@@ -131,6 +131,23 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                 })
             );
 
+            // Extract parent class name from the stack (Rust impl_item or Python class)
+            let parent_class = if is_method {
+                ctx.stack.last().and_then(|f| {
+                    if let FrameKind::Class(_) = &f.kind {
+                        if !f.qualified.is_empty() {
+                            Some(f.qualified.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+            } else {
+                None
+            };
+
             let kind = derive_function_kind(&[], is_method);
             let line = node.start_position().row + 1;
             let exit_line = node.end_position().row + 1;
@@ -147,7 +164,7 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                 name: name.clone(),
                 qualified_name: qualified_name.clone(),
                 parent_module: entity_id.clone(), // patched later
-                parent_class: None,
+                parent_class: parent_class.clone().map(|q| make_entity_id(&ctx.file_path, &q)),
                 parameters: params,
                 return_type: None,
                 calls: Vec::new(),
@@ -232,15 +249,20 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                                 col: col as usize,
                             });
                         }
-                        // Dotted call: `obj.method(x)` — name_node is (attribute)
-                        Some(n) if n.kind() == "attribute" => {
+                        // Dotted call: `obj.method(x)` — name_node is (attribute) [Python]
+                        // or `obj.method(x)` — name_node is (field_expression) [Rust]
+                        Some(n) if n.kind() == "attribute" || n.kind() == "field_expression" => {
                             let method = n
-                                .child_by_field_name("attribute")
+                                .child_by_field_name(
+                                    if n.kind() == "attribute" { "attribute" } else { "field" }
+                                )
                                 .and_then(|c| c.utf8_text(source.as_bytes()).ok())
                                 .unwrap_or("")
                                 .to_string();
                             let object = n
-                                .child_by_field_name("object")
+                                .child_by_field_name(
+                                    if n.kind() == "attribute" { "object" } else { "value" }
+                                )
                                 .and_then(|c| c.utf8_text(source.as_bytes()).ok())
                                 .unwrap_or("")
                                 .to_string();
@@ -270,6 +292,23 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
         }
 
         // ── Silent Tags (no entities emitted) ──────────────────────
+
+        Tag::Impl => {
+            // impl_item for Rust — push a class-like frame so methods
+            // inside get parent_class set, but don't emit a Class entity.
+            let type_name = node
+                .child_by_field_name("type")
+                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                .unwrap_or("")
+                .to_string();
+
+            let qualified = build_qualified_name(&ctx.stack, &type_name);
+            ctx.stack.push(WalkFrame {
+                qualified,
+                kind: FrameKind::Class(String::new()),
+            });
+            Some(FrameKind::Class(String::new()))
+        }
 
         Tag::Docstring
         | Tag::Field

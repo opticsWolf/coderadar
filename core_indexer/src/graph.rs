@@ -609,6 +609,12 @@ impl CodeGraph {
                 .map(|f| f.parent_module.clone())
                 .unwrap_or_default();
 
+            // Get the calling function's parent class for MRO resolution
+            let my_parent_class = projection
+                .functions
+                .get(func_id)
+                .and_then(|f| f.parent_class.clone());
+
             // Build a set of sibling function names in the same module for quick lookup
             let sibling_funcs: std::collections::HashMap<String, String> = projection
                 .functions
@@ -616,6 +622,19 @@ impl CodeGraph {
                 .filter(|(_, f)| f.parent_module == parent_module)
                 .map(|(id, f)| (f.name.clone(), id.clone()))
                 .collect();
+
+            // Build methods of the same class for self.method() resolution
+            let class_methods: std::collections::HashMap<String, String> =
+                if let Some(ref class_id) = my_parent_class {
+                    projection
+                        .functions
+                        .iter()
+                        .filter(|(_, f)| f.parent_class.as_ref() == Some(class_id))
+                        .map(|(id, f)| (f.name.clone(), id.clone()))
+                        .collect()
+                } else {
+                    std::collections::HashMap::new()
+                };
 
             // Cross-file import resolution: build lookup from imports of this module
             let mut import_targets: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -653,22 +672,34 @@ impl CodeGraph {
             // Resolve calls using the orchestrator
             let resolved = orchestrator.resolve_calls(calls, func_id, &import_graph);
 
-            // Override with same-file and cross-file resolution where applicable
+            // Override with same-file, cross-file, and method resolution
             let resolved: Vec<_> = resolved
                 .into_iter()
                 .map(|rc| {
+                    // ── Method resolution: self.method() calls ──────
+                    if let crate::types::ResolvedCall::Unresolved { reason, raw } = &rc {
+                        if matches!(reason, crate::types::UnresolvedReason::TypeInferenceRequired) {
+                            // Try to resolve via class_methods when caller is a method
+                            if let Some(target_id) = class_methods.get(&raw.name) {
+                                return crate::types::ResolvedCall::Function(target_id.clone());
+                            }
+                        }
+                        return rc;
+                    }
+                    // ── External → same-file, cross-file ────────────
                     if let crate::types::ResolvedCall::External(name) = &rc {
-                        // Same-file sibling?
                         if let Some(target_id) = sibling_funcs.get(name.as_str()) {
                             return crate::types::ResolvedCall::Function(target_id.clone());
                         }
-                        // Import-based cross-file?
                         if let Some(target_mod_id) = import_targets.get(name.as_str()) {
-                            // Look for a function with this name in the target module
                             if let Some(imported_func_id) = find_symbol_in_module(
                                 projection, target_mod_id, name) {
                                 return crate::types::ResolvedCall::Function(imported_func_id);
                             }
+                        }
+                        // Method on self that the orchestrator tagged as External
+                        if let Some(target_id) = class_methods.get(name.as_str()) {
+                            return crate::types::ResolvedCall::Function(target_id.clone());
                         }
                     }
                     if let crate::types::ResolvedCall::Builtin(name) = &rc {
@@ -1118,7 +1149,13 @@ mod tests {
     // ── Import Parsing & Cross-File Resolution Tests ──────────────
 
     fn index_source(graph: &CodeGraph, source: &str, file_path: &str) {
-        graph.index_file(source, file_path, &Language::Python).unwrap();
+        let lang = Language::from_extension(
+            std::path::Path::new(file_path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("py")
+        );
+        graph.index_file(source, file_path, &lang).unwrap();
     }
 
     #[test]
@@ -1209,5 +1246,49 @@ mod tests {
         // Config() is a constructor call — should resolve to the class in config.py
         assert!(!callees.is_empty(),
                 "make_cfg should have at least one callee, got {:?}", callees);
+    }
+
+    // ── Rust Indexing & Method Resolution Tests ──────────────────
+
+    #[test]
+    fn test_rust_struct_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "pub struct Foo { x: i32 }\nimpl Foo { pub fn new() -> Self { Foo { x: 0 } } }\n",
+            "src/lib.rs");
+
+        let projection = graph.snapshot();
+        // Should have struct Foo and method Foo::new
+        let struct_id = "src/lib.rs::Foo";
+        assert!(projection.classes.contains_key(struct_id),
+                "Should have struct Foo");
+
+        let method_id = "src/lib.rs::Foo.new";
+        assert!(projection.functions.contains_key(method_id),
+                "Should have method Foo::new");
+
+        let method = projection.functions.get(method_id).unwrap();
+        assert!(method.parent_class.is_some(),
+                "new() should have parent_class set to Foo");
+    }
+
+    #[test]
+    fn test_rust_method_resolution() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "pub struct Foo { x: i32 }\nimpl Foo { pub fn bar(&self) -> i32 { self.baz() } pub fn baz(&self) -> i32 { 42 } }\n",
+            "src/lib.rs");
+
+        let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_all_calls(&mut projection);
+        graph.commit_projection(projection);
+
+        let bar_id = "src/lib.rs::Foo.bar";
+        let baz_id = "src/lib.rs::Foo.baz";
+
+        // bar() calls self.baz() — should resolve via class_methods
+        let callees = graph.callees_of(bar_id);
+        assert!(callees.contains(&baz_id.to_string()),
+                "bar() should call baz() via self, got {:?}", callees);
     }
 }

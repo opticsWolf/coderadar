@@ -642,6 +642,7 @@ pub enum Tag {
     Decorator,
     Docstring,
     Field,
+    Impl,           // Rust: impl_item — container, not an entity
 }
 
 pub struct TaggedTree<'a> {

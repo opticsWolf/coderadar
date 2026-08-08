@@ -56,6 +56,7 @@ fn capture_name_to_tag(name: &str) -> Option<Tag> {
         "function_return" | "function.return" => Some(Tag::FunctionReturn),
         "import" | "import.module" | "import.name" | "import_from" => Some(Tag::Import),
         "import_specifier" | "import_from.alias" => Some(Tag::ImportSpecifier),
+        "impl" => Some(Tag::Impl),
         "call" | "call.name" => Some(Tag::Call),
         "call_receiver" | "call.receiver" | "call.method" => Some(Tag::CallReceiver),
         "decorator" | "decorator.name" => Some(Tag::Decorator),
@@ -70,6 +71,7 @@ fn get_query_for_language_src(language: Language) -> &'static str {
     match language {
         Language::Python => include_str!("../../queries/python.scm"),
         Language::TypeScript | Language::JavaScript => include_str!("../../queries/typescript.scm"),
+        Language::Rust => include_str!("../../queries/rust.scm"),
         _ => "(identifier) @id", // fallback for unsupported languages
     }
 }
