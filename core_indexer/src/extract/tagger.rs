@@ -49,9 +49,9 @@ pub fn tag_tree<'a>(
 /// Map capture name from .scm file to Tag enum.
 fn capture_name_to_tag(name: &str) -> Option<Tag> {
     match name {
-        "class" | "class.name" | "class.def" => Some(Tag::Class),
+        "class" | "class.def" => Some(Tag::Class),
         "class_base" => Some(Tag::ClassBase),
-        "function" | "function.name" | "function.def" => Some(Tag::Function),
+        "function" | "function.def" => Some(Tag::Function),
         "function_param" | "function.params" => Some(Tag::FunctionParam),
         "function_return" | "function.return" => Some(Tag::FunctionReturn),
         "import" | "import.module" | "import.name" | "import_from" => Some(Tag::Import),

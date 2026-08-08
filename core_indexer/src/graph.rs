@@ -18,6 +18,13 @@ use crate::storage;
 use crate::types::*;
 use crate::extract;
 
+/// Normalize a file path string: convert backslashes to forward slashes,
+/// strip leading ./ or .\ for consistent keying.
+fn normalize_path_str(p: &str) -> String {
+    let s = p.trim_start_matches("./").trim_start_matches(".\\");
+    s.replace('\\', "/")
+}
+
 // ── Import Graph (§3.4a) — EntityId-based ───────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -842,6 +849,224 @@ impl CodeGraph {
         Ok(count)
     }
 
+    /// Remove all entities belonging to a file from the projection.
+    /// Returns set of entity IDs that were removed (for downstream resolution).
+    pub fn remove_file_entities(
+        &self,
+        projection: &mut ProjectedGraph,
+        file_path: &str,
+    ) -> BTreeSet<EntityId> {
+        let mut removed = BTreeSet::new();
+
+        // Normalize the lookup path for cross-platform consistency
+        let lookup = normalize_path_str(file_path);
+
+        // Find all module IDs for this file — try both raw and normalized
+        let module_ids: Vec<EntityId> = projection
+            .file_to_modules
+            .get(&PathBuf::from(&lookup))
+            .or_else(|| projection.file_to_modules.get(&PathBuf::from(file_path)))
+            .cloned()
+            .unwrap_or_default();
+
+        if module_ids.is_empty() {
+            // Fallback: entity IDs start with file_path, find them by prefix scan
+            let prefix = format!("{}::", lookup);
+            for (func_id, _) in projection.functions.iter() {
+                if func_id.starts_with(&prefix) && !removed.contains(func_id) {
+                    removed.insert(func_id.clone());
+                }
+            }
+            for (class_id, _) in projection.classes.iter() {
+                if class_id.starts_with(&prefix) && !removed.contains(class_id) {
+                    removed.insert(class_id.clone());
+                }
+            }
+            // Remove entities directly without module lookup
+            for id in &removed.clone() {
+                projection.functions.remove(id);
+                projection.classes.remove(id);
+                projection.imports.remove(id);
+                projection.constants.remove(id);
+                projection.type_aliases.remove(id);
+                projection.callers_by_callee.remove(id);
+                projection.callees_by_caller.remove(id);
+                projection.subclasses.remove(id);
+                projection.overridden_by.remove(id);
+            }
+            // Clean up stale entries
+            projection.callers_by_callee.retain(|_, callees| {
+                callees.retain(|cid| !removed.contains(cid));
+                !callees.is_empty()
+            });
+            projection.callees_by_caller.retain(|_, callers| {
+                callers.retain(|cid| !removed.contains(cid));
+                !callers.is_empty()
+            });
+            return removed;
+        }
+
+        for module_id in &module_ids {
+            removed.insert(module_id.clone());
+
+            // Collect entity IDs to remove by checking parent_module
+            let funcs_to_remove: Vec<EntityId> = projection
+                .functions
+                .iter()
+                .filter(|(_, f)| &f.parent_module == module_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            let classes_to_remove: Vec<EntityId> = projection
+                .classes
+                .iter()
+                .filter(|(_, c)| &c.parent_module == module_id)
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            let imports_to_remove: Vec<EntityId> = projection
+                .imports
+                .iter()
+                .filter(|(id, _)| id.starts_with(&format!("{}::", file_path)))
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            let constants_to_remove: Vec<EntityId> = projection
+                .constants
+                .iter()
+                .filter(|(id, _)| id.starts_with(&format!("{}::", file_path)))
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            let aliases_to_remove: Vec<EntityId> = projection
+                .type_aliases
+                .iter()
+                .filter(|(id, _)| id.starts_with(&format!("{}::", file_path)))
+                .map(|(id, _)| id.clone())
+                .collect();
+
+            // Remove entities and their edge entries
+            for id in &funcs_to_remove {
+                projection.functions.remove(id);
+                projection.callers_by_callee.remove(id);
+                projection.callees_by_caller.remove(id);
+                removed.insert(id.clone());
+            }
+            for id in &classes_to_remove {
+                projection.classes.remove(id);
+                projection.callers_by_callee.remove(id);
+                projection.callees_by_caller.remove(id);
+                projection.subclasses.remove(id);
+                projection.overridden_by.remove(id);
+                removed.insert(id.clone());
+            }
+            for id in &imports_to_remove {
+                projection.imports.remove(id);
+                removed.insert(id.clone());
+            }
+            for id in &constants_to_remove {
+                projection.constants.remove(id);
+                removed.insert(id.clone());
+            }
+            for id in &aliases_to_remove {
+                projection.type_aliases.remove(id);
+                removed.insert(id.clone());
+            }
+
+            // Remove the module itself
+            projection.modules.remove(module_id);
+        }
+
+        // Clean up callers_by_callee entries that reference removed entities
+        projection.callers_by_callee.retain(|_, callees| {
+            callees.retain(|cid| !removed.contains(cid));
+            !callees.is_empty()
+        });
+        projection.callees_by_caller.retain(|_, callers| {
+            callers.retain(|cid| !removed.contains(cid));
+            !callers.is_empty()
+        });
+
+        removed
+    }
+
+    /// Update a single file in-place: re-index and diff against the current graph.
+    /// Returns (entities_added, entities_removed, affected_files).
+    pub fn update_file(
+        &self,
+        file_path: &str,
+        content: Option<&str>,
+        _force: Option<bool>,
+    ) -> Result<(usize, usize, Vec<String>), String> {
+        // Normalize path for consistent lookups
+        let normalized = normalize_path_str(file_path);
+        let file_path = normalized.as_str();
+        let lang = Language::from_extension(
+            std::path::Path::new(file_path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("py")
+        );
+
+        let ts_lang = Self::ts_language(&lang)
+            .ok_or_else(|| format!("No tree-sitter grammar for {:?}", lang))?;
+
+        // Read source (or use provided content)
+        let source = match content {
+            Some(c) => c.to_string(),
+            None => std::fs::read_to_string(file_path)
+                .map_err(|e| format!("Failed to read file: {}", e))?,
+        };
+
+        // Phase 1-2: Parse and extract
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang)
+            .map_err(|e| format!("Failed to set language: {}", e))?;
+        let tree = parser.parse(&source, None)
+            .ok_or_else(|| "Failed to parse source".to_string())?;
+        let root_node = tree.root_node();
+
+        let tagged = crate::extract::tagger::tag_tree(
+            &source, root_node, lang.clone(), ts_lang);
+        let units = crate::extract::walker::walk_and_extract(
+            &tagged, root_node, file_path);
+
+        let new_count = units.len();
+
+        // Phase 3: Remove old entities for this file and insert new ones
+        let mut projection = (*self.snapshot()).clone();
+        let removed_count = self.remove_file_entities(&mut projection, file_path).len();
+        self.insert_extracted(&mut projection, &units, file_path, &lang);
+
+        // Phase 4: Re-run resolution for affected functions
+        self.resolve_all_calls(&mut projection);
+        self.commit_projection(projection);
+
+        // Track affected files (this file + any callers)
+        let mut affected_files = vec![file_path.to_string()];
+        // Find functions that call into entities defined in this file
+        let snap = self.snapshot();
+        for (caller_id, callees) in &snap.callees_by_caller {
+            for callee_id in callees {
+                if callee_id.starts_with(file_path) {
+                    // This caller calls something in the changed file
+                    if let Some(caller_path) = caller_id.split("::").next() {
+                        if !affected_files.contains(&caller_path.to_string()) {
+                            affected_files.push(caller_path.to_string());
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Phase 5: Persist to Macrame if store attached
+        let lang_str = format!("{:?}", lang).to_lowercase();
+        let _ = self.persist_entities(&units, file_path, &lang_str);
+
+        Ok((new_count, removed_count, affected_files))
+    }
+
     /// Insert ExtractedUnits into a ProjectedGraph (used by index_file and update).
     pub fn insert_extracted(
         &self,
@@ -1290,5 +1515,58 @@ mod tests {
         let callees = graph.callees_of(bar_id);
         assert!(callees.contains(&baz_id.to_string()),
                 "bar() should call baz() via self, got {:?}", callees);
+    }
+
+    #[test]
+    fn test_update_file_adds_entities() {
+        let graph = CodeGraph::new(GraphConfig::default());
+
+        // Verify basic indexing
+        graph.index_file("def foo(): pass\ndef bar(): pass\n", "mod.py", &Language::Python).unwrap();
+        let initial = graph.snapshot().functions.len();
+        assert_eq!(initial, 2, "Expected 2 functions, got {}: {:?}",
+            initial,
+            graph.snapshot().functions.keys().collect::<Vec<_>>());
+
+        // Update: change bar, add baz
+        let result = graph.update_file(
+            "mod.py",
+            Some("def foo(): pass\ndef bar(): return 42\ndef baz(): pass\n"),
+            None,
+        );
+        assert!(result.is_ok(), "update_file error: {:?}", result.err());
+        let (added, removed, _affected) = result.unwrap();
+
+        assert!(added >= 1, "Should add at least 1 entity, got {}", added);
+        assert!(removed >= 1, "Should remove at least 1 entity, got {}", removed);
+
+        let snap = graph.snapshot();
+        assert!(snap.functions.contains_key("mod.py::baz"), "Should have new baz");
+        assert!(snap.functions.contains_key("mod.py::foo"), "Foo should survive");
+    }
+
+    #[test]
+    fn test_update_file_removes_entities() {
+        let graph = CodeGraph::new(GraphConfig::default());
+
+        index_source(&graph,
+            "class Dog: pass\nclass Cat: pass\n", "animals.py");
+        assert_eq!(graph.snapshot().classes.len(), 2);
+
+        // Remove Cat
+        let result = graph.update_file(
+            "animals.py",
+            Some("class Dog: pass\n"),
+            None,
+        );
+        assert!(result.is_ok(), "update_file error: {:?}", result.err());
+        let (added, removed, _) = result.unwrap();
+
+        assert!(added >= 1);
+        assert!(removed >= 2); // Cat class + associated
+
+        let snap = graph.snapshot();
+        assert!(snap.classes.contains_key("animals.py::Dog"));
+        assert!(!snap.classes.contains_key("animals.py::Cat"));
     }
 }

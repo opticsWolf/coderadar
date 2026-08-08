@@ -122,6 +122,10 @@ fn class_to_dict(py: Python<'_>, c: &Class) -> PyResult<PyObject> {
     dict.set_item("name", &c.name)?;
     dict.set_item("kind", "class")?;
     dict.set_item("parent_module", &c.parent_module)?;
+    // Extract file_path from entity ID (format: "file_path::Class.name")
+    if let Some(idx) = c.id.rfind("::") {
+        dict.set_item("file_path", &c.id[..idx])?;
+    }
     if let Some(ref pc) = c.parent_class {
         dict.set_item("parent_id", pc)?;
     }
@@ -158,6 +162,10 @@ fn function_to_dict(py: Python<'_>, f: &Function) -> PyResult<PyObject> {
         | crate::types::FunctionKind::CachedProperty => "method",
     })?;
     dict.set_item("parent_module", &f.parent_module)?;
+    // Extract file_path from entity ID (format: "file_path::qualified.name")
+    if let Some(idx) = f.id.rfind("::") {
+        dict.set_item("file_path", &f.id[..idx])?;
+    }
     if let Some(ref pc) = f.parent_class {
         dict.set_item("parent_id", pc)?;
     }
@@ -283,7 +291,19 @@ fn analyze(root: &str) -> PyResult<PyObject> {
     use crate::types::Language;
 
     let config = graph::GraphConfig::default();
-    let graph = CodeGraph::new(config);
+    let mut graph = CodeGraph::new(config);
+
+    // Attach Macrame persistent store in .coderadar/store/
+    let store_path = std::path::Path::new(root).join(".coderadar").join("store");
+    if let Err(e) = std::fs::create_dir_all(&store_path) {
+        eprintln!("Warning: Could not create store directory {:?}: {}", store_path, e);
+    } else {
+        match crate::storage::CodeGraphStore::open(&store_path) {
+            Ok(store) => { graph = graph.with_store(store); }
+            Err(e) => { eprintln!("Warning: Macrame store not attached: {:?}", e); }
+        }
+    }
+
     let root_path = std::path::Path::new(root);
     let mut total_entities = 0usize;
     let mut files_indexed = 0usize;
@@ -358,15 +378,23 @@ fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {
 
 #[pyfunction]
 fn update_file(
-    _file_path: &str, _content: Option<&str>, _force: Option<bool>,
+    file_path: &str, content: Option<&str>, force: Option<bool>,
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
-    let dict = PyDict::new(py);
-    dict.set_item("fully_applied", true)?;
-    dict.set_item("parse_quality", "clean")?;
-    dict.set_item("parse_errors", 0)?;
-    dict.set_item("elapsed_ms", 0.0_f64)?;
-    Ok(dict.into())
+    with_graph(|graph, _snap| {
+        let (added, removed, affected) = graph
+            .update_file(file_path, content, force)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        let dict = PyDict::new(py);
+        dict.set_item("fully_applied", true)?;
+        dict.set_item("entities_added", added)?;
+        dict.set_item("entities_removed", removed)?;
+        dict.set_item("affected_files", affected)?;
+        dict.set_item("parse_quality", "clean")?;
+        dict.set_item("parse_errors", 0)?;
+        dict.set_item("elapsed_ms", 0.0_f64)?;
+        Ok(dict.into())
+    })
 }
 
 // ── Mutation planning ──────────────────────────────────────────────────────
