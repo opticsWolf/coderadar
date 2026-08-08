@@ -1516,9 +1516,9 @@ dependencies = [
 
 [[package]]
 name = "macrame-db"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b28c6858235900a9a21897a47005e7a697e8f3c99bda50cbca06009f95b92ece"
+checksum = "6188b9d31342baf7d18f5dc7602642402df6e50e8b6ffcc69ceaa785119d0cd7"
 dependencies = [
  "bincode",
  "libsql 0.9.30",

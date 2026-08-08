@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use lru::LruCache;
 
-use crate::types::Language;
+use crate::types::{Language, ReferenceKind};
 
 /// Represents a parsed reference waiting to be resolved.
 #[derive(Clone, Debug)]
@@ -16,14 +16,6 @@ pub struct ParsedReference {
     pub line: u32,
     pub column: u32,
     pub kind: ReferenceKind,
-}
-
-#[derive(Clone, Debug)]
-pub enum ReferenceKind {
-    Call,
-    Definition,
-    Inheritance,
-    Import,
 }
 
 /// Result of a Stack Graphs resolution.
