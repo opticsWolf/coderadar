@@ -33,11 +33,12 @@ rayon = "1.9"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 git2 = { version = "0.21", optional = true }
 zstd = "0.13"
-slotmap = "1.0"
+# slotmap and arc-swap removed in v3.5 — replaced by HashMap<String, Arc<T>> + RwLock
+# macrame-db = "0.10"  # placeholder — available when macrame-db is published
 pest = "2.7"
 pest_derive = "2.7"
 parking_lot = "0.12"
-arc-swap = "1.6"
+# arc-swap removed in v3.5 — replaced by RwLock<Arc<ProjectedGraph>>
 streaming-iterator = "0.1"
 notify = { version = "6.1", optional = true }
 notify-debouncer-mini = { version = "0.4", optional = true }

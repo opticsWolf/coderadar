@@ -1,15 +1,13 @@
-// CodeRadar v3.3 — Incremental Update: Patch Application (§5.1)
-// Applies diff operations under WAL transaction, computes affected dependents,
-// and re-resolves only affected symbols.
+// CodeRadar v3.5 — Incremental Update: Patch Application (§5.1, §5.5)
+// Applies diff operations, writes to Macrame, updates the projected graph.
+// v3.5: No WAL — Macrame assertion model provides atomicity and history.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 
 use crate::graph::CodeGraph;
 use crate::types::*;
 use crate::update::diff::{DiffOp, EntityKind};
-use crate::update::wal::PatchTransaction;
 
-/// Result of updating a file in the graph.
 #[derive(Clone, Debug)]
 pub struct UpdateReport {
     pub affected_files: Vec<String>,
@@ -20,8 +18,6 @@ pub struct UpdateReport {
     pub parse_quality: ParseQuality,
     pub parse_errors: usize,
     pub fully_applied: bool,
-    pub epoch_before: u64,
-    pub epoch_after: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -31,55 +27,42 @@ pub struct SymbolChange {
     pub qualified_name: String,
     pub file: String,
     pub line: usize,
-    pub id: Option<u64>,
+    pub id: Option<EntityId>,
 }
 
 /// Compute the set of affected dependents from a diff patch.
-/// Uses reverse indexes to find transitive dependents.
 pub fn compute_affected_dependents(
     _graph: &CodeGraph,
     ops: &[DiffOp],
 ) -> BTreeSet<String> {
     let mut affected = BTreeSet::new();
-
     for op in ops {
         match op {
-            DiffOp::Remove { kind, .. } | DiffOp::Modify { kind, .. } => {
-                // In a full implementation, uses importers, callers_by_callee,
-                // subclasses reverse indexes to compute transitive closure.
-                // For now, mark that recalculation is needed.
-                let _ = kind;
+            DiffOp::Remove { .. } | DiffOp::Modify { .. } => {
+                // Full implementation: use importers, callers_by_callee,
+                // subclasses reverse indexes for transitive closure.
             }
-            DiffOp::Insert { .. } => {
-                // New entities — no dependents yet
-            }
+            DiffOp::Insert { .. } => {}
         }
     }
-
     affected
 }
 
-/// Apply a patch to the graph under a WAL transaction.
+/// Apply a patch to the graph.
+/// v3.5: Writes entities and edges to Macrame (assertion model), then
+/// updates the in-memory projected graph. No WAL, no epoch bumps.
 pub fn apply_patch(
     graph: &mut CodeGraph,
     _ops: &[DiffOp],
-    _file_path: &str,
+    file_path: &str,
 ) -> UpdateReport {
-    let epoch_before = graph.epoch.load(std::sync::atomic::Ordering::Acquire);
-
-    // In a full implementation:
-    // 1. Build PatchTransaction via WAL
-    // 2. Insert new modules/classes/functions/imports
-    // 3. Modify existing entities
-    // 4. Remove obsolete entities
-    // 5. Re-resolve affected symbols
-    // 6. Update reverse indexes
-    // 7. Commit & bump epoch
-
-    let epoch_after = graph.bump_epoch();
+    // Full implementation (§5.5):
+    // 1. For each DiffOp, assert/retire concepts and edges in Macrame
+    // 2. Build new ProjectedGraph from current snapshot + Macrame state
+    // 3. commit_projection(new_projection)
 
     UpdateReport {
-        affected_files: vec![_file_path.to_string()],
+        affected_files: vec![file_path.to_string()],
         changed_symbols: Vec::new(),
         new_unresolved_references: Vec::new(),
         newly_resolved_references: Vec::new(),
@@ -87,7 +70,5 @@ pub fn apply_patch(
         parse_quality: ParseQuality::Clean,
         parse_errors: 0,
         fully_applied: true,
-        epoch_before,
-        epoch_after,
     }
 }

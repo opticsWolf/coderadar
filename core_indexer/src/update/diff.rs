@@ -3,6 +3,21 @@
 
 use crate::types::*;
 
+impl ExtractedUnit {
+    /// Get the entity ID for this unit.
+    pub fn entity_id(&self) -> EntityId {
+        match self {
+            ExtractedUnit::Module(m) => m.id.clone(),
+            ExtractedUnit::Class(c) => c.id.clone(),
+            ExtractedUnit::Function(f) => f.id.clone(),
+            ExtractedUnit::Import(i) => i.id.clone(),
+            ExtractedUnit::Constant(c) => c.id.clone(),
+            ExtractedUnit::TypeAlias(t) => t.id.clone(),
+            ExtractedUnit::Field(f) => f.name.clone(),
+        }
+    }
+}
+
 /// A single diff operation for one entity.
 #[derive(Clone, Debug)]
 pub enum DiffOp {
@@ -11,11 +26,11 @@ pub enum DiffOp {
     },
     Remove {
         kind: EntityKind,
-        old_key: Option<u64>, // SlotMap generational key
+        old_id: Option<EntityId>,
     },
     Modify {
         kind: EntityKind,
-        key: u64,
+        id: EntityId,
         signature_changed: bool,
         body_changed: bool,
         new_unit: ExtractedUnit,
@@ -133,7 +148,7 @@ pub fn diff_units(old_units: &[ExtractedUnit], new_units: &[ExtractedUnit]) -> V
 
             ops.push(DiffOp::Modify {
                 kind: new_key.kind,
-                key: 0, // Will be patched with actual SlotMap key
+                id: new_unit.entity_id(),
                 signature_changed: sig_changed,
                 body_changed: body_changed && !sig_changed,
                 new_unit: (*new_unit).clone(),
@@ -149,7 +164,7 @@ pub fn diff_units(old_units: &[ExtractedUnit], new_units: &[ExtractedUnit]) -> V
         if !old_matched[old_idx] {
             ops.push(DiffOp::Remove {
                 kind: old_key.kind,
-                old_key: None,
+                old_id: Some(old_key.qualified_name.clone()),
             });
         }
     }
@@ -210,9 +225,10 @@ mod tests {
 
     fn make_fn(name: &str, sig_hash: u64, body_hash: u64) -> ExtractedUnit {
         ExtractedUnit::Function(ExtractedFunction {
+            id: format!("test.py::{name}"),
             name: name.into(),
             qualified_name: name.into(),
-            parent_module: None,
+            parent_module: "test.py".into(),
             parent_class: None,
             parameters: vec![],
             return_type: None,
@@ -239,9 +255,10 @@ mod tests {
 
     fn make_class(name: &str) -> ExtractedUnit {
         ExtractedUnit::Class(ExtractedClass {
+            id: format!("test.py::{name}"),
             name: name.into(),
             qualified_name: name.into(),
-            parent_module: None,
+            parent_module: "test.py".into(),
             parent_class: None,
             bases: vec![],
             decorators: vec![],
@@ -317,9 +334,9 @@ mod tests {
     #[test]
     fn test_order_patch_inserts_before_modifies_before_removes() {
         let mut ops = vec![
-            DiffOp::Remove { kind: EntityKind::Class, old_key: None },
+            DiffOp::Remove { kind: EntityKind::Class, old_id: Some("cls1".into()) },
             DiffOp::Insert { unit: make_fn("newfn", 1, 1) },
-            DiffOp::Modify { kind: EntityKind::Function, key: 5, signature_changed: true, body_changed: false, new_unit: make_fn("foo", 2, 2) },
+            DiffOp::Modify { kind: EntityKind::Function, id: "fn1".into(), signature_changed: true, body_changed: false, new_unit: make_fn("foo", 2, 2) },
         ];
         order_patch_ops(&mut ops);
         // After ordering: Insert first, then Modify, then Remove

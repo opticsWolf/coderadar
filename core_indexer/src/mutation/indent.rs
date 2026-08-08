@@ -46,9 +46,11 @@ pub fn detect_indent_style(source: &str) -> IndentStyle {
     if tab_count > space_counts.values().sum() {
         IndentStyle::tabs()
     } else {
+        // Pick the most common width. On ties, prefer the smaller width
+        // (base indentation, e.g. 4-space over 8-space continuation).
         let width = space_counts
             .into_iter()
-            .max_by_key(|(_, count)| *count)
+            .max_by(|(w1, c1), (w2, c2)| c1.cmp(c2).then_with(|| w2.cmp(w1)))
             .map(|(w, _)| w)
             .unwrap_or(4);
         IndentStyle::spaces(width)

@@ -1,12 +1,14 @@
-// CodeRadar — Rust Core Library (spec v3.3)
+// CodeRadar v3.5 — Rust Core Library
 // PyO3 bindings for the Python layer.
 
+pub mod buffers;
 pub mod extract;
 pub mod fs;
 pub mod graph;
 pub mod mutation;
 pub mod query;
 pub mod resolve;
+pub mod storage;
 pub mod types;
 pub mod update;
 
@@ -20,6 +22,7 @@ use crate::graph::{CodeGraph, GraphConfig};
 use crate::query::exec::{execute_query, QueryIterator};
 use crate::query::grammar::parse_query;
 use crate::update::patch::UpdateReport;
+use crate::types::ProjectedGraph;
 
 // ── Python Module ──────────────────────────────────────────────────────────
 
@@ -78,8 +81,8 @@ impl PyCodeGraph {
     }
 
     fn query(&self, query_str: &str) -> PyResult<QueryIterator> {
-        let guard = self.inner.read();
-        let snapshot = guard.snapshot();
+        let graph = self.inner.read();
+        let snapshot = graph.snapshot();
         let parsed = parse_query(query_str)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
         let rows = execute_query(&snapshot, &parsed);

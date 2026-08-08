@@ -1,23 +1,26 @@
-// CodeRadar v3.3 — Extraction: Hierarchy Walker Pass 2 (§4.2)
+// CodeRadar v3.5 — Extraction: Hierarchy Walker Pass 2 (§4.2)
 // Typed stack-frame walker that traverses the tagged tree and emits ExtractedUnits.
+// v3.5: EntityId-based identities; file_path required for building entity IDs.
 
 use tree_sitter::Node;
 
 use crate::types::*;
 
 use super::spans::extract_byte_spans;
-use super::spans::SpanExtractor;
 
 /// Walk the tagged tree and produce a list of ExtractedUnits.
-/// The root_node comes from a tree-sitter Tree already parsed by the caller.
-pub fn walk_and_extract<'a>(tagged: &'a TaggedTree<'a>, root_node: Node<'a>) -> Vec<ExtractedUnit> {
+pub fn walk_and_extract<'a>(
+    tagged: &'a TaggedTree<'a>,
+    root_node: Node<'a>,
+    file_path: &str,
+) -> Vec<ExtractedUnit> {
     let mut ctx = WalkContext {
         tags: tagged,
         units: Vec::new(),
         stack: Vec::new(),
+        file_path: file_path.to_string(),
     };
 
-    // Begin with a module-level frame
     ctx.stack.push(WalkFrame {
         qualified: String::new(),
         kind: FrameKind::Module,
@@ -27,7 +30,6 @@ pub fn walk_and_extract<'a>(tagged: &'a TaggedTree<'a>, root_node: Node<'a>) -> 
     ctx.units
 }
 
-/// Recursively walk a tree-sitter node, emitting units for tagged nodes.
 fn walk_node(node: Node, ctx: &mut WalkContext) {
     let pushed = if let Some(info) = ctx.tags.tags.get(&(node.id() as usize)) {
         emit_for_node(node, info, ctx)
@@ -40,7 +42,6 @@ fn walk_node(node: Node, ctx: &mut WalkContext) {
         walk_node(child, ctx);
     }
 
-    // Pop ONLY frames this invocation pushed — fixes the v1 over-pop bug.
     if let Some(frame_kind) = pushed {
         let popped = ctx.stack.pop();
         debug_assert!(
@@ -53,7 +54,6 @@ fn walk_node(node: Node, ctx: &mut WalkContext) {
     }
 }
 
-/// Emit the appropriate ExtractedUnit for a tagged node.
 fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<FrameKind> {
     let source = ctx.tags.source;
 
@@ -68,14 +68,14 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
             let line = node.start_position().row + 1;
             let exit_line = node.end_position().row + 1;
             let spans = extract_byte_spans(node);
-
-            let qualified_name =
-                build_qualified_name(&ctx.stack, &name);
+            let qualified_name = build_qualified_name(&ctx.stack, &name);
+            let entity_id = make_entity_id(&ctx.file_path, &qualified_name);
 
             ctx.units.push(ExtractedUnit::Class(ExtractedClass {
+                id: entity_id.clone(),
                 name: name.clone(),
                 qualified_name: qualified_name.clone(),
-                parent_module: None,
+                parent_module: entity_id.clone(), // patched later
                 parent_class: None,
                 bases: Vec::new(),
                 decorators: Vec::new(),
@@ -94,9 +94,9 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
 
             ctx.stack.push(WalkFrame {
                 qualified: qualified_name,
-                kind: FrameKind::Class(ClassId::null()),
+                kind: FrameKind::Class(String::new()), // null sentinel, patched later
             });
-            Some(FrameKind::Class(ClassId::null()))
+            Some(FrameKind::Class(String::new()))
         }
 
         Tag::Function => {
@@ -106,7 +106,6 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                 .unwrap_or("")
                 .to_string();
 
-            // is_method tests the IMMEDIATE parent frame's kind — not stack depth
             let is_method = matches!(
                 ctx.stack.last(),
                 Some(WalkFrame {
@@ -116,18 +115,18 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
             );
 
             let kind = derive_function_kind(&[], is_method);
-
             let line = node.start_position().row + 1;
             let exit_line = node.end_position().row + 1;
             let spans = extract_byte_spans(node);
             let params = extract_parameters(node, source);
-
             let qualified_name = build_qualified_name(&ctx.stack, &name);
+            let entity_id = make_entity_id(&ctx.file_path, &qualified_name);
 
             ctx.units.push(ExtractedUnit::Function(ExtractedFunction {
+                id: entity_id.clone(),
                 name: name.clone(),
                 qualified_name: qualified_name.clone(),
-                parent_module: None,
+                parent_module: entity_id.clone(), // patched later
                 parent_class: None,
                 parameters: params,
                 return_type: None,
@@ -182,7 +181,10 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                 }
             };
 
+            let entity_id = make_entity_id(&ctx.file_path, &format!("import@{}", line));
+
             ctx.units.push(ExtractedUnit::Import(ExtractedImport {
+                id: entity_id,
                 raw: text,
                 kind,
                 line,
@@ -235,6 +237,15 @@ fn build_qualified_name(stack: &[WalkFrame], name: &str) -> String {
     }
     parts.push(name);
     parts.join(".")
+}
+
+/// Build a CodeRadar entity ID: "file_path::qualified_name"
+pub fn make_entity_id(file_path: &str, qualified_name: &str) -> String {
+    if qualified_name.is_empty() {
+        file_path.to_string()
+    } else {
+        format!("{}::{}", file_path, qualified_name)
+    }
 }
 
 /// Extract parameters from a function definition node.

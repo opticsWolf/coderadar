@@ -2,13 +2,13 @@
 // Walk the import graph BFS to collect modules exporting a reference name.
 
 use crate::graph::ImportGraph;
-use crate::types::{Export, ExportSource, ModuleId};
+use crate::types::{EntityId, Export, ExportSource};
 
 /// A candidate match found via import-graph traversal.
 #[derive(Clone, Debug)]
 pub struct ImportMatch {
     pub module_path: String,
-    pub module_id: Option<ModuleId>,
+    pub module_id: Option<EntityId>,
     pub export_name: String,
     pub source: ExportSource,
 }
@@ -38,7 +38,7 @@ pub fn resolve_in_imports(
                 if export.name == name {
                     matches.push(ImportMatch {
                         module_path: import_node.path.to_string_lossy().to_string(),
-                        module_id: import_node.module_id,
+                        module_id: import_node.module_id.clone(),
                         export_name: export.name.clone(),
                         source: export.source.clone(),
                     });

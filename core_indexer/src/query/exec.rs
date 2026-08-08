@@ -1,5 +1,5 @@
-// CodeRadar v3.3 — Query Execution (§7.1, §7.2a)
-// Streaming and aggregated query modes against a QuerySnapshot.
+// CodeRadar v3.5 — Query Execution (§7.1, §7.2a)
+// Streaming and aggregated query modes against the in-memory projected graph.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use crate::graph::QuerySnapshot;
+use crate::types::ProjectedGraph;
 use crate::query::grammar::{CompOp, EntityType, Operand, ParsedQuery, Predicate, SelectItem};
 
 /// A single result row from a query.
@@ -63,7 +63,7 @@ impl QueryValue {
 }
 
 /// Execute a parsed query against a snapshot.
-pub fn execute_query(snapshot: &QuerySnapshot, query: &ParsedQuery) -> Vec<QueryRow> {
+pub fn execute_query(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
     let rows = match query.entity {
         EntityType::Functions => scan_functions(snapshot, query),
         EntityType::Classes => scan_classes(snapshot, query),
@@ -87,10 +87,9 @@ pub fn execute_query(snapshot: &QuerySnapshot, query: &ParsedQuery) -> Vec<Query
     result
 }
 
-fn scan_functions(snapshot: &QuerySnapshot, query: &ParsedQuery) -> Vec<QueryRow> {
+fn scan_functions(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
     let mut rows = Vec::new();
-    for (_key, entry) in snapshot.arenas.functions.iter() {
-        let fn_val = &entry.inner;
+    for (_id, fn_val) in snapshot.functions.iter() {
 
         // Build a row with all function fields
         let mut fields = HashMap::new();
@@ -143,10 +142,10 @@ fn scan_functions(snapshot: &QuerySnapshot, query: &ParsedQuery) -> Vec<QueryRow
     rows
 }
 
-fn scan_classes(snapshot: &QuerySnapshot, query: &ParsedQuery) -> Vec<QueryRow> {
+fn scan_classes(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
     let mut rows = Vec::new();
-    for (_key, entry) in snapshot.arenas.classes.iter() {
-        let cls = &entry.inner;
+    for (_id, cls) in snapshot.classes.iter() {
+        // cls is Arc<Class>
         let mut fields = HashMap::new();
         fields.insert("name".to_string(), QueryValue::String(cls.name.clone()));
         fields.insert(
@@ -185,19 +184,19 @@ fn scan_classes(snapshot: &QuerySnapshot, query: &ParsedQuery) -> Vec<QueryRow> 
     rows
 }
 
-fn scan_modules(_snapshot: &QuerySnapshot, _query: &ParsedQuery) -> Vec<QueryRow> {
+fn scan_modules(_snapshot: &ProjectedGraph, _query: &ParsedQuery) -> Vec<QueryRow> {
     Vec::new()
 }
 
-fn scan_imports(_snapshot: &QuerySnapshot, _query: &ParsedQuery) -> Vec<QueryRow> {
+fn scan_imports(_snapshot: &ProjectedGraph, _query: &ParsedQuery) -> Vec<QueryRow> {
     Vec::new()
 }
 
-fn scan_calls(_snapshot: &QuerySnapshot, _query: &ParsedQuery) -> Vec<QueryRow> {
+fn scan_calls(_snapshot: &ProjectedGraph, _query: &ParsedQuery) -> Vec<QueryRow> {
     Vec::new()
 }
 
-fn scan_fields(_snapshot: &QuerySnapshot, _query: &ParsedQuery) -> Vec<QueryRow> {
+fn scan_fields(_snapshot: &ProjectedGraph, _query: &ParsedQuery) -> Vec<QueryRow> {
     Vec::new()
 }
 

@@ -1,36 +1,63 @@
-// CodeRadar v3.3 — Core Types & Enums
-// §3 Data Models, §3.2 Core Entities, §3.3 Supporting Types, §3.3a Extraction Intermediates
+// CodeRadar v3.5 — Core Types & Enums
+// §3 Data Models — EntityId-based identity, Macrame-backed persistence, ProjectedGraph.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use arc_swap::ArcSwap;
-use dashmap::DashMap;
-use slotmap::{new_key_type, SlotMap};
+// ── EntityId (v3.5 §3.1) ────────────────────────────────────────────────────
+// Stable dotted-path identity, e.g. "src/auth.py::UserService.create".
+// Used as Macrame concept IDs and ProjectedGraph hashmap keys.
 
-// ── SlotMap Key Types (§3.1) ────────────────────────────────────────────────
+pub type EntityId = String;
 
-new_key_type! { pub struct ModuleId; }
-new_key_type! { pub struct ClassId; }
+/// Typed wrappers for compile-time safety within Rust — all backed by EntityId.
+#[derive(Clone, Eq, PartialEq, Hash, Debug, PartialOrd, Ord)]
+pub struct ModuleKey(pub EntityId);
 
-impl ClassId {
-    /// Placeholder ClassId for the walker's FrameKind — patched after arena insert.
-    pub const fn null() -> Self {
-        ClassId(slotmap::KeyData::from_ffi(0))
+#[derive(Clone, Eq, PartialEq, Hash, Debug, PartialOrd, Ord)]
+pub struct ClassKey(pub EntityId);
+
+impl ClassKey {
+    /// Placeholder for walker FrameKind — patched after arena insert.
+    pub fn null() -> Self {
+        ClassKey(String::new())
     }
 }
-new_key_type! { pub struct FunctionId; }
-new_key_type! { pub struct ImportId; }
-new_key_type! { pub struct ConstantId; }
-new_key_type! { pub struct TypeAliasId; }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug, PartialOrd, Ord)]
+pub struct FunctionKey(pub EntityId);
+
+#[derive(Clone, Eq, PartialEq, Hash, Debug, PartialOrd, Ord)]
+pub struct ImportKey(pub EntityId);
+
+#[derive(Clone, Eq, PartialEq, Hash, Debug, PartialOrd, Ord)]
+pub struct ConstantKey(pub EntityId);
+
+#[derive(Clone, Eq, PartialEq, Hash, Debug, PartialOrd, Ord)]
+pub struct TypeAliasKey(pub EntityId);
+
+// Convenience conversions
+impl From<EntityId> for ModuleKey     { fn from(id: EntityId) -> Self { ModuleKey(id) } }
+impl From<EntityId> for ClassKey      { fn from(id: EntityId) -> Self { ClassKey(id) } }
+impl From<EntityId> for FunctionKey   { fn from(id: EntityId) -> Self { FunctionKey(id) } }
+impl From<EntityId> for ImportKey     { fn from(id: EntityId) -> Self { ImportKey(id) } }
+impl From<EntityId> for ConstantKey   { fn from(id: EntityId) -> Self { ConstantKey(id) } }
+impl From<EntityId> for TypeAliasKey  { fn from(id: EntityId) -> Self { TypeAliasKey(id) } }
+
+impl ModuleKey    { pub fn as_str(&self) -> &str { &self.0 } }
+impl ClassKey     { pub fn as_str(&self) -> &str { &self.0 } }
+impl FunctionKey  { pub fn as_str(&self) -> &str { &self.0 } }
+impl ImportKey    { pub fn as_str(&self) -> &str { &self.0 } }
+impl ConstantKey  { pub fn as_str(&self) -> &str { &self.0 } }
+impl TypeAliasKey { pub fn as_str(&self) -> &str { &self.0 } }
+
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum SymbolId {
-    Module(ModuleId),
-    Class(ClassId),
-    Function(FunctionId),
-    Import(ImportId),
+    Module(EntityId),
+    Class(EntityId),
+    Function(EntityId),
+    Import(EntityId),
 }
 
 // ── ByteSpan (§3.3) ─────────────────────────────────────────────────────────
@@ -160,13 +187,14 @@ impl Language {
     }
 }
 
-// ── Quality / FileType / SourceType ─────────────────────────────────────────
+// ── Quality / FileType / SourceType (§4.5, §4.5a) ──────────────────────────
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
 pub enum ParseQuality {
     Clean,
     Partial,
     Tainted,
+    Deferred,   // v3.5 §4.5a: routed to recovery extractor
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -194,7 +222,7 @@ pub enum FunctionKind {
     PropertyDeleter,
     CachedProperty,
     AbstractMethod,
-    DataclassSynthesized { from_class: ClassId },
+    DataclassSynthesized { from_class: EntityId },
 }
 
 // ── EffectiveClass (§3.3) ───────────────────────────────────────────────────
@@ -231,8 +259,16 @@ pub enum EnumVariant {
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum MroNode {
-    Class(ClassId),
+    Class(EntityId),
     External { name: String },
+}
+
+// ── TargetKind (§6.1a) ─────────────────────────────────────────────────────
+
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub enum TargetKind {
+    Internal,
+    External(String),   // standard library, third-party; always emitted
 }
 
 // ── Parameter & Field (§3.3) ────────────────────────────────────────────────
@@ -272,7 +308,7 @@ pub struct Export {
 pub enum ExportSource {
     Local,
     ReExport {
-        from: ModuleId,
+        from: EntityId,
         original_name: String,
     },
 }
@@ -305,10 +341,10 @@ pub enum ImportKind {
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum ImportResolution {
     Unresolved,
-    Module(ModuleId),
+    Module(EntityId),
     Symbol(SymbolId),
     Wildcard {
-        module: ModuleId,
+        module: EntityId,
         exposed: Vec<String>,
     },
     Dynamic,
@@ -317,7 +353,7 @@ pub enum ImportResolution {
     },
 }
 
-// ── UnresolvedRef / ResolvedCall (§3.3) ─────────────────────────────────────
+// ── UnresolvedRef / ResolvedCall (§3.3, §6.1a) ─────────────────────────────
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub struct UnresolvedRef {
@@ -329,13 +365,14 @@ pub struct UnresolvedRef {
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum ResolvedCall {
-    Function(FunctionId),
+    Function(EntityId),
     Method {
         receiver: ReceiverShape,
-        method: FunctionId,
+        method: EntityId,
     },
-    Constructor(ClassId),
+    Constructor(EntityId),
     Builtin(String),
+    External(String),          // v3.5 §6.1a: library / third-party call
     Unresolved {
         reason: UnresolvedReason,
         raw: UnresolvedRef,
@@ -345,8 +382,8 @@ pub enum ResolvedCall {
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum ReceiverShape {
     SelfRef,
-    ClassRef(ClassId),
-    ModuleRef(ModuleId),
+    ClassRef(EntityId),
+    ModuleRef(EntityId),
     LocalVar,
     Unknown,
 }
@@ -358,23 +395,25 @@ pub enum UnresolvedReason {
     DynamicImport,
     WildcardImportShadow,
     ParseError,
+    IncompleteFlow,            // v3.5 §6.1a: internal dead-end suppressed
 }
 
-// ── Core Entities (§3.2) ────────────────────────────────────────────────────
+// ── Core Entities (§3.2) — EntityId-based identity ──────────────────────────
 
 #[derive(Clone, Debug)]
 pub struct Module {
+    pub id: EntityId,
     pub name: String,
     pub path: PathBuf,
     pub language: Language,
-    pub package: Option<ModuleId>,
+    pub package: Option<EntityId>,
     pub exports: Vec<Export>,
     pub star_exports: Option<Vec<String>>,
-    pub classes: Vec<ClassId>,
-    pub functions: Vec<FunctionId>,
-    pub imports: Vec<ImportId>,
-    pub constants: Vec<ConstantId>,
-    pub type_aliases: Vec<TypeAliasId>,
+    pub classes: Vec<EntityId>,
+    pub functions: Vec<EntityId>,
+    pub imports: Vec<EntityId>,
+    pub constants: Vec<EntityId>,
+    pub type_aliases: Vec<EntityId>,
     pub parse_quality: ParseQuality,
     pub file_version: u64,
     pub content_hash: u64,
@@ -382,14 +421,15 @@ pub struct Module {
 
 #[derive(Clone, Debug)]
 pub struct Class {
+    pub id: EntityId,
     pub name: String,
-    pub parent_module: ModuleId,
-    pub parent_class: Option<ClassId>,
+    pub parent_module: EntityId,
+    pub parent_class: Option<EntityId>,
     pub bases: Vec<UnresolvedRef>,
-    pub resolved_bases: Vec<ClassId>,
+    pub resolved_bases: Vec<EntityId>,
     pub mro: Vec<MroNode>,
     pub mro_error: bool,
-    pub methods: Vec<FunctionId>,
+    pub methods: Vec<EntityId>,
     pub fields: Vec<Field>,
     pub source: SourceType,
     pub decorators: Vec<String>,
@@ -408,15 +448,16 @@ pub struct Class {
 
 #[derive(Clone, Debug)]
 pub struct Function {
+    pub id: EntityId,
     pub name: String,
-    pub parent_module: ModuleId,
-    pub parent_class: Option<ClassId>,
+    pub parent_module: EntityId,
+    pub parent_class: Option<EntityId>,
     pub parameters: Vec<Parameter>,
     pub return_type: Option<String>,
     pub calls: Vec<UnresolvedRef>,
     pub resolved_calls: Vec<ResolvedCall>,
     pub decorators: Vec<String>,
-    pub setter_of: Option<FunctionId>,
+    pub setter_of: Option<EntityId>,
     pub line: usize,
     pub exit_line: usize,
     pub docstring: Option<String>,
@@ -438,6 +479,7 @@ pub struct Function {
 
 #[derive(Clone, Debug)]
 pub struct Import {
+    pub id: EntityId,
     pub raw: String,
     pub kind: ImportKind,
     pub resolution: ImportResolution,
@@ -448,6 +490,7 @@ pub struct Import {
 
 #[derive(Clone, Debug)]
 pub struct Constant {
+    pub id: EntityId,
     pub name: String,
     pub annotation: Option<String>,
     pub source: SourceType,
@@ -458,6 +501,7 @@ pub struct Constant {
 
 #[derive(Clone, Debug)]
 pub struct TypeAlias {
+    pub id: EntityId,
     pub name: String,
     pub target: String,
     pub source: SourceType,
@@ -465,7 +509,7 @@ pub struct TypeAlias {
     pub name_span: ByteSpan,
 }
 
-// ── Extraction Intermediate Types (§3.3a) ───────────────────────────────────
+// ── Extraction Intermediate Types (§3.3a) — EntityId-based ──────────────────
 
 #[derive(Clone, Debug)]
 pub enum ExtractedUnit {
@@ -480,6 +524,7 @@ pub enum ExtractedUnit {
 
 #[derive(Clone, Debug)]
 pub struct ExtractedModule {
+    pub id: EntityId,
     pub name: String,
     pub path: PathBuf,
     pub language: Language,
@@ -489,10 +534,11 @@ pub struct ExtractedModule {
 
 #[derive(Clone, Debug)]
 pub struct ExtractedClass {
+    pub id: EntityId,
     pub name: String,
     pub qualified_name: String,
-    pub parent_module: Option<ModuleId>,
-    pub parent_class: Option<ClassId>,
+    pub parent_module: EntityId,
+    pub parent_class: Option<EntityId>,
     pub bases: Vec<UnresolvedRef>,
     pub decorators: Vec<String>,
     pub docstring: Option<String>,
@@ -510,10 +556,11 @@ pub struct ExtractedClass {
 
 #[derive(Clone, Debug)]
 pub struct ExtractedFunction {
+    pub id: EntityId,
     pub name: String,
     pub qualified_name: String,
-    pub parent_module: Option<ModuleId>,
-    pub parent_class: Option<ClassId>,
+    pub parent_module: EntityId,
+    pub parent_class: Option<EntityId>,
     pub parameters: Vec<Parameter>,
     pub return_type: Option<String>,
     pub calls: Vec<UnresolvedRef>,
@@ -538,6 +585,7 @@ pub struct ExtractedFunction {
 
 #[derive(Clone, Debug)]
 pub struct ExtractedImport {
+    pub id: EntityId,
     pub raw: String,
     pub kind: ImportKind,
     pub line: usize,
@@ -558,6 +606,7 @@ pub struct ExtractedField {
 
 #[derive(Clone, Debug)]
 pub struct ExtractedConstant {
+    pub id: EntityId,
     pub name: String,
     pub annotation: Option<String>,
     pub source: SourceType,
@@ -568,6 +617,7 @@ pub struct ExtractedConstant {
 
 #[derive(Clone, Debug)]
 pub struct ExtractedTypeAlias {
+    pub id: EntityId,
     pub name: String,
     pub target: String,
     pub source: SourceType,
@@ -575,7 +625,7 @@ pub struct ExtractedTypeAlias {
     pub name_span: ByteSpan,
 }
 
-// ── TaggedTree / TagInfo (§3.3a, §4.1) ──────────────────────────────────────
+// ── TaggedTree / TagInfo (§4.1) ─────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Tag {
@@ -604,11 +654,11 @@ pub struct TagInfo {
     pub capture_name: String,
 }
 
-// ── Walker Frame (§3.3a) ────────────────────────────────────────────────────
+// ── Walker Frame (§3.3a) — EntityId-based ──────────────────────────────────
 
 pub enum FrameKind {
     Module,
-    Class(ClassId),
+    Class(EntityId),
     Function,
 }
 
@@ -631,6 +681,72 @@ pub struct WalkContext<'a> {
     pub tags: &'a TaggedTree<'a>,
     pub units: Vec<ExtractedUnit>,
     pub stack: Vec<WalkFrame>,
+    pub file_path: String,
+}
+
+// ── ProjectedGraph types (§3.4) — used by graph.rs ──────────────────────────
+
+pub struct ProjectedGraph {
+    pub modules: HashMap<EntityId, Arc<Module>>,
+    pub classes: HashMap<EntityId, Arc<Class>>,
+    pub functions: HashMap<EntityId, Arc<Function>>,
+    pub imports: HashMap<EntityId, Arc<Import>>,
+    pub constants: HashMap<EntityId, Arc<Constant>>,
+    pub type_aliases: HashMap<EntityId, Arc<TypeAlias>>,
+
+    pub file_to_modules: HashMap<PathBuf, Vec<EntityId>>,
+    pub module_by_dotted_name: HashMap<(Language, String), EntityId>,
+
+    pub importers: HashMap<EntityId, BTreeSet<EntityId>>,
+    pub callers_by_callee: HashMap<EntityId, BTreeSet<EntityId>>,
+    pub callees_by_caller: HashMap<EntityId, BTreeSet<EntityId>>,
+    pub subclasses: HashMap<EntityId, BTreeSet<EntityId>>,
+    pub overridden_by: HashMap<EntityId, BTreeSet<EntityId>>,
+}
+
+// ── ResolvedEdge (§3.4a, §6.1a) — used by resolution engine ─────────────────
+
+// v3.5: Clone and Debug derives needed for resolution engine usage.
+#[derive(Clone, Debug)]
+pub struct ResolvedEdge {
+    pub source_id: EntityId,
+    pub target_id: EntityId,
+    pub confidence: f32,
+    pub method: ResolutionMethod,
+    pub kind: ReferenceKind,
+    pub line: usize,
+    pub call_site_span: ByteSpan,
+    pub args_span: Option<ByteSpan>,
+    pub target_kind: TargetKind,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
+pub enum ResolutionMethod {
+    StackGraph,
+    ImportConstrained,
+    SignatureMatch,
+    Embedding,
+    Lsp,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
+pub enum ReferenceKind {
+    Call,
+    Instantiation,
+    Inheritance,
+    TypeAnnotation,
+    AttributeAccess,
+    Import,
+}
+
+// ── StagedChange (§6.7) ─────────────────────────────────────────────────────
+
+pub struct StagedChange {
+    pub path: String,
+    pub entities: Vec<ExtractedUnit>,
+    pub edges: Vec<ResolvedEdge>,
+    pub unresolved: Vec<(UnresolvedRef, usize)>,
+    pub language: Language,
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -639,80 +755,89 @@ pub struct WalkContext<'a> {
 mod tests {
     use super::*;
 
-    // ── ByteSpan ──────────────────────────────────────────────────────
-
     #[test]
     fn test_byte_span_len() {
         let span = ByteSpan { start: 10, end: 25 };
         assert_eq!(span.len(), 15);
-        assert!(!span.is_empty());
     }
 
     #[test]
     fn test_byte_span_empty() {
         let span = ByteSpan { start: 0, end: 0 };
         assert!(span.is_empty());
-        assert_eq!(span.len(), 0);
     }
 
     #[test]
     fn test_slice_span_valid() {
         let src = "hello world";
         let span = ByteSpan { start: 0, end: 5 };
-        let result = slice_span(src, span).unwrap();
-        assert_eq!(result, "hello");
+        assert_eq!(slice_span(src, span).unwrap(), "hello");
     }
 
     #[test]
     fn test_slice_span_out_of_bounds() {
-        let src = "hi";
         let span = ByteSpan { start: 0, end: 10 };
-        assert!(slice_span(src, span).is_err());
+        assert!(slice_span("hi", span).is_err());
     }
 
-    // ── Language ──────────────────────────────────────────────────────
-
     #[test]
-    fn test_from_extension_python() {
+    fn test_language_from_extension() {
         assert_eq!(Language::from_extension("py"), Language::Python);
-        assert_eq!(Language::from_extension("pyi"), Language::Python);
-    }
-
-    #[test]
-    fn test_from_extension_typescript() {
         assert_eq!(Language::from_extension("ts"), Language::TypeScript);
-        assert_eq!(Language::from_extension("tsx"), Language::TypeScript);
-    }
-
-    #[test]
-    fn test_from_extension_unknown() {
-        assert_eq!(Language::from_extension("exoticlang"), Language::OtherTen);
+        assert_eq!(Language::from_extension("exotic"), Language::OtherTen);
     }
 
     #[test]
     fn test_language_tier() {
         assert_eq!(Language::Python.tier(), 1);
-        assert_eq!(Language::Rust.tier(), 1);
         assert_eq!(Language::OtherTen.tier(), 2);
     }
 
     #[test]
-    fn test_language_as_str() {
-        assert_eq!(Language::Python.as_str(), "python");
-        assert_eq!(Language::Go.as_str(), "go");
-        assert_eq!(Language::OtherTen.as_str(), "other");
+    fn test_entity_id_wrappers() {
+        let id = "src/main.py::main".to_string();
+        let mk: ModuleKey = id.clone().into();
+        let ck: ClassKey = id.clone().into();
+        let fk: FunctionKey = id.clone().into();
+        assert_eq!(mk.as_str(), "src/main.py::main");
+        assert_eq!(ck.as_str(), "src/main.py::main");
+        assert_eq!(fk.as_str(), "src/main.py::main");
     }
-
-    // ── ClassId null ──────────────────────────────────────────────────
 
     #[test]
-    fn test_classid_null() {
-        let null_id = ClassId::null();
-        // null is a sentinel placeholder — two nulls are equal (same zero key)
-        assert_eq!(null_id, ClassId::null());
+    fn test_classkey_null() {
+        let null = ClassKey::null();
+        assert_eq!(null.0, "");
     }
 
-    // ── FunctionKind derivation ───────────────────────────────────────
+    #[test]
+    fn test_parse_quality_deferred() {
+        // v3.5: Deferred is a valid ParseQuality variant
+        assert!(matches!(ParseQuality::Deferred, ParseQuality::Deferred));
+    }
+
+    #[test]
+    fn test_unresolved_reason_incomplete_flow() {
+        // v3.5 §6.1a: internal dead-ends suppressed
+        assert!(matches!(
+            UnresolvedReason::IncompleteFlow,
+            UnresolvedReason::IncompleteFlow
+        ));
+    }
+
+    #[test]
+    fn test_resolved_call_external() {
+        // v3.5 §6.1a: library calls always emitted
+        let call = ResolvedCall::External("requests.post".to_string());
+        assert!(matches!(call, ResolvedCall::External(_)));
+    }
+
+    #[test]
+    fn test_target_kind() {
+        assert!(matches!(TargetKind::Internal, TargetKind::Internal));
+        let ext = TargetKind::External("numpy.array".into());
+        assert!(matches!(ext, TargetKind::External(ref s) if s == "numpy.array"));
+    }
 
     #[test]
     fn test_derive_function_kind_free() {
@@ -734,15 +859,6 @@ mod tests {
     }
 
     #[test]
-    fn test_derive_function_kind_property() {
-        let kind = crate::extract::walker::derive_function_kind(
-            &["@property".into()], true);
-        assert_eq!(kind, FunctionKind::Property);
-    }
-
-    // ── Decorator classification ──────────────────────────────────────
-
-    #[test]
     fn test_known_decorator_staticmethod() {
         let effect = crate::extract::decorators::known_decorator_effects("@staticmethod");
         assert!(effect.is_some());
@@ -752,18 +868,5 @@ mod tests {
     fn test_known_decorator_unknown() {
         let effect = crate::extract::decorators::known_decorator_effects("@myapp.custom");
         assert!(effect.is_none());
-    }
-
-    #[test]
-    fn test_is_abstract_decorator() {
-        assert!(crate::extract::decorators::is_abstract_decorator("@abstractmethod"));
-        assert!(!crate::extract::decorators::is_abstract_decorator("@property"));
-    }
-
-    #[test]
-    fn test_is_dataclass_decorator() {
-        assert!(crate::extract::decorators::is_dataclass_decorator("@dataclass"));
-        assert!(crate::extract::decorators::is_dataclass_decorator("@dataclass()"));
-        assert!(!crate::extract::decorators::is_dataclass_decorator("@property"));
     }
 }

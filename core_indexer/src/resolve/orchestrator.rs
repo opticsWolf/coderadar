@@ -1,7 +1,7 @@
-// CodeRadar v3.3 — Resolution: Orchestrator (§6.5-6.7)
+// CodeRadar v3.5 — Resolution: Orchestrator (§6.5-6.7)
 // Five-layer resolution cascade, staged two-phase commit, ::toplevel sentinel.
 
-use crate::graph::{CallGraph, CodeGraph, GraphConfig, ImportGraph, ResolutionMethod};
+use crate::graph::{CodeGraph, GraphConfig, ImportGraph, CallGraph};
 use crate::resolve::cache::ResolutionCache;
 use crate::resolve::import_graph::{resolve_in_imports, rank_candidates};
 use crate::resolve::signature::{signature_match, ScoredDef};
@@ -31,7 +31,7 @@ impl<'a> SemanticEngine<'a> {
     }
 
     /// Run the full resolution cascade for a parsed file.
-    pub fn resolve_file(&mut self, _file_path: &str, _references: &[ParsedReference]) -> Vec<crate::graph::ResolvedEdge> {
+    pub fn resolve_file(&mut self, _file_path: &str, _references: &[ParsedReference]) -> Vec<crate::types::ResolvedEdge> {
         // 1. L1: Stack Graphs → confidence 0.90–1.00
         // 2. L2: Import Graph + Scope → confidence 0.80–0.89
         // 3. L3: Signature Matching → confidence 0.40–0.79
@@ -44,7 +44,7 @@ impl<'a> SemanticEngine<'a> {
     /// Resolve calls for a function: classify call shape and resolve.
     pub fn resolve_calls(
         &self,
-        _function_id: FunctionId,
+        _function_id: &str,
         _calls: &[UnresolvedRef],
     ) -> Vec<ResolvedCall> {
         let mut results = Vec::new();
@@ -88,7 +88,7 @@ impl<'a> SemanticEngine<'a> {
     }
 
     /// Compute MRO using C3 linearization (§5.3.4).
-    pub fn c3_linearize(&self, _class_id: ClassId) -> (Vec<MroNode>, bool) {
+    pub fn c3_linearize(&self, _class_id: &str) -> (Vec<MroNode>, bool) {
         // L[C] = C + merge(L[B1], L[B2], ..., [B1, B2, ...])
         // Handles External bases as MroNode::External
         (vec![], true)
@@ -124,7 +124,7 @@ impl<'a> SemanticEngine<'a> {
 pub struct StagedChange {
     pub path: String,
     pub entities: Vec<ParsedEntity>,
-    pub edges: Vec<crate::graph::ResolvedEdge>,
+    pub edges: Vec<crate::types::ResolvedEdge>,
     pub unresolved: Vec<ParsedReference>,
     pub language: String,
 }
