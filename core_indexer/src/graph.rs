@@ -1491,6 +1491,68 @@ mod tests {
                 "Should have C++ method render");
     }
 
+    // ── Ruby Indexing Tests ─────────────────────────────────────
+
+    #[test]
+    fn test_ruby_class_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class Animal\n  def speak; end\nend\n", "animal.rb");
+        let snap = graph.snapshot();
+        assert!(snap.classes.values().any(|c| c.name == "Animal"),
+                "Should have Ruby class Animal");
+        assert!(snap.functions.values().any(|f| f.name == "speak"),
+                "Should have Ruby method speak");
+    }
+
+    #[test]
+    fn test_ruby_module_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "module Utilities\n  def self.format; end\nend\n", "utils.rb");
+        let snap = graph.snapshot();
+        assert!(snap.classes.values().any(|c| c.name == "Utilities"),
+                "Should have Ruby module Utilities");
+    }
+
+    // ── PHP Indexing Tests ──────────────────────────────────────
+
+    #[test]
+    fn test_php_class_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "<?php class User { function login() {} }\n", "User.php");
+        let snap = graph.snapshot();
+        assert!(snap.classes.values().any(|c| c.name == "User"),
+                "Should have PHP class User");
+    }
+
+    #[test]
+    fn test_php_call_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "<?php function foo() { bar(); }\n", "fn.php");
+        let snap = graph.snapshot();
+        assert!(snap.functions.values().any(|f| f.name == "foo"),
+                "Should have PHP function foo");
+    }
+
+    // ── C# Indexing Tests ───────────────────────────────────────
+
+    #[test]
+    fn test_csharp_class_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class Service { void Run() {} }\n", "Service.cs");
+        let snap = graph.snapshot();
+        assert!(snap.classes.values().any(|c| c.name == "Service"),
+                "Should have C# class Service");
+    }
+
+    #[test]
+    fn test_csharp_call_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class T { void A() { B(); } void B() {} }\n", "T.cs");
+        let snap = graph.snapshot();
+        assert!(snap.functions.values().any(|f| f.name == "A"),
+                "Should have C# method A");
+    }
+
     // ── Go Receiver / Method Mapping ────────────────────────────
 
     #[test]

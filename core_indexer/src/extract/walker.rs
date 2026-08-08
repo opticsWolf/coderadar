@@ -299,7 +299,9 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
             // then Call fires on `obj.method`, and the name is the method part.
             if let Some(idx) = ctx.current_function_idx {
                 if let Some(ExtractedUnit::Function(ref mut func)) = ctx.units.get_mut(idx) {
-                    let name_node = node.child_by_field_name("function");
+                    let name_node = node.child_by_field_name("function")
+                        .or_else(|| node.child_by_field_name("method"))
+                        .or_else(|| node.child_by_field_name("name"));
                     let line = node.start_position().row + 1;
                     let col = node.start_position().column as u32;
 
@@ -342,14 +344,26 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                         Some(n) if n.kind() == "attribute"
                             || n.kind() == "field_expression"
                             || n.kind() == "member_expression"
-                            || n.kind() == "selector_expression" => {
+                            || n.kind() == "selector_expression"
+                            || n.kind() == "member_access_expression"
+                            || n.kind() == "chained_method_call"
+                            || n.kind() == "call" => {
+                            // Ruby: chained method call or call with explicit receiver
+                            // C#: member_access_expression (obj.Method())
+                            // PHP: member_call_expression is handled by method= field above
                             let method_field = if n.kind() == "attribute" { "attribute" }
                                 else if n.kind() == "field_expression" { "field" }
                                 else if n.kind() == "member_expression" { "property" }
+                                else if n.kind() == "call" { "method" }
+                                else if n.kind() == "chained_method_call" { "method" }
+                                else if n.kind() == "member_access_expression" { "name" }
                                 else { "field" }; // selector_expression [Go]
                             let object_field = if n.kind() == "attribute" { "object" }
                                 else if n.kind() == "field_expression" { "value" }
                                 else if n.kind() == "member_expression" { "object" }
+                                else if n.kind() == "call" { "receiver" }
+                                else if n.kind() == "chained_method_call" { "receiver" }
+                                else if n.kind() == "member_access_expression" { "expression" }
                                 else { "operand" }; // selector_expression [Go]
 
                             let method = n

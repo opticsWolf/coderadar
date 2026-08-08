@@ -76,6 +76,9 @@ fn get_query_for_language_src(language: Language) -> &'static str {
         Language::Go => include_str!("../../queries/go.scm"),
         Language::Java => include_str!("../../queries/java.scm"),
         Language::C | Language::Cpp => include_str!("../../queries/cpp.scm"),
+        Language::Ruby => include_str!("../../queries/ruby.scm"),
+        Language::Php => include_str!("../../queries/php.scm"),
+        Language::CSharp => include_str!("../../queries/csharp.scm"),
         _ => r#"(identifier) @id"#, // fallback for unsupported languages
     }
 }
