@@ -15,7 +15,7 @@ console = Console()
 
 
 @click.group()
-@click.version_option(version="0.3.1", prog_name="coderadar",
+@click.version_option(version="0.3.2", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.5)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -358,13 +358,17 @@ def visualize(viz_type: str, args: tuple, output: Optional[str], fmt: str):
     from .visualizers.mermaid import generate_mermaid
     from .visualizers.graphviz_viz import generate_dot
     from .visualizers.call_graph import generate_call_graph
+    import coderadar
+
+    graph = coderadar.CodeGraph()
+    arg_list = list(args)
 
     if viz_type == "hierarchy":
-        text = generate_mermaid("hierarchy", list(args))
+        text = generate_mermaid("hierarchy", arg_list, graph)
     elif viz_type == "dependencies":
-        text = generate_dot("dependencies", list(args))
+        text = generate_mermaid("dependencies", arg_list, graph)
     elif viz_type == "call-graph":
-        text = generate_call_graph(list(args))
+        text = generate_call_graph(arg_list, graph)
     else:
         console.print(f"[red]Unknown visualization type: {viz_type}[/red]")
         return
