@@ -244,11 +244,24 @@ fn type_alias_to_dict(py: Python<'_>, ta: &TypeAlias) -> PyResult<PyObject> {
 fn entity_ref_to_dict(
     py: Python<'_>, entity_id: &str, snap: &ProjectedGraph,
 ) -> Option<PyObject> {
-    // Try each entity type
+    // Try each entity type and also resolve file_path from parent module
     if let Some(f) = snap.functions.get(entity_id) {
-        function_to_dict(py, f).ok()
+        let mut dict = function_to_dict(py, f).ok()?;
+        // Resolve file_path from parent module
+        if let Ok(d) = dict.downcast_bound::<PyDict>(py) {
+            if let Some(m) = snap.modules.get(&f.parent_module) {
+                let _ = d.set_item("file_path", m.path.to_string_lossy().to_string());
+            }
+        }
+        Some(dict)
     } else if let Some(c) = snap.classes.get(entity_id) {
-        class_to_dict(py, c).ok()
+        let mut dict = class_to_dict(py, c).ok()?;
+        if let Ok(d) = dict.downcast_bound::<PyDict>(py) {
+            if let Some(m) = snap.modules.get(&c.parent_module) {
+                let _ = d.set_item("file_path", m.path.to_string_lossy().to_string());
+            }
+        }
+        Some(dict)
     } else if let Some(m) = snap.modules.get(entity_id) {
         module_to_dict(py, m).ok()
     } else if let Some(i) = snap.imports.get(entity_id) {
@@ -265,12 +278,57 @@ fn entity_ref_to_dict(
 // ── analyze() ──────────────────────────────────────────────────────────────
 
 #[pyfunction]
-fn analyze(root: &str) -> PyResult<()> {
+fn analyze(root: &str) -> PyResult<PyObject> {
+    use std::fs;
+    use crate::types::Language;
+
     let config = graph::GraphConfig::default();
     let graph = CodeGraph::new(config);
+    let root_path = std::path::Path::new(root);
+    let mut total_entities = 0usize;
+    let mut files_indexed = 0usize;
+
+    if root_path.is_dir() {
+        for entry in ignore::Walk::new(root) {
+            match entry {
+                Ok(entry) => {
+                    if !entry.file_type().map_or(false, |ft| ft.is_file()) {
+                        continue;
+                    }
+                    let path = entry.path();
+                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                        let language = Language::from_extension(ext);
+                        if language == Language::OtherTen {
+                            continue;
+                        }
+                        if CodeGraph::ts_language(&language).is_none() {
+                            continue;
+                        }
+                        if let Ok(source) = fs::read_to_string(path) {
+                            let file_path = path.to_string_lossy().to_string();
+                            match graph.index_file(&source, &file_path, &language) {
+                                Ok(count) => {
+                                    total_entities += count;
+                                    files_indexed += 1;
+                                }
+                                Err(_) => {} // parse failures silently skipped
+                            }
+                        }
+                    }
+                }
+                Err(_) => {} // permission errors etc.
+            }
+        }
+    }
+
     let mut guard = GLOBAL_GRAPH.write();
     *guard = Some(graph);
-    Ok(())
+
+    let py = unsafe { Python::assume_gil_acquired() };
+    let dict = PyDict::new(py);
+    dict.set_item("files_indexed", files_indexed)?;
+    dict.set_item("entities_extracted", total_entities)?;
+    Ok(dict.into())
 }
 
 // ── query_graph() ──────────────────────────────────────────────────────────

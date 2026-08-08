@@ -16,6 +16,7 @@ use crate::resolve::cache::ResolutionCache;
 use crate::resolve::stack_graph::StackGraphResolver;
 use crate::storage;
 use crate::types::*;
+use crate::extract;
 
 // ── Import Graph (§3.4a) — EntityId-based ───────────────────────────────────
 
@@ -502,6 +503,230 @@ impl CodeGraph {
         } else {
             Ok(0) // no-op when no store attached
         }
+    }
+
+    // ── File Indexing Pipeline ────────────────────────────────────────────
+
+    /// Get the tree-sitter Language for a CodeRadar Language.
+    pub fn ts_language(lang: &Language) -> Option<tree_sitter::Language> {
+        match lang {
+            Language::Python => Some(tree_sitter_python::LANGUAGE.into()),
+            Language::TypeScript => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+            Language::JavaScript => Some(tree_sitter_javascript::LANGUAGE.into()),
+            Language::Rust => Some(tree_sitter_rust::LANGUAGE.into()),
+            Language::Go => Some(tree_sitter_go::LANGUAGE.into()),
+            Language::Java => Some(tree_sitter_java::LANGUAGE.into()),
+            Language::C => Some(tree_sitter_c::LANGUAGE.into()),
+            Language::Cpp => Some(tree_sitter_cpp::LANGUAGE.into()),
+            Language::Ruby => Some(tree_sitter_ruby::LANGUAGE.into()),
+            Language::Php => Some(tree_sitter_php::LANGUAGE_PHP.into()),
+            Language::CSharp => Some(tree_sitter_c_sharp::LANGUAGE.into()),
+            Language::Kotlin | Language::OtherTen => None,
+        }
+    }
+
+    /// Index a single source file: parse → tag → walk → extract → insert.
+    /// Returns the number of entities extracted and added to the graph.
+    pub fn index_file(
+        &self,
+        source: &str,
+        file_path: &str,
+        language: &Language,
+    ) -> Result<usize, String> {
+        let ts_lang = Self::ts_language(language)
+            .ok_or_else(|| format!("No tree-sitter grammar for {:?}", language))?;
+
+        // Phase 1: Parse with tree-sitter
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang)
+            .map_err(|e| format!("Failed to set language: {}", e))?;
+        let tree = parser.parse(source, None)
+            .ok_or_else(|| "Failed to parse source".to_string())?;
+        let root_node = tree.root_node();
+
+        // Phase 2: Tag the tree with queries
+        let tagged = crate::extract::tagger::tag_tree(
+            source, root_node, language.clone(), ts_lang);
+
+        // Phase 3: Walk and extract (needs the root node from our parse)
+        let units = crate::extract::walker::walk_and_extract(
+            &tagged, root_node, file_path);
+
+        // Phase 3: Insert into ProjectedGraph
+        let count = units.len();
+        let mut projection = (*self.snapshot()).clone();
+        self.insert_extracted(&mut projection, &units, file_path, language);
+        self.commit_projection(projection);
+
+        // Phase 4: Persist to Macrame if store attached
+        let lang_str = format!("{:?}", language).to_lowercase();
+        let _ = self.persist_entities(&units, file_path, &lang_str);
+
+        Ok(count)
+    }
+
+    /// Insert ExtractedUnits into a ProjectedGraph (used by index_file and update).
+    pub fn insert_extracted(
+        &self,
+        projection: &mut ProjectedGraph,
+        units: &[ExtractedUnit],
+        file_path: &str,
+        language: &Language,
+    ) {
+        // Compute the synthetic module ID up front
+        let file_stem = std::path::Path::new(file_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let module_id = format!("{}::module", file_path);
+        let mut module_classes: Vec<EntityId> = Vec::new();
+        let mut module_functions: Vec<EntityId> = Vec::new();
+        let mut module_imports: Vec<EntityId> = Vec::new();
+        let mut module_constants: Vec<EntityId> = Vec::new();
+        let mut module_type_aliases: Vec<EntityId> = Vec::new();
+
+        for unit in units {
+            match unit {
+                ExtractedUnit::Module(m) => {
+                    // If a module entity is present, use its ID
+                    // (but tree-sitter walker doesn't emit Module entities)
+                    let _ = m;
+                }
+                ExtractedUnit::Class(c) => {
+                    let class = Class {
+                        id: c.id.clone(),
+                        name: c.name.clone(),
+                        parent_module: module_id.clone(), // fix up
+                        parent_class: c.parent_class.clone(),
+                        bases: c.bases.clone(),
+                        resolved_bases: vec![],
+                        mro: vec![],
+                        mro_error: false,
+                        methods: vec![],
+                        fields: c.fields.iter().map(|ef| Field {
+                            name: ef.name.clone(),
+                            annotation: ef.annotation.clone(),
+                            source: ef.source.clone(),
+                            default_value: ef.default_value.clone(),
+                            is_class_var: ef.is_class_var,
+                            span: ef.name_span,
+                            name_span: ef.name_span,
+                        }).collect(),
+                        source: c.source.clone(),
+                        decorators: c.decorators.clone(),
+                        effective: EffectiveClass::Plain,
+                        is_type_checking_only: c.is_type_checking_only,
+                        line: c.line,
+                        exit_line: c.exit_line,
+                        docstring: c.docstring.clone(),
+                        parse_quality: ParseQuality::Clean,
+                        content_hash: 0,
+                        span: c.span,
+                        name_span: c.name_span,
+                        body_span: c.body_span,
+                        decorators_span: c.decorators_span,
+                    };
+                    projection.classes.insert(class.id.clone(), Arc::new(class));
+                    module_classes.push(c.id.clone());
+                }
+                ExtractedUnit::Function(f) => {
+                    let func = Function {
+                        id: f.id.clone(),
+                        name: f.name.clone(),
+                        parent_module: module_id.clone(), // fix up
+                        parent_class: f.parent_class.clone(),
+                        parameters: f.parameters.clone(),
+                        return_type: f.return_type.clone(),
+                        calls: f.calls.clone(),
+                        resolved_calls: vec![],
+                        decorators: f.decorators.clone(),
+                        setter_of: None,
+                        line: f.line,
+                        exit_line: f.exit_line,
+                        docstring: f.docstring.clone(),
+                        kind: f.kind.clone(),
+                        is_async: f.is_async,
+                        is_generator: f.is_generator,
+                        source: f.source.clone(),
+                        signature_hash: f.signature_hash,
+                        body_hash: f.body_hash,
+                        is_type_checking_only: f.is_type_checking_only,
+                        parse_quality: ParseQuality::Clean,
+                        content_hash: 0,
+                        span: f.span,
+                        name_span: f.name_span,
+                        params_span: f.name_span,
+                        body_span: f.body_span,
+                        decorators_span: f.decorators_span,
+                    };
+                    projection.functions.insert(func.id.clone(), Arc::new(func));
+                    module_functions.push(f.id.clone());
+                }
+                ExtractedUnit::Import(i) => {
+                    let import = Import {
+                        id: i.id.clone(),
+                        raw: i.raw.clone(),
+                        kind: i.kind.clone(),
+                        resolution: ImportResolution::Unresolved,
+                        line: i.line,
+                        is_type_only: i.is_type_only,
+                        name_span: i.name_span,
+                    };
+                    projection.imports.insert(import.id.clone(), Arc::new(import));
+                    module_imports.push(i.id.clone());
+                }
+                ExtractedUnit::Constant(k) => {
+                    let constant = Constant {
+                        id: k.id.clone(),
+                        name: k.name.clone(),
+                        annotation: k.annotation.clone(),
+                        source: k.source.clone(),
+                        default_value: k.default_value.clone(),
+                        span: k.span,
+                        name_span: k.name_span,
+                    };
+                    projection.constants.insert(constant.id.clone(), Arc::new(constant));
+                    module_constants.push(k.id.clone());
+                }
+                ExtractedUnit::TypeAlias(ta) => {
+                    let alias = TypeAlias {
+                        id: ta.id.clone(),
+                        name: ta.name.clone(),
+                        target: ta.target.clone(),
+                        source: ta.source.clone(),
+                        span: ta.span,
+                        name_span: ta.name_span,
+                    };
+                    projection.type_aliases.insert(alias.id.clone(), Arc::new(alias));
+                    module_type_aliases.push(ta.id.clone());
+                }
+                _ => {}
+            }
+        }
+
+        // Insert the synthetic module
+        let module = Module {
+            id: module_id.clone(),
+            name: file_stem.to_string(),
+            path: PathBuf::from(file_path),
+            language: language.clone(),
+            package: None,
+            exports: vec![],
+            star_exports: None,
+            classes: module_classes,
+            functions: module_functions,
+            imports: module_imports,
+            constants: module_constants,
+            type_aliases: module_type_aliases,
+            parse_quality: ParseQuality::Clean,
+            file_version: 1,
+            content_hash: 0,
+        };
+        projection.modules.insert(module_id.clone(), Arc::new(module));
+        projection.file_to_modules
+            .entry(PathBuf::from(file_path))
+            .or_default()
+            .push(module_id);
     }
 }
 
