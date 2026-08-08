@@ -348,16 +348,15 @@ def serve(project_path: str):
         }
       }
     """
-    import asyncio
     import coderadar
     from .mcp import serve as mcp_serve
 
     graph = coderadar.CodeGraph()
     console.print(f"[bold]CodeRadar MCP server[/bold] starting for {project_path}...",
                   file=sys.stderr)
-    console.print(f"[dim]Exposing 4 tools: explore, node, search, affected[/dim]",
+    console.print(f"[dim]Exposing 4 tools via MCPServer v2: explore, node, search, affected[/dim]",
                   file=sys.stderr)
-    asyncio.run(mcp_serve(graph))
+    mcp_serve(graph)  # blocking stdio loop
 
 
 if __name__ == "__main__":
