@@ -120,6 +120,12 @@ fn module_to_dict(py: Python<'_>, m: &Module) -> PyResult<PyObject> {
     dict.set_item("file_path", m.path.to_string_lossy().to_string())?;
     dict.set_item("language", format!("{:?}", m.language))?;
     dict.set_item("parse_quality", format!("{:?}", m.parse_quality))?;
+    dict.set_item("classes", m.classes.clone())?;
+    dict.set_item("functions", m.functions.clone())?;
+    dict.set_item("imports", m.imports.clone())?;
+    dict.set_item("constants", m.constants.clone())?;
+    dict.set_item("type_aliases", m.type_aliases.clone())?;
+    dict.set_item("file_version", m.file_version)?;
     Ok(dict.into())
 }
 
@@ -192,6 +198,9 @@ fn function_to_dict(py: Python<'_>, f: &Function) -> PyResult<PyObject> {
     dict.set_item("span_end", f.span.end)?;
     dict.set_item("name_span_start", f.name_span.start)?;
     dict.set_item("name_span_end", f.name_span.end)?;
+    if !f.embedding.is_empty() {
+        dict.set_item("has_embedding", true)?;
+    }
     // Build signature string from parameters
     let params: Vec<String> = f.parameters.iter()
         .map(|p| {
@@ -775,7 +784,7 @@ fn search_similar(
 }
 
 /// Cosine similarity between two vectors.
-fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+pub(crate) fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
     if a.len() != b.len() {
         return 0.0;
     }

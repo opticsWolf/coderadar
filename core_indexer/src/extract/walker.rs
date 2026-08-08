@@ -157,6 +157,34 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                 "".to_string()
             };
 
+            // Go: method_declaration has a receiver (e.g., `func (d *Dog) Bark()`)
+            // Extract receiver type as the parent_class
+            let go_receiver_type: Option<String> = if node.kind() == "method_declaration" {
+                node.child_by_field_name("receiver")
+                    .and_then(|recv| {
+                        // receiver is a parameter_list → parameter_declaration
+                        let mut cursor = recv.walk();
+                        for child in recv.children(&mut cursor) {
+                            if child.kind() == "parameter_declaration" {
+                                // Get the type from: pointer_type → type_identifier,
+                                // or type_identifier directly
+                                if let Some(typ) = child.child_by_field_name("type") {
+                                    if typ.kind() == "pointer_type" {
+                                        return typ.child_by_field_name("name")
+                                            .or_else(|| typ.child(0))
+                                            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                                            .map(|s| s.to_string());
+                                    }
+                                    return typ.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                                }
+                            }
+                        }
+                        None
+                    })
+            } else {
+                None
+            };
+
             let is_method = matches!(
                 ctx.stack.last(),
                 Some(WalkFrame {
@@ -165,7 +193,8 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                 })
             );
 
-            // Extract parent class name from the stack (Rust impl_item or Python class)
+            // Extract parent class name from the stack (Rust impl_item or Python class),
+            // or from Go receiver type
             let parent_class = if is_method {
                 ctx.stack.last().and_then(|f| {
                     if let FrameKind::Class(_) = &f.kind {
@@ -178,6 +207,8 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                         None
                     }
                 })
+            } else if let Some(ref recv) = go_receiver_type {
+                Some(recv.clone())
             } else {
                 None
             };

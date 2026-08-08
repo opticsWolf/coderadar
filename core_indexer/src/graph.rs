@@ -1491,6 +1491,48 @@ mod tests {
                 "Should have C++ method render");
     }
 
+    // ── Go Receiver / Method Mapping ────────────────────────────
+
+    #[test]
+    fn test_go_method_receiver() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "package main\ntype Dog struct { Name string }\nfunc (d *Dog) Bark() {}\n",
+            "dog.go");
+        let snap = graph.snapshot();
+        if let Some(bark) = snap.functions.values().find(|f| f.name == "Bark") {
+            assert!(bark.parent_class.is_some(),
+                    "Go method Bark should have parent_class (receiver type Dog)");
+        }
+    }
+
+    // ── Embedding Pipeline Tests ────────────────────────────────
+
+    #[test]
+    fn test_function_embedding_field() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def add(a, b): return a + b\n", "math.py");
+        let mut projection = (*graph.snapshot()).clone();
+        if let Some(add_fn) = projection.functions.get("math.py::add") {
+            let mut updated = (**add_fn).clone();
+            updated.embedding = vec![0.1, 0.2, 0.3];
+            projection.functions.insert("math.py::add".to_string(), std::sync::Arc::new(updated));
+        }
+        graph.commit_projection(projection);
+        let snap = graph.snapshot();
+        let add = snap.functions.get("math.py::add").unwrap();
+        assert_eq!(add.embedding.len(), 3);
+    }
+
+    #[test]
+    fn test_cosine_similarity() {
+        use crate::cosine_similarity;
+        let sim = cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]);
+        assert!((sim - 0.0).abs() < 0.001, "Orthogonal=0, got {}", sim);
+        let sim = cosine_similarity(&[1.0, 2.0], &[1.0, 2.0]);
+        assert!((sim - 1.0).abs() < 0.001, "Identical=1, got {}", sim);
+    }
+
     #[test]
     fn test_import_parsing_from_import() {
         let graph = CodeGraph::new(GraphConfig::default());

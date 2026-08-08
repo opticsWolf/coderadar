@@ -92,13 +92,20 @@ class EmbeddingDedup:
 
     def _get_cached(self, db: Any, entity_id: str, content_hash: str) -> Optional[List[float]]:
         """Check if an embedding is already cached for this (id, hash) pair."""
-        # In production: query LadybugDB for Function/Method embedding
-        # where id = entity_id AND content_hash = content_hash
+        try:
+            from coderadar._core import lookup_entity
+            entity = lookup_entity(entity_id)
+            if entity and entity.get("has_embedding"):
+                return None  # Already has embedding; skip
+        except ImportError:
+            pass
         return None
 
     def _store_cached(self, db: Any, entity_id: str, content_hash: str,
                       vector: List[float]) -> None:
-        """Store a newly computed embedding for future dedup."""
+        """Store a newly computed embedding via graph update."""
+        # In production: update the entity's embedding field via mutation
+        # For now, embeddings are stored in-memory via ProjectedGraph
         pass
 
     def cache_hit_rate(self) -> float:

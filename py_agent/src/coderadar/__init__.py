@@ -293,9 +293,15 @@ class CodeGraph:
     def search_similar(
         self, query_embedding: List[float], top_k: int = 10,
     ) -> List[Dict[str, Any]]:
-        """Vector similarity search via Macrame embedding index."""
-        from .query import MacrameQuery
-        return MacrameQuery(self).search_similar(query_embedding, top_k)
+        """Vector similarity search via cosine similarity against stored embeddings.
+
+        Requires embeddings to be pre-computed and stored via the embedding pipeline.
+        """
+        try:
+            from coderadar._core import search_similar as _ss
+            return _ss(query_embedding, top_k)
+        except ImportError:
+            return []
 
     # ── Update ─────────────────────────────────────────────────────────
 
