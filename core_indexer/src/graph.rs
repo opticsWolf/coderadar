@@ -489,6 +489,133 @@ impl CodeGraph {
         self.store.is_some()
     }
 
+    /// Run the resolution cascade (L1-L3) on all functions in the current projection.
+    /// After resolution, rewires callees_by_caller/callers_by_callee with resolved targets.
+    pub fn resolve_all_calls(&self, projection: &mut ProjectedGraph) {
+        use crate::resolve::orchestrator::ResolutionOrchestrator;
+        use crate::resolve::signature::ScoredDef;
+
+        let orchestrator = ResolutionOrchestrator::new();
+        let import_graph = crate::graph::ImportGraph::new();
+
+        // Build definition pool for signature matching (L3)
+        let _definitions_pool: Vec<ScoredDef> = projection
+            .functions
+            .values()
+            .map(|f| ScoredDef {
+                entity_id: f.id.clone(),
+                name: f.name.clone(),
+                arity: f.parameters.len(),
+                file_path: f.parent_module.clone(),
+                score: 0.0,
+            })
+            .collect();
+
+        // Clear old call edges — rebuild from resolution
+        projection.callers_by_callee.clear();
+        projection.callees_by_caller.clear();
+
+        // Collect calls (before mutating functions map)
+        let all_calls: Vec<(String, Vec<crate::types::UnresolvedRef>)> = projection
+            .functions
+            .iter()
+            .map(|(id, f)| (id.clone(), f.calls.clone()))
+            .collect();
+
+        for (func_id, calls) in &all_calls {
+            // Same-file intra-resolution: resolve calls to functions in the same module.
+            // Get the function's parent module to find sibling functions.
+            let parent_module = projection
+                .functions
+                .get(func_id)
+                .map(|f| f.parent_module.clone())
+                .unwrap_or_default();
+
+            // Build a set of sibling function names in the same module for quick lookup
+            let sibling_funcs: std::collections::HashMap<String, String> = projection
+                .functions
+                .iter()
+                .filter(|(_, f)| f.parent_module == parent_module)
+                .map(|(id, f)| (f.name.clone(), id.clone()))
+                .collect();
+
+            // Resolve calls using the orchestrator
+            let resolved = orchestrator.resolve_calls(calls, func_id, &import_graph);
+
+            // Override with same-file resolution where applicable
+            let resolved: Vec<_> = resolved
+                .into_iter()
+                .map(|rc| {
+                    if let crate::types::ResolvedCall::External(name) = &rc {
+                        if let Some(target_id) = sibling_funcs.get(name.as_str()) {
+                            return crate::types::ResolvedCall::Function(target_id.clone());
+                        }
+                    }
+                    if let crate::types::ResolvedCall::Builtin(name) = &rc {
+                        // Builtins can also shadow same-file names
+                        if let Some(target_id) = sibling_funcs.get(name.as_str()) {
+                            return crate::types::ResolvedCall::Function(target_id.clone());
+                        }
+                    }
+                    rc
+                })
+                .collect();
+
+            // Update resolved_calls on the function
+            if let Some(func_arc) = projection.functions.get(func_id) {
+                let mut updated = (**func_arc).clone();
+                updated.resolved_calls = resolved.clone();
+                projection.functions.insert(func_id.clone(), std::sync::Arc::new(updated));
+            }
+
+            // Wire callees_by_caller from resolved calls
+            for rc in &resolved {
+                match rc {
+                    crate::types::ResolvedCall::Function(target_id)
+                    | crate::types::ResolvedCall::Constructor(target_id) => {
+                        projection
+                            .callees_by_caller
+                            .entry(func_id.clone())
+                            .or_default()
+                            .insert(target_id.clone());
+                        projection
+                            .callers_by_callee
+                            .entry(target_id.clone())
+                            .or_default()
+                            .insert(func_id.clone());
+                    }
+                    crate::types::ResolvedCall::Method { method, .. } => {
+                        projection
+                            .callees_by_caller
+                            .entry(func_id.clone())
+                            .or_default()
+                            .insert(method.clone());
+                        projection
+                            .callers_by_callee
+                            .entry(method.clone())
+                            .or_default()
+                            .insert(func_id.clone());
+                    }
+                    crate::types::ResolvedCall::Builtin(name)
+                    | crate::types::ResolvedCall::External(name) => {
+                        let ext_id = format!("external::{}", name);
+                        projection
+                            .callees_by_caller
+                            .entry(func_id.clone())
+                            .or_default()
+                            .insert(ext_id.clone());
+                        projection
+                            .callers_by_callee
+                            .entry(ext_id)
+                            .or_default()
+                            .insert(func_id.clone());
+                    }
+                    crate::types::ResolvedCall::Unresolved { .. } => {}
+                }
+            }
+        }
+    }
+
     /// Persist extracted entities to Macrame (async via block_on).
     /// Returns the count of upserted entities.
     pub fn persist_entities(
@@ -701,6 +828,34 @@ impl CodeGraph {
                     module_type_aliases.push(ta.id.clone());
                 }
                 _ => {}
+            }
+        }
+
+        // Wire call edges: for each function's calls, create target IDs
+        // using the same-module heuristic: target = "{file_path}::{call_name}"
+        {
+            for func_id in &module_functions {
+                if let Some(_func) = projection.functions.get(func_id) {
+                    let calls = _func.calls.clone();
+                    for call in &calls {
+                        // Heuristic: same-file function target
+                        let target_id = if call.path.is_empty() {
+                            format!("{}::{}", file_path, call.name)
+                        } else {
+                            format!("{}::{}.{}", file_path, call.path.join("."), call.name)
+                        };
+                        projection
+                            .callees_by_caller
+                            .entry(func_id.clone())
+                            .or_default()
+                            .insert(target_id.clone());
+                        projection
+                            .callers_by_callee
+                            .entry(target_id)
+                            .or_default()
+                            .insert(func_id.clone());
+                    }
+                }
             }
         }
 

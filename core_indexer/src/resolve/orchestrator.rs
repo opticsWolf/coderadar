@@ -337,16 +337,14 @@ impl ResolutionOrchestrator {
         name: &str,
         import_graph: &crate::graph::ImportGraph,
     ) -> ResolvedCall {
-        // Builtins check — Python builtins
+        // Builtins check
         if BUILTINS.contains(&name) {
             return ResolvedCall::Builtin(name.to_string());
         }
 
-        // Check cache per module context
-        // (In production, would check per-scope Module→Name→Resolution)
+        // Same-file resolution: check if name matches a function/class in
+        // the calling function's module. This is handled by the caller now.
 
-        // External fallback — we don't know where this lives, mark it
-        // as External so the agent still sees the edge.
         ResolvedCall::External(name.to_string())
     }
 

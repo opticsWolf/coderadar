@@ -321,6 +321,13 @@ fn analyze(root: &str) -> PyResult<PyObject> {
         }
     }
 
+    // Run resolution cascade on all calls
+    {
+        let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_all_calls(&mut projection);
+        graph.commit_projection(projection);
+    }
+
     let mut guard = GLOBAL_GRAPH.write();
     *guard = Some(graph);
 

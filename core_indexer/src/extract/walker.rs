@@ -1,6 +1,7 @@
 // CodeRadar v3.5 — Extraction: Hierarchy Walker Pass 2 (§4.2)
 // Typed stack-frame walker that traverses the tagged tree and emits ExtractedUnits.
 // v3.5: EntityId-based identities; file_path required for building entity IDs.
+// v3.5a: Call capture — Tag::Call/Tag::CallReceiver attach calls to current function.
 
 use tree_sitter::Node;
 
@@ -19,6 +20,7 @@ pub fn walk_and_extract<'a>(
         units: Vec::new(),
         stack: Vec::new(),
         file_path: file_path.to_string(),
+        current_function_idx: None,
     };
 
     ctx.stack.push(WalkFrame {
@@ -51,6 +53,21 @@ fn walk_node(node: Node, ctx: &mut WalkContext) {
                 .unwrap_or(true),
             "Frame stack mismatch"
         );
+        // Restore outer function index when leaving a function
+        if matches!(frame_kind, FrameKind::Function) {
+            // Walk up the stack to find the enclosing function, if any
+            ctx.current_function_idx = None;
+            for frame in ctx.stack.iter().rev() {
+                if let FrameKind::Function = frame.kind {
+                    // We need to find the function unit index. Walk units backward.
+                    ctx.current_function_idx = ctx.units.iter().enumerate()
+                        .rev()
+                        .find(|(_, u)| matches!(u, ExtractedUnit::Function(f) if f.qualified_name == frame.qualified))
+                        .map(|(i, _)| i);
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -94,7 +111,7 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
 
             ctx.stack.push(WalkFrame {
                 qualified: qualified_name,
-                kind: FrameKind::Class(String::new()), // null sentinel, patched later
+                kind: FrameKind::Class(String::new()),
             });
             Some(FrameKind::Class(String::new()))
         }
@@ -121,6 +138,9 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
             let params = extract_parameters(node, source);
             let qualified_name = build_qualified_name(&ctx.stack, &name);
             let entity_id = make_entity_id(&ctx.file_path, &qualified_name);
+
+            // Track this function for call capture
+            ctx.current_function_idx = Some(ctx.units.len());
 
             ctx.units.push(ExtractedUnit::Function(ExtractedFunction {
                 id: entity_id.clone(),
@@ -194,14 +214,76 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
             None
         }
 
-        Tag::Call
-        | Tag::Docstring
+        // ── Call Capture (§5.3) ──────────────────────────────────────
+
+        Tag::Call => {
+            // The call tag fires on (call) nodes. For simple calls like `foo()`,
+            // the function child is an identifier with the name.
+            // For dotted calls like `obj.method()`, the function child is an
+            // attribute node — the CallReceiver tag fires first on `obj`,
+            // then Call fires on `obj.method`, and the name is the method part.
+            if let Some(idx) = ctx.current_function_idx {
+                if let Some(ExtractedUnit::Function(ref mut func)) = ctx.units.get_mut(idx) {
+                    let name_node = node.child_by_field_name("function");
+                    let line = node.start_position().row + 1;
+                    let col = node.start_position().column as u32;
+
+                    match name_node {
+                        // Simple call: `foo(x)` — name_node is (identifier)
+                        Some(n) if n.kind() == "identifier" => {
+                            let name = n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                            func.calls.push(UnresolvedRef {
+                                name,
+                                path: vec![],
+                                line,
+                                col: col as usize,
+                            });
+                        }
+                        // Dotted call: `obj.method(x)` — name_node is (attribute)
+                        Some(n) if n.kind() == "attribute" => {
+                            let method = n
+                                .child_by_field_name("attribute")
+                                .and_then(|c| c.utf8_text(source.as_bytes()).ok())
+                                .unwrap_or("")
+                                .to_string();
+                            let object = n
+                                .child_by_field_name("object")
+                                .and_then(|c| c.utf8_text(source.as_bytes()).ok())
+                                .unwrap_or("")
+                                .to_string();
+
+                            let path = if object.is_empty() { vec![] } else { vec![object] };
+                            func.calls.push(UnresolvedRef {
+                                name: method,
+                                path,
+                                line,
+                                col: col as usize,
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            None
+        }
+
+        Tag::CallReceiver => {
+            // The CallReceiver tag fires on the object part BEFORE the
+            // Call tag fires on the attribute. Store the receiver name
+            // for the next Call tag to pick up.
+            // (Handled above in Call::attribute path — CallReceiver is
+            //  a signal but the actual capture happens in Call.)
+            None
+        }
+
+        // ── Silent Tags (no entities emitted) ──────────────────────
+
+        Tag::Docstring
         | Tag::Field
         | Tag::ClassBase
         | Tag::FunctionParam
         | Tag::FunctionReturn
         | Tag::Decorator
-        | Tag::CallReceiver
         | Tag::ImportFromClause
         | Tag::ImportSpecifier => None,
     }

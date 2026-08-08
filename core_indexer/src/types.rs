@@ -682,6 +682,8 @@ pub struct WalkContext<'a> {
     pub units: Vec<ExtractedUnit>,
     pub stack: Vec<WalkFrame>,
     pub file_path: String,
+    /// Track which function unit index we're currently inside (for call capture).
+    pub current_function_idx: Option<usize>,
 }
 
 // ── ProjectedGraph types (§3.4) — used by graph.rs ──────────────────────────
