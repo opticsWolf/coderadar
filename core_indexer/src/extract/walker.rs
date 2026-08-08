@@ -185,20 +185,13 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                 end: node.end_byte(),
             };
 
-            let kind = if text.starts_with("from ") {
-                ImportKind::FromImport {
-                    module: String::new(),
-                    names: Vec::new(),
-                }
-            } else if text.contains("import *") {
-                ImportKind::StarImport {
-                    module: String::new(),
-                }
-            } else {
-                ImportKind::ModuleImport {
-                    module: String::new(),
+            let kind = match node.kind() {
+                "import_statement" => parse_import_statement(node, source),
+                "import_from_statement" => parse_import_from_statement(node, source),
+                _ => ImportKind::ModuleImport {
+                    module: text.clone(),
                     alias: None,
-                }
+                },
             };
 
             let entity_id = make_entity_id(&ctx.file_path, &format!("import@{}", line));
@@ -287,6 +280,118 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
         | Tag::ImportFromClause
         | Tag::ImportSpecifier => None,
     }
+}
+
+/// Parse an `import_statement` node: `import os`, `import os.path as p`
+fn parse_import_statement(node: Node, source: &str) -> ImportKind {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "dotted_name" => {
+                let module = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                return ImportKind::ModuleImport {
+                    module,
+                    alias: None,
+                };
+            }
+            "aliased_import" => {
+                let name = child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                    .unwrap_or("")
+                    .to_string();
+                let alias = child
+                    .child_by_field_name("alias")
+                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                    .map(|s| s.to_string());
+                return ImportKind::ModuleImport { module: name, alias };
+            }
+            _ => {}
+        }
+    }
+    ImportKind::ModuleImport { module: String::new(), alias: None }
+}
+
+/// Parse an `import_from_statement` node: `from foo import bar`, `from . import x`
+fn parse_import_from_statement(node: Node, source: &str) -> ImportKind {
+    // Extract the module_name (dotted_name or relative_import)
+    let module_name = node
+        .child_by_field_name("module_name")
+        .map(|mn| {
+            let text = mn.utf8_text(source.as_bytes()).unwrap_or("");
+            (mn.kind().to_string(), text.to_string())
+        });
+
+    // Check for wildcard import
+    let has_star = node
+        .children(&mut node.walk())
+        .any(|c| c.kind() == "wildcard_import");
+
+    if has_star {
+        if let Some((kind, text)) = module_name {
+            if kind == "relative_import" {
+                let level = count_leading_dots(&text);
+                return ImportKind::StarImport {
+                    module: if level > text.len() { String::new() } else { text[level..].to_string() },
+                };
+            }
+            return ImportKind::StarImport { module: text };
+        }
+        return ImportKind::StarImport { module: String::new() };
+    }
+
+    // Collect imported names (skip the module_name child)
+    let mut names: Vec<(String, Option<String>)> = Vec::new();
+    let mut child_cursor = node.walk();
+    for child in node.children(&mut child_cursor) {
+        // Skip the module_name and wildcard_import children
+        if child.kind() == "wildcard_import" {
+            continue;
+        }
+        // Check if this child is the module_name field
+        if node.child_by_field_name("module_name").map(|mn| mn.id()) == Some(child.id()) {
+            continue;
+        }
+        match child.kind() {
+            "dotted_name" => {
+                let name = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                names.push((name, None));
+            }
+            "aliased_import" => {
+                let name = child
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                    .unwrap_or("")
+                    .to_string();
+                let alias = child
+                    .child_by_field_name("alias")
+                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                    .map(|s| s.to_string());
+                names.push((name, alias));
+            }
+            _ => {}
+        }
+    }
+
+    if let Some((kind, text)) = module_name {
+        if kind == "relative_import" {
+            let level = count_leading_dots(&text);
+            let module = if level < text.len() {
+                Some(text[level..].to_string())
+            } else {
+                None
+            };
+            return ImportKind::RelativeImport { level, module, names };
+        }
+        return ImportKind::FromImport { module: text, names };
+    }
+
+    ImportKind::FromImport { module: String::new(), names }
+}
+
+/// Count leading dots in a relative import string like "..." or "...utils"
+fn count_leading_dots(s: &str) -> usize {
+    s.chars().take_while(|&c| c == '.').count()
 }
 
 /// Determine the FunctionKind from decorators and method status.

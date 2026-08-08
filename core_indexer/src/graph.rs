@@ -379,6 +379,84 @@ impl Default for GitConfig {
 
 // ── CodeGraph (§3.4, §9.1) — v3.5 Hybrid Architecture ──────────────────────
 
+/// Find a module by its dotted Python name (e.g., "coderadar.config" → config.py).
+/// Converts the dotted name to path segments and matches against suffixes of
+/// all module file paths. Also builds a reverse lookup for common patterns.
+fn find_module_by_dotted_name(
+    projection: &ProjectedGraph,
+    dotted_name: &str,
+    _current_module: &str,
+) -> Option<String> {
+    let segments: Vec<&str> = dotted_name.split('.').collect();
+
+    // Build candidate path suffixes by matching the last N segments
+    // e.g., "coderadar.config" → try matching "coderadar/config.py" suffix
+    for n in (1..=segments.len()).rev() {
+        let suffix_parts = &segments[segments.len() - n..];
+        let suffix_slash = suffix_parts.join("/");
+        let suffix_py = format!("{}.py", suffix_slash);
+        let suffix_init = format!("{}/__init__.py", suffix_slash);
+
+        for (_, module) in &projection.modules {
+            let path_str = module.path.to_string_lossy().to_string();
+            let path_normalized = path_str.replace('\\', "/");
+            if path_normalized.ends_with(&suffix_py) || path_normalized.ends_with(&suffix_init) {
+                return Some(module.id.clone());
+            }
+        }
+    }
+
+    // Fallback: check if any module name matches the last segment
+    let last_segment = segments.last().unwrap_or(&"");
+    for (_, module) in &projection.modules {
+        if module.name == *last_segment {
+            let path_str = module.path.to_string_lossy().to_string();
+            let path_normalized = path_str.replace('\\', "/");
+            // Verify all segments match in reverse order
+            let file_segments: Vec<&str> = path_normalized
+                .trim_end_matches("/__init__.py")
+                .trim_end_matches(".py")
+                .split('/')
+                .collect();
+            if file_segments.len() >= segments.len() {
+                let file_suffix = &file_segments[file_segments.len() - segments.len()..];
+                if file_suffix == segments.as_slice() {
+                    return Some(module.id.clone());
+                }
+            }
+        }
+    }
+
+    None
+}
+
+/// Find a symbol (function or class) with a given name within a specific module.
+fn find_symbol_in_module(
+    projection: &ProjectedGraph,
+    module_id: &str,
+    symbol_name: &str,
+) -> Option<String> {
+    if let Some(module) = projection.modules.get(module_id) {
+        // Search functions
+        for func_id in &module.functions {
+            if let Some(func) = projection.functions.get(func_id) {
+                if func.name == symbol_name {
+                    return Some(func.id.clone());
+                }
+            }
+        }
+        // Search classes
+        for class_id in &module.classes {
+            if let Some(class) = projection.classes.get(class_id) {
+                if class.name == symbol_name {
+                    return Some(class.id.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
 pub struct CodeGraph {
     /// Macrame bitemporal graph store — source of truth for all entities and edges.
     /// Opened once at CodeGraph construction, lives for the process lifetime.
@@ -539,20 +617,61 @@ impl CodeGraph {
                 .map(|(id, f)| (f.name.clone(), id.clone()))
                 .collect();
 
+            // Cross-file import resolution: build lookup from imports of this module
+            let mut import_targets: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+            if let Some(module) = projection.modules.get(&parent_module) {
+                for import_id in &module.imports {
+                    if let Some(import) = projection.imports.get(import_id) {
+                        match &import.kind {
+                            ImportKind::FromImport { module: src_mod, names } => {
+                                // Look up target module by dotted path
+                                let target_mod_id = find_module_by_dotted_name(
+                                    projection, src_mod, &parent_module);
+                                for (name, _alias) in names {
+                                    // Map imported name → potential target
+                                    if let Some(ref tgt_id) = target_mod_id {
+                                        import_targets.insert(name.clone(), tgt_id.clone());
+                                    }
+                                }
+                            }
+                            ImportKind::ModuleImport { module: src_mod, alias: _ } => {
+                                // `import foo.bar` — makes foo.bar.baz() available
+                                // Store the module prefix mapping
+                                if let Some(tgt_id) = find_module_by_dotted_name(
+                                    projection, src_mod, &parent_module) {
+                                    // The module itself is available as the last segment
+                                    let short_name = src_mod.rsplit('.').next().unwrap_or(src_mod);
+                                    import_targets.insert(short_name.to_string(), tgt_id);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
             // Resolve calls using the orchestrator
             let resolved = orchestrator.resolve_calls(calls, func_id, &import_graph);
 
-            // Override with same-file resolution where applicable
+            // Override with same-file and cross-file resolution where applicable
             let resolved: Vec<_> = resolved
                 .into_iter()
                 .map(|rc| {
                     if let crate::types::ResolvedCall::External(name) = &rc {
+                        // Same-file sibling?
                         if let Some(target_id) = sibling_funcs.get(name.as_str()) {
                             return crate::types::ResolvedCall::Function(target_id.clone());
                         }
+                        // Import-based cross-file?
+                        if let Some(target_mod_id) = import_targets.get(name.as_str()) {
+                            // Look for a function with this name in the target module
+                            if let Some(imported_func_id) = find_symbol_in_module(
+                                projection, target_mod_id, name) {
+                                return crate::types::ResolvedCall::Function(imported_func_id);
+                            }
+                        }
                     }
                     if let crate::types::ResolvedCall::Builtin(name) = &rc {
-                        // Builtins can also shadow same-file names
                         if let Some(target_id) = sibling_funcs.get(name.as_str()) {
                             return crate::types::ResolvedCall::Function(target_id.clone());
                         }
@@ -994,5 +1113,101 @@ mod tests {
     fn test_codegraph_callers_of_empty() {
         let graph = CodeGraph::new(GraphConfig::default());
         assert!(graph.callers_of("nonexistent").is_empty());
+    }
+
+    // ── Import Parsing & Cross-File Resolution Tests ──────────────
+
+    fn index_source(graph: &CodeGraph, source: &str, file_path: &str) {
+        graph.index_file(source, file_path, &Language::Python).unwrap();
+    }
+
+    #[test]
+    fn test_import_parsing_from_import() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "from os import path\ndef foo(): path.join('x')\n", "mod.py");
+
+        let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_all_calls(&mut projection);
+
+        // The import should create an Import entity with FromImport kind
+        let imports: Vec<_> = projection.imports.values().collect();
+        assert!(!imports.is_empty(), "Should have at least one import");
+        let import = &imports[0];
+        match &import.kind {
+            ImportKind::FromImport { module, names } => {
+                assert_eq!(module, "os");
+                assert_eq!(names.len(), 1);
+                assert_eq!(names[0].0, "path");
+            }
+            other => panic!("Expected FromImport, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_import_parsing_module_import() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "import os.path as p\ndef foo(): p.join('x')\n", "mod.py");
+
+        let projection = graph.snapshot();
+        let imports: Vec<_> = projection.imports.values().collect();
+        assert!(!imports.is_empty());
+        match &imports[0].kind {
+            ImportKind::ModuleImport { module, alias } => {
+                assert_eq!(module, "os.path");
+                assert_eq!(alias.as_deref(), Some("p"));
+            }
+            other => panic!("Expected ModuleImport, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_cross_file_resolution_same_dir() {
+        let graph = CodeGraph::new(GraphConfig::default());
+
+        // module_a defines helper
+        index_source(&graph, "def helper(x): return x * 2\n", "src/module_a.py");
+        // module_b imports and calls helper
+        index_source(&graph, "from module_a import helper\ndef process(): return helper(42)\n", "src/module_b.py");
+
+        let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_all_calls(&mut projection);
+        graph.commit_projection(projection);
+
+        // process should call helper from module_a
+        let process_id = "src/module_b.py::process";
+        let helper_id = "src/module_a.py::helper";
+
+        let callees = graph.callees_of(process_id);
+        assert!(!callees.is_empty(),
+                "process should have at least one callee, got {:?}", callees);
+        assert!(callees.contains(&helper_id.to_string()),
+                "process should call {}, got {:?}", helper_id, callees);
+
+        let callers = graph.callers_of(helper_id);
+        assert!(callers.contains(&process_id.to_string()),
+                "helper should be called by process, got {:?}", callers);
+    }
+
+    #[test]
+    fn test_cross_file_resolution_nested_package() {
+        let graph = CodeGraph::new(GraphConfig::default());
+
+        // Simulate coderadar.config.Config
+        index_source(&graph, "class Config:\n    pass\n",
+                     "py_agent/src/coderadar/config.py");
+        // pipeline imports Config
+        index_source(&graph,
+                     "from coderadar.config import Config\ndef make_cfg(): return Config()\n",
+                     "py_agent/src/coderadar/pipeline.py");
+
+        let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_all_calls(&mut projection);
+        graph.commit_projection(projection);
+
+        let make_cfg_id = "py_agent/src/coderadar/pipeline.py::make_cfg";
+        let callees = graph.callees_of(make_cfg_id);
+        // Config() is a constructor call — should resolve to the class in config.py
+        assert!(!callees.is_empty(),
+                "make_cfg should have at least one callee, got {:?}", callees);
     }
 }

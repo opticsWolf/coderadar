@@ -26,7 +26,7 @@
 
 (import_statement) @import
 
-(import_from_statement) @import_from
+(import_from_statement) @import
 
 ;; ── Decorators ──────────────────────────────────────────────────────
 
