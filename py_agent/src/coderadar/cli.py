@@ -15,7 +15,7 @@ console = Console()
 
 
 @click.group()
-@click.version_option(version="0.2.0", prog_name="coderadar",
+@click.version_option(version="0.3.0", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.5)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
