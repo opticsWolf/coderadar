@@ -14,6 +14,7 @@ use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 
 use crate::resolve::cache::ResolutionCache;
 use crate::resolve::stack_graph::StackGraphResolver;
+use crate::storage;
 use crate::types::*;
 
 // ── Import Graph (§3.4a) — EntityId-based ───────────────────────────────────
@@ -373,10 +374,14 @@ impl Default for GitConfig {
 // ── CodeGraph (§3.4, §9.1) — v3.5 Hybrid Architecture ──────────────────────
 
 pub struct CodeGraph {
+    /// Macrame bitemporal graph store — source of truth for all entities and edges.
+    /// Opened once at CodeGraph construction, lives for the process lifetime.
+    /// Optional: None when running without persistence (tests, embedded mode).
+    pub store: Option<Arc<crate::storage::CodeGraphStore>>,
+
     /// The current projected graph, behind an RwLock.
     /// Reads clone the Arc (one atomic increment); writes build a new
-    /// ProjectedGraph and swap the Arc — same pattern as Macrame's
-    /// links_current swap at reduced scale for in-memory reverse indexes.
+    /// ProjectedGraph and swap the Arc.
     pub projection: RwLock<Arc<ProjectedGraph>>,
 
     // Graph structures (separate locks — not part of projection)
@@ -410,6 +415,7 @@ impl CodeGraph {
         };
 
         Self {
+            store: None, // set by caller with CodeGraph::with_store() for persistence
             projection: RwLock::new(Arc::new(projection)),
             stack_graph_resolver: RwLock::new(StackGraphResolver::new()),
             import_graph: RwLock::new(ImportGraph::new()),
@@ -462,6 +468,35 @@ impl CodeGraph {
             .get(id)
             .map(|s| s.iter().cloned().collect())
             .unwrap_or_default()
+    }
+
+    // ── Macrame Store Integration (§10) ────────────────────────────────────
+
+    /// Attach a Macrame store for persistence. Called once after construction.
+    pub fn with_store(mut self, store: crate::storage::CodeGraphStore) -> Self {
+        self.store = Some(Arc::new(store));
+        self
+    }
+
+    /// True if a persistent Macrame store is attached (not test/embedded mode).
+    pub fn has_store(&self) -> bool {
+        self.store.is_some()
+    }
+
+    /// Persist extracted entities to Macrame (async via block_on).
+    /// Returns the count of upserted entities.
+    pub fn persist_entities(
+        &self,
+        units: &[crate::types::ExtractedUnit],
+        file_path: &str,
+        language: &str,
+    ) -> Result<usize, macrame::DbError> {
+        if let Some(ref store) = self.store {
+            store.upsert_entities(units, file_path, language)?;
+            Ok(units.len())
+        } else {
+            Ok(0) // no-op when no store attached
+        }
     }
 }
 
