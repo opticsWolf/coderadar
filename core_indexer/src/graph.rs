@@ -293,10 +293,15 @@ pub struct SignatureConfig {
     pub name_weight: f32,
     pub arity_weight: f32,
     pub proximity_weight: f32,
+    /// Pattern from CodeGraph's name-matcher.ts: when a name is defined more
+    /// than this many times, fuzzy resolution strategies decline to prevent
+    /// near-certain-wrong edges and O(K²) blowup (vendored themes, SDK copies).
+    /// Precise strategies (qualified-name, import-based) still run unaffected.
+    pub ambiguous_name_ceiling: usize,
 }
 impl Default for SignatureConfig {
     fn default() -> Self {
-        Self { min_score: 0.5, name_weight: 0.4, arity_weight: 0.3, proximity_weight: 0.3 }
+        Self { min_score: 0.5, name_weight: 0.4, arity_weight: 0.3, proximity_weight: 0.3, ambiguous_name_ceiling: 500 }
     }
 }
 

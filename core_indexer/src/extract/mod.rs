@@ -1,5 +1,6 @@
-// CodeRadar v3.3 — Extraction Module
+// CodeRadar v3.5 — Extraction Module
 pub mod decorators;
+pub mod docstring;   // v3.5: ported from CodeGraph's docstring.rs
 pub mod spans;
 pub mod tagger;
 pub mod walker;

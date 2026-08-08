@@ -394,6 +394,7 @@ dependencies = [
  "postcard",
  "pyo3",
  "rayon",
+ "regex",
  "ropey",
  "serde",
  "serde_json",

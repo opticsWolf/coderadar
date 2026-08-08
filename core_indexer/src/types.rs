@@ -714,11 +714,26 @@ pub struct ResolvedEdge {
     pub target_id: EntityId,
     pub confidence: f32,
     pub method: ResolutionMethod,
+    pub provenance: EdgeProvenance,
     pub kind: ReferenceKind,
     pub line: usize,
     pub call_site_span: ByteSpan,
     pub args_span: Option<ByteSpan>,
     pub target_kind: TargetKind,
+}
+
+/// Provenance of an edge — tracks how it was discovered.
+/// Pattern adapted from CodeGraph's provenance encoding (buffers.rs).
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
+pub enum EdgeProvenance {
+    TreeSitter,     // extracted directly from AST
+    StackGraph,     // resolved via Stack Graphs (L1)
+    ImportGraph,    // resolved via import graph (L2)
+    SignatureMatch, // resolved via signature matching (L3)
+    Embedding,      // resolved via embedding similarity (L4)
+    Lsp,            // resolved via LSP override (L5)
+    Heuristic,      // resolved via heuristic fallback
+    Scip,           // imported from SCIP index
 }
 
 #[derive(Clone, Copy, Eq, PartialEq, Hash, Debug)]
