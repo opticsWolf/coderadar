@@ -15,7 +15,7 @@ console = Console()
 
 
 @click.group()
-@click.version_option(version="0.3.2", prog_name="coderadar",
+@click.version_option(version="0.3.3", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.5)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -438,6 +438,68 @@ def serve(project_path: str):
     console.print(f"[dim]Exposing 4 tools via MCPServer v2: explore, node, search, affected[/dim]",
                   file=sys.stderr)
     mcp_serve(graph)  # blocking stdio loop
+
+
+@main.command()
+@click.argument("file", type=click.Path())
+@click.option("--repo", default=".", help="Repository root")
+def blame(file: str, repo: str):
+    """Show git blame for a file (author per line)."""
+    try:
+        from coderadar._core import git_blame as _blame
+        lines = _blame(repo, file)
+    except ImportError:
+        lines = []
+
+    if not lines:
+        console.print("[yellow]No blame data (git feature may be disabled)[/yellow]")
+        return
+
+    table = Table(title=f"Blame: {file}")
+    table.add_column("Line", style="cyan")
+    table.add_column("Author", style="green")
+    table.add_column("Commit", style="dim")
+    for l in lines:
+        commit_short = l.get("commit", "")[:8]
+        table.add_row(str(l.get("line", "")), l.get("author", ""), commit_short)
+    console.print(table)
+
+
+@main.command()
+@click.argument("repo", type=click.Path(exists=True), default=".")
+def git_clean(repo: str):
+    """Check if git worktree is clean."""
+    try:
+        from coderadar._core import git_worktree_clean as _clean
+        clean = _clean(repo).get("clean", True)
+    except ImportError:
+        clean = True
+
+    if clean:
+        console.print("[green]Worktree clean[/green]")
+    else:
+        console.print("[yellow]Worktree has uncommitted changes[/yellow]")
+
+
+@main.command()
+@click.argument("repo", type=click.Path(exists=True), default=".")
+@click.option("--old", "old_oid", default=None, help="Old commit OID")
+@click.option("--new", "new_oid", default=None, help="New commit OID (default: HEAD)")
+def git_diff(repo: str, old_oid: Optional[str], new_oid: Optional[str]):
+    """Show files changed between two commits."""
+    try:
+        from coderadar._core import git_changed_files as _diff
+        files = _diff(repo, old_oid, new_oid)
+    except ImportError:
+        files = []
+
+    if not files:
+        console.print("[yellow]No changed files (or git feature disabled)[/yellow]")
+        return
+
+    console.print(f"[bold]{len(files)} changed files:[/bold]")
+    for f in files:
+        console.print(f"  {f}")
 
 
 if __name__ == "__main__":

@@ -33,6 +33,12 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(analyze, m)?)?;
     m.add_function(wrap_pyfunction!(query_graph, m)?)?;
     m.add_function(wrap_pyfunction!(update_file, m)?)?;
+    {
+        use git_bindings::{git_worktree_clean, git_blame, git_changed_files};
+        m.add_function(wrap_pyfunction!(git_worktree_clean, m)?)?;
+        m.add_function(wrap_pyfunction!(git_blame, m)?)?;
+        m.add_function(wrap_pyfunction!(git_changed_files, m)?)?;
+    }
     m.add_function(wrap_pyfunction!(plan_body_replacement, m)?)?;
     m.add_function(wrap_pyfunction!(plan_signature_update, m)?)?;
     m.add_function(wrap_pyfunction!(plan_rename, m)?)?;
@@ -46,6 +52,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
     m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
+    m.add_function(wrap_pyfunction!(search_similar, m)?)?;
     m.add_class::<PyCodeGraph>()?;
     m.add_class::<QueryIterator>()?;
     Ok(())
@@ -374,6 +381,52 @@ fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {
     })
 }
 
+// ── Git Operations ────────────────────────────────────────────────────────
+
+mod git_bindings {
+    use pyo3::prelude::*;
+    use pyo3::types::PyDict;
+
+    #[pyfunction]
+    pub fn git_worktree_clean(py: Python<'_>, repo_path: &str) -> PyResult<PyObject> {
+        let clean = crate::fs::git::is_worktree_clean(repo_path).unwrap_or(true);
+        let dict = PyDict::new(py);
+        dict.set_item("clean", clean)?;
+        Ok(dict.into())
+    }
+
+    #[pyfunction]
+    pub fn git_blame(py: Python<'_>, repo_path: &str, file_path: &str) -> PyResult<Vec<PyObject>> {
+        match crate::fs::git::blame_file(repo_path, file_path) {
+            Ok(lines) => {
+                let rows: Vec<PyObject> = lines.iter().map(|l| {
+                    let d = PyDict::new(py);
+                    let _ = d.set_item("line", l.line_number);
+                    let _ = d.set_item("count", l.line_count);
+                    let _ = d.set_item("author", &l.author);
+                    let _ = d.set_item("commit", &l.commit);
+                    d.into()
+                }).collect();
+                Ok(rows)
+            }
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(
+                format!("git blame failed: {:?}", e))),
+        }
+    }
+
+    #[pyfunction]
+    pub fn git_changed_files(py: Python<'_>, repo_path: &str,
+                             old_oid: Option<&str>, new_oid: Option<&str>) -> PyResult<Vec<String>> {
+        let old = old_oid.and_then(|s| git2::Oid::from_str(s).ok());
+        let new = new_oid.and_then(|s| git2::Oid::from_str(s).ok());
+        match crate::fs::git::changed_files_between(repo_path, old, new) {
+            Ok(files) => Ok(files),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(
+                format!("git diff failed: {:?}", e))),
+        }
+    }
+}
+
 // ── update_file() ──────────────────────────────────────────────────────────
 
 #[pyfunction]
@@ -682,6 +735,57 @@ fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
         dict.set_item("call_edges", total_calls)?;
         Ok(dict.into())
     })
+}
+
+/// Vector similarity search against entity embeddings.
+/// Uses cosine similarity against stored embedding vectors.
+#[pyfunction]
+fn search_similar(
+    py: Python<'_>, query_vec: Vec<f64>, top_k: usize,
+) -> PyResult<Vec<PyObject>> {
+    with_graph(|_graph, snap| {
+        let mut scored: Vec<(f64, &String, &std::sync::Arc<Function>)> = Vec::new();
+
+        // Compute cosine similarity against all functions with embeddings
+        for (id, f) in &snap.functions {
+            if f.embedding.is_empty() { continue; }
+            let sim = cosine_similarity(&query_vec, &f.embedding);
+            scored.push((sim, id, f));
+        }
+
+        // Sort descending by similarity
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(top_k);
+
+        let results: Vec<PyObject> = scored
+            .into_iter()
+            .filter_map(|(sim, _, f)| {
+                function_to_dict(py, f).ok().map(|mut d| {
+                    // Add similarity score to dict
+                    if let Ok(dict) = d.downcast_bound::<PyDict>(py) {
+                        let _ = dict.set_item("similarity", sim);
+                    }
+                    d
+                })
+            })
+            .collect();
+
+        Ok(results)
+    })
+}
+
+/// Cosine similarity between two vectors.
+fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let norm_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b)
 }
 
 // ── Snapshot I/O ───────────────────────────────────────────────────────────

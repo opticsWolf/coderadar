@@ -31,7 +31,7 @@ dashmap = "5.5"
 lru = "0.12"
 rayon = "1.9"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-git2 = { version = "0.21", optional = true }
+git2 = { version = "0.21" }
 zstd = "0.13"
 # slotmap and arc-swap removed in v3.5 — replaced by HashMap<String, Arc<T>> + RwLock
 macrame-db = "0.11"
@@ -55,7 +55,6 @@ ulid = "1.1"
 postcard = "1.0"
 
 [features]
-default = ["git", "watcher", "kotlin"]
-git = ["dep:git2"]
+default = ["watcher", "kotlin"]
 watcher = ["dep:notify", "dep:notify-debouncer-mini"]
 kotlin = ["dep:tree-sitter-kotlin"]

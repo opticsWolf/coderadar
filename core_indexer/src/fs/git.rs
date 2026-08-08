@@ -1,10 +1,8 @@
 // CodeRadar v3.3 — Git Integration (§12)
 // Branch-switch detection, .gitignore integration, and blame annotation.
 
-#[cfg(feature = "git")]
 use std::path::PathBuf;
 
-#[cfg(feature = "git")]
 use git2::{BlameOptions, DiffOptions, Repository};
 
 use crate::graph::GitConfig;
@@ -19,7 +17,6 @@ pub struct BlameLine {
 
 // ── Feature-gated implementations ──────────────────────────────────────────
 
-#[cfg(feature = "git")]
 pub fn detect_branch_switch(repo_path: &str) -> Result<Option<Vec<String>>, GitError> {
     let repo = Repository::open(repo_path).map_err(GitError::Open)?;
     let head = repo.head().map_err(GitError::Head)?;
@@ -28,7 +25,6 @@ pub fn detect_branch_switch(repo_path: &str) -> Result<Option<Vec<String>>, GitE
     Ok(None)
 }
 
-#[cfg(feature = "git")]
 pub fn changed_files_between(
     repo_path: &str,
     old_oid: Option<git2::Oid>,
@@ -61,7 +57,6 @@ pub fn changed_files_between(
     Ok(files)
 }
 
-#[cfg(feature = "git")]
 pub fn blame_file(
     repo_path: &str,
     file_path: &str,
@@ -92,14 +87,12 @@ pub fn blame_file(
     Ok(lines)
 }
 
-#[cfg(feature = "git")]
 pub fn is_worktree_clean(repo_path: &str) -> Result<bool, GitError> {
     let repo = Repository::open(repo_path).map_err(GitError::Open)?;
     let statuses = repo.statuses(None).map_err(GitError::Status)?;
     Ok(statuses.is_empty())
 }
 
-#[cfg(feature = "git")]
 #[derive(Debug)]
 pub enum GitError {
     Open(git2::Error),
@@ -109,34 +102,4 @@ pub enum GitError {
     Commit(git2::Error),
     Blame(String),
     Status(git2::Error),
-}
-
-// ── Stub implementations when git feature is disabled ──────────────────
-
-#[cfg(not(feature = "git"))]
-pub fn detect_branch_switch(_repo_path: &str) -> Result<Option<Vec<String>>, GitError> {
-    Ok(None)
-}
-
-#[cfg(not(feature = "git"))]
-pub fn changed_files_between(
-    _repo_path: &str, _old_oid: Option<u64>, _new_oid: Option<u64>,
-) -> Result<Vec<String>, GitError> {
-    Ok(Vec::new())
-}
-
-#[cfg(not(feature = "git"))]
-pub fn blame_file(_repo_path: &str, _file_path: &str) -> Result<Vec<BlameLine>, GitError> {
-    Ok(Vec::new())
-}
-
-#[cfg(not(feature = "git"))]
-pub fn is_worktree_clean(_repo_path: &str) -> Result<bool, GitError> {
-    Ok(true)
-}
-
-#[cfg(not(feature = "git"))]
-#[derive(Debug)]
-pub enum GitError {
-    GitDisabled,
 }

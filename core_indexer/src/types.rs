@@ -475,6 +475,7 @@ pub struct Function {
     pub params_span: ByteSpan,
     pub body_span: ByteSpan,
     pub decorators_span: Option<ByteSpan>,
+    pub embedding: Vec<f64>,   // cached embedding vector (empty if not computed)
 }
 
 #[derive(Clone, Debug)]

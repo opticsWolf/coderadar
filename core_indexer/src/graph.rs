@@ -1160,6 +1160,7 @@ impl CodeGraph {
                         params_span: f.name_span,
                         body_span: f.body_span,
                         decorators_span: f.decorators_span,
+                        embedding: vec![],
                     };
                     projection.functions.insert(func.id.clone(), Arc::new(func));
                     module_functions.push(f.id.clone());

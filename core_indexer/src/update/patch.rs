@@ -105,6 +105,7 @@ pub fn apply_patch(
                                 params_span: f.params_span,
                                 body_span: f.body_span,
                                 decorators_span: f.decorators_span,
+                                embedding: vec![],
                             };
                             new_projection.functions.insert(id.clone(), Arc::new(func));
                             changed_symbols.push(SymbolChange {
