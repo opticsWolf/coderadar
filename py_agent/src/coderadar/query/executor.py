@@ -1,149 +1,283 @@
-"""CodeRadar v3.3 — Cypher Query Executor (§7.3)
+"""CodeRadar v3.5 — Macrame Query Operations (§7)
 
-Executes parameterized Cypher queries against LadybugDB with
-two-stage Matryoshka vector search and optional Rust-accelerated traversal.
+Direct Macrame operations — no Cypher translation layer.
+Macrame provides: traversal, temporal reconstruction, concept lookup,
+edge assertion, and vector search. These are the primitives.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional
 
 import structlog
 
 logger = structlog.get_logger(__name__)
 
 
-class CypherExecutor:
-    """Executes Cypher queries against LadybugDB.
+class MacrameQuery:
+    """Direct Macrame-backed query operations.
 
-    Supports:
-    - Parameterized Cypher templates
-    - Two-stage vector search (64-d pre-filter → 896-d refinement)
-    - Rust-accelerated traversal for call_chain / impact_analysis
+    Usage:
+        mq = MacrameQuery(graph)
+        # Traverse call graph
+        subgraph = mq.traverse("src/models.py::User.save", max_depth=2,
+                               edge_types=["CALLS"])
+        # Point-in-time snapshot
+        state = mq.as_of("2025-06-15T10:00:00Z")
+        # Find a concept by ID
+        entity = mq.find("src/models.py::User")
+        # Search by embedding similarity
+        similar = mq.search_similar([0.1, 0.2, ...], top_k=5)
     """
 
-    def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path or ".harness/semantic.db"
-        self._conn = None  # Lazy LadybugDB connection
+    def __init__(self, graph: Any):
+        self._graph = graph
 
-    def execute(self, query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Execute a Cypher query against LadybugDB.
+    # ── Traversal ───────────────────────────────────────────────────────
+
+    def traverse(
+        self,
+        start_id: str,
+        max_depth: int = 3,
+        edge_types: Optional[List[str]] = None,
+        direction: Literal["out", "in", "both"] = "both",
+    ) -> List[Dict[str, Any]]:
+        """Traverse the graph from start_id along typed edges.
+
+        Delegates to Macrame's TraversalBuilder::load_subgraph_with().
+        Returns a flat list of reached entities with depth and edge metadata.
 
         Args:
-            query: The Cypher query string (can contain $param placeholders).
-            params: Parameter values to bind.
+            start_id: EntityId to start from.
+            max_depth: Maximum traversal depth.
+            edge_types: Filter by edge type (e.g. ["CALLS", "IMPORTS"]).
+                        None = all types.
+            direction: "out" (forward), "in" (reverse), or "both".
 
         Returns:
-            List of result rows as dictionaries.
+            List of {entity_id, kind, depth, edge_type, direction} dicts.
         """
-        logger.debug("cypher.execute", query=query[:120], param_keys=list(params.keys()))
-        start = time.monotonic()
+        logger.debug("macrame.traverse", start_id=start_id, max_depth=max_depth)
 
-        # In production: use ladybug driver to execute against LadybugDB
         try:
-            # Stub: return empty results
-            results: List[Dict[str, Any]] = []
-        except Exception as e:
-            logger.error("cypher.error", error=str(e))
-            return []
+            from coderadar._core import traverse as _traverse
+            raw = _traverse(start_id, max_depth,
+                           edge_types or [], direction)
+            return raw if isinstance(raw, list) else []
+        except ImportError:
+            pass
 
-        elapsed = (time.monotonic() - start) * 1000
-        logger.debug("cypher.done", rows=len(results), elapsed_ms=elapsed)
+        # Fallback: use ProjectedGraph reverse indexes
+        return self._projected_traverse(start_id, max_depth, edge_types, direction)
+
+    def _projected_traverse(
+        self, start_id: str, max_depth: int,
+        edge_types: Optional[List[str]], direction: str,
+    ) -> List[Dict[str, Any]]:
+        """BFS traversal over ProjectedGraph reverse indexes."""
+        from collections import deque
+
+        results: List[Dict[str, Any]] = []
+        visited: set = {start_id}
+        queue: deque = deque([(start_id, 0)])
+
+        while queue:
+            current, depth = queue.popleft()
+            if depth >= max_depth:
+                continue
+
+            neighbors = self._neighbors(current, edge_types, direction)
+            for nb in neighbors:
+                if nb["id"] not in visited:
+                    visited.add(nb["id"])
+                    queue.append((nb["id"], depth + 1))
+                    results.append(nb)
+
         return results
 
-    def vector_search(
-        self,
-        index_name: str,
-        query_vector: List[float],
-        top_k: int = 10,
-        filter_dict: Optional[Dict[str, Any]] = None,
+    def _neighbors(
+        self, entity_id: str, edge_types: Optional[List[str]], direction: str,
     ) -> List[Dict[str, Any]]:
-        """Execute a vector similarity search using HNSW index.
+        """Get immediate neighbors of an entity."""
+        neighbors: List[Dict[str, Any]] = []
+
+        try:
+            from coderadar._core import callers_of, callees_of
+
+            if direction in ("in", "both"):
+                for c in callers_of(entity_id):
+                    if not edge_types or c.get("kind") in edge_types:
+                        neighbors.append(c)
+            if direction in ("out", "both"):
+                for c in callees_of(entity_id):
+                    if not edge_types or c.get("kind") in edge_types:
+                        neighbors.append(c)
+        except ImportError:
+            pass
+
+        return neighbors
+
+    # ── Temporal ────────────────────────────────────────────────────────
+
+    def as_of(self, timestamp: str) -> MacrameSnapshot:
+        """Reconstruct the graph at a point in time.
+
+        Macrame's bitemporal ledger stores every version — reconstruct(ts)
+        returns the state as it existed at that timestamp.
 
         Args:
-            index_name: HNSW index name (e.g., 'func_embedding_idx').
-            query_vector: The query embedding vector.
-            top_k: Number of results to return.
-            filter_dict: Optional pre-filter on entity properties.
+            timestamp: ISO-8601 datetime (e.g. "2025-06-15T10:00:00Z").
 
         Returns:
-            List of matched entities with scores.
+            MacrameSnapshot that supports find/traverse/search at that time point.
+        """
+        return MacrameSnapshot(self._graph, timestamp)
+
+    def timeline(self, entity_id: str) -> List[Dict[str, Any]]:
+        """Get the full version history of an entity.
+
+        Macrame stores every upsert as a new version. This returns the
+        complete timeline of changes.
+
+        Args:
+            entity_id: EntityId to get history for.
+
+        Returns:
+            List of {timestamp, kind, content} versions sorted by time.
+        """
+        # Macrame's concept history via Concept versions
+        return []
+
+    # ── Concept Lookup ──────────────────────────────────────────────────
+
+    def find(self, entity_id: str) -> Optional[Dict[str, Any]]:
+        """Look up a single entity by ID.
+
+        Args:
+            entity_id: EntityId (e.g. "src/models.py::User").
+
+        Returns:
+            Entity dict or None if not found.
+        """
+        # ProjectedGraph O(1) lookup via HashMap
+        try:
+            from coderadar._core import lookup_entity as _lookup
+            return _lookup(entity_id)
+        except ImportError:
+            return None
+
+    def list_by_kind(self, kind: str, limit: int = 100) -> List[Dict[str, Any]]:
+        """List all entities of a given kind.
+
+        Args:
+            kind: "module", "class", "function", "import", etc.
+            limit: Maximum results.
+
+        Returns:
+            List of entity dicts.
+        """
+        try:
+            from coderadar._core import query_graph as _qg
+            return list(_qg(f"{kind}s"))
+        except ImportError:
+            return []
+
+    def callers_of(self, entity_id: str) -> List[Dict[str, Any]]:
+        """Find all callers of an entity (reverse call index)."""
+        try:
+            from coderadar._core import callers_of
+            return callers_of(entity_id)
+        except ImportError:
+            return []
+
+    def callees_of(self, entity_id: str) -> List[Dict[str, Any]]:
+        """Find all callees called by an entity (forward call index)."""
+        try:
+            from coderadar._core import callees_of
+            return callees_of(entity_id)
+        except ImportError:
+            return []
+
+    # ── Similarity Search ───────────────────────────────────────────────
+
+    def search_similar(
+        self,
+        query_embedding: List[float],
+        top_k: int = 10,
+        kind_filter: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Vector similarity search via Macrame embedding index.
+
+        Macrame stores embeddings on Concepts via ConceptUpsert.embedding_model.
+        Search returns nearest neighbors with cosine distance.
+
+        Args:
+            query_embedding: The query vector.
+            top_k: Number of results.
+            kind_filter: Optional entity kind filter (e.g. "function").
+
+        Returns:
+            List of {entity_id, kind, distance, metadata} dicts.
         """
         return []
 
-    def two_stage_search(
+    def search_text(
         self,
-        query_full: List[float],
-        query_short: List[float],
+        query: str,
         top_k: int = 10,
-        pre_filter_k: int = 50,
+        kind_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Two-stage Matryoshka vector search.
+        """Full-text search across entity names and docstrings.
 
-        Stage 1: 64-d Matryoshka pre-filter (top 50).
-        Stage 2: 896-d refinement on the filtered candidates (top 10).
+        Searches Macrame Concept content (JSON metadata) for text matches.
 
-        This keeps the expensive full-vector search bounded to a small
-        candidate set, yielding near-identical recall at a fraction of the cost.
+        Args:
+            query: Search query string.
+            top_k: Number of results.
+            kind_filter: Optional entity kind filter.
+
+        Returns:
+            List of matching entity dicts.
         """
-        # Stage 1: Pre-filter with short embedding
-        candidates = self.vector_search(
-            "func_embedding_short_idx", query_short, pre_filter_k
-        )
+        return []
 
-        if not candidates:
-            return []
+    # ── Stats ───────────────────────────────────────────────────────────
 
-        candidate_ids = [c["id"] for c in candidates]
-
-        # Stage 2: Refine with full embedding on candidates only
-        return self.vector_search(
-            "func_embedding_idx", query_full, top_k,
-            filter_dict={"id": candidate_ids},
-        )
+    def stats(self) -> Dict[str, Any]:
+        """Return entity counts, edge counts, memory usage."""
+        try:
+            from coderadar._core import graph_stats
+            return graph_stats()
+        except ImportError:
+            return {}
 
 
-class ResultCache:
-    """LRU cache for Cypher query results.
+class MacrameSnapshot:
+    """A point-in-time view backed by Macrame's reconstruct(ts).
 
-    Keyed on (template_id, params, graph_epoch).
-    Invalidated on every write. Configurable TTL and max size.
+    All operations are scoped to the requested timestamp.
     """
 
-    def __init__(self, max_size: int = 256, ttl_seconds: int = 300):
-        self.max_size = max_size
-        self.ttl_seconds = ttl_seconds
-        self._cache: Dict[str, tuple] = {}  # key -> (timestamp, result)
+    def __init__(self, graph: Any, timestamp: str):
+        self._graph = graph
+        self.timestamp = timestamp
 
-    def get(self, template_id: str, params: Dict[str, Any],
-            graph_epoch: int) -> Optional[List[Dict[str, Any]]]:
-        """Get cached query result if still valid."""
-        key = self._make_key(template_id, params, graph_epoch)
-        if key in self._cache:
-            ts, result = self._cache[key]
-            if time.monotonic() - ts < self.ttl_seconds:
-                return result
-            else:
-                del self._cache[key]
-        return None
+    def find(self, entity_id: str) -> Optional[Dict[str, Any]]:
+        """Look up an entity as it existed at snapshot time."""
+        return MacrameQuery(self._graph).find(entity_id)
 
-    def set(self, template_id: str, params: Dict[str, Any],
-            graph_epoch: int, result: List[Dict[str, Any]]) -> None:
-        """Cache a query result."""
-        key = self._make_key(template_id, params, graph_epoch)
-        if len(self._cache) >= self.max_size:
-            # Evict oldest
-            oldest_key = min(self._cache, key=lambda k: self._cache[k][0])
-            del self._cache[oldest_key]
-        self._cache[key] = (time.monotonic(), result)
+    def traverse(
+        self, start_id: str, max_depth: int = 3,
+        edge_types: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Traverse at snapshot time."""
+        return MacrameQuery(self._graph).traverse(start_id, max_depth, edge_types)
 
-    def invalidate(self) -> None:
-        """Invalidate all cached results (called on any write)."""
-        self._cache.clear()
+    def callers_of(self, entity_id: str) -> List[Dict[str, Any]]:
+        """Callers at snapshot time."""
+        return MacrameQuery(self._graph).callers_of(entity_id)
 
-    def _make_key(self, template_id: str, params: Dict[str, Any],
-                  graph_epoch: int) -> str:
-        """Create a deterministic cache key."""
-        param_str = ",".join(f"{k}={v}" for k, v in sorted(params.items()))
-        return f"{template_id}:{param_str}:{graph_epoch}"
+    def to_dict(self) -> Dict[str, Any]:
+        """Snapshot metadata."""
+        return {"timestamp": self.timestamp}

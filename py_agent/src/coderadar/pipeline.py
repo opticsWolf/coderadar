@@ -1,6 +1,12 @@
-"""CodeRadar v3.3 — Ingestion Pipeline (§6.7)
+"""CodeRadar v3.5 — Ingestion Pipeline (§6.7)
 
-Orchestrates the two-phase commit between Rust staging and LadybugDB persistence.
+Orchestrates the two-phase commit between Rust staging and Macrame persistence.
+
+Phase 1: Rust stage_file() — parse, extract entities/edges, flat-buffer encode.
+Phase 2: Python — decode flat buffers, embed unresolved references (L4),
+         run LSP fallback (L5), write to Macrame as Concepts + EdgeAssertions.
+Phase 3: On Macrame success → Rust commit_staged() + rebuild ProjectedGraph.
+         On failure → rollback_staged().
 """
 
 from __future__ import annotations
@@ -32,12 +38,13 @@ class IngestionPipeline:
     """Orchestrates the staged two-phase commit for ingestion.
 
     Phase 1: Rust stage_file() — pure diff, no mutation.
-    Phase 2: Python — embed unresolved references, run LSP fallback, write to LadybugDB.
-    Phase 3: On DB success → Rust commit_staged(); on failure → rollback_staged().
+    Phase 2: Python — decode flat buffers, embed unresolved references,
+             run LSP fallback, write to Macrame as Concepts.
+    Phase 3: On Macrame success → Rust commit_staged(); on failure → rollback_staged().
     """
 
     def __init__(self, db_path: Optional[str] = None):
-        self.db_path = db_path or ".harness/semantic.db"
+        self.db_path = db_path or ".coderadar/coderadar.db"
         self._batch_chunk_size = 200
 
     def process_batch(
@@ -48,17 +55,20 @@ class IngestionPipeline:
 
         for staged in staged_changes:
             try:
-                # 1. Embed unresolved references (Layer 4)
-                self._embed_unresolved(staged)
+                # 1. Decode flat buffers → Python entity/edge/ref objects
+                entities, edges, refs = self._decode_staged(staged)
 
-                # 2. LSP fallback (Layer 5) if enabled
-                self._run_lsp_fallback(staged)
+                # 2. Embed unresolved references (Layer 4)
+                self._embed_unresolved(refs)
 
-                # 3. Write entities and edges to LadybugDB
-                self._write_to_db(staged)
+                # 3. LSP fallback (Layer 5) if enabled
+                self._run_lsp_fallback(refs)
+
+                # 4. Write entities and edges to Macrame
+                self._write_to_macrame(entities, edges)
 
                 result.files_processed += 1
-                result.entities_created += len(getattr(staged, 'entities', []))
+                result.entities_created += len(entities)
 
             except Exception as e:
                 logger.error("ingestion.error", file=getattr(staged, 'path', 'unknown'),
@@ -67,27 +77,47 @@ class IngestionPipeline:
 
         return result
 
-    def _embed_unresolved(self, staged: Any) -> None:
-        """Layer 4: Compute embeddings for unresolved references."""
-        from .embedding.dedup import EmbeddingDedup
-        dedup = EmbeddingDedup()
-        # In production: embed only entities with low-confidence or unresolved edges
+    def _decode_staged(self, staged: Any) -> tuple:
+        """Decode flat-buffer payload from Rust side."""
+        from .flatbuffer import decode_extraction
+
+        meta = getattr(staged, 'meta', b'')
+        entity_bytes = getattr(staged, 'entities', b'')
+        edge_bytes = getattr(staged, 'edges', b'')
+        ref_bytes = getattr(staged, 'refs', b'')
+        arena = getattr(staged, 'arena', b'')
+
+        fb = decode_extraction(meta, entity_bytes, edge_bytes, ref_bytes, arena)
+        return fb.entities, fb.edges, fb.refs
+
+    def _embed_unresolved(self, refs: List[Any]) -> None:
+        """Layer 4: Compute embeddings for unresolved references.
+
+        Macrame stores embeddings directly on Concepts via
+        `ConceptUpsert.embedding` field — no separate vector DB needed.
+        """
         pass
 
-    def _run_lsp_fallback(self, staged: Any) -> None:
+    def _run_lsp_fallback(self, refs: List[Any]) -> None:
         """Layer 5: Override low-confidence edges with LSP results."""
         pass
 
-    def _write_to_db(self, staged: Any) -> None:
-        """Write staged entities and edges to LadybugDB."""
+    def _write_to_macrame(self, entities: List[Any], edges: List[Any]) -> None:
+        """Write staged entities and edges to Macrame.
+
+        Entities → ConceptUpsert (kind + JSON metadata in content).
+        Edges → EdgeAssertion with properties (confidence, provenance, language).
+        Macrame handles the bitemporal ledger automatically.
+        """
         pass
 
     def commit(self, staged: Any) -> None:
-        """Commit staged changes — called after DB write succeeds."""
+        """Commit staged changes — called after Macrame write succeeds."""
+        # Trigger ProjectedGraph rebuild on Rust side
         pass
 
     def rollback(self, staged: Any) -> None:
-        """Rollback staged changes — called if DB write fails."""
+        """Rollback staged changes — called if Macrame write fails."""
         pass
 
 

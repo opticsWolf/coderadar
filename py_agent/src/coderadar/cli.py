@@ -1,4 +1,4 @@
-"""CodeRadar v3.3 — Command-Line Interface (§16)"""
+"""CodeRadar v3.5 — Command-Line Interface (§16)"""
 
 from __future__ import annotations
 
@@ -113,18 +113,74 @@ def query(query_string: str):
 
 
 @main.command()
-@click.argument("cypher_query")
-@click.option("--params", default="{}", help="JSON parameters")
-def cypher(cypher_query: str, params: str):
-    """Execute a Cypher query against LadybugDB."""
-    import json as json_mod
+@click.argument("start_id")
+@click.option("--depth", default=3, help="Maximum traversal depth")
+@click.option("--edges", default="CALLS", help="Edge types (comma-separated)")
+@click.option("--direction", default="both",
+              type=click.Choice(["in", "out", "both"]))
+def traverse(start_id: str, depth: int, edges: str, direction: str):
+    """Traverse the graph from start_id via Macrame."""
+    from .query import MacrameQuery
     import coderadar
 
-    param_dict = json_mod.loads(params)
     graph = coderadar.CodeGraph()
-    results = graph.cypher(cypher_query, **param_dict)
+    mq = MacrameQuery(graph)
+    edge_types = [e.strip() for e in edges.split(",")] if edges else None
+    results = mq.traverse(start_id, depth, edge_types, direction)
 
-    console.print_json(data=results)
+    if not results:
+        console.print("[yellow]No results[/yellow]")
+        return
+
+    table = Table(title=f"Traversal from [bold]{start_id}[/bold]")
+    for key in results[0]:
+        table.add_column(key, style="cyan")
+    for row in results:
+        table.add_row(*[str(row.get(k, "")) for k in results[0]])
+    console.print(table)
+    console.print(f"[dim]{len(results)} reached[/dim]")
+
+
+@main.command()
+@click.argument("entity_id")
+def callers(entity_id: str):
+    """List callers of an entity."""
+    from .query import MacrameQuery
+    import coderadar
+
+    graph = coderadar.CodeGraph()
+    mq = MacrameQuery(graph)
+    results = mq.callers_of(entity_id)
+
+    if not results:
+        console.print(f"[yellow]No callers found for {entity_id}[/yellow]")
+        return
+
+    console.print(f"[bold]Callers of {entity_id}:[/bold]")
+    for r in results:
+        console.print(f"  {r.get('id', r.get('entity_id', '?'))} "
+                      f"({r.get('file', '?')}:{r.get('line', '?')})")
+
+
+@main.command()
+@click.argument("entity_id")
+def callees(entity_id: str):
+    """List callees called by an entity."""
+    from .query import MacrameQuery
+    import coderadar
+
+    graph = coderadar.CodeGraph()
+    mq = MacrameQuery(graph)
+    results = mq.callees_of(entity_id)
+
+    if not results:
+        console.print(f"[yellow]No callees from {entity_id}[/yellow]")
+        return
+
+    console.print(f"[bold]Callees from {entity_id}:[/bold]")
+    for r in results:
+        console.print(f"  {r.get('id', r.get('entity_id', '?'))} "
+                      f"({r.get('file', '?')}:{r.get('line', '?')})")
 
 
 @main.command()
@@ -144,10 +200,20 @@ def shell():
         if cmd.strip() in ("exit", "quit"):
             break
         elif cmd.strip() == "help":
-            console.print("Commands: query <sql>, stats, exit")
+            console.print("Commands: query <pest>, traverse <id>, callers <id>, stats, exit")
         elif cmd.startswith("query "):
             query_str = cmd[6:]
             for row in graph.query(query_str):
+                console.print(row)
+        elif cmd.startswith("traverse "):
+            start_id = cmd[9:].strip()
+            from .query import MacrameQuery
+            for row in MacrameQuery(graph).traverse(start_id):
+                console.print(row)
+        elif cmd.startswith("callers "):
+            entity_id = cmd[8:].strip()
+            from .query import MacrameQuery
+            for row in MacrameQuery(graph).callers_of(entity_id):
                 console.print(row)
         elif cmd.strip() == "stats":
             console.print(graph.stats())
@@ -203,14 +269,6 @@ def resolve_cmd(qualified_name: str):
     chain = coderadar.resolve(qualified_name)
     for step in chain:
         console.print(step)
-
-
-@main.command()
-@click.argument("qualified_name")
-def callers(qualified_name: str):
-    """List callers of a function."""
-    console.print(f"Callers of [bold]{qualified_name}[/bold]:")
-    # Stub
 
 
 @main.command()

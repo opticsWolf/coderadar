@@ -47,6 +47,7 @@ class SignatureConfig(BaseModel):
     name_weight: float = 0.4
     arity_weight: float = 0.3
     proximity_weight: float = 0.3
+    ambiguous_name_ceiling: int = 500  # v3.5: O(K²) guard from CodeGraph's name-matcher.ts
 
 
 class LSPConfig(BaseModel):
@@ -81,10 +82,15 @@ class EmbeddingConfig(BaseModel):
 
 
 class DatabaseConfig(BaseModel):
-    path: str = ".harness/semantic.db"
-    hnsw_ef_construction: int = 128
-    hnsw_m: int = 16
-    hnsw_ef_search: int = 64
+    """Storage configuration — Macrame embedded bitemporal graph.
+
+    Macrame stores entities as Concepts with JSON metadata in content,
+    edges as EdgeAssertions with properties. A single .db file contains
+    the full bitemporal ledger.
+    """
+    path: str = ".coderadar/coderadar.db"
+    sync_mode: str = "full"  # "full" | "normal" | "off"
+    wal_autocheckpoint: int = 1000
 
 
 class IngestionConfig(BaseModel):
