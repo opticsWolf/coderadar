@@ -1,0 +1,67 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "coderadar"
+version = "0.1.0"
+description = "Live semantic graph of your codebase — incremental, queryable, LLM-writable"
+
+# The architecture is defined by spec v3.3 (see specs/CodeRadar v3.3 Consolidated.md).
+# This software version follows semver independently of the spec document revision.
+authors = [{name = "CodeRadar Team"}]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+]
+
+dependencies = [
+    "pydantic>=2.0",
+    "click>=8.0",
+    "rich>=13.0",
+    "ladybug>=0.1",
+    "fastembed>=0.3",
+    "litellm>=1.0",
+    "grep-ast>=0.2",
+    "structlog>=23.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "hypothesis>=6.0",
+    "mypy>=1.0",
+    "ruff>=0.1",
+]
+visualizers = [
+    "graphviz>=0.20",
+]
+
+[project.scripts]
+coderadar = "coderadar.cli:main"
+
+[tool.maturin]
+manifest-path = "core_indexer/Cargo.toml"
+features = ["pyo3/extension-module"]
+python-source = "py_agent/src"
+module-name = "coderadar._core"
+bindings = "pyo3"
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["py_agent/src"]

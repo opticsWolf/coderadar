@@ -1,0 +1,56 @@
+[package]
+name = "core_indexer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "core_indexer"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
+tree-sitter = "0.24"
+tree-sitter-python = "0.23"
+tree-sitter-typescript = "0.23"
+tree-sitter-javascript = "0.23"
+tree-sitter-rust = "0.23"
+tree-sitter-go = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-c = "0.23"
+tree-sitter-cpp = "0.23"
+tree-sitter-ruby = "0.23"
+tree-sitter-php = "0.24"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-kotlin = { version = "0.3", optional = true }
+stack-graphs = "0.14"
+petgraph = "0.6"
+ropey = "1.6"
+similar = "2.3"
+dashmap = "5.5"
+lru = "0.12"
+rayon = "1.9"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+git2 = { version = "0.21", optional = true }
+zstd = "0.13"
+slotmap = "1.0"
+pest = "2.7"
+pest_derive = "2.7"
+parking_lot = "0.12"
+arc-swap = "1.6"
+streaming-iterator = "0.1"
+notify = { version = "6.1", optional = true }
+notify-debouncer-mini = { version = "0.4", optional = true }
+ignore = "0.4"
+crossbeam-channel = "0.5"
+tracing = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+smol_str = "0.2"
+ulid = "1.1"
+postcard = "1.0"
+
+[features]
+default = ["git", "watcher", "kotlin"]
+git = ["dep:git2"]
+watcher = ["dep:notify", "dep:notify-debouncer-mini"]
+kotlin = ["dep:tree-sitter-kotlin"]

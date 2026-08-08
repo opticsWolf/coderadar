@@ -1,0 +1,43 @@
+// CodeRadar v3.3 — Query: Pest Grammar Definition (§7.1)
+// Operator precedence: NOT > AND > OR. Aggregations and derived_call are first-class.
+
+WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
+COMMENT    = _{ "--" ~ (!"\n" ~ ANY)* }
+
+keyword = { "where" | "group" | "by" | "order" | "asc" | "desc" | "limit"
+          | "and" | "or" | "not" | "true" | "false" | "null"
+          | "select" | "as" | "in" | "contains" | "matches" }
+
+identifier = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+path       = @{ identifier ~ ("." ~ identifier)* }
+
+string = @{ "\"" ~ ("\\\"" | (!"\"" ~ ANY))* ~ "\"" }
+number = @{ "-"? ~ ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT+)? }
+bool   = { "true" | "false" }
+null   = { "null" }
+list   = { "[" ~ value ~ ("," ~ value)* ~ "]" }
+value  = { string | number | bool | null | list }
+
+derived_call = { identifier ~ "(" ~ value ~ ("," ~ value)* ~ ")" }
+operand      = { derived_call | path | value }
+comp_op      = { "==" | "!=" | "<=" | ">=" | "<" | ">" | "contains" | "matches" | "in" }
+predicate    = { operand ~ comp_op ~ operand }
+
+not_atom = { "not" ~ atom }
+atom     = { "(" ~ or_expr ~ ")" | not_atom | predicate }
+and_expr = { atom    ~ ("and" ~ atom)* }
+or_expr  = { and_expr ~ ("or"  ~ and_expr)* }
+where_clause = { "where" ~ or_expr }
+
+agg_func = { "count" | "sum" | "avg" | "min" | "max" }
+agg_expr = { agg_func ~ "(" ~ (path | "*") ~ ")" ~ "as" ~ identifier }
+select_item   = { agg_expr | path }
+select_clause = { "select" ~ select_item ~ ("," ~ select_item)* }
+group_by_clause = { "group" ~ "by" ~ path ~ ("," ~ path)* }
+order_by_clause = { "order" ~ "by" ~ path ~ ("asc" | "desc")? }
+limit_clause    = { "limit" ~ number }
+
+entity = { "modules" | "classes" | "functions" | "imports" | "calls" | "fields" }
+
+query = { SOI ~ entity ~ select_clause? ~ where_clause? ~ group_by_clause?
+          ~ order_by_clause? ~ limit_clause? ~ EOI }

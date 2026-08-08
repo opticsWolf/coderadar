@@ -1,0 +1,14 @@
+# Auto-detect text files and convert line endings to LF on commit
+* text=auto
+
+# Explicit text files — always use LF
+*.rs text eol=lf
+*.py text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.scm text eol=lf
+*.pest text eol=lf
+*.lock text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf

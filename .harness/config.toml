@@ -1,0 +1,42 @@
+# CodeRadar v3.3 — Harness Configuration (§15)
+# Watcher / project layout configuration.
+# Place this in your project root as .harness/config.toml
+
+[general]
+watch_paths = ["src/", "tests/"]
+exclude_patterns = [".generated", ".pb.go", ".g.dart"]
+debounce_ms = 500
+max_file_size_bytes = 1_048_576
+log_level = "info"
+
+[languages.python]
+extensions = [".py", ".pyi"]
+parser = "tree-sitter-python"
+tags_query = "tags.scm"
+import_patterns = ["from {module} import {symbol}",
+                   "import {module}",
+                   "import {module} as {alias}"]
+function_patterns = ["def {name}({params}):", "async def {name}({params}):"]
+method_self_param = "self"
+lsp_command = "pyright-langserver --stdio"
+
+[languages.typescript]
+extensions = [".ts", ".tsx"]
+parser = "tree-sitter-typescript"
+import_patterns = ["import {symbol} from '{module}'",
+                   "import * as {alias} from '{module}'",
+                   "import {module}"]
+
+[languages.javascript]
+extensions = [".js", ".jsx", ".mjs", ".cjs"]
+parser = "tree-sitter-javascript"
+import_patterns = ["const {symbol} = require('{module}')",
+                   "import {symbol} from '{module}'"]
+
+[languages.rust]
+extensions = [".rs"]
+parser = "tree-sitter-rust"
+
+[languages.go]
+extensions = [".go"]
+parser = "tree-sitter-go"

@@ -1,0 +1,111 @@
+# CodeRadar v3.3 — Main Configuration (§15)
+# Place this in your project root as .coderadar.toml
+
+[project]
+languages = ["python"]
+roots     = ["src/", "tests/"]
+exclude   = ["**/migrations/**", "**/__pycache__/**", "**/.venv/**"]
+
+[python]
+sys_path = ["src/"]
+follow_type_checking_imports = false
+strict_wildcard_imports = true
+extra_known_decorators = [
+    { name = "myapp.cache",       effect = "cached_property" },
+    { name = "myapp.deprecated",  effect = "warn" },
+]
+
+[resolution]
+min_confidence = 0.3
+
+[resolution.stack_graph]
+rules_dir = ""
+max_path_depth = 10
+incremental = true
+
+[resolution.import_graph]
+max_import_depth = 3
+include_same_package = true
+
+[resolution.signature]
+min_score = 0.5
+name_weight = 0.4
+arity_weight = 0.3
+proximity_weight = 0.3
+
+[resolution.lsp]
+enabled = false
+result_ttl_s = 300
+idle_timeout_s = 600
+timeout_ms = 5000
+override_threshold = 0.90
+
+[embedding]
+model = "jinaai/jina-code-embeddings-0.5b"
+dimension = 896
+truncated_dimension = 64
+max_body_tokens = 2000
+batch_size = 32
+workers = 2
+
+[database]
+path = ".harness/semantic.db"
+hnsw_ef_construction = 128
+hnsw_m = 16
+hnsw_ef_search = 64
+
+[ingestion]
+batch_chunk_size = 200
+embedding_budget_ms = 2000
+defer_low_priority_below = 0.6
+
+[memory]
+stack_graph_mb = 60
+call_graph_mb = 40
+resolution_cache_mb = 20
+spill_compression = "zstd"
+
+[mutation]
+enabled = true
+default_dry_run = true
+max_files_per_plan = 100
+max_edits_per_plan = 500
+max_body_tokens = 4000
+backup_dir = ".harness/backups"
+backup_retention_hours = 24
+post_verify = true
+max_repair_attempts = 3
+require_clean_git = false
+allow = ["src/", "lib/", "tests/", "scripts/"]
+deny  = [".git/", ".harness/", "/migrations/", "/*.lock", "/generated/"]
+audit_retention_days = 30
+audit_max_entries = 10000
+audit_summarize_after_days = 7
+
+[query]
+max_depth = 5
+default_top_k = 10
+cache_ttl_seconds = 300
+cache_max_size = 256
+use_rust_graph_for_traversal = true
+
+[git]
+enabled = true
+reindex_on_branch_switch = true
+
+[llm]
+provider = "openai"
+model = "gpt-4o"
+max_context_tokens = 8192
+context_strategy = "structural"
+temperature = 0.1
+api_key_env = "OPENAI_API_KEY"
+
+[performance]
+worker_threads = 4
+debounce_ms = 50
+query_check_interval = 64
+
+[output]
+snapshot_path = "./.coderadar/snapshot.bin"
+journal_path  = "./.coderadar/wal.log"
