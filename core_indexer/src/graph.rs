@@ -1412,6 +1412,85 @@ mod tests {
                 "Should have method speak");
     }
 
+    // ── Go Indexing Tests ──────────────────────────────────────
+
+    #[test]
+    fn test_go_function_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "package main\nfunc hello(name string) string { return \"hi\" }\n",
+            "main.go");
+        let snap = graph.snapshot();
+        assert!(snap.functions.values().any(|f| f.name == "hello"),
+                "Should have Go function hello");
+    }
+
+    #[test]
+    fn test_go_struct_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "package main\ntype Dog struct { Name string }\nfunc (d *Dog) Bark() {}\n",
+            "dog.go");
+        let snap = graph.snapshot();
+        assert!(snap.classes.values().any(|c| c.name == "Dog"),
+                "Should have Go struct Dog");
+        assert!(snap.functions.values().any(|f| f.name == "Bark"),
+                "Should have Go method Bark");
+    }
+
+    // ── Java Indexing Tests ────────────────────────────────────
+
+    #[test]
+    fn test_java_class_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "class Cat { void meow() { this.eat(); } void eat() {} }\n",
+            "Cat.java");
+        let snap = graph.snapshot();
+        assert!(snap.classes.values().any(|c| c.name == "Cat"),
+                "Should have Java class Cat");
+        assert!(snap.functions.values().any(|f| f.name == "meow"),
+                "Should have Java method meow");
+    }
+
+    #[test]
+    fn test_java_call_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "class Foo { void bar() { baz(); } void baz() {} }\n",
+            "Foo.java");
+        let snap = graph.snapshot();
+        let bar = snap.functions.values().find(|f| f.name == "bar");
+        assert!(bar.is_some(), "Should have bar");
+        assert!(!bar.unwrap().calls.is_empty(), "bar should have calls");
+    }
+
+    // ── C++ Indexing Tests ─────────────────────────────────────
+
+    #[test]
+    fn test_cpp_function_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "int add(int a, int b) { return a + b; }\n",
+            "math.cpp");
+        let snap = graph.snapshot();
+        assert!(snap.functions.values().any(|f| f.name == "add"),
+                "Should have C++ function add");
+    }
+
+    #[test]
+    fn test_cpp_class_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "class Widget { public: void render() {} void paint() {} };\n",
+            "widget.cpp");
+        let snap = graph.snapshot();
+        assert!(snap.classes.values().any(|c| c.name == "Widget"),
+                "Should have C++ class Widget");
+        assert!(snap.functions.values().any(|f| f.name == "render"),
+                "Should have C++ method render");
+    }
+
     #[test]
     fn test_import_parsing_from_import() {
         let graph = CodeGraph::new(GraphConfig::default());

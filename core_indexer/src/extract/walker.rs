@@ -77,10 +77,32 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
     match info.tag {
         Tag::Class => {
             let name_node = node.child_by_field_name("name");
-            let name = name_node
-                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                .unwrap_or("")
-                .to_string();
+            // Go: type_declaration has (type_spec name: (type_identifier)) child
+            let name = if name_node.is_some() && name_node.unwrap().kind() != "" {
+                name_node
+                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                    .unwrap_or("")
+                    .to_string()
+            } else if node.kind() == "type_declaration" {
+                // Go: walk into type_spec → name
+                node.child_by_field_name("type")
+                    .and_then(|ts| ts.child_by_field_name("name"))
+                    .or_else(|| {
+                        // Try direct child
+                        let mut cursor = node.walk();
+                        for child in node.children(&mut cursor) {
+                            if child.kind() == "type_spec" {
+                                return child.child_by_field_name("name");
+                            }
+                        }
+                        None
+                    })
+                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                "".to_string()
+            };
 
             let line = node.start_position().row + 1;
             let exit_line = node.end_position().row + 1;
@@ -118,10 +140,22 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
 
         Tag::Function => {
             let name_node = node.child_by_field_name("name");
-            let name = name_node
-                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                .unwrap_or("")
-                .to_string();
+            // C++: function_definition has declarator → function_declarator → identifier
+            let name = if name_node.is_some() {
+                name_node
+                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                    .unwrap_or("")
+                    .to_string()
+            } else if node.kind() == "function_definition" {
+                // Walk declarator chain to find the identifier
+                node.child_by_field_name("declarator")
+                    .and_then(|d| d.child_by_field_name("declarator"))
+                    .and_then(|id| id.utf8_text(source.as_bytes()).ok())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                "".to_string()
+            };
 
             let is_method = matches!(
                 ctx.stack.last(),
@@ -238,6 +272,26 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                     let line = node.start_position().row + 1;
                     let col = node.start_position().column as u32;
 
+                    // Java: method_invocation — name/object are direct children
+                    if node.kind() == "method_invocation" {
+                        let method_name = node.child_by_field_name("name")
+                            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                            .unwrap_or("")
+                            .to_string();
+                        let object_name = node.child_by_field_name("object")
+                            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                            .unwrap_or("")
+                            .to_string();
+                        let path = if object_name.is_empty() { vec![] } else { vec![object_name] };
+                        func.calls.push(UnresolvedRef {
+                            name: method_name,
+                            path,
+                            line,
+                            col: col as usize,
+                        });
+                        return None;
+                    }
+
                     match name_node {
                         // Simple call: `foo(x)` — name_node is (identifier)
                         Some(n) if n.kind() == "identifier" => {
@@ -250,17 +304,22 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                             });
                         }
                         // Dotted call: `obj.method(x)` — name_node is (attribute) [Python]
-                        // or `obj.method(x)` — name_node is (field_expression) [Rust]
+                        // or `obj.method(x)` — name_node is (field_expression) [Rust/C++]
                         // or `obj.method(x)` — name_node is (member_expression) [TypeScript]
+                        // or `obj.method(x)` — name_node is (selector_expression) [Go]
+                        // or `obj.method(x)` — name_node is (method_invocation) [Java]
                         Some(n) if n.kind() == "attribute"
                             || n.kind() == "field_expression"
-                            || n.kind() == "member_expression" => {
+                            || n.kind() == "member_expression"
+                            || n.kind() == "selector_expression" => {
                             let method_field = if n.kind() == "attribute" { "attribute" }
                                 else if n.kind() == "field_expression" { "field" }
-                                else { "property" }; // member_expression
+                                else if n.kind() == "member_expression" { "property" }
+                                else { "field" }; // selector_expression [Go]
                             let object_field = if n.kind() == "attribute" { "object" }
                                 else if n.kind() == "field_expression" { "value" }
-                                else { "object" }; // member_expression
+                                else if n.kind() == "member_expression" { "object" }
+                                else { "operand" }; // selector_expression [Go]
 
                             let method = n
                                 .child_by_field_name(method_field)
