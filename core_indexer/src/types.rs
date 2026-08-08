@@ -686,6 +686,7 @@ pub struct WalkContext<'a> {
 
 // ── ProjectedGraph types (§3.4) — used by graph.rs ──────────────────────────
 
+#[derive(Clone)]
 pub struct ProjectedGraph {
     pub modules: HashMap<EntityId, Arc<Module>>,
     pub classes: HashMap<EntityId, Arc<Class>>,

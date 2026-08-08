@@ -8,6 +8,7 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 
 use crate::types::ProjectedGraph;
+use crate::types::*;
 use crate::query::grammar::{CompOp, EntityType, Operand, ParsedQuery, Predicate, SelectItem};
 
 /// A single result row from a query.
@@ -116,10 +117,74 @@ fn scan_functions(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRo
                     .collect(),
             ),
         );
+
+        // ── Reverse-index enrichment ──────────────────────────────────
         fields.insert(
             "caller_count".to_string(),
-            QueryValue::Int(0), // populated from reverse indexes
+            QueryValue::Int(
+                snapshot
+                    .callers_by_callee
+                    .get(fn_val.id.as_str())
+                    .map(|s| s.len() as i64)
+                    .unwrap_or(0),
+            ),
         );
+        fields.insert(
+            "callee_count".to_string(),
+            QueryValue::Int(
+                snapshot
+                    .callees_by_caller
+                    .get(fn_val.id.as_str())
+                    .map(|s| s.len() as i64)
+                    .unwrap_or(0),
+            ),
+        );
+        fields.insert(
+            "callers".to_string(),
+            QueryValue::List(
+                snapshot
+                    .callers_by_callee
+                    .get(fn_val.id.as_str())
+                    .map(|s| s.iter().map(|id| QueryValue::String(id.clone())).collect())
+                    .unwrap_or_default(),
+            ),
+        );
+        fields.insert(
+            "callees".to_string(),
+            QueryValue::List(
+                snapshot
+                    .callees_by_caller
+                    .get(fn_val.id.as_str())
+                    .map(|s| s.iter().map(|id| QueryValue::String(id.clone())).collect())
+                    .unwrap_or_default(),
+            ),
+        );
+
+        // Resolved calls as entity IDs
+        fields.insert(
+            "resolved_call_targets".to_string(),
+            QueryValue::List(
+                fn_val
+                    .resolved_calls
+                    .iter()
+                    .filter_map(|rc| match rc {
+                        ResolvedCall::Function(id) | ResolvedCall::Method { method: id, .. } | ResolvedCall::Constructor(id) => {
+                            Some(QueryValue::String(id.clone()))
+                        }
+                        ResolvedCall::External(s) => Some(QueryValue::String(s.clone())),
+                        ResolvedCall::Builtin(s) => Some(QueryValue::String(s.clone())),
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+        );
+        fields.insert(
+            "parameter_count".to_string(),
+            QueryValue::Int(fn_val.parameters.len() as i64),
+        );
+        if let Some(ref rt) = fn_val.return_type {
+            fields.insert("return_type".to_string(), QueryValue::String(rt.clone()));
+        }
 
         // Evaluate WHERE clause
         if let Some(pred) = &query.where_clause {
@@ -184,20 +249,117 @@ fn scan_classes(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow>
     rows
 }
 
-fn scan_modules(_snapshot: &ProjectedGraph, _query: &ParsedQuery) -> Vec<QueryRow> {
-    Vec::new()
+fn scan_modules(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
+    let mut rows = Vec::new();
+    for (_id, module) in snapshot.modules.iter() {
+        let mut fields = HashMap::new();
+        fields.insert("name".into(), QueryValue::String(module.name.clone()));
+        fields.insert("path".into(), QueryValue::String(module.path.to_string_lossy().to_string()));
+        fields.insert("language".into(), QueryValue::String(format!("{:?}", module.language)));
+        fields.insert("class_count".into(), QueryValue::Int(module.classes.len() as i64));
+        fields.insert("function_count".into(), QueryValue::Int(module.functions.len() as i64));
+        fields.insert("import_count".into(), QueryValue::Int(module.imports.len() as i64));
+
+        if let Some(pred) = &query.where_clause {
+            if !evaluate_predicate(pred, &fields) {
+                continue;
+            }
+        }
+        let projected = if query.select.is_empty() { fields } else { project_fields(&fields, &query.select) };
+        rows.push(QueryRow { fields: projected });
+    }
+    rows
 }
 
-fn scan_imports(_snapshot: &ProjectedGraph, _query: &ParsedQuery) -> Vec<QueryRow> {
-    Vec::new()
+fn scan_imports(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
+    let mut rows = Vec::new();
+    for (_id, import) in snapshot.imports.iter() {
+        let mut fields = HashMap::new();
+        fields.insert("raw".into(), QueryValue::String(import.raw.clone()));
+        fields.insert("kind".into(), QueryValue::String(format!("{:?}", import.kind)));
+        fields.insert("line".into(), QueryValue::Int(import.line as i64));
+        fields.insert("is_type_only".into(), QueryValue::Bool(import.is_type_only));
+
+        // Resolved target
+        match &import.resolution {
+            ImportResolution::Module(id) | ImportResolution::Symbol(SymbolId::Module(id)) => {
+                fields.insert("resolved_module".into(), QueryValue::String(id.clone()));
+            }
+            ImportResolution::Symbol(SymbolId::Function(id)) | ImportResolution::Symbol(SymbolId::Class(id)) | ImportResolution::Symbol(SymbolId::Import(id)) => {
+                fields.insert("resolved_target".into(), QueryValue::String(id.clone()));
+            }
+            ImportResolution::External { distribution } => {
+                fields.insert("resolved_target".into(), QueryValue::String(
+                    distribution.clone().unwrap_or_else(|| "external".into())
+                ));
+            }
+            _ => {}
+        }
+
+        if let Some(pred) = &query.where_clause {
+            if !evaluate_predicate(pred, &fields) {
+                continue;
+            }
+        }
+        let projected = if query.select.is_empty() { fields } else { project_fields(&fields, &query.select) };
+        rows.push(QueryRow { fields: projected });
+    }
+    rows
 }
 
-fn scan_calls(_snapshot: &ProjectedGraph, _query: &ParsedQuery) -> Vec<QueryRow> {
-    Vec::new()
+fn scan_calls(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
+    let mut rows = Vec::new();
+    // Produce one row per call edge from the callers_by_callee reverse index
+    for (source_id, callees) in snapshot.callees_by_caller.iter() {
+        for target_id in callees.iter() {
+            let mut fields = HashMap::new();
+            fields.insert("source".into(), QueryValue::String(source_id.clone()));
+            fields.insert("target".into(), QueryValue::String(target_id.clone()));
+
+            // Look up target kind
+            if let Some(_fn) = snapshot.functions.get(target_id) {
+                fields.insert("target_kind".into(), QueryValue::String("function".into()));
+            } else if let Some(_cls) = snapshot.classes.get(target_id) {
+                fields.insert("target_kind".into(), QueryValue::String("class".into()));
+            } else {
+                fields.insert("target_kind".into(), QueryValue::String("external".into()));
+            }
+
+            if let Some(pred) = &query.where_clause {
+                if !evaluate_predicate(pred, &fields) {
+                    continue;
+                }
+            }
+            let projected = if query.select.is_empty() { fields } else { project_fields(&fields, &query.select) };
+            rows.push(QueryRow { fields: projected });
+        }
+    }
+    rows
 }
 
-fn scan_fields(_snapshot: &ProjectedGraph, _query: &ParsedQuery) -> Vec<QueryRow> {
-    Vec::new()
+fn scan_fields(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
+    let mut rows = Vec::new();
+    // Fields live on classes — iterate classes and emit each field as a row
+    for (_class_id, cls) in snapshot.classes.iter() {
+        for field in cls.fields.iter() {
+            let mut fields = HashMap::new();
+            fields.insert("name".into(), QueryValue::String(field.name.clone()));
+            fields.insert("parent_class".into(), QueryValue::String(cls.id.clone()));
+            if let Some(ref ann) = field.annotation {
+                fields.insert("type_annotation".into(), QueryValue::String(ann.clone()));
+            }
+            fields.insert("is_class_var".into(), QueryValue::Bool(field.is_class_var));
+
+            if let Some(pred) = &query.where_clause {
+                if !evaluate_predicate(pred, &fields) {
+                    continue;
+                }
+            }
+            let projected = if query.select.is_empty() { fields } else { project_fields(&fields, &query.select) };
+            rows.push(QueryRow { fields: projected });
+        }
+    }
+    rows
 }
 
 /// Evaluate a WHERE predicate against a row's field values.
@@ -245,16 +407,70 @@ fn evaluate_derived_call(
     fields: &HashMap<String, QueryValue>,
 ) -> QueryValue {
     match name {
-        "inherits_from" | "contains" => {
-            QueryValue::Bool(false) // Stub
+        "inherits_from" => {
+            // Check if parent_class field contains the given class name
+            let target = args.first().map(|a| operand_to_string(a)).unwrap_or_default();
+            let parent = fields.get("parent_class")
+                .map(|v| value_to_string(v))
+                .unwrap_or_default();
+            QueryValue::Bool(parent.contains(&target))
+        }
+        "contains" => {
+            // Check if a list field contains the given value
+            if args.len() < 2 {
+                return QueryValue::Bool(false);
+            }
+            let list_field = operand_to_string(&args[0]);
+            let search = operand_to_string(&args[1]);
+            if let Some(QueryValue::List(items)) = fields.get(&list_field) {
+                let found = items.iter().any(|item| value_to_string(item).contains(&search));
+                QueryValue::Bool(found)
+            } else if let Some(val) = fields.get(&list_field) {
+                QueryValue::Bool(value_to_string(val).contains(&search))
+            } else {
+                QueryValue::Bool(false)
+            }
         }
         "has_method" => {
-            QueryValue::Bool(false) // Stub
+            let target = args.first().map(|a| operand_to_string(a)).unwrap_or_default();
+            let methods = fields.get("method_names")
+                .or_else(|| fields.get("methods"));
+            match methods {
+                Some(QueryValue::List(items)) => {
+                    QueryValue::Bool(items.iter().any(|item| value_to_string(item) == target))
+                }
+                _ => QueryValue::Bool(false),
+            }
         }
         "overrides_of" => {
-            QueryValue::Bool(false) // Stub
+            // Present when parent_class is set AND the method exists on both
+            let parent = fields.get("parent_class")
+                .map(|v| value_to_string(v))
+                .unwrap_or_default();
+            QueryValue::Bool(!parent.is_empty())
         }
         _ => QueryValue::Bool(false),
+    }
+}
+
+fn operand_to_string(op: &Operand) -> String {
+    match op {
+        Operand::StringValue(s) => s.clone(),
+        Operand::Path(p) => p.join("."),
+        Operand::NumberValue(n) => format!("{}", n),
+        Operand::BoolValue(b) => format!("{}", b),
+        _ => String::new(),
+    }
+}
+
+fn value_to_string(val: &QueryValue) -> String {
+    match val {
+        QueryValue::String(s) => s.clone(),
+        QueryValue::Int(i) => format!("{}", i),
+        QueryValue::Float(f) => format!("{}", f),
+        QueryValue::Bool(b) => format!("{}", b),
+        QueryValue::Null => "null".into(),
+        QueryValue::List(_) => String::new(),
     }
 }
 
