@@ -133,6 +133,9 @@ impl ResolutionOrchestrator {
     }
 
     /// Run the full resolution cascade for all references in a file.
+    ///
+    /// After resolving, applies §6.1a partial-coverage validation:
+    /// edges to internal targets whose own edges are missing are suppressed.
     pub fn resolve_file(
         &mut self,
         file_path: &str,
@@ -142,6 +145,7 @@ impl ResolutionOrchestrator {
         config: &crate::graph::SignatureConfig,
     ) -> Vec<ResolvedEdge> {
         let mut edges = Vec::with_capacity(references.len());
+        let mut unresolved: Vec<&ParsedReference> = Vec::new();
 
         for reference in references {
             if let Some(edge) = self.resolve_reference(
@@ -152,12 +156,70 @@ impl ResolutionOrchestrator {
                 config,
             ) {
                 edges.push(edge);
+            } else {
+                unresolved.push(reference);
             }
             // Unresolved references are silently recorded — the Python layer
             // may attempt L4/L5 and the agent queries can report them.
         }
 
+        // §6.1a: Validate partial coverage — suppress internal dead-ends.
+        // An edge to an external target is always kept. An edge to an internal
+        // target whose callers/callees are not in the graph is suppressed.
+        self.validate_partial_coverage(&mut edges, &unresolved, file_path);
+
         edges
+    }
+
+    /// §6.1a Partial Coverage Validation.
+    ///
+    /// Rules:
+    /// 1. External edges (TargetKind::External) are always emitted.
+    /// 2. Internal edges where the target has NO other edges in the graph
+    ///    are suppressed — the agent would encounter a dead end.
+    /// 3. The ::toplevel sentinel is always internal.
+    ///
+    /// Suppressed internal edges are removed from the output entirely;
+    /// the unresolved references remain available for the Python layer's
+    /// diagnostics and the agent's Unresolved query.
+    pub fn validate_partial_coverage(
+        &self,
+        edges: &mut Vec<ResolvedEdge>,
+        _unresolved: &[&ParsedReference],
+        _file_path: &str,
+    ) {
+        // Collect all internal source IDs — entities that have their own
+        // outbound edges (calls, imports, etc.) and are therefore "covered".
+        let mut covered_sources: HashMap<String, bool> = HashMap::new();
+
+        // First pass: index all internal targets
+        for edge in edges.iter() {
+            if matches!(edge.target_kind, TargetKind::Internal) {
+                covered_sources.entry(edge.target_id.clone()).or_insert(false);
+            }
+        }
+
+        // Second pass: mark sources — any entity that itself has outbound
+        // edges in this file is "covered"
+        for edge in edges.iter() {
+            if let Some(covered) = covered_sources.get_mut(&edge.source_id) {
+                *covered = true;
+            }
+        }
+
+        // Third pass: suppress edges to uncovered internal targets.
+        // Internal edges to targets with no known outbound edges create
+        // dead ends — the agent can't traverse further. Remove them.
+        edges.retain(|edge| {
+            if matches!(edge.target_kind, TargetKind::Internal) {
+                if let Some(false) = covered_sources.get(&edge.target_id) {
+                    // Dead end: internal target with no known outbound edges.
+                    // Suppress per §6.1a rule 2.
+                    return false;
+                }
+            }
+            true
+        });
     }
 
     /// Resolve calls for a function: classify call shape and resolve.
@@ -484,5 +546,137 @@ mod tests {
         };
         let result = orchestrator.resolve_single_call(&call, &import_graph);
         assert!(matches!(result, ResolvedCall::External(s) if s == "unknown_secret_sauce"));
+    }
+
+    // ── Partial Coverage (§6.1a) ────────────────────────────────────
+
+    #[test]
+    fn test_keep_external_edges() {
+        // External edges are always kept regardless of coverage.
+        let orchestrator = ResolutionOrchestrator::new();
+        let mut edges = vec![
+            ResolvedEdge {
+                source_id: "mod.py::foo".into(),
+                target_id: "os::path::join".into(),
+                confidence: 0.89,
+                method: ResolutionMethod::ImportConstrained,
+                provenance: EdgeProvenance::ImportGraph,
+                kind: ReferenceKind::Call,
+                line: 42,
+                call_site_span: ByteSpan { start: 0, end: 0 },
+                args_span: None,
+                target_kind: TargetKind::External("os::path::join".into()),
+            },
+        ];
+        let unresolved: Vec<&ParsedReference> = vec![];
+        orchestrator.validate_partial_coverage(&mut edges, &unresolved, "mod.py");
+        assert_eq!(edges.len(), 1, "External edges must be kept");
+    }
+
+    #[test]
+    fn test_suppress_internal_dead_end() {
+        // An internal edge to a target with no outbound edges is suppressed.
+        // foo calls bar, but bar calls nobody — the internal chain ends.
+        let orchestrator = ResolutionOrchestrator::new();
+        let mut edges = vec![
+            ResolvedEdge {
+                source_id: "mod.py::foo".into(),
+                target_id: "mod.py::bar".into(),
+                confidence: 0.90,
+                method: ResolutionMethod::StackGraph,
+                provenance: EdgeProvenance::StackGraph,
+                kind: ReferenceKind::Call,
+                line: 10,
+                call_site_span: ByteSpan { start: 0, end: 0 },
+                args_span: None,
+                target_kind: TargetKind::Internal,
+            },
+        ];
+        let unresolved: Vec<&ParsedReference> = vec![];
+        orchestrator.validate_partial_coverage(&mut edges, &unresolved, "mod.py");
+        // bar has no outbound edges → foo→bar edge is suppressed.
+        assert_eq!(edges.len(), 0, "Internal dead-end edge must be suppressed");
+    }
+
+    #[test]
+    fn test_keep_covered_internal_edge() {
+        // foo calls bar, AND bar calls baz — bar is covered, keep the edge.
+        let orchestrator = ResolutionOrchestrator::new();
+        let mut edges = vec![
+            ResolvedEdge {
+                source_id: "mod.py::foo".into(),
+                target_id: "mod.py::bar".into(),
+                confidence: 0.95,
+                method: ResolutionMethod::StackGraph,
+                provenance: EdgeProvenance::StackGraph,
+                kind: ReferenceKind::Call,
+                line: 10,
+                call_site_span: ByteSpan { start: 0, end: 0 },
+                args_span: None,
+                target_kind: TargetKind::Internal,
+            },
+            ResolvedEdge {
+                source_id: "mod.py::bar".into(),
+                target_id: "mod.py::baz".into(),
+                confidence: 0.88,
+                method: ResolutionMethod::ImportConstrained,
+                provenance: EdgeProvenance::ImportGraph,
+                kind: ReferenceKind::Call,
+                line: 20,
+                call_site_span: ByteSpan { start: 0, end: 0 },
+                args_span: None,
+                target_kind: TargetKind::Internal,
+            },
+        ];
+        let unresolved: Vec<&ParsedReference> = vec![];
+        orchestrator.validate_partial_coverage(&mut edges, &unresolved, "mod.py");
+        // bar→baz is covered (bar has outbound edge from mod.py::bar).
+        // foo→bar is covered (bar has outbound to baz).
+        // But baz has no outbound → bar→baz might get suppressed.
+        // The point is: the chain with a covered intermediate survives.
+        assert!(edges.iter().any(|e| e.target_id == "mod.py::bar"),
+                "foo→bar must be kept (bar is covered by its own edge)");
+    }
+
+    #[test]
+    fn test_mixed_internal_external_flow() {
+        // foo calls bar (internal), bar calls os.path.exist (external).
+        // bar is covered so foo→bar stays. External os.path always stays.
+        let orchestrator = ResolutionOrchestrator::new();
+        let mut edges = vec![
+            ResolvedEdge {
+                source_id: "mod.py::foo".into(),
+                target_id: "mod.py::bar".into(),
+                confidence: 0.95,
+                method: ResolutionMethod::StackGraph,
+                provenance: EdgeProvenance::StackGraph,
+                kind: ReferenceKind::Call,
+                line: 10,
+                call_site_span: ByteSpan { start: 0, end: 0 },
+                args_span: None,
+                target_kind: TargetKind::Internal,
+            },
+            ResolvedEdge {
+                source_id: "mod.py::bar".into(),
+                target_id: "os.path::exists".into(),
+                confidence: 0.89,
+                method: ResolutionMethod::ImportConstrained,
+                provenance: EdgeProvenance::ImportGraph,
+                kind: ReferenceKind::Call,
+                line: 22,
+                call_site_span: ByteSpan { start: 0, end: 0 },
+                args_span: None,
+                target_kind: TargetKind::External("os.path::exists".into()),
+            },
+        ];
+        let unresolved: Vec<&ParsedReference> = vec![];
+        orchestrator.validate_partial_coverage(&mut edges, &unresolved, "mod.py");
+
+        // The internal foo→bar edge stays because bar is covered.
+        assert!(edges.iter().any(|e| e.target_id == "mod.py::bar"),
+                "Covered internal edge must survive");
+        // The external edge always stays.
+        assert!(edges.iter().any(|e| matches!(e.target_kind, TargetKind::External(_))),
+                "External edges must always survive");
     }
 }

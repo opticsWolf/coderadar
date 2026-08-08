@@ -323,5 +323,42 @@ def status():
     console.print("[green]CodeRadar is running[/green]")
 
 
+@main.group()
+def mcp():
+    """Model Context Protocol server commands."""
+
+
+@mcp.command()
+@click.option("--path", "project_path", type=click.Path(exists=True), default=".",
+              help="Project root to serve.")
+def serve(project_path: str):
+    """Start the CodeRadar MCP server over stdio.
+
+    Connect an MCP client (Claude Code, Cursor, etc.) to this server to get
+    code intelligence over the indexed project. The server exposes four tools:
+    codegraph_explore, codegraph_node, codegraph_search, codegraph_affected.
+
+    Configure your MCP client with:
+      {
+        "mcpServers": {
+          "coderadar": {
+            "command": "uv",
+            "args": ["run", "coderadar", "mcp", "serve"]
+          }
+        }
+      }
+    """
+    import asyncio
+    import coderadar
+    from .mcp import serve as mcp_serve
+
+    graph = coderadar.CodeGraph()
+    console.print(f"[bold]CodeRadar MCP server[/bold] starting for {project_path}...",
+                  file=sys.stderr)
+    console.print(f"[dim]Exposing 4 tools: explore, node, search, affected[/dim]",
+                  file=sys.stderr)
+    asyncio.run(mcp_serve(graph))
+
+
 if __name__ == "__main__":
     main()
