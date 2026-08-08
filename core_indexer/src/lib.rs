@@ -308,66 +308,143 @@ fn update_file(
 
 #[pyfunction]
 fn plan_body_replacement(
-    _entity_id: &str, _new_body: &str,
-    _expected_hash: Option<String>, _dry_run: Option<bool>,
+    entity_id: &str, new_body: &str,
+    expected_hash: Option<String>, dry_run: Option<bool>,
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
-    let dict = PyDict::new(py);
-    dict.set_item("id", "")?;
-    dict.set_item("tool", "replace_body")?;
-    dict.set_item("edits", Vec::<String>::new())?;
-    dict.set_item("diff_preview", "")?;
-    Ok(dict.into())
+    with_graph(|_graph, snap| {
+        let config = crate::graph::MutationConfig::default();
+        let engine = mutation::MutationEngine::new(config);
+        let plan = engine.plan_body_replacement(
+            entity_id, new_body, expected_hash, dry_run.unwrap_or(false), snap,
+        ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
+        plan_to_dict(py, &plan)
+    })
 }
 
 #[pyfunction]
 fn plan_signature_update(
-    _entity_id: &str, _new_signature: &str,
-    _call_site_values: Option<HashMap<String, String>>,
-    _inject_defaults: Option<bool>, _dry_run: Option<bool>,
+    entity_id: &str, new_signature: &str,
+    call_site_values: Option<HashMap<String, String>>,
+    inject_defaults: Option<bool>, dry_run: Option<bool>,
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
-    let dict = PyDict::new(py);
-    dict.set_item("id", "")?;
-    dict.set_item("tool", "update_signature")?;
-    dict.set_item("edits", Vec::<String>::new())?;
-    dict.set_item("diff_preview", "")?;
-    Ok(dict.into())
+    with_graph(|_graph, snap| {
+        let config = crate::graph::MutationConfig::default();
+        let engine = mutation::MutationEngine::new(config);
+        let plan = engine.plan_signature_update(
+            entity_id, new_signature,
+            &call_site_values.unwrap_or_default(),
+            inject_defaults.unwrap_or(true), dry_run.unwrap_or(false), snap,
+        ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
+        plan_to_dict(py, &plan)
+    })
 }
 
 #[pyfunction]
 fn plan_rename(
-    _entity_id: &str, _new_name: &str,
-    _include_strings: Option<bool>, _dry_run: Option<bool>,
+    entity_id: &str, new_name: &str,
+    include_strings: Option<bool>, dry_run: Option<bool>,
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
-    let dict = PyDict::new(py);
-    dict.set_item("id", "")?;
-    dict.set_item("tool", "rename")?;
-    dict.set_item("edits", Vec::<String>::new())?;
-    dict.set_item("diff_preview", "")?;
-    Ok(dict.into())
+    with_graph(|_graph, snap| {
+        let config = crate::graph::MutationConfig::default();
+        let engine = mutation::MutationEngine::new(config);
+        let plan = engine.plan_rename(
+            entity_id, new_name,
+            include_strings.unwrap_or(false), dry_run.unwrap_or(false), snap,
+        ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
+        plan_to_dict(py, &plan)
+    })
 }
 
 #[pyfunction]
 fn plan_create_entity(
-    _target_file: &str, _anchor: &str, _code: &str, _dry_run: Option<bool>,
+    target_file: &str, anchor: &str, code: &str, dry_run: Option<bool>,
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
-    let dict = PyDict::new(py);
-    dict.set_item("id", "")?;
-    dict.set_item("tool", "create_entity")?;
-    dict.set_item("edits", Vec::<String>::new())?;
-    dict.set_item("insert_position", 0)?;
-    Ok(dict.into())
+    with_graph(|_graph, snap| {
+        let config = crate::graph::MutationConfig::default();
+        let engine = mutation::MutationEngine::new(config);
+        let plan = engine.plan_create_entity(
+            target_file, anchor, code,
+            dry_run.unwrap_or(false), snap,
+        ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
+        plan_to_dict(py, &plan)
+    })
 }
 
 #[pyfunction]
-fn apply_mutation(_plan_json: &str) -> PyResult<PyObject> {
+fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
+    // Deserialize just enough to call engine.apply()
+    #[derive(serde::Deserialize)]
+    struct ApplyRequest {
+        #[allow(dead_code)]
+        id: String,
+        #[allow(dead_code)]
+        tool: String,
+        edits: Vec<EditRequest>,
+        affected_files: Vec<String>,
+    }
+    #[derive(serde::Deserialize)]
+    struct EditRequest {
+        file: String,
+        span_start: usize,
+        span_end: usize,
+        replacement: String,
+    }
+
+    let req: ApplyRequest = serde_json::from_str(plan_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid plan JSON: {}", e)))?;
+
+    // Build a MutationPlan from the request
+    let plan = mutation::MutationPlan {
+        id: req.id,
+        tool: req.tool,
+        edits: req.edits.iter().map(|e| mutation::MutationEdit {
+            file: e.file.clone(),
+            span: crate::types::ByteSpan { start: e.span_start, end: e.span_end },
+            replacement: e.replacement.clone(),
+            expected_hash: String::new(),
+        }).collect(),
+        affected_files: req.affected_files,
+        diff_preview: String::new(),
+        unverified_sites: Vec::new(),
+        warnings: Vec::new(),
+    };
+
+    with_graph(|_graph, _snap| {
+        let config = crate::graph::MutationConfig::default();
+        let mut engine = mutation::MutationEngine::new(config);
+        let result = engine.apply(&plan);
+        let dict = PyDict::new(py);
+        dict.set_item("applied", matches!(result.status, mutation::MutationStatus::Applied))?;
+        dict.set_item("status", format!("{:?}", result.status))?;
+        dict.set_item("files_written", result.files_written)?;
+        dict.set_item("errors", result.syntax_errors.iter().map(|e| format!("{}:{} — {}", e.file, e.line, e.message)).collect::<Vec<_>>())?;
+        Ok(dict.into())
+    })
+}
+
+/// Convert a MutationPlan to a Python dict.
+fn plan_to_dict(py: Python<'_>, plan: &mutation::MutationPlan) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
-    dict.set_item("applied", true)?;
-    dict.set_item("errors", Vec::<String>::new())?;
+    dict.set_item("id", &plan.id)?;
+    dict.set_item("tool", &plan.tool)?;
+    dict.set_item("diff_preview", &plan.diff_preview)?;
+    dict.set_item("affected_files", &plan.affected_files)?;
+    dict.set_item("warnings", &plan.warnings)?;
+    // Serialize edits as list of {file, span_start, span_end, replacement}
+    let edits: Vec<PyObject> = plan.edits.iter().map(|e| {
+        let ed = PyDict::new(py);
+        let _ = ed.set_item("file", &e.file);
+        let _ = ed.set_item("span_start", e.span.start);
+        let _ = ed.set_item("span_end", e.span.end);
+        let _ = ed.set_item("replacement", &e.replacement);
+        ed.into()
+    }).collect();
+    dict.set_item("edits", edits)?;
     Ok(dict.into())
 }
 
