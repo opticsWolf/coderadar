@@ -1,4 +1,5 @@
-; CodeRadar v3.3 — TypeScript / JavaScript tree-sitter queries (§4.2)
+; CodeRadar v3.5 — TypeScript / JavaScript tree-sitter queries (§4.2)
+; Compatible with tree-sitter-typescript 0.23.x
 
 ;; ── Classes ─────────────────────────────────────────────────────────
 
@@ -8,10 +9,6 @@
 (abstract_class_declaration
   name: (type_identifier) @class.name) @class.def
 
-(class_declaration
-  extends: (type_annotation
-    (type_identifier) @class_base)*)
-
 ;; ── Functions ───────────────────────────────────────────────────────
 
 (function_declaration
@@ -20,10 +17,10 @@
 (method_definition
   name: (property_identifier) @function.name) @function.def
 
-(arrow_function) @function.arrow
-
 (generator_function_declaration
   name: (identifier) @function.name) @function.def
+
+(arrow_function) @function.arrow
 
 ;; ── Calls ───────────────────────────────────────────────────────────
 
@@ -37,50 +34,20 @@
 
 ;; ── Imports ─────────────────────────────────────────────────────────
 
-(import_statement
-  source: (string) @import.module) @import
-
-(import_statement
-  import_clause
-    name: (identifier) @import.name) @import
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @import.name
-    value: (call_expression
-      function: (identifier) @import.require)))
+(import_statement) @import
 
 ;; ── Decorators ──────────────────────────────────────────────────────
 
-(decorator
-  (identifier) @decorator.name) @decorator
-
-(decorator
-  (call_expression
-    function: (identifier) @decorator.name)) @decorator
+(decorator) @decorator
 
 ;; ── Exports ─────────────────────────────────────────────────────────
 
-(export_statement
-  declaration: (function_declaration
-    name: (identifier) @export.function)) @export
-
-(export_statement
-  declaration: (class_declaration
-    name: (type_identifier) @export.class)) @export
-
-(export_statement
-  source: (string) @export.module) @export
+(export_statement) @export
 
 ;; ── Fields / Properties ─────────────────────────────────────────────
 
 (public_field_definition
   name: (property_identifier) @field.name) @field
-
-(class_declaration
-  body: (class_body
-    (public_field_definition
-      name: (property_identifier) @field.name))) @field
 
 ;; ── Docstrings / JSDoc ──────────────────────────────────────────────
 

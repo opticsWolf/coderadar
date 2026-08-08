@@ -643,6 +643,7 @@ pub enum Tag {
     Docstring,
     Field,
     Impl,           // Rust: impl_item — container, not an entity
+    Export,         // TS/JS: export statement
 }
 
 pub struct TaggedTree<'a> {

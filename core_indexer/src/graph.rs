@@ -1373,6 +1373,7 @@ mod tests {
 
     // ── Import Parsing & Cross-File Resolution Tests ──────────────
 
+    /// Helper: index a source string with language auto-detection from extension.
     fn index_source(graph: &CodeGraph, source: &str, file_path: &str) {
         let lang = Language::from_extension(
             std::path::Path::new(file_path)
@@ -1381,6 +1382,33 @@ mod tests {
                 .unwrap_or("py")
         );
         graph.index_file(source, file_path, &lang).unwrap();
+    }
+
+    #[test]
+    fn test_typescript_function_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "function hello(name: string): string {\n  return `Hello ${name}`;\n}\n\nconst add = (a: number, b: number): number => a + b;\n",
+            "src/util.ts");
+
+        let snap = graph.snapshot();
+        // hello should be indexed
+        assert!(snap.functions.values().any(|f| f.name == "hello"),
+                "Should have function hello");
+    }
+
+    #[test]
+    fn test_typescript_class_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "class Animal {\n  speak() { return 'hi'; }\n  move() { this.speak(); }\n}\n",
+            "src/animal.ts");
+
+        let snap = graph.snapshot();
+        assert!(snap.classes.values().any(|c| c.name == "Animal"),
+                "Should have class Animal");
+        assert!(snap.functions.values().any(|f| f.name == "speak"),
+                "Should have method speak");
     }
 
     #[test]

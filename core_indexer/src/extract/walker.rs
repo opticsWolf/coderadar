@@ -251,18 +251,24 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                         }
                         // Dotted call: `obj.method(x)` — name_node is (attribute) [Python]
                         // or `obj.method(x)` — name_node is (field_expression) [Rust]
-                        Some(n) if n.kind() == "attribute" || n.kind() == "field_expression" => {
+                        // or `obj.method(x)` — name_node is (member_expression) [TypeScript]
+                        Some(n) if n.kind() == "attribute"
+                            || n.kind() == "field_expression"
+                            || n.kind() == "member_expression" => {
+                            let method_field = if n.kind() == "attribute" { "attribute" }
+                                else if n.kind() == "field_expression" { "field" }
+                                else { "property" }; // member_expression
+                            let object_field = if n.kind() == "attribute" { "object" }
+                                else if n.kind() == "field_expression" { "value" }
+                                else { "object" }; // member_expression
+
                             let method = n
-                                .child_by_field_name(
-                                    if n.kind() == "attribute" { "attribute" } else { "field" }
-                                )
+                                .child_by_field_name(method_field)
                                 .and_then(|c| c.utf8_text(source.as_bytes()).ok())
                                 .unwrap_or("")
                                 .to_string();
                             let object = n
-                                .child_by_field_name(
-                                    if n.kind() == "attribute" { "object" } else { "value" }
-                                )
+                                .child_by_field_name(object_field)
                                 .and_then(|c| c.utf8_text(source.as_bytes()).ok())
                                 .unwrap_or("")
                                 .to_string();
@@ -317,7 +323,8 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
         | Tag::FunctionReturn
         | Tag::Decorator
         | Tag::ImportFromClause
-        | Tag::ImportSpecifier => None,
+        | Tag::ImportSpecifier
+        | Tag::Export => None,
     }
 }
 

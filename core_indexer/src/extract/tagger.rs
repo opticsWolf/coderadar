@@ -51,17 +51,18 @@ fn capture_name_to_tag(name: &str) -> Option<Tag> {
     match name {
         "class" | "class.def" => Some(Tag::Class),
         "class_base" => Some(Tag::ClassBase),
-        "function" | "function.def" => Some(Tag::Function),
+        "function" | "function.def" | "function.arrow" => Some(Tag::Function),
         "function_param" | "function.params" => Some(Tag::FunctionParam),
         "function_return" | "function.return" => Some(Tag::FunctionReturn),
-        "import" | "import.module" | "import.name" | "import_from" => Some(Tag::Import),
+        "import" | "import.module" | "import_from" => Some(Tag::Import),
         "import_specifier" | "import_from.alias" => Some(Tag::ImportSpecifier),
         "impl" => Some(Tag::Impl),
-        "call" | "call.name" => Some(Tag::Call),
+        "call" => Some(Tag::Call),
         "call_receiver" | "call.receiver" | "call.method" => Some(Tag::CallReceiver),
-        "decorator" | "decorator.name" => Some(Tag::Decorator),
+        "decorator" => Some(Tag::Decorator),
         "docstring" => Some(Tag::Docstring),
-        "field" | "field.name" => Some(Tag::Field),
+        "field" => Some(Tag::Field),
+        "export" | "export.function" | "export.class" | "export.module" => Some(Tag::Export),
         _ => None,
     }
 }
