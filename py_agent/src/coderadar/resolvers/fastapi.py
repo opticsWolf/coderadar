@@ -252,12 +252,10 @@ class FastAPIResolver(FrameworkResolver):
         return edges
 
     def resolve(
-        self, ref_name: str, graph: Any,
+        self, ref_name: str, candidates: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
         """Resolve FastAPI naming conventions."""
-        # FastAPI typically uses explicit imports rather than naming conventions,
-        # but we can resolve Depends() targets
-        return None
+        return None  # FastAPI uses explicit imports
 
     # ── AST Helpers ─────────────────────────────────────────────────
 

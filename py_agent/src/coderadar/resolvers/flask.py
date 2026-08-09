@@ -241,7 +241,7 @@ class FlaskResolver(FrameworkResolver):
         return edges
 
     def resolve(
-        self, ref_name: str, graph: Any,
+        self, ref_name: str, candidates: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
         """Resolve Flask naming conventions."""
         return None  # Flask uses direct imports, not naming conventions

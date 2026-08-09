@@ -142,26 +142,25 @@ class GoResolver(FrameworkResolver):
         )
 
     def resolve(
-        self, ref_name: str, graph: Any,
+        self, ref_name: str, candidates: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Query-time resolution: look up a Go symbol by name."""
-        try:
-            results = graph.search(ref_name, limit=5)
-        except Exception:
+        """Query-time resolution: prefer matches in framework-conventional dirs."""
+        if not candidates:
             return None
 
-        if not results:
-            return None
-
-        # Prefer matches in framework-conventional directories
-        for result in results:
+        # Prefer matches in handler/service/middleware/model directories
+        pref_dirs = _HANDLER_DIRS + _SERVICE_DIRS + _MIDDLEWARE_DIRS + _MODEL_DIRS
+        for result in candidates:
             fp = result.get("file_path", "")
-            for d in _HANDLER_DIRS + _SERVICE_DIRS + _MIDDLEWARE_DIRS:
+            for d in pref_dirs:
                 if f"/{d}/" in fp:
+                    result["confidence"] = 0.85
                     return result
 
-        # Fallback: first match
-        return results[0] if results else None
+        # Fallback: first match with lower confidence
+        result = candidates[0]
+        result["confidence"] = 0.65
+        return result
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

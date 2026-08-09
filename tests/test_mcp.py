@@ -656,3 +656,101 @@ class TestCrossFileScenario:
         # Should have source from models.py
         assert "User" in result
         assert "models.py" in result.lower() or "class " in result.lower()
+
+
+class TestQueryTimeResolution:
+    """v0.5 F.8 Phase 2: query-time framework reference resolution."""
+
+    @staticmethod
+    def _resolvers():
+        from coderadar.resolvers import ALL_RESOLVERS
+        return ALL_RESOLVERS
+
+    def test_resolve_reference_searches_candidates(self):
+        """resolve_reference calls claims_reference on each resolver."""
+        from coderadar.resolvers.resolution import resolve_reference
+
+        def searcher(name, limit):
+            return [{
+                "id": "test::handler",
+                "name": name,
+                "kind": "function",
+                "file_path": "handlers/",
+            }]
+
+        results = resolve_reference("userHandler", searcher, self._resolvers(), limit=5)
+        assert len(results) >= 1
+        assert results[0]["resolved_by"] == "go"
+
+    def test_resolve_django_model_convention(self):
+        """Django *Model naming convention resolves via prefer_in_dir."""
+        from coderadar.resolvers.resolution import resolve_reference
+
+        def searcher(name, limit):
+            return [{
+                "id": "models.py::User",
+                "name": "User",
+                "kind": "class",
+                "file_path": "app/models.py",
+            }]
+
+        results = resolve_reference("UserModel", searcher, self._resolvers(), limit=5)
+        assert len(results) >= 1
+        assert results[0]["resolved_by"] == "django"
+        assert results[0]["name"] == "User"
+
+    def test_resolve_returns_empty_for_unclaimed(self):
+        """References not matching any naming pattern return empty."""
+        from coderadar.resolvers.resolution import resolve_reference
+
+        def searcher(name, limit):
+            return [{"id": "x", "name": name, "kind": "function", "file_path": "x.py"}]
+
+        results = resolve_reference("calculate", searcher, self._resolvers(), limit=5)
+        assert results == []
+
+    def test_resolve_route_finds_handler(self):
+        """resolve_route matches route nodes and returns handlers."""
+        from coderadar.resolvers.resolution import resolve_route
+
+        def searcher(name, limit):
+            entities = {
+                "/users": [{
+                    "id": "route:1",
+                    "name": "GET /users",
+                    "kind": "route",
+                    "file_path": "routes.go",
+                }],
+                "route:1": [{
+                    "id": "handlers.go::listUsers",
+                    "name": "listUsers",
+                    "kind": "function",
+                    "file_path": "handlers/",
+                }],
+            }
+            return entities.get(name, [])
+
+        results = resolve_route("/users", searcher, limit=5)
+        assert len(results) >= 1
+        assert results[0]["name"] == "listUsers"
+        assert results[0]["resolved_by"] == "route-resolution"
+
+    def test_mcp_tool_registered(self):
+        """coderadar_resolve tool is registered on the MCP server."""
+        import asyncio
+        from coderadar.mcp.server import create_server
+        server = create_server(None)
+        tool_names = [t.name for t in asyncio.run(server.list_tools())]
+        assert "coderadar_resolve" in tool_names
+
+    def test_mcp_resolve_uninitialized_graph(self):
+        """Resolve with no graph returns helpful message."""
+        from coderadar.mcp.server import _resolve_ref
+        result = _resolve_ref(None, "UserService", 5)
+        assert isinstance(result, str) and len(result) > 0
+
+    def test_mcp_resolve_empty_query(self):
+        """Resolve with empty query returns guidance."""
+        from coderadar.mcp.server import _resolve_ref
+        result = _resolve_ref(None, "", 5)
+        assert "CodeRadar extension" in result or "provide" in result.lower()

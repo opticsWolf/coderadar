@@ -107,15 +107,15 @@ class FrameworkResolver(ABC):
 
     @abstractmethod
     def resolve(
-        self, ref_name: str, graph: Any,
+        self, ref_name: str, candidates: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Resolve a single reference.
+        """Resolve a reference against search candidates.
 
         Args:
             ref_name: The unresolved reference string.
-            graph: The CodeGraph instance for entity lookups.
+            candidates: Entity dicts from a graph search for this name.
 
         Returns:
-            Resolved target dict or None if this resolver can't resolve it.
+            Resolved target dict (augmented with confidence) or None.
         """
         ...

@@ -232,13 +232,16 @@ class DjangoResolver(FrameworkResolver):
         return handler
 
     def resolve(
-        self, ref_name: str, graph: Any,
+        self, ref_name: str, candidates: List[Dict[str, Any]],
     ) -> Optional[Dict[str, Any]]:
-        """Resolve Django naming conventions.
+        """Resolve Django naming conventions against search candidates.
 
-        *Model → search models.py for matching class
-        *View → search views.py for matching function/class
+        *Model → prefer matches in models.py
+        *View → prefer matches in views.py
         """
+        if not candidates:
+            return None
+
         suffix = None
         search_dir = None
 
@@ -257,28 +260,8 @@ class DjangoResolver(FrameworkResolver):
             return None
 
         base_name = parts[:-len(suffix)] if parts != suffix else parts
-        return self._search_project(graph, base_name, search_dir)
-
-    def _search_project(
-        self, graph: Any, name: str, module_hint: str,
-    ) -> Optional[Dict[str, Any]]:
-        """Search the graph for a matching entity."""
-        # Try exact match
-        try:
-            from coderadar._core import search_entities
-            results = search_entities(name, top_k=10)
-            for r in results:
-                r_name = r.get("name", "")
-                if r_name == name or r_name.endswith(name):
-                    if module_hint and module_hint in r.get("file_path", ""):
-                        return r
-            # Fallback: first result of correct kind
-            for r in results:
-                if r.get("kind") in ("class", "function"):
-                    return r
-        except ImportError:
-            pass
-        return None
+        from .resolution import prefer_in_dir
+        return prefer_in_dir(candidates, base_name, search_dir, confidence=0.85)
 
     # ── AST Helpers ─────────────────────────────────────────────────
 

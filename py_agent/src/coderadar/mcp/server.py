@@ -78,6 +78,7 @@ more for the same answer.
 - `codegraph_node` — full details for an entity identified via explore
 - `codegraph_search` — find symbols by keyword when you don't know the exact name
 - `codegraph_affected` — transitive impact: "what calls this, all the way up?"
+- `coderadar_resolve` — framework-aware reference resolution: "what handles /users/:id?", "where is UserService?", "what model is UserModel?"
 
 ## Anti-patterns
 
@@ -197,6 +198,31 @@ def create_server(graph: Any) -> MCPServer:
     ) -> str:
         """Transitive impact analysis."""
         return _affected(graph, id, max_depth)
+
+    # ── coderadar_resolve (§F.8 Phase 2: query-time framework resolution) ─
+
+    @mcp.tool(
+        description=(
+            "Resolve a framework-level reference like a URL path or naming "
+            "convention. Use when the agent sees route paths (/users/:id), "
+            "handler names (UserService), or framework patterns "
+            "(*Model, *View, *Controller). Searches indexed route nodes and "
+            "uses framework resolvers to match naming conventions. Returns "
+            "ranked candidates with confidence scores."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": True,
+        },
+    )
+    def coderadar_resolve(
+        name: str,
+        limit: int = 5,
+    ) -> str:
+        """Framework-aware reference resolution."""
+        return _resolve_ref(graph, name, limit)
 
     return mcp
 
@@ -808,3 +834,81 @@ def _get_callees(graph: Any, entity_id: str) -> list[dict]:
         return callees_of(entity_id) or []
     except ImportError:
         return []
+
+
+# ── Query-Time Resolution (F.8 Phase 2) ────────────────────────────────────
+
+
+def _resolve_ref(graph: Any, name: str, limit: int) -> str:
+    """Framework-aware reference resolution.
+
+    Uses framework resolvers at query time to answer:
+    - "What handles /users/:id?"
+    - "Where is UserService defined?"
+    - "What model is UserModel?"
+    """
+    try:
+        from coderadar._core import graph_stats
+        if graph_stats().get("modules", 0) == 0:
+            return "No index available. Run `coderadar init` first."
+    except (ImportError, RuntimeError):
+        return "CodeRadar extension not available."
+
+    if not name.strip():
+        return "Please provide a name or path to resolve."
+
+    # Searcher callback for framework resolvers
+    def _searcher(n: str, lim: int) -> list[dict]:
+        return _text_search(graph, n, lim)
+
+    # Route-style paths get special handling
+    results: list[dict] = []
+    if name.startswith("/"):
+        from coderadar.resolvers.resolution import resolve_route
+        results = resolve_route(name, _searcher, limit=limit)
+        if results:
+            lines = [f"## Route Resolution: `{name}`", f"Found {len(results)} handler(s)", ""]
+            for i, r in enumerate(results, 1):
+                rname = r.get("name", "?")
+                rkind = r.get("kind", "?")
+                rid = r.get("id", "?")
+                rfile = r.get("file_path", "?")
+                conf = r.get("confidence", 0)
+                lines.append(f"### {i}. `{rname}` ({rkind}) — confidence {conf:.2f}")
+                lines.append(f"- **ID:** `{rid}`")
+                lines.append(f"- **File:** `{rfile}`")
+                route = r.get("route")
+                if route:
+                    lines.append(f"- **Route:** `{route.get('name', '?')}`")
+                lines.append("")
+            return "\n".join(lines)
+        return f"No handler found for route `{name}`. Try codegraph_search."
+
+    # Framework-level reference resolution
+    from coderadar.resolvers.resolution import resolve_reference
+    from coderadar.resolvers import ALL_RESOLVERS
+    results = resolve_reference(name, _searcher, ALL_RESOLVERS, limit=limit)
+
+    if not results:
+        return (
+            f"No framework resolver claimed `{name}`. "
+            f"Try codegraph_search for a broader search."
+        )
+
+    lines = [f"## Reference Resolution: `{name}`", f"Found {len(results)} result(s)", ""]
+    for i, r in enumerate(results, 1):
+        rname = r.get("name", "?")
+        rkind = r.get("kind", "?")
+        rid = r.get("id", "?")
+        rfile = r.get("file_path", "?")
+        conf = r.get("confidence", 0)
+        resolved_by = r.get("resolved_by", "unknown")
+        lines.append(f"### {i}. `{rname}` ({rkind}) — {resolved_by} (confidence {conf:.2f})")
+        lines.append(f"- **ID:** `{rid}`")
+        lines.append(f"- **File:** `{rfile}`")
+        sig = r.get("signature")
+        if sig:
+            lines.append(f"- **Signature:** `{sig}`")
+        lines.append("")
+
+    return "\n".join(lines)
