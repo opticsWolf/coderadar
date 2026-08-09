@@ -12,12 +12,14 @@ from .base import (
 from .django import DjangoResolver
 from .flask import FlaskResolver
 from .fastapi import FastAPIResolver
+from .go import GoResolver
 
 # Registry of all available resolvers
 ALL_RESOLVERS: list[type[FrameworkResolver]] = [
     DjangoResolver,
     FlaskResolver,
     FastAPIResolver,
+    GoResolver,
 ]
 
 __all__ = [
@@ -28,5 +30,6 @@ __all__ = [
     "DjangoResolver",
     "FlaskResolver",
     "FastAPIResolver",
+    "GoResolver",
     "ALL_RESOLVERS",
 ]

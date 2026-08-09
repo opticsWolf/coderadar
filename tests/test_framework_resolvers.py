@@ -338,3 +338,70 @@ class TestAllExports:
         result = extract_all_exports(source)
         assert result == ["foo", "bar"]
 
+
+class TestGoResolver:
+    """v0.5: Go framework resolver — Gin, net/http route extraction."""
+
+    def test_detects_go_mod(self, tmp_path):
+        from coderadar.resolvers.go import GoResolver
+        resolver = GoResolver()
+        (tmp_path / "go.mod").write_text("module example\n")
+        assert resolver.detect(tmp_path)
+
+    def test_no_detect_without_go_files(self, tmp_path):
+        from coderadar.resolvers.go import GoResolver
+        resolver = GoResolver()
+        assert not resolver.detect(tmp_path)
+
+    def test_extracts_gin_routes(self):
+        from coderadar.resolvers.go import GoResolver
+        resolver = GoResolver()
+        fixture = Path(__file__).parent / "fixtures" / "go" / "gin_routes.go"
+        source = fixture.read_text()
+        extraction = resolver.extract(str(fixture), source)
+
+        routes = [n for n in extraction.nodes if n.kind == "route"]
+        assert len(routes) == 6, f"Expected 6 Gin routes, got {len(routes)}"
+
+        route_paths = {n.metadata["path"] for n in routes}
+        assert "/users" in route_paths
+        assert "/users/:id" in route_paths
+        assert "/items" in route_paths
+
+        handler_edges = [e for e in extraction.edges if e.kind == "handles"]
+        assert len(handler_edges) == 6
+        handler_names = {e.target_id for e in handler_edges}
+        assert "listUsers" in handler_names
+        assert "createUser" in handler_names
+
+    def test_extracts_nethttp_routes(self):
+        from coderadar.resolvers.go import GoResolver
+        resolver = GoResolver()
+        fixture = Path(__file__).parent / "fixtures" / "go" / "nethttp_routes.go"
+        source = fixture.read_text()
+        extraction = resolver.extract(str(fixture), source)
+
+        routes = [n for n in extraction.nodes if n.kind == "route"]
+        assert len(routes) == 3, f"Expected 3 net/http routes, got {len(routes)}"
+
+        methods = {n.metadata["method"] for n in routes}
+        assert "GET" in methods
+        assert "POST" in methods
+        assert "ANY" in methods
+
+    def test_claims_reference_patterns(self):
+        from coderadar.resolvers.go import GoResolver
+        resolver = GoResolver()
+        assert resolver.claims_reference("userHandler")
+        assert resolver.claims_reference("HandleRequest")
+        assert resolver.claims_reference("UserService")
+        assert resolver.claims_reference("UserRepository")
+        assert resolver.claims_reference("AuthMiddleware")
+        assert not resolver.claims_reference("calculate")
+
+    def test_resolve_looks_up_by_name(self):
+        from coderadar.resolvers.go import GoResolver
+        resolver = GoResolver()
+        result = resolver.resolve("noSuchHandler", None)
+        assert result is None
+
