@@ -467,28 +467,55 @@ class TestBenchmarkPipeline:
             f"50 files took {elapsed_ms:.0f}ms, expected <30s"
 
     def test_index_200_files_1000_functions(self, tmp_path):
-        """Index 200 files / 1000 functions and verify counts + Macrame DB."""
+        """Index 200 files / 1000 functions with cross-file calls + Macrame DB.
+
+        Creates 199 modules each with 5 isolated leaf functions, plus one
+        orchestrator that imports and calls them all.  This yields containment
+        edges (file→func) AND cross-file call edges, matching what CodeGraph
+        reports as 'Edges' in its status output.
+        """
         import time
         from coderadar._core import analyze as _analyze_rust, graph_stats
 
-        for i in range(200):
+        # 199 leaf modules with 5 functions each = 995 leaf functions
+        for i in range(199):
             src = '\n'.join(
                 f'def func_{i}_{j}(): return {i}+{j}'
                 for j in range(5)
             )
             (tmp_path / f'mod_{i}.py').write_text(src)
 
+        # 1 orchestrator that imports + calls all 995 leaf functions
+        import_lines = []
+        call_lines = ['def orchestrator():']
+        for i in range(199):
+            for j in range(5):
+                import_lines.append(f'from mod_{i} import func_{i}_{j}')
+                call_lines.append(f'    func_{i}_{j}()')
+        (tmp_path / 'orchestrator.py').write_text(
+            '\n'.join(import_lines + [''] + call_lines + [''])
+        )
+
         t0 = time.perf_counter()
         result = _analyze_rust(str(tmp_path))
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
         stats = graph_stats()
-        assert result['files_indexed'] == 200
-        assert result['entities_extracted'] == 1000
+        assert result['files_indexed'] == 200, \
+            f"Expected 200 files, got {result}"
+        # 199*5 leaf funcs + 1 orchestrator + 199*5 imports
+        expected_entities = 199 * 5 + 1 + 199 * 5
+        assert result['entities_extracted'] == expected_entities, \
+            f"Entities: expected {expected_entities}, got {result}"
         assert stats['modules'] == 200
-        assert stats['functions'] == 1000
+        # 995 leaf + 1 orchestrator = 996
+        assert stats['functions'] == 996
+        assert stats['imports'] == 199 * 5  # one import per leaf function
+        # Each orchestrator call should resolve to a leaf function
+        assert stats['call_edges'] >= 199 * 5, \
+            f"Expected >=995 call edges, got {stats['call_edges']}"
 
-        # Macrame DB must exist with data
+        # Macrame DB must exist with data (schema alone is 4096 bytes)
         db_path = tmp_path / '.coderadar' / 'store' / 'coderadar.db'
         assert db_path.exists(), f"Macrame DB not created at {db_path}"
         assert db_path.stat().st_size > 4096, \
