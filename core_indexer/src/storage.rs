@@ -33,6 +33,7 @@ pub mod annotation {
     pub const CONTENT_HASH: &str = "content_hash";
     pub const PARSE_QUALITY: &str = "parse_quality";
     pub const RETURN_TYPE: &str = "return_type";
+    pub const GRAMMAR_KIND: &str = "grammar_kind";  // v3.6: tree-sitter node kind
 }
 
 /// Edge types for Macrame edge assertions.
@@ -240,6 +241,9 @@ fn entity_meta<'a>(unit: &'a ExtractedUnit, file_path: &'a str, language: &'a st
             }
             if let Some(ref dt) = c.docstring {
                 meta[annotation::DOCSTRING] = json!(dt);
+            }
+            if !c.grammar_kind.is_empty() {
+                meta[annotation::GRAMMAR_KIND] = json!(&c.grammar_kind);
             }
             (&c.name, &c.name, meta)
         }
