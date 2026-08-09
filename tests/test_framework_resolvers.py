@@ -402,6 +402,75 @@ class TestGoResolver:
     def test_resolve_looks_up_by_name(self):
         from coderadar.resolvers.go import GoResolver
         resolver = GoResolver()
-        result = resolver.resolve("noSuchHandler", None)
+        result = resolver.resolve("noSuchHandler", [])
+        assert result is None
+
+
+class TestActixResolver:
+    """v0.5: Rust/Actix framework resolver."""
+
+    def test_detects_cargo_with_actix(self, tmp_path):
+        from coderadar.resolvers.actix import RustActixResolver
+        resolver = RustActixResolver()
+        (tmp_path / "Cargo.toml").write_text(
+            "[dependencies]\nactix-web = \"4\"\n"
+        )
+        assert resolver.detect(tmp_path)
+
+    def test_no_detect_without_actix(self, tmp_path):
+        from coderadar.resolvers.actix import RustActixResolver
+        resolver = RustActixResolver()
+        (tmp_path / "Cargo.toml").write_text(
+            "[dependencies]\nserde = \"1\"\n"
+        )
+        assert not resolver.detect(tmp_path)
+
+    def test_extracts_attribute_macro_routes(self):
+        from coderadar.resolvers.actix import RustActixResolver
+        resolver = RustActixResolver()
+        fixture = Path(__file__).parent / "fixtures" / "rust" / "actix_routes.rs"
+        source = fixture.read_text()
+        extraction = resolver.extract(str(fixture), source)
+
+        routes = [n for n in extraction.nodes if n.kind == "route"]
+        # 5 macros (#[get] x2, #[post], #[put], #[delete]) + 2 .route() calls
+        assert len(routes) == 7, f"Expected 7 routes, got {len(routes)}"
+
+        methods = {n.metadata["method"] for n in routes}
+        assert "GET" in methods
+        assert "POST" in methods
+        assert "PUT" in methods
+        assert "DELETE" in methods
+
+        handler_edges = [e for e in extraction.edges if e.kind == "handles"]
+        assert len(handler_edges) == 7
+        handler_names = {e.target_id for e in handler_edges}
+        assert "list_users" in handler_names
+        assert "create_user" in handler_names
+        assert "health_check" in handler_names
+
+    def test_claims_reference_patterns(self):
+        from coderadar.resolvers.actix import RustActixResolver
+        resolver = RustActixResolver()
+        assert resolver.claims_reference("get_users")
+        assert resolver.claims_reference("post_user")
+        assert resolver.claims_reference("delete_item")
+        assert resolver.claims_reference("handle_request")
+        assert not resolver.claims_reference("calculate")
+
+    def test_resolve_prefers_handler_dirs(self):
+        from coderadar.resolvers.actix import RustActixResolver
+        resolver = RustActixResolver()
+        result = resolver.resolve("get_users", [
+            {"id": "x", "name": "get_users", "kind": "function",
+             "file_path": "/src/handlers/users.rs"},
+        ])
+        assert result is not None
+        assert result["confidence"] == 0.85
+
+    def test_resolve_fallback_no_match(self):
+        from coderadar.resolvers.actix import RustActixResolver
+        resolver = RustActixResolver()
+        result = resolver.resolve("get_users", [])
         assert result is None
 

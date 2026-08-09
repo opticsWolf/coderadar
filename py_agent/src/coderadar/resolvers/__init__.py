@@ -13,6 +13,7 @@ from .django import DjangoResolver
 from .flask import FlaskResolver
 from .fastapi import FastAPIResolver
 from .go import GoResolver
+from .actix import RustActixResolver
 
 # Registry of all available resolvers
 ALL_RESOLVERS: list[type[FrameworkResolver]] = [
@@ -20,6 +21,7 @@ ALL_RESOLVERS: list[type[FrameworkResolver]] = [
     FlaskResolver,
     FastAPIResolver,
     GoResolver,
+    RustActixResolver,
 ]
 
 __all__ = [
@@ -31,5 +33,6 @@ __all__ = [
     "FlaskResolver",
     "FastAPIResolver",
     "GoResolver",
+    "RustActixResolver",
     "ALL_RESOLVERS",
 ]
