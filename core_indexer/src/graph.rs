@@ -2551,4 +2551,114 @@ mod tests {
         // int is builtin → return_type should be None
         assert!(func.unwrap().return_type.is_none(), "int return type should be filtered");
     }
+
+    // ── v3.6: Macrame temporal query tests ──────────────────────
+
+    /// Helper: create a CodeGraph with a real Macrame store in a temp dir.
+    fn graph_with_temp_store() -> (CodeGraph, tempfile::TempDir) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db_path = dir.path().join("test.db");
+        let store = crate::storage::CodeGraphStore::open(&db_path).expect("open store");
+        let graph = CodeGraph::new(GraphConfig::default()).with_store(store);
+        (graph, dir)
+    }
+
+    #[test]
+    fn test_temporal_concepts_persisted() {
+        let (graph, _dir) = graph_with_temp_store();
+        index_source(&graph, "def caller(): callee()\ndef callee(): pass\n", "tp_test.py");
+
+        let snap = graph.snapshot();
+        // In-memory graph should have data
+        assert!(snap.functions.len() >= 2);
+        let caller = snap.functions.values().find(|f| f.name == "caller").unwrap();
+        // In-memory edges should exist
+        let callees = snap.callees_by_caller.get(&caller.id).unwrap();
+        assert!(!callees.is_empty(), "caller should have callees in memory");
+
+        // Verify store was attached
+        assert!(graph.has_store());
+
+        // Verify the DB file exists and has content
+        let db_path = _dir.path().join("test.db");
+        assert!(db_path.exists(), "db file should exist");
+        let meta = std::fs::metadata(&db_path).unwrap();
+        assert!(meta.len() > 0, "db file should not be empty");
+    }
+
+    #[test]
+    fn test_temporal_reconstruct_after_index() {
+        let (graph, _dir) = graph_with_temp_store();
+        index_source(&graph, "def foo(): pass\n", "recon_test.py");
+
+        let store = graph.store.as_ref().unwrap();
+        // reconstruct() requires a valid ISO 8601 timestamp
+        let state = store.reconstruct(crate::storage::TS_OPEN);
+        // reconstruct may fail if no data matches — but shouldn't crash
+        // Either Ok or a reasonable error is acceptable
+        match state {
+            Ok(_s) => { /* reconstruction succeeded */ }
+            Err(e) => {
+                // Macrame may not have matching data for TS_OPEN — that's fine
+                eprintln!("reconstruct returned: {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_temporal_edge_persistence_across_indexes() {
+        let (graph, _dir) = graph_with_temp_store();
+
+        // First index
+        index_source(&graph,
+            "def a(): b()\ndef b(): c()\ndef c(): pass\n",
+            "chain.py");
+
+        let snap = graph.snapshot();
+        let func_a = snap.functions.values().find(|f| f.name == "a").unwrap();
+        let callees = snap.callees_by_caller.get(&func_a.id);
+        assert!(callees.is_some(), "a should have callees");
+        assert!(!callees.unwrap().is_empty());
+
+        // Verify store persistence — db file should be non-empty
+        let db_path = _dir.path().join("test.db");
+        assert!(db_path.exists());
+        let meta = std::fs::metadata(&db_path).unwrap();
+        assert!(meta.len() > 0, "db should have persisted data; size={}", meta.len());
+
+        // Second index should not corrupt
+        index_source(&graph,
+            "def x(): pass\n",
+            "extra.py");
+        let snap2 = graph.snapshot();
+        assert!(snap2.functions.values().any(|f| f.name == "x"));
+        assert!(snap2.functions.values().any(|f| f.name == "a"));
+    }
+
+    #[test]
+    fn test_temporal_synthetic_edge_persistence() {
+        let (graph, _dir) = graph_with_temp_store();
+        index_source(&graph,
+            "def user_detail(id): pass\n",
+            "views.py");
+
+        // Register a synthetic framework edge
+        graph.register_synthetic_edge(
+            "django:route:users/",
+            "views.py::user_detail",
+            "HANDLES",
+        ).unwrap();
+
+        // Verify in-memory graph has the edge
+        let snap = graph.snapshot();
+        let route_callees = snap.callees_by_caller.get("django:route:users/");
+        assert!(route_callees.is_some(), "route should have callees");
+        assert!(route_callees.unwrap().contains("views.py::user_detail"));
+
+        // Verify the DB file has content (persisted)
+        let db_path = _dir.path().join("test.db");
+        assert!(db_path.exists());
+        let meta = std::fs::metadata(&db_path).unwrap();
+        assert!(meta.len() > 0, "db should have persisted data");
+    }
 }

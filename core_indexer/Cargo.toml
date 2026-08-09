@@ -46,3 +46,6 @@ postcard = "1.0"
 [features]
 default = ["watcher"]
 watcher = ["dep:notify", "dep:notify-debouncer-mini"]
+
+[dev-dependencies]
+tempfile = "3"
