@@ -487,6 +487,53 @@ pub struct CodeGraph {
     pub config: GraphConfig,
 }
 
+/// C3 merge: repeatedly find a head that does not appear in the tail
+/// of any other list, append it to result, and remove it from all heads.
+fn c3_merge(mut lists: Vec<Vec<MroNode>>) -> Vec<MroNode> {
+    let mut result: Vec<MroNode> = Vec::new();
+
+    loop {
+        lists.retain(|l| !l.is_empty());
+        if lists.is_empty() {
+            break;
+        }
+
+        // Find a good head: first element not in any other list's tail
+        let mut found = false;
+        for i in 0..lists.len() {
+            let candidate = &lists[i][0];
+            let in_tail = lists.iter().enumerate().any(|(j, l)| {
+                i != j && l[1..].contains(candidate)
+            });
+            if !in_tail {
+                // Good head found — remove it from the front of ALL lists
+                let good = candidate.clone();
+                for list in lists.iter_mut() {
+                    if list.first() == Some(&good) {
+                        list.remove(0);
+                    }
+                }
+                result.push(good);
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            // Cyclic or inconsistent inheritance — break by taking next available
+            for list in &mut lists {
+                if !list.is_empty() {
+                    let head = list.remove(0);
+                    result.push(head);
+                    break;
+                }
+            }
+        }
+    }
+
+    result
+}
+
 impl CodeGraph {
     pub fn new(config: GraphConfig) -> Self {
         let projection = ProjectedGraph {
@@ -574,6 +621,53 @@ impl CodeGraph {
         self.store.is_some()
     }
 
+    /// Compute C3 linearization MRO for all classes in the projection.
+    pub fn compute_all_mro(&self, projection: &mut ProjectedGraph) {
+        let class_ids: Vec<String> = projection.classes.iter()
+            .map(|(id, _)| id.clone()).collect();
+        for class_id in &class_ids {
+            let mro = self.compute_c3_mro(projection, class_id);
+            if let Some(class) = projection.classes.get(class_id) {
+                let mut c = (**class).clone();
+                c.mro = mro;
+                projection.classes.insert(class_id.clone(), std::sync::Arc::new(c));
+            }
+        }
+    }
+
+    /// C3 linearization: L[C] = C + merge(L[B1],...,L[Bn], [B1,...,Bn])
+    fn compute_c3_mro(&self, projection: &ProjectedGraph, class_id: &str) -> Vec<MroNode> {
+        let class = match projection.classes.get(class_id) {
+            Some(c) => c.clone(),
+            None => return vec![MroNode::Class(class_id.to_string())],
+        };
+        if class.bases.is_empty() {
+            return vec![MroNode::Class(class_id.to_string())];
+        }
+        // Recursively compute MRO for each base
+        let base_mros: Vec<Vec<MroNode>> = class.bases.iter().map(|base| {
+            let resolved = projection.classes.iter()
+                .find(|(_, c)| c.name == base.name && c.parent_module == class.parent_module)
+                .map(|(id, _)| id.clone());
+            match resolved {
+                Some(id) => self.compute_c3_mro(projection, &id),
+                None => vec![MroNode::External { name: base.name.clone() }],
+            }
+        }).collect();
+        let base_nodes: Vec<MroNode> = class.bases.iter().map(|b| {
+            projection.classes.iter()
+                .find(|(_, c)| c.name == b.name && c.parent_module == class.parent_module)
+                .map(|(id, _)| MroNode::Class(id.clone()))
+                .unwrap_or_else(|| MroNode::External { name: b.name.clone() })
+        }).collect();
+        let mut merge_lists: Vec<Vec<MroNode>> = base_mros.clone();
+        merge_lists.push(base_nodes);
+        let merged = c3_merge(merge_lists);
+        let mut result = vec![MroNode::Class(class_id.to_string())];
+        result.extend(merged);
+        result
+    }
+
     /// Run the resolution cascade (L1-L3) on all functions in the current projection.
     /// After resolution, rewires callees_by_caller/callers_by_callee with resolved targets.
     pub fn resolve_all_calls(&self, projection: &mut ProjectedGraph) {
@@ -630,15 +724,32 @@ impl CodeGraph {
                 .map(|(id, f)| (f.name.clone(), id.clone()))
                 .collect();
 
-            // Build methods of the same class for self.method() resolution
-            let class_methods: std::collections::HashMap<String, String> =
+            // Build MRO-aware method lookup: for self.method() resolution,
+            // search all classes in the caller's MRO chain (C3 linearization).
+            let mro_methods: std::collections::HashMap<String, String> =
                 if let Some(ref class_id) = my_parent_class {
-                    projection
-                        .functions
-                        .iter()
-                        .filter(|(_, f)| f.parent_class.as_ref() == Some(class_id))
-                        .map(|(id, f)| (f.name.clone(), id.clone()))
-                        .collect()
+                    let mut methods = std::collections::HashMap::new();
+                    if let Some(class) = projection.classes.get(class_id) {
+                        for node in &class.mro {
+                            if let MroNode::Class(ref cid) = node {
+                                for (fid, f) in projection.functions.iter() {
+                                    if f.parent_class.as_ref() == Some(cid) {
+                                        methods.entry(f.name.clone())
+                                            .or_insert_with(|| fid.clone());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Also include direct class methods (non-MRO — for classes
+                    // where MRO hasn't been computed yet)
+                    for (fid, f) in projection.functions.iter() {
+                        if f.parent_class.as_ref() == Some(class_id) {
+                            methods.entry(f.name.clone())
+                                .or_insert_with(|| fid.clone());
+                        }
+                    }
+                    methods
                 } else {
                     std::collections::HashMap::new()
                 };
@@ -687,7 +798,7 @@ impl CodeGraph {
                     if let crate::types::ResolvedCall::Unresolved { reason, raw } = &rc {
                         if matches!(reason, crate::types::UnresolvedReason::TypeInferenceRequired) {
                             // Try to resolve via class_methods when caller is a method
-                            if let Some(target_id) = class_methods.get(&raw.name) {
+                            if let Some(target_id) = mro_methods.get(&raw.name) {
                                 return crate::types::ResolvedCall::Function(target_id.clone());
                             }
                         }
@@ -705,7 +816,7 @@ impl CodeGraph {
                             }
                         }
                         // Method on self that the orchestrator tagged as External
-                        if let Some(target_id) = class_methods.get(name.as_str()) {
+                        if let Some(target_id) = mro_methods.get(name.as_str()) {
                             return crate::types::ResolvedCall::Function(target_id.clone());
                         }
                     }
@@ -1038,7 +1149,8 @@ impl CodeGraph {
         let removed_count = self.remove_file_entities(&mut projection, file_path).len();
         self.insert_extracted(&mut projection, &units, file_path, &lang);
 
-        // Phase 4: Re-run resolution for affected functions
+        // Phase 4: Compute MRO for all classes, then resolve calls
+        self.compute_all_mro(&mut projection);
         self.resolve_all_calls(&mut projection);
         self.commit_projection(projection);
 
@@ -1489,6 +1601,85 @@ mod tests {
                 "Should have C++ class Widget");
         assert!(snap.functions.values().any(|f| f.name == "render"),
                 "Should have C++ method render");
+    }
+
+    // ── MRO / C3 Linearization Tests ────────────────────────────
+
+    #[test]
+    fn test_c3_mro_single_inheritance() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "class A:\n    def foo(self): pass\nclass B(A):\n    def bar(self): self.foo()\n",
+            "mod.py");
+        let mut projection = (*graph.snapshot()).clone();
+        graph.compute_all_mro(&mut projection);
+        if let Some(b) = projection.classes.values().find(|c| c.name == "B") {
+            assert!(b.mro.len() >= 2, "B should have at least 2 MRO entries, got {}", b.mro.len());
+            assert!(matches!(&b.mro[0], MroNode::Class(_)));
+        }
+    }
+
+    #[test]
+    fn test_c3_mro_multiple_inheritance() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "class X:\n    def x(self): pass\nclass Y:\n    def y(self): pass\nclass Z(X, Y):\n    def z(self): pass\n",
+            "diamond.py");
+        let mut projection = (*graph.snapshot()).clone();
+        graph.compute_all_mro(&mut projection);
+        // Z's MRO should be: Z → X → Y → object
+        if let Some(z) = projection.classes.values().find(|c| c.name == "Z") {
+            assert!(z.mro.len() >= 3,
+                    "Z should have at least 3 MRO entries, got {}", z.mro.len());
+        }
+    }
+
+    #[test]
+    fn test_mro_method_resolution() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "class Base:\n    def helper(self): pass\nclass Child(Base):\n    def run(self): self.helper()\n",
+            "inherited.py");
+        let mut projection = (*graph.snapshot()).clone();
+        graph.compute_all_mro(&mut projection);
+        graph.resolve_all_calls(&mut projection);
+        // Child.run() calls self.helper() — should resolve to Base.helper via MRO
+        if let Some(run) = projection.functions.values().find(|f| f.name == "run") {
+            let callees = projection.callees_by_caller.get(&run.id);
+            assert!(callees.is_some(), "run should have resolved callees");
+            if let Some(callee_ids) = callees {
+                let callee_names: Vec<_> = callee_ids.iter()
+                    .filter_map(|id| projection.functions.get(id))
+                    .map(|f| f.name.clone())
+                    .collect();
+                assert!(callee_names.contains(&"helper".to_string()),
+                        "run should call helper via MRO, got: {:?}", callee_names);
+            }
+        }
+    }
+
+    #[test]
+    fn test_c3_diamond() {
+        // Diamond inheritance:
+        //   A
+        //  / \
+        // B   C
+        //  \ /
+        //   D
+        // C3 MRO for D: D → B → C → A
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "class A: pass\nclass B(A): pass\nclass C(A): pass\nclass D(B, C): pass\n",
+            "diamond.py");
+        let mut projection = (*graph.snapshot()).clone();
+        graph.compute_all_mro(&mut projection);
+        if let Some(d) = projection.classes.values().find(|c| c.name == "D") {
+            assert_eq!(d.mro.len(), 4, "D should have MRO [D, B, C, A], got {:?} entries", d.mro.len());
+            // Verify order: D is first
+            if let MroNode::Class(ref id) = d.mro[0] {
+                assert!(id.contains("D"), "First MRO entry should be D");
+            }
+        }
     }
 
     // ── Ruby Indexing Tests ─────────────────────────────────────

@@ -110,13 +110,37 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
             let qualified_name = build_qualified_name(&ctx.stack, &name);
             let entity_id = make_entity_id(&ctx.file_path, &qualified_name);
 
+            // Extract base classes (Python/Ruby/Java/C#/etc.)
+            let bases: Vec<UnresolvedRef> = node
+                .child_by_field_name("superclasses")  // Python
+                .or_else(|| node.child_by_field_name("superclass"))  // Java-style
+                .or_else(|| node.child_by_field_name("bases"))  // C#
+                .map(|sc| {
+                    let mut cursor = sc.walk();
+                    sc.children(&mut cursor)
+                        .filter(|child| child.kind() == "identifier"
+                            || child.kind() == "type_identifier"
+                            || child.kind() == "constant"  // Ruby
+                            || child.kind() == "name")  // PHP
+                        .filter_map(|id| {
+                            id.utf8_text(source.as_bytes()).ok().map(|txt| UnresolvedRef {
+                                name: txt.to_string(),
+                                path: vec![],
+                                line: id.start_position().row + 1,
+                                col: id.start_position().column as usize,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
             ctx.units.push(ExtractedUnit::Class(ExtractedClass {
                 id: entity_id.clone(),
                 name: name.clone(),
                 qualified_name: qualified_name.clone(),
                 parent_module: entity_id.clone(), // patched later
                 parent_class: None,
-                bases: Vec::new(),
+                bases,
                 decorators: Vec::new(),
                 docstring: None,
                 fields: Vec::new(),

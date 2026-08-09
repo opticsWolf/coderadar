@@ -357,9 +357,10 @@ fn analyze(root: &str) -> PyResult<PyObject> {
         }
     }
 
-    // Run resolution cascade on all calls
+    // Compute MRO and run resolution cascade on all calls
     {
         let mut projection = (*graph.snapshot()).clone();
+        graph.compute_all_mro(&mut projection);
         graph.resolve_all_calls(&mut projection);
         graph.commit_projection(projection);
     }
