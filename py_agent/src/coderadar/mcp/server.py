@@ -72,7 +72,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-                version="0.3.13",
+                version="0.3.14",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -156,8 +156,13 @@ def _explore(
     direction: str, max_files: int,
 ) -> str:
     """Execute codegraph_explore."""
-    if graph is None:
-        return "No index available. Run `coderadar init` in the project root first."
+    try:
+        from coderadar._core import graph_stats
+        stats = graph_stats()
+        if stats.get("modules", 0) == 0:
+            return "No index available. Run `coderadar init` in the project root first."
+    except ImportError:
+        return "CodeRadar extension not available."
 
     names = _parse_names(query, symbols)
     if not names:
@@ -208,8 +213,12 @@ def _explore(
 
 def _node_detail(graph: Any, entity_id: str, include_neighbors: bool) -> str:
     """Get full entity details."""
-    if graph is None:
-        return "No index available. Run `coderadar init` first."
+    try:
+        from coderadar._core import graph_stats
+        if graph_stats().get("modules", 0) == 0:
+            return "No index available. Run `coderadar init` first."
+    except ImportError:
+        return "CodeRadar extension not available."
 
     entity = _find_entity(graph, entity_id)
     if not entity:
@@ -260,15 +269,20 @@ def _node_detail(graph: Any, entity_id: str, include_neighbors: bool) -> str:
 
 def _search(graph: Any, query: str, kind: str | None, top_k: int) -> str:
     """Keyword search for symbols."""
-    if graph is None:
-        return "No index available. Run `coderadar init` first."
+    try:
+        from coderadar._core import graph_stats
+        if graph_stats().get("modules", 0) == 0:
+            return "No index available. Run `coderadar init` first."
+    except ImportError:
+        return "CodeRadar extension not available."
 
     if not query.strip():
         return "Please provide a query to search for."
 
     results = _text_search(graph, query, min(top_k, 20))
     if kind:
-        results = [r for r in results if r.get("kind") == kind]
+        # kind filtering now happens in Rust search_entities via the kind param
+        results = [r for r in results if r.get("kind") == kind or r.get("entity_type") == kind]
 
     if not results:
         return (
@@ -303,8 +317,12 @@ def _search(graph: Any, query: str, kind: str | None, top_k: int) -> str:
 
 def _affected(graph: Any, entity_id: str, max_depth: int) -> str:
     """Transitive impact analysis."""
-    if graph is None:
-        return "No index available. Run `coderadar init` first."
+    try:
+        from coderadar._core import graph_stats
+        if graph_stats().get("modules", 0) == 0:
+            return "No index available. Run `coderadar init` first."
+    except ImportError:
+        return "CodeRadar extension not available."
 
     entity = _find_entity(graph, entity_id)
     if not entity:
@@ -432,10 +450,10 @@ def _find_entity(graph: Any, entity_id: str) -> dict | None:
         return None
 
 
-def _text_search(graph: Any, query: str, top_k: int) -> list[dict]:
+def _text_search(graph: Any, query: str, top_k: int, kind: str | None = None) -> list[dict]:
     try:
         from coderadar._core import search_entities
-        return search_entities(query, top_k) or []
+        return search_entities(query, top_k, kind) or []
     except ImportError:
         return []
 

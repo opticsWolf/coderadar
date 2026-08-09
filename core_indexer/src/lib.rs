@@ -628,61 +628,68 @@ fn lookup_entity(py: Python<'_>, entity_id: &str) -> PyResult<Option<PyObject>> 
 
 /// Search entities by name substring match (case-insensitive).
 #[pyfunction]
-fn search_entities(py: Python<'_>, query: &str, top_k: usize) -> PyResult<Vec<PyObject>> {
+fn search_entities(py: Python<'_>, query: &str, top_k: usize, kind: Option<&str>) -> PyResult<Vec<PyObject>> {
     with_graph(|_graph, snap| {
         let query_lower = query.to_lowercase();
         let mut results: Vec<(usize, PyObject)> = Vec::new(); // (score, dict)
+        let kind_filter = kind.map(|k| k.to_lowercase());
 
         // Score: exact match = 100, starts-with = 50, contains = 25
 
         // Search functions
-        for (id, f) in &snap.functions {
-            let name_lower = f.name.to_lowercase();
-            let score = if name_lower == query_lower {
-                100
-            } else if name_lower.starts_with(&query_lower) {
-                50
-            } else if name_lower.contains(&query_lower) {
-                25
-            } else {
-                continue;
-            };
-            if let Ok(d) = function_to_dict(py, f) {
-                results.push((score, d));
+        if kind_filter.is_none() || kind_filter.as_deref() == Some("function") {
+            for (_id, f) in &snap.functions {
+                let name_lower = f.name.to_lowercase();
+                let score = if name_lower == query_lower {
+                    100
+                } else if name_lower.starts_with(&query_lower) {
+                    50
+                } else if name_lower.contains(&query_lower) {
+                    25
+                } else {
+                    continue;
+                };
+                if let Ok(d) = function_to_dict(py, f) {
+                    results.push((score, d));
+                }
             }
         }
 
         // Search classes
-        for (id, c) in &snap.classes {
-            let name_lower = c.name.to_lowercase();
-            let score = if name_lower == query_lower {
-                100
-            } else if name_lower.starts_with(&query_lower) {
-                50
-            } else if name_lower.contains(&query_lower) {
-                25
-            } else {
-                continue;
-            };
-            if let Ok(d) = class_to_dict(py, c) {
-                results.push((score, d));
+        if kind_filter.is_none() || kind_filter.as_deref() == Some("class") {
+            for (_id, c) in &snap.classes {
+                let name_lower = c.name.to_lowercase();
+                let score = if name_lower == query_lower {
+                    100
+                } else if name_lower.starts_with(&query_lower) {
+                    50
+                } else if name_lower.contains(&query_lower) {
+                    25
+                } else {
+                    continue;
+                };
+                if let Ok(d) = class_to_dict(py, c) {
+                    results.push((score, d));
+                }
             }
         }
 
         // Search modules
-        for (id, m) in &snap.modules {
-            let name_lower = m.name.to_lowercase();
-            let score = if name_lower == query_lower {
-                90
-            } else if name_lower.starts_with(&query_lower) {
-                40
-            } else if name_lower.contains(&query_lower) {
-                20
-            } else {
-                continue;
-            };
-            if let Ok(d) = module_to_dict(py, m) {
-                results.push((score, d));
+        if kind_filter.is_none() || kind_filter.as_deref() == Some("module") {
+            for (_id, m) in &snap.modules {
+                let name_lower = m.name.to_lowercase();
+                let score = if name_lower == query_lower {
+                    90
+                } else if name_lower.starts_with(&query_lower) {
+                    40
+                } else if name_lower.contains(&query_lower) {
+                    20
+                } else {
+                    continue;
+                };
+                if let Ok(d) = module_to_dict(py, m) {
+                    results.push((score, d));
+                }
             }
         }
 

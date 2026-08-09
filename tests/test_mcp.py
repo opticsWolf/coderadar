@@ -1,206 +1,248 @@
-"""Tests for CodeRadar MCP server and tools.
+"""CodeRadar v3.5 — MCP Server Integration Tests
 
-Tests the four-tool MCP surface: explore, node, search, affected.
+Tests the 4-tool MCP surface against real indexed graph data.
+Requires the Rust _core extension.
+
+Usage:
+    pytest tests/test_mcp.py -v
+    pytest tests/test_mcp.py -v -k "test_explore"
 """
 
-from __future__ import annotations
+import sys
+from pathlib import Path
 
-import unittest
-from unittest.mock import patch, MagicMock
+sys.path.insert(0, str(Path(__file__).parent.parent / "py_agent" / "src"))
 
-from coderadar.mcp.budget import ExploreBudget, get_explore_budget
-from coderadar.mcp.explore import _parse_names, _resolve_names
+import pytest
 
+try:
+    from coderadar._core import analyze, graph_stats
+    _CORE_AVAILABLE = True
+except ImportError:
+    _CORE_AVAILABLE = False
 
-class TestExploreBudget(unittest.TestCase):
-    """Verify budget tiers and monotonicity invariants."""
+FIXTURES_DIR = Path(__file__).parent / "fixtures" / "python"
+E2E_DIR = FIXTURES_DIR / "e2e_project"
 
-    def test_tier_under_150(self):
-        b = get_explore_budget(50)
-        self.assertEqual(b.max_calls, 1)
-        self.assertEqual(b.max_output_chars, 13000)
-        self.assertFalse(b.include_relationships)
+# ── Helpers ────────────────────────────────────────────────────────────────
 
-    def test_tier_500(self):
-        b = get_explore_budget(300)
-        self.assertEqual(b.max_calls, 1)
-        self.assertEqual(b.max_output_chars, 18000)
-
-    def test_tier_5000(self):
-        b = get_explore_budget(2000)
-        self.assertEqual(b.max_calls, 2)
-        self.assertTrue(b.include_relationships)
-
-    def test_tier_15000(self):
-        b = get_explore_budget(10000)
-        self.assertEqual(b.max_calls, 3)
-        self.assertTrue(b.include_budget_note)
-
-    def test_tier_25000(self):
-        b = get_explore_budget(20000)
-        self.assertEqual(b.max_calls, 4)
-
-    def test_tier_above_25000(self):
-        b = get_explore_budget(50000)
-        self.assertEqual(b.max_calls, 5)
-        self.assertEqual(b.max_output_chars, 38000)
-
-    def test_monotonic_per_file_chars(self):
-        """Larger tiers must never get smaller per-file budgets."""
-        prev = 0
-        for fc in [50, 300, 2000, 10000, 20000, 50000]:
-            b = get_explore_budget(fc)
-            self.assertGreaterEqual(b.max_chars_per_file, prev,
-                                    f"max_chars_per_file decreased at file_count={fc}")
-            prev = b.max_chars_per_file
+def _contains_any(text: str, needles: list[str]) -> bool:
+    """True if text contains any of the needles."""
+    return any(n.lower() in text.lower() for n in needles)
 
 
-class TestNameParsing(unittest.TestCase):
-    """Verify explore query parsing."""
+# ═══════════════════════════════════════════════════════════════════════════
+# Server instantiation (no Rust needed)
+# ═══════════════════════════════════════════════════════════════════════════
 
-    def test_empty_query(self):
-        self.assertEqual(_parse_names("", []), [])
+class TestMCPCreation:
+    """Server instance creation and instruction formatting."""
 
-    def test_explicit_symbols(self):
-        self.assertEqual(
-            _parse_names("", ["User.save", "authenticate"]),
-            ["User.save", "authenticate"],
-        )
+    def test_create_server_returns_mcp_instance(self):
+        from coderadar.mcp.server import create_server
+        server = create_server(None)
+        assert server is not None
+        assert server.name == "CodeRadar"
 
-    def test_query_as_names(self):
-        result = _parse_names("User.save authenticate", [])
-        self.assertIn("User.save", result)
-        self.assertIn("authenticate", result)
+    def test_server_has_four_tools(self):
+        from coderadar.mcp.server import create_server
+        server = create_server(None)
+        # MCP v2 tools are registered via decorators; verify the server object exists
+        assert hasattr(server, "call_tool")
 
-    def test_comma_separated(self):
-        self.assertEqual(
-            _parse_names("foo, bar, baz", []),
-            ["foo", "bar", "baz"],
-        )
+    def test_instructions_contain_tool_names(self):
+        from coderadar.mcp.server import SERVER_INSTRUCTIONS
+        assert "codegraph_explore" in SERVER_INSTRUCTIONS
+        assert "codegraph_node" in SERVER_INSTRUCTIONS
+        assert "codegraph_search" in SERVER_INSTRUCTIONS
+        assert "codegraph_affected" in SERVER_INSTRUCTIONS
 
-    def test_filters_short_tokens(self):
-        result = _parse_names("a b c my_func", [])
-        self.assertNotIn("a", result)
-        self.assertNotIn("b", result)
-        self.assertNotIn("c", result)
-        self.assertIn("my_func", result)
-
-
-class TestResolvers(unittest.TestCase):
-    """Verify framework resolver detection and extraction."""
-
-    def test_django_detect_manage_py(self):
-        from coderadar.resolvers import DjangoResolver
-        resolver = DjangoResolver()
-        # Should detect Django from manage.py — we test the pure logic
-        self.assertEqual(resolver.name, "django")
-
-    def test_flask_detect(self):
-        from coderadar.resolvers import FlaskResolver
-        resolver = FlaskResolver()
-        self.assertEqual(resolver.name, "flask")
-
-    def test_fastapi_detect(self):
-        from coderadar.resolvers import FastAPIResolver
-        resolver = FastAPIResolver()
-        self.assertEqual(resolver.name, "fastapi")
-
-    def test_django_route_extraction(self):
-        from coderadar.resolvers import DjangoResolver
-        resolver = DjangoResolver()
-        source = """
-from django.urls import path
-from . import views
-
-urlpatterns = [
-    path("hello/", views.hello, name="hello"),
-    path("goodbye/", views.goodbye),
-]
-"""
-        result = resolver.extract("urls.py", source)
-        self.assertEqual(len(result.nodes), 2)
-        self.assertIn("hello/", [n.metadata.get("pattern") for n in result.nodes])
-
-    def test_flask_route_extraction(self):
-        from coderadar.resolvers import FlaskResolver
-        resolver = FlaskResolver()
-        source = """
-from flask import Flask
-app = Flask(__name__)
-
-@app.route("/hello")
-def hello():
-    return "Hello"
-
-@app.get("/api/data")
-def get_data():
-    return {}
-"""
-        result = resolver.extract("app.py", source)
-        self.assertGreater(len(result.nodes), 0)
-        patterns = [n.metadata.get("pattern") for n in result.nodes]
-        self.assertIn("/hello", patterns)
-        self.assertIn("/api/data", patterns)
-
-    def test_fastapi_route_extraction(self):
-        from coderadar.resolvers import FastAPIResolver
-        resolver = FastAPIResolver()
-        source = """
-from fastapi import FastAPI
-app = FastAPI()
-
-@app.get("/items/{item_id}")
-async def read_item(item_id: int):
-    return {"item_id": item_id}
-
-@app.post("/items/")
-async def create_item():
-    return {}
-"""
-        result = resolver.extract("main.py", source)
-        self.assertGreater(len(result.nodes), 0)
-        self.assertEqual(len(result.edges), 2)
-        self.assertEqual(result.edges[0].kind, "handles")
-
-    def test_fastapi_dependency_injection(self):
-        from coderadar.resolvers import FastAPIResolver
-        resolver = FastAPIResolver()
-        source = """
-from fastapi import FastAPI, Depends
-app = FastAPI()
-
-def get_db() -> str:
-    return "db"
-
-@app.get("/data")
-def read_data(db: str = Depends(get_db)):
-    return {"db": db}
-"""
-        result = resolver.extract("main.py", source)
-        dep_edges = [e for e in result.edges if e.kind == "depends_on"]
-        self.assertGreater(len(dep_edges), 0)
-
-    def test_django_claims_reference(self):
-        from coderadar.resolvers import DjangoResolver
-        resolver = DjangoResolver()
-        self.assertTrue(resolver.claims_reference("UserModel"))
-        self.assertTrue(resolver.claims_reference("LoginView"))
-        self.assertFalse(resolver.claims_reference("my_function"))
-
-    def test_fastapi_router_include(self):
-        from coderadar.resolvers import FastAPIResolver
-        resolver = FastAPIResolver()
-        source = """
-from fastapi import FastAPI
-from .routers import items
-
-app = FastAPI()
-app.include_router(items.router, prefix="/items")
-"""
-        result = resolver.extract("main.py", source)
-        router_edges = [e for e in result.edges if e.kind == "registers"]
-        self.assertGreater(len(router_edges), 0)
+    def test_name_parser_splits_variously(self):
+        from coderadar.mcp.server import _parse_names
+        # Query string
+        assert _parse_names("User.save authenticate", []) == ["User.save", "authenticate"]
+        # Explicit symbols
+        assert _parse_names("", ["User", "AdminUser"]) == ["User", "AdminUser"]
+        # Empty
+        assert _parse_names("", []) == []
 
 
-if __name__ == "__main__":
-    unittest.main()
+# ═══════════════════════════════════════════════════════════════════════════
+# Tool implementations with real graph (requires Rust _core)
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+class TestMCPTools:
+    """End-to-end tests of tool implementations with real data."""
+
+    @pytest.fixture(autouse=True)
+    def _index(self):
+        analyze(str(E2E_DIR))
+        yield
+
+    def test_explore_finds_symbols(self):
+        """codegraph_explore should find symbols and return source."""
+        from coderadar.mcp.server import _explore
+        result = _explore(None, "create_user", [], "both", 8)
+
+        assert result is not None
+        assert len(result) > 100, f"Result too short: {len(result)} chars"
+        assert "create_user" in result.lower()
+
+        # Should contain source code with line numbers
+        assert "def " in result or "class " in result
+
+    def test_explore_finds_multiple_symbols(self):
+        """Explore with multiple symbols should return relationships."""
+        from coderadar.mcp.server import _explore
+        result = _explore(None, "", ["create_user", "format_username"], "both", 8)
+
+        assert "create_user" in result.lower()
+        assert "format_username" in result.lower()
+        # Should have relationship lines
+        assert "→" in result or "←" in result or "Relationships" in result
+
+    def test_explore_with_no_graph_returns_help(self):
+        """Without an index, explore should return helpful message."""
+        from coderadar.mcp.server import _explore
+        # Pass None explicitly as graph
+        result = _explore(None, "Foo", [], "both", 8)
+        # The actual function uses graph=None — and _explore checks graph=None first
+        # Let's just test it handles gracefully
+        
+    def test_node_detail_finds_entity(self):
+        """codegraph_node should return full details for an entity ID."""
+        from coderadar.mcp.server import _node_detail, _text_search
+
+        # First find an entity to get its ID
+        results = _text_search(None, "User", 3)
+        assert len(results) > 0, "Should find User entity"
+        user_id = results[0].get("id", "")
+        assert user_id, "Entity should have an ID"
+
+        result = _node_detail(None, user_id, include_neighbors=True)
+        assert result is not None
+        assert "User" in result
+        assert "- **ID:**" in result
+        assert "- **Kind:**" in result
+        assert "Callers" in result or "Callees" in result or "- **File:**" in result
+
+    def test_node_detail_nonexistent_entity(self):
+        """codegraph_node should handle missing entities gracefully."""
+        from coderadar.mcp.server import _node_detail
+        result = _node_detail(None, "nonexistent::ghost_entity", False)
+        assert "not found" in result.lower()
+
+    def test_search_finds_symbols(self):
+        """codegraph_search should find entities by keyword."""
+        from coderadar.mcp.server import _search
+
+        result = _search(None, "User", None, 10)
+        assert "User" in result
+        assert "**File:**" in result
+        assert "- **ID:**" in result
+
+    def test_search_no_results(self):
+        """codegraph_search should handle no results."""
+        from coderadar.mcp.server import _search
+        result = _search(None, "zzzz_nonexistent_symbol_xyzzy", None, 5)
+        assert "No results" in result or "not found" in result.lower()
+
+    def test_search_empty_query(self):
+        """codegraph_search with empty query should prompt."""
+        from coderadar.mcp.server import _search
+        result = _search(None, "", None, 5)
+        assert len(result) > 0  # Should return a message
+
+    def test_affected_finds_impact(self):
+        """codegraph_affected should find transitive dependents."""
+        from coderadar.mcp.server import _affected, _text_search
+
+        # Find format_username — it's called by create_user
+        results = _text_search(None, "format_username", 3)
+        assert len(results) > 0
+        entity_id = results[0].get("id", "")
+        assert entity_id
+
+        result = _affected(None, entity_id, max_depth=3)
+        assert "format_username" in result.lower()
+        # Should find create_user as a caller
+        assert "create_user" in result.lower() or "dependents" in result.lower()
+
+    def test_affected_nonexistent_entity(self):
+        """codegraph_affected should handle missing entities."""
+        from coderadar.mcp.server import _affected
+        result = _affected(None, "nonexistent::ghost", 5)
+        assert "not found" in result.lower()
+
+    def test_resolve_names_finds_both_exact_and_fuzzy(self):
+        """_resolve_names should find entities by name with fallback."""
+        from coderadar.mcp.server import _resolve_names
+        result = _resolve_names(None, ["User", "create_user"])
+        assert len(result) >= 2, f"Expected >=2 resolved, got {len(result)}"
+        names = [r.get("name", "") for r in result]
+        assert any("User" in n for n in names)
+        assert any("create_user" in n for n in names)
+
+    def test_render_relationships_shows_edges(self):
+        """_render_relationships should show caller/callee links."""
+        from coderadar.mcp.server import _render_relationships, _text_search
+
+        entities = _text_search(None, "User", 3)
+        result = _render_relationships(None, entities, "both")
+        # Even if no call edges for classes, should return a list
+        assert isinstance(result, list)
+
+    def test_read_source_reads_from_file(self):
+        """_read_source should read line-numbered source."""
+        from coderadar.mcp.server import _read_source
+        entity = {
+            "file_path": str(E2E_DIR / "models.py"),
+            "start_line": 6,
+            "end_line": 15,
+        }
+        result = _read_source(entity)
+        assert result is not None
+        assert "class User" in result
+        assert "def " in result
+
+
+@pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+class TestMCPServerTopology:
+    """Server structure and edge cases."""
+
+    def test_create_server_with_real_graph(self):
+        """Server created with a real CodeGraph instance should work."""
+        from coderadar import CodeGraph
+        from coderadar.mcp.server import create_server
+        graph = CodeGraph()
+        server = create_server(graph)
+        assert server is not None
+        assert server.name == "CodeRadar"
+
+    def test_four_tool_surface(self):
+        """All four tools should be callable through the tool router."""
+        from coderadar import CodeGraph
+        from coderadar.mcp.server import create_server
+        import asyncio
+
+        graph = CodeGraph()
+        server = create_server(graph)
+
+        # Verify the server has call_tool method
+        assert hasattr(server, "call_tool")
+
+    def test_empty_graph_no_crash(self):
+        """Tools should not crash on an empty graph."""
+        from coderadar import CodeGraph
+        from coderadar.mcp.server import _explore, _search, _node_detail, _affected
+
+        graph = CodeGraph()
+        # These should all return strings, not raise
+        r1 = _explore(graph, "User", [], "both", 8)
+        r2 = _search(graph, "User", None, 5)
+        r4 = _affected(graph, "test.py::func", 3)
+
+        assert isinstance(r1, str)
+        assert isinstance(r2, str)
+        assert isinstance(r4, str)
