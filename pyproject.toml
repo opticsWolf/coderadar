@@ -64,3 +64,6 @@ line-length = 100
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["py_agent/src"]
+markers = [
+    "slow: performance / benchmark tests that generate synthetic projects",
+]
