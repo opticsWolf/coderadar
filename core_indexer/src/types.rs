@@ -110,7 +110,13 @@ pub enum Language {
     Php,
     CSharp,
     Kotlin,
-    OtherTen, // canonical lowercase name for Tier 2/3 languages
+    Swift,
+    Scala,
+    Lua,
+    Elixir,
+    Zig,
+    R,
+    OtherTen,
 }
 
 impl Language {
@@ -128,6 +134,12 @@ impl Language {
             "php" => Language::Php,
             "cs" => Language::CSharp,
             "kt" | "kts" => Language::Kotlin,
+            "swift" => Language::Swift,
+            "scala" | "sc" => Language::Scala,
+            "lua" => Language::Lua,
+            "ex" | "exs" => Language::Elixir,
+            "zig" | "zon" => Language::Zig,
+            "r" | "R" => Language::R,
             _ => Language::OtherTen,
         }
     }
@@ -147,6 +159,12 @@ impl Language {
             Language::Php => "php",
             Language::CSharp => "csharp",
             Language::Kotlin => "kotlin",
+            Language::Swift => "swift",
+            Language::Scala => "scala",
+            Language::Lua => "lua",
+            Language::Elixir => "elixir",
+            Language::Zig => "zig",
+            Language::R => "r",
             Language::OtherTen => "",
         }
     }
@@ -165,7 +183,13 @@ impl Language {
             | Language::Php
             | Language::CSharp
             | Language::Kotlin => 1,
-            Language::OtherTen => 2,
+            Language::Swift
+            | Language::Scala
+            | Language::Lua
+            | Language::Elixir
+            | Language::Zig
+            | Language::R => 2,
+            Language::OtherTen => 3,
         }
     }
 
@@ -183,6 +207,12 @@ impl Language {
             Language::Php => "tree-sitter-php",
             Language::CSharp => "tree-sitter-c-sharp",
             Language::Kotlin => "tree-sitter-kotlin",
+            Language::Swift => "tree-sitter-swift",
+            Language::Scala => "tree-sitter-scala",
+            Language::Lua => "tree-sitter-lua",
+            Language::Elixir => "tree-sitter-elixir",
+            Language::Zig => "tree-sitter-zig",
+            Language::R => "tree-sitter-r",
             Language::OtherTen => "",
         }
     }
@@ -201,6 +231,12 @@ impl Language {
             Language::Php => "php",
             Language::CSharp => "csharp",
             Language::Kotlin => "kotlin",
+            Language::Swift => "swift",
+            Language::Scala => "scala",
+            Language::Lua => "lua",
+            Language::Elixir => "elixir",
+            Language::Zig => "zig",
+            Language::R => "r",
             Language::OtherTen => "other",
         }
     }
@@ -830,7 +866,7 @@ mod tests {
     #[test]
     fn test_language_tier() {
         assert_eq!(Language::Python.tier(), 1);
-        assert_eq!(Language::OtherTen.tier(), 2);
+        assert_eq!(Language::OtherTen.tier(), 3);
     }
 
     #[test]

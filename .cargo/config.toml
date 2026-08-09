@@ -8,5 +8,5 @@
 # No shared-library loading, no runtime downloads needed for core langs.
 
 [env]
-TSLP_LANGUAGES = "python,typescript,javascript,rust,go,java,c,cpp,ruby,php,csharp,kotlin"
+TSLP_LANGUAGES = "python,typescript,javascript,rust,go,java,c,cpp,ruby,php,csharp,kotlin,swift,scala,lua,elixir,zig,r"
 TSLP_LINK_MODE = "static"

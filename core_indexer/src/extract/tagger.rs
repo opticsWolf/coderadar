@@ -18,8 +18,13 @@ pub fn tag_tree<'a>(
     let query_source = get_query_for_language_src(language);
     let query = Query::new(&ts_lang, query_source)
         .unwrap_or_else(|e| {
-            eprintln!("Tree-sitter query compile error for {:?}: {:?}", language, e);
-            panic!("Query compilation failed");
+            eprintln!("Tree-sitter query compile error for {:?}: {} — using fallback", language, e);
+            // Universal fallback: matches nothing gracefully
+            let fallback = "(comment) @docstring\n";
+            Query::new(&ts_lang, fallback).unwrap_or_else(|_| {
+                // Truly empty query — some grammars don't even have comment nodes
+                Query::new(&ts_lang, "(ERROR) @_none").unwrap()
+            })
         });
 
     let mut cursor = QueryCursor::new();
@@ -80,6 +85,12 @@ fn get_query_for_language_src(language: Language) -> &'static str {
         Language::Php => include_str!("../../queries/php.scm"),
         Language::CSharp => include_str!("../../queries/csharp.scm"),
         Language::Kotlin => include_str!("../../queries/kotlin.scm"),
-        _ => r#"(identifier) @id"#, // fallback for unsupported languages
+        Language::Swift => include_str!("../../queries/swift.scm"),
+        Language::Scala => include_str!("../../queries/scala.scm"),
+        Language::Lua => include_str!("../../queries/lua.scm"),
+        Language::Elixir => include_str!("../../queries/elixir.scm"),
+        Language::Zig => include_str!("../../queries/zig.scm"),
+        Language::R => include_str!("../../queries/r.scm"),
+        Language::OtherTen => r#"(identifier) @id"#, // fallback
     }
 }

@@ -100,12 +100,28 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                     .and_then(|n| n.utf8_text(source.as_bytes()).ok())
                     .unwrap_or("")
                     .to_string()
-            } else if node.kind() == "class_declaration" || node.kind() == "object_declaration" {
-                // Kotlin: name child is type_identifier or simple_identifier
+            } else if node.kind() == "class_declaration"
+                || node.kind() == "object_declaration"
+                || node.kind() == "struct_declaration"
+                || node.kind() == "enum_declaration"
+                || node.kind() == "union_declaration"
+                || node.kind() == "protocol_declaration"
+                || node.kind() == "extension_declaration"
+                || node.kind() == "class_definition"
+                || node.kind() == "object_definition"
+                || node.kind() == "trait_definition"
+                || node.kind() == "defmodule"
+                || node.kind() == "opaque_declaration"
+                || node.kind() == "table_constructor"
+                || node.kind() == "setClass_expression"
+            {
+                // Multi-language class/struct/enum/trait: name is identifier child
+                // Find identifier-like child node for the name
                 let mut cursor = node.walk();
                 let children: Vec<_> = node.children(&mut cursor).collect();
                 children.iter().find(|ch|
                     ch.kind() == "type_identifier" || ch.kind() == "simple_identifier"
+                    || ch.kind() == "identifier"
                 )
                 .and_then(|n| n.utf8_text(source.as_bytes()).ok())
                 .unwrap_or("")

@@ -167,7 +167,7 @@ fn is_source_extension(ext: &str) -> bool {
         "py" | "pyi" | "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
             | "go" | "java" | "kt" | "kts" | "c" | "h" | "cpp" | "cc" | "cxx"
             | "hpp" | "hxx" | "rb" | "php" | "cs" | "swift" | "scala" | "sc"
-            | "lua" | "r" | "R" | "sql" | "toml" | "yaml" | "yml" | "json"
+            | "lua" | "ex" | "exs" | "zig" | "zon" | "r" | "R" | "sql" | "toml" | "yaml" | "yml" | "json"
             | "md" | "rst" | "sh" | "bash" | "html" | "css" | "vue" | "svelte"
     )
 }
