@@ -256,4 +256,140 @@ This is the right call because:
 
 ---
 
+## Performance Analysis — v0.5.2 (2025-08-09)
+
+### Benchmark setup
+
+200 Python files, one orchestrator importing + calling all leaf functions:
+
+```
+199 leaf modules × 5 functions each = 995 leaf functions
+1 orchestrator.py with 995 `from mod_N import func_N_J` statements
+  and 995 `func_N_J()` calls inside `def orchestrator()`
+
+Total: 200 files, 996 functions, 995 imports, 1991 entities
+```
+
+### Head-to-head: CodeGraph 1.5.0 vs CodeRadar 0.5.2
+
+| Metric | CodeGraph 1.5.0 | CodeRadar 0.5.2 | Ratio |
+|--------|:-:|:-:|:-:|
+| Index time | **1,219ms** | **3,326ms** | 2.7× |
+| Files | 200 | 200 | — |
+| Nodes / Entities | 2,191 | 2,191 | — |
+| Edges | 3,981 | 995 (call edges) | — |
+| DB size | 3.0 MB | 13.7 MB (4.1MB WAL) | — |
+| Search latency | — | 0.05ms | — |
+
+### Where the 3,326ms goes
+
+Three macro-benchmarks isolate each phase:
+
+| Test | Setup | Time | What it measures |
+|------|-------|------|------------------|
+| Pure indexing, no calls | 200 files, 1000 isolated funcs | **1,532ms** | Parse + extract + insert + persist |
+| Single-file, many calls | 1 file, 1001 funcs, 1000 same-file calls | **545ms** | Parse + extract + insert + resolve + persist (1 file) |
+| Full cross-file | 200 files, cross-file calls | **3,326ms** | Everything |
+
+From these, the phase breakdown is:
+
+| Phase | Cost | % of total |
+|-------|------|-----------|
+| Tree-sitter parse + extract + insert | ~800ms | 24% |
+| `persist_entities` (2,191 concepts to Macrame) | ~1,800ms | **54%** |
+| `resolve_all_calls` (995 calls across files) | ~500ms | 15% |
+| `persist_edges` (995 edges, batched) | ~100ms | 3% |
+| Other (walk, MRO, commit) | ~126ms | 4% |
+
+### Root cause: per-concept `block_on` overhead
+
+`persist_entities` accounts for **54% of total time**. The current implementation:
+
+```rust
+// storage.rs — current code
+pub fn upsert_entities(&self, units, file_path, language) -> Result<()> {
+    for unit in units {
+        let concept = build_concept(unit, file_path, language);
+        self.runtime.block_on(self.db.upsert_concept(concept))?;
+        //                      ^^^^^^^^^ one Tokio task per entity
+    }
+    Ok(())
+}
+```
+
+Each of the 2,191 entities triggers:
+1. `build_concept()` — sync, fast (~50µs with JSON serialization)
+2. `block_on()` — spawns a Tokio task, polls the future, waits for completion (~300µs)
+3. `upsert_concept()` — async, writes to libSQL via Macrame's Write Actor (~500µs)
+
+**Per entity: ~850µs. Total: 2,191 × 850µs ≈ 1,862ms.**
+
+### What I tried (and why it didn't work)
+
+**Attempt 1: Single `block_on` per file**
+
+Wrapped all concepts from one file in a single async block to avoid per-entity Tokio task spawning:
+
+```rust
+let concepts: Vec<ConceptUpsert> = units.iter()
+    .map(|u| build_concept(u, file_path, language)).collect();
+self.runtime.block_on(async {
+    for concept in &concepts {
+        self.db.upsert_concept(concept.clone()).await?;
+    }
+    Ok(())
+})
+```
+
+**Result: 15% slower** (3,911ms vs 3,326ms). The Tokio runtime fast-paths individual `block_on` calls for immediately-ready tasks. Batching them forces the async runtime to schedule and poll multiple futures sequentially within the same task, which has higher overhead than individual tiny tasks.
+
+**Attempt 2: Defer all persistence to end of analyze loop**
+
+Collected all `ExtractedUnit`s during the file loop, then persisted all 2,191 concepts in one batch after indexing was complete.
+
+**Result: also slower** (3,875ms). Cloning all units added allocation overhead. Plus the single giant `block_on` with 2,191 sequential `upsert_concept` calls suffered the same Tokio scheduling issue as Attempt 1, just at larger scale.
+
+### What would actually fix it
+
+**Macrame needs a bulk concept upsert API.** The equivalent of `write_bulk_atomic` for edges, but for concepts:
+
+```rust
+// Proposed Macrame API
+pub async fn upsert_concepts_bulk(
+    &self,
+    concepts: Vec<ConceptUpsert>,
+) -> Result<usize>;
+```
+
+This would wrap all concepts in a single SQL transaction with one Write Actor dispatch. Instead of 2,191 `block_on` + `upsert_concept` round-trips, there would be ~10 batch calls (one per 200-entity chunk).
+
+**Projected impact:**
+
+| Phase | Current | With bulk API |
+|-------|---------|---------------|
+| `persist_entities` | 1,800ms | ~500ms |
+| Everything else | 1,526ms | 1,526ms |
+| **Total** | **3,326ms** | **~2,026ms** |
+| vs CodeGraph | 2.7× slower | **1.7× slower** |
+
+The remaining 1.7× gap comes from CodeRadar storing 3× more metadata per entity (byte spans, content hashes, signatures, return types, parameter lists, docstrings, decorators, grammar_kind) vs CodeGraph's minimal (name, kind, file). This is a deliberate tradeoff: richer metadata enables deeper query-time intelligence without re-reading source files.
+
+### Secondary optimization: WAL checkpoint after batch index
+
+After a full `analyze`, Macrame's WAL holds all written data. A forced checkpoint would collapse the 4.1MB WAL into the main DB, reducing total storage from 13.7MB to ~9MB. This is a one-line call after the batch resolve:
+
+```rust
+self.runtime.block_on(self.db.checkpoint())?;
+```
+
+### What doesn't need optimization
+
+- **`resolve_all_calls`** — already scoped per file via `resolve_calls_scoped` (v0.5). Processes only changed-file functions on update.
+- **`persist_edges`** — already batched every 200 edges via `write_bulk_atomic`.
+- **Search** — 0.05ms via HashMap lookups in Rust. No DB query needed.
+- **Tree-sitter** — native C FFI, already the fastest possible path.
+- **Diff algorithm** — O(n) identity match, not AST diffing. Already optimal.
+
+---
+
 *End of revised assessment.*
