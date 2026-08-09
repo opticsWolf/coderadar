@@ -15,7 +15,7 @@ console = Console()
 
 
 @click.group()
-@click.version_option(version="0.3.10", prog_name="coderadar",
+@click.version_option(version="0.3.11", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.5)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -364,9 +364,15 @@ def visualize(viz_type: str, args: tuple, output: Optional[str], fmt: str):
     arg_list = list(args)
 
     if viz_type == "hierarchy":
-        text = generate_mermaid("hierarchy", arg_list, graph)
+        if fmt == "graphviz" or fmt == "dot":
+            text = generate_dot("hierarchy", arg_list, graph)
+        else:
+            text = generate_mermaid("hierarchy", arg_list, graph)
     elif viz_type == "dependencies":
-        text = generate_mermaid("dependencies", arg_list, graph)
+        if fmt == "graphviz" or fmt == "dot":
+            text = generate_dot("dependencies", arg_list, graph)
+        else:
+            text = generate_mermaid("dependencies", arg_list, graph)
     elif viz_type == "call-graph":
         text = generate_call_graph(arg_list, graph)
     else:
