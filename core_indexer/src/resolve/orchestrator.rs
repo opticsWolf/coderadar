@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use crate::resolve::cache::{ResolutionCache, Resolution};
 use crate::types::SymbolId;
 use crate::resolve::import_graph::{rank_candidates, resolve_in_imports};
+use crate::graph::ImportNode;
 use crate::resolve::signature::{signature_match, ScoredDef};
 use crate::resolve::stack_graph::{self, ParsedReference, StackGraphResolver};
 use crate::types::*;
@@ -23,6 +24,13 @@ pub struct ResolutionOrchestrator {
     pub cache: ResolutionCache,
     pub max_import_depth: usize,
     pub include_same_package: bool,
+    /// Per-session cache of `transitive_imports` results keyed by
+    /// (file_path|max_depth). Avoids O(V+E) BFS per call — the
+    /// orchestrator file with 995 calls reuses one BFS result.
+    /// Technique: per-file transitive-import cache adopted from
+    /// CodeGraph's reachableModules cache (resolution/index.ts).
+    /// MIT license. https://github.com/opticsWolf/codegraph
+    pub transitives_cache: std::collections::HashMap<String, Vec<ImportNode>>,
 }
 
 impl ResolutionOrchestrator {
@@ -32,6 +40,7 @@ impl ResolutionOrchestrator {
             cache: ResolutionCache::new(),
             max_import_depth: 3,
             include_same_package: true,
+            transitives_cache: std::collections::HashMap::new(),
         }
     }
 
@@ -72,6 +81,7 @@ impl ResolutionOrchestrator {
             &reference.name,
             self.max_import_depth,
             self.include_same_package,
+            &mut self.transitives_cache,
         ) {
             rank_candidates(&mut matches, file_path);
 
@@ -224,7 +234,7 @@ impl ResolutionOrchestrator {
 
     /// Resolve calls for a function: classify call shape and resolve.
     pub fn resolve_calls(
-        &self,
+        &mut self,
         calls: &[UnresolvedRef],
         function_id: &str,
         import_graph: &crate::graph::ImportGraph,
@@ -273,7 +283,7 @@ impl ResolutionOrchestrator {
 
     /// Classify call shape and resolve based on path structure (§5.3.3).
     fn resolve_single_call(
-        &self,
+        &mut self,
         call: &UnresolvedRef,
         import_graph: &crate::graph::ImportGraph,
     ) -> ResolvedCall {
@@ -310,6 +320,7 @@ impl ResolutionOrchestrator {
                         name,
                         3,
                         true,
+                        &mut self.transitives_cache,
                     ) {
                         if !matches.is_empty() {
                             let target = matches[0]
@@ -341,7 +352,7 @@ impl ResolutionOrchestrator {
 
     /// Resolve a simple (bare) name via import graph → cache → external fallback.
     fn resolve_simple_name(
-        &self,
+        &mut self,
         name: &str,
         import_graph: &crate::graph::ImportGraph,
     ) -> ResolvedCall {
@@ -483,7 +494,7 @@ mod tests {
 
     #[test]
     fn test_c3_linearization_single_no_bases() {
-        let orchestrator = ResolutionOrchestrator::new();
+        let mut orchestrator = ResolutionOrchestrator::new();
         let cache = HashMap::new();
         let (mro, complete) = orchestrator.c3_linearize("A", &[], &cache);
         assert!(complete);
@@ -496,7 +507,7 @@ mod tests {
         let mut cache = HashMap::new();
         cache.insert("B".to_string(), vec![MroNode::Class("B".into()), MroNode::Class("C".into())]);
 
-        let orchestrator = ResolutionOrchestrator::new();
+        let mut orchestrator = ResolutionOrchestrator::new();
         let (mro, complete) = orchestrator.c3_linearize("A", &["B".into()], &cache);
         assert!(complete);
         assert_eq!(mro[0], MroNode::Class("A".into()));
@@ -516,7 +527,7 @@ mod tests {
         // C's MRO: C → A
         cache.insert("C".into(), vec![MroNode::Class("C".into()), MroNode::Class("A".into())]);
 
-        let orchestrator = ResolutionOrchestrator::new();
+        let mut orchestrator = ResolutionOrchestrator::new();
         let (mro, complete) = orchestrator.c3_linearize("D", &["B".into(), "C".into()], &cache);
         assert!(complete);
         // D → B → C → A
@@ -528,7 +539,7 @@ mod tests {
 
     #[test]
     fn test_resolve_bare_builtin() {
-        let orchestrator = ResolutionOrchestrator::new();
+        let mut orchestrator = ResolutionOrchestrator::new();
         let import_graph = crate::graph::ImportGraph::new();
         let call = UnresolvedRef {
             name: "print".into(),
@@ -542,7 +553,7 @@ mod tests {
 
     #[test]
     fn test_resolve_bare_unknown() {
-        let orchestrator = ResolutionOrchestrator::new();
+        let mut orchestrator = ResolutionOrchestrator::new();
         let import_graph = crate::graph::ImportGraph::new();
         let call = UnresolvedRef {
             name: "unknown_secret_sauce".into(),
@@ -559,7 +570,7 @@ mod tests {
     #[test]
     fn test_keep_external_edges() {
         // External edges are always kept regardless of coverage.
-        let orchestrator = ResolutionOrchestrator::new();
+        let mut orchestrator = ResolutionOrchestrator::new();
         let mut edges = vec![
             ResolvedEdge {
                 source_id: "mod.py::foo".into(),
@@ -583,7 +594,7 @@ mod tests {
     fn test_suppress_internal_dead_end() {
         // An internal edge to a target with no outbound edges is suppressed.
         // foo calls bar, but bar calls nobody — the internal chain ends.
-        let orchestrator = ResolutionOrchestrator::new();
+        let mut orchestrator = ResolutionOrchestrator::new();
         let mut edges = vec![
             ResolvedEdge {
                 source_id: "mod.py::foo".into(),
@@ -607,7 +618,7 @@ mod tests {
     #[test]
     fn test_keep_covered_internal_edge() {
         // foo calls bar, AND bar calls baz — bar is covered, keep the edge.
-        let orchestrator = ResolutionOrchestrator::new();
+        let mut orchestrator = ResolutionOrchestrator::new();
         let mut edges = vec![
             ResolvedEdge {
                 source_id: "mod.py::foo".into(),
@@ -648,7 +659,7 @@ mod tests {
     fn test_mixed_internal_external_flow() {
         // foo calls bar (internal), bar calls os.path.exist (external).
         // bar is covered so foo→bar stays. External os.path always stays.
-        let orchestrator = ResolutionOrchestrator::new();
+        let mut orchestrator = ResolutionOrchestrator::new();
         let mut edges = vec![
             ResolvedEdge {
                 source_id: "mod.py::foo".into(),

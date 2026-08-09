@@ -16,22 +16,28 @@ pub struct ImportMatch {
 /// Resolve a name via the import graph (Layer 2).
 ///
 /// Walks the import graph BFS up to `max_import_depth`, collecting modules
-/// that export the given name. Confidence assignment:
-/// - Single candidate → 0.89
-/// - Multiple candidates → 0.80 (band floor), best match by proximity
-/// - Zero candidates → None (passthrough to Layer 3)
+/// that export the given name. Results are cached per (file_path, depth)
+/// since transitive imports are deterministic and BFS is O(V+E).
+///
+/// Technique: per-file transitive-import cache adopted from CodeGraph's
+/// `reachableModules` cache in resolution/index.ts. MIT license.
+/// https://github.com/opticsWolf/codegraph
 pub fn resolve_in_imports(
     graph: &ImportGraph,
     file_path: &str,
     name: &str,
     max_import_depth: usize,
     _include_same_package: bool,
+    transitives_cache: &mut std::collections::HashMap<String, Vec<crate::graph::ImportNode>>,
 ) -> Option<(Vec<ImportMatch>, f32)> {
-    let candidates = graph.transitive_imports(file_path, max_import_depth);
+    let cache_key = format!("{}|{}", file_path, max_import_depth);
+    let candidates = transitives_cache
+        .entry(cache_key)
+        .or_insert_with(|| graph.transitive_imports(file_path, max_import_depth));
 
     let mut matches: Vec<ImportMatch> = Vec::new();
 
-    for import_node in &candidates {
+    for import_node in candidates.iter() {
         let path_key = import_node.path.to_string_lossy().to_string();
         if let Some(exports) = graph.get_exports(&path_key) {
             for export in exports.iter() {

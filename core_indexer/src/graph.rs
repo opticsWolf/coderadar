@@ -699,7 +699,7 @@ impl CodeGraph {
         use crate::resolve::orchestrator::ResolutionOrchestrator;
         use crate::resolve::signature::ScoredDef;
 
-        let orchestrator = ResolutionOrchestrator::new();
+        let mut orchestrator = ResolutionOrchestrator::new();
         // v0.5: Use the shared import graph (edges built during insert_extracted)
         // instead of a fresh empty graph, enabling multi-hop transitive resolution.
         let import_graph_guard = self.import_graph.read();
