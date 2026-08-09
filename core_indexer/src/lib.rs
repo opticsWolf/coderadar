@@ -380,6 +380,11 @@ fn analyze(root: &str) -> PyResult<PyObject> {
         let num_threads = std::thread::available_parallelism()
             .map(|n| n.get().min(8))
             .unwrap_or(4);
+
+        if tasks.is_empty() {
+            // No files to index — skip parallel phase entirely
+            // (avoids chunk_size==0 panic below)
+        } else {
         let chunk_size = (tasks.len() + num_threads - 1) / num_threads;
         let import_graph_ref = &graph.import_graph;
 
@@ -444,6 +449,7 @@ fn analyze(root: &str) -> PyResult<PyObject> {
                 all_concepts.extend_from_slice(concepts);
             }
         }
+        }  // if !tasks.is_empty()
     }
 
     // v0.5: Flush all concepts in one `write_concepts` call (chunked internally
