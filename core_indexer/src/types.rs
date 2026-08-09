@@ -242,6 +242,73 @@ impl Language {
     }
 }
 
+// ── Builtin Type Filter (§3.6a) ─────────────────────────────────────────────
+// Based on CodeGraph's is_builtin_type() (swift.rs, python.rs, fnref.rs)
+// Copyright (c) 2024 Colby McHenry — MIT License
+// <https://github.com/colbymchenry/codegraph>
+
+/// Returns true for language builtin types that should not be tracked
+/// as reference targets (String, int, bool, i32, f64, etc.).
+pub fn is_builtin_type(name: &str) -> bool {
+    matches!(
+        name,
+        // Rust
+        "str" | "bool" | "char"
+        | "i8" | "i16" | "i32" | "i64" | "i128" | "isize"
+        | "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+        | "f32" | "f64"
+        // C / Go / Zig
+        | "int" | "long" | "short" | "byte" | "float" | "double"
+        | "rune" | "error" | "void"
+        | "int8" | "uint8" | "int16" | "uint16"
+        | "int32" | "uint32" | "int64" | "uint64"
+        | "float32" | "float64" | "complex64" | "complex128"
+        // Scala
+        | "Int" | "Long" | "Short" | "Byte" | "Float" | "Double"
+        | "Boolean" | "Char" | "Unit" | "String"
+        | "Any" | "AnyRef" | "AnyVal" | "Nothing" | "Null"
+        // Swift
+        | "Int" | "Double" | "Bool" | "Error"
+        // TS/JS
+        | "string" | "number" | "boolean" | "never" | "any"
+        | "unknown" | "object" | "symbol" | "bigint"
+    )
+}
+
+/// NAME_STOPLIST — identifiers that are never meaningful reference targets.
+///
+/// Based on CodeGraph's stoplist (python.rs, swift.rs, function-ref.ts)
+/// Copyright (c) 2024 Colby McHenry — MIT License
+/// <https://github.com/colbymchenry/codegraph>
+pub fn is_stoplisted(name: &str) -> bool {
+    matches!(
+        name,
+        "this" | "self" | "super" | "null" | "nil" | "true" | "false"
+        | "undefined" | "new" | "NULL" | "nullptr" | "None"
+    )
+}
+
+/// LITERAL_RECEIVER — node kinds that represent literal values,
+/// not referenceable objects. Filters `"str".method()`, `5.times()`.
+///
+/// Based on CodeGraph's is_literal_receiver (python.rs, swift.rs)
+/// Copyright (c) 2024 Colby McHenry — MIT License
+pub fn is_literal_receiver(kind: &str) -> bool {
+    matches!(
+        kind,
+        "string" | "string_literal" | "line_string_literal"
+        | "integer" | "integer_literal" | "INTEGER" | "INT"
+        | "float" | "float_literal" | "FLOAT"
+        | "true" | "false" | "boolean" | "none" | "nil"
+        | "list" | "dictionary" | "dict" | "tuple" | "array"
+        | "set" | "set_literal" | "call_expression" | "call"
+        | "binary_expression" | "unary_expression"
+        | "parenthesized_expression"
+        | "await" | "await_expression"
+        | "CHAR_LITERAL" | "STRINGLITERAL" | "STRINGLITERALSINGLE"
+    )
+}
+
 // ── Quality / FileType / SourceType (§4.5, §4.5a) ──────────────────────────
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -451,6 +518,7 @@ pub enum UnresolvedReason {
     WildcardImportShadow,
     ParseError,
     IncompleteFlow,            // v3.5 §6.1a: internal dead-end suppressed
+    Stoplisted,                // v3.6: filtered by is_stoplisted()
 }
 
 // ── Core Entities (§3.2) — EntityId-based identity ──────────────────────────
@@ -478,6 +546,7 @@ pub struct Module {
 pub struct Class {
     pub id: EntityId,
     pub name: String,
+    pub grammar_kind: String,  // v3.6: raw tree-sitter node kind
     pub parent_module: EntityId,
     pub parent_class: Option<EntityId>,
     pub bases: Vec<UnresolvedRef>,
@@ -593,6 +662,7 @@ pub struct ExtractedClass {
     pub id: EntityId,
     pub name: String,
     pub qualified_name: String,
+    pub grammar_kind: String,  // v3.6: raw tree-sitter node kind
     pub parent_module: EntityId,
     pub parent_class: Option<EntityId>,
     pub bases: Vec<UnresolvedRef>,
@@ -742,6 +812,9 @@ pub struct WalkContext<'a> {
     pub file_path: String,
     /// Track which function unit index we're currently inside (for call capture).
     pub current_function_idx: Option<usize>,
+    /// v3.6: Function-as-value reference candidates.
+    /// (function_unit_index, identifier_name, line, col)
+    pub fn_ref_candidates: Vec<(usize, String, usize, usize)>,
 }
 
 // ── ProjectedGraph types (§3.4) — used by graph.rs ──────────────────────────

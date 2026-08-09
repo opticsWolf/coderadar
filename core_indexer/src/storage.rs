@@ -352,6 +352,7 @@ mod tests {
             id: "test.py::MyClass".into(),
             name: "MyClass".into(),
             qualified_name: "MyClass".into(),
+            grammar_kind: "class_definition".into(),
             parent_module: "test.py".into(),
             parent_class: None,
             bases: vec![],

@@ -232,6 +232,14 @@ impl ResolutionOrchestrator {
         let mut results = Vec::with_capacity(calls.len());
 
         for call in calls {
+            // v3.6: Skip stoplisted identifiers (null, true, false, etc.)
+            if is_stoplisted(&call.name) {
+                results.push(ResolvedCall::Unresolved {
+                    reason: UnresolvedReason::Stoplisted,
+                    raw: call.clone(),
+                });
+                continue;
+            }
             // Check cache first
             if let Some(resolution) = self.cache.get_import_target(function_id, &call.name) {
                 match &resolution {

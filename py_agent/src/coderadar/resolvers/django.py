@@ -70,6 +70,8 @@ class DjangoResolver(FrameworkResolver):
             # admin.site.register(Model)
             if isinstance(node, ast.Call):
                 result.edges.extend(self._extract_admin_register(node, file_path))
+                # DRF router.register(prefix, ViewSet)
+                result.edges.extend(self._extract_drf_router(node, file_path))
 
         return result
 
@@ -148,6 +150,38 @@ class DjangoResolver(FrameworkResolver):
 
         return edges
 
+    def _extract_drf_router(
+        self, node: ast.Call, file_path: str,
+    ) -> List[SyntheticEdge]:
+        """Extract edges from DRF router.register(prefix, ViewSet).
+
+        Pattern: router.register(r'users/', UserViewSet, basename='user')
+        """
+        edges: List[SyntheticEdge] = []
+        call_name = self._get_call_name(node)
+        if call_name != "register":
+            return edges
+        # Ensure it's called on a router object (router.register, not just .register)
+        if not isinstance(node.func, ast.Attribute):
+            return edges
+        if len(node.args) < 2:
+            return edges
+        prefix = self._get_string_value(node.args[0])
+        viewset = self._get_name(node.args[1])
+        if prefix and viewset:
+            edges.append(SyntheticEdge(
+                source_id=f"django:route:{prefix}",
+                target_id=f"{file_path}::{viewset}",
+                kind="handles",
+                metadata={
+                    "synthesized_by": self.name,
+                    "framework": "django",
+                    "pattern": prefix,
+                    "viewset": viewset,
+                },
+            ))
+        return edges
+
     def _parse_route_call(self, call: ast.Call) -> Optional[SyntheticNode]:
         """Parse a path()/re_path() call into a SyntheticNode."""
         if not call.args:
@@ -174,13 +208,28 @@ class DjangoResolver(FrameworkResolver):
         )
 
     def _get_route_handler(self, call: ast.Call) -> Optional[str]:
-        """Get the view handler name from a path() call."""
+        """Get the view handler name from a path() call.
+
+        Strips .as_view() suffix for Django class-based views.
+        """
         if len(call.args) >= 2:
-            return self._get_name(call.args[1])
+            handler = self._get_name(call.args[1])
+            return self._strip_as_view(handler)
         for kw in call.keywords:
             if kw.arg == "view":
-                return self._get_name(kw.value)
+                handler = self._get_name(kw.value)
+                return self._strip_as_view(handler)
         return None
+
+    @staticmethod
+    def _strip_as_view(handler: Optional[str]) -> Optional[str]:
+        """Remove .as_view() suffix from Django CBV handlers.
+
+        views.MyView.as_view → views.MyView
+        """
+        if handler and handler.endswith(".as_view"):
+            return handler[:-len(".as_view")]
+        return handler
 
     def resolve(
         self, ref_name: str, graph: Any,
@@ -250,6 +299,8 @@ class DjangoResolver(FrameworkResolver):
         if isinstance(node, ast.Attribute):
             base = DjangoResolver._get_name(node.value)
             return f"{base}.{node.attr}" if base else node.attr
+        if isinstance(node, ast.Call):
+            return DjangoResolver._get_name(node.func)
         return None
 
     @staticmethod

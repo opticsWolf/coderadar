@@ -44,3 +44,4 @@ dist/
 .DS_Store
 Thumbs.db
 .coderadar/
+docs/v3.6-codegraph-plan.md

@@ -941,6 +941,41 @@ impl CodeGraph {
         Ok(edge_count)
     }
 
+    /// v3.6: Register a synthetic edge from a framework resolver.
+    ///
+    /// Framework resolvers (Django, Flask, FastAPI) produce edges like
+    /// route→handler, router→viewset, app→middleware. These are not
+    /// tree-sitter-extracted but are merged into the graph so agents
+    /// can trace them via callers_of / callees_of / explore.
+    pub fn register_synthetic_edge(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        kind: &str,
+    ) -> Result<(), String> {
+        let mut projection = (*self.snapshot()).clone();
+        projection.callees_by_caller
+            .entry(source_id.to_string())
+            .or_default()
+            .insert(target_id.to_string());
+        projection.callers_by_callee
+            .entry(target_id.to_string())
+            .or_default()
+            .insert(source_id.to_string());
+        self.commit_projection(projection);
+
+        // Persist to Macrame if store attached
+        if let Some(store) = self.store.as_ref() {
+            let ts_open = crate::storage::TS_OPEN;
+            let edge = macrame::graph::EdgeAssertion::new(source_id, target_id, kind)
+                .valid_from(ts_open)
+                .weight(1.0);
+            let _ = store.assert_edges_bulk(vec![edge]);
+        }
+
+        Ok(())
+    }
+
     // ── File Indexing Pipeline ────────────────────────────────────────────
 
     /// Get the tree-sitter Language for a CodeRadar Language.
@@ -1241,6 +1276,7 @@ impl CodeGraph {
                     let class = Class {
                         id: c.id.clone(),
                         name: c.name.clone(),
+                        grammar_kind: c.grammar_kind.clone(),
                         parent_module: module_id.clone(), // fix up
                         parent_class: c.parent_class.clone(),
                         bases: c.bases.clone(),
@@ -2087,8 +2123,9 @@ mod tests {
         let graph = CodeGraph::new(GraphConfig::default());
         index_source(&graph, "func greet(name: String) -> String { return \"Hi\" }\n", "test.swift");
         let snap = graph.snapshot();
-        // Swift query may use fallback; verify indexing doesn't crash
-        assert!(snap.modules.len() > 0, "Should index at least the module");
+        assert!(snap.functions.values().any(|f| f.name == "greet"),
+                "Should index Swift function greet; functions={:?}",
+                snap.functions.values().map(|f| f.name.clone()).collect::<Vec<_>>());
     }
 
     #[test]
@@ -2096,7 +2133,11 @@ mod tests {
         let graph = CodeGraph::new(GraphConfig::default());
         index_source(&graph, "class Dog { func bark() {} }\nstruct Cat { var age: Int }\n", "animals.swift");
         let snap = graph.snapshot();
-        assert!(snap.modules.len() > 0, "Should index at least the module");
+        assert!(snap.classes.values().any(|c| c.name == "Dog"),
+                "Should index Swift class Dog; classes={:?}",
+                snap.classes.values().map(|c| c.name.clone()).collect::<Vec<_>>());
+        assert!(snap.functions.values().any(|f| f.name == "bark"),
+                "Should index Swift method bark");
     }
 
     #[test]
@@ -2144,7 +2185,9 @@ mod tests {
         let graph = CodeGraph::new(GraphConfig::default());
         index_source(&graph, "fn add(a: i32, b: i32) i32 {\n    return a + b;\n}\n", "test.zig");
         let snap = graph.snapshot();
-        assert!(snap.modules.len() > 0, "Should index at least the module");
+        assert!(snap.functions.values().any(|f| f.name == "add"),
+                "Should index Zig function add; functions={:?}",
+                snap.functions.values().map(|f| f.name.clone()).collect::<Vec<_>>());
     }
 
     #[test]
@@ -2152,7 +2195,9 @@ mod tests {
         let graph = CodeGraph::new(GraphConfig::default());
         index_source(&graph, "const Point = struct { x: f32, y: f32 };\n", "geom.zig");
         let snap = graph.snapshot();
-        assert!(snap.modules.len() > 0, "Should index at least the module");
+        assert!(snap.classes.values().any(|c| c.name == "Point"),
+                "Should index Zig struct Point; classes={:?}",
+                snap.classes.values().map(|c| c.name.clone()).collect::<Vec<_>>());
     }
 
     #[test]
@@ -2160,6 +2205,281 @@ mod tests {
         let graph = CodeGraph::new(GraphConfig::default());
         index_source(&graph, "greet <- function(name) {\n  paste('Hi', name)\n}\n", "test.R");
         let snap = graph.snapshot();
-        assert!(snap.modules.len() > 0, "Should index at least the module");
+        assert!(snap.functions.values().any(|f| f.name == "greet"),
+                "Should index R function greet; functions={:?}",
+                snap.functions.values().map(|f| f.name.clone()).collect::<Vec<_>>());
+    }
+
+    // ── v3.6: Function-as-Value Reference Capture Tests ────────────
+
+    #[test]
+    fn test_fn_ref_assignment_callback() {
+        // Python pattern: `on_click = self.handle_click` → fn-ref from on_click to handle_click
+        let graph = CodeGraph::new(GraphConfig::default());
+        let source = "class Widget:\n  def handle_click(self): pass\n  def register(self):\n    self.on_click = self.handle_click\n";
+        index_source(&graph, source, "widget.py");
+
+        let snap = graph.snapshot();
+        assert!(snap.functions.values().any(|f| f.name == "handle_click"),
+                "should have handle_click function");
+        let register = snap.functions.values()
+            .find(|f| f.name == "register");
+        assert!(register.is_some(), "should have register function");
+        let register = register.unwrap();
+        let has_handle_click_ref = register.calls.iter().any(|c| c.name == "handle_click");
+        assert!(has_handle_click_ref,
+                "register should have fn-ref to handle_click; calls={:?}",
+                register.calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_fn_ref_return_value() {
+        // Python pattern: `return handler` → fn-ref
+        let graph = CodeGraph::new(GraphConfig::default());
+        let source = "def greeter(): pass\ndef get_handler():\n    return greeter\n";
+        index_source(&graph, source, "handlers.py");
+
+        let snap = graph.snapshot();
+        let get_handler = snap.functions.values()
+            .find(|f| f.name == "get_handler");
+        assert!(get_handler.is_some(), "should have get_handler function");
+        let get_handler = get_handler.unwrap();
+        assert!(get_handler.calls.iter().any(|c| c.name == "greeter"),
+                "get_handler should have fn-ref to greeter; calls={:?}",
+                get_handler.calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_fn_ref_no_false_positives() {
+        // Local variable assignment should NOT create fn-ref
+        let graph = CodeGraph::new(GraphConfig::default());
+        let source = "def foo():\n    x = 42\n    y = 'hello'\n    return x\n";
+        index_source(&graph, source, "locals.py");
+
+        let snap = graph.snapshot();
+        let foo = snap.functions.values()
+            .find(|f| f.name == "foo");
+        assert!(foo.is_some(), "should have foo function");
+        let foo = foo.unwrap();
+        assert!(foo.calls.is_empty(),
+                "foo should have no fn-ref calls; got {:?}",
+                foo.calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_fn_ref_argument_list() {
+        // Argument-list fn-ref: `register_callback(handler)` → handler is fn-ref
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "def handler(x): pass\ndef register_callback(fn): fn(42)\ndef setup():\n    register_callback(handler)\n",
+            "callback.py");
+
+        let snap = graph.snapshot();
+        let setup = snap.functions.values()
+            .find(|f| f.name == "setup");
+        assert!(setup.is_some(), "should have setup function");
+        let setup = setup.unwrap();
+        assert!(setup.calls.iter().any(|c| c.name == "handler"),
+                "setup should have fn-ref to handler via argument; calls={:?}",
+                setup.calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_fn_ref_dict_values() {
+        // Dict value fn-ref: `{"key": handler}` → handler is fn-ref
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "def handler(x): pass\ndef make_registry():\n    return {'cb': handler}\n",
+            "registry.py");
+
+        let snap = graph.snapshot();
+        let make_reg = snap.functions.values()
+            .find(|f| f.name == "make_registry");
+        assert!(make_reg.is_some(), "should have make_registry function");
+        let make_reg = make_reg.unwrap();
+        assert!(make_reg.calls.iter().any(|c| c.name == "handler"),
+                "make_registry should have fn-ref to handler from dict value; calls={:?}",
+                make_reg.calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_builtin_type_bases_filtered() {
+        // Classes inheriting from builtin types should not track those as refs
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "class MyException(Exception): pass\nclass MyInt(int): pass\n",
+            "bases.py");
+
+        let snap = graph.snapshot();
+        let exc = snap.classes.values()
+            .find(|c| c.name == "MyException");
+        assert!(exc.is_some(), "should have MyException class");
+        let exc = exc.unwrap();
+        // Exception is not a builtin-type (it's a class), so it stays
+        // But int IS filtered by is_builtin_type
+        let myint = snap.classes.values()
+            .find(|c| c.name == "MyInt");
+        assert!(myint.is_some(), "should have MyInt class");
+        let myint = myint.unwrap();
+        // int should be filtered from bases
+        assert!(!myint.bases.iter().any(|b| b.name == "int"),
+                "int should be filtered from bases; got {:?}",
+                myint.bases.iter().map(|b| b.name.clone()).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn test_literal_receiver_skipped() {
+        // Calls on literal receivers like "str".method() should be skipped
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "def foo():\n    x = 'hello'.upper()\n    y = 42.to_bytes(2, 'big')\n",
+            "literal.py");
+
+        let snap = graph.snapshot();
+        let foo = snap.functions.values()
+            .find(|f| f.name == "foo");
+        assert!(foo.is_some(), "should have foo function");
+        let foo = foo.unwrap();
+        // Calls on string/integer literals should be filtered — no path entries for them
+        let has_literal_receiver = foo.calls.iter().any(|c| {
+            c.path.iter().any(|p| p == "'hello'" || p == "42")
+        });
+        assert!(!has_literal_receiver,
+                "literal receivers should be filtered; calls={:?}",
+                foo.calls.iter().map(|c| format!("{:?}::{}", c.path, c.name)).collect::<Vec<_>>());
+    }
+
+    // ── v3.6: grammar_kind tests ─────────────────────────────────
+
+    #[test]
+    fn test_grammar_kind_python_class() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class Foo: pass\n", "test.py");
+        let snap = graph.snapshot();
+        let cls = snap.classes.values().find(|c| c.name == "Foo").unwrap();
+        assert_eq!(cls.grammar_kind, "class_definition",
+                   "Python class should have grammar_kind 'class_definition'");
+    }
+
+    #[test]
+    fn test_grammar_kind_rust_struct() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "struct Point { x: f64, y: f64 }\n", "geom.rs");
+        let snap = graph.snapshot();
+        let cls = snap.classes.values().find(|c| c.name == "Point").unwrap();
+        assert_eq!(cls.grammar_kind, "struct_item",
+                   "Rust struct should have grammar_kind 'struct_item'");
+    }
+
+    #[test]
+    fn test_grammar_kind_typescript_class() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class Drawable { draw(): void {} }\n", "draw.ts");
+        let snap = graph.snapshot();
+        let cls = snap.classes.values().find(|c| c.name == "Drawable").unwrap();
+        assert_eq!(cls.grammar_kind, "class_declaration",
+                   "TS class should have grammar_kind 'class_declaration'");
+    }
+
+    #[test]
+    fn test_grammar_kind_swift_struct() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "struct Cat { var age: Int }\n", "cat.swift");
+        let snap = graph.snapshot();
+        let cls = snap.classes.values().find(|c| c.name == "Cat").unwrap();
+        assert_eq!(cls.grammar_kind, "class_declaration/struct",
+                   "Swift struct should be classified as class_declaration/struct");
+    }
+
+    #[test]
+    fn test_grammar_kind_swift_class() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class Dog { func bark() {} }\n", "dog.swift");
+        let snap = graph.snapshot();
+        let cls = snap.classes.values().find(|c| c.name == "Dog").unwrap();
+        assert_eq!(cls.grammar_kind, "class_declaration",
+                   "Swift class should keep grammar_kind 'class_declaration'");
+    }
+
+    #[test]
+    fn test_grammar_kind_zig_struct() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "const Point = struct { x: f32, y: f32 };\n", "geom.zig");
+        let snap = graph.snapshot();
+        let cls = snap.classes.values().find(|c| c.name == "Point").unwrap();
+        assert_eq!(cls.grammar_kind, "VarDecl",
+                   "Zig struct should have grammar_kind 'VarDecl'");
+    }
+
+    // ── v3.6: Synthetic edge registration ──────────────────────────
+
+    #[test]
+    fn test_synthetic_edge_registration() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def index(): pass\ndef user_detail(id): pass\n", "views.py");
+
+        // Register a synthetic route→handler edge (like Django path()→view)
+        graph.register_synthetic_edge(
+            "django:route:users/",
+            "views.py::user_detail",
+            "HANDLES",
+        ).unwrap();
+
+        let snap = graph.snapshot();
+        // Route should appear as a caller of user_detail
+        let callees = snap.callees_by_caller.get("django:route:users/");
+        assert!(callees.is_some(), "route should have callees");
+        assert!(callees.unwrap().contains("views.py::user_detail"),
+                "route should call user_detail");
+
+        // user_detail should appear as callee of the route
+        let callers = snap.callers_by_callee.get("views.py::user_detail");
+        assert!(callers.is_some(), "user_detail should have callers");
+        assert!(callers.unwrap().contains("django:route:users/"),
+                "user_detail should be called by route");
+    }
+
+    #[test]
+    fn test_synthetic_edge_roundtrip_query() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def list_items(): pass\n", "views.py");
+
+        graph.register_synthetic_edge(
+            "fastapi:route:main.py:/items",
+            "views.py::list_items",
+            "HANDLES",
+        ).unwrap();
+
+        let snap = graph.snapshot();
+
+        // Querying callees_of the route should return list_items
+        let callees = snap.callees_by_caller.get("fastapi:route:main.py:/items");
+        assert!(callees.map_or(false, |c| c.iter().any(|e| e.contains("list_items"))),
+                "route should have list_items as callee");
+    }
+
+    // ── v3.6: Cross-file fn-ref via imports ──────────────────────
+
+    #[test]
+    fn test_fn_ref_cross_file_import() {
+        // Cross-file fn-ref: `from .handlers import handle_click`
+        // then `self.on_click = handle_click` in another file
+        let graph = CodeGraph::new(GraphConfig::default());
+        let source = concat!(
+            "from .handlers import handle_click\n",
+            "class Widget:\n",
+            "    def register(self):\n",
+            "        self.on_click = handle_click\n",
+        );
+        index_source(&graph, source, "widget.py");
+
+        let snap = graph.snapshot();
+        let register = snap.functions.values()
+            .find(|f| f.name == "register");
+        assert!(register.is_some(), "should have register function");
+        let register = register.unwrap();
+        assert!(register.calls.iter().any(|c| c.name == "handle_click"),
+                "register should have fn-ref to imported handle_click; calls={:?}",
+                register.calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
     }
 }

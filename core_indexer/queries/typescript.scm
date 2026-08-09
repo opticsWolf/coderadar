@@ -9,6 +9,9 @@
 (abstract_class_declaration
   name: (type_identifier) @class.name) @class.def
 
+(interface_declaration
+  name: (type_identifier) @class.name) @class.def
+
 ;; ── Functions ───────────────────────────────────────────────────────
 
 (function_declaration

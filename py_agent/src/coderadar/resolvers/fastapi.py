@@ -285,6 +285,8 @@ class FastAPIResolver(FrameworkResolver):
         if isinstance(node, ast.Attribute):
             base = FastAPIResolver._get_name(node.value)
             return f"{base}.{node.attr}" if base else node.attr
+        if isinstance(node, ast.Call):
+            return FastAPIResolver._get_name(node.func)
         return None
 
     @staticmethod

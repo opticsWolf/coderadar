@@ -1,25 +1,34 @@
-; CodeRadar v3.5 — Zig tree-sitter queries (§4.2)
+; CodeRadar v3.6 — Zig tree-sitter queries
 ; tree-sitter-zig via tree-sitter-language-pack
-
-;; ── Structs / Enums / Unions ────────────────────────────────────────
-
-(struct_declaration) @class.def
-(enum_declaration) @class.def
-(union_declaration) @class.def
-(opaque_declaration) @class.def
+; Node kinds verified via AST dump:
+;   FnProto (function declarations, field: "function"),
+;   VarDecl (variable declarations, field: "variable_type_function"),
+;   ContainerDecl (struct/enum/union bodies, inside VarDecl),
+;   FnCallArguments (call argument lists),
+;   BUILTINIDENTIFIER (@import, @cImport, etc.),
+;   IDENTIFIER, BuildinTypeExpr (i32, f64, void, etc.)
 
 ;; ── Functions ───────────────────────────────────────────────────────
+;; name extracted from function: (IDENTIFIER) field
 
-(function_declaration) @function.def
+(FnProto) @function.def
+
+;; ── Structs / Enums / Unions ────────────────────────────────────────
+;; All use VarDecl wrapping ContainerDecl
+
+(VarDecl) @class.def
 
 ;; ── Calls ───────────────────────────────────────────────────────────
+;; Calls appear as SuffixExpr with FnCallArguments child
 
-(call_expression) @call
+(FnCallArguments) @call
 
 ;; ── Imports ─────────────────────────────────────────────────────────
+;; @import("std") → captured as BUILTINIDENTIFIER
 
-(use_declaration) @import
+(BUILTINIDENTIFIER) @import
 
-;; ── Doc comments ────────────────────────────────────────────────────
+;; ── Comments ────────────────────────────────────────────────────────
 
-(doc_comment) @docstring
+;; Note: Zig grammar does not have a "comment" node kind.
+;; Docstring extraction uses the preceding-comment scanner instead.

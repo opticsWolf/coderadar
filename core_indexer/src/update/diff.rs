@@ -258,6 +258,7 @@ mod tests {
             id: format!("test.py::{name}"),
             name: name.into(),
             qualified_name: name.into(),
+            grammar_kind: "class_definition".into(),
             parent_module: "test.py".into(),
             parent_class: None,
             bases: vec![],

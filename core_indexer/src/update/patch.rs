@@ -121,6 +121,7 @@ pub fn apply_patch(
                             let cls = crate::types::Class {
                                 id: id.clone(),
                                 name: c.name.clone(),
+                                grammar_kind: c.grammar_kind.clone(),
                                 parent_module: c.parent_module.clone(),
                                 parent_class: c.parent_class.clone(),
                                 bases: c.bases.clone(),

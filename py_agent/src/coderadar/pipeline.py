@@ -102,6 +102,31 @@ class IngestionPipeline:
         """Layer 5: Override low-confidence edges with LSP results."""
         pass
 
+    def _run_framework_extraction(
+        self, file_path: str, source: str,
+    ) -> tuple:
+        """v3.6: Run framework resolvers (Django/Flask/FastAPI) on a file.
+
+        Returns (synthetic_nodes, synthetic_edges) to be merged into the
+        graph alongside tree-sitter-extracted entities.
+
+        Full pipeline wiring (merging SyntheticEdges into the Rust
+        ProjectedGraph) is deferred — currently the resolvers are
+        surfaced via CLI display only.
+        """
+        from coderadar.resolvers import ALL_RESOLVERS
+
+        nodes, edges = [], []
+        for resolver_cls in ALL_RESOLVERS:
+            resolver = resolver_cls()
+            try:
+                extraction = resolver.extract(file_path, source)
+                nodes.extend(extraction.nodes)
+                edges.extend(extraction.edges)
+            except Exception:
+                pass
+        return nodes, edges
+
     def _write_to_macrame(self, entities: List[Any], edges: List[Any]) -> None:
         """Write staged entities and edges to Macrame.
 

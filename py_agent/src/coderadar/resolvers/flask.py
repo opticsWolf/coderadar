@@ -90,6 +90,9 @@ class FlaskResolver(FrameworkResolver):
                 bp_edges = self._extract_blueprint_register(
                     node, file_path)
                 result.edges.extend(bp_edges)
+                # Flask-RESTful: api.add_resource(Resource, '/path')
+                rest_edges = self._extract_add_resource(node, file_path)
+                result.edges.extend(rest_edges)
 
         return result
 
@@ -176,6 +179,43 @@ class FlaskResolver(FrameworkResolver):
             metadata=metadata,
         )
 
+    def _extract_add_resource(
+        self, node: ast.Call, file_path: str,
+    ) -> List[SyntheticEdge]:
+        """Extract edges from Flask-RESTful api.add_resource().
+
+        Pattern: api.add_resource(HelloWorld, '/', '/hello')
+        """
+        edges: List[SyntheticEdge] = []
+        call_name = self._get_call_name(node)
+        if call_name != "add_resource":
+            return edges
+        if len(node.args) < 2:
+            return edges
+        resource = self._get_name(node.args[0])
+        # Paths can be passed as multiple positional args or a list
+        paths: List[str] = []
+        for arg in node.args[1:]:
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                paths.append(arg.value)
+            elif isinstance(arg, ast.List):
+                for elt in arg.elts:
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                        paths.append(elt.value)
+        for path in paths:
+            edges.append(SyntheticEdge(
+                source_id=f"flask:route:{path}",
+                target_id=f"{file_path}::{resource}" if resource else f"{file_path}::unknown",
+                kind="handles",
+                metadata={
+                    "synthesized_by": self.name,
+                    "framework": "flask",
+                    "pattern": path,
+                    "resource": resource,
+                },
+            ))
+        return edges
+
     def _extract_blueprint_register(
         self, node: ast.Call, file_path: str,
     ) -> List[SyntheticEdge]:
@@ -232,6 +272,8 @@ class FlaskResolver(FrameworkResolver):
         if isinstance(node, ast.Attribute):
             base = FlaskResolver._get_name(node.value)
             return f"{base}.{node.attr}" if base else node.attr
+        if isinstance(node, ast.Call):
+            return FlaskResolver._get_name(node.func)
         return None
 
     @staticmethod

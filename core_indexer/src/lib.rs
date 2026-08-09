@@ -53,6 +53,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
+    m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
     m.add_function(wrap_pyfunction!(start_watcher, m)?)?;
     m.add_function(wrap_pyfunction!(next_watcher_batch, m)?)?;
     m.add_function(wrap_pyfunction!(stop_watcher, m)?)?;
@@ -136,6 +137,7 @@ fn class_to_dict(py: Python<'_>, c: &Class) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
     dict.set_item("id", &c.id)?;
     dict.set_item("name", &c.name)?;
+    dict.set_item("grammar_kind", &c.grammar_kind)?;
     dict.set_item("kind", "class")?;
     dict.set_item("parent_module", &c.parent_module)?;
     // Extract file_path from entity ID (format: "file_path::Class.name")
@@ -871,4 +873,28 @@ fn stop_watcher() -> PyResult<()> {
     let mut guard = GLOBAL_WATCHER.lock().unwrap();
     *guard = None;
     Ok(())
+}
+
+// ── v3.6: Synthetic Edge Registration ────────────────────────────────────
+
+/// Register a synthetic edge from framework resolvers (Django/Flask/FastAPI).
+///
+/// Framework resolvers produce edges like route→handler that aren't
+/// tree-sitter-extracted. This function merges them into the live graph
+/// so agents can trace them via callers_of / callees_of / explore.
+#[pyfunction]
+fn register_synthetic_edge(
+    source_id: &str, target_id: &str, kind: &str,
+) -> PyResult<PyObject> {
+    let mut guard = GLOBAL_GRAPH.write();
+    let graph = guard.as_mut()
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
+            "No graph loaded — run coderadar analyze first"
+        ))?;
+    graph.register_synthetic_edge(source_id, target_id, kind)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+    let py = unsafe { Python::assume_gil_acquired() };
+    let dict = PyDict::new(py);
+    dict.set_item("ok", true)?;
+    Ok(dict.into())
 }

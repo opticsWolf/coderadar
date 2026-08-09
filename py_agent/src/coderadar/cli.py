@@ -1,4 +1,4 @@
-"""CodeRadar v3.5 — Command-Line Interface (§16)"""
+"""CodeRadar v3.6 — Command-Line Interface (§16)"""
 
 from __future__ import annotations
 
@@ -14,8 +14,48 @@ from rich.table import Table
 console = Console()
 
 
+def _run_framework_extraction(project_root: Path) -> dict:
+    """v3.6: Run framework resolvers on a project and return summary.
+
+    Detects Django/Flask/FastAPI projects and extracts route nodes
+    and handler edges. Synthetic edges are registered in the Rust
+    graph so agents can trace them via callers_of / callees_of.
+    """
+    from coderadar.resolvers import ALL_RESOLVERS
+
+    results = {"routes": 0, "handlers": 0, "frameworks": [], "edges_registered": 0}
+    for resolver_cls in ALL_RESOLVERS:
+        resolver = resolver_cls()
+        if not resolver.detect(project_root):
+            continue
+        results["frameworks"].append(resolver.name)
+        for py_file in project_root.rglob("*.py"):
+            if py_file.name.startswith("__"):
+                continue
+            try:
+                source = py_file.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            extraction = resolver.extract(str(py_file), source)
+            results["routes"] += len(extraction.nodes)
+            results["handlers"] += len(extraction.edges)
+            # v3.6: Register synthetic edges in the Rust graph
+            try:
+                from coderadar._core import register_synthetic_edge
+                for edge in extraction.edges:
+                    register_synthetic_edge(
+                        edge.source_id, edge.target_id,
+                        edge.kind.upper(),
+                    )
+                    results["edges_registered"] += 1
+            except (ImportError, RuntimeError) as e:
+                # Graph not loaded or _core not available — edges displayed only
+                pass
+    return results
+
+
 @click.group()
-@click.version_option(version="0.3.15", prog_name="coderadar",
+@click.version_option(version="0.4.0", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.5)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -114,6 +154,12 @@ port = 0  # 0 = stdio only
     console.print(f"  Functions:  {stats.get('functions', 0)}")
     console.print(f"  Imports:    {stats.get('imports', 0)}")
     console.print(f"  Call edges: {stats.get('call_edges', 0)}")
+    # v3.6: Run framework resolvers for Django/Flask/FastAPI
+    framework = _run_framework_extraction(root)
+    if framework["frameworks"]:
+        console.print(f"  Frameworks: {', '.join(framework['frameworks'])}")
+        console.print(f"  Routes:     {framework['routes']}")
+        console.print(f"  Handlers:   {framework['handlers']}")
     console.print(f"[green]OK  Analysis complete[/green]")
 
 
@@ -131,6 +177,20 @@ def analyze(path: str):
     for kind, count in stats.items():
         table.add_row(kind, str(count))
     console.print(table)
+    # v3.6: Run framework resolvers
+    framework = _run_framework_extraction(Path(path))
+    if framework["frameworks"]:
+        fw_table = Table(title="Framework Extraction")
+        fw_table.add_column("Framework", style="cyan")
+        fw_table.add_column("Routes", style="green")
+        fw_table.add_column("Handler Edges", style="yellow")
+        fw_table.add_row(
+            ", ".join(framework["frameworks"]),
+            str(framework["routes"]),
+            str(framework["handlers"]),
+        )
+        console.print(fw_table)
+    console.print(f"[green]OK  Analysis complete[/green]")
 
 
 @main.command()

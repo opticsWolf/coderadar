@@ -1,13 +1,16 @@
-; CodeRadar v3.5 — Swift tree-sitter queries (§4.2)
+; CodeRadar v3.6 — Swift tree-sitter queries
 ; tree-sitter-swift via tree-sitter-language-pack
+; Node kinds verified via AST dump:
+;   class_declaration, function_declaration, call_expression,
+;   import_declaration, simple_identifier, type_identifier
+; Swift uses class_declaration for class/struct/enum/protocol/extension;
+; disambiguation happens in classify_class_like() in walker.rs.
 
 ;; ── Classes / Structs / Enums / Protocols ────────────────────────────
+;; Swift grammar uses a single class_declaration node kind for
+;; class, struct, enum, protocol, extension, actor.
 
 (class_declaration) @class.def
-(struct_declaration) @class.def
-(enum_declaration) @class.def
-(protocol_declaration) @class.def
-(extension_declaration) @class.def
 
 ;; ── Functions / Methods ─────────────────────────────────────────────
 
@@ -21,6 +24,6 @@
 
 (import_declaration) @import
 
-;; ── Doc comments ────────────────────────────────────────────────────
+;; ── Comments (for docstring extraction) ─────────────────────────────
 
-(doc_comment) @docstring
+(comment) @docstring
