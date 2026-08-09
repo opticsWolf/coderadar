@@ -414,4 +414,172 @@ not 300µs).
 
 ---
 
+## Plan: Parallel `resolve_all_calls`
+
+**Status:** planned, not implemented. Attempted 2025-08-09 — reverted due to brace
+complexity. This document captures the detailed approach for a future session.
+
+### Current cost
+
+`resolve_all_calls` accounts for ~580ms of the ~1,800ms cross-file benchmark.
+With 995 cross-file calls from one orchestrator function, each call takes
+~580µs. The per-call work is:
+
+1. `orchestrator.resolve_calls()` — dispatches through `resolve_single_call` →
+   `resolve_simple_name` (a stub returning `External(name)`) — ~50µs
+2. Override loop: check `sibling_funcs` (O(1)), `import_targets` (O(1)),
+   `find_symbol_in_module` (O(1)) — ~100µs
+3. Build `ResolvedCall` variants + clone strings — ~50µs
+4. Projection mutation: `projection.functions.insert()` (Arc clone + HashMap
+   insert), `callees_by_caller.entry().or_default().insert()`, and
+   `callers_by_callee.entry().or_default().insert()` — ~380µs
+
+Step 4 (projection mutation) dominates.
+
+### Why parallelization is safe
+
+Each function's call resolution is **embarrassingly parallel** once the
+module-level lookups (`sibling_funcs`, `import_targets`) are built. Resolution
+reads from shared data (projection, import graph, module lookups) and writes
+to per-function structures. The writes are:
+
+- `updated.resolved_calls` — new field on a cloned `Function`
+- `callees_by_caller[caller_id]` — per-caller entry
+- `callers_by_callee[target_id]` — per-target entry
+
+Each `(caller_id, target_id)` pair is unique across the work set (a caller
+only resolves its own calls, and callers don't share targets in a way that
+creates write conflicts — the `or_default().insert()` pattern is idempotent).
+
+### Architecture
+
+**Extract a pure function** from the inner loop body. Move it from a closure
+inside `resolve_calls_scoped` to a standalone `fn` on `CodeGraph`:
+
+```rust
+impl CodeGraph {
+    /// Resolve calls for a single function. Returns (resolved_calls, edge_pairs).
+    /// Pure — takes all data as parameters, no `&self`. Designed for
+    /// parallel: each thread calls this with its own orchestrator.
+    fn resolve_one_function(
+        func_id: &str,
+        calls: &[UnresolvedRef],
+        sibling_funcs: &HashMap<String, String>,
+        import_targets: &HashMap<String, String>,
+        projection: &ProjectedGraph,       // read-only
+        import_graph: &ImportGraph,         // read-only
+        orchestrator: &mut ResolutionOrchestrator,
+    ) -> (Vec<ResolvedCall>, Vec<(String, String)>);
+}
+```
+
+**Restructure `resolve_calls_scoped`** as a three-phase pipeline:
+
+```
+Phase A (sequential): Build module-level data
+  for each unique parent_module:
+    sibling_funcs = HashMap of (name → func_id) for all functions in module
+    import_targets = HashMap of (name → module_id) from module's imports
+    collect (func_id, calls) pairs into work_items for this module
+
+Phase B (parallel): Resolve calls
+  split work_items into chunks (one per thread, min 50 items/chunk)
+  std::thread::scope to spawn threads
+  each thread:
+    creates its own ResolutionOrchestrator (fresh cache)
+    calls resolve_one_function for each work item
+    collects Vec<(func_id, resolved_calls, edge_pairs)> into a
+      thread-local Vec
+    merges into a shared Mutex<Vec<Result>>
+
+Phase C (sequential): Apply results
+  for each (func_id, resolved_calls, edge_pairs):
+    clone function, set resolved_calls, insert back into projection
+    for each (caller, target) in edge_pairs:
+      callees_by_caller[caller].insert(target)
+      callers_by_callee[target].insert(caller)
+```
+
+### Key constraints
+
+1. **Thread count**: use `available_parallelism().min(4)` — more threads
+   don't help because the per-chunk overhead (~50µs for thread spawn +
+   orchestrator init) dominates below ~50 items/thread.
+
+2. **Minimum chunk size**: 50 work items. Below this threshold, sequential
+   is faster (thread spawn overhead > parallelism gain). This matters for
+   `update_file` where the scope is typically 1-20 functions.
+
+3. **Orchestrator per thread**: `ResolutionOrchestrator` has mutable state
+   (`cache`, `transitives_cache`). Each thread creates its own. The
+   `transitives_cache` is the only state that benefits from sharing across
+   threads — but the BFS result is identical for all threads, so per-thread
+   caches just recompute it once each. Acceptable for now.
+
+4. **Projection is read-only during Phase B**: threads read from
+   `&ProjectedGraph` but never write. All writes happen in Phase C.
+   The `functions`, `classes`, `modules`, and `imports` maps are accessed
+   via `get()` only.
+
+5. **Edge deduplication**: `BTreeSet::insert` is idempotent, so two threads
+   inserting the same `(caller, target)` pair is harmless. However, the
+   current design avoids this by partitioning work at function boundaries —
+   each function's calls are assigned to exactly one thread.
+
+### Brace management (why the first attempt failed)
+
+The current `resolve_calls_scoped` has deep nesting:
+
+```
+fn resolve_calls_scoped {           // depth 1
+  for (module, entries) in by_module {  // depth 2
+    for (func_id, calls) in entries {   // depth 3
+      // ~100 lines of resolution logic
+    }  // depth 2
+  }  // depth 1
+}  // depth 0
+```
+
+The extraction of `resolve_one_function` removes the innermost 100 lines.
+The replacement is ~15 lines of work-item collection + result application.
+
+**Approach for safe refactoring:**
+
+1. First, extract the inner 100 lines into `resolve_one_function` as a
+   standalone `fn` — verify tests pass. This is a pure mechanical
+   extraction; no behavior change.
+2. Then, replace the inner `for (func_id, calls)` loop with the three-phase
+   pipeline (collect → parallel → apply).
+3. The parallel phase uses `std::thread::scope` — identical pattern to
+   what already works in `analyze()` (Phase 2).
+
+### Expected savings
+
+| Case | Current | Expected | Saving |
+|------|---------|----------|--------|
+| Cross-file (995 calls, 1 function) | ~580ms | ~350ms | ~230ms (2 threads) |
+| Cross-file (995 calls, 2 threads) | ~580ms | ~300ms | ~280ms (4 threads) |
+| Large single-file (500 calls, 1 function) | ~140ms | ~100ms | ~40ms |
+
+Projection mutation (Phase C) is ~380ms of the ~580ms and remains sequential,
+so the theoretical floor is ~380ms regardless of thread count.
+
+### Interaction with `update_file` (scoped mode)
+
+The parallel path only activates when `work_items.len() > 50`. `update_file`
+typically processes 1-20 functions, so it stays on the sequential path — no
+behavior change, no thread overhead for small updates.
+
+### Rollback plan
+
+If the parallel path introduces flakiness:
+1. The sequential path is preserved as the `else` branch of the
+   `work_items.len() > 50` check
+2. A compile-time feature flag `parallel-resolve` can gate the parallel
+   path, defaulting to sequential
+3. The `resolve_one_function` extraction is valuable even without
+   parallelization — it makes the code testable in isolation
+
+---
+
 *End of revised assessment.*
