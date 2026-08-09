@@ -1,5 +1,19 @@
-// CodeRadar v3.3 — Resolution: Stack Graphs Layer 1 (§6.2)
-// Uses the stack-graphs crate for name-based resolution.
+// CodeRadar v0.5 — Resolution: Stack Graphs Layer (§6.2)
+//
+// DEFERRED TO POST-V1 (v0.5 decision): Stack Graphs via the stack-graphs
+// crate was spec'd in v3.3 as L1 resolution but never implemented — this
+// file is a structural placeholder. CodeGraph ships 30+ languages at
+// production scale with zero Stack Graphs dependency, proving compiler-
+// grade disambiguation is not required for the MCP agent use case.
+//
+// The resolution cascade now runs:
+//   L1: Import + Scope (0.80–0.89)
+//   L2: Signature Match (0.40–0.79)
+//   L3: Framework Resolvers (0.80–1.00)
+//   L4: Embedding (0.20–0.39)
+//
+// Revisit Stack Graphs post-v1 if evidence shows agents need compiler-
+// grade disambiguation of identical names in complex scopes.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
