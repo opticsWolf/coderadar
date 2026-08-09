@@ -91,6 +91,11 @@ impl ImportGraph {
         module_id: Option<EntityId>,
         language: Language,
     ) -> NodeIndex {
+        // v0.5: Return existing node if already registered (prevents
+        // duplicate nodes with missing outgoing edges in multi-hop chains).
+        if let Some(existing) = self.path_to_node.get(file_path) {
+            return *existing;
+        }
         let node = ImportNode {
             path: PathBuf::from(file_path),
             module_id,
@@ -676,7 +681,10 @@ impl CodeGraph {
         use crate::resolve::signature::ScoredDef;
 
         let orchestrator = ResolutionOrchestrator::new();
-        let import_graph = crate::graph::ImportGraph::new();
+        // v0.5: Use the shared import graph (edges built during insert_extracted)
+        // instead of a fresh empty graph, enabling multi-hop transitive resolution.
+        let import_graph_guard = self.import_graph.read();
+        let import_graph_ref: &crate::graph::ImportGraph = &import_graph_guard;
 
         // Build definition pool for signature matching (L3)
         let _definitions_pool: Vec<ScoredDef> = projection
@@ -788,8 +796,8 @@ impl CodeGraph {
                 }
             }
 
-            // Resolve calls using the orchestrator
-            let resolved = orchestrator.resolve_calls(calls, func_id, &import_graph);
+            // Resolve calls using the orchestrator (v0.5: uses shared import graph for multi-hop)
+            let resolved = orchestrator.resolve_calls(calls, func_id, import_graph_ref);
 
             // Override with same-file, cross-file, and method resolution
             let resolved: Vec<_> = resolved
@@ -1356,6 +1364,31 @@ impl CodeGraph {
                     };
                     projection.imports.insert(import.id.clone(), Arc::new(import));
                     module_imports.push(i.id.clone());
+
+                    // v0.5: Build import graph edges for multi-hop resolution.
+                    // Resolve dotted module name → file path and add edge.
+                    let src_mod: Option<String> = match &i.kind {
+                        ImportKind::FromImport { module, .. }
+                        | ImportKind::ModuleImport { module, .. }
+                        | ImportKind::StarImport { module, .. } => Some(module.clone()),
+                        ImportKind::RelativeImport { module, .. } => module.clone(),
+                        _ => None,
+                    };
+                    if let Some(src_mod) = src_mod {
+                        if let Some(target_module_id) =
+                            find_module_by_dotted_name(projection, &src_mod, &module_id)
+                        {
+                            if let Some(target_mod) = projection.modules.get(&target_module_id) {
+                                let target_path =
+                                    target_mod.path.to_string_lossy().to_string();
+                                let mut ig = self.import_graph.write();
+                                // Ensure both files are nodes in the graph
+                                ig.add_file(file_path, Some(module_id.clone()), *language);
+                                ig.add_file(&target_path, Some(target_module_id), *language);
+                                ig.add_import_edge(file_path, &target_path);
+                            }
+                        }
+                    }
                 }
                 ExtractedUnit::Constant(k) => {
                     let constant = Constant {
@@ -1475,6 +1508,27 @@ mod tests {
         g.add_import_edge("b.py", "c.py");
         let depth2 = g.transitive_imports("a.py", 2);
         assert!(depth2.len() >= 2);
+    }
+
+    #[test]
+    fn test_multi_hop_import_resolution() {
+        let graph = CodeGraph::new(GraphConfig::default());
+
+        index_source(&graph, "def utility(): pass\n", "src/c.py");
+        index_source(&graph, "from src.c import utility\ndef helper(): utility()\n", "src/b.py");
+        index_source(&graph, "from src.b import helper\ndef app(): helper()\n", "src/a.py");
+
+        let ig = graph.import_graph.read();
+
+        eprintln!("From A (3): {:?}", ig.transitive_imports("src/a.py", 3).iter().map(|n| n.path.to_string_lossy().to_string()).collect::<Vec<_>>());
+        eprintln!("From B (3): {:?}", ig.transitive_imports("src/b.py", 3).iter().map(|n| n.path.to_string_lossy().to_string()).collect::<Vec<_>>());
+        eprintln!("From C (1): {:?}", ig.transitive_imports("src/c.py", 1).iter().map(|n| n.path.to_string_lossy().to_string()).collect::<Vec<_>>());
+
+        let from_b: Vec<_> = ig.transitive_imports("src/b.py", 3).iter().map(|n| n.path.to_string_lossy().to_string()).collect();
+        assert!(from_b.iter().any(|p| p.contains("c.py")), "B→C: {:?}", from_b);
+
+        let from_a: Vec<_> = ig.transitive_imports("src/a.py", 3).iter().map(|n| n.path.to_string_lossy().to_string()).collect();
+        assert!(from_a.iter().any(|p| p.contains("c.py")), "A→B→C: {:?}", from_a);
     }
 
     #[test]
