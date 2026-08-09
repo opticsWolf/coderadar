@@ -392,45 +392,58 @@ impl Default for GitConfig {
 
 // ── CodeGraph (§3.4, §9.1) — v3.5 Hybrid Architecture ──────────────────────
 
-/// Find a module by its dotted Python name (e.g., "coderadar.config" → config.py).
+/// Find a module by its dotted name (e.g., "coderadar.config" → config.py).
+/// v0.5: Language-agnostic — matches any known extension (py, ex, zig, scala, lua, ...).
 /// Converts the dotted name to path segments and matches against suffixes of
-/// all module file paths. Also builds a reverse lookup for common patterns.
-fn find_module_by_dotted_name(
+/// all module file paths.
+pub(crate) fn find_module_by_dotted_name(
     projection: &ProjectedGraph,
     dotted_name: &str,
     _current_module: &str,
 ) -> Option<String> {
+    /// Extensions we recognize; also handles /__init__.* patterns for
+    /// Python-style packages (__init__.py), Elixir (__init__.ex), etc.
+    const KNOWN_EXTENSIONS: &[&str] = &[
+        "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs",
+        "go", "rs", "java", "c", "h", "cpp", "cc", "cxx", "hpp",
+        "rb", "php", "cs", "kt", "kts", "swift", "scala", "sc",
+        "lua", "ex", "exs", "zig", "zon", "r",
+    ];
+
     let segments: Vec<&str> = dotted_name.split('.').collect();
 
     // Build candidate path suffixes by matching the last N segments
-    // e.g., "coderadar.config" → try matching "coderadar/config.py" suffix
     for n in (1..=segments.len()).rev() {
         let suffix_parts = &segments[segments.len() - n..];
         let suffix_slash = suffix_parts.join("/");
-        let suffix_py = format!("{}.py", suffix_slash);
-        let suffix_init = format!("{}/__init__.py", suffix_slash);
 
         for (_, module) in &projection.modules {
             let path_str = module.path.to_string_lossy().to_string();
             let path_normalized = path_str.replace('\\', "/");
-            if path_normalized.ends_with(&suffix_py) || path_normalized.ends_with(&suffix_init) {
-                return Some(module.id.clone());
+            // Check each known extension
+            for ext in KNOWN_EXTENSIONS {
+                let suffix = format!("{}.{}", suffix_slash, ext);
+                let init_suffix = format!("{}/__init__.{}", suffix_slash, ext);
+                if path_normalized.ends_with(&suffix) || path_normalized.ends_with(&init_suffix) {
+                    return Some(module.id.clone());
+                }
             }
         }
     }
 
-    // Fallback: check if any module name matches the last segment
+    // Fallback: strip any extension and match segments in reverse order
     let last_segment = segments.last().unwrap_or(&"");
     for (_, module) in &projection.modules {
         if module.name == *last_segment {
             let path_str = module.path.to_string_lossy().to_string();
             let path_normalized = path_str.replace('\\', "/");
-            // Verify all segments match in reverse order
-            let file_segments: Vec<&str> = path_normalized
-                .trim_end_matches("/__init__.py")
-                .trim_end_matches(".py")
-                .split('/')
-                .collect();
+            // Strip extension and __init__
+            let stripped = path_normalized
+                .rsplitn(2, "/__init__.")
+                .last()
+                .unwrap_or(&path_normalized);
+            let without_ext = stripped.rsplitn(2, '.').last().unwrap_or(stripped);
+            let file_segments: Vec<&str> = without_ext.split('/').collect();
             if file_segments.len() >= segments.len() {
                 let file_suffix = &file_segments[file_segments.len() - segments.len()..];
                 if file_suffix == segments.as_slice() {
@@ -1610,6 +1623,37 @@ mod tests {
                     "Expected 1 resolved, got {:?}", resolved);
             }
         }
+    }
+
+    #[test]
+    fn test_extension_agnostic_module_resolution() {
+        // v0.5: find_module_by_dotted_name handles all extensions.
+        // Java: com.foo.bar.Baz → com/foo/bar/Baz.java
+        // Scala: com.foo.bar.Qux → com/foo/bar/Qux.scala
+        // Zig: foo.bar → foo/bar.zig (dotted name uses '.' as separator)
+        let graph = CodeGraph::new(GraphConfig::default());
+
+        // Java package resolution
+        index_source(&graph, "package com.foo.bar;\npublic class Baz { public void run() {} }\n", "com/foo/bar/Baz.java");
+        index_source(&graph, "import com.foo.bar.Baz;\nclass User { void go() { new Baz().run(); } }\n", "User.java");
+
+        // Scala resolution
+        index_source(&graph, "package com.foo.bar\nclass Qux { def doit(): Unit = () }\n", "com/foo/bar/Qux.scala");
+
+        // Elixir resolution
+        index_source(&graph, "defmodule Mix.Tasks.Hello do\nend\n", "lib/mix/tasks/hello.ex");
+
+        // The key test: find_module_by_dotted_name should find any extension.
+        let snap = graph.snapshot();
+        let found = super::find_module_by_dotted_name(&snap, "com.foo.bar.Baz", "");
+        assert!(found.is_some(), "Should find Baz.java via com.foo.bar.Baz");
+
+        let found_scala = super::find_module_by_dotted_name(&snap, "com.foo.bar.Qux", "");
+        assert!(found_scala.is_some(), "Should find Qux.scala via com.foo.bar.Qux");
+
+        // Note: Elixir uses PascalCase module names but lowercase filenames
+        // (e.g., Mix.Tasks.Hello → lib/mix/tasks/hello.ex).
+        // Case-insensitive matching is a future enhancement.
     }
 
     #[test]
