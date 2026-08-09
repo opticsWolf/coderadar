@@ -1,5 +1,5 @@
 ; CodeRadar v3.5 — Kotlin tree-sitter queries (§4.2)
-; Compatible with tree-sitter-kotlin 0.3.x
+; Compatible with tree-sitter-kotlin (via tree-sitter-language-pack)
 
 ;; ── Classes ──────────────────────────────────────────────────────────
 
@@ -18,6 +18,6 @@
 
 (import_header) @import
 
-;; ── Comments ────────────────────────────────────────────────────────
+;; ── Line comments ───────────────────────────────────────────────────
 
-(comment) @docstring
+(line_comment) @docstring

@@ -100,6 +100,16 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                     .and_then(|n| n.utf8_text(source.as_bytes()).ok())
                     .unwrap_or("")
                     .to_string()
+            } else if node.kind() == "class_declaration" || node.kind() == "object_declaration" {
+                // Kotlin: name child is type_identifier or simple_identifier
+                let mut cursor = node.walk();
+                let children: Vec<_> = node.children(&mut cursor).collect();
+                children.iter().find(|ch|
+                    ch.kind() == "type_identifier" || ch.kind() == "simple_identifier"
+                )
+                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                .unwrap_or("")
+                .to_string()
             } else {
                 "".to_string()
             };
@@ -177,6 +187,16 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                     .and_then(|id| id.utf8_text(source.as_bytes()).ok())
                     .unwrap_or("")
                     .to_string()
+            } else if node.kind() == "function_declaration" {
+                // Kotlin: name is simple_identifier
+                let mut cursor = node.walk();
+                let children: Vec<_> = node.children(&mut cursor).collect();
+                children.iter().find(|ch|
+                    ch.kind() == "simple_identifier" || ch.kind() == "identifier"
+                )
+                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                .unwrap_or("")
+                .to_string()
             } else {
                 "".to_string()
             };
@@ -325,7 +345,8 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                 if let Some(ExtractedUnit::Function(ref mut func)) = ctx.units.get_mut(idx) {
                     let name_node = node.child_by_field_name("function")
                         .or_else(|| node.child_by_field_name("method"))
-                        .or_else(|| node.child_by_field_name("name"));
+                        .or_else(|| node.child_by_field_name("name"))
+                        .or_else(|| node.child_by_field_name("callee")); // Kotlin
                     let line = node.start_position().row + 1;
                     let col = node.start_position().column as u32;
 

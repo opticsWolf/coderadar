@@ -79,6 +79,7 @@ fn get_query_for_language_src(language: Language) -> &'static str {
         Language::Ruby => include_str!("../../queries/ruby.scm"),
         Language::Php => include_str!("../../queries/php.scm"),
         Language::CSharp => include_str!("../../queries/csharp.scm"),
+        Language::Kotlin => include_str!("../../queries/kotlin.scm"),
         _ => r#"(identifier) @id"#, // fallback for unsupported languages
     }
 }

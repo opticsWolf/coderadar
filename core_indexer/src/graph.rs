@@ -904,20 +904,9 @@ impl CodeGraph {
 
     /// Get the tree-sitter Language for a CodeRadar Language.
     pub fn ts_language(lang: &Language) -> Option<tree_sitter::Language> {
-        match lang {
-            Language::Python => Some(tree_sitter_python::LANGUAGE.into()),
-            Language::TypeScript => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
-            Language::JavaScript => Some(tree_sitter_javascript::LANGUAGE.into()),
-            Language::Rust => Some(tree_sitter_rust::LANGUAGE.into()),
-            Language::Go => Some(tree_sitter_go::LANGUAGE.into()),
-            Language::Java => Some(tree_sitter_java::LANGUAGE.into()),
-            Language::C => Some(tree_sitter_c::LANGUAGE.into()),
-            Language::Cpp => Some(tree_sitter_cpp::LANGUAGE.into()),
-            Language::Ruby => Some(tree_sitter_ruby::LANGUAGE.into()),
-            Language::Php => Some(tree_sitter_php::LANGUAGE_PHP.into()),
-            Language::CSharp => Some(tree_sitter_c_sharp::LANGUAGE.into()),
-            Language::Kotlin | Language::OtherTen => None,
-        }
+        use tree_sitter_language_pack::get_language;
+        let name = lang.pack_name();
+        get_language(name).ok()
     }
 
     /// Index a single source file: parse → tag → walk → extract → insert.
@@ -1482,6 +1471,28 @@ mod tests {
     fn test_codegraph_callers_of_empty() {
         let graph = CodeGraph::new(GraphConfig::default());
         assert!(graph.callers_of("nonexistent").is_empty());
+    }
+
+    // ── Kotlin Indexing Tests ───────────────────────────────────
+
+    #[test]
+    fn test_kotlin_class_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class Person(val name: String) { fun greet() {} }\n", "Person.kt");
+        let snap = graph.snapshot();
+        assert!(snap.classes.values().any(|c| c.name == "Person"),
+                "Should have Kotlin class Person");
+        assert!(snap.functions.values().any(|f| f.name == "greet"),
+                "Should have Kotlin function greet");
+    }
+
+    #[test]
+    fn test_kotlin_call_indexing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "fun foo() { bar() }\nfun bar() {}\n", "fn.kt");
+        let snap = graph.snapshot();
+        assert!(snap.functions.values().any(|f| f.name == "foo"),
+                "Should have Kotlin function foo");
     }
 
     // ── Import Parsing & Cross-File Resolution Tests ──────────────

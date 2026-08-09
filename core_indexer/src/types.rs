@@ -132,6 +132,25 @@ impl Language {
         }
     }
 
+    /// Name used by tree-sitter-language-pack for grammar lookup.
+    pub fn pack_name(&self) -> &'static str {
+        match self {
+            Language::Python => "python",
+            Language::TypeScript => "typescript",
+            Language::JavaScript => "javascript",
+            Language::Go => "go",
+            Language::Rust => "rust",
+            Language::Java => "java",
+            Language::C => "c",
+            Language::Cpp => "cpp",
+            Language::Ruby => "ruby",
+            Language::Php => "php",
+            Language::CSharp => "csharp",
+            Language::Kotlin => "kotlin",
+            Language::OtherTen => "",
+        }
+    }
+
     pub fn tier(&self) -> u8 {
         match self {
             Language::Python
