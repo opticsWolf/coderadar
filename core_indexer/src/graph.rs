@@ -2511,4 +2511,44 @@ mod tests {
             assert!(func.is_some());
         }
     }
+
+    // ── v3.6: Parameter annotation + return type extraction ─────
+
+    #[test]
+    fn test_parameter_annotations_extracted() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "from typing import Optional\ndef create_user(name: str, age: int, email: Optional[str]) -> User:\n    pass\n",
+            "typed.py");
+        let snap = graph.snapshot();
+        let func = snap.functions.values().find(|f| f.name == "create_user");
+        assert!(func.is_some());
+        let func = func.unwrap();
+
+        // Parameters should have annotations (builtins filtered)
+        assert_eq!(func.parameters.len(), 3);
+        // name: str → annotation: None (str is builtin)
+        assert_eq!(func.parameters[0].name, "name");
+        assert!(func.parameters[0].annotation.is_none(), "str is builtin");
+        // age: int → annotation: None (int is builtin)
+        assert_eq!(func.parameters[1].name, "age");
+        assert!(func.parameters[1].annotation.is_none(), "int is builtin");
+        // email: Optional[str] → should have annotation (not a bare builtin)
+        assert_eq!(func.parameters[2].name, "email");
+        assert!(func.parameters[2].annotation.is_some(), "Optional[str] is not a bare builtin");
+
+        // Return type: User → not builtin, should be extracted
+        assert_eq!(func.return_type.as_deref(), Some("User"));
+    }
+
+    #[test]
+    fn test_return_type_builtin_filtered() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def get_count() -> int:\n    return 0\n", "simple.py");
+        let snap = graph.snapshot();
+        let func = snap.functions.values().find(|f| f.name == "get_count");
+        assert!(func.is_some());
+        // int is builtin → return_type should be None
+        assert!(func.unwrap().return_type.is_none(), "int return type should be filtered");
+    }
 }

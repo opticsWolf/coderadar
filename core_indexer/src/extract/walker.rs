@@ -655,6 +655,20 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
             let qualified_name = build_qualified_name(&ctx.stack, &name);
             let entity_id = make_entity_id(&ctx.file_path, &qualified_name);
 
+            // v3.6: Extract return type annotation
+            let return_type = {
+                let rt_node = node.child_by_field_name("return_type")
+                    .or_else(|| node.child_by_field_name("returns"));
+                rt_node.and_then(|rt| {
+                    let rt_text = rt.utf8_text(source.as_bytes()).unwrap_or("");
+                    if !rt_text.is_empty() && !is_builtin_type(rt_text) {
+                        Some(rt_text.to_string())
+                    } else {
+                        None
+                    }
+                })
+            };
+
             // v3.6: Extract preceding docstring
             let docstring = preceding_docstring(node, source);
 
@@ -668,7 +682,7 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                 parent_module: entity_id.clone(), // patched later
                 parent_class: parent_class.clone().map(|q| make_entity_id(&ctx.file_path, &q)),
                 parameters: params,
-                return_type: None,
+                return_type,
                 calls: Vec::new(),
                 decorators: Vec::new(),
                 docstring,
@@ -1056,6 +1070,10 @@ pub fn make_entity_id(file_path: &str, qualified_name: &str) -> String {
 }
 
 /// Extract parameters from a function definition node.
+///
+/// Handles typed_parameter (x: int), default_parameter (x: int = 5),
+/// and simple identifier parameters. Extracts name, type annotation,
+/// and default value independently.
 fn extract_parameters(node: Node, source: &str) -> Vec<Parameter> {
     let params_node = node.child_by_field_name("parameters");
     let mut params = Vec::new();
@@ -1064,13 +1082,63 @@ fn extract_parameters(node: Node, source: &str) -> Vec<Parameter> {
         let mut cursor = p_node.walk();
         for child in p_node.children(&mut cursor) {
             let kind = child.kind();
-            if kind == "identifier" || kind == "typed_parameter" || kind == "default_parameter" {
+            if kind == "identifier" {
                 let name = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                if name != "," && name != "(" && name != ")" {
+                if !name.is_empty() && name != "," && name != "(" && name != ")" {
                     params.push(Parameter {
                         name,
                         annotation: None,
                         default_value: None,
+                        is_varargs: false,
+                        is_kwargs: false,
+                        is_positional_only: false,
+                        is_keyword_only: false,
+                    });
+                }
+            } else if kind == "typed_parameter" || kind == "default_parameter"
+                || kind == "typed_default_parameter" || kind == "keyword_argument"
+            {
+                let name = child
+                    .child_by_field_name("name")
+                    .or_else(|| {
+                        // Some grammars use (identifier) as first child
+                        child.children(&mut child.walk())
+                            .find(|ch| ch.kind() == "identifier")
+                    })
+                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                    .unwrap_or("")
+                    .to_string();
+
+                // Extract type annotation from the "type" field
+                let annotation = child
+                    .child_by_field_name("type")
+                    .and_then(|t| {
+                        let type_text = t.utf8_text(source.as_bytes()).unwrap_or("");
+                        if !type_text.is_empty() && !is_builtin_type(type_text) {
+                            Some(type_text.to_string())
+                        } else {
+                            None
+                        }
+                    });
+
+                // Extract default value
+                let default_value = child
+                    .child_by_field_name("value")
+                    .or_else(|| child.child_by_field_name("default"))
+                    .and_then(|v| {
+                        let val = v.utf8_text(source.as_bytes()).unwrap_or("");
+                        if !val.is_empty() {
+                            Some(val.to_string())
+                        } else {
+                            None
+                        }
+                    });
+
+                if !name.is_empty() && name != "," && name != "(" && name != ")" {
+                    params.push(Parameter {
+                        name,
+                        annotation,
+                        default_value,
                         is_varargs: false,
                         is_kwargs: false,
                         is_positional_only: false,
