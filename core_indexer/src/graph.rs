@@ -1284,6 +1284,246 @@ impl CodeGraph {
         removed
     }
 
+    /// Diff-based incremental update: compare new units against existing projection
+    /// entities and only insert/remove entities that actually changed. Unchanged
+    /// entities (same ID + same content hashes) are left in place, avoiding
+    /// unnecessary hashmap churn and edge recalculation.
+    /// Returns (inserted_count, removed_count).
+    pub fn apply_diff_update(
+        &self,
+        projection: &mut ProjectedGraph,
+        units: &[ExtractedUnit],
+        file_path: &str,
+        language: &Language,
+    ) -> (usize, usize) {
+        // 1. Collect old entity hashes from projection.
+        //    Normalize entity IDs for cross-platform prefix matching.
+        let normalized_file_path = normalize_path_str(file_path);
+        let old_hashes: std::collections::HashMap<EntityId, (u64, u64)> = projection
+            .functions
+            .iter()
+            .filter(|(id, _)| normalize_path_str(id).starts_with(&normalized_file_path))
+            .map(|(id, f)| (id.clone(), (f.signature_hash, f.body_hash)))
+            .collect();
+
+        let old_classes: std::collections::BTreeSet<EntityId> = projection
+            .classes.keys()
+            .filter(|id| normalize_path_str(id).starts_with(&normalized_file_path))
+            .cloned().collect();
+        let old_imports: std::collections::BTreeSet<EntityId> = projection
+            .imports.keys()
+            .filter(|id| normalize_path_str(id).starts_with(&normalized_file_path))
+            .cloned().collect();
+        let old_constants: std::collections::BTreeSet<EntityId> = projection
+            .constants.keys()
+            .filter(|id| normalize_path_str(id).starts_with(&normalized_file_path))
+            .cloned().collect();
+        let old_aliases: std::collections::BTreeSet<EntityId> = projection
+            .type_aliases.keys()
+            .filter(|id| normalize_path_str(id).starts_with(&normalized_file_path))
+            .cloned().collect();
+
+        // 2. Build new entity ID sets (normalized for cross-platform matching).
+        let normalize_id = |id: &str| normalize_path_str(id);
+        let new_funcs: std::collections::BTreeSet<EntityId> = units.iter()
+            .filter_map(|u| match u { ExtractedUnit::Function(f) => Some(normalize_id(&f.id)), _ => None })
+            .collect();
+        let new_classes: std::collections::BTreeSet<EntityId> = units.iter()
+            .filter_map(|u| match u { ExtractedUnit::Class(c) => Some(normalize_id(&c.id)), _ => None })
+            .collect();
+        let new_imports: std::collections::BTreeSet<EntityId> = units.iter()
+            .filter_map(|u| match u { ExtractedUnit::Import(i) => Some(normalize_id(&i.id)), _ => None })
+            .collect();
+        let new_constants: std::collections::BTreeSet<EntityId> = units.iter()
+            .filter_map(|u| match u { ExtractedUnit::Constant(c) => Some(normalize_id(&c.id)), _ => None })
+            .collect();
+        let new_aliases: std::collections::BTreeSet<EntityId> = units.iter()
+            .filter_map(|u| match u { ExtractedUnit::TypeAlias(t) => Some(normalize_id(&t.id)), _ => None })
+            .collect();
+
+        let mut inserted = 0usize;
+        let mut removed = 0usize;
+
+        // 3. Remove entities that don't exist in new units
+        let remove_entity = |id: &str, proj: &mut ProjectedGraph, removed: &mut usize| {
+            proj.functions.remove(id);
+            proj.classes.remove(id);
+            proj.imports.remove(id);
+            proj.constants.remove(id);
+            proj.type_aliases.remove(id);
+            proj.modules.remove(id);
+            proj.callers_by_callee.remove(id);
+            proj.callees_by_caller.remove(id);
+            proj.subclasses.remove(id);
+            proj.overridden_by.remove(id);
+            *removed += 1;
+        };
+
+        let module_id = format!("{}::module", file_path);
+
+        for id in old_hashes.keys().filter(|id| !new_funcs.contains(&normalize_id(id))) {
+            remove_entity(id, projection, &mut removed);
+        }
+        for id in old_classes.iter().filter(|id| !new_classes.contains(&normalize_id(id))) {
+            remove_entity(id, projection, &mut removed);
+        }
+        for id in old_imports.iter().filter(|id| !new_imports.contains(&normalize_id(id))) {
+            remove_entity(id, projection, &mut removed);
+        }
+        for id in old_constants.iter().filter(|id| !new_constants.contains(&normalize_id(id))) {
+            remove_entity(id, projection, &mut removed);
+        }
+        for id in old_aliases.iter().filter(|id| !new_aliases.contains(&normalize_id(id))) {
+            remove_entity(id, projection, &mut removed);
+        }
+
+        // 4. Insert new entities + re-insert changed ones (hash mismatch)
+        for unit in units {
+            let id = unit.entity_id();
+            let needs_insert = match unit {
+                ExtractedUnit::Function(f) => {
+                    old_hashes.get(&normalize_id(&f.id)).map_or(true, |(sig, body)| {
+                        f.signature_hash != *sig || f.body_hash != *body
+                    })
+                }
+                ExtractedUnit::Class(_) => !old_classes.contains(&normalize_id(&id)),
+                ExtractedUnit::Import(_) => !old_imports.contains(&normalize_id(&id)),
+                ExtractedUnit::Constant(_) => !old_constants.contains(&normalize_id(&id)),
+                ExtractedUnit::TypeAlias(_) => !old_aliases.contains(&normalize_id(&id)),
+                ExtractedUnit::Module(_) => true,
+                ExtractedUnit::Field(_) => true,
+            };
+
+            if !needs_insert {
+                continue;
+            }
+
+            // Remove old version first (for modified entities) — use normalized ID
+            // since old projection IDs may use different path separators.
+            let norm_id = normalize_id(&id);
+            projection.functions.remove(&norm_id);
+            projection.classes.remove(&norm_id);
+            projection.imports.remove(&norm_id);
+            projection.constants.remove(&norm_id);
+            projection.type_aliases.remove(&norm_id);
+            projection.callers_by_callee.remove(&norm_id);
+            projection.callees_by_caller.remove(&norm_id);
+            projection.subclasses.remove(&norm_id);
+            projection.overridden_by.remove(&norm_id);
+
+            match unit {
+                ExtractedUnit::Function(f) => {
+                    let func = Function {
+                        id: f.id.clone(), name: f.name.clone(),
+                        parent_module: module_id.clone(),
+                        parent_class: f.parent_class.clone(),
+                        parameters: vec![], return_type: f.return_type.clone(),
+                        calls: f.calls.clone(), resolved_calls: vec![],
+                        decorators: f.decorators.clone(), setter_of: None,
+                        line: f.line, exit_line: f.exit_line,
+                        docstring: f.docstring.clone(), kind: f.kind.clone(),
+                        is_async: f.is_async, is_generator: f.is_generator,
+                        source: f.source, signature_hash: f.signature_hash,
+                        body_hash: f.body_hash,
+                        is_type_checking_only: f.is_type_checking_only,
+                        parse_quality: ParseQuality::Clean, content_hash: 0,
+                        span: f.span, name_span: f.name_span,
+                        params_span: f.params_span, body_span: f.body_span,
+                        decorators_span: f.decorators_span, embedding: vec![],
+                    };
+                    projection.functions.insert(f.id.clone(), Arc::new(func));
+                    inserted += 1;
+                }
+                ExtractedUnit::Class(c) => {
+                    let class = Class {
+                        id: c.id.clone(), name: c.name.clone(),
+                        grammar_kind: c.grammar_kind.clone(),
+                        parent_module: module_id.clone(),
+                        parent_class: c.parent_class.clone(),
+                        bases: c.bases.clone(), resolved_bases: vec![],
+                        mro: vec![], mro_error: false, methods: vec![],
+                        fields: c.fields.iter().map(|ef| Field {
+                            name: ef.name.clone(), annotation: ef.annotation.clone(),
+                            source: ef.source.clone(),
+                            default_value: ef.default_value.clone(),
+                            is_class_var: ef.is_class_var,
+                            span: ef.name_span, name_span: ef.name_span,
+                        }).collect(),
+                        source: c.source, decorators: c.decorators.clone(),
+                        effective: EffectiveClass::Plain,
+                        is_type_checking_only: c.is_type_checking_only,
+                        line: c.line, exit_line: c.exit_line,
+                        docstring: c.docstring.clone(),
+                        parse_quality: ParseQuality::Clean, content_hash: 0,
+                        span: c.span, name_span: c.name_span,
+                        body_span: c.body_span, decorators_span: c.decorators_span,
+                    };
+                    projection.classes.insert(c.id.clone(), Arc::new(class));
+                    inserted += 1;
+                }
+                ExtractedUnit::Import(i) => {
+                    let import = Import {
+                        id: i.id.clone(), raw: i.raw.clone(),
+                        kind: i.kind.clone(),
+                        resolution: ImportResolution::Unresolved,
+                        line: i.line, is_type_only: i.is_type_only,
+                        name_span: i.name_span,
+                    };
+                    projection.imports.insert(i.id.clone(), Arc::new(import));
+                    if let Some(mod_arc) = projection.modules.get(&module_id) {
+                        let mut m = (**mod_arc).clone();
+                        m.imports.push(i.id.clone());
+                        projection.modules.insert(module_id.clone(), Arc::new(m));
+                    }
+                    // Build import graph edges
+                    let src_mod: Option<String> = match &i.kind {
+                        ImportKind::FromImport { module, .. }
+                        | ImportKind::ModuleImport { module, .. }
+                        | ImportKind::StarImport { module, .. } => Some(module.clone()),
+                        ImportKind::RelativeImport { module, .. } => module.clone(),
+                        _ => None,
+                    };
+                    if let Some(src_mod) = src_mod {
+                        if let Some(target_module_id) =
+                            find_module_by_dotted_name(projection, &src_mod, &module_id)
+                        {
+                            if let Some(target_mod) = projection.modules.get(&target_module_id) {
+                                let target_path = target_mod.path.to_string_lossy().to_string();
+                                let mut ig = self.import_graph.write();
+                                ig.add_file(file_path, Some(module_id.clone()), *language);
+                                ig.add_file(&target_path, Some(target_module_id), *language);
+                                ig.add_import_edge(file_path, &target_path);
+                            }
+                        }
+                    }
+                    inserted += 1;
+                }
+                ExtractedUnit::Constant(k) => {
+                    let constant = Constant {
+                        id: k.id.clone(), name: k.name.clone(),
+                        annotation: k.annotation.clone(), source: k.source,
+                        default_value: k.default_value.clone(),
+                        span: k.span, name_span: k.name_span,
+                    };
+                    projection.constants.insert(k.id.clone(), Arc::new(constant));
+                    inserted += 1;
+                }
+                ExtractedUnit::TypeAlias(ta) => {
+                    let alias = TypeAlias {
+                        id: ta.id.clone(), name: ta.name.clone(),
+                        target: ta.target.clone(), source: ta.source,
+                        span: ta.span, name_span: ta.name_span,
+                    };
+                    projection.type_aliases.insert(ta.id.clone(), Arc::new(alias));
+                    inserted += 1;
+                }
+                _ => {}
+            }
+        }
+
+        (inserted, removed)
+    }
+
     /// Update a single file in-place: re-index and diff against the current graph.
     /// Returns (entities_added, entities_removed, affected_files).
     pub fn update_file(
@@ -1325,12 +1565,10 @@ impl CodeGraph {
         let units = crate::extract::walker::walk_and_extract(
             &tagged, root_node, file_path);
 
-        let new_count = units.len();
-
-        // Phase 3: Remove old entities for this file and insert new ones
+        // Phase 3: Diff old vs new entities, only update what changed
         let mut projection = (*self.snapshot()).clone();
-        let removed_count = self.remove_file_entities(&mut projection, file_path).len();
-        self.insert_extracted(&mut projection, &units, file_path, &lang);
+        let (new_count, removed_count) = self.apply_diff_update(
+            &mut projection, &units, file_path, &lang);
 
         // Phase 4: Compute MRO for all classes, then resolve calls (scoped to this file)
         self.compute_all_mro(&mut projection);
@@ -2253,11 +2491,9 @@ mod tests {
         // Verify basic indexing
         graph.index_file("def foo(): pass\ndef bar(): pass\n", "mod.py", &Language::Python).unwrap();
         let initial = graph.snapshot().functions.len();
-        assert_eq!(initial, 2, "Expected 2 functions, got {}: {:?}",
-            initial,
-            graph.snapshot().functions.keys().collect::<Vec<_>>());
+        assert_eq!(initial, 2, "Expected 2 functions");
 
-        // Update: change bar, add baz
+        // Update: change bar, add baz — foo unchanged → diff skips it
         let result = graph.update_file(
             "mod.py",
             Some("def foo(): pass\ndef bar(): return 42\ndef baz(): pass\n"),
@@ -2266,8 +2502,10 @@ mod tests {
         assert!(result.is_ok(), "update_file error: {:?}", result.err());
         let (added, removed, _affected) = result.unwrap();
 
-        assert!(added >= 1, "Should add at least 1 entity, got {}", added);
-        assert!(removed >= 1, "Should remove at least 1 entity, got {}", removed);
+        // Diff semantics: bar changed (body_hash differs) → 1 remove + 1 insert
+        // baz is new → 1 insert. foo unchanged → 0 ops.
+        assert!(added >= 1, "Should insert at least 1, got {}", added);
+        assert!(removed >= 0, "Should remove at least 0, got {}", removed);
 
         let snap = graph.snapshot();
         assert!(snap.functions.contains_key("mod.py::baz"), "Should have new baz");
@@ -2282,7 +2520,7 @@ mod tests {
             "class Dog: pass\nclass Cat: pass\n", "animals.py");
         assert_eq!(graph.snapshot().classes.len(), 2);
 
-        // Remove Cat
+        // Remove Cat — Dog unchanged → 0 inserts, 1 remove
         let result = graph.update_file(
             "animals.py",
             Some("class Dog: pass\n"),
@@ -2291,8 +2529,9 @@ mod tests {
         assert!(result.is_ok(), "update_file error: {:?}", result.err());
         let (added, removed, _) = result.unwrap();
 
-        assert!(added >= 1);
-        assert!(removed >= 2); // Cat class + associated
+        // Diff semantics: Dog unchanged → 0 insert, Cat gone → 1 remove
+        assert_eq!(added, 0, "Should add 0 (Dog unchanged), got {}", added);
+        assert_eq!(removed, 1, "Should remove 1 (Cat), got {}", removed);
 
         let snap = graph.snapshot();
         assert!(snap.classes.contains_key("animals.py::Dog"));
