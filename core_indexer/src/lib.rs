@@ -335,6 +335,14 @@ fn analyze(root: &str) -> PyResult<PyObject> {
     let mut all_concepts: Vec<macrame::ConceptUpsert> = Vec::new();
 
     if root_path.is_dir() {
+        // Phase 1: Collect file paths + source content for all indexable files.
+        // Read into memory upfront to avoid I/O contention in parallel phase.
+        struct FileTask {
+            path: String,
+            source: String,
+            language: Language,
+        }
+        let mut tasks: Vec<FileTask> = Vec::new();
         for entry in ignore::Walk::new(root) {
             match entry {
                 Ok(entry) => {
@@ -351,19 +359,78 @@ fn analyze(root: &str) -> PyResult<PyObject> {
                             continue;
                         }
                         if let Ok(source) = fs::read_to_string(path) {
-                            let file_path = path.to_string_lossy().to_string();
-                            match graph.index_file_accumulate(&source, &file_path, &language) {
-                                Ok((count, concepts)) => {
-                                    total_entities += count;
-                                    files_indexed += 1;
-                                    all_concepts.extend(concepts);
-                                }
-                                Err(_) => {} // parse failures silently skipped
-                            }
+                            tasks.push(FileTask {
+                                path: path.to_string_lossy().to_string(),
+                                source,
+                                language,
+                            });
                         }
                     }
                 }
                 Err(_) => {} // permission errors etc.
+            }
+        }
+
+        // Phase 2: Parallel parse + extract. Each thread creates its own
+        // tree-sitter Parser (not Send). Technique adopted from CodeGraph's
+        // ParseWorkerPool (src/extraction/index.ts). MIT license.
+        // https://github.com/opticsWolf/codegraph
+        let num_threads = std::thread::available_parallelism()
+            .map(|n| n.get().min(8))
+            .unwrap_or(4);
+        let chunk_size = (tasks.len() + num_threads - 1) / num_threads;
+
+        type ChunkResult = Vec<(
+            String,                             // file_path
+            Vec<crate::types::ExtractedUnit>,   // units
+            Vec<macrame::ConceptUpsert>,         // concepts
+        )>;
+
+        let mut all_results: Vec<ChunkResult> = Vec::new();
+
+        std::thread::scope(|s| {
+            let mut handles = Vec::new();
+            for chunk in tasks.chunks(chunk_size) {
+                let chunk_tasks: Vec<&FileTask> = chunk.iter().collect();
+                handles.push(s.spawn(move || {
+                    let mut results = Vec::new();
+                    for task in &chunk_tasks {
+                        match CodeGraph::extract_only(
+                            &task.source, &task.path, &task.language)
+                        {
+                            Ok((units, concepts)) => {
+                                results.push((task.path.clone(), units, concepts));
+                            }
+                            Err(_) => {} // parse failures silently skipped
+                        }
+                    }
+                    results
+                }));
+            }
+            for h in handles {
+                match h.join() {
+                    Ok(chunk_results) => all_results.push(chunk_results),
+                    Err(_) => {} // thread panic — skip this chunk
+                }
+            }
+        });
+
+        // Phase 3: Sequential insert into projection + collect concepts.
+        for chunk_results in &all_results {
+            for (file_path, units, concepts) in chunk_results {
+                let lang = Language::from_extension(
+                    std::path::Path::new(file_path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("py"),
+                );
+                let count = units.len();
+                let mut projection = (*graph.snapshot()).clone();
+                graph.insert_extracted(&mut projection, units, file_path, &lang);
+                graph.commit_projection(projection);
+                total_entities += count;
+                files_indexed += 1;
+                all_concepts.extend_from_slice(concepts);
             }
         }
     }

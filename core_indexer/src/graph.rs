@@ -1110,6 +1110,41 @@ impl CodeGraph {
         Ok((count, concepts))
     }
 
+    /// Parse+extract only — no projection mutation, no persistence.
+    /// Returns (units, concepts) for later batch insert. Thread-safe:
+    /// creates its own tree-sitter Parser per invocation.
+    /// Technique: parallel extraction across files adopted from CodeGraph's
+    /// ParseWorkerPool pattern (src/extraction/index.ts). MIT license.
+    /// https://github.com/opticsWolf/codegraph
+    pub fn extract_only(
+        source: &str,
+        file_path: &str,
+        language: &Language,
+    ) -> Result<(Vec<ExtractedUnit>, Vec<macrame::ConceptUpsert>), String> {
+        let ts_lang = Self::ts_language(language)
+            .ok_or_else(|| format!("No tree-sitter grammar for {:?}", language))?;
+
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&ts_lang)
+            .map_err(|e| format!("Failed to set language: {}", e))?;
+        let tree = parser.parse(source, None)
+            .ok_or_else(|| "Failed to parse source".to_string())?;
+        let root_node = tree.root_node();
+
+        let tagged = crate::extract::tagger::tag_tree(
+            source, root_node, language.clone(), ts_lang);
+        let units = crate::extract::walker::walk_and_extract(
+            &tagged, root_node, file_path);
+
+        let lang_str = format!("{:?}", language).to_lowercase();
+        let concepts: Vec<macrame::ConceptUpsert> = units
+            .iter()
+            .map(|u| crate::storage::build_concept(u, file_path, &lang_str))
+            .collect();
+
+        Ok((units, concepts))
+    }
+
     /// Shared parse→extract→insert logic.
     fn index_file_inner(
         &self,
