@@ -284,3 +284,57 @@ urlpatterns = [
             # .as_view should be stripped
             assert ".as_view" not in target, f"Handler should not contain .as_view: {target}"
             assert "UserView" in target, f"Handler should contain UserView: {target}"
+
+
+# ── v3.6: __all__ Export Detection (F.4) ─────────────────────────
+
+class TestAllExports:
+    """Test __all__ export extraction from Python source."""
+
+    def test_literal_list(self):
+        from coderadar.resolvers.exports import extract_all_exports
+        source = '__all__ = ["foo", "bar", "baz"]'
+        assert extract_all_exports(source) == ["foo", "bar", "baz"]
+
+    def test_augmented_assign(self):
+        from coderadar.resolvers.exports import extract_all_exports
+        source = '__all__ = ["foo"]\n__all__ += ["bar"]'
+        result = extract_all_exports(source)
+        assert result is not None
+        assert "foo" in result
+        assert "bar" in result
+
+    def test_extend_method(self):
+        from coderadar.resolvers.exports import extract_all_exports
+        source = '__all__ = ["foo"]\n__all__.extend(["bar", "baz"])'
+        result = extract_all_exports(source)
+        assert result is not None
+        assert "foo" in result
+        assert "bar" in result
+        assert "baz" in result
+
+    def test_append_method(self):
+        from coderadar.resolvers.exports import extract_all_exports
+        source = '__all__ = ["foo"]\n__all__.append("bar")'
+        result = extract_all_exports(source)
+        assert result is not None
+        assert "foo" in result
+        assert "bar" in result
+
+    def test_no_all_returns_none(self):
+        from coderadar.resolvers.exports import extract_all_exports
+        source = 'x = ["not_all"]'
+        assert extract_all_exports(source) is None
+
+    def test_non_string_literals_ignored(self):
+        from coderadar.resolvers.exports import extract_all_exports
+        source = '__all__ = ["valid", 42, x]'
+        result = extract_all_exports(source)
+        assert result == ["valid"]
+
+    def test_deduplication(self):
+        from coderadar.resolvers.exports import extract_all_exports
+        source = '__all__ = ["foo", "bar"]\n__all__ += ["foo"]\n__all__.extend(["bar"])'
+        result = extract_all_exports(source)
+        assert result == ["foo", "bar"]
+

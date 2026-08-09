@@ -2175,9 +2175,11 @@ mod tests {
         let graph = CodeGraph::new(GraphConfig::default());
         index_source(&graph, "defmodule MyApp.User do\n  def greet(name) do\n    \"Hello \" <> name\n  end\nend\n", "user.ex");
         let snap = graph.snapshot();
-        // Elixir query may use partial matching — just verify no crash
-        assert!(snap.modules.len() > 0, "Should index at least the module: classes={} functions={}",
-                snap.classes.len(), snap.functions.len());
+        assert!(snap.modules.len() > 0, "Should index the module");
+        // v3.6: def/defp extraction — verify function entity
+        assert!(snap.functions.values().any(|f| f.name == "greet"),
+                "Should extract greet function from def block; functions={:?}",
+                snap.functions.values().map(|f| f.name.clone()).collect::<Vec<_>>());
     }
 
     #[test]
@@ -2481,5 +2483,32 @@ mod tests {
         assert!(register.calls.iter().any(|c| c.name == "handle_click"),
                 "register should have fn-ref to imported handle_click; calls={:?}",
                 register.calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>());
+    }
+
+    // ── v3.6: module.children() convenience API ─────────────────
+
+    #[test]
+    fn test_module_children_resolution() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class Foo:\n    def bar(self):\n        pass\n\ndef baz():\n    pass\n", "mod.py");
+        let snap = graph.snapshot();
+
+        let module = snap.modules.values().find(|m| m.path.ends_with("mod.py"));
+        assert!(module.is_some(), "Should find module");
+        let module = module.unwrap();
+
+        assert!(!module.classes.is_empty(), "Module should have classes");
+        assert!(!module.functions.is_empty(), "Module should have functions");
+
+        for cid in &module.classes {
+            let cls = snap.classes.get(cid);
+            assert!(cls.is_some());
+            assert_eq!(cls.unwrap().name, "Foo");
+        }
+
+        for fid in &module.functions {
+            let func = snap.functions.get(fid);
+            assert!(func.is_some());
+        }
     }
 }

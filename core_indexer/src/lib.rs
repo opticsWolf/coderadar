@@ -54,6 +54,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
+    m.add_function(wrap_pyfunction!(module_children, m)?)?;
     m.add_function(wrap_pyfunction!(start_watcher, m)?)?;
     m.add_function(wrap_pyfunction!(next_watcher_batch, m)?)?;
     m.add_function(wrap_pyfunction!(stop_watcher, m)?)?;
@@ -897,4 +898,69 @@ fn register_synthetic_edge(
     let dict = PyDict::new(py);
     dict.set_item("ok", true)?;
     Ok(dict.into())
+}
+
+/// Resolve a module's children (classes, functions) to full entity dicts.
+///
+/// Module dicts carry EntityId lists for `classes`, `functions`, etc.
+/// This function resolves those IDs to the full entity representation.
+#[pyfunction]
+fn module_children(
+    py: Python<'_>, module_id: &str,
+) -> PyResult<PyObject> {
+    with_graph(|_graph, snap| {
+        let module = snap.modules.get(module_id)
+            .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(
+                format!("Module not found: {}", module_id)
+            ))?;
+
+        let dict = PyDict::new(py);
+        dict.set_item("module_id", module_id)?;
+
+        // Resolve classes
+        let classes: Vec<PyObject> = module.classes.iter()
+            .filter_map(|cid| {
+                snap.classes.get(cid).and_then(|c| class_to_dict(py, c).ok())
+            })
+            .collect();
+        dict.set_item("classes", classes)?;
+
+        // Resolve functions
+        let functions: Vec<PyObject> = module.functions.iter()
+            .filter_map(|fid| {
+                snap.functions.get(fid).and_then(|f| function_to_dict(py, f).ok())
+            })
+            .collect();
+        dict.set_item("functions", functions)?;
+
+        // Resolve imports
+        let imports: Vec<PyObject> = module.imports.iter()
+            .filter_map(|iid| {
+                snap.imports.get(iid).map(|i| {
+                    let d = PyDict::new(py);
+                    let _ = d.set_item("id", &i.id);
+                    let _ = d.set_item("raw", &i.raw);
+                    let _ = d.set_item("kind", format!("{:?}", i.kind));
+                    let _ = d.set_item("line", i.line);
+                    d.into()
+                })
+            })
+            .collect();
+        dict.set_item("imports", imports)?;
+
+        // Resolve constants
+        let constants: Vec<PyObject> = module.constants.iter()
+            .filter_map(|cid| {
+                snap.constants.get(cid).map(|c| {
+                    let d = PyDict::new(py);
+                    let _ = d.set_item("id", &c.id);
+                    let _ = d.set_item("name", &c.name);
+                    d.into()
+                })
+            })
+            .collect();
+        dict.set_item("constants", constants)?;
+
+        Ok(dict.into())
+    })
 }

@@ -366,26 +366,48 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                 || node.kind() == "opaque_declaration"
                 || node.kind() == "table_constructor"
                 || node.kind() == "setClass_expression"
-                || node.kind() == "VarDecl"  // Zig: variable declarations (struct/enum/union)
+                || node.kind() == "VarDecl"
+                // Elixir: defmodule is represented as (call ...)
+                || (node.kind() == "call" && node.child_by_field_name("target")
+                    .and_then(|t| t.utf8_text(source.as_bytes()).ok())
+                    .map(|s| s == "defmodule")
+                    .unwrap_or(false))
             {
                 // Multi-language class/struct/enum/trait: name is identifier child
                 // Zig VarDecl: name is variable_type_function: (IDENTIFIER)
-                let zig_name = if node.kind() == "VarDecl" {
-                    node.child_by_field_name("variable_type_function")
-                        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                // Elixir defmodule: name is in arguments → alias
+                let elixir_name = if node.kind() == "call" {
+                    node.children(&mut node.walk())
+                        .find(|c| c.kind() == "arguments")
+                        .and_then(|args| {
+                            args.children(&mut args.walk())
+                                .find(|c| c.kind() == "alias")
+                                .and_then(|a| a.utf8_text(source.as_bytes()).ok())
+                                .map(|s| s.to_string())
+                        })
                 } else {
                     None
                 };
-                zig_name.unwrap_or_else(|| {
-                    let mut cursor = node.walk();
-                    let children: Vec<_> = node.children(&mut cursor).collect();
-                    children.iter().find(|ch|
-                        ch.kind() == "type_identifier" || ch.kind() == "simple_identifier"
-                        || ch.kind() == "identifier"
-                    )
-                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                    .unwrap_or("")
-                }).to_string()
+                if let Some(en) = elixir_name {
+                    en
+                } else {
+                    let zig_name = if node.kind() == "VarDecl" {
+                        node.child_by_field_name("variable_type_function")
+                            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                    } else {
+                        None
+                    };
+                    zig_name.unwrap_or_else(|| {
+                        let mut cursor = node.walk();
+                        let children: Vec<_> = node.children(&mut cursor).collect();
+                        children.iter().find(|ch|
+                            ch.kind() == "type_identifier" || ch.kind() == "simple_identifier"
+                            || ch.kind() == "identifier"
+                        )
+                        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                        .unwrap_or("")
+                    }).to_string()
+                }
             } else {
                 "".to_string()
             };
@@ -531,6 +553,40 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                     .and_then(|n| n.utf8_text(source.as_bytes()).ok())
                     .unwrap_or("")
                     .to_string()
+            } else if node.is_named() && node.kind() == "call" {
+                // Elixir: (call target: (identifier "def"/"defp"/"defmodule") ...)
+                // defmodule → arguments has alias child
+                // def/defp → arguments has nested (call target: (identifier))
+                let name = node.child_by_field_name("target")
+                    .and_then(|t| t.utf8_text(source.as_bytes()).ok())
+                    .and_then(|s| {
+                        if matches!(s, "def" | "defp") {
+                            // arguments → (call target: (identifier "name"))
+                            node.children(&mut node.walk())
+                                .find(|c| c.kind() == "arguments")
+                                .and_then(|args| {
+                                    args.children(&mut args.walk())
+                                        .find(|c| c.kind() == "call")
+                                        .and_then(|call| call.child_by_field_name("target"))
+                                        .and_then(|id| id.utf8_text(source.as_bytes()).ok())
+                                        .map(|s| s.to_string())
+                                })
+                        } else if s == "defmodule" {
+                            // arguments → alias
+                            node.children(&mut node.walk())
+                                .find(|c| c.kind() == "arguments")
+                                .and_then(|args| {
+                                    args.children(&mut args.walk())
+                                        .find(|c| c.kind() == "alias")
+                                        .and_then(|a| a.utf8_text(source.as_bytes()).ok())
+                                        .map(|s| s.to_string())
+                                })
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                name
             } else {
                 "".to_string()
             };
