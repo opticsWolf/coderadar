@@ -54,6 +54,36 @@ def _run_framework_extraction(project_root: Path) -> dict:
     return results
 
 
+def _extract_star_exports(project_root: Path) -> int:
+    """v0.5: Extract __all__ exports from Python modules.
+
+    Scans all .py files, statically detects __all__ lists, and
+    registers them via set_module_star_exports so wildcard
+    imports (from X import *) can be resolved.
+    """
+    from coderadar.resolvers.exports import extract_all_exports
+    try:
+        from coderadar._core import set_module_star_exports
+    except ImportError:
+        return 0
+
+    count = 0
+    for py_file in project_root.rglob("*.py"):
+        try:
+            source = py_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        names = extract_all_exports(source)
+        if names:
+            module_id = f"{py_file}::module"
+            try:
+                set_module_star_exports(module_id, names)
+                count += 1
+            except RuntimeError:
+                pass
+    return count
+
+
 @click.group()
 @click.version_option(version="0.4.0", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.5)")
@@ -160,6 +190,10 @@ port = 0  # 0 = stdio only
         console.print(f"  Frameworks: {', '.join(framework['frameworks'])}")
         console.print(f"  Routes:     {framework['routes']}")
         console.print(f"  Handlers:   {framework['handlers']}")
+    # v0.5: Extract __all__ star exports for wildcard import resolution
+    star_count = _extract_star_exports(root)
+    if star_count > 0:
+        console.print(f"  Star exports: {star_count} module(s) with __all__")
     console.print(f"[green]OK  Analysis complete[/green]")
 
 
@@ -190,6 +224,10 @@ def analyze(path: str):
             str(framework["handlers"]),
         )
         console.print(fw_table)
+    # v0.5: Extract __all__ star exports for wildcard import resolution
+    star_count = _extract_star_exports(Path(path))
+    if star_count > 0:
+        console.print(f"[dim]  Star exports: {star_count} module(s) with __all__[/dim]")
     console.print(f"[green]OK  Analysis complete[/green]")
 
 

@@ -699,16 +699,22 @@ impl CodeGraph {
             })
             .collect();
 
-        // Clear old call edges — rebuild from resolution
-        projection.callers_by_callee.clear();
-        projection.callees_by_caller.clear();
-
         // Collect calls (before mutating functions map)
         let all_calls: Vec<(String, Vec<crate::types::UnresolvedRef>)> = projection
             .functions
             .iter()
             .map(|(id, f)| (id.clone(), f.calls.clone()))
             .collect();
+
+        // Early exit if no calls to resolve — avoid clearing edge maps
+        let has_calls = all_calls.iter().any(|(_, calls)| !calls.is_empty());
+        if !has_calls {
+            return;
+        }
+
+        // Clear old call edges — rebuild from resolution
+        projection.callers_by_callee.clear();
+        projection.callees_by_caller.clear();
 
         for (func_id, calls) in &all_calls {
             // Same-file intra-resolution: resolve calls to functions in the same module.
@@ -788,6 +794,22 @@ impl CodeGraph {
                                     // The module itself is available as the last segment
                                     let short_name = src_mod.rsplit('.').next().unwrap_or(src_mod);
                                     import_targets.insert(short_name.to_string(), tgt_id);
+                                }
+                            }
+                            ImportKind::StarImport { module: src_mod } => {
+                                // v0.5: `from X import *` — resolve via __all__/star_exports
+                                if let Some(tgt_id) = find_module_by_dotted_name(
+                                    projection, src_mod, &parent_module)
+                                {
+                                    if let Some(tgt_module) = projection.modules.get(&tgt_id) {
+                                        if let Some(ref exports) = tgt_module.star_exports {
+                                            for name in exports {
+                                                import_targets.insert(
+                                                    name.clone(), tgt_id.clone()
+                                                );
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             _ => {}
@@ -982,6 +1004,23 @@ impl CodeGraph {
         }
 
         Ok(())
+    }
+
+    /// v0.5: Set a module's `__all__` star-export names list.
+    /// Called from Python after static `__all__` analysis (exports.py).
+    /// Enables resolution of `from X import *` wildcard imports.
+    pub fn set_module_star_exports(
+        &self,
+        module_id: &str,
+        names: Vec<String>,
+    ) {
+        let mut projection = (*self.snapshot()).clone();
+        if let Some(module) = projection.modules.get(module_id) {
+            let mut m = (**module).clone();
+            m.star_exports = Some(names);
+            projection.modules.insert(module_id.to_string(), Arc::new(m));
+        }
+        self.commit_projection(projection);
     }
 
     // ── File Indexing Pipeline ────────────────────────────────────────────
@@ -1529,6 +1568,48 @@ mod tests {
 
         let from_a: Vec<_> = ig.transitive_imports("src/a.py", 3).iter().map(|n| n.path.to_string_lossy().to_string()).collect();
         assert!(from_a.iter().any(|p| p.contains("c.py")), "A→B→C: {:?}", from_a);
+    }
+
+    #[test]
+    fn test_star_exports_wildcard_import() {
+        let graph = CodeGraph::new(GraphConfig::default());
+
+        index_source(&graph, "__all__ = ['public_api', 'internal_helper']\n\ndef public_api(): pass\ndef private_impl(): pass\ndef internal_helper(): pass\n", "src/lib.py");
+        graph.set_module_star_exports("src/lib.py::module",
+            vec!["public_api".to_string(), "internal_helper".to_string()]);
+
+        index_source(&graph, "from src.lib import *\ndef consumer(): public_api()\n", "src/consumer.py");
+
+        // v0.5: Manually resolve calls — resolve_all_calls is normally called
+        // from update_file, not index_file. In production, calls are resolved
+        // after all files are indexed (batch mode).
+        {
+            let mut projection = (*graph.snapshot()).clone();
+            graph.compute_all_mro(&mut projection);
+            graph.resolve_all_calls(&mut projection);
+            graph.commit_projection(projection);
+        }
+
+        let snap = graph.snapshot();
+
+        // Debug: check import graph edges
+        let ig = graph.import_graph.read();
+        let trans = ig.transitive_imports("src/consumer.py", 3);
+        assert!(trans.iter().any(|n| n.path.to_string_lossy().to_string().contains("lib.py")),
+            "consumer should transitively reach lib.py");
+
+        for (fid, func) in &snap.functions {
+            if func.name == "consumer" {
+                let resolved: Vec<_> = func.resolved_calls.iter()
+                    .filter_map(|rc| match rc {
+                        crate::types::ResolvedCall::Function(f) => Some(f.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(resolved.len(), 1,
+                    "Expected 1 resolved, got {:?}", resolved);
+            }
+        }
     }
 
     #[test]
