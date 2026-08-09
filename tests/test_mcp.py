@@ -60,7 +60,7 @@ class TestMCPCreation:
         from coderadar.mcp.server import create_server
         server = create_server(None)
         assert server.name == "CodeRadar"
-        assert server.version == "0.3.15"
+        assert server.version == "0.4.1"
 
     def test_server_has_call_tool(self):
         from coderadar.mcp.server import create_server
@@ -100,6 +100,17 @@ class TestMCPCreation:
         assert "a" not in result
         assert "x" not in result
         assert "User" in result
+
+    def test_instructions_mention_18_languages(self):
+        from coderadar.mcp.server import SERVER_INSTRUCTIONS
+        assert "18 languages" in SERVER_INSTRUCTIONS
+
+    def test_instructions_include_staleness_guidance(self):
+        from coderadar.mcp.server import SERVER_INSTRUCTIONS
+        # Check for the staleness warning content (the ⚠ char may vary by encoding)
+        assert "changed on disk" in SERVER_INSTRUCTIONS.lower() or \
+            "last index sync" in SERVER_INSTRUCTIONS.lower() or \
+            "\u26a0" in SERVER_INSTRUCTIONS
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -454,6 +465,114 @@ class TestUninitializedGraph:
         from coderadar.mcp.server import _affected
         result = _affected(None, "test.py::func", 3)
         assert isinstance(result, str)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v0.4.1 new features: normalization, budget, staleness
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestQueryNormalization:
+    """Language spelling normalization (Elixir/Erlang → index)."""
+
+    def test_arity_tail_stripped(self):
+        from coderadar.mcp.server import _normalize_query_spelling
+        assert _normalize_query_spelling("GenServer:handle_call/3") == "GenServer.handle_call"
+
+    def test_module_colon_to_dot(self):
+        from coderadar.mcp.server import _normalize_query_spelling
+        assert _normalize_query_spelling("mod:fn") == "mod.fn"
+
+    def test_multi_arity_stripped(self):
+        from coderadar.mcp.server import _normalize_query_spelling
+        assert _normalize_query_spelling("cowboy_stream_h:request_process/3") == \
+            "cowboy_stream_h.request_process"
+
+    def test_preserves_kind_prefix(self):
+        from coderadar.mcp.server import _normalize_query_spelling
+        assert _normalize_query_spelling("kind:function lang:python User") == \
+            "kind:function lang:python User"
+
+    def test_plain_query_unaffected(self):
+        from coderadar.mcp.server import _normalize_query_spelling
+        assert _normalize_query_spelling("create_user format_username") == \
+            "create_user format_username"
+
+    def test_integrated_into_parse_names(self):
+        from coderadar.mcp.server import _parse_names
+        result = _parse_names("GenServer:handle_call/3 spawn/1", [])
+        assert "handle_call/3" not in result
+        assert any("handle_call" in r for r in result)
+
+
+class TestOutputBudget:
+    """Budget-aware explore output truncation."""
+
+    def test_budget_below_trim_threshold_passes_through(self):
+        from coderadar.mcp.server import _apply_output_budget
+        short = ["**test.py** — foo(function)", "", "1\tdef foo(): pass"]
+        result = _apply_output_budget(short, max_chars=10_000)
+        assert "def foo" in result
+
+    def test_budget_truncates_large_file(self):
+        from coderadar.mcp.server import _apply_output_budget
+        big_body = [f"{i}\t{'x' * 100}" for i in range(1, 200)]
+        lines = ["**big.py** — big(function)", ""] + big_body
+        result = _apply_output_budget(lines, max_chars=20_000, max_per_file=1000)
+        assert len(result) < len("\n".join(lines))
+
+    def test_budget_preserves_file_headers(self):
+        from coderadar.mcp.server import _apply_output_budget
+        lines = [
+            "**models.py** — User(class)", "",
+            "1\tclass User:",
+            "2\t    pass",
+        ]
+        result = _apply_output_budget(lines, max_chars=50)
+        assert "models.py" in result
+
+    def test_budget_respects_relationships_section(self):
+        from coderadar.mcp.server import _apply_output_budget
+        lines = [
+            "**src.py** — foo(function)", "",
+            "1\tdef foo(): pass", "",
+            "## Relationships",
+            "- `bar` ←──[caller] `foo`",
+        ]
+        result = _apply_output_budget(lines, max_chars=500)
+        assert "## Relationships" in result
+
+
+class TestStalenessBanner:
+    """Staleness detection and formatting."""
+
+    def test_empty_stale_list_returns_empty(self):
+        from coderadar.mcp.server import _format_stale_banner
+        result = _format_stale_banner([], [])
+        assert result == ""
+
+    def test_stale_files_not_in_referenced_returns_empty(self):
+        from coderadar.mcp.server import _format_stale_banner
+        stale = [{"path": "/tmp/other.py", "mtime": 999999}]
+        result = _format_stale_banner(stale, ["/tmp/main.py"])
+        assert result == ""
+
+    def test_stale_file_in_referenced_shows_banner(self):
+        from coderadar.mcp.server import _format_stale_banner
+        stale = [{"path": "/tmp/main.py", "mtime": 999999}]
+        result = _format_stale_banner(stale, ["/tmp/main.py"])
+        assert "⚠" in result
+        assert "/tmp/main.py" in result
+        assert "Read them directly" in result
+
+    def test_get_stale_files_returns_list(self):
+        from coderadar.mcp.server import _get_stale_files
+        result = _get_stale_files(["/nonexistent/path.py"])
+        assert isinstance(result, list)
+
+    def test_get_stale_files_with_real_file(self):
+        from coderadar.mcp.server import _get_stale_files
+        result = _get_stale_files([str(E2E_DIR / "models.py")])
+        assert isinstance(result, list)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

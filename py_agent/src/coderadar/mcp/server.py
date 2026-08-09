@@ -6,10 +6,19 @@ Type hints ARE the JSON Schema — no manual Tool/schema boilerplate.
 Usage:
   server = create_server(graph)
   server.run(transport="stdio")  # blocking
+
+Improvements adapted from CodeGraph (MIT License, https://github.com/colbymchenry/codegraph):
+  1. Staleness banners — warn agent when files drift from index
+  2. Tool annotations — readOnlyHint/idempotentHint for MCP client gating
+  3. Tighter server instructions — staleness guidance, anti-patterns
+  4. Language spelling normalization — Elixir/Erlang fn/3 → fn
+  5. Output budget with proportional file truncation
 """
 
 from __future__ import annotations
 
+import re
+import os
 from collections import deque
 from typing import Any, Literal, Optional
 
@@ -19,14 +28,32 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# ── Output Budget Constants ───────────────────────────────────────────────
+# Adapted from CodeGraph's getExploreOutputBudget / allocateExploreBudget
+# (MIT License, https://github.com/colbymchenry/codegraph)
+
+MAX_OUTPUT_CHARS = 18_000
+"""Hard cap on total explore output (characters)."""
+
+MAX_CHARS_PER_FILE = 4_500
+"""Maximum source characters served per file."""
+
+POINTER_HEADER = "**Not shown above — explore these names for their source**"
+"""Header for files trimmed by the output budget."""
+
+
 # ── Instructions (§26.1 item 2) ──────────────────────────────────────────
 
 SERVER_INSTRUCTIONS = """# CodeRadar — live semantic graph of your codebase
 
 CodeRadar is a pre-computed knowledge graph of every symbol, edge, and file
 in the workspace — cached intelligence for thousands of parse/trace decisions
-you'd otherwise re-derive by reading files. Indexes Python + TypeScript;
-reads are sub-millisecond.
+you'd otherwise re-derive by reading files. Indexes 18 languages (Python,
+TypeScript, JavaScript, Rust, Go, Java, C, C++, Ruby, PHP, C#, Kotlin, Swift,
+Scala, Lua, Elixir, Zig, R); reads are sub-millisecond. Reach for it BEFORE
+and while writing or editing code — not just for questions: one call returns
+the verbatim source PLUS who calls it and what it affects, so you edit with
+the blast radius in view.
 
 ## Primary tool: codegraph_explore
 
@@ -54,10 +81,11 @@ more for the same answer.
 
 ## Anti-patterns
 
-- **Trust codegraph's results — don't re-verify with grep.** They come from a full AST parse.
+- **Trust codegraph's results — don't re-verify them with grep.** They come from a full AST parse; re-checking with grep is slower, less accurate, and wastes context.
 - **Don't grep or Read first** to find indexed code — ONE explore call returns source together.
 - **Don't reconstruct a flow by hand** — name the endpoints and explore surfaces the path.
-- **If a project isn't indexed**, stop calling codegraph tools for that project and use built-in tools.
+- **When a file is flagged "⚠ changed on disk after index sync"**, Read those specific files for accurate content. Every file NOT flagged is fresh — still trust codegraph.
+- **If a project isn't indexed**, stop calling codegraph tools for that project and use built-in tools. Indexing is the user's decision — mention `coderadar init` if it comes up, but don't run it yourself.
 """
 
 
@@ -72,20 +100,28 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-                version="0.3.15",
+        version="0.4.1",
         instructions=SERVER_INSTRUCTIONS,
     )
 
     # ── codegraph_explore (§26.2 primary tool) ─────────────────────────
 
-    @mcp.tool(description=(
-        "Explore the code graph: given symbol or file names (or a natural-language "
-        "question), returns the verbatim line-numbered source of the relevant "
-        "symbols grouped by file, PLUS the call paths between them and a blast-radius "
-        "summary of what depends on them. Use this instead of grep + Read for any "
-        "structural or flow question. For multiple symbols, pass them together in "
-        "one call to get the relationships between them."
-    ))
+    @mcp.tool(
+        description=(
+            "Explore the code graph: given symbol or file names (or a natural-language "
+            "question), returns the verbatim line-numbered source of the relevant "
+            "symbols grouped by file, PLUS the call paths between them and a blast-radius "
+            "summary of what depends on them. Use this instead of grep + Read for any "
+            "structural or flow question. For multiple symbols, pass them together in "
+            "one call to get the relationships between them."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
     def codegraph_explore(
         query: str = "",
         symbols: Optional[list[str]] = None,
@@ -97,11 +133,19 @@ def create_server(graph: Any) -> MCPServer:
 
     # ── codegraph_node (§26.2 depth tool) ──────────────────────────────
 
-    @mcp.tool(description=(
-        "Get full details for a specific entity identified via codegraph_explore. "
-        "Returns complete metadata, source location, docstring, decorators, "
-        "and optionally immediate neighbors (callers and callees)."
-    ))
+    @mcp.tool(
+        description=(
+            "Get full details for a specific entity identified via codegraph_explore. "
+            "Returns complete metadata, source location, docstring, decorators, "
+            "and optionally immediate neighbors (callers and callees)."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
     def codegraph_node(
         id: str,
         include_neighbors: bool = False,
@@ -111,11 +155,19 @@ def create_server(graph: Any) -> MCPServer:
 
     # ── codegraph_search (§26.2 discovery tool) ────────────────────────
 
-    @mcp.tool(description=(
-        "Search for symbols by keyword or natural-language description when "
-        "you don't know the exact symbol name. Returns ranked results with "
-        "snippets. Use this to discover what's available before calling explore."
-    ))
+    @mcp.tool(
+        description=(
+            "Search for symbols by keyword or natural-language description when "
+            "you don't know the exact symbol name. Returns ranked results with "
+            "snippets. Use this to discover what's available before calling explore."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
     def codegraph_search(
         query: str,
         kind: Optional[str] = None,
@@ -126,11 +178,19 @@ def create_server(graph: Any) -> MCPServer:
 
     # ── codegraph_affected (§26.2 impact tool) ─────────────────────────
 
-    @mcp.tool(description=(
-        "Find all entities transitively affected by a given entity — the "
-        "blast radius. Traverses upstream through callers to show the full "
-        "dependency tree. Use this before editing to understand the impact."
-    ))
+    @mcp.tool(
+        description=(
+            "Find all entities transitively affected by a given entity — the "
+            "blast radius. Traverses upstream through callers to show the full "
+            "dependency tree. Use this before editing to understand the impact."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
     def codegraph_affected(
         id: str,
         max_depth: int = 5,
@@ -147,6 +207,236 @@ def serve(graph: Any) -> None:
     """Run the MCP server over stdio (blocking)."""
     server = create_server(graph)
     server.run(transport="stdio")
+
+
+# ── Staleness Detection ──────────────────────────────────────────────────
+# Adapted from CodeGraph's formatStaleBanner / formatDegradedBanner
+# (MIT License, https://github.com/colbymchenry/codegraph)
+
+def _get_stale_files(file_paths: list[str]) -> list[dict]:
+    """Check if any of the given file paths are stale (modified since last index).
+
+    Uses file modification time vs. a simple heuristic: if the .coderadar/
+    directory has a timestamp file, compares against it. Otherwise returns empty.
+
+    Returns list of dicts with `path`, `stale` keys.
+    """
+    stale: list[dict] = []
+    try:
+        # Check for index timestamp marker
+        # The index stores its snapshot time; we compare file mtime against it
+        from coderadar._core import graph_stats
+        stats = graph_stats()
+        index_epoch = stats.get("epoch", 0)
+    except ImportError:
+        return stale
+
+    for fp in file_paths:
+        try:
+            mtime = os.path.getmtime(fp)
+            # Compare file modification time against last index time
+            # (epoch is stored as seconds when indexed; 0 means unknown)
+            if index_epoch > 0 and mtime > index_epoch:
+                stale.append({"path": fp, "mtime": mtime})
+        except OSError:
+            pass
+
+    return stale
+
+
+def _format_stale_banner(stale_files: list[dict], referenced_paths: list[str]) -> str:
+    """Format a staleness warning banner for the agent.
+
+    Only includes files that appear in referenced_paths (those the response
+    actually uses). Other stale files are noise — the agent only cares about
+    the files it's about to act on.
+    """
+    if not stale_files:
+        return ""
+
+    referenced_set = set(referenced_paths)
+    relevant = [s for s in stale_files if s["path"] in referenced_set]
+    if not relevant:
+        return ""
+
+    lines = [
+        "⚠️ Some files referenced below were edited since the last index sync — "
+        "their codegraph entries may be stale:",
+    ]
+    for s in relevant:
+        lines.append(f"  - {s['path']}")
+    lines.append(
+        "For accurate content of those specific files, Read them directly. "
+        "Every file NOT listed above is fresh — still trust codegraph."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ── Language Spelling Normalization ──────────────────────────────────────
+# Adapted from CodeGraph's normalizeQuerySpelling
+# (MIT License, https://github.com/colbymchenry/codegraph)
+
+_ERLANG_ARITY_RE = re.compile(r'\b([A-Za-z_][\w@]*)/(\d{1,3})\b')
+_ERLANG_MODULE_RE = re.compile(
+    r'(^|[\s,()[\]])(?!(?:kind|lang|language|path|name):)'
+    r'([A-Za-z_][\w@]*):([A-Za-z_][\w@]*)(?=$|[\s,()\]])'
+)
+
+
+def _normalize_query_spelling(query: str) -> str:
+    """Normalize language-native query spellings into index-compatible forms.
+
+    Transforms so agent queries using language-native notation match the index:
+      - Elixir/Erlang arity: ``fn/3`` → ``fn``
+      - Elixir/Erlang module: ``mod:fn`` → ``mod.fn``
+
+    Safe cross-language: Lua ``t:m`` maps to ``t.m``, and no other supported
+    language uses a bare single-colon identifier pair.
+    """
+    # Strip arity tails: fn/3 → fn
+    query = _ERLANG_ARITY_RE.sub(r'\1', query)
+    # Module:function → module.function (preserving kind:/lang: prefixes)
+    query = _ERLANG_MODULE_RE.sub(r'\1\2.\3', query)
+    return query
+
+
+# ── Output Budget Truncation ─────────────────────────────────────────────
+# Adapted from CodeGraph's allocateExploreBudget / score-proportional allocation
+# (MIT License, https://github.com/colbymchenry/codegraph)
+
+def _apply_output_budget(
+    lines: list[str],
+    max_chars: int = MAX_OUTPUT_CHARS,
+    max_per_file: int = MAX_CHARS_PER_FILE,
+) -> str:
+    """Trim full output to fit within a character budget.
+
+    Strategy: walk through file sections (delimited by ``**file_path**`` headers),
+    applying per-file caps first, then a global cap. Files below the cap get
+    full source; at-cap files get their source truncated at cluster boundaries.
+    Files that don't fit at all are converted to pointer lines.
+
+    Always preserves file headers and the Relationships section.
+    """
+    text = "\n".join(lines)
+    if len(text) <= max_chars:
+        return text
+
+    # Identify file sections and the relationships section
+    file_sections: list[list[str]] = []
+    current_section: list[str] = []
+    relationships_lines: list[str] = []
+    in_relationships = False
+
+    for line in lines:
+        if line.startswith("## Relationships"):
+            in_relationships = True
+            if current_section:
+                file_sections.append(current_section)
+                current_section = []
+        if in_relationships:
+            relationships_lines.append(line)
+            continue
+        # File header detection: **path** — ...
+        if line.startswith("**") and "** —" in line:
+            if current_section:
+                file_sections.append(current_section)
+            current_section = [line]
+        elif current_section:
+            current_section.append(line)
+        else:
+            # Preamble lines (before first file header)
+            current_section.append(line)
+
+    if current_section:
+        file_sections.append(current_section)
+
+    # Separate preamble from file sections
+    preamble_lines: list[str] = []
+    file_sections_filtered: list[list[str]] = []
+    for sec in file_sections:
+        if sec and sec[0].startswith("**") and "** —" in sec[0]:
+            file_sections_filtered.append(sec)
+        else:
+            preamble_lines = sec
+
+    # Build output: preamble + truncated file sections + relationships
+    output_lines = list(preamble_lines)
+    remaining = max_chars - len("\n".join(output_lines))
+    if relationships_lines:
+        remaining -= len("\n".join(relationships_lines)) + 2  # 2 for separators
+
+    if remaining <= 0:
+        # Bare minimum: just relationships
+        output_lines = [POINTER_HEADER, ""]
+        output_lines.extend(relationships_lines)
+        return "\n".join(output_lines)
+
+    pointer_files: list[str] = []
+
+    for sec in file_sections_filtered:
+        sec_text = "\n".join(sec)
+        if len(sec_text) <= max_per_file:
+            # Small enough — include whole (but check global budget)
+            if len(sec_text) <= remaining:
+                output_lines.extend(sec)
+                remaining -= len(sec_text)
+            else:
+                # Budget exhausted — pointer only
+                pointer_files.append(_extract_path_from_header(sec[0]))
+        else:
+            # Per-file cap: trim to max_per_file, preserving the header
+            header = sec[0]
+            body_lines = sec[1:]
+            trimmed_body = _trim_to_char_budget(body_lines, max_per_file - len(header) - 1)
+            trimmed_sec = [header] + trimmed_body
+            sec_text = "\n".join(trimmed_sec)
+            if len(sec_text) <= remaining:
+                output_lines.extend(trimmed_sec)
+                remaining -= len(sec_text)
+            else:
+                pointer_files.append(_extract_path_from_header(header))
+
+    # Pointer list for files that didn't fit
+    if pointer_files:
+        output_lines.append("")
+        output_lines.append(POINTER_HEADER)
+        for pf in pointer_files:
+            output_lines.append(f"- {pf}")
+        output_lines.append("")
+
+    # Relationships
+    if relationships_lines:
+        output_lines.append("")
+        output_lines.extend(relationships_lines)
+
+    return "\n".join(output_lines)
+
+
+def _extract_path_from_header(header: str) -> str:
+    """Extract file path from a ``**path** — symbols`` header."""
+    # Remove bold markers and trailing symbol list
+    path = header.removeprefix("**").split("**")[0].strip()
+    return path
+
+
+def _trim_to_char_budget(body_lines: list[str], max_chars: int) -> list[str]:
+    """Trim body source lines to fit within max_chars, at line boundaries."""
+    if max_chars <= 0:
+        return []
+    result: list[str] = []
+    used = 0
+    for line in body_lines:
+        # +1 for newline separator
+        cost = len(line) + 1
+        if used + cost > max_chars:
+            break
+        result.append(line)
+        used += cost
+    if len(result) < len(body_lines):
+        result.append("...")
+    return result
 
 
 # ── Tool Implementations ─────────────────────────────────────────────────
@@ -182,12 +472,24 @@ def _explore(
 
     # Group by file
     by_file: dict[str, list[dict]] = {}
+    referenced_paths: list[str] = []
     for entity in resolved:
         fp = entity.get("file_path", "unknown")
         by_file.setdefault(fp, []).append(entity)
+        if fp not in referenced_paths:
+            referenced_paths.append(fp)
+
+    # Staleness check — warn agent about files edited since last index
+    stale_banner = ""
+    stale_files = _get_stale_files(referenced_paths)
+    if stale_files:
+        stale_banner = _format_stale_banner(stale_files, referenced_paths)
 
     # Render output
     lines: list[str] = []
+    if stale_banner:
+        lines.append(stale_banner)
+
     for file_path, entities in list(by_file.items())[:max_files]:
         names_str = ", ".join(
             f"{e.get('name', '?')}({e.get('kind', '?')})"
@@ -208,7 +510,8 @@ def _explore(
         lines.append("## Relationships")
         lines.extend(rel_lines)
 
-    return "\n".join(lines)
+    result = _apply_output_budget(lines)
+    return result
 
 
 def _node_detail(graph: Any, entity_id: str, include_neighbors: bool) -> str:
@@ -227,13 +530,25 @@ def _node_detail(graph: Any, entity_id: str, include_neighbors: bool) -> str:
             "Try codegraph_search to locate it."
         )
 
-    lines = [
+    # Staleness check for this entity's file
+    stale_banner = ""
+    fp = entity.get("file_path", "")
+    if fp:
+        stale_files = _get_stale_files([fp])
+        if stale_files:
+            stale_banner = _format_stale_banner(stale_files, [fp])
+
+    lines: list[str] = []
+    if stale_banner:
+        lines.append(stale_banner)
+
+    lines.extend([
         f"## {entity.get('name', '?')}",
         "",
         f"- **ID:** `{entity.get('id', '?')}`",
         f"- **Kind:** {entity.get('kind', '?')}",
         f"- **File:** `{entity.get('file_path', '?')}`",
-    ]
+    ])
 
     start = entity.get("start_line")
     end = entity.get("end_line")
@@ -251,6 +566,10 @@ def _node_detail(graph: Any, entity_id: str, include_neighbors: bool) -> str:
     decorators = entity.get("decorators", [])
     if decorators:
         lines.append(f"\n**Decorators:** {', '.join(f'`{d}`' for d in decorators)}")
+
+    grammar_kind = entity.get("grammar_kind")
+    if grammar_kind:
+        lines.append(f"\n**Grammar kind:** `{grammar_kind}`")
 
     if include_neighbors:
         callers = _get_callers(graph, entity_id)
@@ -328,6 +647,14 @@ def _affected(graph: Any, entity_id: str, max_depth: int) -> str:
     if not entity:
         return f"Entity `{entity_id}` not found. Try codegraph_search."
 
+    # Staleness check for this entity's file
+    stale_banner = ""
+    fp = entity.get("file_path", "")
+    if fp:
+        stale_files = _get_stale_files([fp])
+        if stale_files:
+            stale_banner = _format_stale_banner(stale_files, [fp])
+
     # BFS upstream
     tree: dict[int, list[dict]] = {}
     visited = {entity_id}
@@ -348,13 +675,17 @@ def _affected(graph: Any, entity_id: str, max_depth: int) -> str:
     entity_name = entity.get("name", "?")
     total = sum(len(v) for v in tree.values())
 
-    lines = [
+    lines: list[str] = []
+    if stale_banner:
+        lines.append(stale_banner)
+
+    lines.extend([
         f"## Affected by `{entity_name}`",
         "",
         f"Transitive impact for `{entity_id}` (max depth: {max_depth})",
         f"**Total dependents:** {total}",
         "",
-    ]
+    ])
 
     if total == 0:
         lines.append("No dependents found. Nothing calls this entity.")
@@ -379,12 +710,17 @@ def _affected(graph: Any, entity_id: str, max_depth: int) -> str:
 # ── Helpers ──────────────────────────────────────────────────────────────
 
 def _parse_names(query: str, symbols: list[str]) -> list[str]:
-    """Parse query string or explicit symbols into candidate names."""
+    """Parse query string or explicit symbols into candidate names.
+
+    Applies language spelling normalization so agent queries using
+    language-native notation match the index.
+    """
     if symbols:
         return [s.strip() for s in symbols if s.strip()]
     if not query.strip():
         return []
-    import re
+    # Normalize language spellings: Elixir fn/3→fn, mod:fn→mod.fn
+    query = _normalize_query_spelling(query)
     parts = re.split(r'[,;\s]+', query)
     return [p.strip() for p in parts if p.strip() and len(p.strip()) > 1]
 
