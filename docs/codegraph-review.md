@@ -1,9 +1,9 @@
-# CodeGraph-Main Review — What CodeRadar Can Learn
+# CodeGraph-Main Review — What CodeRadar Learned & Adopted
 
-**Date:** 2026-08-08  
-**Source:** `D:\User\Documents\Python\codegraph-main`  
-**For:** CodeRadar v0.1.0 implementation guidance  
-**Status:** Review only — no implementation changes made
+**Date:** 2026-08-08 (original), updated 2026-08-10 (v0.4.1)
+**Source:** `D:\User\Documents\Python\codegraph-main`
+**For:** CodeRadar v0.1.0 → v0.4.1 implementation
+**Status:** 11 techniques adopted across v3.6 + v0.4.1 (see `docs/v3.6-codegraph-plan.md` for item-level status)
 
 ---
 

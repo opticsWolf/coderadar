@@ -1,5 +1,7 @@
 # CodeRadar — Consolidated Architecture Specification v3.5
 
+> **⚠️ SUPERSEDED by `docs/v3.6-consolidated.md` (v3.6 + v0.4.1).** This document is retained for historical reference. Current live spec is v3.6.
+>
 > **Status:** Consolidated from v3.3 + v3.4 Amendment + v3.4 Review Response. Production review of the shipping CodeGraph product and adoption of Macrame as the storage engine have been incorporated.
 > **Scope:** A Rust core (tree-sitter extraction, diff engine, resolution cascade, mutation engine, in-memory projected graph) + Macrame embedded bitemporal database + Python shell (CLI, GraphRAG, LSP pool, embedding pipeline).
 > **Date:** 2026-08-08
