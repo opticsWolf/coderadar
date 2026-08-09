@@ -107,6 +107,46 @@ impl ImportGraph {
         idx
     }
 
+    /// Add all import edges for a file's extracted imports. Thread-safe:
+    /// takes the import_graph lock internally. Called from parallel workers.
+    pub fn build_import_edges(
+        import_graph: &parking_lot::RwLock<Self>,
+        units: &[ExtractedUnit],
+        file_path: &str,
+        language: Language,
+        module_id: &str,
+    ) {
+        use crate::types::ImportKind;
+
+        let mut ig = import_graph.write();
+        ig.add_file(file_path, Some(module_id.to_string()), language);
+
+        for unit in units {
+            if let ExtractedUnit::Import(i) = unit {
+                let src_mod: Option<String> = match &i.kind {
+                    ImportKind::FromImport { module, .. }
+                    | ImportKind::ModuleImport { module, .. }
+                    | ImportKind::StarImport { module, .. } => Some(module.clone()),
+                    ImportKind::RelativeImport { module, .. } => module.clone(),
+                    _ => None,
+                };
+                if let Some(src_mod) = src_mod {
+                    // Use a simplified path: assume same-directory modules.
+                    // The full find_module_by_dotted_name requires the projection
+                    // which isn't available in parallel. The import graph edges
+                    // will be refined during the sequential insert phase.
+                    let target_path = format!("{}/{}.py",
+                        std::path::Path::new(file_path).parent()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default(),
+                        src_mod.replace('.', "/"));
+                    ig.add_file(&target_path, None, language);
+                    ig.add_import_edge(file_path, &target_path);
+                }
+            }
+        }
+    }
+
     pub fn add_import_edge(&mut self, importer: &str, imported: &str) {
         let from = self.path_to_node.get(importer);
         let to = self.path_to_node.get(imported);

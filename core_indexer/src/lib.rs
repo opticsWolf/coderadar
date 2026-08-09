@@ -20,6 +20,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use crate::graph::CodeGraph;
+use crate::graph::ImportGraph;
 use crate::query::exec::{execute_query, QueryIterator};
 use crate::query::grammar::parse_query;
 use crate::types::{
@@ -372,13 +373,15 @@ fn analyze(root: &str) -> PyResult<PyObject> {
         }
 
         // Phase 2: Parallel parse + extract. Each thread creates its own
-        // tree-sitter Parser (not Send). Technique adopted from CodeGraph's
-        // ParseWorkerPool (src/extraction/index.ts). MIT license.
+        // tree-sitter Parser (not Send). Also builds import graph edges
+        // in parallel (ImportGraph uses parking_lot::RwLock).
+        // Technique: adopted from CodeGraph's ParseWorkerPool. MIT license.
         // https://github.com/opticsWolf/codegraph
         let num_threads = std::thread::available_parallelism()
             .map(|n| n.get().min(8))
             .unwrap_or(4);
         let chunk_size = (tasks.len() + num_threads - 1) / num_threads;
+        let import_graph_ref = &graph.import_graph;
 
         type ChunkResult = Vec<(
             String,                             // file_path
@@ -399,6 +402,14 @@ fn analyze(root: &str) -> PyResult<PyObject> {
                             &task.source, &task.path, &task.language)
                         {
                             Ok((units, concepts)) => {
+                                // Build import graph edges in parallel.
+                                // ImportGraph uses parking_lot::RwLock — safe
+                                // across threads. Full resolution happens
+                                // in the sequential insert phase later.
+                                let module_id = format!("{}::module", task.path);
+                                ImportGraph::build_import_edges(
+                                    import_graph_ref, &units, &task.path,
+                                    task.language, &module_id);
                                 results.push((task.path.clone(), units, concepts));
                             }
                             Err(_) => {} // parse failures silently skipped
