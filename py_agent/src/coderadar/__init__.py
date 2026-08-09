@@ -629,6 +629,24 @@ def analyze(root: str) -> CodeGraph:
         _analyze_rust(root)
     except ImportError:
         pass
+
+    # v0.5: Extract __all__ star exports for wildcard import resolution.
+    # Must run after Rust analysis populates modules, before MCP server reads.
+    try:
+        from coderadar.resolvers.exports import extract_all_exports
+        from coderadar._core import set_module_star_exports
+        import pathlib
+        for py_file in pathlib.Path(root).rglob("*.py"):
+            try:
+                source = py_file.read_text(encoding="utf-8")
+                names = extract_all_exports(source)
+                if names:
+                    set_module_star_exports(f"{py_file}::module", names)
+            except (OSError, UnicodeDecodeError, RuntimeError):
+                pass
+    except ImportError:
+        pass
+
     return CodeGraph()
 
 
