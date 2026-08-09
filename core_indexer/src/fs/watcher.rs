@@ -158,6 +158,14 @@ impl FileWatcher {
     pub fn next_batch(&self) -> Option<BatchEvent> {
         self.receiver.recv().ok()
     }
+
+    /// Get the next batch with a timeout in milliseconds.
+    /// Returns None if the timeout expires before a batch arrives.
+    pub fn next_batch_timeout(&self, timeout_ms: u64) -> Option<BatchEvent> {
+        self.receiver
+            .recv_timeout(Duration::from_millis(timeout_ms))
+            .ok()
+    }
 }
 
 /// Check if a file extension is a recognized source code extension.

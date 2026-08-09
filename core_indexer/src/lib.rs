@@ -58,6 +58,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_module_star_exports, m)?)?;
     m.add_function(wrap_pyfunction!(start_watcher, m)?)?;
     m.add_function(wrap_pyfunction!(next_watcher_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(next_watcher_batch_timeout, m)?)?;
     m.add_function(wrap_pyfunction!(stop_watcher, m)?)?;
     m.add_class::<PyCodeGraph>()?;
     m.add_class::<QueryIterator>()?;
@@ -875,6 +876,30 @@ fn stop_watcher() -> PyResult<()> {
     let mut guard = GLOBAL_WATCHER.lock().unwrap();
     *guard = None;
     Ok(())
+}
+
+/// Get the next batch with a timeout (ms). Returns None if timeout expires.
+#[pyfunction]
+fn next_watcher_batch_timeout(timeout_ms: u64) -> PyResult<Option<Vec<(String, String)>>> {
+    let mut guard = GLOBAL_WATCHER.lock().unwrap();
+    if guard.is_none() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "Watcher not started",
+        ));
+    }
+    let watcher = guard.take().unwrap();
+    drop(guard);
+
+    let batch = watcher.next_batch_timeout(timeout_ms);
+
+    let mut guard = GLOBAL_WATCHER.lock().unwrap();
+    *guard = Some(watcher);
+
+    Ok(batch.map(|b| {
+        b.changes.into_iter().map(|c| {
+            (c.path, format!("{:?}", c.kind))
+        }).collect()
+    }))
 }
 
 // ── v3.6: Synthetic Edge Registration ────────────────────────────────────

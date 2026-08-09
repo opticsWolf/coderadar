@@ -334,3 +334,94 @@ class TestEmbeddingPipeline:
         from coderadar.embedding.dedup import EmbeddingDedup
         dedup = EmbeddingDedup()
         assert dedup is not None
+
+
+@pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+class TestWatcherPipeline:
+    """v0.5: Watcher integration — end-to-end file change detection."""
+
+    def test_watcher_detects_file_modification(self, tmp_path):
+        """Start watcher, modify a file, verify batch contains the change."""
+        from coderadar._core import (
+            analyze, graph_stats, start_watcher,
+            next_watcher_batch_timeout, stop_watcher, update_file,
+            search_entities,
+        )
+
+        # Set up: create a Python file and analyze it
+        py_file = tmp_path / "test_mod.py"
+        py_file.write_text("def original(): pass\n")
+        analyze(str(tmp_path))
+
+        stats = graph_stats()
+        assert stats["functions"] >= 1
+
+        # Start watching the temp directory
+        start_watcher([str(tmp_path)])
+
+        try:
+            # Modify the file: add a new function
+            py_file.write_text("def original(): pass\ndef new_func(): return 42\n")
+
+            # Wait for the watcher to pick up the change (debounce = 100ms)
+            import time
+            time.sleep(0.3)  # Let notify + debouncer fire
+
+            batch = next_watcher_batch_timeout(3000)
+            assert batch is not None, "Watcher should detect file modification"
+
+            # Verify the batch contains our file
+            paths = [p for p, _ in batch]
+            assert any("test_mod" in p for p in paths), \
+                f"Batch should contain test_mod.py: {paths}"
+
+            # Apply the update
+            for file_path, kind in batch:
+                if "Modify" in kind or "Any" in kind:
+                    update_file(file_path, None, True)
+
+            # Verify the new function is indexed
+            results = search_entities("new_func", 10, kind="function")
+            assert len(results) >= 1, \
+                f"new_func should be indexed after update: {_names(results)}"
+
+        finally:
+            stop_watcher()
+
+    def test_watcher_timeout_returns_none(self, tmp_path):
+        """When no file changes occur, timeout returns None."""
+        from coderadar._core import start_watcher, next_watcher_batch_timeout, stop_watcher
+
+        # Create a clean directory for watching
+        (tmp_path / "dummy.py").write_text("x = 1\n")
+        start_watcher([str(tmp_path)])
+
+        try:
+            # No file changes — timeout should return None
+            batch = next_watcher_batch_timeout(500)
+            assert batch is None, \
+                f"With no changes, timeout should return None, got: {batch}"
+        finally:
+            stop_watcher()
+
+    def test_watcher_ignores_non_source_files(self, tmp_path):
+        """Watcher should not report changes to .txt, .png, etc."""
+        from coderadar._core import start_watcher, next_watcher_batch_timeout, stop_watcher
+
+        (tmp_path / "code.py").write_text("x = 1\n")
+        start_watcher([str(tmp_path)])
+
+        try:
+            import time
+            # Modify a non-source file
+            (tmp_path / "readme.txt").write_text("hello\n")
+            time.sleep(0.3)
+
+            batch = next_watcher_batch_timeout(2000)
+            # Should timeout since .txt is excluded — or return only code.py changes
+            if batch is not None:
+                paths = [p for p, _ in batch]
+                assert not any(p.endswith(".txt") for p in paths), \
+                    f"Non-source files should be filtered: {paths}"
+        finally:
+            stop_watcher()
