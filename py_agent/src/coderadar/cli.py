@@ -85,8 +85,8 @@ def _extract_star_exports(project_root: Path) -> int:
 
 
 @click.group()
-@click.version_option(version="0.4.0", prog_name="coderadar",
-                      message="coderadar %(version)s (spec v3.5)")
+@click.version_option(version="0.4.1", prog_name="coderadar",
+                      message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
 
