@@ -270,7 +270,7 @@ This is the right call because:
 Total: 200 files, 996 functions, 995 imports, 1991 entities
 ```
 
-### Head-to-head: CodeGraph 1.5.0 vs CodeRadar 0.5.2
+### Benchmark setup
 
 | Metric | CodeGraph 1.5.0 | CodeRadar 0.5.2 | Ratio |
 |--------|:-:|:-:|:-:|
@@ -389,6 +389,28 @@ self.runtime.block_on(self.db.checkpoint())?;
 - **Search** — 0.05ms via HashMap lookups in Rust. No DB query needed.
 - **Tree-sitter** — native C FFI, already the fastest possible path.
 - **Diff algorithm** — O(n) identity match, not AST diffing. Already optimal.
+
+---
+
+## Result after `write_concepts` fix (2025-08-09)
+
+Implemented `index_file_accumulate()` + single `write_concepts` call in
+`analyze()`. N=7, median, control-subtracted:
+
+| Metric | Before | After | Delta |
+|--------|--------|-------|-------|
+| 200 files, isolated | 1,532ms | **1,316ms** | −14% |
+| 200 files, cross-file | 3,326ms | **2,682ms** | −19% |
+| vs CodeGraph (1,219ms) | 2.7× slower | **2.2× slower** | — |
+
+The fix was: collect all `ConceptUpsert`s during the file walk, flush once
+via `write_concepts` (32 chunks × ~2.35ms ≈ 75ms for 2,191 concepts) instead
+of 2,191 individual `upsert_concept` calls (each ~0.8ms transaction overhead).
+
+The remaining 2.2× gap is now dominated by tree-sitter parsing + extraction +
+call resolution, not Macrame I/O. The earlier per-transaction diagnosis was
+correct; the `block_on` attribution was wrong (block_on is single-digit µs,
+not 300µs).
 
 ---
 
