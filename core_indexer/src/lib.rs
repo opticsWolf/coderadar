@@ -312,15 +312,16 @@ fn analyze(root: &str) -> PyResult<PyObject> {
     let config = graph::GraphConfig::default();
     let mut graph = CodeGraph::new(config);
 
-    // Attach Macrame persistent store in .coderadar/store/
-    let store_path = std::path::Path::new(root).join(".coderadar").join("store");
-    if let Err(e) = std::fs::create_dir_all(&store_path) {
-        eprintln!("Warning: Could not create store directory {:?}: {}", store_path, e);
-    } else {
-        match crate::storage::CodeGraphStore::open(&store_path) {
-            Ok(store) => { graph = graph.with_store(store); }
-            Err(e) => { eprintln!("Warning: Macrame store not attached: {:?}", e); }
+    // Attach Macrame persistent store — Macrame/libSQL needs a file path, not a directory
+    let store_path = std::path::Path::new(root).join(".coderadar").join("store").join("coderadar.db");
+    if let Some(parent) = store_path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            eprintln!("Warning: Could not create store directory {:?}: {}", parent, e);
         }
+    }
+    match crate::storage::CodeGraphStore::open(&store_path) {
+        Ok(store) => { graph = graph.with_store(store); }
+        Err(e) => { eprintln!("Warning: Macrame store not attached: {:?}", e); }
     }
 
     let root_path = std::path::Path::new(root);
