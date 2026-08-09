@@ -760,97 +760,63 @@ impl CodeGraph {
             projection.callees_by_caller.clear();
         }
 
-        for (func_id, calls) in &calls_to_resolve {
-            // Same-file intra-resolution: resolve calls to functions in the same module.
-            // Get the function's parent module to find sibling functions.
-            let parent_module = projection
-                .functions
-                .get(func_id)
+        // Group calls by parent module so we build sibling_funcs and
+        // import_targets once per module, not once per function.
+        // Technique adopted from CodeGraph's inline def-use tracking
+        // (codegraph-kernel/src/python.rs): same-file lookups built once
+        // during the walk and reused. MIT license.
+        // https://github.com/opticsWolf/codegraph
+        let mut by_module: std::collections::HashMap<EntityId, Vec<(&String, &Vec<crate::types::UnresolvedRef>)>> =
+            std::collections::HashMap::new();
+        for entry in &calls_to_resolve {
+            let pm = projection.functions.get(entry.0.as_str())
                 .map(|f| f.parent_module.clone())
                 .unwrap_or_default();
+            by_module.entry(pm).or_default().push((&entry.0, &entry.1));
+        }
 
-            // Get the calling function's parent class for MRO resolution
-            let my_parent_class = projection
-                .functions
-                .get(func_id)
-                .and_then(|f| f.parent_class.clone());
-
-            // Build a set of sibling function names in the same module for quick lookup
+        for (parent_module, module_entries) in &by_module {
+            // Build same-module function lookup — O(n) per module, not O(n²)
             let sibling_funcs: std::collections::HashMap<String, String> = projection
                 .functions
                 .iter()
-                .filter(|(_, f)| f.parent_module == parent_module)
+                .filter(|(_, f)| &f.parent_module == parent_module)
                 .map(|(id, f)| (f.name.clone(), id.clone()))
                 .collect();
 
-            // Build MRO-aware method lookup: for self.method() resolution,
-            // search all classes in the caller's MRO chain (C3 linearization).
-            let mro_methods: std::collections::HashMap<String, String> =
-                if let Some(ref class_id) = my_parent_class {
-                    let mut methods = std::collections::HashMap::new();
-                    if let Some(class) = projection.classes.get(class_id) {
-                        for node in &class.mro {
-                            if let MroNode::Class(ref cid) = node {
-                                for (fid, f) in projection.functions.iter() {
-                                    if f.parent_class.as_ref() == Some(cid) {
-                                        methods.entry(f.name.clone())
-                                            .or_insert_with(|| fid.clone());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // Also include direct class methods (non-MRO — for classes
-                    // where MRO hasn't been computed yet)
-                    for (fid, f) in projection.functions.iter() {
-                        if f.parent_class.as_ref() == Some(class_id) {
-                            methods.entry(f.name.clone())
-                                .or_insert_with(|| fid.clone());
-                        }
-                    }
-                    methods
-                } else {
-                    std::collections::HashMap::new()
-                };
-
-            // Cross-file import resolution: build lookup from imports of this module
-            let mut import_targets: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-            if let Some(module) = projection.modules.get(&parent_module) {
+            // Build import-targets lookup — O(i) per module
+            let mut import_targets: std::collections::HashMap<String, String> =
+                std::collections::HashMap::new();
+            if let Some(module) = projection.modules.get(parent_module) {
                 for import_id in &module.imports {
                     if let Some(import) = projection.imports.get(import_id) {
                         match &import.kind {
                             ImportKind::FromImport { module: src_mod, names } => {
-                                // Look up target module by dotted path
                                 let target_mod_id = find_module_by_dotted_name(
-                                    projection, src_mod, &parent_module);
+                                    projection, src_mod, parent_module);
                                 for (name, _alias) in names {
-                                    // Map imported name → potential target
                                     if let Some(ref tgt_id) = target_mod_id {
                                         import_targets.insert(name.clone(), tgt_id.clone());
                                     }
                                 }
                             }
                             ImportKind::ModuleImport { module: src_mod, alias: _ } => {
-                                // `import foo.bar` — makes foo.bar.baz() available
-                                // Store the module prefix mapping
                                 if let Some(tgt_id) = find_module_by_dotted_name(
-                                    projection, src_mod, &parent_module) {
-                                    // The module itself is available as the last segment
+                                    projection, src_mod, parent_module)
+                                {
                                     let short_name = src_mod.rsplit('.').next().unwrap_or(src_mod);
                                     import_targets.insert(short_name.to_string(), tgt_id);
                                 }
                             }
                             ImportKind::StarImport { module: src_mod } => {
-                                // v0.5: `from X import *` — resolve via __all__/star_exports
                                 if let Some(tgt_id) = find_module_by_dotted_name(
-                                    projection, src_mod, &parent_module)
+                                    projection, src_mod, parent_module)
                                 {
                                     if let Some(tgt_module) = projection.modules.get(&tgt_id) {
                                         if let Some(ref exports) = tgt_module.star_exports {
                                             for name in exports {
                                                 import_targets.insert(
-                                                    name.clone(), tgt_id.clone()
-                                                );
+                                                    name.clone(), tgt_id.clone());
                                             }
                                         }
                                     }
@@ -862,43 +828,78 @@ impl CodeGraph {
                 }
             }
 
-            // Resolve calls using the orchestrator (v0.5: uses shared import graph for multi-hop)
-            let resolved = orchestrator.resolve_calls(calls, func_id, import_graph_ref);
+            for (func_id, calls) in module_entries {
+                let func_id: &String = func_id;
+                let calls: &Vec<crate::types::UnresolvedRef> = calls;
 
-            // Override with same-file, cross-file, and method resolution
-            let resolved: Vec<_> = resolved
-                .into_iter()
-                .map(|rc| {
-                    // ── Method resolution: self.method() calls ──────
-                    if let crate::types::ResolvedCall::Unresolved { reason, raw } = &rc {
-                        if matches!(reason, crate::types::UnresolvedReason::TypeInferenceRequired) {
-                            // Try to resolve via class_methods when caller is a method
-                            if let Some(target_id) = mro_methods.get(&raw.name) {
+                // Get the calling function's parent class for MRO resolution
+                let my_parent_class = projection
+                    .functions
+                    .get(func_id.as_str())
+                    .and_then(|f| f.parent_class.clone());
+
+                // MRO-aware method lookup: per-function (different callers
+                // belong to different classes).
+                let mro_methods: std::collections::HashMap<String, String> =
+                    if let Some(ref class_id) = my_parent_class {
+                        let mut methods = std::collections::HashMap::new();
+                        if let Some(class) = projection.classes.get(class_id) {
+                            for node in &class.mro {
+                                if let MroNode::Class(ref cid) = node {
+                                    for (fid, f) in projection.functions.iter() {
+                                        if f.parent_class.as_ref() == Some(cid) {
+                                            methods.entry(f.name.clone())
+                                                .or_insert_with(|| fid.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        for (fid, f) in projection.functions.iter() {
+                            if f.parent_class.as_ref() == Some(class_id) {
+                                methods.entry(f.name.clone())
+                                    .or_insert_with(|| fid.clone());
+                            }
+                        }
+                        methods
+                    } else {
+                        std::collections::HashMap::new()
+                    };
+
+                // Resolve calls using the orchestrator with shared import graph
+                let resolved = orchestrator.resolve_calls(calls, func_id, import_graph_ref);
+
+                // Override with same-file (sibling_funcs), cross-file (import_targets),
+                // and method resolution (mro_methods) — all built once per module.
+                let resolved: Vec<_> = resolved
+                    .into_iter()
+                    .map(|rc| {
+                        if let crate::types::ResolvedCall::Unresolved { reason, raw } = &rc {
+                            if matches!(reason, crate::types::UnresolvedReason::TypeInferenceRequired) {
+                                if let Some(target_id) = mro_methods.get(&raw.name) {
+                                    return crate::types::ResolvedCall::Function(target_id.clone());
+                                }
+                            }
+                            return rc;
+                        }
+                        if let crate::types::ResolvedCall::External(name) = &rc {
+                            if let Some(target_id) = sibling_funcs.get(name.as_str()) {
+                                return crate::types::ResolvedCall::Function(target_id.clone());
+                            }
+                            if let Some(target_mod_id) = import_targets.get(name.as_str()) {
+                                if let Some(imported_func_id) = find_symbol_in_module(
+                                    projection, target_mod_id, name) {
+                                    return crate::types::ResolvedCall::Function(imported_func_id);
+                                }
+                            }
+                            if let Some(target_id) = mro_methods.get(name.as_str()) {
                                 return crate::types::ResolvedCall::Function(target_id.clone());
                             }
                         }
-                        return rc;
-                    }
-                    // ── External → same-file, cross-file ────────────
-                    if let crate::types::ResolvedCall::External(name) = &rc {
-                        if let Some(target_id) = sibling_funcs.get(name.as_str()) {
-                            return crate::types::ResolvedCall::Function(target_id.clone());
-                        }
-                        if let Some(target_mod_id) = import_targets.get(name.as_str()) {
-                            if let Some(imported_func_id) = find_symbol_in_module(
-                                projection, target_mod_id, name) {
-                                return crate::types::ResolvedCall::Function(imported_func_id);
+                        if let crate::types::ResolvedCall::Builtin(name) = &rc {
+                            if let Some(target_id) = sibling_funcs.get(name.as_str()) {
+                                return crate::types::ResolvedCall::Function(target_id.clone());
                             }
-                        }
-                        // Method on self that the orchestrator tagged as External
-                        if let Some(target_id) = mro_methods.get(name.as_str()) {
-                            return crate::types::ResolvedCall::Function(target_id.clone());
-                        }
-                    }
-                    if let crate::types::ResolvedCall::Builtin(name) = &rc {
-                        if let Some(target_id) = sibling_funcs.get(name.as_str()) {
-                            return crate::types::ResolvedCall::Function(target_id.clone());
-                        }
                     }
                     rc
                 })
@@ -956,7 +957,8 @@ impl CodeGraph {
                     crate::types::ResolvedCall::Unresolved { .. } => {}
                 }
             }
-        }
+        }  // for (func_id, calls) in module_entries
+    }      // for (parent_module, module_entries) in &by_module
     }
 
     /// Persist extracted entities to Macrame (async via block_on).
