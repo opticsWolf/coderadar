@@ -366,6 +366,8 @@ fn analyze(root: &str) -> PyResult<PyObject> {
         let mut projection = (*graph.snapshot()).clone();
         graph.compute_all_mro(&mut projection);
         graph.resolve_all_calls(&mut projection);
+        // Persist resolved edges to Macrame store
+        let _ = graph.persist_edges(&projection);
         graph.commit_projection(projection);
     }
 

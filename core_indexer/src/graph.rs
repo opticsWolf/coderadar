@@ -15,6 +15,7 @@ use petgraph::stable_graph::{NodeIndex, StableDiGraph};
 use crate::resolve::cache::ResolutionCache;
 use crate::resolve::stack_graph::StackGraphResolver;
 use crate::storage;
+use macrame::graph::EdgeAssertion;
 use crate::types::*;
 use crate::extract;
 
@@ -900,6 +901,41 @@ impl CodeGraph {
         }
     }
 
+    /// Persist call edges from the projection to the Macrame store.
+    pub fn persist_edges(
+        &self,
+        projection: &ProjectedGraph,
+    ) -> Result<usize, macrame::DbError> {
+        let store = match self.store.as_ref() {
+            Some(s) => s,
+            None => return Ok(0),
+        };
+
+        let mut edge_count = 0usize;
+        let mut batch: Vec<macrame::graph::EdgeAssertion> = Vec::new();
+        let ts_open = crate::storage::TS_OPEN;
+
+        for (caller, callees) in projection.callees_by_caller.iter() {
+            for callee in callees.iter() {
+                batch.push(
+                    EdgeAssertion::new(caller.as_str(), callee.as_str(), "CALLS")
+                        .valid_from(ts_open)
+                        .weight(1.0),
+                );
+                edge_count += 1;
+                if batch.len() >= 200 {
+                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                }
+            }
+        }
+
+        if !batch.is_empty() {
+            store.assert_edges_bulk(batch)?;
+        }
+
+        Ok(edge_count)
+    }
+
     // ── File Indexing Pipeline ────────────────────────────────────────────
 
     /// Get the tree-sitter Language for a CodeRadar Language.
@@ -1141,6 +1177,7 @@ impl CodeGraph {
         // Phase 4: Compute MRO for all classes, then resolve calls
         self.compute_all_mro(&mut projection);
         self.resolve_all_calls(&mut projection);
+        let _ = self.persist_edges(&projection);
         self.commit_projection(projection);
 
         // Track affected files (this file + any callers)
@@ -1982,5 +2019,59 @@ mod tests {
         let snap = graph.snapshot();
         assert!(snap.classes.contains_key("animals.py::Dog"));
         assert!(!snap.classes.contains_key("animals.py::Cat"));
+    }
+
+    // ── Persistence Tests ────────────────────────────────────────
+
+    #[test]
+    fn test_persist_entities_no_store_returns_zero() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        let units: Vec<ExtractedUnit> = vec![];
+        // No store attached → no-op
+        let count = graph.persist_entities(&units, "test.py", "python");
+        assert!(count.is_ok());
+        assert_eq!(count.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_persist_edges_no_store_returns_zero() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        let snap = graph.snapshot();
+        // No store attached → no-op, returns 0 edges persisted
+        let count = graph.persist_edges(&snap);
+        assert!(count.is_ok());
+        assert_eq!(count.unwrap(), 0);
+    }
+
+    #[test]
+    fn test_persist_entities_with_index() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def foo(): pass\n", "test_persist.py");
+        // Entities are persisted inside index_file → persist_entities is called
+        // without a store it returns Ok(0) but shouldn't crash
+        let snap = graph.snapshot();
+        assert!(snap.functions.values().any(|f| f.name == "foo"));
+        // Verify has_store returns false (no config for store in test)
+        assert!(!graph.has_store());
+    }
+
+    #[test]
+    fn test_persist_edges_with_resolved_calls() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def caller(): callee()\ndef callee(): pass\n",
+                     "edges_test.py");
+        let snap = graph.snapshot();
+        // Edges persisted via persist_edges (no-op without store)
+        let count = graph.persist_edges(&snap);
+        assert!(count.is_ok());
+        assert_eq!(count.unwrap(), 0);
+        // Verify edges exist in memory
+        let caller_id = snap.functions.values()
+            .find(|f| f.name == "caller").map(|f| f.id.clone());
+        assert!(caller_id.is_some());
+        if let Some(cid) = caller_id {
+            let callees = snap.callees_by_caller.get(&cid);
+            assert!(callees.is_some(), "caller should have callee edges");
+        }
     }
 }
