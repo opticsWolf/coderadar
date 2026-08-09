@@ -687,9 +687,15 @@ impl CodeGraph {
         result
     }
 
-    /// Run the resolution cascade (L1-L3) on all functions in the current projection.
-    /// After resolution, rewires callees_by_caller/callers_by_callee with resolved targets.
+    /// Run the resolution cascade on all functions, or scoped to a single file.
+    /// When `scope_file` is Some, only clears and rebuilds edges for functions
+    /// in that file — used by `update_file` for O(changed) instead of O(all).
     pub fn resolve_all_calls(&self, projection: &mut ProjectedGraph) {
+        self.resolve_calls_scoped(projection, None);
+    }
+
+    /// Resolve calls scoped to a single file (or all if None).
+    fn resolve_calls_scoped(&self, projection: &mut ProjectedGraph, scope_file: Option<&str>) {
         use crate::resolve::orchestrator::ResolutionOrchestrator;
         use crate::resolve::signature::ScoredDef;
 
@@ -719,17 +725,42 @@ impl CodeGraph {
             .map(|(id, f)| (id.clone(), f.calls.clone()))
             .collect();
 
+        // Filter to scoped file if specified
+        let calls_to_resolve: Vec<&(String, Vec<crate::types::UnresolvedRef>)> = if let Some(fp) = scope_file {
+            all_calls.iter().filter(|(fid, _)| {
+                projection.functions.get(fid.as_str())
+                    .map(|f| f.parent_module.contains(fp))
+                    .unwrap_or(false)
+            }).collect()
+        } else {
+            all_calls.iter().collect()
+        };
+
         // Early exit if no calls to resolve — avoid clearing edge maps
-        let has_calls = all_calls.iter().any(|(_, calls)| !calls.is_empty());
+        let has_calls = calls_to_resolve.iter().any(|(_, calls)| !calls.is_empty());
         if !has_calls {
             return;
         }
 
-        // Clear old call edges — rebuild from resolution
-        projection.callers_by_callee.clear();
-        projection.callees_by_caller.clear();
+        // v0.5: Scoped edge clearing — only remove edges from affected functions.
+        // In unscoped mode (batch analyze), clear all and rebuild.
+        if scope_file.is_some() {
+            for (func_id, _) in &calls_to_resolve {
+                // Remove outgoing edges from this function
+                if let Some(callees) = projection.callees_by_caller.remove(func_id.as_str()) {
+                    for callee in &callees {
+                        if let Some(callers) = projection.callers_by_callee.get_mut(callee) {
+                            callers.remove(func_id.as_str());
+                        }
+                    }
+                }
+            }
+        } else {
+            projection.callers_by_callee.clear();
+            projection.callees_by_caller.clear();
+        }
 
-        for (func_id, calls) in &all_calls {
+        for (func_id, calls) in &calls_to_resolve {
             // Same-file intra-resolution: resolve calls to functions in the same module.
             // Get the function's parent module to find sibling functions.
             let parent_module = projection
@@ -1274,9 +1305,9 @@ impl CodeGraph {
         let removed_count = self.remove_file_entities(&mut projection, file_path).len();
         self.insert_extracted(&mut projection, &units, file_path, &lang);
 
-        // Phase 4: Compute MRO for all classes, then resolve calls
+        // Phase 4: Compute MRO for all classes, then resolve calls (scoped to this file)
         self.compute_all_mro(&mut projection);
-        self.resolve_all_calls(&mut projection);
+        self.resolve_calls_scoped(&mut projection, Some(file_path));
         let _ = self.persist_edges(&projection);
         self.commit_projection(projection);
 
