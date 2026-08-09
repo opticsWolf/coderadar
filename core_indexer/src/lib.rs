@@ -332,6 +332,7 @@ fn analyze(root: &str) -> PyResult<PyObject> {
     let root_path = std::path::Path::new(root);
     let mut total_entities = 0usize;
     let mut files_indexed = 0usize;
+    let mut all_concepts: Vec<macrame::ConceptUpsert> = Vec::new();
 
     if root_path.is_dir() {
         for entry in ignore::Walk::new(root) {
@@ -351,10 +352,11 @@ fn analyze(root: &str) -> PyResult<PyObject> {
                         }
                         if let Ok(source) = fs::read_to_string(path) {
                             let file_path = path.to_string_lossy().to_string();
-                            match graph.index_file(&source, &file_path, &language) {
-                                Ok(count) => {
+                            match graph.index_file_accumulate(&source, &file_path, &language) {
+                                Ok((count, concepts)) => {
                                     total_entities += count;
                                     files_indexed += 1;
+                                    all_concepts.extend(concepts);
                                 }
                                 Err(_) => {} // parse failures silently skipped
                             }
@@ -364,6 +366,13 @@ fn analyze(root: &str) -> PyResult<PyObject> {
                 Err(_) => {} // permission errors etc.
             }
         }
+    }
+
+    // v0.5: Flush all concepts in one `write_concepts` call (chunked internally
+    // at 70 concepts/chunk, one transaction per chunk — ~2.35ms/chunk).
+    // Concepts must commit before edges (FK REFERENCES constraints).
+    if let Some(ref store) = graph.store {
+        let _ = store.upsert_concepts_bulk(&all_concepts);
     }
 
     // Compute MRO and run resolution cascade on all calls

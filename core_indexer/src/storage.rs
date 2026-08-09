@@ -86,17 +86,35 @@ impl CodeGraphStore {
     }
 
     /// Synchronous wrapper — bulk upsert entities from one file.
+    /// Uses Macrame's `write_concepts` chunked path (70 concepts/chunk, one
+    /// transaction per chunk) instead of per-concept `upsert_concept` calls.
+    /// Per quickref.md:688, per-transaction overhead is ~0.8ms; batching
+    /// 2,191 concepts into ~32 chunks saves ~1,700ms vs per-concept commits.
     pub fn upsert_entities(
         &self,
         units: &[ExtractedUnit],
         file_path: &str,
         language: &str,
     ) -> macrame::Result<()> {
-        for unit in units {
-            let concept = build_concept(unit, file_path, language);
-            self.runtime.block_on(self.db.upsert_concept(concept))?;
+        if units.is_empty() {
+            return Ok(());
         }
+        let concepts: Vec<ConceptUpsert> = units
+            .iter()
+            .map(|unit| build_concept(unit, file_path, language))
+            .collect();
+        self.runtime.block_on(self.db.write_concepts(concepts))?;
         Ok(())
+    }
+
+    /// Bulk-persist pre-built concepts via Macrame's `write_concepts`.
+    /// Chunked internally at 70/chunk, one transaction per chunk.
+    /// For batch index: 2,191 concepts ≈ 32 chunks ≈ 75ms.
+    pub fn upsert_concepts_bulk(&self, concepts: &[ConceptUpsert]) -> macrame::Result<usize> {
+        if concepts.is_empty() {
+            return Ok(0);
+        }
+        self.runtime.block_on(self.db.write_concepts(concepts.to_vec()))
     }
 
     /// Assert a single edge.
@@ -146,7 +164,7 @@ impl CodeGraphStore {
 
 /// Build a Macrame ConceptUpsert from a CodeRadar ExtractedUnit.
 /// Entity metadata is stored as JSON in the `content` field.
-fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> ConceptUpsert {
+pub fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> ConceptUpsert {
     let entity_id = unit.entity_id();
     let (title, _kind, metadata) = entity_meta(unit, file_path, language);
 

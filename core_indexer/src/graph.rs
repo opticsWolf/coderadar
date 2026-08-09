@@ -1077,6 +1077,7 @@ impl CodeGraph {
     }
 
     /// Index a single source file: parse → tag → walk → extract → insert.
+    /// Persists entities to Macrame immediately (used by update_file / tests).
     /// Returns the number of entities extracted and added to the graph.
     pub fn index_file(
         &self,
@@ -1084,6 +1085,36 @@ impl CodeGraph {
         file_path: &str,
         language: &Language,
     ) -> Result<usize, String> {
+        let (count, units) = self.index_file_inner(source, file_path, language)?;
+        let lang_str = format!("{:?}", language).to_lowercase();
+        let _ = self.persist_entities(&units, file_path, &lang_str);
+        Ok(count)
+    }
+
+    /// Index without persisting — returns (count, concepts) for batched persistence.
+    /// Used by `analyze` to collect all concepts and flush via `write_concepts` once.
+    pub fn index_file_accumulate(
+        &self,
+        source: &str,
+        file_path: &str,
+        language: &Language,
+    ) -> Result<(usize, Vec<macrame::ConceptUpsert>), String> {
+        let (count, units) = self.index_file_inner(source, file_path, language)?;
+        let lang_str = format!("{:?}", language).to_lowercase();
+        let concepts: Vec<macrame::ConceptUpsert> = units
+            .iter()
+            .map(|u| crate::storage::build_concept(u, file_path, &lang_str))
+            .collect();
+        Ok((count, concepts))
+    }
+
+    /// Shared parse→extract→insert logic.
+    fn index_file_inner(
+        &self,
+        source: &str,
+        file_path: &str,
+        language: &Language,
+    ) -> Result<(usize, Vec<crate::types::ExtractedUnit>), String> {
         let ts_lang = Self::ts_language(language)
             .ok_or_else(|| format!("No tree-sitter grammar for {:?}", language))?;
 
@@ -1109,11 +1140,7 @@ impl CodeGraph {
         self.insert_extracted(&mut projection, &units, file_path, language);
         self.commit_projection(projection);
 
-        // Phase 4: Persist to Macrame if store attached
-        let lang_str = format!("{:?}", language).to_lowercase();
-        let _ = self.persist_entities(&units, file_path, &lang_str);
-
-        Ok(count)
+        Ok((count, units))
     }
 
     /// Remove all entities belonging to a file from the projection.
