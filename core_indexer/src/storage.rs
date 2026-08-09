@@ -147,19 +147,50 @@ impl CodeGraphStore {
 /// Entity metadata is stored as JSON in the `content` field.
 fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> ConceptUpsert {
     let entity_id = unit.entity_id();
-    let (title, kind, metadata) = entity_meta(unit, file_path, language);
+    let (title, _kind, metadata) = entity_meta(unit, file_path, language);
 
     let content = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".into());
+
+    // Build a valid RFC 3339 timestamp for valid_from (current time)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    // Manual ISO 8601 formatting to avoid chrono dependency
+    let days_since_epoch = secs / 86400;
+    let secs_of_day = secs % 86400;
+    let hours = secs_of_day / 3600;
+    let minutes = (secs_of_day % 3600) / 60;
+    let seconds = secs_of_day % 60;
+    // Calculate year/month/day from days since epoch (approximate, good enough for timestamps)
+    let (y, m, d) = civil_from_days(days_since_epoch as i64 + 719468); // 719468 = days from 0000-01-01 to 1970-01-01
+    let valid_from = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000000Z", y, m, d, hours, minutes, seconds);
 
     ConceptUpsert {
         id: entity_id,
         title: title.to_string(),
         content,
         embedding_model: None,
-        valid_from: String::new(), // defaults to "now" on upsert
+        valid_from,
         valid_to: TS_OPEN.to_string(),
         retired: false,
     }
+}
+
+/// Convert days since 0000-03-01 to (year, month, day) using the civil calendar algorithm.
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    // Algorithm from Howard Hinnant, based on the proleptic Gregorian calendar
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u32; // day of era [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // year of era [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // day of year [0, 365]
+    let mp = (5 * doy + 2) / 153; // month phase [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
 }
 
 /// Build entity metadata JSON for a ConceptUpsert.content field.

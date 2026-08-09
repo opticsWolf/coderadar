@@ -897,7 +897,7 @@ impl CodeGraph {
             store.upsert_entities(units, file_path, language)?;
             Ok(units.len())
         } else {
-            Ok(0) // no-op when no store attached
+            Ok(0)
         }
     }
 
@@ -917,6 +917,11 @@ impl CodeGraph {
 
         for (caller, callees) in projection.callees_by_caller.iter() {
             for callee in callees.iter() {
+                // Skip edges where target is external/builtin (no concept entry)
+                // and edges where the target would violate FK constraints
+                if callee.starts_with("external::") || callee.starts_with("builtins.") {
+                    continue;
+                }
                 batch.push(
                     EdgeAssertion::new(caller.as_str(), callee.as_str(), "CALLS")
                         .valid_from(ts_open)
