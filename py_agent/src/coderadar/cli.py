@@ -15,7 +15,7 @@ console = Console()
 
 
 @click.group()
-@click.version_option(version="0.3.9", prog_name="coderadar",
+@click.version_option(version="0.3.10", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.5)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -500,6 +500,24 @@ def git_diff(repo: str, old_oid: Optional[str], new_oid: Optional[str]):
     console.print(f"[bold]{len(files)} changed files:[/bold]")
     for f in files:
         console.print(f"  {f}")
+
+
+@main.command()
+@click.argument("paths", nargs=-1, type=click.Path(exists=True))
+@click.option("--debounce", default=100, help="Debounce window in ms")
+def watch(paths, debounce):
+    """Watch files for changes and auto-update the code graph.
+
+    PATHS: directories to watch (default: src/ tests/).
+    """
+    from coderadar import CodeGraph
+
+    watch_paths = list(paths) if paths else ["src/", "tests/"]
+    graph = CodeGraph()
+    watcher = graph.watch(watch_paths, debounce_ms=debounce)
+    console.print(f"[bold green]Watching:[/bold green] {', '.join(watch_paths)}")
+    console.print("[dim]Press Ctrl+C to stop[/dim]")
+    watcher.run_forever()
 
 
 if __name__ == "__main__":

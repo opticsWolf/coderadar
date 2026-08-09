@@ -53,6 +53,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
+    m.add_function(wrap_pyfunction!(start_watcher, m)?)?;
+    m.add_function(wrap_pyfunction!(next_watcher_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(stop_watcher, m)?)?;
     m.add_class::<PyCodeGraph>()?;
     m.add_class::<QueryIterator>()?;
     Ok(())
@@ -805,3 +808,57 @@ fn export_snapshot(_path: &str) -> PyResult<()> { Ok(()) }
 
 #[pyfunction]
 fn load_snapshot(_path: &str) -> PyResult<()> { Ok(()) }
+
+// ── File Watcher Bindings ──────────────────────────────────────────────
+
+static GLOBAL_WATCHER: std::sync::LazyLock<std::sync::Mutex<Option<crate::fs::watcher::FileWatcher>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// Start the file watcher on the given paths. Must have run analyze() first.
+#[pyfunction]
+fn start_watcher(paths: Vec<String>) -> PyResult<()> {
+    use crate::fs::watcher::{FileWatcher, WatcherConfig};
+    let config = WatcherConfig {
+        watch_paths: paths,
+        ..WatcherConfig::default()
+    };
+    let watcher = FileWatcher::start(config)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
+    let mut guard = GLOBAL_WATCHER.lock().unwrap();
+    *guard = Some(watcher);
+    Ok(())
+}
+
+/// Get the next batch of file changes (blocks until events arrive).
+#[pyfunction]
+fn next_watcher_batch() -> PyResult<Option<Vec<(String, String)>>> {
+    // Take the watcher out of the global, call next_batch, put it back
+    let mut guard = GLOBAL_WATCHER.lock().unwrap();
+    if guard.is_none() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(
+            "Watcher not started",
+        ));
+    }
+    let watcher = guard.take().unwrap();
+    drop(guard);
+
+    let batch = watcher.next_batch();
+
+    // Put the watcher back
+    let mut guard = GLOBAL_WATCHER.lock().unwrap();
+    *guard = Some(watcher);
+
+    Ok(batch.map(|b| {
+        b.changes.into_iter().map(|c| {
+            (c.path, format!("{:?}", c.kind))
+        }).collect()
+    }))
+}
+
+/// Stop the file watcher.
+#[pyfunction]
+fn stop_watcher() -> PyResult<()> {
+    let mut guard = GLOBAL_WATCHER.lock().unwrap();
+    *guard = None;
+    Ok(())
+}

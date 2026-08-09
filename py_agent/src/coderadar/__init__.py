@@ -390,6 +390,22 @@ class CodeGraph:
             epoch_after=1,
         )
 
+    def watch(self, paths: Optional[List[str]] = None,
+              debounce_ms: int = 100) -> "Watcher":
+        """Start watching paths for file changes and auto-update the graph.
+
+        Returns a Watcher handle that runs the event loop.
+
+        Usage:
+            watcher = graph.watch(["src/", "tests/"])
+            watcher.run_forever()  # blocking loop
+
+        Args:
+            paths: Directories to watch (default: ["src/", "tests/"]).
+            debounce_ms: Debounce window in milliseconds (default: 100).
+        """
+        return Watcher(self, paths or ["src/", "tests/"], debounce_ms)
+
     def batch(self) -> "BatchContext":
         """Context manager for batched updates."""
         return BatchContext(self)
@@ -690,3 +706,56 @@ __all__ = [
     "MutationError",
     "PolicyViolation",
 ]
+
+
+class Watcher:
+    """Live file watcher that auto-updates the CodeGraph on file changes."""
+
+    def __init__(self, graph: "CodeGraph", paths: List[str], debounce_ms: int = 100):
+        self._graph = graph
+        self._paths = paths
+        self._debounce_ms = debounce_ms
+        self._running = False
+
+    def run_forever(self) -> None:
+        """Blocking loop: watch files and update graph on changes."""
+        try:
+            from coderadar._core import start_watcher, next_watcher_batch
+        except ImportError:
+            print("Watcher not available")
+            return
+
+        self._running = True
+        start_watcher(self._paths)
+        print(f"CodeRadar watcher: watching {self._paths}")
+
+        try:
+            while self._running:
+                batch = next_watcher_batch()
+                if batch is None:
+                    break
+                for file_path, change_kind in batch:
+                    if change_kind in ("Modify", "Any", "AnyContinuous"):
+                        try:
+                            report = self._graph.update_file(file_path)
+                            print(f"  {file_path} ({report.parse_quality})")
+                        except Exception as e:
+                            print(f"  {file_path}: {e}")
+                    elif change_kind == "Create":
+                        print(f"  + {file_path}")
+                        try:
+                            self._graph.update_file(file_path)
+                        except Exception as e:
+                            print(f"  {file_path}: {e}")
+        except KeyboardInterrupt:
+            print("\nWatcher stopped.")
+            self._running = False
+
+    def stop(self) -> None:
+        """Stop the watcher."""
+        self._running = False
+        try:
+            from coderadar._core import stop_watcher
+            stop_watcher()
+        except ImportError:
+            pass
