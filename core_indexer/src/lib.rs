@@ -385,9 +385,10 @@ fn analyze(root: &str) -> PyResult<PyObject> {
 
         if tasks.is_empty() {
             // No files to index — skip parallel phase entirely
-            // (avoids chunk_size==0 panic below)
         } else {
-        let chunk_size = (tasks.len() + num_threads - 1) / num_threads;
+        // Sort by source size descending, then round-robin across threads
+        // so large files (e.g. 300KB+ TypeScript) don't all land on one thread.
+        tasks.sort_by(|a, b| b.source.len().cmp(&a.source.len()));
         let import_graph_ref = &graph.import_graph;
 
         type ChunkResult = Vec<(
@@ -397,28 +398,32 @@ fn analyze(root: &str) -> PyResult<PyObject> {
 
         let mut all_results: Vec<ChunkResult> = Vec::new();
 
+        // Bucket assignment: thread i gets tasks[i], tasks[i+N], tasks[i+2N], ...
+        let mut buckets: Vec<Vec<&FileTask>> = (0..num_threads).map(|_| Vec::new()).collect();
+        for (i, task) in tasks.iter().enumerate() {
+            buckets[i % num_threads].push(task);
+        }
+
         std::thread::scope(|s| {
             let mut handles = Vec::new();
-            for chunk in tasks.chunks(chunk_size) {
-                let chunk_tasks: Vec<&FileTask> = chunk.iter().collect();
+            for bucket in buckets {
+                if bucket.is_empty() { continue; }
                 handles.push(s.spawn(move || {
                     let mut results = Vec::new();
-                    for task in &chunk_tasks {
+                    for task in &bucket {
                         match CodeGraph::extract_only(
                             &task.source, &task.path, &task.language)
                         {
                             Ok((units, concepts)) => {
-                                // Build import graph edges in parallel.
                                 let module_id = format!("{}::module", task.path);
                                 ImportGraph::build_import_edges(
                                     import_graph_ref, &units, &task.path,
                                     task.language, &module_id);
-                                // Build local projection fragment in parallel.
                                 let fragment = CodeGraph::build_fragment(
                                     &units, &task.path, &task.language);
                                 results.push((fragment, concepts));
                             }
-                            Err(_) => {} // parse failures silently skipped
+                            Err(_) => {}
                         }
                     }
                     results
