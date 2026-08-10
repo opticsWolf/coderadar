@@ -1,8 +1,8 @@
 # CodeRadar Performance Roadmap
 
 **Date:** 2025-08-09  
-**Baseline:** v0.5.2, 200-file cross-file benchmark at commit `2f52739`  
-**Reference:** CodeGraph 1.5.0 cross-file = 1,219ms (CodeRadar approximately 1.5× slower)
+**Baseline:** v0.5.3, commit `2a94c2f`  
+**Latest head-to-head (N=5, median):** CodeRadar 1,096ms vs CodeGraph 1,137ms — **0.96× (4% faster)**
 
 ---
 
@@ -347,8 +347,8 @@ essentially parity with CodeGraph 1.5.0. The remaining candidates (#3, #4, #8,
 | + parallel parse | 2,006ms | 1.65× | |
 | + import graph edges | 1,776ms | 1.46× | |
 | + resolve extraction | 1,959ms | 1.61× | extraction + Arc sharing |
-| **+ parallel fragment merge** | **1,189ms** | **0.98×** | **now FASTER than CodeGraph** |
-| Remaining (#6 PRAGMAs) | ~940ms | 0.77× | blocked on Macrame API |
+| **Head-to-head (N=5)** | **1,096ms** | **0.96×** | **4% faster than CodeGraph** |
+| Remaining (#6 PRAGMAs) | ~850ms | 0.75× | blocked on Macrame API |
 
 At parity or better, the benchmark itself becomes the bottleneck — 200 files
 is below CodeGraph's own recommended minimum for meaningful measurement.
