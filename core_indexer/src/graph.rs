@@ -945,11 +945,13 @@ impl CodeGraph {
                 })
                 .collect();
 
-            // Update resolved_calls on the function
+            // Update resolved_calls on the function (skip clone if unchanged)
             if let Some(func_arc) = projection.functions.get(func_id) {
-                let mut updated = (**func_arc).clone();
-                updated.resolved_calls = resolved.clone();
-                projection.functions.insert(func_id.clone(), std::sync::Arc::new(updated));
+                if func_arc.resolved_calls != resolved {
+                    let mut updated = (**func_arc).clone();
+                    updated.resolved_calls = resolved.clone();
+                    projection.functions.insert(func_id.clone(), std::sync::Arc::new(updated));
+                }
             }
 
             // Wire callees_by_caller from resolved calls
