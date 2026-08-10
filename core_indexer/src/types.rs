@@ -779,7 +779,6 @@ pub struct TaggedTree<'a> {
 
 pub struct TagInfo {
     pub tag: Tag,
-    pub capture_name: String,
 }
 
 // ── Walker Frame (§3.3a) — EntityId-based ──────────────────────────────────

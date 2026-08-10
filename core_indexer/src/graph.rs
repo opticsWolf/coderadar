@@ -1249,6 +1249,8 @@ impl CodeGraph {
     ) -> Result<(Vec<ExtractedUnit>, Vec<macrame::ConceptUpsert>), String> {
         let ts_lang = Self::ts_language(language)
             .ok_or_else(|| format!("No tree-sitter grammar for {:?}", language))?;
+        let compiled_query = crate::extract::tagger::CompiledQuery::new(*language, &ts_lang)
+            .ok_or_else(|| format!("Failed to compile query for {:?}", language))?;
 
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&ts_lang)
@@ -1258,7 +1260,7 @@ impl CodeGraph {
         let root_node = tree.root_node();
 
         let tagged = crate::extract::tagger::tag_tree(
-            source, root_node, language.clone(), ts_lang);
+            source, root_node, &compiled_query);
         let units = crate::extract::walker::walk_and_extract(
             &tagged, root_node, file_path);
 
@@ -1447,6 +1449,8 @@ impl CodeGraph {
     ) -> Result<(usize, Vec<crate::types::ExtractedUnit>), String> {
         let ts_lang = Self::ts_language(language)
             .ok_or_else(|| format!("No tree-sitter grammar for {:?}", language))?;
+        let compiled_query = crate::extract::tagger::CompiledQuery::new(*language, &ts_lang)
+            .ok_or_else(|| format!("Failed to compile query for {:?}", language))?;
 
         // Phase 1: Parse with tree-sitter
         let mut parser = tree_sitter::Parser::new();
@@ -1456,9 +1460,9 @@ impl CodeGraph {
             .ok_or_else(|| "Failed to parse source".to_string())?;
         let root_node = tree.root_node();
 
-        // Phase 2: Tag the tree with queries
+        // Phase 2: Tag the tree with queries (pre-compiled)
         let tagged = crate::extract::tagger::tag_tree(
-            source, root_node, language.clone(), ts_lang);
+            source, root_node, &compiled_query);
 
         // Phase 3: Walk and extract (needs the root node from our parse)
         let units = crate::extract::walker::walk_and_extract(
@@ -1874,6 +1878,8 @@ impl CodeGraph {
 
         let ts_lang = Self::ts_language(&lang)
             .ok_or_else(|| format!("No tree-sitter grammar for {:?}", lang))?;
+        let compiled_query = crate::extract::tagger::CompiledQuery::new(lang, &ts_lang)
+            .ok_or_else(|| format!("Failed to compile query for {:?}", lang))?;
 
         // Read source (or use provided content)
         let source = match content {
@@ -1891,7 +1897,7 @@ impl CodeGraph {
         let root_node = tree.root_node();
 
         let tagged = crate::extract::tagger::tag_tree(
-            &source, root_node, lang.clone(), ts_lang);
+            &source, root_node, &compiled_query);
         let units = crate::extract::walker::walk_and_extract(
             &tagged, root_node, file_path);
 
