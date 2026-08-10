@@ -42,6 +42,8 @@ libsql = "0.6"
 smol_str = "0.2"
 ulid = "1.1"
 postcard = "1.0"
+tree-sitter-typescript = "0.23.2"
+tree-sitter-javascript = "0.25.0"
 
 [features]
 default = ["watcher"]
