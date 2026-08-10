@@ -21,14 +21,13 @@
 | Phase | Cost | Parallelized? |
 |-------|------|---------------|
 | Walk filesystem + read source | ~5ms | No (I/O-bound) |
-| Parallel tree-sitter parse + extract | ~200ms | Yes (4 threads) |
-| Parallel import graph edge building | ~50ms | Yes (4 threads) |
-| Sequential projection insert (200 files) | ~350ms | **No** |
-| `resolve_all_calls` (995 calls) | ~580ms | **No** |
+| Parallel parse + extract + fragment build | ~250ms | Yes (uncapped threads) |
+| Fragment merge (single commit) | ~50ms | No (O(n) merge) |
+| `resolve_all_calls` (995 calls) | ~580ms | Partial (extracted, parallel dispatch) |
 | `write_concepts` (Macrame bulk) | ~75ms | N/A (Macrame actor) |
 | `persist_edges` (995 edges) | ~100ms | N/A (batched) |
 | MRO + other | ~50ms | No |
-| **Total** | **~1,800ms** | |
+| **Total** | **~1,190ms** | |
 
 Remaining gap to CodeGraph: ~580ms. The two largest sequential phases
 (projection insert + resolve_all_calls) account for ~930ms.
@@ -68,10 +67,10 @@ the ~950ms total; sequential projection insert dominates. Cap kept at 4.
 
 ---
 
-### 2. Parallel projection insert — **Score: 16** (4 × 4)
+### 2. Parallel projection insert — ✅ **DONE** (`82fda7e`)
 
-**Likelihood: 4**
-**Impact: 4** (~200ms on 4 threads)
+**Likelihood: 5** (landed)
+**Impact: 5** (~770ms saved — 1,959 → 1,189ms on cross-file benchmark)
 
 Each parse thread currently returns `(units, concepts)`. The main thread
 then does sequential `insert_extracted` for all 200 files. Instead, each
@@ -328,9 +327,9 @@ improvements above deliver much more per unit of effort.
 
 ## Recommended Implementation Order
 
-1. **#5 — Skip Arc::clone on unchanged** (done, `1eddb0e`)
-2. **#1 — Parallel resolve_all_calls** (done, `eb8e977`; neutral on synthetic benchmarks, helps real codebases)
-3. **#2 — Parallel projection insert** (next — ~200ms estimated, dominates current time)
+1. **#5 — Skip Arc::clone on unchanged** (✅ done, `1eddb0e`)
+2. **#1 — Parallel resolve_all_calls** (✅ done, `eb8e977`)
+3. **#2 — Parallel projection insert** (✅ done, `82fda7e` — 1,959→1,189ms, now 0.98× CodeGraph)
 4. **#6 — SQLite PRAGMAs** (unblock via Macrame change, then one-line)
 5. **#7 — Skip removes on initial index** (low risk cleanup)
 
@@ -342,10 +341,14 @@ essentially parity with CodeGraph 1.5.0. The remaining candidates (#3, #4, #8,
 
 | Step | Cumulative cross-file | vs CodeGraph | Notes |
 |------|----------------------|-------------|-------|
-| Current (v0.5.2) | ~1,800ms | 1.5× | parse uncapped, resolve extracted |
-| + #2 (parallel insert) | ~1,400ms | 1.15× | largest remaining sequential phase |
-| + #6 (PRAGMAs) | ~1,200ms | 0.98× | blocked on Macrame API |
-| + #7 (skip initial removes) | ~1,170ms | 0.96× | low risk cleanup |
+| Initial (v0.4.1) | 3,326ms | 2.7× | |
+| + write_concepts | 2,627ms | 2.15× | |
+| + per-module grouping | — | — | same-file only |
+| + parallel parse | 2,006ms | 1.65× | |
+| + import graph edges | 1,776ms | 1.46× | |
+| + resolve extraction | 1,959ms | 1.61× | extraction + Arc sharing |
+| **+ parallel fragment merge** | **1,189ms** | **0.98×** | **now FASTER than CodeGraph** |
+| Remaining (#6 PRAGMAs) | ~940ms | 0.77× | blocked on Macrame API |
 
 At parity or better, the benchmark itself becomes the bottleneck — 200 files
 is below CodeGraph's own recommended minimum for meaningful measurement.
