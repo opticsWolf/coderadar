@@ -1,5 +1,6 @@
-// CodeRadar v3.3 — Extraction: Tagger Pass 1 (§4.2)
+// CodeRadar v3.5 — Extraction: Tagger Pass 1 (§4.2)
 // Tree-sitter .scm queries tag nodes with coarse classifications.
+// v3.5a: Pre-compiled query + pre-indexed capture names.
 
 use std::collections::HashMap;
 use streaming_iterator::StreamingIterator;
@@ -7,43 +8,57 @@ use tree_sitter::{Query, QueryCursor};
 
 use crate::types::{Language, Tag, TagInfo, TaggedTree};
 
+/// Compiled query + pre-indexed capture name → Tag mapping for reuse across files.
+pub struct CompiledQuery {
+    pub query: Query,
+    /// capture_index → Option<Tag>, precomputed once.
+    pub capture_tags: Vec<Option<Tag>>,
+}
+
+impl CompiledQuery {
+    pub fn new(language: Language, ts_lang: &tree_sitter::Language) -> Option<Self> {
+        let query_source = get_query_for_language_src(language);
+        let query = match Query::new(ts_lang, query_source) {
+            Ok(q) => q,
+            Err(e) => {
+                eprintln!("Tree-sitter query compile error for {:?}: {} — using fallback", language, e);
+                let fallback = "(comment) @docstring\n";
+                Query::new(ts_lang, fallback)
+                    .unwrap_or_else(|_| Query::new(ts_lang, "(ERROR) @_none").unwrap())
+            }
+        };
+        let capture_count = query.capture_names().len();
+        let mut capture_tags: Vec<Option<Tag>> = Vec::with_capacity(capture_count);
+        for i in 0..capture_count {
+            let name = query.capture_names()[i];
+            capture_tags.push(capture_name_to_tag(name));
+        }
+        Some(CompiledQuery { query, capture_tags })
+    }
+}
+
 /// Run tree-sitter queries against a parsed source file to produce a TaggedTree.
-/// The caller handles parsing — tag_tree only runs queries.
+/// Accepts a pre-compiled query — callers should compile once per language.
 pub fn tag_tree<'a>(
     source: &'a str,
     root_node: tree_sitter::Node,
-    language: Language,
-    ts_lang: tree_sitter::Language,
+    compiled: &CompiledQuery,
 ) -> TaggedTree<'a> {
-    let query_source = get_query_for_language_src(language);
-    let query = Query::new(&ts_lang, query_source)
-        .unwrap_or_else(|e| {
-            eprintln!("Tree-sitter query compile error for {:?}: {} — using fallback", language, e);
-            // Universal fallback: matches nothing gracefully
-            let fallback = "(comment) @docstring\n";
-            Query::new(&ts_lang, fallback).unwrap_or_else(|_| {
-                // Truly empty query — some grammars don't even have comment nodes
-                Query::new(&ts_lang, "(ERROR) @_none").unwrap()
-            })
-        });
-
     let mut cursor = QueryCursor::new();
     let mut tags: HashMap<usize, TagInfo> = HashMap::new();
-
     let source_bytes = source.as_bytes();
 
-    let mut captures = cursor.captures(&query, root_node, source_bytes);
+    let mut captures = cursor.captures(&compiled.query, root_node, source_bytes);
     while let Some((qm, _idx)) = captures.next() {
         for capture in qm.captures {
-            let capture_name = query.capture_names()[capture.index as usize];
-            if let Some(tag) = capture_name_to_tag(capture_name) {
-                tags.insert(
-                    capture.node.id() as usize,
-                    TagInfo {
-                        tag,
-                        capture_name: capture_name.to_string(),
-                    },
-                );
+            let idx = capture.index as usize;
+            if idx < compiled.capture_tags.len() {
+                if let Some(ref tag) = compiled.capture_tags[idx] {
+                    tags.insert(
+                        capture.node.id() as usize,
+                        TagInfo { tag: *tag },
+                    );
+                }
             }
         }
     }
