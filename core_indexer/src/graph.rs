@@ -734,6 +734,115 @@ impl CodeGraph {
         self.resolve_calls_scoped(projection, None);
     }
 
+    /// Pure resolution of a single function's calls — all data passed as parameters.
+    /// Returns (resolved_calls, edge_pairs) without mutating the projection.
+    /// The projection is read-only during resolution; edge pairs are applied
+    /// sequentially afterward. Thread-safe: no `&self`, each thread creates
+    /// its own orchestrator.
+    ///
+    /// Technique adopted from CodeGraph's per-file resolution in
+    /// resolve/index.ts (MIT license, https://github.com/opticsWolf/codegraph).
+    fn resolve_one_function(
+        func_id: &str,
+        calls: &[crate::types::UnresolvedRef],
+        sibling_funcs: &std::collections::HashMap<String, String>,
+        import_targets: &std::collections::HashMap<String, String>,
+        projection: &ProjectedGraph,
+        import_graph: &ImportGraph,
+        orchestrator: &mut crate::resolve::orchestrator::ResolutionOrchestrator,
+    ) -> (Vec<crate::types::ResolvedCall>, Vec<(String, String)>) {
+        let mut edge_pairs = Vec::new();
+
+        // MRO-aware method lookup: per-function
+        let my_parent_class = projection
+            .functions
+            .get(func_id)
+            .and_then(|f| f.parent_class.clone());
+
+        let mro_methods: std::collections::HashMap<String, String> =
+            if let Some(ref class_id) = my_parent_class {
+                let mut methods = std::collections::HashMap::new();
+                if let Some(class) = projection.classes.get(class_id) {
+                    for node in &class.mro {
+                        if let MroNode::Class(ref cid) = node {
+                            for (fid, f) in projection.functions.iter() {
+                                if f.parent_class.as_ref() == Some(cid) {
+                                    methods.entry(f.name.clone())
+                                        .or_insert_with(|| fid.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+                for (fid, f) in projection.functions.iter() {
+                    if f.parent_class.as_ref() == Some(class_id) {
+                        methods.entry(f.name.clone())
+                            .or_insert_with(|| fid.clone());
+                    }
+                }
+                methods
+            } else {
+                std::collections::HashMap::new()
+            };
+
+        let resolved = orchestrator.resolve_calls(calls, func_id, import_graph);
+
+        let resolved: Vec<_> = resolved
+            .into_iter()
+            .map(|rc| {
+                if let crate::types::ResolvedCall::Unresolved { reason, raw } = &rc {
+                    if matches!(reason, crate::types::UnresolvedReason::TypeInferenceRequired) {
+                        if let Some(target_id) = mro_methods.get(&raw.name) {
+                            return crate::types::ResolvedCall::Function(target_id.clone());
+                        }
+                    }
+                    return rc;
+                }
+                if let crate::types::ResolvedCall::External(name) = &rc {
+                    if let Some(target_id) = sibling_funcs.get(name.as_str()) {
+                        return crate::types::ResolvedCall::Function(target_id.clone());
+                    }
+                    if let Some(target_mod_id) = import_targets.get(name.as_str()) {
+                        if let Some(imported_func_id) = find_symbol_in_module(
+                            projection, target_mod_id, name) {
+                            return crate::types::ResolvedCall::Function(imported_func_id);
+                        }
+                    }
+                    if let Some(target_id) = mro_methods.get(name.as_str()) {
+                        return crate::types::ResolvedCall::Function(target_id.clone());
+                    }
+                }
+                if let crate::types::ResolvedCall::Builtin(name) = &rc {
+                    if let Some(target_id) = sibling_funcs.get(name.as_str()) {
+                        return crate::types::ResolvedCall::Function(target_id.clone());
+                    }
+                }
+                rc
+            })
+            .collect();
+
+        // Build edge pairs (applied later by caller)
+        for rc in &resolved {
+            match rc {
+                crate::types::ResolvedCall::Function(target_id)
+                | crate::types::ResolvedCall::Constructor(target_id) => {
+                    edge_pairs.push((func_id.to_string(), target_id.clone()));
+                }
+                crate::types::ResolvedCall::Method { method, .. } => {
+                    edge_pairs.push((func_id.to_string(), method.clone()));
+                }
+                crate::types::ResolvedCall::Builtin(name)
+                | crate::types::ResolvedCall::External(name) => {
+                    let ext_id = format!("external::{}", name);
+                    edge_pairs.push((func_id.to_string(), ext_id));
+                }
+                crate::types::ResolvedCall::Unresolved { .. } => {}
+            }
+        }
+
+        (resolved, edge_pairs)
+    }
+
     /// Resolve calls scoped to a single file (or all if None).
     fn resolve_calls_scoped(&self, projection: &mut ProjectedGraph, scope_file: Option<&str>) {
         use crate::resolve::orchestrator::ResolutionOrchestrator;
@@ -815,47 +924,57 @@ impl CodeGraph {
             by_module.entry(pm).or_default().push((&entry.0, &entry.1));
         }
 
-        for (parent_module, module_entries) in &by_module {
-            // Build same-module function lookup — O(n) per module, not O(n²)
-            let sibling_funcs: std::collections::HashMap<String, String> = projection
-                .functions
-                .iter()
-                .filter(|(_, f)| &f.parent_module == parent_module)
-                .map(|(id, f)| (f.name.clone(), id.clone()))
-                .collect();
+        // Phase A: Build per-module lookups and collect work items.
+        // Use Arc<HashMap> so per-function work items share the module lookups
+        // (avoids 501×501 HashMap clones in the single-file 500-varargs case).
+        type ModuleLookups = (
+            std::sync::Arc<std::collections::HashMap<String, String>>,
+            std::sync::Arc<std::collections::HashMap<String, String>>,
+        );
+        type WorkItem = (String, Vec<crate::types::UnresolvedRef>, ModuleLookups);
 
-            // Build import-targets lookup — O(i) per module
-            let mut import_targets: std::collections::HashMap<String, String> =
-                std::collections::HashMap::new();
+        let mut all_work: Vec<WorkItem> = Vec::new();
+
+        for (parent_module, module_entries) in &by_module {
+            let sibling_funcs = std::sync::Arc::new(
+                projection
+                    .functions
+                    .iter()
+                    .filter(|(_, f)| &f.parent_module == parent_module)
+                    .map(|(id, f)| (f.name.clone(), id.clone()))
+                    .collect::<std::collections::HashMap<String, String>>(),
+            );
+
+            let mut import_targets_map = std::collections::HashMap::new();
             if let Some(module) = projection.modules.get(parent_module) {
                 for import_id in &module.imports {
                     if let Some(import) = projection.imports.get(import_id) {
                         match &import.kind {
-                            ImportKind::FromImport { module: src_mod, names } => {
+                            crate::types::ImportKind::FromImport { module: src_mod, names } => {
                                 let target_mod_id = find_module_by_dotted_name(
                                     projection, src_mod, parent_module);
                                 for (name, _alias) in names {
                                     if let Some(ref tgt_id) = target_mod_id {
-                                        import_targets.insert(name.clone(), tgt_id.clone());
+                                        import_targets_map.insert(name.clone(), tgt_id.clone());
                                     }
                                 }
                             }
-                            ImportKind::ModuleImport { module: src_mod, alias: _ } => {
+                            crate::types::ImportKind::ModuleImport { module: src_mod, alias: _ } => {
                                 if let Some(tgt_id) = find_module_by_dotted_name(
                                     projection, src_mod, parent_module)
                                 {
                                     let short_name = src_mod.rsplit('.').next().unwrap_or(src_mod);
-                                    import_targets.insert(short_name.to_string(), tgt_id);
+                                    import_targets_map.insert(short_name.to_string(), tgt_id);
                                 }
                             }
-                            ImportKind::StarImport { module: src_mod } => {
+                            crate::types::ImportKind::StarImport { module: src_mod } => {
                                 if let Some(tgt_id) = find_module_by_dotted_name(
                                     projection, src_mod, parent_module)
                                 {
                                     if let Some(tgt_module) = projection.modules.get(&tgt_id) {
                                         if let Some(ref exports) = tgt_module.star_exports {
                                             for name in exports {
-                                                import_targets.insert(
+                                                import_targets_map.insert(
                                                     name.clone(), tgt_id.clone());
                                             }
                                         }
@@ -867,140 +986,93 @@ impl CodeGraph {
                     }
                 }
             }
+            let import_targets = std::sync::Arc::new(import_targets_map);
+            let lookups: ModuleLookups = (sibling_funcs, import_targets);
 
             for (func_id, calls) in module_entries {
-                let func_id: &String = func_id;
-                let calls: &Vec<crate::types::UnresolvedRef> = calls;
+                all_work.push((
+                    (*func_id).clone(),
+                    (*calls).clone(),
+                    lookups.clone(),  // Arc clone (reference count only)
+                ));
+            }
+        }
 
-                // Get the calling function's parent class for MRO resolution
-                let my_parent_class = projection
-                    .functions
-                    .get(func_id.as_str())
-                    .and_then(|f| f.parent_class.clone());
+        // Phase B: Resolve calls (parallel if enough work, else sequential).
+        // Threads read from projection (immutable); writes are collected
+        // and applied in Phase C.
+        type ResolveResult = (String, Vec<crate::types::ResolvedCall>, Vec<(String, String)>);
+        let results: Vec<ResolveResult>;
 
-                // MRO-aware method lookup: per-function (different callers
-                // belong to different classes).
-                let mro_methods: std::collections::HashMap<String, String> =
-                    if let Some(ref class_id) = my_parent_class {
-                        let mut methods = std::collections::HashMap::new();
-                        if let Some(class) = projection.classes.get(class_id) {
-                            for node in &class.mro {
-                                if let MroNode::Class(ref cid) = node {
-                                    for (fid, f) in projection.functions.iter() {
-                                        if f.parent_class.as_ref() == Some(cid) {
-                                            methods.entry(f.name.clone())
-                                                .or_insert_with(|| fid.clone());
-                                        }
-                                    }
-                                }
-                            }
+        if all_work.len() > 50 {
+            let num_threads = std::thread::available_parallelism()
+                .map(|n| n.get().min(4))
+                .unwrap_or(2);
+            let chunk_size = (all_work.len() + num_threads - 1) / num_threads;
+            let results_mutex = std::sync::Mutex::new(Vec::<ResolveResult>::new());
+            let projection_ro: &ProjectedGraph = projection;  // shared borrow
+
+            std::thread::scope(|s| {
+                let results_ref = &results_mutex;
+                for chunk in all_work.chunks(chunk_size) {
+                    let chunk_owned: Vec<WorkItem> = chunk.iter().map(|(fid, c, lkp)| {
+                        (fid.clone(), c.clone(), lkp.clone())
+                    }).collect();
+                    let import_graph = import_graph_ref;
+                    s.spawn(move || {
+                        let mut local = Vec::new();
+                        let mut orch = ResolutionOrchestrator::new();
+                        for (fid, calls, lkp) in &chunk_owned {
+                            let (rc, ep) = Self::resolve_one_function(
+                                fid, calls,
+                                &lkp.0, &lkp.1,
+                                projection_ro, import_graph,
+                                &mut orch);
+                            local.push((fid.clone(), rc, ep));
                         }
-                        for (fid, f) in projection.functions.iter() {
-                            if f.parent_class.as_ref() == Some(class_id) {
-                                methods.entry(f.name.clone())
-                                    .or_insert_with(|| fid.clone());
-                            }
-                        }
-                        methods
-                    } else {
-                        std::collections::HashMap::new()
-                    };
+                        results_ref.lock().unwrap().extend(local);
+                    });
+                }
+            });
+            // projection_ro borrow ends — projection is exclusively mutable again
+            results = results_mutex.into_inner().unwrap();
+        } else {
+            // Small work set — sequential (avoid thread overhead)
+            let mut results_vec = Vec::new();
+            for (fid, calls, lkp) in &all_work {
+                let (rc, ep) = Self::resolve_one_function(
+                    fid, calls,
+                    &lkp.0, &lkp.1,
+                    projection, import_graph_ref,
+                    &mut orchestrator);
+                results_vec.push((fid.clone(), rc, ep));
+            }
+            results = results_vec;
+        }
 
-                // Resolve calls using the orchestrator with shared import graph
-                let resolved = orchestrator.resolve_calls(calls, func_id, import_graph_ref);
-
-                // Override with same-file (sibling_funcs), cross-file (import_targets),
-                // and method resolution (mro_methods) — all built once per module.
-                let resolved: Vec<_> = resolved
-                    .into_iter()
-                    .map(|rc| {
-                        if let crate::types::ResolvedCall::Unresolved { reason, raw } = &rc {
-                            if matches!(reason, crate::types::UnresolvedReason::TypeInferenceRequired) {
-                                if let Some(target_id) = mro_methods.get(&raw.name) {
-                                    return crate::types::ResolvedCall::Function(target_id.clone());
-                                }
-                            }
-                            return rc;
-                        }
-                        if let crate::types::ResolvedCall::External(name) = &rc {
-                            if let Some(target_id) = sibling_funcs.get(name.as_str()) {
-                                return crate::types::ResolvedCall::Function(target_id.clone());
-                            }
-                            if let Some(target_mod_id) = import_targets.get(name.as_str()) {
-                                if let Some(imported_func_id) = find_symbol_in_module(
-                                    projection, target_mod_id, name) {
-                                    return crate::types::ResolvedCall::Function(imported_func_id);
-                                }
-                            }
-                            if let Some(target_id) = mro_methods.get(name.as_str()) {
-                                return crate::types::ResolvedCall::Function(target_id.clone());
-                            }
-                        }
-                        if let crate::types::ResolvedCall::Builtin(name) = &rc {
-                            if let Some(target_id) = sibling_funcs.get(name.as_str()) {
-                                return crate::types::ResolvedCall::Function(target_id.clone());
-                            }
-                    }
-                    rc
-                })
-                .collect();
-
-            // Update resolved_calls on the function (skip clone if unchanged)
-            if let Some(func_arc) = projection.functions.get(func_id) {
-                if func_arc.resolved_calls != resolved {
+        // Phase C: Apply results to projection (sequential)
+        for (func_id, resolved, edge_pairs) in &results {
+            if let Some(func_arc) = projection.functions.get(func_id.as_str()) {
+                if func_arc.resolved_calls != *resolved {
                     let mut updated = (**func_arc).clone();
                     updated.resolved_calls = resolved.clone();
                     projection.functions.insert(func_id.clone(), std::sync::Arc::new(updated));
                 }
             }
 
-            // Wire callees_by_caller from resolved calls
-            for rc in &resolved {
-                match rc {
-                    crate::types::ResolvedCall::Function(target_id)
-                    | crate::types::ResolvedCall::Constructor(target_id) => {
-                        projection
-                            .callees_by_caller
-                            .entry(func_id.clone())
-                            .or_default()
-                            .insert(target_id.clone());
-                        projection
-                            .callers_by_callee
-                            .entry(target_id.clone())
-                            .or_default()
-                            .insert(func_id.clone());
-                    }
-                    crate::types::ResolvedCall::Method { method, .. } => {
-                        projection
-                            .callees_by_caller
-                            .entry(func_id.clone())
-                            .or_default()
-                            .insert(method.clone());
-                        projection
-                            .callers_by_callee
-                            .entry(method.clone())
-                            .or_default()
-                            .insert(func_id.clone());
-                    }
-                    crate::types::ResolvedCall::Builtin(name)
-                    | crate::types::ResolvedCall::External(name) => {
-                        let ext_id = format!("external::{}", name);
-                        projection
-                            .callees_by_caller
-                            .entry(func_id.clone())
-                            .or_default()
-                            .insert(ext_id.clone());
-                        projection
-                            .callers_by_callee
-                            .entry(ext_id)
-                            .or_default()
-                            .insert(func_id.clone());
-                    }
-                    crate::types::ResolvedCall::Unresolved { .. } => {}
-                }
+            for (source, target) in edge_pairs {
+                projection
+                    .callees_by_caller
+                    .entry(source.clone())
+                    .or_default()
+                    .insert(target.clone());
+                projection
+                    .callers_by_callee
+                    .entry(target.clone())
+                    .or_default()
+                    .insert(source.clone());
             }
-        }  // for (func_id, calls) in module_entries
-    }      // for (parent_module, module_entries) in &by_module
+        }
     }
 
     /// Persist extracted entities to Macrame (async via block_on).
