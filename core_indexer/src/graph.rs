@@ -1263,6 +1263,173 @@ impl CodeGraph {
         Ok((units, concepts))
     }
 
+    /// Build a standalone ProjectedGraph fragment from one file's extracted units.
+    /// Thread-safe — no `&self`, no shared state. Used by the parallel indexing
+    /// phase so each thread builds its local fragment, then the main thread merges
+    /// them (avoiding the sequential projection-clone bottleneck).
+    ///
+    /// This mirrors `insert_extracted` but:
+    /// - Does NOT touch `self.import_graph` (already parallelized via
+    ///   `ImportGraph::build_import_edges` during Phase 2)
+    /// - Returns a new `ProjectedGraph` instead of mutating an existing one
+    /// - Includes same-file heuristic call edges (resolved later by
+    ///   `resolve_all_calls`)
+    pub fn build_fragment(
+        units: &[ExtractedUnit],
+        file_path: &str,
+        language: &Language,
+    ) -> ProjectedGraph {
+        let file_stem = std::path::Path::new(file_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let module_id = format!("{}::module", file_path);
+
+        let mut projection = ProjectedGraph {
+            modules: HashMap::new(),
+            classes: HashMap::new(),
+            functions: HashMap::new(),
+            imports: HashMap::new(),
+            constants: HashMap::new(),
+            type_aliases: HashMap::new(),
+            file_to_modules: HashMap::new(),
+            module_by_dotted_name: HashMap::new(),
+            importers: HashMap::new(),
+            callers_by_callee: HashMap::new(),
+            callees_by_caller: HashMap::new(),
+            subclasses: HashMap::new(),
+            overridden_by: HashMap::new(),
+        };
+
+        let mut module_classes: Vec<EntityId> = Vec::new();
+        let mut module_functions: Vec<EntityId> = Vec::new();
+        let mut module_imports: Vec<EntityId> = Vec::new();
+        let mut module_constants: Vec<EntityId> = Vec::new();
+        let mut module_type_aliases: Vec<EntityId> = Vec::new();
+
+        for unit in units {
+            match unit {
+                ExtractedUnit::Module(_) => {}
+                ExtractedUnit::Class(c) => {
+                    let class = Class {
+                        id: c.id.clone(), name: c.name.clone(),
+                        grammar_kind: c.grammar_kind.clone(),
+                        parent_module: module_id.clone(),
+                        parent_class: c.parent_class.clone(),
+                        bases: c.bases.clone(), resolved_bases: vec![],
+                        mro: vec![], mro_error: false, methods: vec![],
+                        fields: c.fields.iter().map(|ef| Field {
+                            name: ef.name.clone(), annotation: ef.annotation.clone(),
+                            source: ef.source.clone(),
+                            default_value: ef.default_value.clone(),
+                            is_class_var: ef.is_class_var,
+                            span: ef.name_span, name_span: ef.name_span,
+                        }).collect(),
+                        source: c.source.clone(), decorators: c.decorators.clone(),
+                        effective: EffectiveClass::Plain,
+                        is_type_checking_only: c.is_type_checking_only,
+                        line: c.line, exit_line: c.exit_line,
+                        docstring: c.docstring.clone(),
+                        parse_quality: ParseQuality::Clean, content_hash: 0,
+                        span: c.span, name_span: c.name_span,
+                        body_span: c.body_span, decorators_span: c.decorators_span,
+                    };
+                    projection.classes.insert(class.id.clone(), Arc::new(class));
+                    module_classes.push(c.id.clone());
+                }
+                ExtractedUnit::Function(f) => {
+                    let func = Function {
+                        id: f.id.clone(), name: f.name.clone(),
+                        parent_module: module_id.clone(),
+                        parent_class: f.parent_class.clone(),
+                        parameters: f.parameters.clone(), return_type: f.return_type.clone(),
+                        calls: f.calls.clone(), resolved_calls: vec![],
+                        decorators: f.decorators.clone(), setter_of: None,
+                        line: f.line, exit_line: f.exit_line,
+                        docstring: f.docstring.clone(), kind: f.kind.clone(),
+                        is_async: f.is_async, is_generator: f.is_generator,
+                        source: f.source.clone(),
+                        signature_hash: f.signature_hash, body_hash: f.body_hash,
+                        is_type_checking_only: f.is_type_checking_only,
+                        parse_quality: ParseQuality::Clean, content_hash: 0,
+                        span: f.span, name_span: f.name_span,
+                        params_span: f.params_span, body_span: f.body_span,
+                        decorators_span: f.decorators_span, embedding: vec![],
+                    };
+                    projection.functions.insert(func.id.clone(), Arc::new(func));
+                    module_functions.push(f.id.clone());
+                }
+                ExtractedUnit::Import(i) => {
+                    let import = Import {
+                        id: i.id.clone(), raw: i.raw.clone(),
+                        kind: i.kind.clone(),
+                        resolution: ImportResolution::Unresolved,
+                        line: i.line, is_type_only: i.is_type_only,
+                        name_span: i.name_span,
+                    };
+                    projection.imports.insert(import.id.clone(), Arc::new(import));
+                    module_imports.push(i.id.clone());
+                }
+                ExtractedUnit::Constant(k) => {
+                    let constant = Constant {
+                        id: k.id.clone(), name: k.name.clone(),
+                        annotation: k.annotation.clone(), source: k.source.clone(),
+                        default_value: k.default_value.clone(),
+                        span: k.span, name_span: k.name_span,
+                    };
+                    projection.constants.insert(constant.id.clone(), Arc::new(constant));
+                    module_constants.push(k.id.clone());
+                }
+                ExtractedUnit::TypeAlias(ta) => {
+                    let alias = TypeAlias {
+                        id: ta.id.clone(), name: ta.name.clone(),
+                        target: ta.target.clone(), source: ta.source.clone(),
+                        span: ta.span, name_span: ta.name_span,
+                    };
+                    projection.type_aliases.insert(alias.id.clone(), Arc::new(alias));
+                    module_type_aliases.push(ta.id.clone());
+                }
+                _ => {}
+            }
+        }
+
+        // Same-file heuristic call edges
+        for func_id in &module_functions {
+            if let Some(func) = projection.functions.get(func_id) {
+                let calls = func.calls.clone();
+                for call in &calls {
+                    let target_id = if call.path.is_empty() {
+                        format!("{}::{}", file_path, call.name)
+                    } else {
+                        format!("{}::{}.{}", file_path, call.path.join("."), call.name)
+                    };
+                    projection.callees_by_caller
+                        .entry(func_id.clone()).or_default()
+                        .insert(target_id.clone());
+                    projection.callers_by_callee
+                        .entry(target_id).or_default()
+                        .insert(func_id.clone());
+                }
+            }
+        }
+
+        // Synthetic module entity
+        let module = Module {
+            id: module_id.clone(), name: file_stem.to_string(),
+            path: PathBuf::from(file_path),
+            language: language.clone(), package: None,
+            exports: vec![], star_exports: None,
+            classes: module_classes, functions: module_functions,
+            imports: module_imports, constants: module_constants,
+            type_aliases: module_type_aliases,
+            parse_quality: ParseQuality::Clean, file_version: 1, content_hash: 0,
+        };
+        projection.modules.insert(module_id.clone(), Arc::new(module));
+        projection.file_to_modules.insert(PathBuf::from(file_path), vec![module_id]);
+
+        projection
+    }
+
     /// Shared parse→extract→insert logic.
     fn index_file_inner(
         &self,

@@ -391,9 +391,8 @@ fn analyze(root: &str) -> PyResult<PyObject> {
         let import_graph_ref = &graph.import_graph;
 
         type ChunkResult = Vec<(
-            String,                             // file_path
-            Vec<crate::types::ExtractedUnit>,   // units
-            Vec<macrame::ConceptUpsert>,         // concepts
+            ProjectedGraph,                    // local fragment
+            Vec<macrame::ConceptUpsert>,        // concepts
         )>;
 
         let mut all_results: Vec<ChunkResult> = Vec::new();
@@ -410,14 +409,14 @@ fn analyze(root: &str) -> PyResult<PyObject> {
                         {
                             Ok((units, concepts)) => {
                                 // Build import graph edges in parallel.
-                                // ImportGraph uses parking_lot::RwLock — safe
-                                // across threads. Full resolution happens
-                                // in the sequential insert phase later.
                                 let module_id = format!("{}::module", task.path);
                                 ImportGraph::build_import_edges(
                                     import_graph_ref, &units, &task.path,
                                     task.language, &module_id);
-                                results.push((task.path.clone(), units, concepts));
+                                // Build local projection fragment in parallel.
+                                let fragment = CodeGraph::build_fragment(
+                                    &units, &task.path, &task.language);
+                                results.push((fragment, concepts));
                             }
                             Err(_) => {} // parse failures silently skipped
                         }
@@ -433,23 +432,40 @@ fn analyze(root: &str) -> PyResult<PyObject> {
             }
         });
 
-        // Phase 3: Sequential insert into projection + collect concepts.
-        for chunk_results in &all_results {
-            for (file_path, units, concepts) in chunk_results {
-                let lang = Language::from_extension(
-                    std::path::Path::new(file_path)
-                        .extension()
-                        .and_then(|e| e.to_str())
-                        .unwrap_or("py"),
-                );
-                let count = units.len();
-                let mut projection = (*graph.snapshot()).clone();
-                graph.insert_extracted(&mut projection, units, file_path, &lang);
-                graph.commit_projection(projection);
-                total_entities += count;
-                files_indexed += 1;
-                all_concepts.extend_from_slice(concepts);
+        // Phase 3: Merge all local fragments into the main projection.
+        // Fragment keys are unique per file, so HashMap::extend is safe.
+        // This replaces the old sequential projection-clone + insert_extracted
+        // pattern, which was O(n²) in files (cloning the growing projection n times).
+        {
+            let mut proj = (*graph.snapshot()).clone();
+            for chunk_results in all_results {
+                for (fragment, concepts) in chunk_results {
+                    let entity_count = fragment.functions.len()
+                        + fragment.classes.len()
+                        + fragment.imports.len()
+                        + fragment.constants.len()
+                        + fragment.type_aliases.len();
+                    proj.modules.extend(fragment.modules);
+                    proj.classes.extend(fragment.classes);
+                    proj.functions.extend(fragment.functions);
+                    proj.imports.extend(fragment.imports);
+                    proj.constants.extend(fragment.constants);
+                    proj.type_aliases.extend(fragment.type_aliases);
+                    for (k, v) in fragment.file_to_modules {
+                        proj.file_to_modules.entry(k).or_default().extend(v);
+                    }
+                    proj.module_by_dotted_name.extend(fragment.module_by_dotted_name);
+                    for (k, v) in fragment.importers { proj.importers.entry(k).or_default().extend(v); }
+                    for (k, v) in fragment.callers_by_callee { proj.callers_by_callee.entry(k).or_default().extend(v); }
+                    for (k, v) in fragment.callees_by_caller { proj.callees_by_caller.entry(k).or_default().extend(v); }
+                    for (k, v) in fragment.subclasses { proj.subclasses.entry(k).or_default().extend(v); }
+                    for (k, v) in fragment.overridden_by { proj.overridden_by.entry(k).or_default().extend(v); }
+                    total_entities += entity_count;
+                    files_indexed += 1;
+                    all_concepts.extend(concepts);
+                }
             }
+            graph.commit_projection(proj);
         }
         }  // if !tasks.is_empty()
     }
