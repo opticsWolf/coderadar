@@ -73,7 +73,7 @@ fn capture_name_to_tag(name: &str) -> Option<Tag> {
 }
 
 /// Return the appropriate .scm query source for a language.
-fn get_query_for_language_src(language: Language) -> &'static str {
+pub fn get_query_for_language_src(language: Language) -> &'static str {
     match language {
         Language::Python => include_str!("../../queries/python.scm"),
         Language::TypeScript => include_str!("../../queries/typescript.scm"),

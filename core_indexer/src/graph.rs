@@ -3459,4 +3459,49 @@ mod tests {
         let meta = std::fs::metadata(&db_path).unwrap();
         assert!(meta.len() > 0, "db should have persisted data");
     }
+
+    /// Verify that every .scm query file compiles cleanly against its
+    /// tree-sitter grammar.  A query that falls back to `(comment)` silently
+    /// loses entity extraction — this test catches that.
+    #[test]
+    fn test_all_queries_compile_without_errors() {
+        use crate::extract::tagger;
+        use crate::types::Language;
+
+        let languages: Vec<(Language, &str)> = vec![
+            (Language::Python, "python"),
+            (Language::TypeScript, "typescript"),
+            (Language::JavaScript, "javascript"),
+            (Language::Rust, "rust"),
+            (Language::Go, "go"),
+            (Language::Java, "java"),
+            (Language::C, "c"),
+            (Language::Cpp, "cpp"),
+            (Language::Ruby, "ruby"),
+            (Language::Php, "php"),
+            (Language::CSharp, "csharp"),
+            (Language::Kotlin, "kotlin"),
+            (Language::Swift, "swift"),
+            (Language::Scala, "scala"),
+            (Language::Lua, "lua"),
+            (Language::Elixir, "elixir"),
+            (Language::Zig, "zig"),
+            (Language::R, "r"),
+        ];
+
+        let mut failures = 0;
+        for (lang, pack_name) in &languages {
+            let query_src = tagger::get_query_for_language_src(*lang);
+            let ts_lang = crate::graph::CodeGraph::ts_language(lang)
+                .unwrap_or_else(|| panic!("No grammar for {:?}", lang));
+            match tree_sitter::Query::new(&ts_lang, query_src) {
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("FAIL {:?}: {}", lang, e);
+                    failures += 1;
+                }
+            }
+        }
+        assert_eq!(failures, 0, "{} query files failed to compile", failures);
+    }
 }
