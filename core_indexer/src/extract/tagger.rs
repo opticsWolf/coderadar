@@ -76,11 +76,13 @@ fn capture_name_to_tag(name: &str) -> Option<Tag> {
 fn get_query_for_language_src(language: Language) -> &'static str {
     match language {
         Language::Python => include_str!("../../queries/python.scm"),
-        Language::TypeScript | Language::JavaScript => include_str!("../../queries/typescript.scm"),
+        Language::TypeScript => include_str!("../../queries/typescript.scm"),
+        Language::JavaScript => include_str!("../../queries/javascript.scm"),
         Language::Rust => include_str!("../../queries/rust.scm"),
         Language::Go => include_str!("../../queries/go.scm"),
         Language::Java => include_str!("../../queries/java.scm"),
-        Language::C | Language::Cpp => include_str!("../../queries/cpp.scm"),
+        Language::C => include_str!("../../queries/c.scm"),
+        Language::Cpp => include_str!("../../queries/cpp.scm"),
         Language::Ruby => include_str!("../../queries/ruby.scm"),
         Language::Php => include_str!("../../queries/php.scm"),
         Language::CSharp => include_str!("../../queries/csharp.scm"),
