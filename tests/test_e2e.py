@@ -586,3 +586,109 @@ class TestBenchmarkPipeline:
         # Bigger functions (with docstrings, bodies) should produce larger DB
         assert big_size >= small_size, \
             f"DB with richer entities should be >= simpler ones: {big_size} vs {small_size}"
+
+    def test_balanced_callers_50_modules_1000_calls(self, tmp_path):
+        """Balanced resolve workload: many callers spread across modules.
+
+        Creates 50 modules each with 5 leaf functions, plus 50 caller modules
+        each with 2 callers making 10 cross-module calls (1,000 total calls).
+        Each caller imports from module (i+1)%50.  Unlike the skewed benchmark
+        (1 heavy orchestrator + 199 empty modules), this evenly distributes
+        resolution work across all callers — the workload that exercises the
+        parallel resolve path.
+
+        Benchmark B from docs/performance-roadmap.md.
+        """
+        import time
+        from coderadar._core import analyze as _analyze_rust, graph_stats
+
+        # 50 leaf modules, 5 functions each = 250 leaf functions
+        for i in range(50):
+            funcs = [f'def leaf_{i}_{j}(): return {i}+{j}' for j in range(5)]
+            (tmp_path / f'mod_{i}.py').write_text('\n'.join(funcs))
+
+        # 50 caller modules, 2 callers each, 10 calls each = 1,000 calls
+        for i in range(50):
+            tgt = (i + 1) % 50
+            import_lines = [f'from mod_{tgt} import leaf_{tgt}_{j}' for j in range(5)]
+            func_lines = []
+            for c in range(2):
+                func_lines.append(f'def caller_{i}_{c}():')
+                for j in range(5):
+                    func_lines.append(f'    leaf_{tgt}_{j}()')
+                    func_lines.append(f'    leaf_{tgt}_{j}()')
+            (tmp_path / f'callers_{i}.py').write_text(
+                '\n'.join(import_lines + [''] + func_lines))
+
+        t0 = time.perf_counter()
+        result = _analyze_rust(str(tmp_path))
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+
+        stats = graph_stats()
+        assert result['files_indexed'] == 100, \
+            f"Expected 100 files, got {result}"
+        # 250 leaf + 100 callers = 350 functions
+        assert stats['functions'] == 350, \
+            f"Expected 350 functions, got {stats['functions']}"
+        # 50 caller modules × 5 imports each = 250 imports
+        assert stats['imports'] == 250, \
+            f"Expected 250 imports, got {stats['imports']}"
+        # 100 callers × 5 unique targets = 500 edges (deduplicated in BTreeSet)
+        assert stats['call_edges'] == 500, \
+            f"Expected 500 call edges, got {stats['call_edges']}"
+
+        # Sanity: should finish in under 60s
+        assert elapsed_ms < 60_000, \
+            f"Balanced benchmark took {elapsed_ms:.0f}ms, expected <60s"
+
+    def test_heavy_resolve_100_modules_4000_calls(self, tmp_path):
+        """Heavy resolve workload: many callers, many calls, cross-module.
+
+        Creates 100 modules each with 5 leaf functions, plus 100 caller modules
+        each with 2 callers making 20 cross-module calls (4,000 total calls).
+        Each caller imports from module (i+1)%100.
+
+        This is the highest call-density benchmark — resolution work is spread
+        across 200 callers.  Useful for measuring parallel resolve cap effects.
+
+        Benchmark C from docs/performance-roadmap.md.
+        """
+        import time
+        from coderadar._core import analyze as _analyze_rust, graph_stats
+
+        for i in range(100):
+            funcs = [f'def leaf_{i}_{j}(): return {i}+{j}' for j in range(5)]
+            (tmp_path / f'mod_{i}.py').write_text('\n'.join(funcs))
+
+        for i in range(100):
+            tgt = (i + 1) % 100
+            import_lines = [f'from mod_{tgt} import leaf_{tgt}_{j}' for j in range(5)]
+            func_lines = []
+            for ci in range(2):
+                func_lines.append(f'def caller_{i}_{ci}():')
+                for j in range(5):
+                    for _ in range(4):
+                        func_lines.append(f'    leaf_{tgt}_{j}()')
+            (tmp_path / f'callers_{i}.py').write_text(
+                '\n'.join(import_lines + [''] + func_lines))
+
+        t0 = time.perf_counter()
+        result = _analyze_rust(str(tmp_path))
+        elapsed_ms = (time.perf_counter() - t0) * 1000
+
+        stats = graph_stats()
+        assert result['files_indexed'] == 200, \
+            f"Expected 200 files, got {result}"
+        # 500 leaf + 200 callers = 700 functions
+        assert stats['functions'] == 700, \
+            f"Expected 700 functions, got {stats['functions']}"
+        # 100 caller modules × 5 imports each = 500 imports
+        assert stats['imports'] == 500, \
+            f"Expected 500 imports, got {stats['imports']}"
+        # 200 callers × 5 unique targets = 1,000 edges (deduplicated)
+        assert stats['call_edges'] == 1000, \
+            f"Expected 1000 call edges, got {stats['call_edges']}"
+
+        # Sanity: should finish in under 60s
+        assert elapsed_ms < 60_000, \
+            f"Heavy resolve benchmark took {elapsed_ms:.0f}ms, expected <60s"

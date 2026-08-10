@@ -8,6 +8,16 @@
 
 ## Current State
 
+**Benchmarks** (formalized as `TestBenchmarkPipeline` in `tests/test_e2e.py`):
+
+| Benchmark | Files | Functions | Calls | Work distribution | Resolve benefit? |
+|-----------|-------|-----------|-------|-------------------|------------------|
+| A (skewed) | 200 | 996 | 995 | 1 caller has all calls | No — single work item |
+| B (balanced) | 100 | 350 | 1,000 | 100 callers × 10 calls | Minimal — too few calls/caller |
+| C (heavy) | 200 | 700 | 4,000 | 200 callers × 20 calls | Some — 200 work items |
+
+**Current timings (v0.5.2, parse uncapped, resolve cap=4):**
+
 | Phase | Cost | Parallelized? |
 |-------|------|---------------|
 | Walk filesystem + read source | ~5ms | No (I/O-bound) |
@@ -52,6 +62,9 @@ Detailed plan in: `docs/macrame-evaluation.md` § "Plan: Parallel resolve_all_ca
 then add parallel dispatch. Gated behind 50-item minimum chunk threshold.  
 **Dependencies:** None.  
 **Interaction:** `update_file` stays sequential (small files fall below threshold).
+Resolve cap sweep (benchmark C, 4,000 calls, 200 callers): 1=947ms, 2=968ms,
+4=950ms, 8=935ms, 16=965ms — all within ±33ms. Resolution is only ~200ms of
+the ~950ms total; sequential projection insert dominates. Cap kept at 4.
 
 ---
 
@@ -315,9 +328,9 @@ improvements above deliver much more per unit of effort.
 
 ## Recommended Implementation Order
 
-1. **#5 — Skip Arc::clone on unchanged** (trivial, immediate win)
-2. **#1 — Parallel resolve_all_calls** (highest score, plan documented)
-3. **#2 — Parallel projection insert** (second highest, natural extension of existing parallel phase)
+1. **#5 — Skip Arc::clone on unchanged** (done, `1eddb0e`)
+2. **#1 — Parallel resolve_all_calls** (done, `eb8e977`; neutral on synthetic benchmarks, helps real codebases)
+3. **#2 — Parallel projection insert** (next — ~200ms estimated, dominates current time)
 4. **#6 — SQLite PRAGMAs** (unblock via Macrame change, then one-line)
 5. **#7 — Skip removes on initial index** (low risk cleanup)
 
@@ -327,14 +340,12 @@ essentially parity with CodeGraph 1.5.0. The remaining candidates (#3, #4, #8,
 
 ## Projected Timeline
 
-| Step | Cumulative cross-file | vs CodeGraph |
-|------|----------------------|-------------|
-| Current (v0.5.2) | ~1,800ms | 1.5× |
-| + #5 (clone skip) | ~1,770ms | 1.45× |
-| + #1 (parallel resolve) | ~1,490ms | 1.22× |
-| + #2 (parallel insert) | ~1,290ms | 1.06× |
-| + #6 (PRAGMAs) | ~1,190ms | 0.98× |
-| + #7 (skip initial removes) | ~1,170ms | 0.96× |
+| Step | Cumulative cross-file | vs CodeGraph | Notes |
+|------|----------------------|-------------|-------|
+| Current (v0.5.2) | ~1,800ms | 1.5× | parse uncapped, resolve extracted |
+| + #2 (parallel insert) | ~1,400ms | 1.15× | largest remaining sequential phase |
+| + #6 (PRAGMAs) | ~1,200ms | 0.98× | blocked on Macrame API |
+| + #7 (skip initial removes) | ~1,170ms | 0.96× | low risk cleanup |
 
 At parity or better, the benchmark itself becomes the bottleneck — 200 files
 is below CodeGraph's own recommended minimum for meaningful measurement.
