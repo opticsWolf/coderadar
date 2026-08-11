@@ -98,6 +98,11 @@ After editing code, use the mutation pipeline to keep the graph in sync:
 **Always plan before applying.** Dry-run plans show the diff preview without touching files.
 When ready, call apply_mutation to execute the edit and keep the graph fresh.
 
+## Keeping the graph fresh
+
+- `codegraph_update_file` — after editing a single file via Read/Edit, sync just that file
+- `codegraph_reindex` — after batch edits, full guaranteed-fresh reindex
+
 ## Anti-patterns
 
 - **Trust codegraph's results — don't re-verify them with grep.** They come from a full AST parse; re-checking with grep is slower, less accurate, and wastes context.
@@ -478,6 +483,52 @@ def create_server(graph: Any) -> MCPServer:
     ) -> str:
         """Apply a mutation plan."""
         return _apply_mutation(graph, plan_json)
+
+    # ── codegraph_reindex — full graph refresh ───────────────────────
+
+    @mcp.tool(
+        description=(
+            "Re-index the entire project to refresh the code graph. "
+            "Use after batch edits when you've changed many files and want "
+            "a guaranteed-fresh index. Slower than codegraph_update_file but "
+            "always correct. Returns index statistics."
+        ),
+        annotations={
+            "read_only_hint": False,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def codegraph_reindex(
+    ) -> str:
+        """Full reindex."""
+        return _reindex(graph)
+
+    # ── codegraph_update_file — incremental single-file sync ────────
+
+    @mcp.tool(
+        description=(
+            "Incrementally update the graph after editing a single file. "
+            "Call this after using Read/Edit to modify source code, before "
+            "the next codegraph_explore or codegraph_affected call. "
+            "Faster than codegraph_reindex — only re-parses one file. "
+            "Pass the file path and optionally the new content; if content "
+            "is omitted, the file is read from disk."
+        ),
+        annotations={
+            "read_only_hint": False,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def codegraph_update_file(
+        file_path: str,
+        content: Optional[str] = None,
+    ) -> str:
+        """Incrementally sync one file."""
+        return _update_file(graph, file_path, content)
 
     return mcp
 
@@ -1317,6 +1368,51 @@ def _format_mutation_plan(plan: Any) -> str:
     lines.append("")
     lines.append("**To apply:** call `coderadar_apply_mutation` with the plan JSON.")
     return "\n".join(lines)
+
+
+def _reindex(graph: Any) -> str:
+    """Full reindex of the project."""
+    try:
+        from coderadar._core import analyze as _analyze, graph_stats
+        import os
+        cwd = os.getcwd()
+        _analyze(cwd)
+        stats = graph_stats()
+        return (
+            f"## Reindex Complete\n\n"
+            f"- **Files:** {stats.get('file_count', 0)}\n"
+            f"- **Modules:** {stats.get('modules', 0)}\n"
+            f"- **Classes:** {stats.get('classes', 0)}\n"
+            f"- **Functions:** {stats.get('functions', 0)}\n"
+            f"- **Call edges:** {stats.get('call_edges', 0)}\n"
+        )
+    except ImportError:
+        return "CodeRadar extension not available."
+    except Exception as e:
+        return f"Reindex failed: {e}"
+
+
+def _update_file(graph: Any, file_path: str, content: str | None) -> str:
+    """Incremental single-file update."""
+    try:
+        from coderadar._core import graph_stats
+        if graph_stats().get("modules", 0) == 0:
+            return "No index available. Run codegraph_reindex first."
+    except (ImportError, RuntimeError):
+        return "CodeRadar extension not available."
+
+    if not file_path.strip():
+        return "Please provide a file path."
+
+    try:
+        graph.update_file(file_path, content)
+        return (
+            f"## File Updated\n\n"
+            f"- **File:** `{file_path}`\n"
+            f"- Graph refreshed from {'provided content' if content else 'disk'}.\n"
+        )
+    except Exception as e:
+        return f"Update failed: {e}"
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
