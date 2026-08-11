@@ -1,4 +1,4 @@
-# CodeRadar v0.5.3
+# CodeRadar v0.5.4
 
 **Live semantic graph of your codebase — incremental, queryable, LLM-writable.**
 
@@ -26,11 +26,10 @@ Head-to-head benchmarks (N=5 median, lower is better):
 
 | Codebase | Files | Lang | CodeRadar | CodeGraph 1.5.0 | Ratio |
 |----------|-------|------|-----------|-----------------|-------|
-| Synthetic (200 files) | 200 | Python | 1,096ms | 1,137ms | **0.96×** (parity) |
-| CodeRadar self | 102 | Python+Rust | 855ms | 1,434ms | **0.59×** (faster) |
-| codegraph-main | 546 | TypeScript | 19,328ms | 6,970ms | 2.77× |
+| CodeRadar self | 84 | Python+Rust | 554ms | 1,434ms | **0.39×** (faster) |
+| codegraph-main | 558 | TypeScript | 12,232ms | 6,970ms | 1.75× |
 
-CodeRadar wins on small-to-medium Python/Rust projects due to zero runtime boot overhead. On large TypeScript codebases, CodeGraph's hand-written per-language Rust walkers and flat-buffer emission are faster than the generic `.scm`-query engine. See [performance-roadmap.md](docs/performance-roadmap.md) for the optimization backlog.
+CodeRadar wins on small-to-medium Python/Rust projects due to zero runtime boot overhead. On large TypeScript codebases, CodeGraph's hand-written per-language Rust walkers and flat-buffer emission are still faster than the generic `.scm`-query engine, but the gap narrowed from 2.77× to 1.75×. See [performance-roadmap.md](docs/performance-roadmap.md) for the optimization backlog.
 
 ## Architecture
 
@@ -145,9 +144,10 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
 
-## v0.5.3 Feature Highlights
+## v0.5.4 Feature Highlights
 
-- **Parallel extraction pipeline** — 3-phase design: collect → parallel parse/tag/walk (fragment merge) → sequential projection commit. 0.96× CodeGraph on synthetic benchmarks.
+- **Single-pass cursor-driven extraction** — QueryCursor directly drives entity emission, eliminating the two-pass tag→walk pipeline. Inline fn-ref subtree scanning during function emission. **37% faster** on real-world TypeScript codebases.
+- **Parallel extraction pipeline** — 3-phase design: collect → parallel parse/tag/walk (fragment merge) → sequential projection commit.
 - **18-language query files** — per-language `.scm` queries with automated compile validation. C/C++ and TypeScript/JavaScript query files split to eliminate grammar mismatches.
 - **Query compilation caching** — `CompiledQuery` wraps pre-compiled queries + pre-indexed capture tags; compiles once per language, not per file.
 - **`grammar_kind` field** — raw tree-sitter node kind on every Class entity (e.g. `class_declaration/struct` for Swift)
