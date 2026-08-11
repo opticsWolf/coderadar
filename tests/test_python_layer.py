@@ -101,10 +101,9 @@ class TestConfigLoading:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Query Planner Tests (QueryPlanner not yet implemented — §13 deferred)
+# Query Planner Tests
 # ═══════════════════════════════════════════════════════════════════════════
 
-@pytest.mark.skip(reason="QueryPlanner class not yet implemented")
 class TestQueryPlanner:
     """Intent classification for natural-language queries."""
 

@@ -170,3 +170,28 @@ class GraphRAGPipeline:
             )
         else:
             return []
+
+
+class QueryPlanner:
+    """Natural-language query intent classifier.
+
+    Wraps plan_query with a class-based API that returns
+    (QueryIntent, params) for the GraphRAG pipeline entry point.
+
+    Usage:
+        planner = QueryPlanner()
+        intent, params = planner.classify("who calls create_user")
+        # → (QueryIntent.IMPACT_ANALYSIS, {"query_text": "...", "depth": 3})
+    """
+
+    def classify(self, query_text: str) -> tuple[QueryIntent, dict[str, Any]]:
+        """Classify a natural-language query into intent + parameters.
+
+        Args:
+            query_text: The natural language query to classify.
+
+        Returns:
+            Tuple of (QueryIntent, params dict) for routing to MacrameQuery.
+        """
+        plan = plan_query(query_text)
+        return plan.intent, plan.params
