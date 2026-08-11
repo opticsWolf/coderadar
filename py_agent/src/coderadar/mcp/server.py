@@ -80,7 +80,7 @@ more for the same answer.
 - `codegraph_affected` — transitive impact: "what calls this, all the way up?"
 - `coderadar_resolve` — framework-aware reference resolution: "what handles /users/:id?", "where is UserService?", "what model is UserModel?"
 - `codegraph_query` — structured Pest graph queries ("functions where name contains 'test'")
-- `codegraph_search_similar` — semantic/embedding search (run codegraph_compute_embeddings first)
+- `codegraph_search_similar` — semantic/embedding search across all entity types
 - `codegraph_compute_embeddings` — generate embedding vectors for semantic search
 - `codegraph_module_children` — list classes/functions/imports in a module
 - `codegraph_as_of` — query the graph at a past timestamp ("what did X look like at commit Y?")
@@ -274,9 +274,11 @@ def create_server(graph: Any) -> MCPServer:
     @mcp.tool(
         description=(
             "Find symbols semantically similar to a natural-language query. "
-            "Requires embeddings to be pre-computed (run compute_embeddings first). "
-            "Returns ranked results with cosine similarity scores. "
-            "Use for conceptual search: 'authentication logic', 'error handling', etc."
+            "Scans ALL entity types (functions, classes, modules, imports, constants, "
+            "type aliases) with stored embeddings. "
+            "Returns ranked results with cosine similarity scores and entity kind. "
+            "Use for conceptual search: 'authentication logic', 'error handling', etc. "
+            "Auto-computes embeddings on first call if none exist."
         ),
         annotations={
             "read_only_hint": True,
@@ -296,7 +298,8 @@ def create_server(graph: Any) -> MCPServer:
 
     @mcp.tool(
         description=(
-            "Compute and store embedding vectors for all functions in the index. "
+            "Compute and store embedding vectors for all entities in the index "
+            "(functions, classes, modules, imports, constants, type aliases). "
             "Uses fastembed (BAAI/bge-small-en-v1.5) for local embedding generation. "
             "This is a prerequisite for codegraph_search_similar — without embeddings, "
             "semantic search returns 'no embeddings found'. Run once after indexing. "
