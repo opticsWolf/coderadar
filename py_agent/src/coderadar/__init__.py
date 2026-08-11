@@ -107,7 +107,12 @@ class PolicyViolation(MutationError):
 # ── CodeGraph Python Wrapper ────────────────────────────────────────────────
 
 class CodeGraph:
-    """Python-facing graph handle backed by Macrame + ProjectedGraph.
+    """Python-facing graph handle backed by Macrame bitemporal ledger.
+
+    The CodeGraph class holds a handle to the in-memory ProjectedGraph
+    (built from extracted ASTs) and an optional Macrame persistent store.
+    It is NOT a reference to the CodeGraph project — it's the graph
+    data structure at the heart of the CodeRadar system.
 
     Usage:
         graph = coderadar.analyze("src/")
