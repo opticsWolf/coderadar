@@ -308,7 +308,7 @@ fn resolve_fn_ref_candidates(ctx: &mut WalkContext) {
 /// Based on CodeGraph's classifyClassNode pattern (swift.rs, kotlin.rs)
 /// Copyright (c) 2024 Colby McHenry — MIT License
 /// <https://github.com/colbymchenry/codegraph>
-fn classify_class_like(node: Node) -> &'static str {
+pub fn classify_class_like(node: Node) -> &'static str {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i as u32) {
             match child.kind() {
@@ -549,7 +549,7 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
 }
 
 /// Parse an `import_statement` node: `import os`, `import os.path as p`
-fn parse_import_statement(node: Node, source: &str) -> ImportKind {
+pub fn parse_import_statement(node: Node, source: &str) -> ImportKind {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
@@ -579,7 +579,7 @@ fn parse_import_statement(node: Node, source: &str) -> ImportKind {
 }
 
 /// Parse an `import_from_statement` node: `from foo import bar`, `from . import x`
-fn parse_import_from_statement(node: Node, source: &str) -> ImportKind {
+pub fn parse_import_from_statement(node: Node, source: &str) -> ImportKind {
     // Extract the module_name (dotted_name or relative_import)
     let module_name = node
         .child_by_field_name("module_name")
@@ -1002,7 +1002,7 @@ pub fn make_entity_id(file_path: &str, qualified_name: &str) -> String {
 /// Handles typed_parameter (x: int), default_parameter (x: int = 5),
 /// and simple identifier parameters. Extracts name, type annotation,
 /// and default value independently.
-fn extract_parameters(node: Node, source: &str) -> Vec<Parameter> {
+pub fn extract_parameters(node: Node, source: &str) -> Vec<Parameter> {
     let params_node = node.child_by_field_name("parameters");
     let mut params = Vec::new();
 

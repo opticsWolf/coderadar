@@ -1251,10 +1251,8 @@ impl CodeGraph {
             .ok_or_else(|| "Failed to parse source".to_string())?;
         let root_node = tree.root_node();
 
-        let tagged = crate::extract::tagger::tag_tree(
-            source, root_node, &compiled_query);
-        let units = crate::extract::walker::walk_and_extract(
-            &tagged, root_node, file_path);
+        let units = crate::extract::single_pass::extract_single_pass(
+            source, root_node, &compiled_query, file_path);
 
         let lang_str = format!("{:?}", language).to_lowercase();
         let concepts: Vec<macrame::ConceptUpsert> = units
@@ -1452,13 +1450,9 @@ impl CodeGraph {
             .ok_or_else(|| "Failed to parse source".to_string())?;
         let root_node = tree.root_node();
 
-        // Phase 2: Tag the tree with queries (pre-compiled)
-        let tagged = crate::extract::tagger::tag_tree(
-            source, root_node, &compiled_query);
-
-        // Phase 3: Walk and extract (needs the root node from our parse)
-        let units = crate::extract::walker::walk_and_extract(
-            &tagged, root_node, file_path);
+        // Phase 2+3: Single-pass cursor-driven extraction
+        let units = crate::extract::single_pass::extract_single_pass(
+            source, root_node, &compiled_query, file_path);
 
         // Phase 3: Insert into ProjectedGraph
         let count = units.len();
@@ -1888,10 +1882,8 @@ impl CodeGraph {
             .ok_or_else(|| "Failed to parse source".to_string())?;
         let root_node = tree.root_node();
 
-        let tagged = crate::extract::tagger::tag_tree(
-            &source, root_node, &compiled_query);
-        let units = crate::extract::walker::walk_and_extract(
-            &tagged, root_node, file_path);
+        let units = crate::extract::single_pass::extract_single_pass(
+            &source, root_node, &compiled_query, file_path);
 
         // Phase 3: Diff old vs new entities, only update what changed
         let mut projection = (*self.snapshot()).clone();
