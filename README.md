@@ -4,6 +4,22 @@
 
 CodeRadar maintains an incrementally updatable graph of your code's logical structure, enabling LLMs and developer tools to both **query** and **safely rewrite** code through a unified pipeline. Based on techniques from [CodeGraph](https://github.com/opticsWolf/codegraph) (MIT License).
 
+## Why CodeRadar
+
+CodeGraph pioneered the semantic code graph for agents — CodeRadar builds on that foundation with capabilities CodeGraph doesn't have:
+
+| Capability | CodeGraph | CodeRadar |
+|-----------|-----------|-----------|
+| **Mutate code** | ❌ Read-only | ✅ AST-aware body replacement, indent preservation, WriteGuard safety |
+| **Temporal queries** | ❌ | ✅ Macrame bitemporal DB — query the graph as it existed at any point in time |
+| **Rewrite safety** | ❌ | ✅ Dry-run mutation plans, stale-write rejection, automatic rollback on tainted updates |
+| **Semantic fallback resolution** | ❌ | ✅ L4 embedding-based resolution when structural resolution fails |
+| **Python-native embedding** | ❌ | ✅ Native Python integration for embeddings, GraphRAG, and ML pipelines |
+| **Zero runtime boot** | 1.4s Node.js startup | ✅ <50ms — Python process is already warm |
+| **LLM-driven refactoring** | ❌ | ✅ `plan_body_replacement()` — LLM proposes, CodeRadar validates, applies, and rolls back on error |
+
+**The key insight:** CodeGraph answers "what is this codebase?" — CodeRadar answers that **and** "what was it yesterday?" **and** "what would it look like if I changed X?" **and** "apply that change safely."
+
 ## Performance
 
 Head-to-head benchmarks (N=5 median, lower is better):
