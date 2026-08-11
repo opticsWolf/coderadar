@@ -100,8 +100,6 @@ class TestConfigLoading:
         assert cfg.truncated_dimension == 64
 
 
-import pytest
-
 # ═══════════════════════════════════════════════════════════════════════════
 # Query Planner Tests (QueryPlanner not yet implemented — §13 deferred)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -140,51 +138,6 @@ class TestQueryPlanner:
         """Unrecognized queries fall back to scope_exploration."""
         intent, _params = planner.classify("hello world")
         assert intent.value == "scope_exploration"
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Cypher Template Tests (templates module not yet created)
-# ═══════════════════════════════════════════════════════════════════════════
-
-@pytest.mark.skip(reason="coderadar.query.templates module not yet created")
-class TestCypherTemplates:
-    """All §7.3 Cypher templates are syntactically valid and parameterized."""
-
-    def test_all_templates_exist(self):
-        from coderadar.query.templates import CYPHER_TEMPLATES
-        expected = [
-            "scope_exploration", "impact_analysis", "call_chain",
-            "similarity_search", "dependency_graph", "definition_lookup",
-        ]
-        for key in expected:
-            assert key in CYPHER_TEMPLATES, f"Missing template: {key}"
-
-    def test_templates_not_empty(self):
-        from coderadar.query.templates import CYPHER_TEMPLATES
-        for key, template in CYPHER_TEMPLATES.items():
-            assert len(template) > 50, f"Template {key} is too short"
-
-    def test_get_template_valid(self):
-        from coderadar.query.templates import get_template
-        tmpl = get_template("impact_analysis")
-        assert "CALLS" in tmpl
-        assert "$target_id" in tmpl
-
-    def test_get_template_unknown_raises(self):
-        from coderadar.query.templates import get_template
-        with pytest.raises(ValueError, match="Unknown template"):
-            get_template("nonexistent")
-
-    def test_all_templates_contain_return_clause(self):
-        from coderadar.query.templates import CYPHER_TEMPLATES
-        for key, template in CYPHER_TEMPLATES.items():
-            assert "RETURN" in template, \
-                f"Template {key} missing RETURN clause"
-
-    def test_vector_search_templates_use_hnsw(self):
-        from coderadar.query.templates import CYPHER_TEMPLATES
-        assert "db_similarity_search" in CYPHER_TEMPLATES["similarity_search"]
-        assert "db_similarity_search" in CYPHER_TEMPLATES["scope_exploration"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
