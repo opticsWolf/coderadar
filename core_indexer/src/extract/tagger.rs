@@ -118,6 +118,19 @@ pub fn get_query_for_language_src(language: Language) -> &'static str {
         Language::Graphql => include_str!("../../queries/graphql.scm"),
         Language::Erlang => include_str!("../../queries/erlang.scm"),
         Language::Haskell => include_str!("../../queries/haskell.scm"),
+        Language::Nix => include_str!("../../queries/nix.scm"),
+        Language::Shell => include_str!("../../queries/shell.scm"),
+        Language::Groovy => include_str!("../../queries/groovy.scm"),
+        Language::Perl => include_str!("../../queries/perl.scm"),
+        Language::SystemVerilog => include_str!("../../queries/systemverilog.scm"),
+        Language::Ocaml => include_str!("../../queries/ocaml.scm"),
+        Language::Clojure => include_str!("../../queries/clojure.scm"),
+        Language::Fsharp => include_str!("../../queries/fsharp.scm"),
+        Language::Verilog => include_str!("../../queries/verilog.scm"),
+        Language::Julia => include_str!("../../queries/julia.scm"),
+        Language::Powershell => include_str!("../../queries/powershell.scm"),
+        Language::EmacsLisp => include_str!("../../queries/elisp.scm"),
+        Language::Objc => include_str!("../../queries/objc.scm"),
         Language::OtherTen => r#"(identifier) @id"#, // fallback
     }
 }

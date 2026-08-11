@@ -1,4 +1,4 @@
-# CodeRadar v0.5.7
+# CodeRadar v0.5.8
 
 **Live semantic graph of your codebase — incremental, queryable, LLM-writable.**
 
@@ -46,7 +46,7 @@ Rust Core (ProjectedGraph, Tree-sitter 18-lang, Parallel Extraction,
 
 | Metric | Value |
 |--------|-------|
-| **Languages indexed** | 28 (12 Tier 1, 16 Tier 2, 280+ Tier 3) |
+| **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
 | **Tests** | 476 (163 Rust + 313 Python) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
@@ -115,7 +115,7 @@ past = graph.as_of("2026-08-01T00:00:00Z")
 | Tier | Languages | Resolution | Mutation |
 |------|-----------|------------|----------|
 | **Tier 1** | Python, TypeScript, JavaScript, Rust, Go, Java, C, C++, Ruby, PHP, C#, Kotlin | Import → Signature → Framework | Full tool suite |
-| **Tier 2** | Swift, Scala, Lua, Elixir, Zig, R, Bash, Dart, Protobuf, Dockerfile, SQL, HCL, CMake, GraphQL, Erlang, Haskell | Import → Signature | replace_body, create_entity |
+| **Tier 2** | Swift, Scala, Lua, Elixir, Zig, R, Bash, Dart, Protobuf, Dockerfile, SQL, HCL, CMake, GraphQL, Erlang, Haskell, **Nix, Shell, Groovy, Perl, SystemVerilog, OCaml, Clojure, F#, Verilog, Julia, PowerShell, Emacs Lisp, Objective-C** | Import → Signature | replace_body, create_entity |
 | **Tier 3** | Shell, SQL, HTML, CSS, YAML, TOML, JSON, Markdown + 280 more | Signature Match only | replace_body, create_entity |
 
 ## Resolution Cascade

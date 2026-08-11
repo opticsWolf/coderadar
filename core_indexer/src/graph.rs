@@ -3495,6 +3495,19 @@ mod tests {
             (Language::Graphql, "graphql"),
             (Language::Erlang, "erlang"),
             (Language::Haskell, "haskell"),
+            (Language::Nix, "nix"),
+            (Language::Shell, "bash"),
+            (Language::Groovy, "groovy"),
+            (Language::Perl, "perl"),
+            (Language::SystemVerilog, "systemverilog"),
+            (Language::Ocaml, "ocaml"),
+            (Language::Clojure, "clojure"),
+            (Language::Fsharp, "fsharp"),
+            (Language::Verilog, "verilog"),
+            (Language::Julia, "julia"),
+            (Language::Powershell, "powershell"),
+            (Language::EmacsLisp, "elisp"),
+            (Language::Objc, "objc"),
         ];
 
         let mut failures = 0;

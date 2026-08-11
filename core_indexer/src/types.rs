@@ -127,6 +127,20 @@ pub enum Language {
     Graphql,
     Erlang,
     Haskell,
+    // Batch 3 (13 languages from tree-sitter-language-pack 1.14)
+    Nix,
+    Shell,
+    Groovy,
+    Perl,
+    SystemVerilog,
+    Ocaml,
+    Clojure,
+    Fsharp,
+    Verilog,
+    Julia,
+    Powershell,
+    EmacsLisp,
+    Objc,
     OtherTen,
 }
 
@@ -139,6 +153,7 @@ impl Language {
         match name.to_lowercase().as_str() {
             "dockerfile" => Language::Dockerfile,
             "cmakefile" => Language::Cmake,
+            ".bashrc" | ".zshrc" | ".profile" => Language::Shell,
             _ => Language::OtherTen,
         }
     }
@@ -174,6 +189,20 @@ impl Language {
             "graphql" | "gql" => Language::Graphql,
             "erl" | "hrl" => Language::Erlang,
             "hs" | "lhs" => Language::Haskell,
+            // Batch 3
+            "nix" => Language::Nix,
+            "sh" | "bash" | "zsh" => Language::Shell,
+            "groovy" | "gvy" => Language::Groovy,
+            "pl" | "pm" => Language::Perl,
+            "sv" | "svh" => Language::SystemVerilog,
+            "ml" | "mli" => Language::Ocaml,
+            "clj" | "cljs" | "cljc" | "edn" => Language::Clojure,
+            "fs" | "fsi" | "fsx" => Language::Fsharp,
+            "v" | "vh" => Language::Verilog,
+            "jl" => Language::Julia,
+            "ps1" | "psm1" | "psd1" => Language::Powershell,
+            "el" => Language::EmacsLisp,
+            "m" | "mm" => Language::Objc,
             _ => Language::OtherTen,
         }
     }
@@ -209,6 +238,19 @@ impl Language {
             Language::Graphql => "graphql",
             Language::Erlang => "erlang",
             Language::Haskell => "haskell",
+            Language::Nix => "nix",
+            Language::Shell => "bash",
+            Language::Groovy => "groovy",
+            Language::Perl => "perl",
+            Language::SystemVerilog => "systemverilog",
+            Language::Ocaml => "ocaml",
+            Language::Clojure => "clojure",
+            Language::Fsharp => "fsharp",
+            Language::Verilog => "verilog",
+            Language::Julia => "julia",
+            Language::Powershell => "powershell",
+            Language::EmacsLisp => "elisp",
+            Language::Objc => "objc",
             Language::OtherTen => "",
         }
     }
@@ -243,6 +285,19 @@ impl Language {
             | Language::Graphql
             | Language::Erlang
             | Language::Haskell => 2,
+            Language::Nix
+            | Language::Shell
+            | Language::Groovy
+            | Language::Perl
+            | Language::SystemVerilog
+            | Language::Ocaml
+            | Language::Clojure
+            | Language::Fsharp
+            | Language::Verilog
+            | Language::Julia
+            | Language::Powershell
+            | Language::EmacsLisp
+            | Language::Objc => 2,
             Language::OtherTen => 3,
         }
     }
@@ -277,6 +332,19 @@ impl Language {
             Language::Graphql => "tree-sitter-graphql",
             Language::Erlang => "tree-sitter-erlang",
             Language::Haskell => "tree-sitter-haskell",
+            Language::Nix => "tree-sitter-nix",
+            Language::Shell => "tree-sitter-bash",
+            Language::Groovy => "tree-sitter-groovy",
+            Language::Perl => "tree-sitter-perl",
+            Language::SystemVerilog => "tree-sitter-systemverilog",
+            Language::Ocaml => "tree-sitter-ocaml",
+            Language::Clojure => "tree-sitter-clojure",
+            Language::Fsharp => "tree-sitter-fsharp",
+            Language::Verilog => "tree-sitter-verilog",
+            Language::Julia => "tree-sitter-julia",
+            Language::Powershell => "tree-sitter-powershell",
+            Language::EmacsLisp => "tree-sitter-elisp",
+            Language::Objc => "tree-sitter-objc",
             Language::OtherTen => "",
         }
     }
@@ -311,6 +379,19 @@ impl Language {
             Language::Graphql => "graphql",
             Language::Erlang => "erlang",
             Language::Haskell => "haskell",
+            Language::Nix => "nix",
+            Language::Shell => "shell",
+            Language::Groovy => "groovy",
+            Language::Perl => "perl",
+            Language::SystemVerilog => "systemverilog",
+            Language::Ocaml => "ocaml",
+            Language::Clojure => "clojure",
+            Language::Fsharp => "fsharp",
+            Language::Verilog => "verilog",
+            Language::Julia => "julia",
+            Language::Powershell => "powershell",
+            Language::EmacsLisp => "emacs-lisp",
+            Language::Objc => "objc",
             Language::OtherTen => "other",
         }
     }
