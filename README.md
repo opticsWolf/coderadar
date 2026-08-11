@@ -56,7 +56,7 @@ Rust Core (ProjectedGraph, Tree-sitter 18-lang, Parallel Extraction,
 ## Quick Start
 
 ```bash
-pip install coderadar
+pip install coderadar-rs
 
 # Initial analysis (includes framework detection)
 coderadar init src/

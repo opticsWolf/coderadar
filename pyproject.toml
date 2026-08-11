@@ -3,7 +3,7 @@ requires = ["maturin>=1.4,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "coderadar"
+name = "coderadar-rs"
 version = "0.5.3"
 description = "Live semantic graph of your codebase — incremental, queryable, LLM-writable"
 
