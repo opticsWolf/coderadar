@@ -80,7 +80,8 @@ more for the same answer.
 - `codegraph_affected` — transitive impact: "what calls this, all the way up?"
 - `coderadar_resolve` — framework-aware reference resolution: "what handles /users/:id?", "where is UserService?", "what model is UserModel?"
 - `codegraph_query` — structured Pest graph queries ("functions where name contains 'test'")
-- `codegraph_search_similar` — semantic/embedding search (requires compute_embeddings first)
+- `codegraph_search_similar` — semantic/embedding search (run codegraph_compute_embeddings first)
+- `codegraph_compute_embeddings` — generate embedding vectors for semantic search
 - `codegraph_module_children` — list classes/functions/imports in a module
 - `codegraph_as_of` — query the graph at a past timestamp ("what did X look like at commit Y?")
 - `codegraph_traverse` — generic edge traversal with direction and depth control
@@ -290,6 +291,29 @@ def create_server(graph: Any) -> MCPServer:
     ) -> str:
         """Semantic similarity search."""
         return _search_similar(graph, query, top_k)
+
+    # ── codegraph_compute_embeddings — generate embedding vectors ────
+
+    @mcp.tool(
+        description=(
+            "Compute and store embedding vectors for all functions in the index. "
+            "Uses fastembed (BAAI/bge-small-en-v1.5) for local embedding generation. "
+            "This is a prerequisite for codegraph_search_similar — without embeddings, "
+            "semantic search returns 'no embeddings found'. Run once after indexing. "
+            "Subsequent runs skip unchanged functions via content hash dedup. "
+            "Returns: {generated, cached, total, errors}."
+        ),
+        annotations={
+            "read_only_hint": False,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def codegraph_compute_embeddings(
+    ) -> str:
+        """Compute embeddings for semantic search."""
+        return _compute_embeddings(graph)
 
     # ── codegraph_module_children — structural discovery ─────────────
 
@@ -1062,6 +1086,29 @@ def _query_graph(graph: Any, query: str) -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Query failed: {e}"
+
+
+def _compute_embeddings(graph: Any) -> str:
+    """Compute embeddings for all functions."""
+    try:
+        from coderadar._core import graph_stats
+        if graph_stats().get("modules", 0) == 0:
+            return "No index available. Run codegraph_reindex first."
+    except (ImportError, RuntimeError):
+        return "CodeRadar extension not available."
+
+    try:
+        metrics = graph.compute_embeddings()
+        return (
+            f"## Embeddings Complete\n\n"
+            f"- **Generated:** {metrics.get('generated', 0)}\n"
+            f"- **Cached (unchanged):** {metrics.get('cached', 0)}\n"
+            f"- **Total functions:** {metrics.get('total', 0)}\n"
+            f"- **Errors:** {metrics.get('errors', 0)}\n\n"
+            f"Semantic search (codegraph_search_similar) is now available."
+        )
+    except Exception as e:
+        return f"Embedding generation failed: {e}\n\nEnsure fastembed is installed: pip install fastembed"
 
 
 def _search_similar(graph: Any, query: str, top_k: int) -> str:

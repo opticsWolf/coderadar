@@ -1170,6 +1170,24 @@ impl CodeGraph {
         Ok(())
     }
 
+    /// Store an embedding vector on a function entity.
+    /// Updates the in-memory Function.embedding field and commits the projection.
+    pub fn set_embedding(
+        &self,
+        entity_id: &str,
+        embedding: &[f64],
+    ) -> Result<(), String> {
+        let mut projection = (*self.snapshot()).clone();
+        if let Some(func) = projection.functions.get_mut(entity_id) {
+            let func_mut = std::sync::Arc::make_mut(func);
+            func_mut.embedding = embedding.to_vec();
+        } else {
+            return Err(format!("Entity not found: {}", entity_id));
+        }
+        self.commit_projection(projection);
+        Ok(())
+    }
+
     /// v0.5: Set a module's `__all__` star-export names list.
     /// Called from Python after static `__all__` analysis (exports.py).
     /// Enables resolution of `from X import *` wildcard imports.

@@ -55,6 +55,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
+    m.add_function(wrap_pyfunction!(set_embedding, m)?)?;
     m.add_function(wrap_pyfunction!(module_children, m)?)?;
     m.add_function(wrap_pyfunction!(set_module_star_exports, m)?)?;
     m.add_function(wrap_pyfunction!(start_watcher, m)?)?;
@@ -1055,6 +1056,28 @@ fn register_synthetic_edge(
             "No graph loaded — run coderadar analyze first"
         ))?;
     graph.register_synthetic_edge(source_id, target_id, kind)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+    let py = unsafe { Python::assume_gil_acquired() };
+    let dict = PyDict::new(py);
+    dict.set_item("ok", true)?;
+    Ok(dict.into())
+}
+
+/// Store an embedding vector on a function entity in the projected graph.
+///
+/// Called from Python's compute_embeddings() pipeline. The embedding is
+/// written directly into the in-memory Function.embedding field, making it
+/// immediately available for search_similar() queries.
+#[pyfunction]
+fn set_embedding(
+    entity_id: &str, embedding: Vec<f64>,
+) -> PyResult<PyObject> {
+    let mut guard = GLOBAL_GRAPH.write();
+    let graph = guard.as_mut()
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
+            "No graph loaded — run coderadar analyze first"
+        ))?;
+    graph.set_embedding(entity_id, &embedding)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);

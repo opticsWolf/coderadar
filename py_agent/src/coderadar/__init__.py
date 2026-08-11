@@ -315,7 +315,8 @@ class CodeGraph:
         """Compute and store embeddings for all indexable entities.
 
         Uses fastembed for local embedding generation. Embeddings are
-        stored in the Function.embedding field and persisted via Macrame.
+        written into the in-memory Function.embedding field, making them
+        immediately available for search_similar() queries.
 
         Args:
             model_name: HuggingFace model name for fastembed.
@@ -349,15 +350,20 @@ class CodeGraph:
 
         results = dedup.embed_batch(targets, db=None)
         generated = 0
+        cached = 0
+        errors = 0
         for target, vec in zip(targets, results):
-            if vec is not None:
-                try:
-                    from coderadar._core import lookup_entity
-                    # Use mutation to attach embedding to entity
-                    # For now, embeddings stored in-memory via ProjectedGraph
-                    generated += 1
-                except ImportError:
-                    break
+            if vec is None:
+                cached += 1  # dedup cache hit — already has embedding
+                continue
+            try:
+                from coderadar._core import set_embedding
+                set_embedding(target.entity_id, list(vec))
+                generated += 1
+            except (ImportError, RuntimeError) as e:
+                errors += 1
+
+        return {"generated": generated, "cached": cached, "total": len(targets), "errors": errors}
 
         return {
             "generated": generated,
