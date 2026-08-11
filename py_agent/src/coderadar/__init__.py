@@ -332,19 +332,21 @@ class CodeGraph:
 
         try:
             from coderadar._core import search_entities
-            functions = search_entities("", 10_000, "function")
-            for func in functions:
-                func_id = func.get("id", "")
-                if not func_id:
-                    continue
-                body = func.get("signature", "") or func.get("name", "")
-                content_hash = compute_content_hash(body.encode())
-                targets.append(EmbedTarget(
-                    entity_id=func_id,
-                    body=body,
-                    content_hash=content_hash,
-                    kind="function",
-                ))
+            # Collect all embeddable entities across all kinds
+            for kind in ("function", "class", "module", "import", "constant", "type_alias"):
+                entities = search_entities("", 10_000, kind)
+                for entity in entities:
+                    entity_id = entity.get("id", "")
+                    if not entity_id:
+                        continue
+                    body = entity.get("signature", "") or entity.get("name", "") or ""
+                    content_hash = compute_content_hash(body.encode())
+                    targets.append(EmbedTarget(
+                        entity_id=entity_id,
+                        body=body,
+                        content_hash=content_hash,
+                        kind=kind,
+                    ))
         except ImportError:
             return {"generated": 0, "cached": 0, "total": 0, "errors": 1}
 
