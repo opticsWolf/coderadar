@@ -116,10 +116,33 @@ pub enum Language {
     Elixir,
     Zig,
     R,
+    // Tier 2 added: top-10 high-value languages
+    Bash,
+    Dart,
+    Protobuf,
+    Dockerfile,
+    Sql,
+    Hcl,
+    Cmake,
+    Graphql,
+    Erlang,
+    Haskell,
     OtherTen,
 }
 
 impl Language {
+    pub fn from_filename(path: &str) -> Language {
+        let name = std::path::Path::new(path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        match name.to_lowercase().as_str() {
+            "dockerfile" => Language::Dockerfile,
+            "cmakefile" => Language::Cmake,
+            _ => Language::OtherTen,
+        }
+    }
+
     pub fn from_extension(ext: &str) -> Language {
         match ext {
             "py" | "pyi" => Language::Python,
@@ -140,6 +163,17 @@ impl Language {
             "ex" | "exs" => Language::Elixir,
             "zig" | "zon" => Language::Zig,
             "r" | "R" => Language::R,
+            // Tier 2 added
+            "sh" | "bash" => Language::Bash,
+            "dart" => Language::Dart,
+            "proto" => Language::Protobuf,
+            "dockerfile" => Language::Dockerfile,
+            "sql" => Language::Sql,
+            "hcl" | "tf" | ".tfvars" => Language::Hcl,
+            "cmake" => Language::Cmake,
+            "graphql" | "gql" => Language::Graphql,
+            "erl" | "hrl" => Language::Erlang,
+            "hs" | "lhs" => Language::Haskell,
             _ => Language::OtherTen,
         }
     }
@@ -165,6 +199,16 @@ impl Language {
             Language::Elixir => "elixir",
             Language::Zig => "zig",
             Language::R => "r",
+            Language::Bash => "bash",
+            Language::Dart => "dart",
+            Language::Protobuf => "proto",
+            Language::Dockerfile => "dockerfile",
+            Language::Sql => "sql",
+            Language::Hcl => "hcl",
+            Language::Cmake => "cmake",
+            Language::Graphql => "graphql",
+            Language::Erlang => "erlang",
+            Language::Haskell => "haskell",
             Language::OtherTen => "",
         }
     }
@@ -188,7 +232,17 @@ impl Language {
             | Language::Lua
             | Language::Elixir
             | Language::Zig
-            | Language::R => 2,
+            | Language::R
+            | Language::Bash
+            | Language::Dart
+            | Language::Protobuf
+            | Language::Dockerfile
+            | Language::Sql
+            | Language::Hcl
+            | Language::Cmake
+            | Language::Graphql
+            | Language::Erlang
+            | Language::Haskell => 2,
             Language::OtherTen => 3,
         }
     }
@@ -213,6 +267,16 @@ impl Language {
             Language::Elixir => "tree-sitter-elixir",
             Language::Zig => "tree-sitter-zig",
             Language::R => "tree-sitter-r",
+            Language::Bash => "tree-sitter-bash",
+            Language::Dart => "tree-sitter-dart",
+            Language::Protobuf => "tree-sitter-proto",
+            Language::Dockerfile => "tree-sitter-dockerfile",
+            Language::Sql => "tree-sitter-sql",
+            Language::Hcl => "tree-sitter-hcl",
+            Language::Cmake => "tree-sitter-cmake",
+            Language::Graphql => "tree-sitter-graphql",
+            Language::Erlang => "tree-sitter-erlang",
+            Language::Haskell => "tree-sitter-haskell",
             Language::OtherTen => "",
         }
     }
@@ -237,6 +301,16 @@ impl Language {
             Language::Elixir => "elixir",
             Language::Zig => "zig",
             Language::R => "r",
+            Language::Bash => "bash",
+            Language::Dart => "dart",
+            Language::Protobuf => "protobuf",
+            Language::Dockerfile => "dockerfile",
+            Language::Sql => "sql",
+            Language::Hcl => "hcl",
+            Language::Cmake => "cmake",
+            Language::Graphql => "graphql",
+            Language::Erlang => "erlang",
+            Language::Haskell => "haskell",
             Language::OtherTen => "other",
         }
     }

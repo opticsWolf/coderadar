@@ -3485,6 +3485,16 @@ mod tests {
             (Language::Elixir, "elixir"),
             (Language::Zig, "zig"),
             (Language::R, "r"),
+            (Language::Bash, "bash"),
+            (Language::Dart, "dart"),
+            (Language::Protobuf, "protobuf"),
+            (Language::Dockerfile, "dockerfile"),
+            (Language::Sql, "sql"),
+            (Language::Hcl, "hcl"),
+            (Language::Cmake, "cmake"),
+            (Language::Graphql, "graphql"),
+            (Language::Erlang, "erlang"),
+            (Language::Haskell, "haskell"),
         ];
 
         let mut failures = 0;

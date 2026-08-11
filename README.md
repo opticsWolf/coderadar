@@ -46,7 +46,7 @@ Rust Core (ProjectedGraph, Tree-sitter 18-lang, Parallel Extraction,
 
 | Metric | Value |
 |--------|-------|
-| **Languages indexed** | 18 (12 Tier 1 full, 6 Tier 2) |
+| **Languages indexed** | 28 (12 Tier 1, 16 Tier 2, 280+ Tier 3) |
 | **Tests** | 451 (163 Rust + 288 Python) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET |
@@ -115,7 +115,7 @@ past = graph.as_of("2026-08-01T00:00:00Z")
 | Tier | Languages | Resolution | Mutation |
 |------|-----------|------------|----------|
 | **Tier 1** | Python, TypeScript, JavaScript, Rust, Go, Java, C, C++, Ruby, PHP, C#, Kotlin | Import → Signature → Framework | Full tool suite |
-| **Tier 2** | Swift, Scala, Lua, Elixir, Zig, R | Import → Signature | replace_body, create_entity |
+| **Tier 2** | Swift, Scala, Lua, Elixir, Zig, R, Bash, Dart, Protobuf, Dockerfile, SQL, HCL, CMake, GraphQL, Erlang, Haskell | Import → Signature | replace_body, create_entity |
 | **Tier 3** | Shell, SQL, HTML, CSS, YAML, TOML, JSON, Markdown + 280 more | Signature Match only | replace_body, create_entity |
 
 ## Resolution Cascade
@@ -151,6 +151,7 @@ Framework edges are registered in the Rust graph — agents can trace from URL p
 ## v0.5.6 Feature Highlights
 
 - **9 framework resolvers** — Django, Flask, FastAPI, Go, Actix, **Express**, **Spring Boot**, **Laravel**, **ASP.NET** — detect route registrations and synthesize handler edges across 6 languages
+- **10 new languages** — Bash, Dart, Protobuf, Dockerfile, SQL, HCL, CMake, GraphQL, Erlang, Haskell (Tier 2, 28 languages total)
 - **QueryPlanner** — natural-language intent classifier routing to MacrameQuery primitives (callers_of, traverse, search_similar, find)
 - **451 tests, 0 failures** — 163 Rust + 288 Python, full E2E coverage
 

@@ -352,7 +352,12 @@ fn analyze(root: &str) -> PyResult<PyObject> {
                     }
                     let path = entry.path();
                     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                        let language = Language::from_extension(ext);
+                        let mut language = Language::from_extension(ext);
+                        // Fallback: filename-based detection (Dockerfile, CMake)
+                        if language == Language::OtherTen {
+                            language = Language::from_filename(
+                                &path.to_string_lossy());
+                        }
                         if language == Language::OtherTen {
                             continue;
                         }
@@ -365,6 +370,21 @@ fn analyze(root: &str) -> PyResult<PyObject> {
                                 source,
                                 language,
                             });
+                        }
+                    } else {
+                        // Files without extension (Dockerfile, CMakeLists.txt)
+                        let language = Language::from_filename(
+                            &path.to_string_lossy());
+                        if language != Language::OtherTen
+                            && CodeGraph::ts_language(&language).is_some()
+                        {
+                            if let Ok(source) = fs::read_to_string(path) {
+                                tasks.push(FileTask {
+                                    path: path.to_string_lossy().to_string(),
+                                    source,
+                                    language,
+                                });
+                            }
                         }
                     }
                 }

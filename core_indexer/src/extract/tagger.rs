@@ -108,6 +108,16 @@ pub fn get_query_for_language_src(language: Language) -> &'static str {
         Language::Elixir => include_str!("../../queries/elixir.scm"),
         Language::Zig => include_str!("../../queries/zig.scm"),
         Language::R => include_str!("../../queries/r.scm"),
+        Language::Bash => include_str!("../../queries/bash.scm"),
+        Language::Dart => include_str!("../../queries/dart.scm"),
+        Language::Protobuf => include_str!("../../queries/protobuf.scm"),
+        Language::Dockerfile => include_str!("../../queries/dockerfile.scm"),
+        Language::Sql => include_str!("../../queries/sql.scm"),
+        Language::Hcl => include_str!("../../queries/hcl.scm"),
+        Language::Cmake => include_str!("../../queries/cmake.scm"),
+        Language::Graphql => include_str!("../../queries/graphql.scm"),
+        Language::Erlang => include_str!("../../queries/erlang.scm"),
+        Language::Haskell => include_str!("../../queries/haskell.scm"),
         Language::OtherTen => r#"(identifier) @id"#, // fallback
     }
 }
