@@ -15,6 +15,7 @@ from .fastapi import FastAPIResolver
 from .go import GoResolver
 from .actix import RustActixResolver
 from .express import ExpressResolver
+from .springboot import SpringBootResolver
 
 # Registry of all available resolvers
 ALL_RESOLVERS: list[type[FrameworkResolver]] = [
@@ -24,6 +25,7 @@ ALL_RESOLVERS: list[type[FrameworkResolver]] = [
     GoResolver,
     RustActixResolver,
     ExpressResolver,
+    SpringBootResolver,
 ]
 
 __all__ = [
@@ -37,5 +39,6 @@ __all__ = [
     "GoResolver",
     "RustActixResolver",
     "ExpressResolver",
+    "SpringBootResolver",
     "ALL_RESOLVERS",
 ]
