@@ -536,10 +536,13 @@ def serve(project_path: str):
     import coderadar
     from .mcp import serve as mcp_serve
 
-    graph = coderadar.CodeGraph()
-    print(f"CodeRadar MCP server starting for {project_path}...", file=sys.stderr)
-    print("Exposing 5 tools: explore, node, search, affected, resolve", file=sys.stderr)
-    mcp_serve(graph)  # blocking stdio loop
+    # Load the code graph from the existing Macrame store.
+    # analyze() attaches the store to GLOBAL_GRAPH, which the Rust
+    # extension functions (graph_stats, query_graph, etc.) read from.
+    print(f"Loading CodeRadar graph from {project_path}...", file=sys.stderr)
+    coderadar.analyze(project_path)
+    print("MCP server ready — 5 tools: explore, node, search, affected, resolve", file=sys.stderr)
+    mcp_serve(coderadar.CodeGraph())
 
 
 @main.command()
