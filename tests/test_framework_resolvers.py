@@ -788,3 +788,140 @@ public class PingController {
         assert result.nodes == []
         assert result.edges == []
 
+
+class TestLaravelResolver:
+    """Laravel Route:: facade route extraction for PHP."""
+
+    def test_detects_composer_json_with_laravel(self, tmp_path):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        (tmp_path / "composer.json").write_text(
+            '{"require": {"laravel/framework": "^10.0"}}'
+        )
+        assert resolver.detect(tmp_path)
+
+    def test_detects_by_route_grep(self, tmp_path):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        (tmp_path / "web.php").write_text(
+            '<?php Route::get(\'/users\', [UserController::class, \'index\']);'
+        )
+        assert resolver.detect(tmp_path)
+
+    def test_no_detect_without_laravel(self, tmp_path):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        assert not resolver.detect(tmp_path)
+
+    def test_extracts_crud_routes(self):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        source = """\
+<?php
+Route::get('/users', [UserController::class, 'index']);
+Route::post('/users', [UserController::class, 'store']);
+Route::put('/users/{id}', [UserController::class, 'update']);
+Route::delete('/users/{id}', [UserController::class, 'destroy']);
+"""
+        result = resolver.extract("web.php", source)
+        assert len(result.nodes) == 4
+        methods = {n.metadata["method"] for n in result.nodes}
+        assert methods == {"GET", "POST", "PUT", "DELETE"}
+        handler_names = {e.target_id for e in result.edges}
+        assert "UserController.index" in handler_names
+        assert "UserController.store" in handler_names
+
+    def test_extracts_controller_string_syntax(self):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        source = "Route::post('/login', 'AuthController@login');"
+        result = resolver.extract("web.php", source)
+        assert len(result.nodes) == 1
+        assert len(result.edges) == 1
+        assert result.edges[0].target_id == "AuthController.login"
+
+    def test_extracts_resource_routes(self):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        source = "Route::resource('products', ProductController::class);"
+        result = resolver.extract("web.php", source)
+        assert len(result.nodes) == 5  # index, show, store, update, destroy
+        methods = {n.metadata["method"] for n in result.nodes}
+        assert "GET" in methods
+        assert "POST" in methods
+        assert "PUT" in methods
+        assert "DELETE" in methods
+
+    def test_extracts_group_prefix(self):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        source = """\
+Route::group(['prefix' => 'admin'], function () {
+    Route::get('/dashboard', [AdminController::class, 'index']);
+    Route::get('/settings', [AdminController::class, 'settings']);
+});
+"""
+        result = resolver.extract("web.php", source)
+        assert len(result.nodes) == 2
+        paths = {n.metadata["path"] for n in result.nodes}
+        assert "admin/dashboard" in paths
+        assert "admin/settings" in paths
+
+    def test_extracts_uses_array_syntax(self):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        source = (
+            "Route::get('/profile', "
+            "['uses' => 'ProfileController@show', 'as' => 'profile']);"
+        )
+        result = resolver.extract("web.php", source)
+        assert len(result.nodes) == 1
+        assert len(result.edges) == 1
+        assert result.edges[0].target_id == "ProfileController.show"
+
+    def test_route_any(self):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        source = "Route::any('/health', 'HealthController@check');"
+        result = resolver.extract("web.php", source)
+        assert len(result.nodes) == 1
+        assert result.nodes[0].metadata["method"] == "ANY"
+
+    def test_fixture_extracts_all(self):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        fixture = (
+            Path(__file__).parent
+            / "fixtures" / "php" / "laravel_routes.php"
+        ).read_text()
+        result = resolver.extract("web.php", fixture)
+        # 11 Route::method + 5 resource routes = 16 nodes
+        assert len(result.nodes) >= 14, f"Got {len(result.nodes)} nodes"
+        assert len(result.edges) >= 14, f"Got {len(result.edges)} edges"
+
+    def test_claims_reference_patterns(self):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        assert resolver.claims_reference("UserController")
+        assert resolver.claims_reference("OrderService")
+        assert resolver.claims_reference("AuthMiddleware")
+        assert resolver.claims_reference("RouteServiceProvider")
+        assert not resolver.claims_reference("calculateTax")
+
+    def test_resolve_prefers_controller_dirs(self):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        result = resolver.resolve("UserController", [{
+            "id": "x", "name": "UserController", "kind": "class",
+            "file_path": "/app/Http/Controllers/UserController.php",
+        }])
+        assert result is not None
+        assert result["confidence"] == 0.85
+
+    def test_skips_non_php_files(self):
+        from coderadar.resolvers.laravel import LaravelResolver
+        resolver = LaravelResolver()
+        result = resolver.extract("routes.py", "Route::get('/users', handler)")
+        assert result.nodes == []
+        assert result.edges == []
+

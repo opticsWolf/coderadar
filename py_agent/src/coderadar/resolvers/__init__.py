@@ -16,6 +16,7 @@ from .go import GoResolver
 from .actix import RustActixResolver
 from .express import ExpressResolver
 from .springboot import SpringBootResolver
+from .laravel import LaravelResolver
 
 # Registry of all available resolvers
 ALL_RESOLVERS: list[type[FrameworkResolver]] = [
@@ -26,6 +27,7 @@ ALL_RESOLVERS: list[type[FrameworkResolver]] = [
     RustActixResolver,
     ExpressResolver,
     SpringBootResolver,
+    LaravelResolver,
 ]
 
 __all__ = [
@@ -40,5 +42,6 @@ __all__ = [
     "RustActixResolver",
     "ExpressResolver",
     "SpringBootResolver",
+    "LaravelResolver",
     "ALL_RESOLVERS",
 ]
