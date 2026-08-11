@@ -332,7 +332,7 @@ class CodeGraph:
 
         try:
             from coderadar._core import search_entities
-            functions = search_entities("kind", "function")
+            functions = search_entities("", 10_000, "function")
             for func in functions:
                 func_id = func.get("id", "")
                 if not func_id:
