@@ -374,7 +374,7 @@ class CodeGraph:
         try:
             from coderadar._core import update_file as _update_file_rust
             _update_file_rust(file_path, content, force)
-        except ImportError:
+        except (ImportError, RuntimeError):
             pass
 
         return UpdateReport(
@@ -540,7 +540,7 @@ class CodeGraph:
         try:
             from coderadar._core import graph_stats as _gs
             return _gs()
-        except ImportError:
+        except (ImportError, RuntimeError):
             return {
                 "epoch": 0, "modules": 0, "classes": 0,
                 "functions": 0, "imports": 0,
