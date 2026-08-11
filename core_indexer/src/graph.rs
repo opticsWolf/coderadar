@@ -2689,6 +2689,83 @@ mod tests {
     }
 
     #[test]
+    fn test_set_embedding_stores_vector() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def add(a, b): return a + b\ndef sub(a, b): return a - b\n", "math.py");
+
+        // Set embedding on add
+        let vec = vec![0.1, 0.2, 0.3, 0.4];
+        graph.set_embedding("math.py::add", &vec).expect("set_embedding should succeed");
+
+        let snap = graph.snapshot();
+        let add = snap.functions.get("math.py::add").unwrap();
+        assert_eq!(add.embedding, vec);
+
+        // sub should still have empty embedding
+        let sub = snap.functions.get("math.py::sub").unwrap();
+        assert!(sub.embedding.is_empty());
+    }
+
+    #[test]
+    fn test_set_embedding_entity_not_found() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def add(a, b): return a + b\n", "math.py");
+
+        let result = graph.set_embedding("math.py::no_such_function", &[0.1, 0.2]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Entity not found"));
+    }
+
+    #[test]
+    fn test_set_embedding_overwrites_existing() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def add(a, b): return a + b\n", "math.py");
+
+        // First embedding
+        graph.set_embedding("math.py::add", &[0.1]).unwrap();
+        // Overwrite with different vector
+        graph.set_embedding("math.py::add", &[0.9, 0.8, 0.7]).unwrap();
+
+        let snap = graph.snapshot();
+        let add = snap.functions.get("math.py::add").unwrap();
+        assert_eq!(add.embedding, vec![0.9, 0.8, 0.7]);
+    }
+
+    #[test]
+    fn test_search_similar_after_set_embedding() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "def auth_login(): pass\ndef render_html(): pass\ndef calc_tax(): pass\n",
+            "mod.py");
+
+        // Embed functions with contrasting vectors
+        graph.set_embedding("mod.py::auth_login", &[1.0, 0.0, 0.0]).unwrap();
+        graph.set_embedding("mod.py::render_html", &[0.0, 1.0, 0.0]).unwrap();
+        graph.set_embedding("mod.py::calc_tax", &[0.0, 0.0, 1.0]).unwrap();
+
+        // Verify embeddings stored correctly
+        let snap = graph.snapshot();
+        assert_eq!(snap.functions.get("mod.py::auth_login").unwrap().embedding, vec![1.0, 0.0, 0.0]);
+        assert_eq!(snap.functions.get("mod.py::render_html").unwrap().embedding, vec![0.0, 1.0, 0.0]);
+        assert_eq!(snap.functions.get("mod.py::calc_tax").unwrap().embedding, vec![0.0, 0.0, 1.0]);
+
+        // Cosine similarity: vector to itself = 1.0, orthogonal = 0.0
+        let sim = crate::cosine_similarity(&[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0]);
+        assert!((sim - 0.0).abs() < 0.001, "Orthogonal vectors should have similarity 0");
+    }
+
+    #[test]
+    fn test_set_embedding_empty_vector() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def empty_fn(): pass\n", "mod.py");
+
+        graph.set_embedding("mod.py::empty_fn", &[]).unwrap();
+        let snap = graph.snapshot();
+        let f = snap.functions.get("mod.py::empty_fn").unwrap();
+        assert!(f.embedding.is_empty(), "Empty embedding should be stored as empty");
+    }
+
+    #[test]
     fn test_import_parsing_from_import() {
         let graph = CodeGraph::new(GraphConfig::default());
         index_source(&graph, "from os import path\ndef foo(): path.join('x')\n", "mod.py");
