@@ -6,6 +6,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 // ── EntityId (v3.6 §3.1) ────────────────────────────────────────────────────
+
+/// Wrapper around Vec<f64> that defaults to empty.
+/// Used for embedding vectors on all entity types.
+#[derive(Clone, Debug, Default)]
+pub struct EmbeddingVec(pub Vec<f64>);
 // Stable dotted-path identity, e.g. "src/auth.py::UserService.create".
 // Used as Macrame concept IDs and ProjectedGraph hashmap keys.
 
@@ -695,6 +700,7 @@ pub struct Module {
     pub parse_quality: ParseQuality,
     pub file_version: u64,
     pub content_hash: u64,
+    pub embedding: EmbeddingVec,
 }
 
 #[derive(Clone, Debug)]
@@ -723,6 +729,7 @@ pub struct Class {
     pub name_span: ByteSpan,
     pub body_span: ByteSpan,
     pub decorators_span: Option<ByteSpan>,
+    pub embedding: EmbeddingVec,
 }
 
 #[derive(Clone, Debug)]
@@ -754,7 +761,7 @@ pub struct Function {
     pub params_span: ByteSpan,
     pub body_span: ByteSpan,
     pub decorators_span: Option<ByteSpan>,
-    pub embedding: Vec<f64>,   // cached embedding vector (empty if not computed)
+    pub embedding: EmbeddingVec,   // cached embedding vector (empty if not computed)
 }
 
 #[derive(Clone, Debug)]
@@ -766,6 +773,7 @@ pub struct Import {
     pub line: usize,
     pub is_type_only: bool,
     pub name_span: ByteSpan,
+    pub embedding: EmbeddingVec,
 }
 
 #[derive(Clone, Debug)]
@@ -777,6 +785,7 @@ pub struct Constant {
     pub default_value: Option<String>,
     pub span: ByteSpan,
     pub name_span: ByteSpan,
+    pub embedding: EmbeddingVec,
 }
 
 #[derive(Clone, Debug)]
@@ -787,6 +796,7 @@ pub struct TypeAlias {
     pub source: SourceType,
     pub span: ByteSpan,
     pub name_span: ByteSpan,
+    pub embedding: EmbeddingVec,
 }
 
 // ── Extraction Intermediate Types (§3.3a) — EntityId-based ──────────────────

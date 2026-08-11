@@ -105,7 +105,7 @@ pub fn apply_patch(
                                 params_span: f.params_span,
                                 body_span: f.body_span,
                                 decorators_span: f.decorators_span,
-                                embedding: vec![],
+                                embedding: EmbeddingVec(vec![]),
                             };
                             new_projection.functions.insert(id.clone(), Arc::new(func));
                             changed_symbols.push(SymbolChange {
@@ -151,6 +151,7 @@ pub fn apply_patch(
                                 name_span: c.name_span,
                                 body_span: c.body_span,
                                 decorators_span: c.decorators_span,
+                                embedding: EmbeddingVec(vec![]),
                             };
                             new_projection.classes.insert(id.clone(), Arc::new(cls));
                             changed_symbols.push(SymbolChange {

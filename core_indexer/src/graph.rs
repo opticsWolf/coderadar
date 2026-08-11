@@ -1170,17 +1170,27 @@ impl CodeGraph {
         Ok(())
     }
 
-    /// Store an embedding vector on a function entity.
-    /// Updates the in-memory Function.embedding field and commits the projection.
+    /// Store an embedding vector on any entity type.
+    /// Updates the in-memory embedding field and commits the projection.
     pub fn set_embedding(
         &self,
         entity_id: &str,
         embedding: &[f64],
     ) -> Result<(), String> {
         let mut projection = (*self.snapshot()).clone();
-        if let Some(func) = projection.functions.get_mut(entity_id) {
-            let func_mut = std::sync::Arc::make_mut(func);
-            func_mut.embedding = embedding.to_vec();
+        let vec = EmbeddingVec(embedding.to_vec());
+        if let Some(e) = projection.functions.get_mut(entity_id) {
+            std::sync::Arc::make_mut(e).embedding = vec;
+        } else if let Some(e) = projection.classes.get_mut(entity_id) {
+            std::sync::Arc::make_mut(e).embedding = vec;
+        } else if let Some(e) = projection.modules.get_mut(entity_id) {
+            std::sync::Arc::make_mut(e).embedding = vec;
+        } else if let Some(e) = projection.imports.get_mut(entity_id) {
+            std::sync::Arc::make_mut(e).embedding = vec;
+        } else if let Some(e) = projection.constants.get_mut(entity_id) {
+            std::sync::Arc::make_mut(e).embedding = vec;
+        } else if let Some(e) = projection.type_aliases.get_mut(entity_id) {
+            std::sync::Arc::make_mut(e).embedding = vec;
         } else {
             return Err(format!("Entity not found: {}", entity_id));
         }
@@ -1351,7 +1361,7 @@ impl CodeGraph {
                         parse_quality: ParseQuality::Clean, content_hash: 0,
                         span: c.span, name_span: c.name_span,
                         body_span: c.body_span, decorators_span: c.decorators_span,
-                    };
+                        embedding: EmbeddingVec(vec![]),                    };
                     projection.classes.insert(class.id.clone(), Arc::new(class));
                     module_classes.push(c.id.clone());
                 }
@@ -1372,7 +1382,7 @@ impl CodeGraph {
                         parse_quality: ParseQuality::Clean, content_hash: 0,
                         span: f.span, name_span: f.name_span,
                         params_span: f.params_span, body_span: f.body_span,
-                        decorators_span: f.decorators_span, embedding: vec![],
+                        decorators_span: f.decorators_span, embedding: EmbeddingVec(vec![]),
                     };
                     projection.functions.insert(func.id.clone(), Arc::new(func));
                     module_functions.push(f.id.clone());
@@ -1384,7 +1394,7 @@ impl CodeGraph {
                         resolution: ImportResolution::Unresolved,
                         line: i.line, is_type_only: i.is_type_only,
                         name_span: i.name_span,
-                    };
+                        embedding: EmbeddingVec(vec![]),                    };
                     projection.imports.insert(import.id.clone(), Arc::new(import));
                     module_imports.push(i.id.clone());
                 }
@@ -1394,7 +1404,7 @@ impl CodeGraph {
                         annotation: k.annotation.clone(), source: k.source.clone(),
                         default_value: k.default_value.clone(),
                         span: k.span, name_span: k.name_span,
-                    };
+                        embedding: EmbeddingVec(vec![]),                    };
                     projection.constants.insert(constant.id.clone(), Arc::new(constant));
                     module_constants.push(k.id.clone());
                 }
@@ -1403,7 +1413,7 @@ impl CodeGraph {
                         id: ta.id.clone(), name: ta.name.clone(),
                         target: ta.target.clone(), source: ta.source.clone(),
                         span: ta.span, name_span: ta.name_span,
-                    };
+                        embedding: EmbeddingVec(vec![]),                    };
                     projection.type_aliases.insert(alias.id.clone(), Arc::new(alias));
                     module_type_aliases.push(ta.id.clone());
                 }
@@ -1441,7 +1451,7 @@ impl CodeGraph {
             imports: module_imports, constants: module_constants,
             type_aliases: module_type_aliases,
             parse_quality: ParseQuality::Clean, file_version: 1, content_hash: 0,
-        };
+                        embedding: EmbeddingVec(vec![]),        };
         projection.modules.insert(module_id.clone(), Arc::new(module));
         projection.file_to_modules.insert(PathBuf::from(file_path), vec![module_id]);
 
@@ -1767,7 +1777,7 @@ impl CodeGraph {
                         parse_quality: ParseQuality::Clean, content_hash: 0,
                         span: f.span, name_span: f.name_span,
                         params_span: f.params_span, body_span: f.body_span,
-                        decorators_span: f.decorators_span, embedding: vec![],
+                        decorators_span: f.decorators_span, embedding: EmbeddingVec(vec![]),
                     };
                     projection.functions.insert(f.id.clone(), Arc::new(func));
                     inserted += 1;
@@ -1795,7 +1805,7 @@ impl CodeGraph {
                         parse_quality: ParseQuality::Clean, content_hash: 0,
                         span: c.span, name_span: c.name_span,
                         body_span: c.body_span, decorators_span: c.decorators_span,
-                    };
+                        embedding: EmbeddingVec(vec![]),                    };
                     projection.classes.insert(c.id.clone(), Arc::new(class));
                     inserted += 1;
                 }
@@ -1806,7 +1816,7 @@ impl CodeGraph {
                         resolution: ImportResolution::Unresolved,
                         line: i.line, is_type_only: i.is_type_only,
                         name_span: i.name_span,
-                    };
+                        embedding: EmbeddingVec(vec![]),                    };
                     projection.imports.insert(i.id.clone(), Arc::new(import));
                     if let Some(mod_arc) = projection.modules.get(&module_id) {
                         let mut m = (**mod_arc).clone();
@@ -1842,7 +1852,7 @@ impl CodeGraph {
                         annotation: k.annotation.clone(), source: k.source,
                         default_value: k.default_value.clone(),
                         span: k.span, name_span: k.name_span,
-                    };
+                        embedding: EmbeddingVec(vec![]),                    };
                     projection.constants.insert(k.id.clone(), Arc::new(constant));
                     inserted += 1;
                 }
@@ -1851,7 +1861,7 @@ impl CodeGraph {
                         id: ta.id.clone(), name: ta.name.clone(),
                         target: ta.target.clone(), source: ta.source,
                         span: ta.span, name_span: ta.name_span,
-                    };
+                        embedding: EmbeddingVec(vec![]),                    };
                     projection.type_aliases.insert(ta.id.clone(), Arc::new(alias));
                     inserted += 1;
                 }
@@ -2000,7 +2010,7 @@ impl CodeGraph {
                         name_span: c.name_span,
                         body_span: c.body_span,
                         decorators_span: c.decorators_span,
-                    };
+                        embedding: EmbeddingVec(vec![]),                    };
                     projection.classes.insert(class.id.clone(), Arc::new(class));
                     module_classes.push(c.id.clone());
                 }
@@ -2033,7 +2043,7 @@ impl CodeGraph {
                         params_span: f.name_span,
                         body_span: f.body_span,
                         decorators_span: f.decorators_span,
-                        embedding: vec![],
+                        embedding: EmbeddingVec(vec![]),
                     };
                     projection.functions.insert(func.id.clone(), Arc::new(func));
                     module_functions.push(f.id.clone());
@@ -2047,7 +2057,7 @@ impl CodeGraph {
                         line: i.line,
                         is_type_only: i.is_type_only,
                         name_span: i.name_span,
-                    };
+                        embedding: EmbeddingVec(vec![]),                    };
                     projection.imports.insert(import.id.clone(), Arc::new(import));
                     module_imports.push(i.id.clone());
 
@@ -2085,6 +2095,7 @@ impl CodeGraph {
                         default_value: k.default_value.clone(),
                         span: k.span,
                         name_span: k.name_span,
+                        embedding: EmbeddingVec(vec![]),
                     };
                     projection.constants.insert(constant.id.clone(), Arc::new(constant));
                     module_constants.push(k.id.clone());
@@ -2097,6 +2108,7 @@ impl CodeGraph {
                         source: ta.source.clone(),
                         span: ta.span,
                         name_span: ta.name_span,
+                        embedding: EmbeddingVec(vec![]),
                     };
                     projection.type_aliases.insert(alias.id.clone(), Arc::new(alias));
                     module_type_aliases.push(ta.id.clone());
@@ -2150,7 +2162,7 @@ impl CodeGraph {
             parse_quality: ParseQuality::Clean,
             file_version: 1,
             content_hash: 0,
-        };
+                        embedding: EmbeddingVec(vec![]),        };
         projection.modules.insert(module_id.clone(), Arc::new(module));
         projection.file_to_modules
             .entry(PathBuf::from(file_path))
@@ -2670,13 +2682,13 @@ mod tests {
         let mut projection = (*graph.snapshot()).clone();
         if let Some(add_fn) = projection.functions.get("math.py::add") {
             let mut updated = (**add_fn).clone();
-            updated.embedding = vec![0.1, 0.2, 0.3];
+            updated.embedding = EmbeddingVec(vec![0.1, 0.2, 0.3]);
             projection.functions.insert("math.py::add".to_string(), std::sync::Arc::new(updated));
         }
         graph.commit_projection(projection);
         let snap = graph.snapshot();
         let add = snap.functions.get("math.py::add").unwrap();
-        assert_eq!(add.embedding.len(), 3);
+        assert_eq!(add.embedding.0.len(), 3);
     }
 
     #[test]
@@ -2699,11 +2711,11 @@ mod tests {
 
         let snap = graph.snapshot();
         let add = snap.functions.get("math.py::add").unwrap();
-        assert_eq!(add.embedding, vec);
+        assert_eq!(add.embedding.0, vec);
 
         // sub should still have empty embedding
         let sub = snap.functions.get("math.py::sub").unwrap();
-        assert!(sub.embedding.is_empty());
+        assert!(sub.embedding.0.is_empty());
     }
 
     #[test]
@@ -2728,7 +2740,7 @@ mod tests {
 
         let snap = graph.snapshot();
         let add = snap.functions.get("math.py::add").unwrap();
-        assert_eq!(add.embedding, vec![0.9, 0.8, 0.7]);
+        assert_eq!(add.embedding.0, vec![0.9, 0.8, 0.7]);
     }
 
     #[test]
@@ -2745,9 +2757,9 @@ mod tests {
 
         // Verify embeddings stored correctly
         let snap = graph.snapshot();
-        assert_eq!(snap.functions.get("mod.py::auth_login").unwrap().embedding, vec![1.0, 0.0, 0.0]);
-        assert_eq!(snap.functions.get("mod.py::render_html").unwrap().embedding, vec![0.0, 1.0, 0.0]);
-        assert_eq!(snap.functions.get("mod.py::calc_tax").unwrap().embedding, vec![0.0, 0.0, 1.0]);
+        assert_eq!(snap.functions.get("mod.py::auth_login").unwrap().embedding.0, vec![1.0, 0.0, 0.0]);
+        assert_eq!(snap.functions.get("mod.py::render_html").unwrap().embedding.0, vec![0.0, 1.0, 0.0]);
+        assert_eq!(snap.functions.get("mod.py::calc_tax").unwrap().embedding.0, vec![0.0, 0.0, 1.0]);
 
         // Cosine similarity: vector to itself = 1.0, orthogonal = 0.0
         let sim = crate::cosine_similarity(&[1.0, 0.0, 0.0], &[0.0, 1.0, 0.0]);
@@ -2762,7 +2774,7 @@ mod tests {
         graph.set_embedding("mod.py::empty_fn", &[]).unwrap();
         let snap = graph.snapshot();
         let f = snap.functions.get("mod.py::empty_fn").unwrap();
-        assert!(f.embedding.is_empty(), "Empty embedding should be stored as empty");
+        assert!(f.embedding.0.is_empty(), "Empty embedding should be stored as empty");
     }
 
     #[test]

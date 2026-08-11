@@ -24,7 +24,7 @@ use crate::graph::ImportGraph;
 use crate::query::exec::{execute_query, QueryIterator};
 use crate::query::grammar::parse_query;
 use crate::types::{
-    Class, Constant, Function, Import, Module, ProjectedGraph, TypeAlias,
+    Class, Constant, EmbeddingVec, Function, Import, Module, ProjectedGraph, TypeAlias,
 };
 
 // ── Python Module ──────────────────────────────────────────────────────────
@@ -135,6 +135,7 @@ fn module_to_dict(py: Python<'_>, m: &Module) -> PyResult<PyObject> {
     dict.set_item("constants", m.constants.clone())?;
     dict.set_item("type_aliases", m.type_aliases.clone())?;
     dict.set_item("file_version", m.file_version)?;
+    dict.set_item("has_embedding", !m.embedding.0.is_empty())?;
     Ok(dict.into())
 }
 
@@ -165,6 +166,7 @@ fn class_to_dict(py: Python<'_>, c: &Class) -> PyResult<PyObject> {
     dict.set_item("name_span_end", c.name_span.end)?;
     let bases: Vec<String> = c.bases.iter().map(|b| b.name.clone()).collect();
     dict.set_item("bases", bases)?;
+    dict.set_item("has_embedding", !c.embedding.0.is_empty())?;
     Ok(dict.into())
 }
 
@@ -208,7 +210,7 @@ fn function_to_dict(py: Python<'_>, f: &Function) -> PyResult<PyObject> {
     dict.set_item("span_end", f.span.end)?;
     dict.set_item("name_span_start", f.name_span.start)?;
     dict.set_item("name_span_end", f.name_span.end)?;
-    if !f.embedding.is_empty() {
+    if !f.embedding.0.is_empty() {
         dict.set_item("has_embedding", true)?;
     }
     // Build signature string from parameters
@@ -244,6 +246,7 @@ fn import_to_dict(py: Python<'_>, i: &Import) -> PyResult<PyObject> {
     dict.set_item("start_line", i.line)?;
     dict.set_item("name_span_start", i.name_span.start)?;
     dict.set_item("name_span_end", i.name_span.end)?;
+    dict.set_item("has_embedding", !i.embedding.0.is_empty())?;
     Ok(dict.into())
 }
 
@@ -257,6 +260,7 @@ fn constant_to_dict(py: Python<'_>, c: &Constant) -> PyResult<PyObject> {
     }
     dict.set_item("span_start", c.span.start)?;
     dict.set_item("span_end", c.span.end)?;
+    dict.set_item("has_embedding", !c.embedding.0.is_empty())?;
     Ok(dict.into())
 }
 
@@ -268,6 +272,7 @@ fn type_alias_to_dict(py: Python<'_>, ta: &TypeAlias) -> PyResult<PyObject> {
     dict.set_item("target", &ta.target)?;
     dict.set_item("span_start", ta.span.start)?;
     dict.set_item("span_end", ta.span.end)?;
+    dict.set_item("has_embedding", !ta.embedding.0.is_empty())?;
     Ok(dict.into())
 }
 
@@ -904,29 +909,43 @@ fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
 
 /// Vector similarity search against entity embeddings.
 /// Uses cosine similarity against stored embedding vectors.
+/// Scans ALL entity types (functions, classes, modules, imports, constants, type aliases).
 #[pyfunction]
 fn search_similar(
     py: Python<'_>, query_vec: Vec<f64>, top_k: usize,
 ) -> PyResult<Vec<PyObject>> {
     with_graph(|_graph, snap| {
-        let mut scored: Vec<(f64, &String, &std::sync::Arc<Function>)> = Vec::new();
+        let mut scored: Vec<(f64, String)> = Vec::new();
 
-        // Compute cosine similarity against all functions with embeddings
-        for (id, f) in &snap.functions {
-            if f.embedding.is_empty() { continue; }
-            let sim = cosine_similarity(&query_vec, &f.embedding);
-            scored.push((sim, id, f));
-        }
+        // Scan all entity maps for non-empty embeddings
+        let mut collect = |scored: &mut Vec<(f64, String)>, id: &str, emb: &EmbeddingVec| {
+            if !emb.0.is_empty() {
+                let sim = cosine_similarity(&query_vec, &emb.0);
+                scored.push((sim, id.to_string()));
+            }
+        };
 
-        // Sort descending by similarity
+        for (id, f) in &snap.functions { collect(&mut scored, id, &f.embedding); }
+        for (id, c) in &snap.classes { collect(&mut scored, id, &c.embedding); }
+        for (id, m) in &snap.modules { collect(&mut scored, id, &m.embedding); }
+        for (id, i) in &snap.imports { collect(&mut scored, id, &i.embedding); }
+        for (id, c) in &snap.constants { collect(&mut scored, id, &c.embedding); }
+        for (id, ta) in &snap.type_aliases { collect(&mut scored, id, &ta.embedding); }
+
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(top_k);
 
         let results: Vec<PyObject> = scored
             .into_iter()
-            .filter_map(|(sim, _, f)| {
-                function_to_dict(py, f).ok().map(|mut d| {
-                    // Add similarity score to dict
+            .filter_map(|(sim, id)| {
+                let dict: Option<PyObject> =
+                    snap.functions.get(&id).and_then(|f| function_to_dict(py, f).ok())
+                    .or_else(|| snap.classes.get(&id).and_then(|c| class_to_dict(py, c).ok()))
+                    .or_else(|| snap.modules.get(&id).and_then(|m| module_to_dict(py, m).ok()))
+                    .or_else(|| snap.imports.get(&id).and_then(|i| import_to_dict(py, i).ok()))
+                    .or_else(|| snap.constants.get(&id).and_then(|c| constant_to_dict(py, c).ok()))
+                    .or_else(|| snap.type_aliases.get(&id).and_then(|ta| type_alias_to_dict(py, ta).ok()));
+                dict.map(|mut d| {
                     if let Ok(dict) = d.downcast_bound::<PyDict>(py) {
                         let _ = dict.set_item("similarity", sim);
                     }
