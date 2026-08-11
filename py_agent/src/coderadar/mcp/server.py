@@ -1413,18 +1413,15 @@ def _format_mutation_plan(plan: Any) -> str:
 def _format_mutation_applied(result: Any) -> str:
     """Format a MutationResult after application."""
     lines = ["## Mutation Applied", ""]
-    lines.append(f"- **Success:** {result.success}")
-    if result.written_files:
-        lines.append(f"- **Files written:** {len(result.written_files)}")
-        for f in result.written_files:
+    lines.append(f"- **Status:** {result.status}")
+    if result.files_written:
+        lines.append(f"- **Files written:** {len(result.files_written)}")
+        for f in result.files_written:
             lines.append(f"  - `{f}`")
-    if result.error:
-        lines.append(f"- **Error:** {result.error}")
-    if result.warnings:
-        lines.append("")
-        lines.append("### Warnings")
-        for w in result.warnings:
-            lines.append(f"- {w}")
+    if result.syntax_errors:
+        lines.append(f"- **Syntax errors:** {len(result.syntax_errors)}")
+    if result.backup_path:
+        lines.append(f"- **Backup:** `{result.backup_path}`")
     lines.append("")
     lines.append("Graph has been updated — subsequent queries will reflect the change.")
     return "\n".join(lines)

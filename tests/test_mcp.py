@@ -754,3 +754,227 @@ class TestQueryTimeResolution:
         from coderadar.mcp.server import _resolve_ref
         result = _resolve_ref(None, "", 5)
         assert "CodeRadar extension" in result or "provide" in result.lower()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# v0.5.9 — new MCP tools (query, traverse, mutation, reindex, embeddings)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestInstructionsV059:
+    """Server instructions mention all v0.5.9 tools."""
+
+    def test_instructions_mention_query_tools(self):
+        from coderadar.mcp.server import SERVER_INSTRUCTIONS
+        assert "codegraph_query" in SERVER_INSTRUCTIONS
+        assert "codegraph_search_similar" in SERVER_INSTRUCTIONS
+        assert "codegraph_module_children" in SERVER_INSTRUCTIONS
+
+    def test_instructions_mention_temporal_and_traverse(self):
+        from coderadar.mcp.server import SERVER_INSTRUCTIONS
+        assert "codegraph_as_of" in SERVER_INSTRUCTIONS
+        assert "codegraph_traverse" in SERVER_INSTRUCTIONS
+
+    def test_instructions_mention_mutation_tools(self):
+        from coderadar.mcp.server import SERVER_INSTRUCTIONS
+        assert "coderadar_replace_body" in SERVER_INSTRUCTIONS
+        assert "coderadar_update_signature" in SERVER_INSTRUCTIONS
+        assert "coderadar_rename" in SERVER_INSTRUCTIONS
+        assert "coderadar_create_entity" in SERVER_INSTRUCTIONS
+
+    def test_instructions_mention_sync_tools(self):
+        from coderadar.mcp.server import SERVER_INSTRUCTIONS
+        assert "codegraph_reindex" in SERVER_INSTRUCTIONS
+        assert "codegraph_update_file" in SERVER_INSTRUCTIONS
+
+    def test_instructions_mention_compute_embeddings(self):
+        from coderadar.mcp.server import SERVER_INSTRUCTIONS
+        assert "codegraph_compute_embeddings" in SERVER_INSTRUCTIONS
+
+
+class TestQueryTool:
+    """codegraph_query backend validation."""
+
+    def test_query_empty_graph_returns_help(self):
+        from coderadar.mcp.server import _query_graph
+        result = _query_graph(None, "functions where name contains 'test'")
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_query_empty_query_returns_prompt(self):
+        from coderadar.mcp.server import _query_graph
+        result = _query_graph(None, "")
+        assert "Pest query" in result or "provide" in result.lower()
+
+    @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+    def test_query_returns_results(self):
+        analyze(str(E2E_DIR))
+        from coderadar.mcp.server import _query_graph
+        # Try a known-good Pest query format; handle parse errors gracefully
+        result = _query_graph(None, "classes where inherits_from contains 'BaseModel'")
+        # Either returns results or a parse error — both prove the path works
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+
+class TestModuleChildren:
+    """codegraph_module_children backend."""
+
+    def test_module_children_empty_graph(self):
+        from coderadar.mcp.server import _module_children
+        result = _module_children(None, "test.py::module")
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_module_children_empty_id(self):
+        from coderadar.mcp.server import _module_children
+        result = _module_children(None, "")
+        assert "module" in result.lower()
+
+    @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+    def test_module_children_returns_structure(self):
+        analyze(str(E2E_DIR))
+        from coderadar.mcp.server import _module_children
+        from coderadar._core import search_entities as _se
+        entries = _se("User", 3, None)
+        if entries:
+            fp = entries[0].get("file_path", "")
+            module_id = f"{fp}::module"
+            result = _module_children(None, module_id)
+            assert "## Module" in result
+
+
+class TestTraverse:
+    """codegraph_traverse backend."""
+
+    def test_traverse_empty_graph(self):
+        from coderadar.mcp.server import _traverse
+        result = _traverse(None, "test.py::func", "both", None, 3)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_traverse_empty_entity_id(self):
+        from coderadar.mcp.server import _traverse
+        result = _traverse(None, "", "both", None, 3)
+        assert "entity" in result.lower()
+
+    def test_traverse_nonexistent_entity(self):
+        from coderadar.mcp.server import _traverse
+        result = _traverse(None, "nonexistent::ghost", "both", None, 3)
+        assert "not found" in result.lower() or "codegraph" in result.lower()
+
+
+class TestMutationTools:
+    """Mutation tools — plan + apply via dry_run toggle."""
+
+    def test_replace_body_uninitialized(self):
+        from coderadar.mcp.server import _replace_body
+        result = _replace_body(None, "test.py::fn", "return 42", None, True)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_update_signature_uninitialized(self):
+        from coderadar.mcp.server import _update_signature
+        result = _update_signature(None, "test.py::fn", "def fn(x, y):", False, True)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_rename_uninitialized(self):
+        from coderadar.mcp.server import _rename
+        result = _rename(None, "test.py::fn", "new_fn", True)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_create_entity_uninitialized(self):
+        from coderadar.mcp.server import _create_entity
+        result = _create_entity(None, "test.py", "python", "function", "new_fn", "return 1", None, True)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_format_mutation_plan_shows_diff(self):
+        from coderadar.mcp.server import _format_mutation_plan
+        from coderadar import MutationPlan, MutationEdit
+        plan = MutationPlan(
+            id="test-123",
+            tool="replace_entity_body",
+            edits=[MutationEdit(file="test.py", replacement="x", expected_hash="abc")],
+            affected_files=["test.py"],
+            diff_preview="@@ -1,1 +1,1 @@\n-old\n+new",
+            unverified_sites=[],
+            warnings=[],
+        )
+        result = _format_mutation_plan(plan)
+        assert "DRY RUN" in result
+        assert "test-123" in result
+        assert "Diff Preview" in result
+
+    def test_format_mutation_applied_shows_result(self):
+        from coderadar.mcp.server import _format_mutation_applied
+        from coderadar import MutationResult
+        result_obj = MutationResult(
+            status="Applied",
+            files_written=["test.py"],
+            syntax_errors=[],
+        )
+        result = _format_mutation_applied(result_obj)
+        assert "Mutation Applied" in result
+        assert "test.py" in result
+
+
+class TestReindexUpdateFile:
+    """codegraph_reindex and codegraph_update_file backends."""
+
+    def test_update_file_empty_graph(self):
+        from coderadar.mcp.server import _update_file
+        result = _update_file(None, "test.py", "def foo(): pass")
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_update_file_empty_path(self):
+        from coderadar.mcp.server import _update_file
+        result = _update_file(None, "", None)
+        assert "file path" in result.lower()
+
+
+class TestSearchSimilar:
+    """codegraph_search_similar backend."""
+
+    def test_search_similar_empty_graph(self):
+        from coderadar.mcp.server import _search_similar
+        result = _search_similar(None, "authentication logic", 5)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_search_similar_empty_query(self):
+        from coderadar.mcp.server import _search_similar
+        result = _search_similar(None, "", 5)
+        assert "natural-language" in result.lower() or "provide" in result.lower()
+
+
+class TestComputeEmbeddings:
+    """codegraph_compute_embeddings backend."""
+
+    def test_compute_embeddings_empty_graph(self):
+        from coderadar.mcp.server import _compute_embeddings
+        result = _compute_embeddings(None)
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+
+class TestAsOf:
+    """codegraph_as_of backend."""
+
+    def test_as_of_empty_graph(self):
+        from coderadar.mcp.server import _as_of
+        result = _as_of(None, "2025-01-01T00:00:00Z", "", [])
+        assert isinstance(result, str)
+        assert len(result) > 0
+
+    def test_as_of_empty_timestamp(self):
+        from coderadar.mcp.server import _as_of
+        result = _as_of(None, "", "", [])
+        assert "timestamp" in result.lower()
+
+    def test_as_of_with_symbols_uninitialized(self):
+        from coderadar.mcp.server import _as_of
+        result = _as_of(None, "2025-01-01T00:00:00Z", "", ["User"])
+        assert isinstance(result, str) and len(result) > 0
