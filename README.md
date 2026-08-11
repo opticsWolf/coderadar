@@ -2,7 +2,7 @@
 
 **Live semantic graph of your codebase — incremental, queryable, LLM-writable.**
 
-CodeRadar maintains an incrementally updatable graph of your code's logical structure, enabling LLMs and developer tools to both **query** and **safely rewrite** code through a unified pipeline. Based on techniques from [CodeGraph](https://github.com/opticsWolf/codegraph) (MIT License).
+CodeRadar maintains an incrementally updatable graph of your code's logical structure, enabling LLMs and developer tools to both **query** and **safely rewrite** code through a unified pipeline.
 
 ## Why CodeRadar
 
