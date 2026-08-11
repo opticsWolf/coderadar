@@ -18,6 +18,10 @@ from .express import ExpressResolver
 from .springboot import SpringBootResolver
 from .laravel import LaravelResolver
 from .aspnet import AspNetResolver
+from .rails import RailsResolver
+from .nestjs import NestJSResolver
+from .vuerouter import VueRouterResolver
+from .reactrouter import ReactRouterResolver
 
 # Registry of all available resolvers
 ALL_RESOLVERS: list[type[FrameworkResolver]] = [
@@ -30,6 +34,10 @@ ALL_RESOLVERS: list[type[FrameworkResolver]] = [
     SpringBootResolver,
     LaravelResolver,
     AspNetResolver,
+    RailsResolver,
+    NestJSResolver,
+    VueRouterResolver,
+    ReactRouterResolver,
 ]
 
 __all__ = [
@@ -46,5 +54,9 @@ __all__ = [
     "SpringBootResolver",
     "LaravelResolver",
     "AspNetResolver",
+    "RailsResolver",
+    "NestJSResolver",
+    "VueRouterResolver",
+    "ReactRouterResolver",
     "ALL_RESOLVERS",
 ]

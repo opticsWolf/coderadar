@@ -1055,3 +1055,285 @@ public class HealthController : ControllerBase
         assert result.nodes == []
         assert result.edges == []
 
+
+class TestRailsResolver:
+    """Rails model associations and controller callbacks for Ruby."""
+
+    def test_detects_gemfile(self, tmp_path):
+        from coderadar.resolvers.rails import RailsResolver
+        resolver = RailsResolver()
+        (tmp_path / "Gemfile").write_text("gem 'rails', '~> 7.0'\n")
+        assert resolver.detect(tmp_path)
+
+    def test_detects_by_structure(self, tmp_path):
+        from coderadar.resolvers.rails import RailsResolver
+        resolver = RailsResolver()
+        (tmp_path / "config").mkdir()
+        (tmp_path / "config" / "routes.rb").write_text("# routes")
+        assert resolver.detect(tmp_path)
+
+    def test_extracts_has_many_belongs_to(self):
+        from coderadar.resolvers.rails import RailsResolver
+        resolver = RailsResolver()
+        source = """\
+class User < ApplicationRecord
+  has_many :posts, dependent: :destroy
+  belongs_to :organization
+  has_one :profile
+end
+"""
+        result = resolver.extract("user.rb", source)
+        assert len(result.nodes) >= 3
+        kinds = {n.metadata["kind"] for n in result.nodes}
+        assert "has_many" in kinds
+        assert "belongs_to" in kinds
+        assert "has_one" in kinds
+
+    def test_extracts_controller_callbacks(self):
+        from coderadar.resolvers.rails import RailsResolver
+        resolver = RailsResolver()
+        source = """\
+class UsersController < ApplicationController
+  before_action :authenticate_user
+  after_action :log_access
+  skip_before_action :verify_authenticity_token
+end
+"""
+        result = resolver.extract("users_controller.rb", source)
+        assert len(result.nodes) >= 3
+        kinds = {n.metadata["kind"] for n in result.nodes}
+        assert "before_action" in kinds
+        assert "after_action" in kinds
+        assert "skip_before_action" in kinds
+
+    def test_fixture_extracts_all(self):
+        from coderadar.resolvers.rails import RailsResolver
+        resolver = RailsResolver()
+        fixture = (
+            Path(__file__).parent / "fixtures" / "ruby" / "rails_models.rb"
+        ).read_text()
+        result = resolver.extract("rails_models.rb", fixture)
+        assert len(result.nodes) >= 7
+        assert len(result.edges) >= 7
+
+    def test_claims_reference_patterns(self):
+        from coderadar.resolvers.rails import RailsResolver
+        resolver = RailsResolver()
+        assert resolver.claims_reference("UsersController")
+        assert resolver.claims_reference("UserModel")
+        assert not resolver.claims_reference("calculate")
+
+    def test_skips_non_ruby_files(self):
+        from coderadar.resolvers.rails import RailsResolver
+        resolver = RailsResolver()
+        result = resolver.extract("models.py", "has_many :users")
+        assert result.nodes == []
+
+
+class TestNestJSResolver:
+    """NestJS @Module / @Controller route extraction for TypeScript."""
+
+    def test_detects_package_json(self, tmp_path):
+        from coderadar.resolvers.nestjs import NestJSResolver
+        resolver = NestJSResolver()
+        (tmp_path / "package.json").write_text(
+            '{"dependencies": {"@nestjs/core": "^10.0.0"}}'
+        )
+        assert resolver.detect(tmp_path)
+
+    def test_extracts_controller_routes(self):
+        from coderadar.resolvers.nestjs import NestJSResolver
+        resolver = NestJSResolver()
+        source = """\
+@Controller('users')
+export class UserController {
+  @Get()
+  async findAll() {}
+
+  @Get(':id')
+  async findOne(@Param('id') id: string) {}
+
+  @Post()
+  async create(@Body() dto: any) {}
+}
+"""
+        result = resolver.extract("user.controller.ts", source)
+        assert len(result.nodes) >= 3
+        methods = {n.metadata["method"] for n in result.nodes}
+        assert "GET" in methods
+        assert "POST" in methods
+
+    def test_fixture_extracts_all(self):
+        from coderadar.resolvers.nestjs import NestJSResolver
+        resolver = NestJSResolver()
+        fixture = (
+            Path(__file__).parent
+            / "fixtures" / "typescript" / "nestjs_controller.ts"
+        ).read_text()
+        result = resolver.extract("nestjs_controller.ts", fixture)
+        assert len(result.nodes) >= 5
+        assert len(result.edges) >= 5
+
+    def test_claims_reference_patterns(self):
+        from coderadar.resolvers.nestjs import NestJSResolver
+        resolver = NestJSResolver()
+        assert resolver.claims_reference("UserController")
+        assert resolver.claims_reference("AuthService")
+        assert resolver.claims_reference("JwtGuard")
+        assert not resolver.claims_reference("calculate")
+
+    def test_skips_non_ts_files(self):
+        from coderadar.resolvers.nestjs import NestJSResolver
+        resolver = NestJSResolver()
+        result = resolver.extract("controller.py", "@Get()")
+        assert result.nodes == []
+
+
+class TestVueRouterResolver:
+    """Vue Router route extraction for JavaScript/TypeScript."""
+
+    def test_detects_package_json(self, tmp_path):
+        from coderadar.resolvers.vuerouter import VueRouterResolver
+        resolver = VueRouterResolver()
+        (tmp_path / "package.json").write_text(
+            '{"dependencies": {"vue-router": "^4.0.0"}}'
+        )
+        assert resolver.detect(tmp_path)
+
+    def test_extracts_route_objects(self):
+        from coderadar.resolvers.vuerouter import VueRouterResolver
+        resolver = VueRouterResolver()
+        source = """\
+import { createRouter } from 'vue-router';
+
+const routes = [
+  { path: '/', name: 'home', component: HomeView },
+  { path: '/users', component: UserList },
+  { path: '/users/:id', component: UserDetail },
+];
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes,
+});
+"""
+        result = resolver.extract("router.js", source)
+        assert len(result.nodes) >= 3
+        paths = {n.metadata["path"] for n in result.nodes}
+        assert "/" in paths
+        assert "/users" in paths
+        assert "/users/:id" in paths
+
+    def test_extracts_lazy_imports(self):
+        from coderadar.resolvers.vuerouter import VueRouterResolver
+        resolver = VueRouterResolver()
+        source = """\
+{ path: '/settings', component: () => import('@/views/Settings.vue') }
+"""
+        result = resolver.extract("router.js", source)
+        assert len(result.nodes) == 1
+        assert result.nodes[0].metadata["component"] == "Settings"
+
+    def test_fixture_extracts_all(self):
+        from coderadar.resolvers.vuerouter import VueRouterResolver
+        resolver = VueRouterResolver()
+        fixture = (
+            Path(__file__).parent
+            / "fixtures" / "javascript" / "vue_router.js"
+        ).read_text()
+        result = resolver.extract("vue_router.js", fixture)
+        assert len(result.nodes) >= 5
+        assert len(result.edges) >= 5
+
+    def test_claims_reference_patterns(self):
+        from coderadar.resolvers.vuerouter import VueRouterResolver
+        resolver = VueRouterResolver()
+        assert resolver.claims_reference("HomeView")
+        assert resolver.claims_reference("UserPage")
+        assert not resolver.claims_reference("calculate")
+
+    def test_skips_non_js_files(self):
+        from coderadar.resolvers.vuerouter import VueRouterResolver
+        resolver = VueRouterResolver()
+        result = resolver.extract("router.py", "{ path: '/users' }")
+        assert result.nodes == []
+
+
+class TestReactRouterResolver:
+    """React Router JSX/data route extraction for JSX/TSX."""
+
+    def test_detects_package_json(self, tmp_path):
+        from coderadar.resolvers.reactrouter import ReactRouterResolver
+        resolver = ReactRouterResolver()
+        (tmp_path / "package.json").write_text(
+            '{"dependencies": {"react-router-dom": "^6.0.0"}}'
+        )
+        assert resolver.detect(tmp_path)
+
+    def test_extracts_jsx_routes(self):
+        from coderadar.resolvers.reactrouter import ReactRouterResolver
+        resolver = ReactRouterResolver()
+        source = """\
+<Routes>
+  <Route path="/" element={<AppLayout />}>
+    <Route index element={<HomePage />} />
+    <Route path="users" element={<UserList />} />
+    <Route path="users/:id" element={<UserDetail />} />
+  </Route>
+</Routes>
+"""
+        result = resolver.extract("App.jsx", source)
+        assert len(result.nodes) >= 4
+        paths = {n.metadata["path"] for n in result.nodes}
+        assert "/" in paths
+        assert "users" in paths
+        assert "users/:id" in paths
+
+    def test_extracts_data_router(self):
+        from coderadar.resolvers.reactrouter import ReactRouterResolver
+        resolver = ReactRouterResolver()
+        source = """\
+const router = createBrowserRouter([
+  { path: '/', element: <AppLayout /> },
+  { path: 'users', element: <UserList /> },
+]);
+"""
+        result = resolver.extract("router.jsx", source)
+        assert len(result.nodes) >= 2
+
+    def test_extracts_link_navigation(self):
+        from coderadar.resolvers.reactrouter import ReactRouterResolver
+        resolver = ReactRouterResolver()
+        source = """\
+<nav>
+  <Link to="/users">Users</Link>
+  <NavLink to="/settings">Settings</NavLink>
+</nav>
+"""
+        result = resolver.extract("Nav.jsx", source)
+        assert len(result.nodes) >= 2
+
+    def test_fixture_extracts_all(self):
+        from coderadar.resolvers.reactrouter import ReactRouterResolver
+        resolver = ReactRouterResolver()
+        fixture = (
+            Path(__file__).parent
+            / "fixtures" / "javascript" / "react_router.jsx"
+        ).read_text()
+        result = resolver.extract("react_router.jsx", fixture)
+        assert len(result.nodes) >= 7
+        assert len(result.edges) >= 5
+
+    def test_claims_reference_patterns(self):
+        from coderadar.resolvers.reactrouter import ReactRouterResolver
+        resolver = ReactRouterResolver()
+        assert resolver.claims_reference("HomePage")
+        assert resolver.claims_reference("AppLayout")
+        assert not resolver.claims_reference("calculate")
+
+    def test_skips_non_jsx_files(self):
+        from coderadar.resolvers.reactrouter import ReactRouterResolver
+        resolver = ReactRouterResolver()
+        result = resolver.extract("routes.py", '<Route path="/users" />')
+        assert result.nodes == []
+
