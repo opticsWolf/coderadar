@@ -1238,6 +1238,7 @@ impl CodeGraph {
         source: &str,
         file_path: &str,
         language: &Language,
+        cursor: &mut tree_sitter::QueryCursor,
     ) -> Result<(Vec<ExtractedUnit>, Vec<macrame::ConceptUpsert>), String> {
         let ts_lang = Self::ts_language(language)
             .ok_or_else(|| format!("No tree-sitter grammar for {:?}", language))?;
@@ -1252,7 +1253,7 @@ impl CodeGraph {
         let root_node = tree.root_node();
 
         let units = crate::extract::single_pass::extract_single_pass(
-            source, root_node, &compiled_query, file_path);
+            source, root_node, &compiled_query, file_path, cursor);
 
         let lang_str = format!("{:?}", language).to_lowercase();
         let concepts: Vec<macrame::ConceptUpsert> = units
@@ -1450,9 +1451,10 @@ impl CodeGraph {
             .ok_or_else(|| "Failed to parse source".to_string())?;
         let root_node = tree.root_node();
 
+        let mut cursor = tree_sitter::QueryCursor::new();
         // Phase 2+3: Single-pass cursor-driven extraction
         let units = crate::extract::single_pass::extract_single_pass(
-            source, root_node, &compiled_query, file_path);
+            source, root_node, &compiled_query, file_path, &mut cursor);
 
         // Phase 3: Insert into ProjectedGraph
         let count = units.len();
@@ -1882,8 +1884,9 @@ impl CodeGraph {
             .ok_or_else(|| "Failed to parse source".to_string())?;
         let root_node = tree.root_node();
 
+        let mut cursor = tree_sitter::QueryCursor::new();
         let units = crate::extract::single_pass::extract_single_pass(
-            &source, root_node, &compiled_query, file_path);
+            &source, root_node, &compiled_query, file_path, &mut cursor);
 
         // Phase 3: Diff old vs new entities, only update what changed
         let mut projection = (*self.snapshot()).clone();

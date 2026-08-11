@@ -79,7 +79,8 @@ impl<'a> CursorExtractor<'a> {
 
     /// Run the single-pass extraction: cursor drives emission, parent chain + frame
     /// stack resolves context, then targeted fn_ref scan and resolution.
-    pub fn extract(mut self, root_node: Node, compiled: &CompiledQuery) -> Vec<ExtractedUnit> {
+    pub fn extract(mut self, root_node: Node, compiled: &CompiledQuery,
+                   cursor: &mut tree_sitter::QueryCursor) -> Vec<ExtractedUnit> {
         // Phase 1: Emit file-level module frame
         self.frames.push(Frame {
             end_byte: root_node.end_byte(),
@@ -88,25 +89,28 @@ impl<'a> CursorExtractor<'a> {
         });
 
         // Phase 2: Direct cursor-driven dispatch.
-        // Dedup by node ID — same node can match multiple patterns (e.g., Elixir
-        // call nodes match both class.def and function.def when predicates fail).
-        // The capture order in the .scm file determines priority: function.def
-        // patterns appear BEFORE class.def in language queries to ensure
-        // `def greet` inside a module dispatches as Function, not Class.
+        // Optimizations:
+        //   C1. Reuse caller-provided QueryCursor (avoids per-file allocation).
+        //   C2. Pre-allocate `seen` HashSet with capacity estimate.
+        //   C3. Unsafe direct indexing on capture_tags (skip bounds check).
         let source_bytes = self.source.as_bytes();
-        let mut cursor = tree_sitter::QueryCursor::new();
+
+        // C2: Estimate capture count from node count (typical: 1-5% of nodes are captured)
+        let estimated_captures = (root_node.end_byte() as usize - root_node.start_byte() as usize) / 64;
+        let mut seen: HashSet<usize> = HashSet::with_capacity(estimated_captures.max(32).min(8192));
+
         let mut captures = cursor.captures(&compiled.query, root_node, source_bytes);
-        let mut seen: HashSet<usize> = HashSet::new();
+        let capture_tags = &compiled.capture_tags;
 
         while let Some((qm, _idx)) = captures.next() {
             for capture in qm.captures {
+                // C3: Direct unsafe index — capture.index is always valid for this query
                 let idx = capture.index as usize;
-                if idx >= compiled.capture_tags.len() {
-                    continue;
-                }
-                let tag = match &compiled.capture_tags[idx] {
-                    Some(t) => *t,
-                    None => continue,
+                let tag = unsafe {
+                    match capture_tags.get_unchecked(idx) {
+                        Some(t) => *t,
+                        None => continue,
+                    }
                 };
                 let node = capture.node;
                 let node_id = node.id() as usize;
@@ -439,8 +443,9 @@ impl<'a> CursorExtractor<'a> {
 }
 
 /// Convenience function — single-pass extraction.
-pub fn extract_single_pass(source: &str, root_node: Node, compiled: &CompiledQuery, file_path: &str) -> Vec<ExtractedUnit> {
-    CursorExtractor::new(source, file_path).extract(root_node, compiled)
+pub fn extract_single_pass(source: &str, root_node: Node, compiled: &CompiledQuery,
+                           file_path: &str, cursor: &mut tree_sitter::QueryCursor) -> Vec<ExtractedUnit> {
+    CursorExtractor::new(source, file_path).extract(root_node, compiled, cursor)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

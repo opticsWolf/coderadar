@@ -410,9 +410,10 @@ fn analyze(root: &str) -> PyResult<PyObject> {
                 if bucket.is_empty() { continue; }
                 handles.push(s.spawn(move || {
                     let mut results = Vec::new();
+                    let mut cursor = tree_sitter::QueryCursor::new();
                     for task in &bucket {
                         match CodeGraph::extract_only(
-                            &task.source, &task.path, &task.language)
+                            &task.source, &task.path, &task.language, &mut cursor)
                         {
                             Ok((units, concepts)) => {
                                 let module_id = format!("{}::module", task.path);
