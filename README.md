@@ -1,4 +1,4 @@
-# CodeRadar v0.5.6
+# CodeRadar v0.5.7
 
 **Live semantic graph of your codebase — incremental, queryable, LLM-writable.**
 
@@ -47,9 +47,9 @@ Rust Core (ProjectedGraph, Tree-sitter 18-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 28 (12 Tier 1, 16 Tier 2, 280+ Tier 3) |
-| **Tests** | 451 (163 Rust + 288 Python) |
+| **Tests** | 476 (163 Rust + 313 Python) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
-| **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET |
+| **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
 | **Agents** | MCP server with explore, node, search, affected tools |
 
 ## Quick Start
@@ -145,14 +145,25 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 | **Spring Boot** | Java | `pom.xml`/`build.gradle` | `@GetMapping`, `@PostMapping`, `@RequestMapping(method=...)`, class-level `@RequestMapping` prefix, `[controller]` token replacement |
 | **Laravel** | PHP | `composer.json` | `Route::get()`, `Route::resource()`, `Route::group()` prefix propagation, `[Controller::class, 'method']` array + `'Controller@method'` string syntax |
 | **ASP.NET** | C# | `.csproj`/`.sln` | `[HttpGet]`, `[HttpPost]`, `[Route("api/[controller]")]` token replacement, Minimal API `app.MapGet()` |
+| **Rails** | Ruby | `Gemfile` | `has_many`/`belongs_to`/`has_one` associations, `before_action`/`after_action` callbacks |
+| **NestJS** | TS | `package.json` | `@Controller` route prefix, `@Get`/`@Post` routes, `@Module` dependency edges |
+| **Vue Router** | JS/TS | `package.json` | `createRouter` route objects, lazy `import()` component resolution, `addRoute` dynamic routes |
+| **React Router** | JSX/TSX | `package.json` | JSX `<Route>` declarations, v6 data router objects, `<Link>`/`<NavLink>` navigation tracking |
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
 
+## v0.5.7 Feature Highlights
+
+- **13 framework resolvers** — Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, **Rails**, **NestJS**, **Vue Router**, **React Router** — detect route registrations, model associations, controller callbacks, and navigation links across 7 languages
+- **10 new languages** — Bash, Dart, Protobuf, Dockerfile, SQL, HCL, CMake, GraphQL, Erlang, Haskell (28 languages total across 3 tiers)
+- **QueryPlanner** — natural-language intent classifier routing to MacrameQuery primitives
+- **476 tests, 0 failures** — 163 Rust + 313 Python, full E2E coverage
+
 ## v0.5.6 Feature Highlights
 
-- **9 framework resolvers** — Django, Flask, FastAPI, Go, Actix, **Express**, **Spring Boot**, **Laravel**, **ASP.NET** — detect route registrations and synthesize handler edges across 6 languages
-- **10 new languages** — Bash, Dart, Protobuf, Dockerfile, SQL, HCL, CMake, GraphQL, Erlang, Haskell (Tier 2, 28 languages total)
-- **QueryPlanner** — natural-language intent classifier routing to MacrameQuery primitives (callers_of, traverse, search_similar, find)
+- **9 framework resolvers** — Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET — detect route registrations and synthesize handler edges across 6 languages
+- **10 new languages** — Bash, Dart, Protobuf, Dockerfile, SQL, HCL, CMake, GraphQL, Erlang, Haskell (28 languages total across 3 tiers)
+- **QueryPlanner** — natural-language intent classifier routing to MacrameQuery primitives
 - **451 tests, 0 failures** — 163 Rust + 288 Python, full E2E coverage
 
 ## v0.5.4 Feature Highlights
@@ -192,7 +203,7 @@ core_indexer/              # Rust core
     lib.rs                 # PyO3 FFI bindings
 
 py_agent/src/coderadar/    # Python layer
-    resolvers/             # 9 framework resolvers: Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET
+    resolvers/             # 13 framework resolvers: Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router
     embedding/             # Content-addressed dedup
     agent/                 # GraphRAG query pipeline
     lsp/                   # Persistent LSP warm pool
