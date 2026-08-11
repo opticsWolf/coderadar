@@ -14,6 +14,7 @@ from .flask import FlaskResolver
 from .fastapi import FastAPIResolver
 from .go import GoResolver
 from .actix import RustActixResolver
+from .express import ExpressResolver
 
 # Registry of all available resolvers
 ALL_RESOLVERS: list[type[FrameworkResolver]] = [
@@ -22,6 +23,7 @@ ALL_RESOLVERS: list[type[FrameworkResolver]] = [
     FastAPIResolver,
     GoResolver,
     RustActixResolver,
+    ExpressResolver,
 ]
 
 __all__ = [
@@ -34,5 +36,6 @@ __all__ = [
     "FastAPIResolver",
     "GoResolver",
     "RustActixResolver",
+    "ExpressResolver",
     "ALL_RESOLVERS",
 ]

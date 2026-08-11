@@ -474,3 +474,176 @@ class TestActixResolver:
         result = resolver.resolve("get_users", [])
         assert result is None
 
+
+class TestExpressResolver:
+    """Express.js route extraction for JavaScript and TypeScript."""
+
+    def test_detects_express_in_package_json(self, tmp_path):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        pkg = tmp_path / "package.json"
+        pkg.write_text('{"dependencies": {"express": "^4.18.0"}}')
+        assert resolver.detect(tmp_path)
+
+    def test_detects_express_by_import_grep(self, tmp_path):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        (tmp_path / "app.js").write_text(
+            'const express = require("express");\n'
+            'const app = express();\n'
+        )
+        assert resolver.detect(tmp_path)
+
+    def test_no_detect_without_express(self, tmp_path):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        assert not resolver.detect(tmp_path)
+
+    def test_extracts_js_direct_routes(self):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        source = """\
+const app = require('express')();
+app.get('/users', usersController.list);
+app.post('/users', usersController.create);
+app.put('/users/:id', usersController.update);
+app.delete('/users/:id', usersController.delete);
+"""
+        result = resolver.extract("routes.js", source)
+        assert len(result.nodes) == 4
+        methods = [n.metadata["method"] for n in result.nodes]
+        assert "GET" in methods
+        assert "POST" in methods
+        assert "PUT" in methods
+        assert "DELETE" in methods
+        handler_names = {e.target_id for e in result.edges}
+        assert "list" in handler_names
+        assert "create" in handler_names
+        assert "update" in handler_names
+
+    def test_extracts_js_fixture(self):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        fixture = (
+            Path(__file__).parent
+            / "fixtures" / "javascript" / "express_routes.js"
+        ).read_text()
+        result = resolver.extract("express_routes.js", fixture)
+
+        # At least 12 route nodes expected (direct calls + chained)
+        assert len(result.nodes) >= 12, f"Got {len(result.nodes)} nodes"
+        assert len(result.edges) >= 12, f"Got {len(result.edges)} edges"
+
+        methods = {n.metadata["method"] for n in result.nodes}
+        assert "GET" in methods
+        assert "POST" in methods
+        assert "PUT" in methods
+        assert "DELETE" in methods
+        assert "PATCH" in methods
+
+        # app.use('/api', apiRouter) should create edge to apiRouter
+        api_router_edges = [
+            e for e in result.edges
+            if e.target_id == "apiRouter"
+        ]
+        assert len(api_router_edges) >= 1
+
+    def test_extracts_ts_fixture(self):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        fixture = (
+            Path(__file__).parent
+            / "fixtures" / "typescript" / "express_routes.ts"
+        ).read_text()
+        result = resolver.extract("express_routes.ts", fixture)
+
+        assert len(result.nodes) >= 7, f"Got {len(result.nodes)} nodes"
+        assert len(result.edges) >= 7, f"Got {len(result.edges)} edges"
+
+        paths = {n.metadata["path"] for n in result.nodes}
+        assert "/api/users/:id" in paths
+        assert "/api/users" in paths
+
+    def test_chain_route_builder(self):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        source = """\
+app.route('/photos')
+    .get(listPhotos)
+    .post(createPhoto)
+    .delete(deletePhoto);
+"""
+        result = resolver.extract("routes.js", source)
+        assert len(result.nodes) == 3
+        methods = {n.metadata["method"] for n in result.nodes}
+        assert methods == {"GET", "POST", "DELETE"}
+        # All share same path
+        paths = {n.metadata["path"] for n in result.nodes}
+        assert paths == {"/photos"}
+
+    def test_arrow_function_ignored(self):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        source = """\
+app.get('/inline', (req, res) => { res.send('ok'); });
+"""
+        result = resolver.extract("routes.js", source)
+        assert len(result.nodes) == 1
+        # Arrow function has no named handler reference
+        assert len(result.edges) == 0
+
+    def test_middleware_use_no_path(self):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        source = """\
+app.use(authMiddleware);
+app.use(logger('dev'));
+"""
+        result = resolver.extract("app.js", source)
+        assert len(result.nodes) == 2
+        # Bare .use() gets /* path
+        paths = {n.metadata["path"] for n in result.nodes}
+        assert "/*" in paths
+
+    def test_claims_reference_patterns(self):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        assert resolver.claims_reference("userController")
+        assert resolver.claims_reference("AuthMiddleware")
+        assert resolver.claims_reference("apiRouter")
+        assert resolver.claims_reference("getUsers")
+        assert not resolver.claims_reference("calculateTax")
+
+    def test_resolve_prefers_handler_dirs(self):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        result = resolver.resolve("listUsers", [{
+            "id": "x", "name": "listUsers", "kind": "function",
+            "file_path": "/src/routes/users.js",
+        }])
+        assert result is not None
+        assert result["confidence"] == 0.85
+
+    def test_resolve_fallback(self):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        result = resolver.resolve("listUsers", [{
+            "id": "x", "name": "listUsers", "kind": "function",
+            "file_path": "/src/something/random.js",
+        }])
+        assert result is not None
+        assert result["confidence"] == 0.65
+
+    def test_resolve_no_candidates(self):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        result = resolver.resolve("listUsers", [])
+        assert result is None
+
+    def test_skips_non_js_ts_files(self):
+        from coderadar.resolvers.express import ExpressResolver
+        resolver = ExpressResolver()
+        result = resolver.extract("routes.py", "app.get('/users', handler)")
+        assert result.nodes == []
+        assert result.edges == []
+
