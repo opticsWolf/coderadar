@@ -1,8 +1,8 @@
 # CodeRadar Performance Roadmap
 
-**Date:** 2025-08-09  
-**Baseline:** v0.5.3, commit `2a94c2f`  
-**Latest head-to-head (N=5, median):** CodeRadar 1,096ms vs CodeGraph 1,137ms — **0.96× (4% faster)**
+**Date:** 2025-08-09 (updated 2025-08-12)  
+**Baseline:** v0.5.4, single-pass extraction  
+**Latest:** CodeRadar self 554ms, codegraph-main 12,232ms (1.75× vs CodeGraph)
 
 ---
 
@@ -16,7 +16,14 @@
 | B (balanced) | 100 | 350 | 1,000 | 100 callers × 10 calls | Minimal — too few calls/caller |
 | C (heavy) | 200 | 700 | 4,000 | 200 callers × 20 calls | Some — 200 work items |
 
-**Current timings (v0.5.2, parse uncapped, resolve cap=4):**
+**Real-world benchmarks (v0.5.4):**
+
+| Project | Files | CodeRadar | CodeGraph 1.5.0 | Ratio |
+|---------|-------|-----------|-----------------|-------|
+| CodeRadar self | 84 | 554ms | 1,434ms | **0.39×** |
+| codegraph-main | 558 | 12,232ms | 6,970ms | 1.75× |
+
+**Current timings (v0.5.4, parse uncapped, single-pass extraction):**
 
 | Phase | Cost | Parallelized? |
 |-------|------|---------------|
@@ -347,13 +354,16 @@ essentially parity with CodeGraph 1.5.0. The remaining candidates (#3, #4, #8,
 | + parallel parse | 2,006ms | 1.65× | |
 | + import graph edges | 1,776ms | 1.46× | |
 | + resolve extraction | 1,959ms | 1.61× | extraction + Arc sharing |
-| **Head-to-head (N=5)** | **1,096ms** | **0.96×** | **4% faster than CodeGraph** |
-| Remaining (#6 PRAGMAs) | ~850ms | 0.75× | blocked on Macrame API |
+| + fragment merge | 1,189ms | 0.98× | |
+| + thread cap tuning | 1,096ms | 0.96× | synthetic: 4% faster |
+| **Single-pass extraction** | **19,328→12,232ms** | **2.77→1.75×** | **real-world: −37%** |
+| Remaining (#6 PRAGMAs) | ~9,800ms | ~1.4× | blocked on Macrame API |
 
-At parity or better, the benchmark itself becomes the bottleneck — 200 files
-is below CodeGraph's own recommended minimum for meaningful measurement.
-Further work shifts to profiling real-world codebases (Django, CPython, Linux
-kernel) rather than synthetic benchmarks.
+At 1.75× CodeGraph on real-world TypeScript, the remaining gap is dominated by
+the `.scm` query engine overhead. CodeGraph's hand-written per-language walkers
+with flat-buffer emission are inherently faster per-node. Closing the gap
+further requires either per-language Rust walkers or columnar extraction
+(#11) — both high-risk, high-effort changes deferred to post-v1.
 
 ---
 

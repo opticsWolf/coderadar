@@ -1,4 +1,7 @@
-# Single-Pass Extraction — Implementation Plan
+# CodeRadar Single-Pass Extraction — ✅ COMPLETED (v0.5.4)
+
+**Implemented:** branch `feature/single-pass-extraction`, commit `bb15e37`  
+**Result:** 19,328→12,232ms (−37%) on codegraph-main, 855→554ms (−35%) on CodeRadar self
 
 ## Motivation
 
