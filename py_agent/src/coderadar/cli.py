@@ -537,10 +537,8 @@ def serve(project_path: str):
     from .mcp import serve as mcp_serve
 
     graph = coderadar.CodeGraph()
-    console.print(f"[bold]CodeRadar MCP server[/bold] starting for {project_path}...",
-                  file=sys.stderr)
-    console.print(f"[dim]Exposing 4 tools via MCPServer v2: explore, node, search, affected[/dim]",
-                  file=sys.stderr)
+    print(f"CodeRadar MCP server starting for {project_path}...", file=sys.stderr)
+    print("Exposing 5 tools: explore, node, search, affected, resolve", file=sys.stderr)
     mcp_serve(graph)  # blocking stdio loop
 
 
