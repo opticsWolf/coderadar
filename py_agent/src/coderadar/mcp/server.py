@@ -89,14 +89,13 @@ more for the same answer.
 
 After editing code, use the mutation pipeline to keep the graph in sync:
 
-1. `coderadar_plan_body_replacement` — plan replacing a function body
-2. `coderadar_plan_signature_update` — plan changing a function signature (with call-site cascade)
-3. `coderadar_plan_rename` — plan renaming an entity
-4. `coderadar_plan_create_entity` — plan creating a new entity in a file
-5. `coderadar_apply_mutation` — apply a planned mutation to files AND update the graph
+1. `coderadar_plan_body_replacement` — plan/replace a function body
+2. `coderadar_plan_signature_update` — plan/change a function signature (with call-site cascade)
+3. `coderadar_plan_rename` — plan/rename an entity
+4. `coderadar_plan_create_entity` — plan/create a new entity in a file
 
-**Always plan before applying.** Dry-run plans show the diff preview without touching files.
-When ready, call apply_mutation to execute the edit and keep the graph fresh.
+**Always plan first (dry_run=True), review the diff, then apply (dry_run=False).**
+Each tool does both — plan and apply are a single call with the dry_run toggle.
 
 ## Keeping the graph fresh
 
@@ -368,11 +367,12 @@ def create_server(graph: Any) -> MCPServer:
 
     @mcp.tool(
         description=(
-            "Plan replacing the body of a function/method. Returns a MutationPlan "
-            "with a diff preview and affected file list. Always dry-run by default — "
-            "call coderadar_apply_mutation to execute. "
-            "Use after codegraph_affected to understand impact, then edit through "
-            "the graph rather than raw Read/Edit."
+            "Plan or apply replacing the body of a function/method. "
+            "With dry_run=True (default): returns a diff preview for review. "
+            "With dry_run=False: writes the file AND updates the graph atomically. "
+            "Best practice: call first with dry_run=True to review, then call "
+            "again with dry_run=False to apply. Use expected_hash to verify the "
+            "current body matches before replacing (safety check)."
         ),
         annotations={
             "read_only_hint": False,
@@ -385,18 +385,19 @@ def create_server(graph: Any) -> MCPServer:
         entity_id: str,
         new_body: str,
         expected_hash: Optional[str] = None,
+        dry_run: bool = True,
     ) -> str:
-        """Plan a function body replacement."""
-        return _plan_body_replacement(graph, entity_id, new_body, expected_hash)
+        """Plan or apply a function body replacement."""
+        return _plan_body_replacement(graph, entity_id, new_body, expected_hash, dry_run)
 
     # ── coderadar_plan_signature_update ──────────────────────────────
 
     @mcp.tool(
         description=(
-            "Plan changing a function/method signature. Returns a MutationPlan "
-            "showing the signature change and all affected call sites. "
-            "Optionally provide call_site_values to cascade argument changes. "
-            "Use inject_defaults=True to inject default values at call sites."
+            "Plan or apply changing a function/method signature. "
+            "With dry_run=True: shows the signature change and all affected call sites. "
+            "With dry_run=False: writes the change AND updates the graph. "
+            "Use inject_defaults=True to inject default argument values at call sites."
         ),
         annotations={
             "read_only_hint": False,
@@ -409,17 +410,19 @@ def create_server(graph: Any) -> MCPServer:
         entity_id: str,
         new_signature: str,
         inject_defaults: bool = False,
+        dry_run: bool = True,
     ) -> str:
-        """Plan a signature update."""
-        return _plan_signature_update(graph, entity_id, new_signature, inject_defaults)
+        """Plan or apply a signature update."""
+        return _plan_signature_update(graph, entity_id, new_signature, inject_defaults, dry_run)
 
     # ── coderadar_plan_rename ────────────────────────────────────────
 
     @mcp.tool(
         description=(
-            "Plan renaming an entity (function, class, variable). Returns a "
-            "MutationPlan showing all files where the name appears and needs updating. "
-            "Covers definition site and all references."
+            "Plan or apply renaming an entity (function, class, variable). "
+            "With dry_run=True: shows all files and references that need updating. "
+            "With dry_run=False: renames the definition and ALL references, "
+            "updates the graph. Covers definition site and all usages."
         ),
         annotations={
             "read_only_hint": False,
@@ -431,17 +434,19 @@ def create_server(graph: Any) -> MCPServer:
     def coderadar_plan_rename(
         entity_id: str,
         new_name: str,
+        dry_run: bool = True,
     ) -> str:
-        """Plan a rename."""
-        return _plan_rename(graph, entity_id, new_name)
+        """Plan or apply a rename."""
+        return _plan_rename(graph, entity_id, new_name, dry_run)
 
     # ── coderadar_plan_create_entity ─────────────────────────────────
 
     @mcp.tool(
         description=(
-            "Plan creating a new entity (function, class, constant) in a file. "
-            "Returns a MutationPlan that, when applied, inserts the entity at the "
-            "appropriate location. Language-aware placement."
+            "Plan or apply creating a new entity (function, class, constant) "
+            "in a file. With dry_run=True: shows where the entity would be inserted. "
+            "With dry_run=False: inserts the entity into the file AND indexes it. "
+            "Language-aware placement at the appropriate location."
         ),
         annotations={
             "read_only_hint": False,
@@ -457,32 +462,12 @@ def create_server(graph: Any) -> MCPServer:
         name: str,
         body: str,
         decorators: Optional[list[str]] = None,
+        dry_run: bool = True,
     ) -> str:
-        """Plan creating a new entity."""
-        return _plan_create_entity(graph, file_path, language, kind, name, body, decorators)
+        """Plan or apply creating a new entity."""
+        return _plan_create_entity(graph, file_path, language, kind, name, body, decorators, dry_run)
 
-    # ── coderadar_apply_mutation ─────────────────────────────────────
-
-    @mcp.tool(
-        description=(
-            "Apply a previously planned mutation. Takes the plan JSON from any "
-            "coderadar_plan_* tool and executes it: edits files on disk AND updates "
-            "the graph index in a single atomic operation. "
-            "Returns the mutation result with status, changed files, and new entity IDs. "
-            "CRITICAL: always plan first (dry-run), review the diff, then apply."
-        ),
-        annotations={
-            "read_only_hint": False,
-            "destructive_hint": True,
-            "idempotent_hint": False,
-            "open_world_hint": False,
-        },
-    )
-    def coderadar_apply_mutation(
-        plan_json: str,
-    ) -> str:
-        """Apply a mutation plan."""
-        return _apply_mutation(graph, plan_json)
+    return mcp
 
     # ── codegraph_reindex — full graph refresh ───────────────────────
 
@@ -1280,86 +1265,70 @@ def _traverse(
 
 
 def _plan_body_replacement(
-    graph: Any, entity_id: str, new_body: str, expected_hash: str | None,
+    graph: Any, entity_id: str, new_body: str,
+    expected_hash: str | None, dry_run: bool,
 ) -> str:
-    """Plan a function body replacement."""
+    """Plan or apply a function body replacement."""
     try:
-        plan = graph.plan_body_replacement(entity_id, new_body, expected_hash, dry_run=True)
-        return _format_mutation_plan(plan)
+        plan = graph.plan_body_replacement(entity_id, new_body, expected_hash, dry_run=dry_run)
+        if dry_run:
+            return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
+        else:
+            return _format_mutation_applied(plan)
     except Exception as e:
-        return f"Plan failed: {e}"
+        return f"Mutation failed: {e}"
 
 
 def _plan_signature_update(
-    graph: Any, entity_id: str, new_signature: str, inject_defaults: bool,
+    graph: Any, entity_id: str, new_signature: str,
+    inject_defaults: bool, dry_run: bool,
 ) -> str:
-    """Plan a signature update."""
+    """Plan or apply a signature update."""
     try:
         plan = graph.plan_signature_update(
-            entity_id, new_signature, inject_defaults=inject_defaults, dry_run=True,
+            entity_id, new_signature, inject_defaults=inject_defaults, dry_run=dry_run,
         )
-        return _format_mutation_plan(plan)
+        if dry_run:
+            return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
+        else:
+            return _format_mutation_applied(plan)
     except Exception as e:
-        return f"Plan failed: {e}"
+        return f"Mutation failed: {e}"
 
 
-def _plan_rename(graph: Any, entity_id: str, new_name: str) -> str:
-    """Plan a rename."""
+def _plan_rename(graph: Any, entity_id: str, new_name: str, dry_run: bool) -> str:
+    """Plan or apply a rename."""
     try:
-        plan = graph.plan_rename(entity_id, new_name, dry_run=True)
-        return _format_mutation_plan(plan)
+        plan = graph.plan_rename(entity_id, new_name, dry_run=dry_run)
+        if dry_run:
+            return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
+        else:
+            return _format_mutation_applied(plan)
     except Exception as e:
-        return f"Plan failed: {e}"
+        return f"Mutation failed: {e}"
 
 
 def _plan_create_entity(
     graph: Any, file_path: str, language: str, kind: str,
-    name: str, body: str, decorators: list[str] | None,
+    name: str, body: str, decorators: list[str] | None, dry_run: bool,
 ) -> str:
-    """Plan creating a new entity."""
+    """Plan or apply creating a new entity."""
     try:
         plan = graph.plan_create_entity(
             file_path, language, kind, name, body,
-            decorators=decorators, dry_run=True,
+            decorators=decorators, dry_run=dry_run,
         )
-        return _format_mutation_plan(plan)
+        if dry_run:
+            return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
+        else:
+            return _format_mutation_applied(plan)
     except Exception as e:
-        return f"Plan failed: {e}"
-
-
-def _apply_mutation(graph: Any, plan_json: str) -> str:
-    """Apply a mutation plan."""
-    try:
-        import json
-        plan_dict = json.loads(plan_json)
-        from coderadar import MutationPlan, MutationEdit
-        plan = MutationPlan(
-            id=plan_dict.get("id", ""),
-            tool=plan_dict.get("tool", ""),
-            edits=[MutationEdit(**e) for e in plan_dict.get("edits", [])],
-            affected_files=plan_dict.get("affected_files", []),
-            diff_preview=plan_dict.get("diff_preview", ""),
-            unverified_sites=plan_dict.get("unverified_sites", []),
-            warnings=plan_dict.get("warnings", []),
-        )
-        result = graph.apply(plan)
-        lines = ["## Mutation Applied", ""]
-        lines.append(f"- **Success:** {result.success}")
-        if result.written_files:
-            lines.append(f"- **Files written:** {', '.join(f'`{f}`' for f in result.written_files)}")
-        if result.error:
-            lines.append(f"- **Error:** {result.error}")
-        if result.warnings:
-            for w in result.warnings:
-                lines.append(f"- ⚠ {w}")
-        return "\n".join(lines)
-    except Exception as e:
-        return f"Mutation application failed: {e}"
+        return f"Mutation failed: {e}"
 
 
 def _format_mutation_plan(plan: Any) -> str:
-    """Format a MutationPlan for MCP output."""
-    lines = [f"## Mutation Plan: `{plan.tool}`", ""]
+    """Format a MutationPlan for MCP output (dry-run)."""
+    lines = [f"## Mutation Plan: `{plan.tool}` (DRY RUN)", ""]
     lines.append(f"- **Plan ID:** `{plan.id}`")
     lines.append(f"- **Affected files:** {len(plan.affected_files)}")
 
@@ -1385,8 +1354,23 @@ def _format_mutation_plan(plan: Any) -> str:
         for w in plan.warnings:
             lines.append(f"- ⚠ {w}")
 
+    return "\n".join(lines)
+
+
+def _format_mutation_applied(plan: Any) -> str:
+    """Format a MutationPlan result after application."""
+    lines = [f"## Mutation Applied: `{plan.tool}`", ""]
+    lines.append(f"- **Plan ID:** `{plan.id}`")
+    lines.append(f"- **Files modified:** {len(plan.affected_files)}")
+    for f in plan.affected_files:
+        lines.append(f"  - `{f}`")
+    if plan.warnings:
+        lines.append("")
+        lines.append("### Warnings")
+        for w in plan.warnings:
+            lines.append(f"- {w}")
     lines.append("")
-    lines.append("**To apply:** call `coderadar_apply_mutation` with the plan JSON.")
+    lines.append("Graph has been updated — subsequent codegraph_explore/codegraph_affected calls will reflect the change.")
     return "\n".join(lines)
 
 
