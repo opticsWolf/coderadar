@@ -1218,11 +1218,11 @@ def _traverse(
     graph: Any, entity_id: str, direction: str,
     edge_kinds: list[str] | None, max_depth: int,
 ) -> str:
-    """Generic edge traversal."""
+    """Proper multi-depth BFS edge traversal via MacrameQuery."""
     try:
         from coderadar._core import graph_stats
         if graph_stats().get("modules", 0) == 0:
-            return "No index available. Run `coderadar init` first."
+            return "No index available. Run codegraph_reindex first."
     except (ImportError, RuntimeError):
         return "CodeRadar extension not available."
 
@@ -1231,30 +1231,50 @@ def _traverse(
 
     entity = _find_entity(graph, entity_id)
     if not entity:
-        return f"Entity `{entity_id}` not found. Try codegraph_search to locate it."
+        return f"Entity `{entity_id}` not found. Try codegraph_search."
 
     depth = min(max_depth, 10)
+    # Map MCP direction names to MacrameQuery direction
+    macrame_dir = {"downstream": "out", "upstream": "in", "both": "both"}.get(direction, "both")
+
+    try:
+        results = graph.traverse(entity_id, depth, edge_kinds, macrame_dir)
+    except Exception as e:
+        return f"Traversal failed: {e}"
+
+    if not results:
+        return (
+            f"## Traverse from `{entity.get('name', entity_id)}`\n\n"
+            f"No neighbors found (direction={direction}, max_depth={depth})"
+        )
+
+    # Group by depth
+    by_depth: dict[int, list[dict]] = {}
+    for r in results:
+        d = r.get("depth", 1)
+        by_depth.setdefault(d, []).append(r)
+
     lines = [
         f"## Traverse from `{entity.get('name', entity_id)}`",
-        f"Direction: {direction}, max depth: {depth}",
+        f"Direction: {direction}, max depth: {depth}, "
+        f"edge kinds: {edge_kinds or 'all'}",
+        f"Found {len(results)} reachable entities",
         "",
     ]
 
-    if direction in ("upstream", "both"):
-        callers = _get_callers(graph, entity_id)[:10]
-        if callers:
-            lines.append(f"### Callers ({len(callers)})")
-            for c in callers:
-                lines.append(f"- `{c.get('name', c.get('id', '?'))}` ({c.get('kind', '?')})")
-            lines.append("")
-
-    if direction in ("downstream", "both"):
-        callees = _get_callees(graph, entity_id)[:10]
-        if callees:
-            lines.append(f"### Callees ({len(callees)})")
-            for c in callees:
-                lines.append(f"- `{c.get('name', c.get('id', '?'))}` ({c.get('kind', '?')})")
-            lines.append("")
+    for d in sorted(by_depth.keys()):
+        items = by_depth[d]
+        lines.append(f"### Depth {d} ({len(items)})")
+        for item in items[:15]:
+            name = item.get("name", item.get("id", item.get("entity_id", "?")))
+            ek = item.get("kind", item.get("edge_type", "?"))
+            eid = item.get("id", item.get("entity_id", ""))
+            fp = item.get("file_path", "")
+            fp_str = f" — `{fp}`" if fp else ""
+            lines.append(f"- `{name}` ({ek}){fp_str}")
+        if len(items) > 15:
+            lines.append(f"  ... and {len(items) - 15} more")
+        lines.append("")
 
     return "\n".join(lines)
 
