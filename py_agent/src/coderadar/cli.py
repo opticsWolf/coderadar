@@ -536,13 +536,21 @@ def serve(project_path: str):
     import coderadar
     from .mcp import serve as mcp_serve
 
-    # Load the code graph from the existing Macrame store.
-    # analyze() attaches the store to GLOBAL_GRAPH, which the Rust
-    # extension functions (graph_stats, query_graph, etc.) read from.
-    print(f"Loading CodeRadar graph from {project_path}...", file=sys.stderr)
-    coderadar.analyze(project_path)
-    print("MCP server ready — 5 tools: explore, node, search, affected, resolve", file=sys.stderr)
-    mcp_serve(coderadar.CodeGraph())
+    # Load the code graph by running analyze() on the project root.
+    # This re-reads all source files, detects changes since last index,
+    # and ensures the in-memory GLOBAL_GRAPH is always fresh.
+    # One-time startup cost (seconds) — the server is long-lived.
+    print(f"Indexing {project_path}...", file=sys.stderr)
+    graph = coderadar.analyze(project_path)
+    try:
+        from coderadar._core import graph_stats
+        stats = graph_stats()
+        print(f"Loaded: {stats.get('modules', 0)} modules, "
+              f"{stats.get('functions', 0)} functions, "
+              f"{stats.get('call_edges', 0)} call edges", file=sys.stderr)
+    except ImportError:
+        print("MCP server ready", file=sys.stderr)
+    mcp_serve(graph)
 
 
 @main.command()

@@ -119,7 +119,7 @@ class CodeGraph:
     """
 
     def __init__(self, db_path: Optional[str] = None):
-        self._db_path = db_path or ".coderadar/coderadar.db"
+        self._db_path = db_path or ".coderadar/store/coderadar.db"
         self._config: Dict[str, Any] = {}
         self._macrame = None  # Macrame Database handle (lazy)
 
