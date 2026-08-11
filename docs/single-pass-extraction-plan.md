@@ -3,6 +3,14 @@
 **Implemented:** branch `feature/single-pass-extraction`, commit `bb15e37`  
 **Result:** 19,328→12,232ms (−37%) on codegraph-main, 855→554ms (−35%) on CodeRadar self
 
+**Note (2025-08-12):** Further `.scm` query engine micro-optimizations (branch
+`feature/scm-query-engine`) showed zero measurable improvement. Cursor reuse,
+HashSet pre-allocation, and unsafe indexing are all dwarfed by the extraction
+logic. The remaining 1.75× gap vs CodeGraph on TypeScript is architectural —
+`.scm` query engine + string-based entities vs hand-written `match`-on-node-kind
++ flat buffers. See `docs/performance-roadmap.md` § "Attempted: .scm Query
+Engine Optimization".
+
 ## Motivation
 
 CodeRadar currently uses a two-pass extraction pipeline:

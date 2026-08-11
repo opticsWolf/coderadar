@@ -227,7 +227,10 @@ A flag `is_initial_index: bool` could skip the remove-on-insert pattern.
 
 ---
 
-### 8. Tree-sitter query caching — **Score: 7** (2 × 3.5)
+### 8. Tree-sitter query caching — **Score: 7** (2 × 3.5) — ❌ ATTEMPTED (no gain)
+
+**Likelihood: 2**
+**Impact: 3.5** (~100ms across 200 files) — **measured: 0ms**
 
 **Likelihood: 2**
 **Impact: 3.5** (~100ms across 200 files)
@@ -331,6 +334,29 @@ improvements above deliver much more per unit of effort.
 | 9 | Batched commit_projection | 3 | 2 | 6 | Small |
 | 10 | Memory-mapped source files | 2 | 2 | 4 | Small |
 | 11 | Columnar/flat-buffer extraction | 1 | 3 | 3 | Very Large |
+
+## Attempted: .scm Query Engine Optimization (v0.5.4)
+
+**Branch:** `feature/scm-query-engine`  
+**Date:** 2025-08-12  
+**Result:** No measurable improvement.
+
+Three micro-optimizations were applied to the tree-sitter `.scm` query cursor path:
+
+| # | Optimization | Expected | Measured |
+|---|-------------|----------|----------|
+| C1 | Reuse `QueryCursor` across files (one per thread) | ~50ms | 0ms |
+| C2 | Pre-allocate `seen` HashSet with capacity estimate | ~10ms | 0ms |
+| C3 | Unsafe `get_unchecked` on `capture_tags` (skip bounds check) | ~5ms | 0ms |
+
+**Conclusion:** The query engine is near-optimal. Cursor allocation, HashSet
+rehashing, and bounds checks are all dwarfed by the extraction logic itself
+(name resolution, parameter extraction, span computation, fn-ref subtree
+scanning). The remaining 1.75× gap vs CodeGraph on TypeScript is architectural:
+the `.scm` query engine + string-based entity building vs CodeGraph's
+`match`-on-node-kind + flat-buffer emission. Closing the gap further requires
+either hand-written per-language Rust walkers (option 1) or columnar extraction
+(#11 above) — both high-effort changes deferred to post-v1.
 
 ## Recommended Implementation Order
 
