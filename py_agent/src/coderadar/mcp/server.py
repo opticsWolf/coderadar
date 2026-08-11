@@ -89,13 +89,12 @@ more for the same answer.
 
 After editing code, use the mutation pipeline to keep the graph in sync:
 
-1. `coderadar_plan_body_replacement` — plan/replace a function body
-2. `coderadar_plan_signature_update` — plan/change a function signature (with call-site cascade)
-3. `coderadar_plan_rename` — plan/rename an entity
-4. `coderadar_plan_create_entity` — plan/create a new entity in a file
+1. `coderadar_replace_body` — replace a function body
+2. `coderadar_update_signature` — change a function signature (with call-site cascade)
+3. `coderadar_rename` — rename an entity and all references
+4. `coderadar_create_entity` — create a new entity in a file
 
-**Always plan first (dry_run=True), review the diff, then apply (dry_run=False).**
-Each tool does both — plan and apply are a single call with the dry_run toggle.
+**Always dry-run first, review the diff, then apply with dry_run=False.**
 
 ## Keeping the graph fresh
 
@@ -363,11 +362,11 @@ def create_server(graph: Any) -> MCPServer:
         """Generic edge traversal."""
         return _traverse(graph, entity_id, direction, edge_kinds, max_depth)
 
-    # ── coderadar_plan_body_replacement ──────────────────────────────
+    # ── coderadar_replace_body ────────────────────────────────────
 
     @mcp.tool(
         description=(
-            "Plan or apply replacing the body of a function/method. "
+            "Replace the body of a function/method. "
             "With dry_run=True (default): returns a diff preview for review. "
             "With dry_run=False: writes the file AND updates the graph atomically. "
             "Best practice: call first with dry_run=True to review, then call "
@@ -381,20 +380,20 @@ def create_server(graph: Any) -> MCPServer:
             "open_world_hint": False,
         },
     )
-    def coderadar_plan_body_replacement(
+    def coderadar_replace_body(
         entity_id: str,
         new_body: str,
         expected_hash: Optional[str] = None,
         dry_run: bool = True,
     ) -> str:
-        """Plan or apply a function body replacement."""
-        return _plan_body_replacement(graph, entity_id, new_body, expected_hash, dry_run)
+        """Replace a function body."""
+        return _replace_body(graph, entity_id, new_body, expected_hash, dry_run)
 
-    # ── coderadar_plan_signature_update ──────────────────────────────
+    # ── coderadar_update_signature ────────────────────────────────
 
     @mcp.tool(
         description=(
-            "Plan or apply changing a function/method signature. "
+            "Change a function/method signature. "
             "With dry_run=True: shows the signature change and all affected call sites. "
             "With dry_run=False: writes the change AND updates the graph. "
             "Use inject_defaults=True to inject default argument values at call sites."
@@ -406,20 +405,20 @@ def create_server(graph: Any) -> MCPServer:
             "open_world_hint": False,
         },
     )
-    def coderadar_plan_signature_update(
+    def coderadar_update_signature(
         entity_id: str,
         new_signature: str,
         inject_defaults: bool = False,
         dry_run: bool = True,
     ) -> str:
-        """Plan or apply a signature update."""
-        return _plan_signature_update(graph, entity_id, new_signature, inject_defaults, dry_run)
+        """Change a function signature."""
+        return _update_signature(graph, entity_id, new_signature, inject_defaults, dry_run)
 
-    # ── coderadar_plan_rename ────────────────────────────────────────
+    # ── coderadar_rename ────────────────────────────────────────────
 
     @mcp.tool(
         description=(
-            "Plan or apply renaming an entity (function, class, variable). "
+            "Rename an entity (function, class, variable) and all references. "
             "With dry_run=True: shows all files and references that need updating. "
             "With dry_run=False: renames the definition and ALL references, "
             "updates the graph. Covers definition site and all usages."
@@ -431,20 +430,20 @@ def create_server(graph: Any) -> MCPServer:
             "open_world_hint": False,
         },
     )
-    def coderadar_plan_rename(
+    def coderadar_rename(
         entity_id: str,
         new_name: str,
         dry_run: bool = True,
     ) -> str:
-        """Plan or apply a rename."""
-        return _plan_rename(graph, entity_id, new_name, dry_run)
+        """Rename an entity."""
+        return _rename(graph, entity_id, new_name, dry_run)
 
-    # ── coderadar_plan_create_entity ─────────────────────────────────
+    # ── coderadar_create_entity ─────────────────────────────────────
 
     @mcp.tool(
         description=(
-            "Plan or apply creating a new entity (function, class, constant) "
-            "in a file. With dry_run=True: shows where the entity would be inserted. "
+            "Create a new entity (function, class, constant) in a file. "
+            "With dry_run=True: shows where the entity would be inserted. "
             "With dry_run=False: inserts the entity into the file AND indexes it. "
             "Language-aware placement at the appropriate location."
         ),
@@ -455,7 +454,7 @@ def create_server(graph: Any) -> MCPServer:
             "open_world_hint": False,
         },
     )
-    def coderadar_plan_create_entity(
+    def coderadar_create_entity(
         file_path: str,
         language: str,
         kind: str,
@@ -464,8 +463,8 @@ def create_server(graph: Any) -> MCPServer:
         decorators: Optional[list[str]] = None,
         dry_run: bool = True,
     ) -> str:
-        """Plan or apply creating a new entity."""
-        return _plan_create_entity(graph, file_path, language, kind, name, body, decorators, dry_run)
+        """Create a new entity."""
+        return _create_entity(graph, file_path, language, kind, name, body, decorators, dry_run)
 
     return mcp
 
@@ -1264,64 +1263,64 @@ def _traverse(
     return "\n".join(lines)
 
 
-def _plan_body_replacement(
+def _replace_body(
     graph: Any, entity_id: str, new_body: str,
     expected_hash: str | None, dry_run: bool,
 ) -> str:
-    """Plan or apply a function body replacement."""
+    """Replace a function body."""
     try:
-        plan = graph.plan_body_replacement(entity_id, new_body, expected_hash, dry_run=dry_run)
+        plan = graph.plan_body_replacement(entity_id, new_body, expected_hash, dry_run=True)
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
-        else:
-            return _format_mutation_applied(plan)
+        result = graph.apply(plan)
+        return _format_mutation_applied(result)
     except Exception as e:
         return f"Mutation failed: {e}"
 
 
-def _plan_signature_update(
+def _update_signature(
     graph: Any, entity_id: str, new_signature: str,
     inject_defaults: bool, dry_run: bool,
 ) -> str:
-    """Plan or apply a signature update."""
+    """Change a function signature."""
     try:
         plan = graph.plan_signature_update(
-            entity_id, new_signature, inject_defaults=inject_defaults, dry_run=dry_run,
+            entity_id, new_signature, inject_defaults=inject_defaults, dry_run=True,
         )
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
-        else:
-            return _format_mutation_applied(plan)
+        result = graph.apply(plan)
+        return _format_mutation_applied(result)
     except Exception as e:
         return f"Mutation failed: {e}"
 
 
-def _plan_rename(graph: Any, entity_id: str, new_name: str, dry_run: bool) -> str:
-    """Plan or apply a rename."""
+def _rename(graph: Any, entity_id: str, new_name: str, dry_run: bool) -> str:
+    """Rename an entity."""
     try:
-        plan = graph.plan_rename(entity_id, new_name, dry_run=dry_run)
+        plan = graph.plan_rename(entity_id, new_name, dry_run=True)
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
-        else:
-            return _format_mutation_applied(plan)
+        result = graph.apply(plan)
+        return _format_mutation_applied(result)
     except Exception as e:
         return f"Mutation failed: {e}"
 
 
-def _plan_create_entity(
+def _create_entity(
     graph: Any, file_path: str, language: str, kind: str,
     name: str, body: str, decorators: list[str] | None, dry_run: bool,
 ) -> str:
-    """Plan or apply creating a new entity."""
+    """Create a new entity."""
     try:
         plan = graph.plan_create_entity(
             file_path, language, kind, name, body,
-            decorators=decorators, dry_run=dry_run,
+            decorators=decorators, dry_run=True,
         )
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
-        else:
-            return _format_mutation_applied(plan)
+        result = graph.apply(plan)
+        return _format_mutation_applied(result)
     except Exception as e:
         return f"Mutation failed: {e}"
 
@@ -1357,20 +1356,23 @@ def _format_mutation_plan(plan: Any) -> str:
     return "\n".join(lines)
 
 
-def _format_mutation_applied(plan: Any) -> str:
-    """Format a MutationPlan result after application."""
-    lines = [f"## Mutation Applied: `{plan.tool}`", ""]
-    lines.append(f"- **Plan ID:** `{plan.id}`")
-    lines.append(f"- **Files modified:** {len(plan.affected_files)}")
-    for f in plan.affected_files:
-        lines.append(f"  - `{f}`")
-    if plan.warnings:
+def _format_mutation_applied(result: Any) -> str:
+    """Format a MutationResult after application."""
+    lines = ["## Mutation Applied", ""]
+    lines.append(f"- **Success:** {result.success}")
+    if result.written_files:
+        lines.append(f"- **Files written:** {len(result.written_files)}")
+        for f in result.written_files:
+            lines.append(f"  - `{f}`")
+    if result.error:
+        lines.append(f"- **Error:** {result.error}")
+    if result.warnings:
         lines.append("")
         lines.append("### Warnings")
-        for w in plan.warnings:
+        for w in result.warnings:
             lines.append(f"- {w}")
     lines.append("")
-    lines.append("Graph has been updated — subsequent codegraph_explore/codegraph_affected calls will reflect the change.")
+    lines.append("Graph has been updated — subsequent queries will reflect the change.")
     return "\n".join(lines)
 
 
