@@ -520,7 +520,7 @@ class CodeGraph:
         Phase 3: Rebuild ProjectedGraph reverse indexes.
         """
         try:
-            from coderadar._core import apply_mutation as _am
+            from coderadar._core import apply_mutation as _am, clear_embeddings_for_file
             _am(json.dumps({
                 "id": plan.id,
                 "tool": plan.tool,
@@ -528,6 +528,12 @@ class CodeGraph:
                            "expected_hash": e.expected_hash} for e in plan.edits],
                 "affected_files": plan.affected_files,
             }))
+            # Invalidate stale embeddings for all affected files
+            for f in plan.affected_files:
+                try:
+                    clear_embeddings_for_file(f)
+                except RuntimeError:
+                    pass
         except ImportError:
             pass
         return MutationResult(

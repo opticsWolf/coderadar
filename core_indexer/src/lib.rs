@@ -56,6 +56,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
     m.add_function(wrap_pyfunction!(set_embedding, m)?)?;
+    m.add_function(wrap_pyfunction!(clear_embeddings_for_file, m)?)?;
     m.add_function(wrap_pyfunction!(module_children, m)?)?;
     m.add_function(wrap_pyfunction!(set_module_star_exports, m)?)?;
     m.add_function(wrap_pyfunction!(start_watcher, m)?)?;
@@ -1167,6 +1168,21 @@ fn module_children(
 
         Ok(dict.into())
     })
+}
+
+/// Set a module's `__all__` star-export names list.
+#[pyfunction]
+fn clear_embeddings_for_file(file_path: &str) -> PyResult<PyObject> {
+    let mut guard = GLOBAL_GRAPH.write();
+    let graph = guard.as_mut()
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
+            "No graph loaded"
+        ))?;
+    graph.clear_embeddings_for_file(file_path);
+    let py = unsafe { Python::assume_gil_acquired() };
+    let dict = PyDict::new(py);
+    dict.set_item("ok", true)?;
+    Ok(dict.into())
 }
 
 /// v0.5: Set a module's `__all__` star-export names list.

@@ -1198,6 +1198,40 @@ impl CodeGraph {
         Ok(())
     }
 
+    /// Clear embedding vectors for all entities in a file.
+    /// Called after mutation to invalidate stale embeddings.
+    pub fn clear_embeddings_for_file(&self, file_path: &str) {
+        let module_id = format!("{}::module", file_path);
+        let mut projection = (*self.snapshot()).clone();
+        if let Some(module) = projection.modules.get(&module_id) {
+            let ids: Vec<String> = module.functions.iter()
+                .chain(module.classes.iter())
+                .chain(module.imports.iter())
+                .chain(module.constants.iter())
+                .chain(module.type_aliases.iter())
+                .cloned()
+                .collect();
+            for id in &ids {
+                if let Some(f) = projection.functions.get_mut(id) {
+                    std::sync::Arc::make_mut(f).embedding = EmbeddingVec(vec![]);
+                }
+                if let Some(c) = projection.classes.get_mut(id) {
+                    std::sync::Arc::make_mut(c).embedding = EmbeddingVec(vec![]);
+                }
+                if let Some(i) = projection.imports.get_mut(id) {
+                    std::sync::Arc::make_mut(i).embedding = EmbeddingVec(vec![]);
+                }
+                if let Some(c) = projection.constants.get_mut(id) {
+                    std::sync::Arc::make_mut(c).embedding = EmbeddingVec(vec![]);
+                }
+                if let Some(ta) = projection.type_aliases.get_mut(id) {
+                    std::sync::Arc::make_mut(ta).embedding = EmbeddingVec(vec![]);
+                }
+            }
+        }
+        self.commit_projection(projection);
+    }
+
     /// v0.5: Set a module's `__all__` star-export names list.
     /// Called from Python after static `__all__` analysis (exports.py).
     /// Enables resolution of `from X import *` wildcard imports.
