@@ -17,6 +17,7 @@ from .actix import RustActixResolver
 from .express import ExpressResolver
 from .springboot import SpringBootResolver
 from .laravel import LaravelResolver
+from .aspnet import AspNetResolver
 
 # Registry of all available resolvers
 ALL_RESOLVERS: list[type[FrameworkResolver]] = [
@@ -28,6 +29,7 @@ ALL_RESOLVERS: list[type[FrameworkResolver]] = [
     ExpressResolver,
     SpringBootResolver,
     LaravelResolver,
+    AspNetResolver,
 ]
 
 __all__ = [
@@ -43,5 +45,6 @@ __all__ = [
     "ExpressResolver",
     "SpringBootResolver",
     "LaravelResolver",
+    "AspNetResolver",
     "ALL_RESOLVERS",
 ]

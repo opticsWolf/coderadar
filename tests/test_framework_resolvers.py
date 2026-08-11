@@ -925,3 +925,133 @@ Route::group(['prefix' => 'admin'], function () {
         assert result.nodes == []
         assert result.edges == []
 
+
+class TestAspNetResolver:
+    """ASP.NET Core attribute-based route extraction for C#."""
+
+    def test_detects_csproj_with_web_sdk(self, tmp_path):
+        from coderadar.resolvers.aspnet import AspNetResolver
+        resolver = AspNetResolver()
+        (tmp_path / "MyApi.csproj").write_text(
+            '<Project Sdk="Microsoft.NET.Sdk.Web"><PropertyGroup></PropertyGroup></Project>'
+        )
+        assert resolver.detect(tmp_path)
+
+    def test_detects_by_attribute_grep(self, tmp_path):
+        from coderadar.resolvers.aspnet import AspNetResolver
+        resolver = AspNetResolver()
+        (tmp_path / "UsersController.cs").write_text(
+            '[ApiController]\npublic class UsersController : ControllerBase { }'
+        )
+        assert resolver.detect(tmp_path)
+
+    def test_no_detect_without_aspnet(self, tmp_path):
+        from coderadar.resolvers.aspnet import AspNetResolver
+        resolver = AspNetResolver()
+        assert not resolver.detect(tmp_path)
+
+    def test_extracts_crud_attributes(self):
+        from coderadar.resolvers.aspnet import AspNetResolver
+        resolver = AspNetResolver()
+        source = """\
+[ApiController]
+[Route("api/users")]
+public class UsersController : ControllerBase
+{
+    [HttpGet]
+    public IActionResult List() => Ok();
+
+    [HttpGet("{id}")]
+    public IActionResult GetById(int id) => Ok();
+
+    [HttpPost]
+    public IActionResult Create([FromBody] User u) => Created("", u);
+
+    [HttpPut("{id}")]
+    public IActionResult Update(int id, [FromBody] User u) => Ok(u);
+
+    [HttpDelete("{id}")]
+    public IActionResult Delete(int id) => NoContent();
+}
+"""
+        result = resolver.extract("UsersController.cs", source)
+        assert len(result.nodes) == 5, f"Got {len(result.nodes)} nodes"
+        methods = {n.metadata["method"] for n in result.nodes}
+        assert methods == {"GET", "POST", "PUT", "DELETE"}
+
+    def test_controller_token_replacement(self):
+        from coderadar.resolvers.aspnet import AspNetResolver
+        resolver = AspNetResolver()
+        source = """\
+[ApiController]
+[Route("api/[controller]")]
+public class ProductsController : ControllerBase
+{
+    [HttpGet]
+    public IActionResult List() => Ok();
+}
+"""
+        result = resolver.extract("ProductsController.cs", source)
+        assert len(result.nodes) == 1
+        assert result.nodes[0].metadata["path"] == "api/products"
+
+    def test_no_class_route_prefix(self):
+        from coderadar.resolvers.aspnet import AspNetResolver
+        resolver = AspNetResolver()
+        source = """\
+[ApiController]
+public class HealthController : ControllerBase
+{
+    [HttpGet("/health")]
+    public IActionResult Check() => Ok();
+
+    [HttpGet("/version")]
+    public IActionResult Version() => Ok();
+}
+"""
+        result = resolver.extract("HealthController.cs", source)
+        assert len(result.nodes) == 2
+        paths = {n.metadata["path"] for n in result.nodes}
+        assert "/health" in paths
+        assert "/version" in paths
+
+    def test_fixture_extracts_all(self):
+        from coderadar.resolvers.aspnet import AspNetResolver
+        resolver = AspNetResolver()
+        fixture = (
+            Path(__file__).parent
+            / "fixtures" / "csharp" / "AspNetUsersController.cs"
+        ).read_text()
+        result = resolver.extract("AspNetUsersController.cs", fixture)
+        assert len(result.nodes) >= 10, f"Got {len(result.nodes)} nodes"
+        assert len(result.edges) >= 10, f"Got {len(result.edges)} edges"
+
+        paths = {n.metadata["path"] for n in result.nodes}
+        assert "api/users" in paths or "api/users/{id}" in paths
+        assert "/health" in paths
+
+    def test_claims_reference_patterns(self):
+        from coderadar.resolvers.aspnet import AspNetResolver
+        resolver = AspNetResolver()
+        assert resolver.claims_reference("UsersController")
+        assert resolver.claims_reference("UserService")
+        assert resolver.claims_reference("UserRepository")
+        assert not resolver.claims_reference("CalculateTax")
+
+    def test_resolve_prefers_controller_dirs(self):
+        from coderadar.resolvers.aspnet import AspNetResolver
+        resolver = AspNetResolver()
+        result = resolver.resolve("UsersController", [{
+            "id": "x", "name": "UsersController", "kind": "class",
+            "file_path": "/Controllers/UsersController.cs",
+        }])
+        assert result is not None
+        assert result["confidence"] == 0.85
+
+    def test_skips_non_cs_files(self):
+        from coderadar.resolvers.aspnet import AspNetResolver
+        resolver = AspNetResolver()
+        result = resolver.extract("routes.py", '[HttpGet("/users")]')
+        assert result.nodes == []
+        assert result.edges == []
+
