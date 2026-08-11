@@ -1,8 +1,8 @@
 # CodeRadar Performance Roadmap
 
 **Date:** 2025-08-09 (updated 2025-08-12)  
-**Baseline:** v0.5.4, single-pass extraction  
-**Latest:** CodeRadar self 554ms, codegraph-main 12,232ms (1.75× vs CodeGraph)
+**Baseline:** v0.5.6, single-pass extraction + 9 framework resolvers  
+**Latest:** CodeRadar self ~560ms, codegraph-main 12,232ms (1.75× vs CodeGraph)
 
 ---
 

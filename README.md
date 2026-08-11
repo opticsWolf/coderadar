@@ -1,4 +1,4 @@
-# CodeRadar v0.5.4
+# CodeRadar v0.5.6
 
 **Live semantic graph of your codebase — incremental, queryable, LLM-writable.**
 
@@ -47,9 +47,9 @@ Rust Core (ProjectedGraph, Tree-sitter 18-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 18 (12 Tier 1 full, 6 Tier 2) |
-| **Tests** | 303 (163 Rust + 140 Python) |
+| **Tests** | 451 (163 Rust + 288 Python) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
-| **Frameworks** | Django, Flask, FastAPI, Go net/http, Rust Actix |
+| **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET |
 | **Agents** | MCP server with explore, node, search, affected tools |
 
 ## Quick Start
@@ -134,15 +134,25 @@ past = graph.as_of("2026-08-01T00:00:00Z")
 
 CodeRadar detects and extracts framework-specific patterns that tree-sitter can't see:
 
-| Framework | Detection | Extracted Patterns |
-|-----------|-----------|-------------------|
-| **Django** | `manage.py` | `path()` routes, DRF `router.register()`, admin registrations, `.as_view()` handlers |
-| **Flask** | `@app.route` | Route decorators, Flask-RESTful `add_resource()`, Blueprint registration |
-| **FastAPI** | `APIRouter` | `@app.get()`/`@router.post()` routes, `Depends()` injection chains, `include_router()` |
-| **Go net/http** | `http.HandleFunc` | `mux.Handle()` routes, `gin.GET()` detection, stdlib handler registration |
-| **Rust Actix** | `actix_web` | `App::new().route()`, `web::resource()`, `#[get]`/`#[post]` attribute macros, `HttpServer::new` |
+| Framework | Language | Detection | Extracted Patterns |
+|-----------|----------|-----------|-------------------|
+| **Django** | Python | `manage.py` | `path()` routes, DRF `router.register()`, admin registrations, `.as_view()` handlers |
+| **Flask** | Python | `@app.route` | Route decorators, Flask-RESTful `add_resource()`, Blueprint registration |
+| **FastAPI** | Python | `APIRouter` | `@app.get()`/`@router.post()` routes, `Depends()` injection chains, `include_router()` |
+| **Go** | Go | `go.mod` | `gin.GET()`, `mux.HandleFunc()`, Chi/Echo/Fiber route patterns |
+| **Actix** | Rust | `Cargo.toml` | `App::new().route()`, `web::resource()`, `#[get]`/`#[post]` attribute macros |
+| **Express** | JS/TS | `package.json` | `app.get()`, `router.post()`, chained `.route()` builder, `app.use()` middleware |
+| **Spring Boot** | Java | `pom.xml`/`build.gradle` | `@GetMapping`, `@PostMapping`, `@RequestMapping(method=...)`, class-level `@RequestMapping` prefix, `[controller]` token replacement |
+| **Laravel** | PHP | `composer.json` | `Route::get()`, `Route::resource()`, `Route::group()` prefix propagation, `[Controller::class, 'method']` array + `'Controller@method'` string syntax |
+| **ASP.NET** | C# | `.csproj`/`.sln` | `[HttpGet]`, `[HttpPost]`, `[Route("api/[controller]")]` token replacement, Minimal API `app.MapGet()` |
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
+
+## v0.5.6 Feature Highlights
+
+- **9 framework resolvers** — Django, Flask, FastAPI, Go, Actix, **Express**, **Spring Boot**, **Laravel**, **ASP.NET** — detect route registrations and synthesize handler edges across 6 languages
+- **QueryPlanner** — natural-language intent classifier routing to MacrameQuery primitives (callers_of, traverse, search_similar, find)
+- **451 tests, 0 failures** — 163 Rust + 288 Python, full E2E coverage
 
 ## v0.5.4 Feature Highlights
 
@@ -181,7 +191,7 @@ core_indexer/              # Rust core
     lib.rs                 # PyO3 FFI bindings
 
 py_agent/src/coderadar/    # Python layer
-    resolvers/             # Django, Flask, FastAPI, Go, Actix framework resolvers + __all__ exports
+    resolvers/             # 9 framework resolvers: Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET
     embedding/             # Content-addressed dedup
     agent/                 # GraphRAG query pipeline
     lsp/                   # Persistent LSP warm pool
