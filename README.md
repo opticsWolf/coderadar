@@ -1,5 +1,12 @@
 # CodeRadar v0.5.8
 
+[![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
+[![Python](https://img.shields.io/pypi/pyversions/coderadar-rs)](https://pypi.org/project/coderadar-rs/)
+[![Rust](https://img.shields.io/badge/rust-1.80%2B-orange)](https://www.rust-lang.org)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Languages](https://img.shields.io/badge/languages-41-brightgreen)]()
+
 **Live semantic graph of your codebase — incremental, queryable, LLM-writable.**
 
 CodeRadar maintains an incrementally updatable graph of your code's logical structure, enabling LLMs and developer tools to both **query** and **safely rewrite** code through a unified pipeline.
