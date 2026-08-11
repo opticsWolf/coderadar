@@ -79,6 +79,24 @@ more for the same answer.
 - `codegraph_search` — find symbols by keyword when you don't know the exact name
 - `codegraph_affected` — transitive impact: "what calls this, all the way up?"
 - `coderadar_resolve` — framework-aware reference resolution: "what handles /users/:id?", "where is UserService?", "what model is UserModel?"
+- `codegraph_query` — structured Pest graph queries ("functions where name contains 'test'")
+- `codegraph_search_similar` — semantic/embedding search (requires compute_embeddings first)
+- `codegraph_module_children` — list classes/functions/imports in a module
+- `codegraph_as_of` — query the graph at a past timestamp ("what did X look like at commit Y?")
+- `codegraph_traverse` — generic edge traversal with direction and depth control
+
+## Mutation pipeline (LLM-writable code)
+
+After editing code, use the mutation pipeline to keep the graph in sync:
+
+1. `coderadar_plan_body_replacement` — plan replacing a function body
+2. `coderadar_plan_signature_update` — plan changing a function signature (with call-site cascade)
+3. `coderadar_plan_rename` — plan renaming an entity
+4. `coderadar_plan_create_entity` — plan creating a new entity in a file
+5. `coderadar_apply_mutation` — apply a planned mutation to files AND update the graph
+
+**Always plan before applying.** Dry-run plans show the diff preview without touching files.
+When ready, call apply_mutation to execute the edit and keep the graph fresh.
 
 ## Anti-patterns
 
@@ -223,6 +241,243 @@ def create_server(graph: Any) -> MCPServer:
     ) -> str:
         """Framework-aware reference resolution."""
         return _resolve_ref(graph, name, limit)
+
+    # ── codegraph_query — Pest graph query language ───────────────────
+
+    @mcp.tool(
+        description=(
+            "Execute a structured Pest graph query against the indexed codebase. "
+            "Supports: 'functions where name contains X', 'classes where inherits_from "
+            "contains Y', 'imports where module contains Z', 'entities where kind = function'. "
+            "Returns matched entities with metadata. Use for precise structural queries "
+            "that go beyond keyword search."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def codegraph_query(
+        query: str,
+    ) -> str:
+        """Execute a Pest graph query."""
+        return _query_graph(graph, query)
+
+    # ── codegraph_search_similar — embedding/semantic search ──────────
+
+    @mcp.tool(
+        description=(
+            "Find symbols semantically similar to a natural-language query. "
+            "Requires embeddings to be pre-computed (run compute_embeddings first). "
+            "Returns ranked results with cosine similarity scores. "
+            "Use for conceptual search: 'authentication logic', 'error handling', etc."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def codegraph_search_similar(
+        query: str,
+        top_k: int = 10,
+    ) -> str:
+        """Semantic similarity search."""
+        return _search_similar(graph, query, top_k)
+
+    # ── codegraph_module_children — structural discovery ─────────────
+
+    @mcp.tool(
+        description=(
+            "List all children (classes, functions, imports, constants) of a module. "
+            "The module ID is typically '{file_path}::module' — get it from codegraph_explore "
+            "or codegraph_search results. Use to understand a module's structure before editing."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def codegraph_module_children(
+        module_id: str,
+    ) -> str:
+        """List module children."""
+        return _module_children(graph, module_id)
+
+    # ── codegraph_as_of — temporal query ─────────────────────────────
+
+    @mcp.tool(
+        description=(
+            "Query the code graph as it existed at a specific point in time. "
+            "Macrame's bitemporal ledger stores every version of every entity and edge, "
+            "so this reconstructs the graph at any past timestamp. "
+            "Use for: 'what did this look like last week?', 'when was X introduced?'."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": True,
+        },
+    )
+    def codegraph_as_of(
+        timestamp: str,
+        query: str = "",
+        symbols: Optional[list[str]] = None,
+    ) -> str:
+        """Temporal graph query."""
+        return _as_of(graph, timestamp, query, symbols or [])
+
+    # ── codegraph_traverse — edge traversal ──────────────────────────
+
+    @mcp.tool(
+        description=(
+            "Traverse the graph from a starting entity along specified edge kinds. "
+            "Direction: 'downstream' (callees), 'upstream' (callers), 'both'. "
+            "Edge kinds: 'calls', 'imports', 'inherits', 'overrides', 'handles', "
+            "'declares', 'references', 'navigation'. Returns a tree of linked entities. "
+            "Use for custom flow analysis beyond explore/affected."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def codegraph_traverse(
+        entity_id: str,
+        direction: Literal["downstream", "upstream", "both"] = "both",
+        edge_kinds: Optional[list[str]] = None,
+        max_depth: int = 3,
+    ) -> str:
+        """Generic edge traversal."""
+        return _traverse(graph, entity_id, direction, edge_kinds, max_depth)
+
+    # ── coderadar_plan_body_replacement ──────────────────────────────
+
+    @mcp.tool(
+        description=(
+            "Plan replacing the body of a function/method. Returns a MutationPlan "
+            "with a diff preview and affected file list. Always dry-run by default — "
+            "call coderadar_apply_mutation to execute. "
+            "Use after codegraph_affected to understand impact, then edit through "
+            "the graph rather than raw Read/Edit."
+        ),
+        annotations={
+            "read_only_hint": False,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_plan_body_replacement(
+        entity_id: str,
+        new_body: str,
+        expected_hash: Optional[str] = None,
+    ) -> str:
+        """Plan a function body replacement."""
+        return _plan_body_replacement(graph, entity_id, new_body, expected_hash)
+
+    # ── coderadar_plan_signature_update ──────────────────────────────
+
+    @mcp.tool(
+        description=(
+            "Plan changing a function/method signature. Returns a MutationPlan "
+            "showing the signature change and all affected call sites. "
+            "Optionally provide call_site_values to cascade argument changes. "
+            "Use inject_defaults=True to inject default values at call sites."
+        ),
+        annotations={
+            "read_only_hint": False,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_plan_signature_update(
+        entity_id: str,
+        new_signature: str,
+        inject_defaults: bool = False,
+    ) -> str:
+        """Plan a signature update."""
+        return _plan_signature_update(graph, entity_id, new_signature, inject_defaults)
+
+    # ── coderadar_plan_rename ────────────────────────────────────────
+
+    @mcp.tool(
+        description=(
+            "Plan renaming an entity (function, class, variable). Returns a "
+            "MutationPlan showing all files where the name appears and needs updating. "
+            "Covers definition site and all references."
+        ),
+        annotations={
+            "read_only_hint": False,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_plan_rename(
+        entity_id: str,
+        new_name: str,
+    ) -> str:
+        """Plan a rename."""
+        return _plan_rename(graph, entity_id, new_name)
+
+    # ── coderadar_plan_create_entity ─────────────────────────────────
+
+    @mcp.tool(
+        description=(
+            "Plan creating a new entity (function, class, constant) in a file. "
+            "Returns a MutationPlan that, when applied, inserts the entity at the "
+            "appropriate location. Language-aware placement."
+        ),
+        annotations={
+            "read_only_hint": False,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_plan_create_entity(
+        file_path: str,
+        language: str,
+        kind: str,
+        name: str,
+        body: str,
+        decorators: Optional[list[str]] = None,
+    ) -> str:
+        """Plan creating a new entity."""
+        return _plan_create_entity(graph, file_path, language, kind, name, body, decorators)
+
+    # ── coderadar_apply_mutation ─────────────────────────────────────
+
+    @mcp.tool(
+        description=(
+            "Apply a previously planned mutation. Takes the plan JSON from any "
+            "coderadar_plan_* tool and executes it: edits files on disk AND updates "
+            "the graph index in a single atomic operation. "
+            "Returns the mutation result with status, changed files, and new entity IDs. "
+            "CRITICAL: always plan first (dry-run), review the diff, then apply."
+        ),
+        annotations={
+            "read_only_hint": False,
+            "destructive_hint": True,
+            "idempotent_hint": False,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_apply_mutation(
+        plan_json: str,
+    ) -> str:
+        """Apply a mutation plan."""
+        return _apply_mutation(graph, plan_json)
 
     return mcp
 
@@ -730,6 +985,337 @@ def _affected(graph: Any, entity_id: str, max_depth: int) -> str:
             lines.append(f"{indent}  ... and {len(entities) - 20} more")
         lines.append("")
 
+    return "\n".join(lines)
+
+
+# ── New Tool Implementations (v0.5.9) ─────────────────────────────────
+
+def _query_graph(graph: Any, query: str) -> str:
+    """Execute a Pest query against the graph."""
+    try:
+        from coderadar._core import graph_stats
+        if graph_stats().get("modules", 0) == 0:
+            return "No index available. Run `coderadar init` first."
+    except (ImportError, RuntimeError):
+        return "CodeRadar extension not available."
+
+    if not query.strip():
+        return "Please provide a Pest query. Examples:\n" \
+               "  - functions where name contains 'test'\n" \
+               "  - classes where inherits_from contains 'BaseModel'\n" \
+               "  - imports where module contains 'os'"
+
+    try:
+        from coderadar._core import query_graph as _qg
+        rows = _qg(query)
+        if not rows:
+            return f"Query `{query}` returned no results."
+        lines = [f"## Query: `{query}`", f"Found {len(rows)} result(s)", ""]
+        for i, row in enumerate(rows[:30], 1):
+            name = row.get("name", row.get("id", "?"))
+            kind = row.get("kind", row.get("entity_type", "?"))
+            fp = row.get("file_path", "?")
+            sl = row.get("start_line", row.get("line", ""))
+            lines.append(f"{i}. `{name}` ({kind}) — `{fp}`")
+            if sl:
+                lines.append(f"   Line: {sl}")
+            sig = row.get("signature")
+            if sig:
+                lines.append(f"   Signature: `{sig}`")
+        if len(rows) > 30:
+            lines.append(f"... and {len(rows) - 30} more")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Query failed: {e}"
+
+
+def _search_similar(graph: Any, query: str, top_k: int) -> str:
+    """Semantic/embedding similarity search."""
+    try:
+        from coderadar._core import graph_stats
+        if graph_stats().get("modules", 0) == 0:
+            return "No index available. Run `coderadar init` first."
+    except (ImportError, RuntimeError):
+        return "CodeRadar extension not available."
+
+    if not query.strip():
+        return "Please provide a natural-language query for semantic search."
+
+    # Try to embed the query using fastembed
+    try:
+        from fastembed import TextEmbedding
+        model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        embedding = list(model.embed([query]))[0]
+    except ImportError:
+        return (
+            "Semantic search requires `fastembed` to be installed. "
+            "Run: pip install fastembed\n"
+            "Then run compute_embeddings() to index all entities."
+        )
+    except Exception as e:
+        return f"Embedding failed: {e}"
+
+    try:
+        from coderadar._core import search_similar as _ss
+        results = _ss(list(embedding), min(top_k, 20))
+    except RuntimeError:
+        return (
+            "No embeddings found in the index. "
+            "Run `graph.compute_embeddings()` first to generate embeddings for all entities."
+        )
+
+    if not results:
+        return f"No semantically similar results found for '{query}'."
+
+    lines = [f"## Semantic Search: `{query}`", f"Found {len(results)} result(s)", ""]
+    for i, r in enumerate(results, 1):
+        name = r.get("name", "?")
+        kind = r.get("kind", "?")
+        fp = r.get("file_path", "?")
+        sim = r.get("similarity", 0.0)
+        lines.append(f"{i}. `{name}` ({kind}) — similarity {sim:.3f}")
+        lines.append(f"   File: `{fp}`")
+        doc = r.get("docstring")
+        if doc:
+            lines.append(f"   {doc[:120]}{'...' if len(doc) > 120 else ''}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _module_children(graph: Any, module_id: str) -> str:
+    """List children of a module."""
+    try:
+        from coderadar._core import graph_stats
+        if graph_stats().get("modules", 0) == 0:
+            return "No index available. Run `coderadar init` first."
+    except (ImportError, RuntimeError):
+        return "CodeRadar extension not available."
+
+    if not module_id.strip():
+        return "Please provide a module ID (e.g. 'src/main.py::module')."
+
+    try:
+        from coderadar._core import module_children as _mc
+        children = _mc(module_id)
+    except Exception as e:
+        return f"Module `{module_id}` not found or error: {e}"
+
+    total = sum(len(children.get(k, [])) for k in ("classes", "functions", "imports", "constants"))
+    lines = [f"## Module: `{module_id}`", f"{total} children", ""]
+
+    for category in ("classes", "functions", "imports", "constants"):
+        items = children.get(category, [])
+        if not items:
+            continue
+        lines.append(f"### {category.title()} ({len(items)})")
+        for item in items:
+            name = item.get("name", item.get("id", "?"))
+            item_id = item.get("id", "")
+            line_no = item.get("line", item.get("start_line", ""))
+            extra = f" (line {line_no})" if line_no else ""
+            lines.append(f"- `{name}`{extra} — `{item_id}`")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
+    """Query the graph at a past timestamp."""
+    try:
+        from coderadar._core import graph_stats
+        if graph_stats().get("modules", 0) == 0:
+            return "No index available. Run `coderadar init` first."
+    except (ImportError, RuntimeError):
+        return "CodeRadar extension not available."
+
+    if not timestamp:
+        return "Please provide an ISO 8601 timestamp (e.g. '2025-01-15T10:00:00Z')."
+
+    try:
+        snapshot = graph.as_of(timestamp)
+    except Exception as e:
+        return f"Temporal query failed: {e}. Ensure Macrame snapshots are enabled."
+
+    names = _parse_names(query, symbols)
+    if not names:
+        lines = [
+            f"## Snapshot at `{timestamp}`",
+            "",
+            f"Graph loaded at {timestamp}. Provide symbols to explore, or use:",
+            f"- `codegraph_query` with timestamp to run Pest queries",
+            f"- `search_entities` to find symbols at this point in time",
+        ]
+        return "\n".join(lines)
+
+    lines = [f"## Snapshot at `{timestamp}`", ""]
+    for name in names:
+        entity = snapshot.find(name) if hasattr(snapshot, "find") else None
+        if entity:
+            lines.append(f"**{entity.get('name', name)}** ({entity.get('kind', '?')})")
+            lines.append(f"- File: `{entity.get('file_path', '?')}`")
+            sig = entity.get("signature")
+            if sig:
+                lines.append(f"- Signature: `{sig}`")
+        else:
+            lines.append(f"`{name}` — not found at {timestamp}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _traverse(
+    graph: Any, entity_id: str, direction: str,
+    edge_kinds: list[str] | None, max_depth: int,
+) -> str:
+    """Generic edge traversal."""
+    try:
+        from coderadar._core import graph_stats
+        if graph_stats().get("modules", 0) == 0:
+            return "No index available. Run `coderadar init` first."
+    except (ImportError, RuntimeError):
+        return "CodeRadar extension not available."
+
+    if not entity_id.strip():
+        return "Please provide an entity ID to traverse from."
+
+    entity = _find_entity(graph, entity_id)
+    if not entity:
+        return f"Entity `{entity_id}` not found. Try codegraph_search to locate it."
+
+    depth = min(max_depth, 10)
+    lines = [
+        f"## Traverse from `{entity.get('name', entity_id)}`",
+        f"Direction: {direction}, max depth: {depth}",
+        "",
+    ]
+
+    if direction in ("upstream", "both"):
+        callers = _get_callers(graph, entity_id)[:10]
+        if callers:
+            lines.append(f"### Callers ({len(callers)})")
+            for c in callers:
+                lines.append(f"- `{c.get('name', c.get('id', '?'))}` ({c.get('kind', '?')})")
+            lines.append("")
+
+    if direction in ("downstream", "both"):
+        callees = _get_callees(graph, entity_id)[:10]
+        if callees:
+            lines.append(f"### Callees ({len(callees)})")
+            for c in callees:
+                lines.append(f"- `{c.get('name', c.get('id', '?'))}` ({c.get('kind', '?')})")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def _plan_body_replacement(
+    graph: Any, entity_id: str, new_body: str, expected_hash: str | None,
+) -> str:
+    """Plan a function body replacement."""
+    try:
+        plan = graph.plan_body_replacement(entity_id, new_body, expected_hash, dry_run=True)
+        return _format_mutation_plan(plan)
+    except Exception as e:
+        return f"Plan failed: {e}"
+
+
+def _plan_signature_update(
+    graph: Any, entity_id: str, new_signature: str, inject_defaults: bool,
+) -> str:
+    """Plan a signature update."""
+    try:
+        plan = graph.plan_signature_update(
+            entity_id, new_signature, inject_defaults=inject_defaults, dry_run=True,
+        )
+        return _format_mutation_plan(plan)
+    except Exception as e:
+        return f"Plan failed: {e}"
+
+
+def _plan_rename(graph: Any, entity_id: str, new_name: str) -> str:
+    """Plan a rename."""
+    try:
+        plan = graph.plan_rename(entity_id, new_name, dry_run=True)
+        return _format_mutation_plan(plan)
+    except Exception as e:
+        return f"Plan failed: {e}"
+
+
+def _plan_create_entity(
+    graph: Any, file_path: str, language: str, kind: str,
+    name: str, body: str, decorators: list[str] | None,
+) -> str:
+    """Plan creating a new entity."""
+    try:
+        plan = graph.plan_create_entity(
+            file_path, language, kind, name, body,
+            decorators=decorators, dry_run=True,
+        )
+        return _format_mutation_plan(plan)
+    except Exception as e:
+        return f"Plan failed: {e}"
+
+
+def _apply_mutation(graph: Any, plan_json: str) -> str:
+    """Apply a mutation plan."""
+    try:
+        import json
+        plan_dict = json.loads(plan_json)
+        from coderadar import MutationPlan, MutationEdit
+        plan = MutationPlan(
+            id=plan_dict.get("id", ""),
+            tool=plan_dict.get("tool", ""),
+            edits=[MutationEdit(**e) for e in plan_dict.get("edits", [])],
+            affected_files=plan_dict.get("affected_files", []),
+            diff_preview=plan_dict.get("diff_preview", ""),
+            unverified_sites=plan_dict.get("unverified_sites", []),
+            warnings=plan_dict.get("warnings", []),
+        )
+        result = graph.apply(plan)
+        lines = ["## Mutation Applied", ""]
+        lines.append(f"- **Success:** {result.success}")
+        if result.written_files:
+            lines.append(f"- **Files written:** {', '.join(f'`{f}`' for f in result.written_files)}")
+        if result.error:
+            lines.append(f"- **Error:** {result.error}")
+        if result.warnings:
+            for w in result.warnings:
+                lines.append(f"- ⚠ {w}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Mutation application failed: {e}"
+
+
+def _format_mutation_plan(plan: Any) -> str:
+    """Format a MutationPlan for MCP output."""
+    lines = [f"## Mutation Plan: `{plan.tool}`", ""]
+    lines.append(f"- **Plan ID:** `{plan.id}`")
+    lines.append(f"- **Affected files:** {len(plan.affected_files)}")
+
+    if plan.diff_preview:
+        lines.append("")
+        lines.append("### Diff Preview")
+        lines.append("```diff")
+        for line in plan.diff_preview.split("\n")[:60]:
+            lines.append(line)
+        if len(plan.diff_preview.split("\n")) > 60:
+            lines.append("...")
+        lines.append("```")
+
+    if plan.unverified_sites:
+        lines.append("")
+        lines.append(f"### Unverified Call Sites ({len(plan.unverified_sites)})")
+        for site in plan.unverified_sites[:10]:
+            lines.append(f"- `{site}`")
+
+    if plan.warnings:
+        lines.append("")
+        lines.append("### Warnings")
+        for w in plan.warnings:
+            lines.append(f"- ⚠ {w}")
+
+    lines.append("")
+    lines.append("**To apply:** call `coderadar_apply_mutation` with the plan JSON.")
     return "\n".join(lines)
 
 
