@@ -1,4 +1,4 @@
-// CodeRadar v3.5 — AST-Aware Mutation Engine (§11)
+// CodeRadar v3.6 — AST-Aware Mutation Engine (§11)
 // Four refactoring tools: replace_entity_body, update_signature, rename_symbol, create_entity.
 //
 // Each plan_* method takes the current CodeGraph for entity/span lookup.

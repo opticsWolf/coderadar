@@ -1,4 +1,4 @@
-"""CodeRadar v3.5 — Query Package
+"""CodeRadar v3.6 — Query Package
 
 Direct Macrame operations: traversal, temporal reconstruction, concept lookup,
 vector search. No Cypher translation layer — Macrame IS the API.

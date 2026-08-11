@@ -1,4 +1,4 @@
-// CodeRadar v3.3 — Resolution: Signature Matching Layer 3 (§6.4)
+// CodeRadar v3.6 — Resolution: Signature Matching Layer 3 (§6.4)
 // Language-agnostic name + arity matching biased toward proximity.
 
 use crate::graph::SignatureConfig;

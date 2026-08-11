@@ -1,4 +1,4 @@
-// CodeRadar v3.5 — Resolution: Orchestrator (§6.5-6.7)
+// CodeRadar v3.6 — Resolution: Orchestrator (§6.5-6.7)
 // Five-layer resolution cascade, staged two-phase commit, ::toplevel sentinel.
 //
 // Cascade order (early exit on success):

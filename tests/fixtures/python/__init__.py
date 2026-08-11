@@ -1,4 +1,4 @@
-"""CodeRadar v3.3 — Test Fixture: Sample Python Project
+"""CodeRadar v3.6 — Test Fixture: Sample Python Project
 
 A minimal project used for integration testing the ingestion pipeline,
 resolution cascade, and query execution.

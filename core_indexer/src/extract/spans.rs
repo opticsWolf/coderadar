@@ -1,4 +1,4 @@
-// CodeRadar v3.3 — Extraction: Byte-Span Extraction (§4.6)
+// CodeRadar v3.6 — Extraction: Byte-Span Extraction (§4.6)
 // Extract byte-accurate spans from tree-sitter nodes for mutation targeting.
 
 use tree_sitter::Node;

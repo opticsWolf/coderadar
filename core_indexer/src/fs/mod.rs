@@ -1,3 +1,3 @@
-// CodeRadar v3.3 — Filesystem Module
+// CodeRadar v3.6 — Filesystem Module
 pub mod git;
 pub mod watcher;

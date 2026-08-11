@@ -1,4 +1,4 @@
-// CodeRadar v3.3 — Query Engine: Pest Grammar (§7.1)
+// CodeRadar v3.6 — Query Engine: Pest Grammar (§7.1)
 // See grammar.pest for the full pest grammar definition.
 
 use pest::iterators::Pair;

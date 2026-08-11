@@ -1,4 +1,4 @@
-// CodeRadar v3.3 — Mutation: Rope-Based Multi-Edit Application (§11.3)
+// CodeRadar v3.6 — Mutation: Rope-Based Multi-Edit Application (§11.3)
 // Applies edits in descending offset order to keep positions stable.
 
 use ropey::Rope;

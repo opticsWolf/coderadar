@@ -1,4 +1,4 @@
-// CodeRadar v3.5 — Rust Core Library
+// CodeRadar v3.6 — Rust Core Library
 // PyO3 bindings for the Python layer (MCP server, CLI, resolvers).
 
 pub mod buffers;

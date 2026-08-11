@@ -1,4 +1,4 @@
-"""CodeRadar v3.5 -- End-to-End Integration Tests
+"""CodeRadar v3.6 -- End-to-End Integration Tests
 
 Tests the full pipeline: analyze -> query -> resolve -> visualize -> mutation
 using real fixture data. Requires the Rust _core extension to be built.

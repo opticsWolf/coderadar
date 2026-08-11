@@ -1,4 +1,4 @@
-// CodeRadar v3.3 — Resolution: Import Graph + Scope Layer 2 (§6.3)
+// CodeRadar v3.6 — Resolution: Import Graph + Scope Layer 2 (§6.3)
 // Walk the import graph BFS to collect modules exporting a reference name.
 
 use crate::graph::ImportGraph;

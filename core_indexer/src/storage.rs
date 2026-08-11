@@ -1,4 +1,4 @@
-// CodeRadar v3.5 — Macrame Storage Interface (§10)
+// CodeRadar v3.6 — Macrame Storage Interface (§10)
 // Bridges CodeRadar's entity model to Macrame's concept+assertion model.
 // Macrame is tokio-based; CodeRadar wraps it with block_on behind a sync API.
 

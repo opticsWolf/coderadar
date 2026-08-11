@@ -1,10 +1,10 @@
-"""CodeRadar v3.5 — Python API Surface (§8)
+"""CodeRadar v3.6 — Python API Surface (§8)
 
 A hybrid Python/Rust tool that maintains a live, incrementally updatable
 semantic graph of a source codebase's logical structure, enabling LLMs and
 developer tools to both query and safely rewrite code.
 
-v3.5 Architecture:
+v3.6 Architecture:
   - Macrame (bitemporal graph) — source of truth for persistence, temporal
     queries, agent traversals, vector search
   - In-memory ProjectedGraph — sub-ms Pest queries, reverse indexes,

@@ -1,4 +1,4 @@
-"""CodeRadar v3.3 — Core Tests: Semantic Engine
+"""CodeRadar v3.6 — Core Tests: Semantic Engine
 
 Golden resolution tests: per-language fixtures with expected-resolution manifests.
 """

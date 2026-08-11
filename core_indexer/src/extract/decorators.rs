@@ -1,4 +1,4 @@
-// CodeRadar v3.3 — Extraction: Known-Decorator Table (§4.3)
+// CodeRadar v3.6 — Extraction: Known-Decorator Table (§4.3)
 // Maps decorator names to semantic effects (FunctionKind / EffectiveClass).
 
 use crate::types::{EffectiveClass, EnumVariant, FunctionKind};

@@ -1,4 +1,4 @@
-"""CodeRadar v3.5 — Visualizers: Call Graph
+"""CodeRadar v3.6 — Visualizers: Call Graph
 
 Fan-out (callees_by_caller) and fan-in (callers_by_callee) visualization
 for a single function, with real data from the CodeGraph.

@@ -1,4 +1,4 @@
-"""CodeRadar v3.5 — Visualizers: Graphviz DOT Output
+"""CodeRadar v3.6 — Visualizers: Graphviz DOT Output
 
 Module dependency graph with cycle highlighting (Kosaraju SCC),
 class hierarchy with inheritance edges, wired to real CodeGraph data.

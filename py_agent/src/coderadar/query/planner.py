@@ -1,4 +1,4 @@
-"""CodeRadar v3.5 — Query Planner (§13.3)
+"""CodeRadar v3.6 — Query Planner (§13.3)
 
 Classifies natural-language queries into intents, routing each to the
 appropriate Macrame primitive: traversal, similarity search, concept

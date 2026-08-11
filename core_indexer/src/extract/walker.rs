@@ -1,7 +1,7 @@
-// CodeRadar v3.5 — Extraction: Hierarchy Walker Pass 2 (§4.2)
+// CodeRadar v3.6 — Extraction: Hierarchy Walker Pass 2 (§4.2)
 // Typed stack-frame walker that traverses the tagged tree and emits ExtractedUnits.
-// v3.5: EntityId-based identities; file_path required for building entity IDs.
-// v3.5a: Call capture — Tag::Call/Tag::CallReceiver attach calls to current function.
+// v3.6: EntityId-based identities; file_path required for building entity IDs.
+// v3.6a: Call capture — Tag::Call/Tag::CallReceiver attach calls to current function.
 
 use tree_sitter::Node;
 

@@ -1,4 +1,4 @@
-"""CodeRadar v3.3 — Visualizers Package (§18)
+"""CodeRadar v3.6 — Visualizers Package (§18)
 
 Mermaid/Graphviz output for class hierarchy, module dependencies, and call graphs.
 """

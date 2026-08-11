@@ -1,4 +1,4 @@
-"""CodeRadar v3.3 — Embedding Deduplication (§13.1)
+"""CodeRadar v3.6 — Embedding Deduplication (§13.1)
 
 Content-addressed embedding deduplication: before embedding an entity,
 compute xxHash of its body. If unchanged since last embedding, reuse

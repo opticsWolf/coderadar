@@ -1,4 +1,4 @@
-// CodeRadar v3.5 — File Watcher (§17)
+// CodeRadar v3.6 — File Watcher (§17)
 // Uses notify + notify-debouncer-mini for cross-platform file events.
 
 use std::path::PathBuf;

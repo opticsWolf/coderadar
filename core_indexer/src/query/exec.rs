@@ -1,4 +1,4 @@
-// CodeRadar v3.5 — Query Execution (§7.1, §7.2a)
+// CodeRadar v3.6 — Query Execution (§7.1, §7.2a)
 // Streaming and aggregated query modes against the in-memory projected graph.
 
 use std::collections::HashMap;

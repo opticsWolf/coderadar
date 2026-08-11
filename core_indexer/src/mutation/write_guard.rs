@@ -1,4 +1,4 @@
-// CodeRadar v3.3 — Mutation: WriteGuard — Watcher Self-Write Suppression (§11.5)
+// CodeRadar v3.6 — Mutation: WriteGuard — Watcher Self-Write Suppression (§11.5)
 // Prevents the file watcher from triggering on files the mutation engine wrote.
 
 use std::path::PathBuf;

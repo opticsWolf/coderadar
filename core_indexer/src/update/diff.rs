@@ -1,4 +1,4 @@
-// CodeRadar v3.3 — Incremental Update: Tiered Diff Algorithm (§5.2)
+// CodeRadar v3.6 — Incremental Update: Tiered Diff Algorithm (§5.2)
 // Matches entities by identity, not position. Produces Add | Remove | Modify patches.
 
 use crate::types::*;

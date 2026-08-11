@@ -1,6 +1,6 @@
-// CodeRadar v3.5 — Incremental Update: Patch Application (§5.1, §5.5)
+// CodeRadar v3.6 — Incremental Update: Patch Application (§5.1, §5.5)
 // Applies diff operations, writes to Macrame, updates the projected graph.
-// v3.5: No WAL — Macrame assertion model provides atomicity and history.
+// v3.6: No WAL — Macrame assertion model provides atomicity and history.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -50,7 +50,7 @@ pub fn compute_affected_dependents(
 }
 
 /// Apply a patch to the graph.
-/// v3.5: Updates the in-memory projected graph. If Macrame store is attached,
+/// v3.6: Updates the in-memory projected graph. If Macrame store is attached,
 /// entities and edges are persisted via assertion model.
 /// No WAL, no epoch bumps — ProjectedGraph is rebuilt from the diff.
 pub fn apply_patch(

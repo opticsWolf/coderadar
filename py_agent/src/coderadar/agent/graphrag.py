@@ -1,4 +1,4 @@
-"""CodeRadar v3.5 — GraphRAG Query Pipeline (§13.3)
+"""CodeRadar v3.6 — GraphRAG Query Pipeline (§13.3)
 
 Natural-language intent classification → direct Macrame operations →
 context building with token budget.

@@ -1,4 +1,4 @@
-"""CodeRadar v3.5 — Query Cache (§7.3)
+"""CodeRadar v3.6 — Query Cache (§7.3)
 
 LRU cache for Macrame query results, keyed on (method, params, graph_epoch).
 Invalidated on every write.

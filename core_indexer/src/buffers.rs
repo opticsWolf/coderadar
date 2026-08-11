@@ -1,4 +1,4 @@
-// CodeRadar v3.5 — Flat-Buffer FFI Serialization (§8.1, Appendix A)
+// CodeRadar v3.6 — Flat-Buffer FFI Serialization (§8.1, Appendix A)
 //
 // Flat-buffer encoding pattern adapted from CodeGraph's buffers.rs
 // (MIT/Apache-2.0, opticsWolf/codegraph). One boundary crossing per file.

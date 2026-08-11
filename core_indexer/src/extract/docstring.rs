@@ -1,4 +1,4 @@
-// CodeRadar v3.5 — Docstring Extraction
+// CodeRadar v3.6 — Docstring Extraction
 // Adapted from CodeGraph's docstring.rs (MIT/Apache-2.0, opticsWolf/codegraph).
 //
 // Extracts preceding docstrings for tree-sitter nodes by walking backwards

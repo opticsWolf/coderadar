@@ -1,4 +1,4 @@
-# CodeRadar v0.5.8
+# CodeRadar v0.6.0
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -54,7 +54,8 @@ Rust Core (ProjectedGraph, Tree-sitter 18-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 476 (163 Rust + 313 Python) |
+| **Tests** | 509 (168 Rust + 341 Python) |
+| **MCP Tools** | 17 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
 | **Agents** | MCP server with explore, node, search, affected tools |
@@ -158,6 +159,15 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 | **React Router** | JSX/TSX | `package.json` | JSX `<Route>` declarations, v6 data router objects, `<Link>`/`<NavLink>` navigation tracking |
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
+
+## v0.6.0 Feature Highlights
+
+- **17 MCP tools** — full query surface: explore, search, node, affected, resolve, query (Pest), search_similar (embeddings), module_children, as_of (temporal), traverse (graph walk), replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file
+- **Embeddings pipeline** — compute + store + search_similar with fastembed/BGE-small, xxHash dedup, auto-trigger on first search_similar call
+- **Mutation pipeline** — plan-review-apply via dry_run toggle; rename cascades to all references; create_entity with language-aware placement
+- **13 framework resolvers** — Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router
+- **41 languages** — 12 Tier 1, 29 Tier 2, 330+ Tier 3 via tree-sitter-language-pack 1.14
+- **509 tests, 0 failures** — 168 Rust + 341 Python, full E2E and MCP coverage
 
 ## v0.5.7 Feature Highlights
 

@@ -1,4 +1,4 @@
-"""CodeRadar v3.5 — Macrame Query Operations (§7)
+"""CodeRadar v3.6 — Macrame Query Operations (§7)
 
 Direct Macrame operations — no Cypher translation layer.
 Macrame provides: traversal, temporal reconstruction, concept lookup,

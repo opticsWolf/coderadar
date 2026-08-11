@@ -1,4 +1,4 @@
-"""CodeRadar v3.3 — Configuration Models (§15)
+"""CodeRadar v3.6 — Configuration Models (§15)
 
 Pydantic models for .coderadar.toml and .harness/config.toml.
 """
@@ -47,7 +47,7 @@ class SignatureConfig(BaseModel):
     name_weight: float = 0.4
     arity_weight: float = 0.3
     proximity_weight: float = 0.3
-    ambiguous_name_ceiling: int = 500  # v3.5: O(K²) guard from CodeGraph's name-matcher.ts
+    ambiguous_name_ceiling: int = 500  # v3.6: O(K²) guard from CodeGraph's name-matcher.ts
 
 
 class LSPConfig(BaseModel):

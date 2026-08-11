@@ -1,4 +1,4 @@
-"""CodeRadar v3.3 — Mutation Tool Router (§11.2)
+"""CodeRadar v3.6 — Mutation Tool Router (§11.2)
 
 Routes LLM tool calls to the appropriate Rust planner: replace_entity_body,
 update_signature, rename_symbol, create_entity.

@@ -1,4 +1,4 @@
-// CodeRadar v3.5 — CodeGraph Container (§3.4, §9.1)
+// CodeRadar v3.6 — CodeGraph Container (§3.4, §9.1)
 // RwLock<Arc<ProjectedGraph>> with Macrame-backed persistence.
 // Hybrid architecture: in-memory projected graph for structural queries,
 // Macrame for agent traversals and bitemporal history.
@@ -430,7 +430,7 @@ impl Default for GitConfig {
     }
 }
 
-// ── CodeGraph (§3.4, §9.1) — v3.5 Hybrid Architecture ──────────────────────
+// ── CodeGraph (§3.4, §9.1) — v3.6 Hybrid Architecture ──────────────────────
 
 /// Find a module by its dotted name (e.g., "coderadar.config" → config.py).
 /// v0.5: Language-agnostic — matches any known extension (py, ex, zig, scala, lua, ...).

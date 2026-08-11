@@ -1,6 +1,6 @@
-// CodeRadar v3.5 — Extraction: Tagger Pass 1 (§4.2)
+// CodeRadar v3.6 — Extraction: Tagger Pass 1 (§4.2)
 // Tree-sitter .scm queries tag nodes with coarse classifications.
-// v3.5a: Pre-compiled query + pre-indexed capture names.
+// v3.6a: Pre-compiled query + pre-indexed capture names.
 
 use std::collections::HashMap;
 use streaming_iterator::StreamingIterator;

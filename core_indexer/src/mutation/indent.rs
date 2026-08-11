@@ -1,4 +1,4 @@
-// CodeRadar v3.3 — Mutation: Indent Normalization (§11.4)
+// CodeRadar v3.6 — Mutation: Indent Normalization (§11.4)
 // Normalizes LLM-pasted code to the target indentation level before rope application.
 
 use crate::types::ByteSpan;

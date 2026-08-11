@@ -1,7 +1,7 @@
 // CodeRadar v0.5 — Resolution: Stack Graphs Layer (§6.2)
 //
 // DEFERRED TO POST-V1 (v0.5 decision): Stack Graphs via the stack-graphs
-// crate was spec'd in v3.3 as L1 resolution but never implemented — this
+// crate was spec'd in v3.6 as L1 resolution but never implemented — this
 // file is a structural placeholder. CodeGraph ships 30+ languages at
 // production scale with zero Stack Graphs dependency, proving compiler-
 // grade disambiguation is not required for the MCP agent use case.

@@ -1,4 +1,4 @@
-// CodeRadar v3.3 — Git Integration (§12)
+// CodeRadar v3.6 — Git Integration (§12)
 // Branch-switch detection, .gitignore integration, and blame annotation.
 
 use std::path::PathBuf;

@@ -1,11 +1,11 @@
-// CodeRadar v3.5 — Core Types & Enums
+// CodeRadar v3.6 — Core Types & Enums
 // §3 Data Models — EntityId-based identity, Macrame-backed persistence, ProjectedGraph.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-// ── EntityId (v3.5 §3.1) ────────────────────────────────────────────────────
+// ── EntityId (v3.6 §3.1) ────────────────────────────────────────────────────
 // Stable dotted-path identity, e.g. "src/auth.py::UserService.create".
 // Used as Macrame concept IDs and ProjectedGraph hashmap keys.
 
@@ -471,7 +471,7 @@ pub enum ParseQuality {
     Clean,
     Partial,
     Tainted,
-    Deferred,   // v3.5 §4.5a: routed to recovery extractor
+    Deferred,   // v3.6 §4.5a: routed to recovery extractor
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -649,7 +649,7 @@ pub enum ResolvedCall {
     },
     Constructor(EntityId),
     Builtin(String),
-    External(String),          // v3.5 §6.1a: library / third-party call
+    External(String),          // v3.6 §6.1a: library / third-party call
     Unresolved {
         reason: UnresolvedReason,
         raw: UnresolvedRef,
@@ -672,7 +672,7 @@ pub enum UnresolvedReason {
     DynamicImport,
     WildcardImportShadow,
     ParseError,
-    IncompleteFlow,            // v3.5 §6.1a: internal dead-end suppressed
+    IncompleteFlow,            // v3.6 §6.1a: internal dead-end suppressed
     Stoplisted,                // v3.6: filtered by is_stoplisted()
 }
 
@@ -994,7 +994,7 @@ pub struct ProjectedGraph {
 
 // ── ResolvedEdge (§3.4a, §6.1a) — used by resolution engine ─────────────────
 
-// v3.5: Clone and Debug derives needed for resolution engine usage.
+// v3.6: Clone and Debug derives needed for resolution engine usage.
 #[derive(Clone, Debug)]
 pub struct ResolvedEdge {
     pub source_id: EntityId,
@@ -1115,13 +1115,13 @@ mod tests {
 
     #[test]
     fn test_parse_quality_deferred() {
-        // v3.5: Deferred is a valid ParseQuality variant
+        // v3.6: Deferred is a valid ParseQuality variant
         assert!(matches!(ParseQuality::Deferred, ParseQuality::Deferred));
     }
 
     #[test]
     fn test_unresolved_reason_incomplete_flow() {
-        // v3.5 §6.1a: internal dead-ends suppressed
+        // v3.6 §6.1a: internal dead-ends suppressed
         assert!(matches!(
             UnresolvedReason::IncompleteFlow,
             UnresolvedReason::IncompleteFlow
@@ -1130,7 +1130,7 @@ mod tests {
 
     #[test]
     fn test_resolved_call_external() {
-        // v3.5 §6.1a: library calls always emitted
+        // v3.6 §6.1a: library calls always emitted
         let call = ResolvedCall::External("requests.post".to_string());
         assert!(matches!(call, ResolvedCall::External(_)));
     }

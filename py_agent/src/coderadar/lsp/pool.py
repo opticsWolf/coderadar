@@ -1,4 +1,4 @@
-"""CodeRadar v3.3 — LSP Persistent Warm Pool (§14)
+"""CodeRadar v3.6 — LSP Persistent Warm Pool (§14)
 
 Optional persistent LSP servers — spawned once per language per workspace,
 kept synchronized via didOpen/didChange on ingestion.

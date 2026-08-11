@@ -1,4 +1,4 @@
-"""CodeRadar v3.5 — Ingestion Pipeline (§6.7)
+"""CodeRadar v3.6 — Ingestion Pipeline (§6.7)
 
 Orchestrates the two-phase commit between Rust staging and Macrame persistence.
 

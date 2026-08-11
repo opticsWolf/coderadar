@@ -1,5 +1,5 @@
-// CodeRadar v3.5 — Resolution Cache (§5.4)
-// v3.5: EntityId-based keys instead of SlotMap u64 raw keys.
+// CodeRadar v3.6 — Resolution Cache (§5.4)
+// v3.6: EntityId-based keys instead of SlotMap u64 raw keys.
 
 use std::collections::HashMap;
 

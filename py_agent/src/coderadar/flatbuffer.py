@@ -1,4 +1,4 @@
-"""CodeRadar v3.5 — Flat-Buffer Decoder (§8.1, Appendix A)
+"""CodeRadar v3.6 — Flat-Buffer Decoder (§8.1, Appendix A)
 
 Decodes the fixed-layout row format produced by core_indexer/src/buffers.rs.
 One boundary crossing per file — entities, edges, and refs as fixed rows with

@@ -1,4 +1,4 @@
-"""CodeRadar v3.5 — Visualizers: Mermaid / Graphviz (§18)
+"""CodeRadar v3.6 — Visualizers: Mermaid / Graphviz (§18)
 
 Class hierarchy, module dependencies, and call graph visualization
 with real data from the CodeGraph projection.
