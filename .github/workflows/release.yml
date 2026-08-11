@@ -21,7 +21,7 @@ jobs:
           - os: ubuntu-latest
             target: x86_64
           - os: macos-latest
-            target: universal2-apple-darwin
+            target: aarch64-apple-darwin
           - os: windows-latest
             target: x64
 
