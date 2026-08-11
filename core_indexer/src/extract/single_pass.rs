@@ -87,15 +87,16 @@ impl<'a> CursorExtractor<'a> {
             kind: EmittedKind::Module,
         });
 
-        // Phase 2: Collect captures with tag priority resolution.
-        // Some grammars (Elixir) produce overlapping captures on the same
-        // node — collect all, then dispatch highest-priority tag per node.
+        // Phase 2: Direct cursor-driven dispatch.
+        // Dedup by node ID — same node can match multiple patterns (e.g., Elixir
+        // call nodes match both class.def and function.def when predicates fail).
+        // The capture order in the .scm file determines priority: function.def
+        // patterns appear BEFORE class.def in language queries to ensure
+        // `def greet` inside a module dispatches as Function, not Class.
         let source_bytes = self.source.as_bytes();
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut captures = cursor.captures(&compiled.query, root_node, source_bytes);
-
-        // node_id → highest-priority (tag, node)
-        let mut pending: HashMap<usize, (Tag, Node)> = HashMap::new();
+        let mut seen: HashSet<usize> = HashSet::new();
 
         while let Some((qm, _idx)) = captures.next() {
             for capture in qm.captures {
@@ -110,27 +111,16 @@ impl<'a> CursorExtractor<'a> {
                 let node = capture.node;
                 let node_id = node.id() as usize;
 
-                // Keep highest-priority tag per node
-                match pending.get(&node_id) {
-                    Some(&(existing_tag, _)) if tag_priority(tag) <= tag_priority(existing_tag) => {}
-                    _ => { pending.insert(node_id, (tag, node)); }
+                if !seen.insert(node_id) {
+                    continue;
                 }
+
+                self.pop_frames(node.start_byte());
+                self.dispatch(node, tag);
             }
         }
 
-        // Dispatch in document order (sorted by start byte)
-        let mut sorted: Vec<_> = pending.into_values().collect();
-        sorted.sort_by_key(|(_, node)| node.start_byte());
-
-        for (tag, node) in sorted {
-            self.pop_frames(node.start_byte());
-            self.dispatch(node, tag);
-        }
-
-        // Phase 3: Targeted fn_ref scan on function body subtrees
-        self.scan_fn_refs(root_node);
-
-        // Phase 4: Resolve fn_ref candidates
+        // Phase 3: Resolve fn_ref candidates (inline scan happened during emit_function)
         self.resolve_fn_refs();
 
         self.units
@@ -223,7 +213,7 @@ impl<'a> CursorExtractor<'a> {
         let line = node.start_position().row + 1;
         let exit_line = node.end_position().row + 1;
         let spans = extract_byte_spans(node);
-        let (parent_qname, parent_class) = self.resolve_context();
+        let (parent_qname, _parent_class) = self.resolve_context();
         let qualified_name = build_qualified_name_simple(&parent_qname, &name);
         let entity_id = make_entity_id(self.file_path, &qualified_name);
         let bases = extract_base_classes(node, self.source);
@@ -344,6 +334,10 @@ impl<'a> CursorExtractor<'a> {
 
         self.record_emitted(node.id() as usize, unit_idx, &qualified_name,
                             EmittedKind::Function, node.end_byte());
+
+        // Scan this function's body subtree for fn-ref patterns inline
+        scan_subtree_for_fn_ref(node, self.source, unit_idx, &mut self.fn_ref_candidates);
+
         self.frames.push(Frame {
             end_byte: node.end_byte(),
             qualified_name,
@@ -418,28 +412,6 @@ impl<'a> CursorExtractor<'a> {
 
     // ── Targeted fn_ref scan ────────────────────────────────────────────
 
-    /// Walk function body subtrees to find fn-ref candidates, instead of
-    /// scanning every node in the tree (as the old walk_node did).
-    fn scan_fn_refs(&mut self, root_node: Node) {
-        if self.fn_names.is_empty() {
-            return;
-        }
-
-        // Collect function node IDs and their unit indices
-        let fn_entries: Vec<(usize, usize)> = self.emitted.iter()
-            .filter(|(_, e)| e.kind == EmittedKind::Function)
-            .map(|(node_id, e)| (*node_id, e.unit_idx))
-            .collect();
-
-        for (node_id, unit_idx) in fn_entries {
-            // Find the function node in the tree (need to re-find it from root)
-            // We use a simple walk since we know the node ID
-            if let Some(node) = find_node_by_id(root_node, node_id) {
-                scan_subtree_for_fn_ref(node, self.source, unit_idx, &mut self.fn_ref_candidates);
-            }
-        }
-    }
-
     /// Resolve fn_ref candidates against extracted function names.
     fn resolve_fn_refs(&mut self) {
         if self.fn_ref_candidates.is_empty() || self.fn_names.is_empty() {
@@ -504,20 +476,6 @@ fn emit_docstring_node(node: Node, source: &str) -> Option<(usize, String, usize
         let end_line = node.end_position().row + 1;
         Some((line, cleaned.to_string(), end_line))
     }
-}
-
-/// Find a node by its tree-sitter node ID (recursive walk).
-fn find_node_by_id(root: Node, target_id: usize) -> Option<Node> {
-    if root.id() as usize == target_id {
-        return Some(root);
-    }
-    let mut cursor = root.walk();
-    for child in root.children(&mut cursor) {
-        if let Some(found) = find_node_by_id(child, target_id) {
-            return Some(found);
-        }
-    }
-    None
 }
 
 /// Scan a function's subtree for fn-ref patterns.
@@ -657,16 +615,4 @@ fn is_identifier_kind(kind: &str) -> bool {
         | "type_identifier" | "property_identifier"
         | "field_identifier" | "shorthand_property_identifier"
     )
-}
-
-/// Tag priority for dedup: higher number = wins.
-/// Function beats Class because Elixir call nodes match both patterns;
-/// `def greet` inside a module is a function, not a class.
-fn tag_priority(tag: Tag) -> u8 {
-    match tag {
-        Tag::Function => 3,
-        Tag::Class => 2,
-        Tag::Impl => 1,
-        _ => 0,
-    }
 }
