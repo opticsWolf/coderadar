@@ -490,8 +490,6 @@ def create_server(graph: Any) -> MCPServer:
         """Create a new entity."""
         return _create_entity(graph, file_path, language, kind, name, body, decorators, dry_run)
 
-    return mcp
-
     # ── codegraph_reindex — full graph refresh ───────────────────────
 
     @mcp.tool(
@@ -499,7 +497,9 @@ def create_server(graph: Any) -> MCPServer:
             "Re-index the entire project to refresh the code graph. "
             "Use after batch edits when you've changed many files and want "
             "a guaranteed-fresh index. Slower than codegraph_update_file but "
-            "always correct. Returns index statistics."
+            "always correct. Set with_embeddings=True to also compute embedding "
+            "vectors for semantic search (adds 8-10s for small projects). "
+            "Returns index statistics."
         ),
         annotations={
             "read_only_hint": False,
@@ -509,9 +509,10 @@ def create_server(graph: Any) -> MCPServer:
         },
     )
     def codegraph_reindex(
+        with_embeddings: bool = False,
     ) -> str:
-        """Full reindex."""
-        return _reindex(graph)
+        """Full reindex with optional embeddings."""
+        return _reindex(graph, with_embeddings)
 
     # ── codegraph_update_file — incremental single-file sync ────────
 
@@ -1141,10 +1142,16 @@ def _search_similar(graph: Any, query: str, top_k: int) -> str:
         from coderadar._core import search_similar as _ss
         results = _ss(list(embedding), min(top_k, 20))
     except RuntimeError:
-        return (
-            "No embeddings found in the index. "
-            "Run `graph.compute_embeddings()` first to generate embeddings for all entities."
-        )
+        # No embeddings in index — try to auto-compute
+        try:
+            metrics = graph.compute_embeddings()
+            results = _ss(list(embedding), min(top_k, 20))
+        except Exception:
+            return (
+                "No embeddings found and auto-computation failed. "
+                "Run codegraph_compute_embeddings first, or "
+                "codegraph_reindex with_embeddings=True."
+            )
 
     if not results:
         return f"No semantically similar results found for '{query}'."
@@ -1423,7 +1430,7 @@ def _format_mutation_applied(result: Any) -> str:
     return "\n".join(lines)
 
 
-def _reindex(graph: Any) -> str:
+def _reindex(graph: Any, with_embeddings: bool = False) -> str:
     """Full reindex of the project."""
     try:
         from coderadar._core import analyze as _analyze, graph_stats
@@ -1431,14 +1438,24 @@ def _reindex(graph: Any) -> str:
         cwd = os.getcwd()
         _analyze(cwd)
         stats = graph_stats()
-        return (
-            f"## Reindex Complete\n\n"
-            f"- **Files:** {stats.get('file_count', 0)}\n"
-            f"- **Modules:** {stats.get('modules', 0)}\n"
-            f"- **Classes:** {stats.get('classes', 0)}\n"
-            f"- **Functions:** {stats.get('functions', 0)}\n"
-            f"- **Call edges:** {stats.get('call_edges', 0)}\n"
-        )
+        lines = [
+            "## Reindex Complete",
+            "",
+            f"- **Files:** {stats.get('file_count', 0)}",
+            f"- **Modules:** {stats.get('modules', 0)}",
+            f"- **Classes:** {stats.get('classes', 0)}",
+            f"- **Functions:** {stats.get('functions', 0)}",
+            f"- **Call edges:** {stats.get('call_edges', 0)}",
+        ]
+        if with_embeddings:
+            lines.append("")
+            try:
+                emb_metrics = graph.compute_embeddings()
+                lines.append(f"- **Embeddings generated:** {emb_metrics.get('generated', 0)}")
+                lines.append(f"- **Embeddings cached:** {emb_metrics.get('cached', 0)}")
+            except Exception as e:
+                lines.append(f"- **Embeddings:** failed — {e}")
+        return "\n".join(lines)
     except ImportError:
         return "CodeRadar extension not available."
     except Exception as e:
