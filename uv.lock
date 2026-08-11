@@ -502,7 +502,7 @@ wheels = [
 ]
 
 [[package]]
-name = "coderadar"
+name = "coderadar-rs"
 version = "0.5.3"
 source = { editable = "." }
 dependencies = [

@@ -328,135 +328,16 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
 
     match info.tag {
         Tag::Class => {
-            let name_node = node.child_by_field_name("name");
-            // Go: type_declaration has (type_spec name: (type_identifier)) child
-            let name = if name_node.is_some() && name_node.unwrap().kind() != "" {
-                name_node
-                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                    .unwrap_or("")
-                    .to_string()
-            } else if node.kind() == "type_declaration" {
-                // Go: walk into type_spec → name
-                node.child_by_field_name("type")
-                    .and_then(|ts| ts.child_by_field_name("name"))
-                    .or_else(|| {
-                        // Try direct child
-                        let mut cursor = node.walk();
-                        for child in node.children(&mut cursor) {
-                            if child.kind() == "type_spec" {
-                                return child.child_by_field_name("name");
-                            }
-                        }
-                        None
-                    })
-                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                    .unwrap_or("")
-                    .to_string()
-            } else if node.kind() == "class_declaration"
-                || node.kind() == "object_declaration"
-                || node.kind() == "struct_declaration"
-                || node.kind() == "enum_declaration"
-                || node.kind() == "union_declaration"
-                || node.kind() == "protocol_declaration"
-                || node.kind() == "extension_declaration"
-                || node.kind() == "class_definition"
-                || node.kind() == "object_definition"
-                || node.kind() == "trait_definition"
-                || node.kind() == "defmodule"
-                || node.kind() == "opaque_declaration"
-                || node.kind() == "table_constructor"
-                || node.kind() == "setClass_expression"
-                || node.kind() == "VarDecl"
-                // Elixir: defmodule is represented as (call ...)
-                || (node.kind() == "call" && node.child_by_field_name("target")
-                    .and_then(|t| t.utf8_text(source.as_bytes()).ok())
-                    .map(|s| s == "defmodule")
-                    .unwrap_or(false))
-            {
-                // Multi-language class/struct/enum/trait: name is identifier child
-                // Zig VarDecl: name is variable_type_function: (IDENTIFIER)
-                // Elixir defmodule: name is in arguments → alias
-                let elixir_name = if node.kind() == "call" {
-                    node.children(&mut node.walk())
-                        .find(|c| c.kind() == "arguments")
-                        .and_then(|args| {
-                            args.children(&mut args.walk())
-                                .find(|c| c.kind() == "alias")
-                                .and_then(|a| a.utf8_text(source.as_bytes()).ok())
-                                .map(|s| s.to_string())
-                        })
-                } else {
-                    None
-                };
-                if let Some(en) = elixir_name {
-                    en
-                } else {
-                    let zig_name = if node.kind() == "VarDecl" {
-                        node.child_by_field_name("variable_type_function")
-                            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                    } else {
-                        None
-                    };
-                    zig_name.unwrap_or_else(|| {
-                        let mut cursor = node.walk();
-                        let children: Vec<_> = node.children(&mut cursor).collect();
-                        children.iter().find(|ch|
-                            ch.kind() == "type_identifier" || ch.kind() == "simple_identifier"
-                            || ch.kind() == "identifier"
-                        )
-                        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                        .unwrap_or("")
-                    }).to_string()
-                }
-            } else {
-                "".to_string()
-            };
-
+            let name = extract_class_name(node, source);
             let line = node.start_position().row + 1;
             let exit_line = node.end_position().row + 1;
             let spans = extract_byte_spans(node);
             let qualified_name = build_qualified_name(&ctx.stack, &name);
             let entity_id = make_entity_id(&ctx.file_path, &qualified_name);
-
-            // Extract base classes (Python/Ruby/Java/C#/etc.)
-            let bases: Vec<UnresolvedRef> = node
-                .child_by_field_name("superclasses")  // Python
-                .or_else(|| node.child_by_field_name("superclass"))  // Java-style
-                .or_else(|| node.child_by_field_name("bases"))  // C#
-                .map(|sc| {
-                    let mut cursor = sc.walk();
-                    sc.children(&mut cursor)
-                        .filter(|child| child.kind() == "identifier"
-                            || child.kind() == "type_identifier"
-                            || child.kind() == "constant"  // Ruby
-                            || child.kind() == "name")  // PHP
-                        .filter_map(|id| {
-                            id.utf8_text(source.as_bytes()).ok().map(|txt| {
-                                if is_builtin_type(txt) {
-                                    return None;
-                                }
-                                Some(UnresolvedRef {
-                                    name: txt.to_string(),
-                                    path: vec![],
-                                    line: id.start_position().row + 1,
-                                    col: id.start_position().column as usize,
-                                })
-                            })
-                        })
-                        .flatten()
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            // v3.6: Extract preceding docstring
+            let bases = extract_base_classes(node, source);
             let docstring = preceding_docstring(node, source);
-
-            // v3.6: grammar_kind — raw tree-sitter node kind.
-            // For Swift's ambiguous class_declaration, attempt keyword disambiguation.
             let grammar_kind = if node.kind() == "class_declaration" {
                 let sub = classify_class_like(node);
-                // Only use subclass when it differs from the node kind's default
-                // ("class" is the default for class_declaration, so skip appending)
                 if sub != "class" {
                     format!("class_declaration/{}", sub)
                 } else {
@@ -496,128 +377,8 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
         }
 
         Tag::Function => {
-            let name_node = node.child_by_field_name("name");
-            // C++: function_definition has declarator → function_declarator → identifier
-            // Zig: FnProto has function: (IDENTIFIER) field
-            // R: function_definition is wrapped by binary_operator; name is on lhs
-            //
-            // Only use name_node if it is an actual identifier-like node kind.
-            // Some grammars (R) assign field "name" to keyword tokens like
-            // `function`, which would produce wrong names.
-            let name = if node.kind() == "function_definition" {
-                // R: function_definition is child of binary_operator; name is on lhs
-                // e.g. (binary_operator lhs: (identifier) rhs: (function_definition ...))
-                // Check for R pattern BEFORE generic name_node extraction
-                let r_parent_name = node.parent().and_then(|p| {
-                    if p.kind() == "binary_operator" {
-                        p.child_by_field_name("lhs")
-                            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                    } else {
-                        None
-                    }
-                });
-                if let Some(rn) = r_parent_name {
-                    rn.to_string()
-                } else if name_node.is_some() {
-                    // Scala/PHP: function_definition with name: field
-                    name_node
-                        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                        .unwrap_or("")
-                        .to_string()
-                } else {
-                    // C++/C: walk declarator chain
-                    node.child_by_field_name("declarator")
-                        .and_then(|d| d.child_by_field_name("declarator"))
-                        .and_then(|id| id.utf8_text(source.as_bytes()).ok())
-                        .unwrap_or("")
-                        .to_string()
-                }
-            } else if name_node.is_some() {
-                name_node
-                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                    .unwrap_or("")
-                    .to_string()
-            } else if node.kind() == "function_declaration" {
-                // Kotlin: name is simple_identifier
-                let mut cursor = node.walk();
-                let children: Vec<_> = node.children(&mut cursor).collect();
-                children.iter().find(|ch|
-                    ch.kind() == "simple_identifier" || ch.kind() == "identifier"
-                )
-                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                .unwrap_or("")
-                .to_string()
-            } else if node.kind() == "FnProto" {
-                // Zig: function name is in function: (IDENTIFIER) field
-                node.child_by_field_name("function")
-                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                    .unwrap_or("")
-                    .to_string()
-            } else if node.is_named() && node.kind() == "call" {
-                // Elixir: (call target: (identifier "def"/"defp"/"defmodule") ...)
-                // defmodule → arguments has alias child
-                // def/defp → arguments has nested (call target: (identifier))
-                let name = node.child_by_field_name("target")
-                    .and_then(|t| t.utf8_text(source.as_bytes()).ok())
-                    .and_then(|s| {
-                        if matches!(s, "def" | "defp") {
-                            // arguments → (call target: (identifier "name"))
-                            node.children(&mut node.walk())
-                                .find(|c| c.kind() == "arguments")
-                                .and_then(|args| {
-                                    args.children(&mut args.walk())
-                                        .find(|c| c.kind() == "call")
-                                        .and_then(|call| call.child_by_field_name("target"))
-                                        .and_then(|id| id.utf8_text(source.as_bytes()).ok())
-                                        .map(|s| s.to_string())
-                                })
-                        } else if s == "defmodule" {
-                            // arguments → alias
-                            node.children(&mut node.walk())
-                                .find(|c| c.kind() == "arguments")
-                                .and_then(|args| {
-                                    args.children(&mut args.walk())
-                                        .find(|c| c.kind() == "alias")
-                                        .and_then(|a| a.utf8_text(source.as_bytes()).ok())
-                                        .map(|s| s.to_string())
-                                })
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_default();
-                name
-            } else {
-                "".to_string()
-            };
-
-            // Go: method_declaration has a receiver (e.g., `func (d *Dog) Bark()`)
-            // Extract receiver type as the parent_class
-            let go_receiver_type: Option<String> = if node.kind() == "method_declaration" {
-                node.child_by_field_name("receiver")
-                    .and_then(|recv| {
-                        // receiver is a parameter_list → parameter_declaration
-                        let mut cursor = recv.walk();
-                        for child in recv.children(&mut cursor) {
-                            if child.kind() == "parameter_declaration" {
-                                // Get the type from: pointer_type → type_identifier,
-                                // or type_identifier directly
-                                if let Some(typ) = child.child_by_field_name("type") {
-                                    if typ.kind() == "pointer_type" {
-                                        return typ.child_by_field_name("name")
-                                            .or_else(|| typ.child(0))
-                                            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                                            .map(|s| s.to_string());
-                                    }
-                                    return typ.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
-                                }
-                            }
-                        }
-                        None
-                    })
-            } else {
-                None
-            };
+            let name = extract_function_name(node, source);
+            let go_receiver_type = extract_go_receiver_type(node, source);
 
             let is_method = matches!(
                 ctx.stack.last(),
@@ -743,136 +504,7 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
         // ── Call Capture (§5.3) ──────────────────────────────────────
 
         Tag::Call => {
-            // The call tag fires on (call) nodes. For simple calls like `foo()`,
-            // the function child is an identifier with the name.
-            // For dotted calls like `obj.method()`, the function child is an
-            // attribute node — the CallReceiver tag fires first on `obj`,
-            // then Call fires on `obj.method`, and the name is the method part.
-            if let Some(idx) = ctx.current_function_idx {
-                if let Some(ExtractedUnit::Function(ref mut func)) = ctx.units.get_mut(idx) {
-                    let name_node = node.child_by_field_name("function")
-                        .or_else(|| node.child_by_field_name("method"))
-                        .or_else(|| node.child_by_field_name("name"))
-                        .or_else(|| node.child_by_field_name("callee")); // Kotlin
-                    let line = node.start_position().row + 1;
-                    let col = node.start_position().column as u32;
-
-                    // Java: method_invocation — name/object are direct children
-                    if node.kind() == "method_invocation" {
-                        let method_name = node.child_by_field_name("name")
-                            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                            .unwrap_or("")
-                            .to_string();
-                        let object_name = node.child_by_field_name("object")
-                            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                            .unwrap_or("")
-                            .to_string();
-                        let path = if object_name.is_empty() { vec![] } else { vec![object_name] };
-                        func.calls.push(UnresolvedRef {
-                            name: method_name,
-                            path,
-                            line,
-                            col: col as usize,
-                        });
-                        return None;
-                    }
-
-                    match name_node {
-                        // Simple call: `foo(x)` — name_node is (identifier)
-                        Some(n) if n.kind() == "identifier" => {
-                            let name = n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
-                            if !is_stoplisted(&name) {
-                                func.calls.push(UnresolvedRef {
-                                    name,
-                                    path: vec![],
-                                    line,
-                                    col: col as usize,
-                                });
-                            }
-                        }
-                        // Dotted call: `obj.method(x)` — name_node is (attribute) [Python]
-                        // or `obj.method(x)` — name_node is (field_expression) [Rust/C++]
-                        // or `obj.method(x)` — name_node is (member_expression) [TypeScript]
-                        // or `obj.method(x)` — name_node is (selector_expression) [Go]
-                        // or `obj.method(x)` — name_node is (method_invocation) [Java]
-                        Some(n) if n.kind() == "attribute"
-                            || n.kind() == "field_expression"
-                            || n.kind() == "member_expression"
-                            || n.kind() == "selector_expression"
-                            || n.kind() == "member_access_expression"
-                            || n.kind() == "chained_method_call"
-                            || n.kind() == "call" => {
-                            // Ruby: chained method call or call with explicit receiver
-                            // C#: member_access_expression (obj.Method())
-                            // PHP: member_call_expression is handled by method= field above
-                            let method_field = if n.kind() == "attribute" { "attribute" }
-                                else if n.kind() == "field_expression" { "field" }
-                                else if n.kind() == "member_expression" { "property" }
-                                else if n.kind() == "call" { "method" }
-                                else if n.kind() == "chained_method_call" { "method" }
-                                else if n.kind() == "member_access_expression" { "name" }
-                                else { "field" }; // selector_expression [Go]
-                            let object_field = if n.kind() == "attribute" { "object" }
-                                else if n.kind() == "field_expression" { "value" }
-                                else if n.kind() == "member_expression" { "object" }
-                                else if n.kind() == "call" { "receiver" }
-                                else if n.kind() == "chained_method_call" { "receiver" }
-                                else if n.kind() == "member_access_expression" { "expression" }
-                                else { "operand" }; // selector_expression [Go]
-
-                            let method = n
-                                .child_by_field_name(method_field)
-                                .and_then(|c| c.utf8_text(source.as_bytes()).ok())
-                                .unwrap_or("")
-                                .to_string();
-                            let object = n
-                                .child_by_field_name(object_field)
-                                .and_then(|c| {
-                                    // v3.6: Skip literal receivers like "str".method() or 5.times()
-                                    if is_literal_receiver(c.kind()) {
-                                        return None;
-                                    }
-                                    c.utf8_text(source.as_bytes()).ok()
-                                })
-                                .unwrap_or("")
-                                .to_string();
-
-                            if !is_stoplisted(&method) {
-                                let path = if object.is_empty() { vec![] } else { vec![object] };
-                                func.calls.push(UnresolvedRef {
-                                    name: method,
-                                    path,
-                                    line,
-                                    col: col as usize,
-                                });
-                            }
-                        }
-                        _ => {
-                            // Zig: call fires on (FnCallArguments); parent SuffixExpr has
-                            // variable_type_function: (IDENTIFIER) for the function name
-                            if node.kind() == "FnCallArguments" {
-                                if let Some(parent) = node.parent() {
-                                    if parent.kind() == "SuffixExpr" {
-                                        let zig_name = parent
-                                            .child_by_field_name("variable_type_function")
-                                            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                                            .unwrap_or("")
-                                            .to_string();
-                                        if !zig_name.is_empty() && !is_stoplisted(&zig_name) {
-                                            func.calls.push(UnresolvedRef {
-                                                name: zig_name,
-                                                path: vec![],
-                                                line,
-                                                col: col as usize,
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            emit_call_for_node(node, source, &mut ctx.units, ctx.current_function_idx);
             None
         }
 
@@ -1027,6 +659,302 @@ fn parse_import_from_statement(node: Node, source: &str) -> ImportKind {
 fn count_leading_dots(s: &str) -> usize {
     s.chars().take_while(|&c| c == '.').count()
 }
+
+// ── Step 1: Extracted emit_* functions for single-pass migration ──────────
+
+/// Extract the name from a class-like AST node.
+/// Handles: Python class, Go type_declaration, Rust struct/enum/trait,
+/// Swift/Kotlin class_declaration, Zig VarDecl, Elixir defmodule, Lua table_constructor,
+/// R setClass_expression, PHP class_definition, etc.
+pub fn extract_class_name(node: Node, source: &str) -> String {
+    let name_node = node.child_by_field_name("name");
+    if name_node.is_some() && name_node.unwrap().kind() != "" {
+        return name_node
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+    }
+    if node.kind() == "type_declaration" {
+        return node.child_by_field_name("type")
+            .and_then(|ts| ts.child_by_field_name("name"))
+            .or_else(|| {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    if child.kind() == "type_spec" {
+                        return child.child_by_field_name("name");
+                    }
+                }
+                None
+            })
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+    }
+    // Elixir defmodule
+    if node.kind() == "call" && node.child_by_field_name("target")
+        .and_then(|t| t.utf8_text(source.as_bytes()).ok())
+        .map(|s| s == "defmodule")
+        .unwrap_or(false)
+    {
+        return node.children(&mut node.walk())
+            .find(|c| c.kind() == "arguments")
+            .and_then(|args| {
+                args.children(&mut args.walk())
+                    .find(|c| c.kind() == "alias")
+                    .and_then(|a| a.utf8_text(source.as_bytes()).ok())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+    }
+    if node.kind() == "VarDecl" {
+        if let Some(name) = node.child_by_field_name("variable_type_function")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+        {
+            return name.to_string();
+        }
+    }
+    // General: find identifier child
+    let mut cursor = node.walk();
+    let children: Vec<_> = node.children(&mut cursor).collect();
+    children.iter().find(|ch|
+        ch.kind() == "type_identifier" || ch.kind() == "simple_identifier"
+        || ch.kind() == "identifier"
+    )
+    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+    .unwrap_or("")
+    .to_string()
+}
+
+/// Extract the name from a function-like AST node.
+/// Handles: Python/JS function_definition, C++ function_definition,
+/// Kotlin function_declaration, Zig FnProto, Elixir def/defp, R function_definition.
+pub fn extract_function_name(node: Node, source: &str) -> String {
+    let name_node = node.child_by_field_name("name");
+    if node.kind() == "function_definition" {
+        // R: function_definition is child of binary_operator; name is on lhs
+        if let Some(rn) = node.parent().and_then(|p| {
+            if p.kind() == "binary_operator" {
+                p.child_by_field_name("lhs")
+                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            } else {
+                None
+            }
+        }) {
+            return rn.to_string();
+        }
+        if name_node.is_some() {
+            return name_node
+                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                .unwrap_or("")
+                .to_string();
+        }
+        // C++/C: walk declarator chain
+        return node.child_by_field_name("declarator")
+            .and_then(|d| d.child_by_field_name("declarator"))
+            .and_then(|id| id.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+    }
+    if name_node.is_some() {
+        return name_node
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+    }
+    if node.kind() == "function_declaration" {
+        let mut cursor = node.walk();
+        let children: Vec<_> = node.children(&mut cursor).collect();
+        return children.iter().find(|ch|
+            ch.kind() == "simple_identifier" || ch.kind() == "identifier"
+        )
+        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+        .unwrap_or("")
+        .to_string();
+    }
+    if node.kind() == "FnProto" {
+        return node.child_by_field_name("function")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+    }
+    // Elixir: (call target: (identifier "def"/"defp") ...)
+    if node.is_named() && node.kind() == "call" {
+        return node.child_by_field_name("target")
+            .and_then(|t| t.utf8_text(source.as_bytes()).ok())
+            .and_then(|s| {
+                if matches!(s, "def" | "defp") {
+                    node.children(&mut node.walk())
+                        .find(|c| c.kind() == "arguments")
+                        .and_then(|args| {
+                            args.children(&mut args.walk())
+                                .find(|c| c.kind() == "call")
+                                .and_then(|call| call.child_by_field_name("target"))
+                                .and_then(|id| id.utf8_text(source.as_bytes()).ok())
+                                .map(|s| s.to_string())
+                        })
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_default();
+    }
+    "".to_string()
+}
+
+/// Extract base classes from a class node's superclass field.
+pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
+    node
+        .child_by_field_name("superclasses")
+        .or_else(|| node.child_by_field_name("superclass"))
+        .or_else(|| node.child_by_field_name("bases"))
+        .map(|sc| {
+            let mut cursor = sc.walk();
+            sc.children(&mut cursor)
+                .filter(|child| child.kind() == "identifier"
+                    || child.kind() == "type_identifier"
+                    || child.kind() == "constant"
+                    || child.kind() == "name")
+                .filter_map(|id| {
+                    id.utf8_text(source.as_bytes()).ok().map(|txt| {
+                        if is_builtin_type(txt) {
+                            return None;
+                        }
+                        Some(UnresolvedRef {
+                            name: txt.to_string(),
+                            path: vec![],
+                            line: id.start_position().row + 1,
+                            col: id.start_position().column as usize,
+                        })
+                    })
+                })
+                .flatten()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Extract Go receiver type from method_declaration.
+pub fn extract_go_receiver_type(node: Node, source: &str) -> Option<String> {
+    if node.kind() != "method_declaration" {
+        return None;
+    }
+    node.child_by_field_name("receiver")
+        .and_then(|recv| {
+            let mut cursor = recv.walk();
+            for child in recv.children(&mut cursor) {
+                if child.kind() == "parameter_declaration" {
+                    if let Some(typ) = child.child_by_field_name("type") {
+                        if typ.kind() == "pointer_type" {
+                            return typ.child_by_field_name("name")
+                                .or_else(|| typ.child(0))
+                                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                                .map(|s| s.to_string());
+                        }
+                        return typ.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+                    }
+                }
+            }
+            None
+        })
+}
+
+/// Emit a captured call node, recording it in the current function's call list.
+pub fn emit_call_for_node(node: Node, source: &str, units: &mut [ExtractedUnit],
+                          current_function_idx: Option<usize>) {
+    let idx = match current_function_idx {
+        Some(i) => i,
+        None => return,
+    };
+    let func = match units.get_mut(idx) {
+        Some(ExtractedUnit::Function(ref mut f)) => f,
+        _ => return,
+    };
+    let line = node.start_position().row + 1;
+    let col = node.start_position().column as u32;
+
+    if node.kind() == "method_invocation" {
+        let method_name = node.child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+        let object_name = node.child_by_field_name("object")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
+        let path = if object_name.is_empty() { vec![] } else { vec![object_name] };
+        func.calls.push(UnresolvedRef { name: method_name, path, line, col: col as usize });
+        return;
+    }
+
+    let name_node = node.child_by_field_name("function")
+        .or_else(|| node.child_by_field_name("method"))
+        .or_else(|| node.child_by_field_name("name"))
+        .or_else(|| node.child_by_field_name("callee"));
+
+    match name_node {
+        Some(n) if n.kind() == "identifier" => {
+            let name = n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+            if !is_stoplisted(&name) {
+                func.calls.push(UnresolvedRef { name, path: vec![], line, col: col as usize });
+            }
+        }
+        Some(n) if n.kind() == "attribute"
+            || n.kind() == "field_expression"
+            || n.kind() == "member_expression"
+            || n.kind() == "selector_expression"
+            || n.kind() == "member_access_expression"
+            || n.kind() == "chained_method_call"
+            || n.kind() == "call" => {
+            let method_field = if n.kind() == "attribute" { "attribute" }
+                else if n.kind() == "field_expression" { "field" }
+                else if n.kind() == "member_expression" { "property" }
+                else if n.kind() == "call" { "method" }
+                else if n.kind() == "chained_method_call" { "method" }
+                else if n.kind() == "member_access_expression" { "name" }
+                else { "field" };
+            let object_field = if n.kind() == "attribute" { "object" }
+                else if n.kind() == "field_expression" { "value" }
+                else if n.kind() == "member_expression" { "object" }
+                else if n.kind() == "call" { "receiver" }
+                else if n.kind() == "chained_method_call" { "receiver" }
+                else if n.kind() == "member_access_expression" { "expression" }
+                else { "operand" };
+            let method = n.child_by_field_name(method_field)
+                .and_then(|c| c.utf8_text(source.as_bytes()).ok())
+                .unwrap_or("")
+                .to_string();
+            let object = n.child_by_field_name(object_field)
+                .and_then(|c| {
+                    if is_literal_receiver(c.kind()) { return None; }
+                    c.utf8_text(source.as_bytes()).ok()
+                })
+                .unwrap_or("")
+                .to_string();
+            if !is_stoplisted(&method) {
+                let path = if object.is_empty() { vec![] } else { vec![object] };
+                func.calls.push(UnresolvedRef { name: method, path, line, col: col as usize });
+            }
+        }
+        _ => {
+            if node.kind() == "FnCallArguments" {
+                if let Some(parent) = node.parent() {
+                    if parent.kind() == "SuffixExpr" {
+                        let zig_name = parent
+                            .child_by_field_name("variable_type_function")
+                            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                            .unwrap_or("")
+                            .to_string();
+                        if !zig_name.is_empty() && !is_stoplisted(&zig_name) {
+                            func.calls.push(UnresolvedRef { name: zig_name, path: vec![], line, col: col as usize });
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── End extracted emit_* helpers ───────────────────────────────────────────
 
 /// Determine the FunctionKind from decorators and method status.
 pub fn derive_function_kind(decorators: &[String], is_method: bool) -> FunctionKind {
