@@ -66,7 +66,9 @@ class MutationEdit:
     """A single byte-accurate edit to a file."""
     file: str
     replacement: str
-    expected_hash: str
+    expected_hash: str = ""
+    span_start: Optional[int] = None
+    span_end: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -105,6 +107,28 @@ class PolicyViolation(MutationError):
 
 
 # ── CodeGraph Python Wrapper ────────────────────────────────────────────────
+
+def _parse_plan_dict(result: dict, tool: str) -> "MutationPlan":
+    """Convert a Rust plan_to_dict result into a MutationPlan."""
+    edits = []
+    for e in result.get("edits", []) or []:
+        edits.append(MutationEdit(
+            file=e.get("file", ""),
+            replacement=e.get("replacement", ""),
+            expected_hash=e.get("expected_hash", ""),
+            span_start=e.get("span_start"),
+            span_end=e.get("span_end"),
+        ))
+    return MutationPlan(
+        id=result.get("id", ""),
+        tool=tool,
+        edits=edits,
+        affected_files=list(result.get("affected_files", []) or []),
+        diff_preview=result.get("diff_preview", ""),
+        unverified_sites=list(result.get("unverified_sites", []) or []),
+        warnings=list(result.get("warnings", []) or []),
+    )
+
 
 class CodeGraph:
     """Python-facing graph handle backed by Macrame bitemporal ledger.
@@ -382,21 +406,41 @@ class CodeGraph:
         """
         try:
             from coderadar._core import update_file as _update_file_rust
-            _update_file_rust(file_path, content, force)
-        except (ImportError, RuntimeError):
-            pass
+            result = _update_file_rust(file_path, content, force)
+            if isinstance(result, dict):
+                return UpdateReport(
+                    affected_files=result.get("affected_files") or [file_path],
+                    changed_symbols=[],
+                    new_unresolved_references=[],
+                    newly_resolved_references=[],
+                    elapsed_ms=float(result.get("elapsed_ms", 0.0)),
+                    parse_quality=str(result.get("parse_quality", "Clean")),
+                    parse_errors=int(result.get("parse_errors", 0)),
+                    fully_applied=bool(result.get("fully_applied", True)),
+                    epoch_before=0,
+                    epoch_after=1,
+                )
+        except ImportError:
+            return UpdateReport(
+                affected_files=[file_path], changed_symbols=[],
+                new_unresolved_references=[], newly_resolved_references=[],
+                elapsed_ms=0.0, parse_quality="Clean", parse_errors=0,
+                fully_applied=True, epoch_before=0, epoch_after=1,
+            )
+        except RuntimeError as e:
+            return UpdateReport(
+                affected_files=[file_path], changed_symbols=[],
+                new_unresolved_references=[], newly_resolved_references=[],
+                elapsed_ms=0.0, parse_quality=f"Error: {e}", parse_errors=1,
+                fully_applied=False, epoch_before=0, epoch_after=1,
+            )
 
+        # Fallback (unreachable in practice)
         return UpdateReport(
-            affected_files=[file_path],
-            changed_symbols=[],
-            new_unresolved_references=[],
-            newly_resolved_references=[],
-            elapsed_ms=0.0,
-            parse_quality="Clean",
-            parse_errors=0,
-            fully_applied=True,
-            epoch_before=0,
-            epoch_after=1,
+            affected_files=[file_path], changed_symbols=[],
+            new_unresolved_references=[], newly_resolved_references=[],
+            elapsed_ms=0.0, parse_quality="Clean", parse_errors=0,
+            fully_applied=False, epoch_before=0, epoch_after=1,
         )
 
     def watch(self, paths: Optional[List[str]] = None,
@@ -436,15 +480,7 @@ class CodeGraph:
             from coderadar._core import plan_body_replacement as _pbr
             result = _pbr(entity_id, new_body, expected_hash, dry_run)
             if isinstance(result, dict):
-                return MutationPlan(
-                    id=result.get("id", ""),
-                    tool="replace_entity_body",
-                    edits=[MutationEdit(**e) for e in result.get("edits", [])],
-                    affected_files=result.get("affected_files", []),
-                    diff_preview=result.get("diff_preview", ""),
-                    unverified_sites=result.get("unverified_sites", []),
-                    warnings=result.get("warnings", []),
-                )
+                return _parse_plan_dict(result, "replace_entity_body")
         except ImportError:
             pass
         return MutationPlan(
@@ -463,8 +499,10 @@ class CodeGraph:
         """Plan a signature update with call-site cascade."""
         try:
             from coderadar._core import plan_signature_update as _psu
-            _psu(entity_id, new_signature, call_site_values or {},
-                 inject_defaults, dry_run)
+            result = _psu(entity_id, new_signature, call_site_values or {},
+                          inject_defaults, dry_run)
+            if isinstance(result, dict):
+                return _parse_plan_dict(result, "update_signature")
         except ImportError:
             pass
         return MutationPlan(
@@ -482,7 +520,9 @@ class CodeGraph:
         """Plan a symbol rename across the codebase."""
         try:
             from coderadar._core import plan_rename as _pr
-            _pr(entity_id, new_name, include_strings, dry_run)
+            result = _pr(entity_id, new_name, include_strings, dry_run)
+            if isinstance(result, dict):
+                return _parse_plan_dict(result, "rename_symbol")
         except ImportError:
             pass
         return MutationPlan(
@@ -500,7 +540,9 @@ class CodeGraph:
         """Plan creating a new entity after an anchor point."""
         try:
             from coderadar._core import plan_create_entity as _pce
-            _pce(target_file, anchor, code, dry_run)
+            result = _pce(target_file, anchor, code, dry_run)
+            if isinstance(result, dict):
+                return _parse_plan_dict(result, "create_entity")
         except ImportError:
             pass
         return MutationPlan(
@@ -517,19 +559,35 @@ class CodeGraph:
         """
         try:
             from coderadar._core import apply_mutation as _am, clear_embeddings_for_file
-            _am(json.dumps({
+            result = _am(json.dumps({
                 "id": plan.id,
                 "tool": plan.tool,
-                "edits": [{"file": e.file, "replacement": e.replacement,
-                           "expected_hash": e.expected_hash} for e in plan.edits],
+                "edits": [{"file": e.file, "span_start": e.span_start or 0,
+                           "span_end": e.span_end or 0, "replacement": e.replacement,
+                           "expected_hash": e.expected_hash or ""} for e in plan.edits],
                 "affected_files": plan.affected_files,
             }))
+            # Reindex changed files so the graph reflects the new content
+            for f in plan.affected_files:
+                try:
+                    self.update_file(f)
+                except Exception:
+                    pass
             # Invalidate stale embeddings for all affected files
             for f in plan.affected_files:
                 try:
                     clear_embeddings_for_file(f)
                 except RuntimeError:
                     pass
+            if isinstance(result, dict) and not result.get("applied", True):
+                raw_status = str(result.get("status", "RolledBack"))
+                status = "RejectedStale" if "RejectedStale" in raw_status else "RolledBack"
+                return MutationResult(
+                    status=status,
+                    files_written=result.get("files_written", []),
+                    syntax_errors=result.get("errors", []),
+                    backup_path=result.get("backup_path"),
+                )
         except ImportError:
             pass
         return MutationResult(

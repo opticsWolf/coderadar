@@ -593,6 +593,21 @@ class TestCodeRadarAPI:
             b.update_file("a.py", "def foo(): pass\n")
         # Should not raise
 
+    def test_update_file_reports_failure(self):
+        try:
+            from coderadar._core import analyze
+            from coderadar import CodeGraph
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        from pathlib import Path
+        e2e = Path(__file__).parent / "fixtures" / "python" / "e2e_project"
+        analyze(str(e2e))
+        graph = CodeGraph()
+        report = graph.update_file(r".\__definitely_missing__.py")
+        assert report.fully_applied is False
+        assert report.parse_errors >= 1
+        assert "Error" in report.parse_quality
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Pest Query Grammar Tests (parseable examples from §7.2a)
