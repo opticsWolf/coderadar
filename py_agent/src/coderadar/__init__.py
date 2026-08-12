@@ -563,7 +563,8 @@ class CodeGraph:
                 "id": plan.id,
                 "tool": plan.tool,
                 "edits": [{"file": e.file, "span_start": e.span_start or 0,
-                           "span_end": e.span_end or 0, "replacement": e.replacement} for e in plan.edits],
+                           "span_end": e.span_end or 0, "replacement": e.replacement,
+                           "expected_hash": e.expected_hash or ""} for e in plan.edits],
                 "affected_files": plan.affected_files,
             }))
             # Reindex changed files so the graph reflects the new content
@@ -579,10 +580,13 @@ class CodeGraph:
                 except RuntimeError:
                     pass
             if isinstance(result, dict) and not result.get("applied", True):
+                raw_status = str(result.get("status", "RolledBack"))
+                status = "RejectedStale" if "RejectedStale" in raw_status else "RolledBack"
                 return MutationResult(
-                    status="RolledBack",
+                    status=status,
                     files_written=result.get("files_written", []),
                     syntax_errors=result.get("errors", []),
+                    backup_path=result.get("backup_path"),
                 )
         except ImportError:
             pass

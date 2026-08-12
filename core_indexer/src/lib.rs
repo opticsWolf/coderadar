@@ -711,6 +711,8 @@ fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
         span_start: usize,
         span_end: usize,
         replacement: String,
+        #[serde(default)]
+        expected_hash: String,
     }
 
     let req: ApplyRequest = serde_json::from_str(plan_json)
@@ -724,7 +726,7 @@ fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
             file: e.file.clone(),
             span: crate::types::ByteSpan { start: e.span_start, end: e.span_end },
             replacement: e.replacement.clone(),
-            expected_hash: String::new(),
+            expected_hash: e.expected_hash.clone(),
         }).collect(),
         affected_files: req.affected_files,
         diff_preview: String::new(),
@@ -741,6 +743,7 @@ fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
         dict.set_item("status", format!("{:?}", result.status))?;
         dict.set_item("files_written", result.files_written)?;
         dict.set_item("errors", result.syntax_errors.iter().map(|e| format!("{}:{} — {}", e.file, e.line, e.message)).collect::<Vec<_>>())?;
+        dict.set_item("backup_path", result.backup_path.clone().unwrap_or_default())?;
         Ok(dict.into())
     })
 }
@@ -753,13 +756,14 @@ fn plan_to_dict(py: Python<'_>, plan: &mutation::MutationPlan) -> PyResult<PyObj
     dict.set_item("diff_preview", &plan.diff_preview)?;
     dict.set_item("affected_files", &plan.affected_files)?;
     dict.set_item("warnings", &plan.warnings)?;
-    // Serialize edits as list of {file, span_start, span_end, replacement}
+    // Serialize edits as list of {file, span_start, span_end, replacement, expected_hash}
     let edits: Vec<PyObject> = plan.edits.iter().map(|e| {
         let ed = PyDict::new(py);
         let _ = ed.set_item("file", &e.file);
         let _ = ed.set_item("span_start", e.span.start);
         let _ = ed.set_item("span_end", e.span.end);
         let _ = ed.set_item("replacement", &e.replacement);
+        let _ = ed.set_item("expected_hash", &e.expected_hash);
         ed.into()
     }).collect();
     dict.set_item("edits", edits)?;

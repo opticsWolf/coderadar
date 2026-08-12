@@ -1,8 +1,10 @@
 // CodeRadar v3.6 — AST-Aware Mutation Engine (§11)
 // Four refactoring tools: replace_entity_body, update_signature, rename_symbol, create_entity.
 //
-// Each plan_* method takes the current CodeGraph for entity/span lookup.
-// Actual file edits are applied via the Python layer (ropey + tree-sitter verify).
+// Each plan_* method takes the current CodeGraph for entity/span lookup and
+// computes byte-accurate edits with content-hash guards. apply() performs
+// stale-write rejection, backup, atomic write, post-write parse verification,
+// and automatic rollback on tainted updates.
 
 pub mod edit;
 pub mod indent;
@@ -116,6 +118,55 @@ fn line_col_to_byte(source: &[u8], line: usize, col: usize) -> Option<usize> {
     (pos <= source.len()).then_some(pos)
 }
 
+/// xxh3_64 hex digest of a byte slice (used for stale-write rejection).
+fn span_hash(bytes: &[u8]) -> String {
+    format!("{:016x}", xxhash_rust::xxh3::xxh3_64(bytes))
+}
+
+/// Hash the content of `bytes` within `span` (clamped to bounds).
+fn hash_span(bytes: &[u8], span: ByteSpan) -> String {
+    let len = bytes.len();
+    let start = span.start.min(len);
+    let end = span.end.min(len).max(start);
+    span_hash(&bytes[start..end])
+}
+
+/// Parse `source` with the tree-sitter grammar for `lang`, if available.
+/// Returns None if the language has no grammar or parsing fails.
+fn parse_has_error(lang: crate::types::Language, source: &[u8]) -> Option<bool> {
+    let ts_lang = crate::graph::CodeGraph::ts_language(&lang)?;
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&ts_lang).ok()?;
+    let tree = parser.parse(source, None)?;
+    Some(tree.root_node().has_error())
+}
+
+/// Post-write parse verification: report a diagnostic only if the mutation
+/// *introduced* a syntax error (after has_error && !before has_error).
+fn verify_parse_introduced_error(
+    file_path: &str, original: &[u8],
+) -> Option<SyntaxDiagnostic> {
+    let lang = crate::types::Language::from_extension(
+        std::path::Path::new(file_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("py")
+    );
+    let before = parse_has_error(lang, original);
+    let after_bytes = std::fs::read(file_path).ok()?;
+    let after = parse_has_error(lang, &after_bytes);
+
+    match (before, after) {
+        (Some(_), Some(true)) if before == Some(false) => Some(SyntaxDiagnostic {
+            file: file_path.to_string(),
+            line: 0, column: 0,
+            message: "post-write parse check failed — mutation introduced a syntax error".into(),
+            offending_span: ByteSpan { start: 0, end: 0 },
+        }),
+        _ => None,
+    }
+}
+
 pub struct MutationEngine {
     pub write_guard: WriteGuard,
     pub config: crate::graph::MutationConfig,
@@ -152,6 +203,11 @@ impl MutationEngine {
         let file_source = std::fs::read_to_string(&file_path).unwrap_or_default();
         let indent = detect_indent_style(&file_source);
 
+        // Stale-write guard: hash the current body span content so apply() can
+        // reject the edit if the file changed between planning and applying.
+        let computed_hash = hash_span(file_source.as_bytes(), body_span);
+        let edit_expected_hash = expected_hash.unwrap_or(computed_hash);
+
         // Body spans start at the first body token (or inline `{`), so the
         // leading indentation is NOT part of the span — use an empty target.
         // normalize_indent preserves the replacement's relative indentation.
@@ -166,7 +222,7 @@ impl MutationEngine {
                 file: module_file_path(projection, &fn_entity.parent_module),
                 span: body_span,
                 replacement: normalized_body,
-                expected_hash: expected_hash.unwrap_or_else(|| format!("{:x}", fn_entity.body_hash)),
+                expected_hash: edit_expected_hash,
             }],
             affected_files: vec![module_file_path(projection, &fn_entity.parent_module)],
             diff_preview: if dry_run {
@@ -204,6 +260,11 @@ impl MutationEngine {
         let params_span = fn_entity.params_span;
         let old_params = &fn_entity.parameters;
 
+        // Stale-write guard: hash the current params span content.
+        let def_file = module_file_path(projection, &fn_entity.parent_module);
+        let def_source = std::fs::read_to_string(&def_file).unwrap_or_default();
+        let def_expected_hash = hash_span(def_source.as_bytes(), params_span);
+
         // 1. Diff old vs new parameters
         let new_param_names: Vec<&str> = new_signature
             .split(',')
@@ -222,10 +283,10 @@ impl MutationEngine {
 
         // 2. Definition edit: replace params_span
         edits.push(MutationEdit {
-            file: module_file_path(projection, &fn_entity.parent_module),
+            file: def_file,
             span: params_span,
             replacement: new_signature.to_string(),
-            expected_hash: format!("{:x}", fn_entity.signature_hash),
+            expected_hash: def_expected_hash,
         });
 
         // 3. Enumerate call sites and generate per-site edits
@@ -332,11 +393,13 @@ impl MutationEngine {
 
         // 1. Definition: rewrite name_span
         let def_file = module_file_path(projection, &fn_entity.parent_module);
+        let def_source = std::fs::read(&def_file).unwrap_or_default();
+        let def_hash = hash_span(&def_source, name_span);
         edits.push(MutationEdit {
             file: def_file.clone(),
             span: name_span,
             replacement: new_name.to_string(),
-            expected_hash: format!("{:x}", fn_entity.signature_hash),
+            expected_hash: def_hash,
         });
         affected.push(def_file);
 
@@ -376,11 +439,12 @@ impl MutationEngine {
                         // Simple call `foo()` — name starts at (line, col)
                         if let Some(start) = line_col_to_byte(&caller_source, call.line, call.col) {
                             let end = (start + call.name.len()).min(caller_source.len());
+                            let span = ByteSpan { start, end };
                             edits.push(MutationEdit {
                                 file: caller_file.clone(),
-                                span: ByteSpan { start, end },
+                                span,
                                 replacement: new_name.to_string(),
-                                expected_hash: String::new(),
+                                expected_hash: hash_span(&caller_source, span),
                             });
                             if !affected.contains(&caller_file) {
                                 affected.push(caller_file.clone());
@@ -411,15 +475,16 @@ impl MutationEngine {
 
         // 4. Also check classes
         if let Some(cls) = projection.classes.get(entity_id) {
+            let cls_file = module_file_path(projection, &cls.parent_module);
+            let cls_source = std::fs::read(&cls_file).unwrap_or_default();
             edits.push(MutationEdit {
-                file: module_file_path(projection, &cls.parent_module),
+                file: cls_file.clone(),
                 span: cls.name_span,
                 replacement: new_name.to_string(),
-                expected_hash: format!("{:x}", cls.content_hash),
+                expected_hash: hash_span(&cls_source, cls.name_span),
             });
-            let fp = module_file_path(projection, &cls.parent_module);
-            if !affected.contains(&fp) {
-                affected.push(fp);
+            if !affected.contains(&cls_file) {
+                affected.push(cls_file);
             }
         }
 
@@ -503,9 +568,8 @@ impl MutationEngine {
         })
     }
 
-    /// Apply a mutation plan: group edits by file → read → rope-apply → atomic write.
+    /// Apply a mutation plan: stale-check → backup → write → post-verify → rollback.
     pub fn apply(&mut self, plan: &MutationPlan) -> MutationResult {
-        use std::collections::HashMap;
         use std::io::Write;
 
         // Group edits by file path (all edits carry real byte spans)
@@ -516,39 +580,97 @@ impl MutationEngine {
                 .push(edit.clone());
         }
 
-        let mut files_written: Vec<String> = Vec::new();
         let mut syntax_errors: Vec<SyntaxDiagnostic> = Vec::new();
+        let mut originals: HashMap<String, String> = HashMap::new();
 
+        // ── Phase 1: Stale-write rejection ──────────────────────────────
+        // Every non-empty expected_hash must match the current content at its
+        // span. Any mismatch → reject the entire plan (nothing is written).
         for (file_path, edits) in &by_file {
-            // Read original
             let original = match std::fs::read_to_string(file_path) {
                 Ok(s) => s,
                 Err(e) => {
                     syntax_errors.push(SyntaxDiagnostic {
-                        file: file_path.clone(),
-                        line: 0, column: 0,
+                        file: file_path.clone(), line: 0, column: 0,
                         message: format!("read failed: {}", e),
                         offending_span: ByteSpan { start: 0, end: 0 },
                     });
-                    continue;
+                    return MutationResult {
+                        status: MutationStatus::RolledBack,
+                        files_written: vec![], syntax_errors,
+                        reindex: ReindexSummary { files: 0, entities_updated: 0, edges_updated: 0, duration_ms: 0 },
+                        backup_path: None,
+                    };
                 }
             };
+            for edit in edits {
+                if edit.expected_hash.is_empty() {
+                    continue;
+                }
+                let actual = hash_span(original.as_bytes(), edit.span);
+                if actual != edit.expected_hash {
+                    syntax_errors.push(SyntaxDiagnostic {
+                        file: file_path.clone(), line: 0, column: 0,
+                        message: format!(
+                            "stale edit rejected — content changed since planning (expected {}, found {})",
+                            edit.expected_hash, actual
+                        ),
+                        offending_span: edit.span,
+                    });
+                    return MutationResult {
+                        status: MutationStatus::RejectedStale,
+                        files_written: vec![], syntax_errors,
+                        reindex: ReindexSummary { files: 0, entities_updated: 0, edges_updated: 0, duration_ms: 0 },
+                        backup_path: None,
+                    };
+                }
+            }
+            originals.insert(file_path.clone(), original);
+        }
 
-            // Apply edits via rope
+        // ── Phase 2: Backup every target file ────────────────────────────
+        let mut backups: Vec<(String, String)> = Vec::new(); // (file, backup)
+        for file_path in by_file.keys() {
+            let backup_path = format!("{}.coderadar-bak", file_path);
+            if let Err(e) = std::fs::copy(file_path, &backup_path) {
+                for (_, bp) in &backups { let _ = std::fs::remove_file(bp); }
+                syntax_errors.push(SyntaxDiagnostic {
+                    file: file_path.clone(), line: 0, column: 0,
+                    message: format!("backup failed: {}", e),
+                    offending_span: ByteSpan { start: 0, end: 0 },
+                });
+                return MutationResult {
+                    status: MutationStatus::RolledBack,
+                    files_written: vec![], syntax_errors,
+                    reindex: ReindexSummary { files: 0, entities_updated: 0, edges_updated: 0, duration_ms: 0 },
+                    backup_path: None,
+                };
+            }
+            backups.push((file_path.clone(), backup_path));
+        }
+
+        // ── Phase 3: Write (atomic temp + rename) ────────────────────────
+        let mut files_written: Vec<String> = Vec::new();
+        for (file_path, edits) in &by_file {
+            let original = originals.get(file_path).cloned().unwrap_or_default();
             let new_content = match apply_edits_to_file(&original, &edits) {
                 Ok(s) => s,
                 Err(e) => {
+                    rollback_all(&backups);
                     syntax_errors.push(SyntaxDiagnostic {
-                        file: file_path.clone(),
-                        line: 0, column: 0,
+                        file: file_path.clone(), line: 0, column: 0,
                         message: format!("apply failed: {:?}", e),
                         offending_span: ByteSpan { start: 0, end: 0 },
                     });
-                    continue;
+                    return MutationResult {
+                        status: MutationStatus::RolledBack,
+                        files_written: vec![], syntax_errors,
+                        reindex: ReindexSummary { files: 0, entities_updated: 0, edges_updated: 0, duration_ms: 0 },
+                        backup_path: None,
+                    };
                 }
             };
 
-            // Atomic write: temp file + rename
             let tmp_path = format!("{}.coderadar-tmp", file_path);
             let write_ok = std::fs::File::create(&tmp_path)
                 .and_then(|mut f| f.write_all(new_content.as_bytes()))
@@ -559,27 +681,52 @@ impl MutationEngine {
                 files_written.push(file_path.clone());
             } else {
                 let _ = std::fs::remove_file(&tmp_path);
+                rollback_all(&backups);
                 syntax_errors.push(SyntaxDiagnostic {
-                    file: file_path.clone(),
-                    line: 0, column: 0,
+                    file: file_path.clone(), line: 0, column: 0,
                     message: "atomic write failed".into(),
                     offending_span: ByteSpan { start: 0, end: 0 },
                 });
+                return MutationResult {
+                    status: MutationStatus::RolledBack,
+                    files_written: vec![], syntax_errors,
+                    reindex: ReindexSummary { files: 0, entities_updated: 0, edges_updated: 0, duration_ms: 0 },
+                    backup_path: None,
+                };
             }
         }
 
-        let status = if syntax_errors.is_empty() {
-            MutationStatus::Applied
-        } else if !files_written.is_empty() {
-            MutationStatus::Applied // partial success — report errors separately
-        } else {
-            MutationStatus::RolledBack
-        };
+        // ── Phase 4: Post-write parse verification ───────────────────────
+        let mut tainted: Vec<SyntaxDiagnostic> = Vec::new();
+        for file_path in &files_written {
+            let original_bytes = originals.get(file_path).map(|s| s.as_bytes()).unwrap_or(&[]);
+            if let Some(diag) = verify_parse_introduced_error(file_path, original_bytes) {
+                tainted.push(diag);
+            }
+        }
+
+        if !tainted.is_empty() {
+            // Tainted update → automatic rollback of every written file.
+            rollback_all(&backups);
+            syntax_errors.extend(tainted);
+            return MutationResult {
+                status: MutationStatus::RolledBack,
+                files_written: vec![],
+                syntax_errors,
+                reindex: ReindexSummary { files: 0, entities_updated: 0, edges_updated: 0, duration_ms: 0 },
+                backup_path: backups.first().map(|(_, bp)| bp.clone()),
+            };
+        }
+
+        // ── Phase 5: Success — clean up backups ──────────────────────────
+        for (_, backup_path) in &backups {
+            let _ = std::fs::remove_file(backup_path);
+        }
 
         MutationResult {
-            status,
+            status: MutationStatus::Applied,
             files_written,
-            syntax_errors,
+            syntax_errors: Vec::new(),
             reindex: ReindexSummary {
                 files: by_file.len(),
                 entities_updated: 0,
@@ -588,6 +735,14 @@ impl MutationEngine {
             },
             backup_path: None,
         }
+    }
+}
+
+/// Restore every backup (rollback) and remove the backup files.
+fn rollback_all(backups: &[(String, String)]) {
+    for (file_path, backup_path) in backups {
+        let _ = std::fs::copy(backup_path, file_path);
+        let _ = std::fs::remove_file(backup_path);
     }
 }
 
@@ -607,6 +762,7 @@ mod tests {
     use super::*;
     use crate::graph::MutationConfig;
     use crate::types::ByteSpan;
+    use std::path::Path;
 
     fn engine() -> MutationEngine {
         MutationEngine::new(MutationConfig::default())
@@ -663,5 +819,78 @@ mod tests {
         let result = eng.apply(&p);
         assert_eq!(result.status, MutationStatus::Applied);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "import os\ndef g():\n    pass\n");
+    }
+
+    #[test]
+    fn test_apply_rejects_stale_edit() {
+        let src = b"def foo():\n    return 1\n";
+        let start = src.windows(8).position(|w| w == b"return 1").unwrap();
+        let span = ByteSpan { start, end: start + 8 };
+        let hash = hash_span(src, span);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.py");
+        std::fs::write(&path, src).unwrap();
+        let file = path.to_string_lossy().to_string();
+
+        // Simulate the file changing after the plan was built
+        std::fs::write(&file, b"def foo():\n    return 999\n").unwrap();
+
+        let mut eng = engine();
+        let p = plan(vec![MutationEdit {
+            file: file.clone(), span, replacement: "return 2".into(), expected_hash: hash,
+        }]);
+        let result = eng.apply(&p);
+        assert_eq!(result.status, MutationStatus::RejectedStale);
+        assert!(!result.syntax_errors.is_empty());
+        // File must be untouched
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "def foo():\n    return 999\n");
+    }
+
+    #[test]
+    fn test_apply_rolls_back_tainted_update() {
+        let src = b"def foo():\n    return 1\n";
+        let span = ByteSpan { start: 0, end: src.len() };
+        let hash = hash_span(src, span);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.py");
+        std::fs::write(&path, src).unwrap();
+        let file = path.to_string_lossy().to_string();
+
+        let mut eng = engine();
+        // Replacement is syntactically broken → post-verify must roll back
+        let p = plan(vec![MutationEdit {
+            file: file.clone(), span,
+            replacement: "def foo(:\n  broken".into(),
+            expected_hash: hash,
+        }]);
+        let result = eng.apply(&p);
+        assert_eq!(result.status, MutationStatus::RolledBack, "{:#?}", result.syntax_errors);
+        // File restored to original
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "def foo():\n    return 1\n");
+        // No leftover backup file
+        assert!(!Path::new(&format!("{}.coderadar-bak", file)).exists());
+    }
+
+    #[test]
+    fn test_apply_succeeds_when_hash_matches() {
+        let src = b"def foo():\n    return 1\n";
+        let start = src.windows(8).position(|w| w == b"return 1").unwrap();
+        let span = ByteSpan { start, end: start + 8 };
+        let hash = hash_span(src, span);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.py");
+        std::fs::write(&path, src).unwrap();
+        let file = path.to_string_lossy().to_string();
+
+        let mut eng = engine();
+        let p = plan(vec![MutationEdit {
+            file: file.clone(), span, replacement: "return 2".into(), expected_hash: hash,
+        }]);
+        let result = eng.apply(&p);
+        assert_eq!(result.status, MutationStatus::Applied, "{:#?}", result.syntax_errors);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "def foo():\n    return 2\n");
     }
 }

@@ -943,6 +943,48 @@ class TestMutationTools:
         assert "def created_fn():" in content
         assert content.startswith("existing = 1")
 
+    @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+    def test_apply_rejects_stale_write(self, tmp_path):
+        from coderadar._core import analyze
+        from coderadar import CodeGraph
+        target = tmp_path / "stale_mod.py"
+        target.write_text("def foo():\n    return 1\n", encoding="utf-8")
+        analyze(str(tmp_path))
+
+        cg = CodeGraph()
+        eid = f"{target}::foo"
+        plan = cg.plan_rename(eid, "bar", dry_run=True)
+        assert plan.edits and plan.edits[0].expected_hash, "plan must carry content hash"
+
+        # Simulate the name changing after planning (same length, different content)
+        target.write_text("def fop():\n    return 1\n", encoding="utf-8")
+        result = cg.apply(plan)
+        assert result.status == "RejectedStale"
+        assert target.read_text(encoding="utf-8") == "def fop():\n    return 1\n"
+
+    @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+    def test_apply_rolls_back_tainted_update(self, tmp_path):
+        from coderadar._core import analyze
+        from coderadar import CodeGraph, MutationPlan, MutationEdit
+        target = tmp_path / "taint_mod.py"
+        target.write_text("def foo():\n    return 1\n", encoding="utf-8")
+        analyze(str(tmp_path))
+
+        cg = CodeGraph()
+        eid = f"{target}::foo"
+        plan = cg.plan_body_replacement(eid, "return 2", dry_run=True)
+        e = plan.edits[0]
+        broken = MutationPlan(
+            id="t", tool="replace_entity_body",
+            edits=[MutationEdit(file=e.file, replacement="return (",
+                                expected_hash=e.expected_hash,
+                                span_start=e.span_start, span_end=e.span_end)],
+            affected_files=[e.file], diff_preview="", unverified_sites=[], warnings=[],
+        )
+        result = cg.apply(broken)
+        assert result.status == "RolledBack"
+        assert target.read_text(encoding="utf-8") == "def foo():\n    return 1\n"
+
     def test_format_mutation_plan_shows_diff(self):
         from coderadar.mcp.server import _format_mutation_plan
         from coderadar import MutationPlan, MutationEdit
