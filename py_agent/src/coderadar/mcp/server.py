@@ -1543,7 +1543,14 @@ def _update_file(graph: Any, file_path: str, content: str | None) -> str:
         return "Please provide a file path."
 
     try:
-        graph.update_file(file_path, content)
+        report = graph.update_file(file_path, content)
+        if not report.fully_applied:
+            return (
+                f"## Update Failed\n\n"
+                f"- **File:** `{file_path}`\n"
+                f"- **Reason:** {report.parse_quality}\n"
+                f"- **Parse errors:** {report.parse_errors}\n"
+            )
         return (
             f"## File Updated\n\n"
             f"- **File:** `{file_path}`\n"

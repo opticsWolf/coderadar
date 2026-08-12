@@ -406,21 +406,41 @@ class CodeGraph:
         """
         try:
             from coderadar._core import update_file as _update_file_rust
-            _update_file_rust(file_path, content, force)
-        except (ImportError, RuntimeError):
-            pass
+            result = _update_file_rust(file_path, content, force)
+            if isinstance(result, dict):
+                return UpdateReport(
+                    affected_files=result.get("affected_files") or [file_path],
+                    changed_symbols=[],
+                    new_unresolved_references=[],
+                    newly_resolved_references=[],
+                    elapsed_ms=float(result.get("elapsed_ms", 0.0)),
+                    parse_quality=str(result.get("parse_quality", "Clean")),
+                    parse_errors=int(result.get("parse_errors", 0)),
+                    fully_applied=bool(result.get("fully_applied", True)),
+                    epoch_before=0,
+                    epoch_after=1,
+                )
+        except ImportError:
+            return UpdateReport(
+                affected_files=[file_path], changed_symbols=[],
+                new_unresolved_references=[], newly_resolved_references=[],
+                elapsed_ms=0.0, parse_quality="Clean", parse_errors=0,
+                fully_applied=True, epoch_before=0, epoch_after=1,
+            )
+        except RuntimeError as e:
+            return UpdateReport(
+                affected_files=[file_path], changed_symbols=[],
+                new_unresolved_references=[], newly_resolved_references=[],
+                elapsed_ms=0.0, parse_quality=f"Error: {e}", parse_errors=1,
+                fully_applied=False, epoch_before=0, epoch_after=1,
+            )
 
+        # Fallback (unreachable in practice)
         return UpdateReport(
-            affected_files=[file_path],
-            changed_symbols=[],
-            new_unresolved_references=[],
-            newly_resolved_references=[],
-            elapsed_ms=0.0,
-            parse_quality="Clean",
-            parse_errors=0,
-            fully_applied=True,
-            epoch_before=0,
-            epoch_after=1,
+            affected_files=[file_path], changed_symbols=[],
+            new_unresolved_references=[], newly_resolved_references=[],
+            elapsed_ms=0.0, parse_quality="Clean", parse_errors=0,
+            fully_applied=False, epoch_before=0, epoch_after=1,
         )
 
     def watch(self, paths: Optional[List[str]] = None,
