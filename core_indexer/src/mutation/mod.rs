@@ -167,15 +167,27 @@ fn verify_parse_introduced_error(
     }
 }
 
+/// Shared process-wide WriteGuard — suppresses watcher events for files the
+/// mutation engine wrote. The watcher consults the same instance so mutation
+/// writes don't trigger double-indexing.
+pub static WRITE_GUARD: std::sync::OnceLock<std::sync::Arc<WriteGuard>> = std::sync::OnceLock::new();
+
+/// Get (or lazily create) the shared WriteGuard instance.
+pub fn shared_write_guard() -> std::sync::Arc<WriteGuard> {
+    WRITE_GUARD
+        .get_or_init(|| std::sync::Arc::new(WriteGuard::new()))
+        .clone()
+}
+
 pub struct MutationEngine {
-    pub write_guard: WriteGuard,
+    pub write_guard: std::sync::Arc<WriteGuard>,
     pub config: crate::graph::MutationConfig,
 }
 
 impl MutationEngine {
     pub fn new(config: crate::graph::MutationConfig) -> Self {
         Self {
-            write_guard: WriteGuard::new(),
+            write_guard: shared_write_guard(),
             config,
         }
     }
@@ -679,6 +691,13 @@ impl MutationEngine {
 
             if write_ok {
                 files_written.push(file_path.clone());
+                // Suppress watcher events for this file for 5s — the mutation
+                // engine wrote it, so the watcher shouldn't re-index it.
+                self.write_guard.suppress(
+                    std::path::PathBuf::from(file_path),
+                    span_hash(new_content.as_bytes()),
+                    5,
+                );
             } else {
                 let _ = std::fs::remove_file(&tmp_path);
                 rollback_all(&backups);

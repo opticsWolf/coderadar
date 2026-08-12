@@ -29,6 +29,16 @@ impl WriteGuard {
             .insert(path, (expected_hash, Instant::now() + std::time::Duration::from_secs(ttl_secs)));
     }
 
+    /// Check if a path has an active (non-expired) suppression entry.
+    /// Cheap — does not hash file content.
+    pub fn is_suppressed(&self, path: &PathBuf) -> bool {
+        if let Some(entry) = self.suppressed.get(path) {
+            let (_, expiry) = entry.value();
+            return Instant::now() <= *expiry;
+        }
+        false
+    }
+
     /// Check if a file event should be dropped (the engine just wrote it).
     /// Returns true if the event should be suppressed.
     pub fn should_drop(&self, path: &PathBuf, current_hash: &str) -> bool {
@@ -69,5 +79,42 @@ impl WriteGuard {
 impl Default for WriteGuard {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_suppress_then_drop() {
+        let guard = WriteGuard::new();
+        let path = PathBuf::from("src/foo.py");
+
+        assert!(!guard.is_suppressed(&path));
+
+        // Engine writes file with hash H → suppress
+        guard.suppress(path.clone(), "hash-H".into(), 5);
+        assert!(guard.is_suppressed(&path));
+
+        // Watcher sees the same content → drop
+        assert!(guard.should_drop(&path, "hash-H"));
+        // Watcher sees DIFFERENT content (external edit) → don't drop
+        assert!(!guard.should_drop(&path, "hash-other"));
+
+        // Empty expected hash → always drop while suppressed
+        guard.suppress(path.clone(), String::new(), 5);
+        assert!(guard.should_drop(&path, "anything"));
+    }
+
+    #[test]
+    fn test_suppression_ttl_expiry() {
+        let guard = WriteGuard::new();
+        let path = PathBuf::from("src/foo.py");
+        // ttl_secs = 0 → expires immediately
+        guard.suppress(path.clone(), "hash".into(), 0);
+        assert!(!guard.is_suppressed(&path));
+        assert!(!guard.should_drop(&path, "hash"));
     }
 }
