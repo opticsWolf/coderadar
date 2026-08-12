@@ -1010,6 +1010,12 @@ pub struct ProjectedGraph {
     pub callees_by_caller: HashMap<EntityId, BTreeSet<EntityId>>,
     pub subclasses: HashMap<EntityId, BTreeSet<EntityId>>,
     pub overridden_by: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Forward override index: override method → (single) base method it
+    /// overrides. Absent = no override detected. Downstream traversal of
+    /// `overrides` reads this; upstream traversal reads `overridden_by`.
+    /// Direction semantics adopted project-wide: a method overrides its
+    /// *dependency* (the base), so `overrides_base[m]` = downstream dep.
+    pub overrides_base: HashMap<EntityId, EntityId>,
 }
 
 // ── ResolvedEdge (§3.4a, §6.1a) — used by resolution engine ─────────────────

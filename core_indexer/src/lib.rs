@@ -51,7 +51,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lookup_entity, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
-    m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;
+    m.add_function(wrap_pyfunction!(index_edge_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;;
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
@@ -521,6 +522,9 @@ fn analyze(root: &str) -> PyResult<PyObject> {
     {
         let mut projection = (*graph.snapshot()).clone();
         graph.compute_all_mro(&mut projection);
+        graph.resolve_class_hierarchy(&mut projection);
+        graph.resolve_imports(&mut projection);
+        graph.resolve_overrides(&mut projection);
         graph.resolve_all_calls(&mut projection);
         // Persist resolved edges to Macrame store
         let _ = graph.persist_edges(&projection);
@@ -916,6 +920,34 @@ fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
         // Total call edges
         let total_calls: usize = snap.callees_by_caller.values().map(|s| s.len()).sum();
         dict.set_item("call_edges", total_calls)?;
+        Ok(dict.into())
+    })
+}
+
+/// Read-only diagnostic: counts of every reverse/forward edge index.
+/// Observability for the Phase-D back-fill (subclasses / importers /
+/// overridden_by / overrides_base) and the call indexes. Cheap — one snap.
+#[pyfunction]
+fn index_edge_stats(py: Python<'_>) -> PyResult<PyObject> {
+    with_graph(|_graph, snap| {
+        let dict = PyDict::new(py);
+        let count = |m: &std::collections::HashMap<String, std::collections::BTreeSet<String>>|
+            m.values().map(|s| s.len()).sum::<usize>();
+        dict.set_item("callers_by_callee", count(&snap.callers_by_callee))?;
+        dict.set_item("callees_by_caller", count(&snap.callees_by_caller))?;
+        dict.set_item("importers", count(&snap.importers))?;
+        dict.set_item("subclasses", count(&snap.subclasses))?;
+        dict.set_item("overridden_by", count(&snap.overridden_by))?;
+        dict.set_item("overrides_base", snap.overrides_base.len())?;
+        // How many Import entities actually resolved (resolution != Unresolved).
+        let resolved_imports = snap.imports.values()
+            .filter(|i| !matches!(i.resolution, crate::types::ImportResolution::Unresolved)).count();
+        dict.set_item("resolved_imports", resolved_imports)?;
+        // Keys-with-entries — useful even when edge count is 0 (shows the
+        // index is non-empty but targets may have 0 inbound).
+        dict.set_item("importer_keys", snap.importers.len())?;
+        dict.set_item("subclass_keys", snap.subclasses.len())?;
+        dict.set_item("overridden_by_keys", snap.overridden_by.len())?;
         Ok(dict.into())
     })
 }
