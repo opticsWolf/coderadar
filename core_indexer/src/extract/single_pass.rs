@@ -263,6 +263,17 @@ impl<'a> CursorExtractor<'a> {
 
     fn emit_function(&mut self, node: Node) {
         let name = extract_function_name(node, self.source);
+        // Skip purely anonymous functions (JS/TS arrow callbacks, R/Ex/Lua anon
+        // fns, ...). They have no name node and would otherwise collapse to a
+        // single empty-name entity per file ("file::") — mis-attributing every
+        // callback's calls — or, if synthesized, flood the graph with thousands
+        // of <anonymous:L:C> callbacks. A navigation/search graph tracks NAMED
+        // declarations; direct calls inside a skipped callback are still
+        // captured by dispatch and attributed to the enclosing function via its
+        // frame, so the call graph stays accurate.
+        if name.is_empty() {
+            return;
+        }
         let go_receiver_type = extract_go_receiver_type(node, self.source);
         let (parent_qname, parent_class_from_frame) = self.resolve_context();
         let is_method = self.frames.iter().rev().any(|f| f.kind == EmittedKind::Class);

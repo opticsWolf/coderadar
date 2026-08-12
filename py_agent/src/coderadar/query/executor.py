@@ -89,30 +89,51 @@ class MacrameQuery:
 
             neighbors = self._neighbors(current, edge_types, direction)
             for nb in neighbors:
-                if nb["id"] not in visited:
-                    visited.add(nb["id"])
-                    queue.append((nb["id"], depth + 1))
-                    results.append(nb)
+                nid = nb.get("id")
+                if nid is None or nid in visited:
+                    continue
+                visited.add(nid)
+                queue.append((nid, depth + 1))
+                nb["depth"] = depth + 1
+                results.append(nb)
 
         return results
 
     def _neighbors(
         self, entity_id: str, edge_types: Optional[List[str]], direction: str,
     ) -> List[Dict[str, Any]]:
-        """Get immediate neighbors of an entity."""
+        """Get immediate neighbors of an entity along CALL edges.
+
+        The ProjectedGraph fallback only has the reverse call indexes
+        (callers_by_callee / callees_by_caller), so every neighbor here is
+        reachable via a CALL edge. ``edge_types`` is therefore matched
+        against the *edge* type ("calls"), NOT the entity ``kind`` (which is
+        "function"/"class"/...). The old filter compared entity ``kind`` to
+        edge types and so dropped every neighbor when an edge filter was
+        supplied.
+        """
         neighbors: List[Dict[str, Any]] = []
+
+        # The fallback can only honour call-edge requests. Normalise the
+        # requested kinds case-insensitively so "calls" / "CALLS" / "call"
+        # all match.
+        wanted = {e.lower() for e in edge_types} if edge_types else None
+        if wanted is not None and not ("calls" in wanted or "call" in wanted):
+            return neighbors
 
         try:
             from coderadar._core import callers_of, callees_of
 
             if direction in ("in", "both"):
                 for c in callers_of(entity_id):
-                    if not edge_types or c.get("kind") in edge_types:
-                        neighbors.append(c)
+                    c = dict(c)
+                    c.setdefault("edge_type", "calls")
+                    neighbors.append(c)
             if direction in ("out", "both"):
                 for c in callees_of(entity_id):
-                    if not edge_types or c.get("kind") in edge_types:
-                        neighbors.append(c)
+                    c = dict(c)
+                    c.setdefault("edge_type", "calls")
+                    neighbors.append(c)
         except ImportError:
             pass
 

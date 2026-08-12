@@ -60,7 +60,7 @@ class TestMCPCreation:
         from coderadar.mcp.server import create_server
         server = create_server(None)
         assert server.name == "CodeRadar"
-        assert server.version == "0.6.3"
+        assert server.version == "0.6.4"
 
     def test_server_has_call_tool(self):
         from coderadar.mcp.server import create_server
@@ -809,11 +809,40 @@ class TestQueryTool:
     def test_query_returns_results(self):
         analyze(str(E2E_DIR))
         from coderadar.mcp.server import _query_graph
-        # Try a known-good Pest query format; handle parse errors gracefully
-        result = _query_graph(None, "classes where inherits_from contains 'BaseModel'")
-        # Either returns results or a parse error — both prove the path works
+        # Single-quote WHERE clause must parse and return matching functions.
+        result = _query_graph(None, "functions where name contains 'create'")
         assert isinstance(result, str)
         assert len(result) > 0
+        # Must contain real matched rows, not a parse error / no-results banner.
+        assert "create_user" in result, result
+        assert "no results" not in result.lower()
+        assert "parse error" not in result.lower()
+
+    @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+    def test_query_where_numeric_and_bool_match(self):
+        """Regression for v0.6.4: WHERE clauses never matched because the
+        atomic `path` rule yielded Path([]) and number literals parsed as
+        Float while count fields are Int (no mixed arm). Also `and`/`or`
+        used removal index 1 off the end of the parts vec."""
+        analyze(str(E2E_DIR))
+        from coderadar.mcp.server import _query_graph
+        # numeric: caller_count / parameter_count are Int; literal is Float.
+        r1 = _query_graph(None, "functions where parameter_count > 0")
+        assert "register" in r1 or "create_user" in r1, r1
+        # bool literal comparison.
+        r2 = _query_graph(None, "functions where is_async == false limit 5")
+        assert "no results" not in r2.lower(), r2
+        # and/or chains must not panic and must filter correctly.
+        r3 = _query_graph(
+            None,
+            "functions where name contains 'user' and name contains 'create'",
+        )
+        assert "create_user" in r3, r3
+        r4 = _query_graph(
+            None,
+            "functions where name == 'nope_a' or name == 'create_user'",
+        )
+        assert "create_user" in r4, r4
 
 
 class TestModuleChildren:

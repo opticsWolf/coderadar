@@ -280,20 +280,41 @@ fn scan_imports(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow>
         fields.insert("line".into(), QueryValue::Int(import.line as i64));
         fields.insert("is_type_only".into(), QueryValue::Bool(import.is_type_only));
 
-        // Resolved target
+        // Resolved target + its kind, derived from the resolution variant so
+        // `imports where target_kind == "function"` / `... == "external"` work.
         match &import.resolution {
             ImportResolution::Module(id) | ImportResolution::Symbol(SymbolId::Module(id)) => {
                 fields.insert("resolved_module".into(), QueryValue::String(id.clone()));
+                fields.insert("target_kind".into(), QueryValue::String("module".into()));
             }
-            ImportResolution::Symbol(SymbolId::Function(id)) | ImportResolution::Symbol(SymbolId::Class(id)) | ImportResolution::Symbol(SymbolId::Import(id)) => {
+            ImportResolution::Symbol(SymbolId::Function(id)) => {
                 fields.insert("resolved_target".into(), QueryValue::String(id.clone()));
+                fields.insert("target_kind".into(), QueryValue::String("function".into()));
+            }
+            ImportResolution::Symbol(SymbolId::Class(id)) => {
+                fields.insert("resolved_target".into(), QueryValue::String(id.clone()));
+                fields.insert("target_kind".into(), QueryValue::String("class".into()));
+            }
+            ImportResolution::Symbol(SymbolId::Import(id)) => {
+                fields.insert("resolved_target".into(), QueryValue::String(id.clone()));
+                fields.insert("target_kind".into(), QueryValue::String("import".into()));
             }
             ImportResolution::External { distribution } => {
                 fields.insert("resolved_target".into(), QueryValue::String(
                     distribution.clone().unwrap_or_else(|| "external".into())
                 ));
+                fields.insert("target_kind".into(), QueryValue::String("external".into()));
             }
-            _ => {}
+            ImportResolution::Wildcard { module, .. } => {
+                fields.insert("resolved_module".into(), QueryValue::String(module.clone()));
+                fields.insert("target_kind".into(), QueryValue::String("wildcard".into()));
+            }
+            ImportResolution::Dynamic => {
+                fields.insert("target_kind".into(), QueryValue::String("dynamic".into()));
+            }
+            ImportResolution::Unresolved => {
+                fields.insert("target_kind".into(), QueryValue::String("unresolved".into()));
+            }
         }
 
         if let Some(pred) = &query.where_clause {
@@ -474,6 +495,18 @@ fn value_to_string(val: &QueryValue) -> String {
     }
 }
 
+fn compare_numbers(op: &CompOp, l: f64, r: f64) -> bool {
+    match op {
+        CompOp::Eq => (l - r).abs() < f64::EPSILON,
+        CompOp::NotEq => (l - r).abs() >= f64::EPSILON,
+        CompOp::Less => l < r,
+        CompOp::Greater => l > r,
+        CompOp::LessEq => l <= r,
+        CompOp::GreaterEq => l >= r,
+        _ => false,
+    }
+}
+
 fn compare_values(op: &CompOp, left: &QueryValue, right: &QueryValue) -> bool {
     match (left, right) {
         (QueryValue::String(l), QueryValue::String(r)) => match op {
@@ -504,6 +537,8 @@ fn compare_values(op: &CompOp, left: &QueryValue, right: &QueryValue) -> bool {
             CompOp::GreaterEq => l >= r,
             _ => false,
         },
+        (QueryValue::Int(l), QueryValue::Float(r)) => compare_numbers(op, *l as f64, *r),
+        (QueryValue::Float(l), QueryValue::Int(r)) => compare_numbers(op, *l, *r as f64),
         (QueryValue::Bool(l), QueryValue::Bool(r)) => match op {
             CompOp::Eq => l == r,
             CompOp::NotEq => l != r,
