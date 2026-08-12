@@ -23,6 +23,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
+            ~/.cache/tree-sitter-language-pack
           key: cargo-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-
 
