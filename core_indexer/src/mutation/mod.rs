@@ -13,15 +13,9 @@ use std::collections::HashMap;
 use ropey::Rope;
 
 use crate::mutation::edit::apply_edits_to_file;
-use crate::mutation::indent::{detect_indent_style, normalize_indent, IndentStyle};
+use crate::mutation::indent::{detect_indent_style, normalize_indent};
 use crate::mutation::write_guard::WriteGuard;
 use crate::types::{ByteSpan, ParseQuality, ProjectedGraph, ResolvedCall};
-
-/// Detect indent style from a span — defers to file-content-based detection.
-/// The Python layer handles actual file reads; here we return a safe default.
-fn detect_indent_style_from_span(_span: &ByteSpan) -> IndentStyle {
-    IndentStyle { unit: ' ', width: 4 }
-}
 
 /// Mutation plan — produced by the planner, consumed by apply().
 #[derive(Clone, Debug)]
@@ -131,15 +125,15 @@ impl MutationEngine {
 
         let body_span = fn_entity.body_span;
 
-        // 2. Detect indent style from body
-        let indent = detect_indent_style_from_span(
-            &fn_entity.body_span,
-            // body text provided by Python layer
-        );
+        // Detect indent style from the file (spaces vs tabs, width).
+        let file_path = module_file_path(projection, &fn_entity.parent_module);
+        let file_source = std::fs::read_to_string(&file_path).unwrap_or_default();
+        let indent = detect_indent_style(&file_source);
 
-        // 3. Normalize new_body indentation to match target
-        let target_indent = " ".repeat(indent.width);
-        let normalized_body = normalize_indent(new_body, &target_indent, &indent, &[]);
+        // Body spans start at the first body token (or inline `{`), so the
+        // leading indentation is NOT part of the span — use an empty target.
+        // normalize_indent preserves the replacement's relative indentation.
+        let normalized_body = normalize_indent(new_body, "", &indent, &[]);
 
         let plan_id = ulid::Ulid::new().to_string();
 

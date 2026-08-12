@@ -1186,6 +1186,8 @@ def _module_children(graph: Any, module_id: str) -> str:
     if not module_id.strip():
         return "Please provide a module ID (e.g. 'src/main.py::module')."
 
+    module_id = _canonical_entity_id(module_id)
+
     try:
         from coderadar._core import module_children as _mc
         children = _mc(module_id)
@@ -1273,6 +1275,7 @@ def _traverse(
     entity = _find_entity(graph, entity_id)
     if not entity:
         return f"Entity `{entity_id}` not found. Try codegraph_search."
+    entity_id = _canonical_entity_id(entity_id)
 
     depth = min(max_depth, 10)
     # Map MCP direction names to MacrameQuery direction
@@ -1326,6 +1329,7 @@ def _replace_body(
 ) -> str:
     """Replace a function body."""
     try:
+        entity_id = _canonical_entity_id(entity_id)
         plan = graph.plan_body_replacement(entity_id, new_body, expected_hash, dry_run=True)
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
@@ -1341,6 +1345,7 @@ def _update_signature(
 ) -> str:
     """Change a function signature."""
     try:
+        entity_id = _canonical_entity_id(entity_id)
         plan = graph.plan_signature_update(
             entity_id, new_signature, inject_defaults=inject_defaults, dry_run=True,
         )
@@ -1355,6 +1360,7 @@ def _update_signature(
 def _rename(graph: Any, entity_id: str, new_name: str, dry_run: bool) -> str:
     """Rename an entity."""
     try:
+        entity_id = _canonical_entity_id(entity_id)
         plan = graph.plan_rename(entity_id, new_name, dry_run=True)
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
@@ -1434,9 +1440,9 @@ def _reindex(graph: Any, with_embeddings: bool = False) -> str:
     """Full reindex of the project."""
     try:
         from coderadar._core import analyze as _analyze, graph_stats
-        import os
-        cwd = os.getcwd()
-        _analyze(cwd)
+        # Use relative root ('.') to keep entity IDs consistent with startup
+        # (analyze('.')) — absolute os.getcwd() would change ID prefixes.
+        _analyze('.')
         stats = graph_stats()
         lines = [
             "## Reindex Complete",
@@ -1556,11 +1562,52 @@ def _render_relationships(
     return lines
 
 
+def _canonical_entity_id(entity_id: str) -> str:
+    """Resolve an entity ID to its canonical in-graph form.
+
+    Handles both relative (`.\\...`) and absolute (`D:\\...`) path prefixes
+    by probing the graph with a few candidate forms.
+    """
+    try:
+        from coderadar._core import lookup_entity
+    except ImportError:
+        return entity_id
+    if lookup_entity(entity_id):
+        return entity_id
+
+    import os
+    candidates: list[str] = []
+
+    # Relative → absolute
+    if entity_id.startswith('.\\') or entity_id.startswith('./'):
+        candidates.append(os.path.join(os.getcwd(), entity_id[2:]))
+
+    # Absolute → relative (with ./ prefix and bare)
+    if os.path.isabs(entity_id):
+        try:
+            rel = os.path.relpath(entity_id, os.getcwd())
+            candidates.append('.' + os.sep + rel)
+            candidates.append(rel)
+        except ValueError:
+            pass
+
+    # Normalize separators both ways
+    normalized: list[str] = []
+    for c in candidates:
+        normalized.append(c.replace('/', '\\'))
+        normalized.append(c.replace('\\', '/'))
+
+    for c in normalized:
+        if lookup_entity(c):
+            return c
+    return entity_id
+
+
 def _find_entity(graph: Any, entity_id: str) -> dict | None:
     try:
         from coderadar._core import lookup_entity
-        return lookup_entity(entity_id)
-    except ImportError:
+        return lookup_entity(_canonical_entity_id(entity_id))
+    except (ImportError, RuntimeError):
         return None
 
 
