@@ -9,33 +9,38 @@ use super::{MutationEdit, MutationError};
 
 /// Apply a list of MutationEdits to source text using a rope.
 /// Edits are sorted by descending span.start so earlier edits don't shift later spans.
+/// ByteSpans are byte offsets; ropey uses char indices — we convert via byte_to_char.
 pub fn apply_edits_to_file(source: &str, edits: &[MutationEdit]) -> Result<String, MutationError> {
-    let mut rope = Rope::from_str(source);
+    let rope = Rope::from_str(source);
     let mut ordered: Vec<&MutationEdit> = edits.iter().collect();
-    ordered.sort_by(|a, b| b.span.start.cmp(&a.span.start)); // descending offsets
+    ordered.sort_by(|a, b| b.span.start.cmp(&a.span.start)); // descending byte offsets
 
+    let mut result = rope.clone();
     for edit in ordered {
-        let (s, e) = rope_clamped_char_bounds(&rope, edit.span)?;
-        rope.remove(s..e);
-        rope.insert(s, &edit.replacement);
+        let (s, e) = rope_clamped_char_bounds(&result, edit.span)?;
+        result.remove(s..e);
+        result.insert(s, &edit.replacement);
     }
 
-    Ok(rope.to_string())
+    Ok(result.to_string())
 }
 
-/// Convert a ByteSpan to valid Rope char indices, clamping to bounds.
+/// Convert a ByteSpan (byte offsets) to Rope char indices, clamping to bounds.
 fn rope_clamped_char_bounds(rope: &Rope, span: ByteSpan) -> Result<(usize, usize), MutationError> {
-    let len = rope.len_chars();
-    let start = span.start.min(len);
-    let end = span.end.min(len);
+    let len_bytes = rope.len_bytes();
+    let len_chars = rope.len_chars();
+    let start = span.start.min(len_bytes);
+    let end = span.end.min(len_bytes);
 
-    // Validate char boundaries by checking char index validity
-    if start > len || end > len {
+    if start > len_bytes || end > len_bytes || start > end {
         return Err(MutationError::ParseFailed(
             "ByteSpan out of rope bounds".into(),
         ));
     }
-    Ok((start, end))
+    // Convert byte offsets → char indices (ropey is char-indexed)
+    let char_start = rope.byte_to_char(start);
+    let char_end = rope.byte_to_char(end);
+    Ok((char_start.min(len_chars), char_end.min(len_chars)))
 }
 
 /// Compute a simple line-based diff between old and new source.
@@ -120,5 +125,26 @@ mod tests {
     fn test_compute_diff_preview_no_changes() {
         let diff = compute_diff_preview("same\n", "same\n");
         assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn test_apply_edit_with_multibyte_chars_before_span() {
+        // Multi-byte UTF-8 chars BEFORE the edit point shift byte offsets
+        // away from char indices. "é" is 2 bytes, "→" is 3 bytes.
+        // Source: "# é → café\ndef target():\n    pass\n"
+        // Byte offset of "target" is NOT its char index.
+        let source = "# é → café\ndef target():\n    pass\n";
+        // Compute the byte offset of "target" by searching bytes
+        let target_byte = source.find("target").unwrap();
+        assert!(target_byte > source[..target_byte].chars().count(),
+            "byte offset should exceed char count with multibyte chars");
+        let edit = MutationEdit {
+            file: "test.py".into(),
+            span: ByteSpan { start: target_byte, end: target_byte + "target".len() },
+            replacement: "renamed".into(),
+            expected_hash: "".into(),
+        };
+        let result = apply_edits_to_file(source, &[edit]).unwrap();
+        assert_eq!(result, "# é → café\ndef renamed():\n    pass\n");
     }
 }

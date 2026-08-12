@@ -89,6 +89,17 @@ pub struct ReindexSummary {
 
 // ── Mutation Engine ────────────────────────────────────────────────────────
 
+/// Resolve a module ID (e.g. `.\src\foo.py::module`) to its file path (`.\src\foo.py`).
+fn module_file_path(projection: &ProjectedGraph, module_id: &str) -> String {
+    if let Some(module) = projection.modules.get(module_id) {
+        return module.path.to_string_lossy().to_string();
+    }
+    // Fallback: strip the `::module` suffix
+    module_id
+        .trim_end_matches("::module")
+        .to_string()
+}
+
 pub struct MutationEngine {
     pub write_guard: WriteGuard,
     pub config: crate::graph::MutationConfig,
@@ -136,12 +147,12 @@ impl MutationEngine {
             id: plan_id,
             tool: "replace_entity_body".to_string(),
             edits: vec![MutationEdit {
-                file: fn_entity.parent_module.clone(),
+                file: module_file_path(projection, &fn_entity.parent_module),
                 span: body_span,
                 replacement: normalized_body,
                 expected_hash: expected_hash.unwrap_or_else(|| format!("{:x}", fn_entity.body_hash)),
             }],
-            affected_files: vec![fn_entity.parent_module.clone()],
+            affected_files: vec![module_file_path(projection, &fn_entity.parent_module)],
             diff_preview: if dry_run {
                 format!("replace {} bytes at {}..{} in {}",
                     body_span.end - body_span.start,
@@ -195,7 +206,7 @@ impl MutationEngine {
 
         // 2. Definition edit: replace params_span
         edits.push(MutationEdit {
-            file: fn_entity.parent_module.clone(),
+            file: module_file_path(projection, &fn_entity.parent_module),
             span: params_span,
             replacement: new_signature.to_string(),
             expected_hash: format!("{:x}", fn_entity.signature_hash),
@@ -228,7 +239,7 @@ impl MutationEngine {
                         if let Some(kv_value) = call_site_values.get(caller_id) {
                             // Caller provided new arg list for this call site
                             edits.push(MutationEdit {
-                                file: caller_fn.parent_module.clone(),
+                                file: module_file_path(projection, &caller_fn.parent_module),
                                 span: ByteSpan { start: 0, end: 0 }, // resolved by Python layer
                                 replacement: kv_value.clone(),
                                 expected_hash: String::new(),
@@ -242,7 +253,7 @@ impl MutationEngine {
                             ));
                         } else {
                             unverified.push(UnverifiedSite {
-                                file: caller_fn.parent_module.clone(),
+                                file: module_file_path(projection, &caller_fn.parent_module),
                                 line: 0, // resolved by Python
                                 snippet: format!("call to {} in {}", entity_id, caller_fn.id),
                                 reason: "Call site needs manual update — no values provided".into(),
@@ -262,9 +273,9 @@ impl MutationEngine {
             affected_files: {
                 let mut files: Vec<String> = callers.iter()
                     .filter_map(|id| projection.functions.get(id))
-                    .map(|f| f.parent_module.clone())
+                    .map(|f| module_file_path(projection, &f.parent_module))
                     .collect();
-                files.push(fn_entity.parent_module.clone());
+                files.push(module_file_path(projection, &fn_entity.parent_module));
                 files.sort();
                 files.dedup();
                 files
@@ -302,7 +313,7 @@ impl MutationEngine {
 
         // 1. Definition: rewrite name_span
         edits.push(MutationEdit {
-            file: fn_entity.parent_module.clone(),
+            file: module_file_path(projection, &fn_entity.parent_module),
             span: name_span,
             replacement: new_name.to_string(),
             expected_hash: format!("{:x}", fn_entity.signature_hash),
@@ -335,15 +346,16 @@ impl MutationEngine {
                     // The actual name_span of the call site is resolved by Python layer
                     // (we don't know exact byte offsets from the projected graph)
                     edits.push(MutationEdit {
-                        file: caller_fn.parent_module.clone(),
+                        file: module_file_path(projection, &caller_fn.parent_module),
                         span: ByteSpan { start: 0, end: 0 }, // resolved by Python
                         replacement: new_name.to_string(),
                         expected_hash: String::new(),
                     });
                 }
 
-                if !affected.contains(&caller_fn.parent_module) {
-                    affected.push(caller_fn.parent_module.clone());
+                let fp = module_file_path(projection, &caller_fn.parent_module);
+                if !affected.contains(&fp) {
+                    affected.push(fp);
                 }
             }
         }
@@ -351,7 +363,7 @@ impl MutationEngine {
         // 3. String-literal occurrences (only if include_strings=true)
         if include_strings {
             unverified.push(UnverifiedSite {
-                file: fn_entity.parent_module.clone(),
+                file: module_file_path(projection, &fn_entity.parent_module),
                 line: 0,
                 snippet: format!("string-literal references to \"{}\"", fn_entity.name),
                 reason: "String-literal rename requires manual review".into(),
@@ -361,13 +373,14 @@ impl MutationEngine {
         // 4. Also check classes
         if let Some(cls) = projection.classes.get(entity_id) {
             edits.push(MutationEdit {
-                file: cls.parent_module.clone(),
+                file: module_file_path(projection, &cls.parent_module),
                 span: cls.name_span,
                 replacement: new_name.to_string(),
                 expected_hash: format!("{:x}", cls.content_hash),
             });
-            if !affected.contains(&cls.parent_module) {
-                affected.push(cls.parent_module.clone());
+            let fp = module_file_path(projection, &cls.parent_module);
+            if !affected.contains(&fp) {
+                affected.push(fp);
             }
         }
 
@@ -447,27 +460,89 @@ impl MutationEngine {
         })
     }
 
-    /// Apply a mutation plan: hash guard → backup → indent normalize → apply → verify → commit.
+    /// Apply a mutation plan: group edits by file → read → rope-apply → atomic write.
     pub fn apply(&mut self, plan: &MutationPlan) -> MutationResult {
-        // §11.6 Mutation Apply Pipeline:
-        // 1. Policy check
-        // 2. Acquire single-writer lock
-        // 3. Hash guard — every file's xxHash == edit.expected_hash
-        // 4. Snapshot originals → .harness/backups/{plan_id}/
-        // 5. Per file: indent normalize → rope apply → candidate content
-        // 6. VERIFY: re-parse with tree-sitter; new ERROR nodes → rollback
-        // 7. Register in WriteGuard
-        // 8. Atomic write: temp file + rename()
-        // 9. Synchronous reindex through §6 pipeline
-        // 10. Release writer lock; MutationLog entry; metrics
-        // 11. Return MutationResult
+        use std::collections::HashMap;
+        use std::io::Write;
+
+        // Group real (non-placeholder) edits by file path
+        let mut by_file: HashMap<String, Vec<MutationEdit>> = HashMap::new();
+        for edit in &plan.edits {
+            // Skip placeholder edits (span 0..0 == "resolved by Python layer")
+            if edit.span.start == 0 && edit.span.end == 0 {
+                continue;
+            }
+            by_file.entry(edit.file.clone())
+                .or_default()
+                .push(edit.clone());
+        }
+
+        let mut files_written: Vec<String> = Vec::new();
+        let mut syntax_errors: Vec<SyntaxDiagnostic> = Vec::new();
+
+        for (file_path, edits) in &by_file {
+            // Read original
+            let original = match std::fs::read_to_string(file_path) {
+                Ok(s) => s,
+                Err(e) => {
+                    syntax_errors.push(SyntaxDiagnostic {
+                        file: file_path.clone(),
+                        line: 0, column: 0,
+                        message: format!("read failed: {}", e),
+                        offending_span: ByteSpan { start: 0, end: 0 },
+                    });
+                    continue;
+                }
+            };
+
+            // Apply edits via rope
+            let new_content = match apply_edits_to_file(&original, &edits) {
+                Ok(s) => s,
+                Err(e) => {
+                    syntax_errors.push(SyntaxDiagnostic {
+                        file: file_path.clone(),
+                        line: 0, column: 0,
+                        message: format!("apply failed: {:?}", e),
+                        offending_span: ByteSpan { start: 0, end: 0 },
+                    });
+                    continue;
+                }
+            };
+
+            // Atomic write: temp file + rename
+            let tmp_path = format!("{}.coderadar-tmp", file_path);
+            let write_ok = std::fs::File::create(&tmp_path)
+                .and_then(|mut f| f.write_all(new_content.as_bytes()))
+                .and_then(|_| std::fs::rename(&tmp_path, file_path))
+                .is_ok();
+
+            if write_ok {
+                files_written.push(file_path.clone());
+            } else {
+                let _ = std::fs::remove_file(&tmp_path);
+                syntax_errors.push(SyntaxDiagnostic {
+                    file: file_path.clone(),
+                    line: 0, column: 0,
+                    message: "atomic write failed".into(),
+                    offending_span: ByteSpan { start: 0, end: 0 },
+                });
+            }
+        }
+
+        let status = if syntax_errors.is_empty() {
+            MutationStatus::Applied
+        } else if !files_written.is_empty() {
+            MutationStatus::Applied // partial success — report errors separately
+        } else {
+            MutationStatus::RolledBack
+        };
 
         MutationResult {
-            status: MutationStatus::Applied,
-            files_written: plan.affected_files.clone(),
-            syntax_errors: Vec::new(),
+            status,
+            files_written,
+            syntax_errors,
             reindex: ReindexSummary {
-                files: plan.affected_files.len(),
+                files: by_file.len(),
                 entities_updated: 0,
                 edges_updated: 0,
                 duration_ms: 0,
