@@ -906,6 +906,18 @@ class TestMutationTools:
         go = _render_entity_code("go", "function", "run", "return nil", None)
         assert go == 'func run() {\nreturn nil\n}\n'
 
+    def test_canonical_file_path(self):
+        import os
+        from coderadar.mcp.server import _canonical_file_path
+        # Relative without prefix gets ./
+        assert _canonical_file_path("a/b.py").startswith(".")
+        # Absolute path → project-relative
+        abs_path = os.path.join(os.getcwd(), "x", "y.py")
+        assert _canonical_file_path(abs_path) == "." + os.sep + os.path.join("x", "y.py")
+        # Already-prefixed relative is unchanged
+        p = "." + os.sep + "a.py"
+        assert _canonical_file_path(p) == p
+
     @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
     def test_create_entity_end_to_end(self, tmp_path):
         import tempfile

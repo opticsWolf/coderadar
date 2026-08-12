@@ -28,6 +28,9 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# Cached fastembed model for semantic search (lazy-loaded, reused across queries)
+_EMBED_MODEL = None
+
 # ── Output Budget Constants ───────────────────────────────────────────────
 # Adapted from CodeGraph's getExploreOutputBudget / allocateExploreBudget
 # (MIT License, https://github.com/colbymchenry/codegraph)
@@ -422,8 +425,10 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Change a function/method signature. "
             "With dry_run=True: shows the signature change and all affected call sites. "
-            "With dry_run=False: writes the change AND updates the graph. "
-            "Use inject_defaults=True to inject default argument values at call sites."
+            "With dry_run=False: writes the definition change AND updates the graph. "
+            "NOTE: the definition signature is edited automatically, but call sites are "
+            "returned as unverified_sites (with line numbers) for manual review — "
+            "call-site argument spans are not indexed, so they cannot be auto-edited safely."
         ),
         annotations={
             "read_only_hint": False,
@@ -1119,6 +1124,15 @@ def _compute_embeddings(graph: Any) -> str:
         return f"Embedding generation failed: {e}\n\nEnsure fastembed is installed: pip install fastembed"
 
 
+def _get_embedding_model():
+    """Lazily load and cache the fastembed model (avoid reload per query)."""
+    global _EMBED_MODEL
+    if _EMBED_MODEL is None:
+        from fastembed import TextEmbedding
+        _EMBED_MODEL = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    return _EMBED_MODEL
+
+
 def _search_similar(graph: Any, query: str, top_k: int) -> str:
     """Semantic/embedding similarity search."""
     try:
@@ -1131,11 +1145,9 @@ def _search_similar(graph: Any, query: str, top_k: int) -> str:
     if not query.strip():
         return "Please provide a natural-language query for semantic search."
 
-    # Try to embed the query using fastembed
+    # Try to embed the query using a cached fastembed model
     try:
-        from fastembed import TextEmbedding
-        model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-        embedding = list(model.embed([query]))[0]
+        embedding = list(_get_embedding_model().embed([query]))[0]
     except ImportError:
         return (
             "Semantic search requires `fastembed` to be installed. "
@@ -1429,6 +1441,25 @@ def _render_entity_code(
     return (body + "\n") if body else ""
 
 
+def _canonical_file_path(file_path: str) -> str:
+    r"""Resolve a file path to the project-relative form the graph stores.
+
+    The graph stores entity IDs as `.\relative\path::name` (Windows
+    backslashes, `./`-style prefix). Convert absolute paths to that form so
+    create_entity's reindex step matches existing entities instead of
+    creating duplicates.
+    """
+    import os
+    if os.path.isabs(file_path):
+        try:
+            return '.' + os.sep + os.path.relpath(file_path, os.getcwd())
+        except ValueError:
+            return file_path
+    if file_path.startswith('./') or file_path.startswith('.\\'):
+        return file_path
+    return '.' + os.sep + file_path
+
+
 def _create_entity(
     graph: Any, file_path: str, language: str, kind: str,
     name: str, body: str, decorators: list[str] | None,
@@ -1439,8 +1470,13 @@ def _create_entity(
         code = _render_entity_code(language, kind, name, body, decorators)
         if not code.strip():
             return "Cannot render entity: provide a non-empty body or kind."
+        target = _canonical_file_path(file_path)
+        # If the anchor is an entity ID (not 'top'/'end'), canonicalize it too
+        anchor_norm = anchor or "end"
+        if anchor_norm not in ("top", "end"):
+            anchor_norm = _canonical_entity_id(anchor_norm)
         plan = graph.plan_create_entity(
-            file_path, anchor or "end", code, dry_run=True,
+            target, anchor_norm, code, dry_run=True,
         )
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
