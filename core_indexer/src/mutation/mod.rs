@@ -94,6 +94,28 @@ fn module_file_path(projection: &ProjectedGraph, module_id: &str) -> String {
         .to_string()
 }
 
+/// Convert a 1-indexed line + 0-indexed byte column to an absolute byte offset.
+fn line_col_to_byte(source: &[u8], line: usize, col: usize) -> Option<usize> {
+    let mut line_start = 0usize;
+    let mut current_line = 1usize;
+    if line > 1 {
+        for (i, &b) in source.iter().enumerate() {
+            if b == b'\n' {
+                current_line += 1;
+                if current_line == line {
+                    line_start = i + 1;
+                    break;
+                }
+            }
+        }
+        if current_line != line {
+            return None; // line out of range
+        }
+    }
+    let pos = line_start + col;
+    (pos <= source.len()).then_some(pos)
+}
+
 pub struct MutationEngine {
     pub write_guard: WriteGuard,
     pub config: crate::graph::MutationConfig,
@@ -306,12 +328,14 @@ impl MutationEngine {
         let mut unverified = Vec::new();
 
         // 1. Definition: rewrite name_span
+        let def_file = module_file_path(projection, &fn_entity.parent_module);
         edits.push(MutationEdit {
-            file: module_file_path(projection, &fn_entity.parent_module),
+            file: def_file.clone(),
             span: name_span,
             replacement: new_name.to_string(),
             expected_hash: format!("{:x}", fn_entity.signature_hash),
         });
+        affected.push(def_file);
 
         // 2. Caller side: rewrite every resolved reference name_span
         let callers = projection
@@ -326,30 +350,48 @@ impl MutationEngine {
 
         for caller_id in &callers {
             if let Some(caller_fn) = projection.functions.get(caller_id) {
-                // Find call sites referencing this entity and produce name rewrites
-                let found = caller_fn.resolved_calls.iter().any(|rc| {
-                    match rc {
-                        ResolvedCall::Function(id) | ResolvedCall::Method { method: id, .. } | ResolvedCall::Constructor(id) => {
-                            id == entity_id
-                        }
+                let caller_file = module_file_path(projection, &caller_fn.parent_module);
+                let caller_source = std::fs::read(&caller_file).unwrap_or_default();
+
+                for (i, rc) in caller_fn.resolved_calls.iter().enumerate() {
+                    let targets_entity = match rc {
+                        ResolvedCall::Function(id)
+                        | ResolvedCall::Method { method: id, .. }
+                        | ResolvedCall::Constructor(id) => id == entity_id,
                         _ => false,
+                    };
+                    if !targets_entity {
+                        continue;
                     }
-                });
 
-                if found {
-                    // The actual name_span of the call site is resolved by Python layer
-                    // (we don't know exact byte offsets from the projected graph)
-                    edits.push(MutationEdit {
-                        file: module_file_path(projection, &caller_fn.parent_module),
-                        span: ByteSpan { start: 0, end: 0 }, // resolved by Python
-                        replacement: new_name.to_string(),
-                        expected_hash: String::new(),
-                    });
-                }
+                    // resolved_calls is parallel to calls — use index i
+                    let Some(call) = caller_fn.calls.get(i) else {
+                        continue;
+                    };
 
-                let fp = module_file_path(projection, &caller_fn.parent_module);
-                if !affected.contains(&fp) {
-                    affected.push(fp);
+                    if call.path.is_empty() {
+                        // Simple call `foo()` — name starts at (line, col)
+                        if let Some(start) = line_col_to_byte(&caller_source, call.line, call.col) {
+                            let end = (start + call.name.len()).min(caller_source.len());
+                            edits.push(MutationEdit {
+                                file: caller_file.clone(),
+                                span: ByteSpan { start, end },
+                                replacement: new_name.to_string(),
+                                expected_hash: String::new(),
+                            });
+                            if !affected.contains(&caller_file) {
+                                affected.push(caller_file.clone());
+                            }
+                        }
+                    } else {
+                        // Method/attribute call `obj.foo()` — needs manual review
+                        unverified.push(UnverifiedSite {
+                            file: caller_file.clone(),
+                            line: call.line as u32,
+                            snippet: format!("{}.{}", call.path.join("."), call.name),
+                            reason: "Method/attribute call-site rename needs manual review".into(),
+                        });
+                    }
                 }
             }
         }
