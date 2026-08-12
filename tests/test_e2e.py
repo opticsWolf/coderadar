@@ -692,3 +692,59 @@ class TestBenchmarkPipeline:
         # Sanity: should finish in under 60s
         assert elapsed_ms < 60_000, \
             f"Heavy resolve benchmark took {elapsed_ms:.0f}ms, expected <60s"
+
+
+@pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+class TestAnonymousFunctionHandling:
+    """v0.6.4: anonymous functions must not be emitted with empty names."""
+
+    def test_anonymous_arrow_callbacks_are_skipped(self, tmp_path):
+        """Named fns are indexed; anonymous arrow callbacks are not emitted as
+        empty-name entities (they used to collapse to a single "file::" id).
+        """
+        from coderadar._core import analyze, graph_stats, query_graph
+        ts = tmp_path / "widget.tsx"
+        ts.write_text(
+            "export function namedHandler(x: number): number {\n"
+            "  return [1, 2, 3].map(n => n * 2).reduce((a, b) => a + b, 0);\n"
+            "}\n"
+            "const inlineCb = () => 42;\n"
+        )
+        analyze(str(tmp_path))
+
+        rows = query_graph('functions')
+        names = [r.get('name') for r in rows]
+        # No empty-name functions should ever be emitted.
+        assert '' not in names, f"empty-name function emitted: {rows}"
+        assert all(n for n in names), f"empty name found: {names}"
+        # The named function is indexed.
+        assert 'namedHandler' in names, f"namedHandler missing: {names}"
+        stats = graph_stats()
+        assert stats['functions'] >= 1
+        # Anonymous arrow callbacks must not flood the graph.
+        assert stats['functions'] < 5, \
+            f"expected only named fns indexed, got {stats['functions']}: {names}"
+
+    def test_anon_calls_attribute_to_enclosing_function(self, tmp_path):
+        """Direct calls inside a skipped anonymous callback are still captured
+        and attributed to the enclosing named function (call graph stays
+        accurate)."""
+        from coderadar._core import analyze, query_graph
+        ts = tmp_path / "wrap.ts"
+        ts.write_text(
+            "function helper(): void { return; }\n"
+            "export function outer(): void {\n"
+            "  [1, 2].forEach(n => helper());\n"
+            "}\n"
+        )
+        analyze(str(tmp_path))
+        rows = query_graph('functions where name == "outer"')
+        assert rows, "outer() should be indexed"
+        # `outer` calls helper() via the arrow callback body.
+        callees = rows[0].get('callees', []) or rows[0].get('resolved_call_targets', [])
+        callee_names = [
+            c.split('::')[-1] if isinstance(c, str) else c for c in callees
+        ]
+        assert any('helper' in c for c in callee_names), \
+            f"call to helper() inside the anon callback should attribute to outer; callees={callees}"
+
