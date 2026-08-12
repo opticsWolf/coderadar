@@ -214,23 +214,29 @@ fn parse_where_clause(pair: Pair<Rule>) -> Predicate {
 }
 
 fn parse_or_expr(pair: Pair<Rule>) -> Predicate {
-    let mut parts: Vec<_> = pair.into_inner().collect();
-    if parts.len() == 1 {
-        return parse_and_expr(parts.remove(0));
+    let parts: Vec<_> = pair.into_inner().collect();
+    let mut iter = parts.into_iter();
+    let first = iter.next().expect("or_expr has no children");
+    let mut acc = parse_and_expr(first);
+    for next in iter {
+        // "or" string literal is silent in pest, so each remaining pair is
+        // a full and_expr — left-associate them into a chain of Or.
+        acc = Predicate::Or(Box::new(acc), Box::new(parse_and_expr(next)));
     }
-    let left = parse_and_expr(parts.remove(0));
-    let right = parse_or_expr(parts.remove(1)); // skip "or" token
-    Predicate::Or(Box::new(left), Box::new(right))
+    acc
 }
 
 fn parse_and_expr(pair: Pair<Rule>) -> Predicate {
-    let mut parts: Vec<_> = pair.into_inner().collect();
-    if parts.len() == 1 {
-        return parse_atom(parts.remove(0));
+    let parts: Vec<_> = pair.into_inner().collect();
+    let mut iter = parts.into_iter();
+    let first = iter.next().expect("and_expr has no children");
+    let mut acc = parse_atom(first);
+    for next in iter {
+        // "and" string literal is silent in pest, so each remaining pair is
+        // a full atom — left-associate them into a chain of And.
+        acc = Predicate::And(Box::new(acc), Box::new(parse_atom(next)));
     }
-    let left = parse_atom(parts.remove(0));
-    let right = parse_and_expr(parts.remove(1)); // skip "and" token
-    Predicate::And(Box::new(left), Box::new(right))
+    acc
 }
 
 fn parse_atom(pair: Pair<Rule>) -> Predicate {
@@ -256,15 +262,11 @@ fn parse_predicate(pair: Pair<Rule>) -> Predicate {
 fn parse_operand(pair: Pair<Rule>) -> Operand {
     match pair.as_rule() {
         Rule::path => {
-            let parts: Vec<String> = pair
-                .into_inner()
-                .map(|p| p.as_str().to_string())
-                .collect();
-            if parts.len() == 1 {
-                Operand::Path(parts)
-            } else {
-                Operand::Path(parts)
-            }
+            // `path` is an atomic pest rule (@{ ... }), so into_inner() is
+            // empty; read the raw text and split on '.' to recover the parts.
+            let s = pair.as_str();
+            let parts: Vec<String> = s.split('.').map(|p| p.to_string()).collect();
+            Operand::Path(parts)
         }
         Rule::string => {
             let s = pair.as_str();
@@ -276,9 +278,10 @@ fn parse_operand(pair: Pair<Rule>) -> Operand {
         Rule::bool => {
             Operand::BoolValue(pair.as_str() == "true")
         }
+        Rule::null => Operand::StringValue("null".to_string()),
         Rule::list => Operand::ListValue(
             pair.into_inner()
-                .filter(|p| p.as_rule() == Rule::value)
+                .filter(|p| p.as_rule() == Rule::value || p.as_rule() == Rule::string || p.as_rule() == Rule::number || p.as_rule() == Rule::bool)
                 .map(parse_operand)
                 .collect(),
         ),
@@ -287,6 +290,16 @@ fn parse_operand(pair: Pair<Rule>) -> Operand {
             let name = parts.next().unwrap().as_str().to_string();
             let args: Vec<Operand> = parts.map(parse_operand).collect();
             Operand::DerivedCall { name, args }
+        }
+        // operand / value are non-silent wrappers in the grammar — recurse
+        // into their single inner pair so `name == "x"` resolves the field
+        // path instead of being treated as a string literal.
+        Rule::operand | Rule::value => {
+            let raw = pair.as_str().to_string();
+            match pair.into_inner().next() {
+                Some(inner) => parse_operand(inner),
+                None => Operand::StringValue(raw),
+            }
         }
         _ => Operand::StringValue(pair.as_str().to_string()),
     }
@@ -413,6 +426,61 @@ mod tests {
             "functions where decorators contains \"deprecated\""
         ).unwrap();
         assert!(q.where_clause.is_some());
+    }
+
+    #[test]
+    fn test_parse_path_field_has_parts() {
+        // Regression: atomic `path` must yield Path(["name"]), not Path([]).
+        let q = parse_query("functions where name == \"parse\"").unwrap();
+        match q.where_clause.expect("where clause") {
+            Predicate::Comparison { left, op: CompOp::Eq, right } => {
+                match left {
+                    Operand::Path(parts) => assert_eq!(parts, vec!["name".to_string()]),
+                    other => panic!("expected Path, got {:?}", other),
+                }
+                match right {
+                    Operand::StringValue(s) => assert_eq!(s, "parse"),
+                    other => panic!("expected StringValue, got {:?}", other),
+                }
+            }
+            other => panic!("expected Comparison, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_with_and_chain() {
+        // Regression: `a and b` must fold into And(a, b), not panic.
+        let q = parse_query("functions where name == \"parse\" and is_async == false").unwrap();
+        assert!(matches!(q.where_clause, Some(Predicate::And(_, _))));
+    }
+
+    #[test]
+    fn test_parse_single_quoted_string() {
+        // Regression: single-quoted strings must parse like double-quoted.
+        let q = parse_query("functions where name contains 'parse'").unwrap();
+        match q.where_clause.expect("where clause") {
+            Predicate::Comparison { left, op: CompOp::Contains, right } => {
+                assert!(matches!(left, Operand::Path(_)));
+                match right {
+                    Operand::StringValue(s) => assert_eq!(s, "parse"),
+                    other => panic!("expected StringValue, got {:?}", other),
+                }
+            }
+            other => panic!("expected Comparison, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_with_or_chain() {
+        let q = parse_query("functions where name == \"a\" or name == \"b\" or name == \"c\"").unwrap();
+        // left-assoc: Or(Or(a, b), c)
+        match q.where_clause.expect("where clause") {
+            Predicate::Or(outer, inner_c) => {
+                assert!(matches!(*outer, Predicate::Or(_, _)));
+                assert!(matches!(*inner_c, Predicate::Comparison { .. }));
+            }
+            other => panic!("expected Or chain, got {:?}", other),
+        }
     }
 
     #[test]

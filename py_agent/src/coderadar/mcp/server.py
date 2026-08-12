@@ -1064,18 +1064,20 @@ def _affected(graph: Any, entity_id: str, max_depth: int) -> str:
 
 def _query_graph(graph: Any, query: str) -> str:
     """Execute a Pest query against the graph."""
+    # An empty query is a usage error regardless of graph state, so prompt
+    # for it before touching the (possibly unloaded) in-memory graph.
+    if not query.strip():
+        return "Please provide a Pest query. Examples:\n" \
+               "  - functions where name contains 'test'\n" \
+               "  - classes where inherits_from contains 'BaseModel'\n" \
+               "  - imports where module contains 'os'"
+
     try:
         from coderadar._core import graph_stats
         if graph_stats().get("modules", 0) == 0:
             return "No index available. Run `coderadar init` first."
     except (ImportError, RuntimeError):
         return "CodeRadar extension not available."
-
-    if not query.strip():
-        return "Please provide a Pest query. Examples:\n" \
-               "  - functions where name contains 'test'\n" \
-               "  - classes where inherits_from contains 'BaseModel'\n" \
-               "  - imports where module contains 'os'"
 
     try:
         from coderadar._core import query_graph as _qg
@@ -1116,7 +1118,7 @@ def _compute_embeddings(graph: Any) -> str:
             f"## Embeddings Complete\n\n"
             f"- **Generated:** {metrics.get('generated', 0)}\n"
             f"- **Cached (unchanged):** {metrics.get('cached', 0)}\n"
-            f"- **Total functions:** {metrics.get('total', 0)}\n"
+            f"- **Total entities:** {metrics.get('total', 0)}\n"
             f"- **Errors:** {metrics.get('errors', 0)}\n\n"
             f"Semantic search (codegraph_search_similar) is now available."
         )
@@ -1287,6 +1289,13 @@ def _traverse(
 
     if not entity_id.strip():
         return "Please provide an entity ID to traverse from."
+
+    # Production: `graph` is the CodeGraph captured by create_server's
+    # closure. When invoked without it (harness / suite) fall back to a
+    # CodeGraph attached to the already-analysed global graph.
+    if graph is None:
+        from coderadar import CodeGraph
+        graph = CodeGraph()
 
     entity = _find_entity(graph, entity_id)
     if not entity:
