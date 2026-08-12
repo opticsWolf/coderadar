@@ -886,9 +886,50 @@ class TestMutationTools:
 
     def test_create_entity_uninitialized(self):
         from coderadar.mcp.server import _create_entity
-        result = _create_entity(None, "test.py", "python", "function", "new_fn", "return 1", None, True)
+        result = _create_entity(None, "test.py", "python", "function", "new_fn", "return 1", None, "end", True)
         assert isinstance(result, str)
         assert len(result) > 0
+
+    def test_render_entity_code_python(self):
+        from coderadar.mcp.server import _render_entity_code
+        fn = _render_entity_code("python", "function", "greet", 'return "hi"', ["@staticmethod"])
+        assert fn == '@staticmethod\ndef greet():\n    return "hi"\n'
+        cls = _render_entity_code("python", "class", "Widget", "pass", None)
+        assert cls == 'class Widget:\n    pass\n'
+        const = _render_entity_code("python", "constant", "MAX", "3", None)
+        assert const == 'MAX = 3\n'
+
+    def test_render_entity_code_rust_and_go(self):
+        from coderadar.mcp.server import _render_entity_code
+        rs = _render_entity_code("rust", "function", "add", "a + b", None)
+        assert rs == 'pub fn add() {\na + b\n}\n'
+        go = _render_entity_code("go", "function", "run", "return nil", None)
+        assert go == 'func run() {\nreturn nil\n}\n'
+
+    @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+    def test_create_entity_end_to_end(self, tmp_path):
+        import tempfile
+        from coderadar._core import analyze
+        from coderadar import CodeGraph
+        from coderadar.mcp.server import _render_entity_code, _create_entity
+        analyze(str(E2E_DIR))
+
+        # Create a writable target file
+        target = tmp_path / "new_mod.py"
+        target.write_text("existing = 1", encoding="utf-8")
+        target_s = str(target)
+
+        code = _render_entity_code("python", "function", "created_fn", "return 42", None)
+        cg = CodeGraph()
+        plan = cg.plan_create_entity(target_s, "end", code, dry_run=True)
+        # Real span: end of file, not 0..0 placeholder
+        assert plan.edits[0].span_start == plan.edits[0].span_end == len("existing = 1")
+
+        result = cg.apply(plan)
+        assert result.status == "Applied"
+        content = target.read_text(encoding="utf-8")
+        assert "def created_fn():" in content
+        assert content.startswith("existing = 1")
 
     def test_format_mutation_plan_shows_diff(self):
         from coderadar.mcp.server import _format_mutation_plan

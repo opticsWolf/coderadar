@@ -241,7 +241,8 @@ impl MutationEngine {
 
         for caller_id in &callers {
             if let Some(caller_fn) = projection.functions.get(caller_id) {
-                for call in &caller_fn.resolved_calls {
+                let caller_file = module_file_path(projection, &caller_fn.parent_module);
+                for (i, call) in caller_fn.resolved_calls.iter().enumerate() {
                     // Check if this call targets the entity being modified
                     let target_matches = match call {
                         ResolvedCall::Function(id) | ResolvedCall::Method { method: id, .. } | ResolvedCall::Constructor(id) => {
@@ -250,31 +251,33 @@ impl MutationEngine {
                         _ => false,
                     };
 
-                    if target_matches {
-                        // Generate call-site edit
-                        if let Some(kv_value) = call_site_values.get(caller_id) {
-                            // Caller provided new arg list for this call site
-                            edits.push(MutationEdit {
-                                file: module_file_path(projection, &caller_fn.parent_module),
-                                span: ByteSpan { start: 0, end: 0 }, // resolved by Python layer
-                                replacement: kv_value.clone(),
-                                expected_hash: String::new(),
-                            });
-                        } else if inject_defaults {
-                            // Auto-fill with defaults from new signature
-                            // This is language-specific and handled by Python layer
-                            warnings.push(format!(
-                                "Call site in {} at {} — defaults auto-injected",
-                                caller_fn.parent_module, caller_fn.id
-                            ));
-                        } else {
-                            unverified.push(UnverifiedSite {
-                                file: module_file_path(projection, &caller_fn.parent_module),
-                                line: 0, // resolved by Python
-                                snippet: format!("call to {} in {}", entity_id, caller_fn.id),
-                                reason: "Call site needs manual update — no values provided".into(),
-                            });
-                        }
+                    if !target_matches {
+                        continue;
+                    }
+
+                    // resolved_calls is parallel to calls — use index i for line/col
+                    let line = caller_fn.calls.get(i).map(|c| c.line as u32).unwrap_or(0);
+
+                    if let Some(kv_value) = call_site_values.get(caller_id) {
+                        // No arg span is stored in the graph — surface for manual review
+                        unverified.push(UnverifiedSite {
+                            file: caller_file.clone(),
+                            line,
+                            snippet: format!("call to {} — new args: {}", entity_id, kv_value),
+                            reason: "Call-site arg span unavailable; apply arg change manually".into(),
+                        });
+                    } else if inject_defaults {
+                        warnings.push(format!(
+                            "Call site in {} line {} — inject default args manually",
+                            caller_file, line
+                        ));
+                    } else {
+                        unverified.push(UnverifiedSite {
+                            file: caller_file.clone(),
+                            line,
+                            snippet: format!("call to {} in {}", entity_id, caller_fn.id),
+                            reason: "Call site needs manual update — no values provided".into(),
+                        });
                     }
                 }
             }
@@ -447,29 +450,33 @@ impl MutationEngine {
         dry_run: bool,
         projection: &ProjectedGraph,
     ) -> Result<MutationPlan, MutationError> {
-        // 1. Determine insertion point
-        let insert_span = if anchor == "top" || anchor.is_empty() {
-            // Insert at file top (after module docstring if present)
-            ByteSpan { start: 0, end: 0 }
+        // 1. Determine insertion point + replacement (with newline normalization)
+        let file_bytes = std::fs::read(target_file).unwrap_or_default();
+        let file_len = file_bytes.len();
+        let code_trimmed = code.trim_matches(['\n', '\r']);
+
+        let (insert_span, replacement) = if anchor == "top" || anchor.is_empty() {
+            // Insert at file top (after a UTF-8 BOM if present)
+            let start = if file_bytes.starts_with(&[0xEF, 0xBB, 0xBF]) { 3 } else { 0 };
+            (ByteSpan { start, end: start }, format!("{}\n", code_trimmed))
         } else if anchor == "end" {
-            // Insert at file end
-            ByteSpan { start: 0, end: 0 } // resolved by Python layer
+            // Insert at file end, blank-line separated from existing content
+            let repl = if file_len == 0 {
+                format!("{}\n", code_trimmed)
+            } else {
+                format!("\n{}\n", code_trimmed)
+            };
+            (ByteSpan { start: file_len, end: file_len }, repl)
         } else {
             // Anchor after a specific entity
-            // Look up anchor entity by id
-            if let Some(fn_ent) = projection.functions.get(anchor) {
-                ByteSpan {
-                    start: fn_ent.span.end,
-                    end: fn_ent.span.end, // insert-only (replacement of empty)
-                }
+            let span = if let Some(fn_ent) = projection.functions.get(anchor) {
+                ByteSpan { start: fn_ent.span.end, end: fn_ent.span.end }
             } else if let Some(cls_ent) = projection.classes.get(anchor) {
-                ByteSpan {
-                    start: cls_ent.span.end,
-                    end: cls_ent.span.end,
-                }
+                ByteSpan { start: cls_ent.span.end, end: cls_ent.span.end }
             } else {
                 return Err(MutationError::EntityNotFound(anchor.to_string()));
-            }
+            };
+            (span, format!("\n{}\n", code_trimmed))
         };
 
         let plan_id = ulid::Ulid::new().to_string();
@@ -480,7 +487,7 @@ impl MutationEngine {
             edits: vec![MutationEdit {
                 file: target_file.to_string(),
                 span: insert_span,
-                replacement: format!("\n{}", code),
+                replacement,
                 expected_hash: String::new(),
             }],
             affected_files: vec![target_file.to_string()],
@@ -501,13 +508,9 @@ impl MutationEngine {
         use std::collections::HashMap;
         use std::io::Write;
 
-        // Group real (non-placeholder) edits by file path
+        // Group edits by file path (all edits carry real byte spans)
         let mut by_file: HashMap<String, Vec<MutationEdit>> = HashMap::new();
         for edit in &plan.edits {
-            // Skip placeholder edits (span 0..0 == "resolved by Python layer")
-            if edit.span.start == 0 && edit.span.end == 0 {
-                continue;
-            }
             by_file.entry(edit.file.clone())
                 .or_default()
                 .push(edit.clone());
@@ -597,4 +600,68 @@ pub enum MutationError {
     TooManyFiles(usize),
     TooManyEdits(usize),
     SyntaxDiagnostic(Vec<SyntaxDiagnostic>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::MutationConfig;
+    use crate::types::ByteSpan;
+
+    fn engine() -> MutationEngine {
+        MutationEngine::new(MutationConfig::default())
+    }
+
+    fn plan(edits: Vec<MutationEdit>) -> MutationPlan {
+        MutationPlan {
+            id: "t".into(),
+            tool: "create_entity".into(),
+            affected_files: edits.iter().map(|e| e.file.clone()).collect(),
+            edits,
+            diff_preview: String::new(),
+            unverified_sites: vec![],
+            warnings: vec![],
+        }
+    }
+
+    #[test]
+    fn test_apply_inserts_at_top_with_zero_span() {
+        // span 0..0 is a legitimate "insert at top" — must NOT be skipped
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.py");
+        std::fs::write(&path, "import os\n").unwrap();
+        let file = path.to_string_lossy().to_string();
+
+        let mut eng = engine();
+        let p = plan(vec![MutationEdit {
+            file: file.clone(),
+            span: ByteSpan { start: 0, end: 0 },
+            replacement: "def f():\n    pass\n".into(),
+            expected_hash: String::new(),
+        }]);
+        let result = eng.apply(&p);
+        assert_eq!(result.status, MutationStatus::Applied, "{:#?}", result.syntax_errors);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "def f():\n    pass\nimport os\n");
+    }
+
+    #[test]
+    fn test_apply_inserts_at_end() {
+        // end anchor: insert at file length, adding a newline separator
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.py");
+        std::fs::write(&path, "import os").unwrap(); // no trailing newline
+        let file = path.to_string_lossy().to_string();
+        let len = "import os".len();
+
+        let mut eng = engine();
+        let p = plan(vec![MutationEdit {
+            file: file.clone(),
+            span: ByteSpan { start: len, end: len },
+            replacement: "\ndef g():\n    pass\n".into(),
+            expected_hash: String::new(),
+        }]);
+        let result = eng.apply(&p);
+        assert_eq!(result.status, MutationStatus::Applied);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "import os\ndef g():\n    pass\n");
+    }
 }

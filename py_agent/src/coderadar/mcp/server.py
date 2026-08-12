@@ -472,7 +472,10 @@ def create_server(graph: Any) -> MCPServer:
             "Create a new entity (function, class, constant) in a file. "
             "With dry_run=True: shows where the entity would be inserted. "
             "With dry_run=False: inserts the entity into the file AND indexes it. "
-            "Language-aware placement at the appropriate location."
+            "anchor='end' appends at file end, 'top' inserts at file top, "
+            "or pass an entity ID to insert after that entity. "
+            "The code is rendered from name/body/decorators using language-aware "
+            "syntax for common languages."
         ),
         annotations={
             "read_only_hint": False,
@@ -488,10 +491,11 @@ def create_server(graph: Any) -> MCPServer:
         name: str,
         body: str,
         decorators: Optional[list[str]] = None,
+        anchor: str = "end",
         dry_run: bool = True,
     ) -> str:
         """Create a new entity."""
-        return _create_entity(graph, file_path, language, kind, name, body, decorators, dry_run)
+        return _create_entity(graph, file_path, language, kind, name, body, decorators, anchor, dry_run)
 
     # ── codegraph_reindex — full graph refresh ───────────────────────
 
@@ -1370,15 +1374,73 @@ def _rename(graph: Any, entity_id: str, new_name: str, dry_run: bool) -> str:
         return f"Mutation failed: {e}"
 
 
+def _render_entity_code(
+    language: str, kind: str, name: str, body: str, decorators: list[str] | None,
+) -> str:
+    """Render a source snippet for a new entity using language-aware syntax."""
+    lang = (language or "").lower()
+    kind_norm = (kind or "function").lower()
+    body = (body or "").rstrip("\n")
+    dec = "\n".join(decorators or [])
+    dec_block = (dec + "\n") if dec else ""
+
+    def indent(text: str, spaces: int = 4) -> str:
+        pad = " " * spaces
+        return "\n".join((pad + line) if line.strip() else line for line in text.split("\n"))
+
+    if kind_norm in ("function", "method", "fn"):
+        if lang in ("python", "py"):
+            return f"{dec_block}def {name}():\n{indent(body)}\n"
+        if lang in ("rust", "rs"):
+            return f"{dec_block}pub fn {name}() {{\n{body}\n}}\n"
+        if lang == "go":
+            return f"{dec_block}func {name}() {{\n{body}\n}}\n"
+        if lang in ("javascript", "typescript", "js", "ts", "jsx", "tsx"):
+            return f"{dec_block}function {name}() {{\n{body}\n}}\n"
+        if lang in ("java",):
+            return f"{dec_block}public void {name}() {{\n{body}\n}}\n"
+        if lang in ("csharp", "cs"):
+            return f"{dec_block}public void {name}() {{\n{body}\n}}\n"
+        if lang in ("php",):
+            return f"{dec_block}function {name}() {{\n{body}\n}}\n"
+        if lang in ("ruby", "rb"):
+            return f"{dec_block}def {name}\n{body}\nend\n"
+        # generic brace language fallback
+        return f"{dec_block}{name}() {{\n{body}\n}}\n"
+
+    if kind_norm in ("class", "struct"):
+        if lang in ("python", "py"):
+            inner = indent(body) or "    pass"
+            return f"{dec_block}class {name}:\n{inner}\n"
+        if lang in ("ruby", "rb"):
+            return f"{dec_block}class {name}\n{body}\nend\n"
+        return f"{dec_block}class {name} {{\n{body}\n}}\n"
+
+    if kind_norm in ("constant", "variable", "const", "var"):
+        if lang in ("python", "py"):
+            return f"{dec_block}{name} = {body or 'None'}\n"
+        if lang == "go":
+            return f"{dec_block}const {name} = {body or 'nil'}\n"
+        if lang in ("javascript", "typescript", "js", "ts"):
+            return f"{dec_block}const {name} = {body or 'null'};\n"
+        return f"{dec_block}{name} = {body or 'null'}\n"
+
+    # Unknown kind: emit the body verbatim
+    return (body + "\n") if body else ""
+
+
 def _create_entity(
     graph: Any, file_path: str, language: str, kind: str,
-    name: str, body: str, decorators: list[str] | None, dry_run: bool,
+    name: str, body: str, decorators: list[str] | None,
+    anchor: str, dry_run: bool,
 ) -> str:
     """Create a new entity."""
     try:
+        code = _render_entity_code(language, kind, name, body, decorators)
+        if not code.strip():
+            return "Cannot render entity: provide a non-empty body or kind."
         plan = graph.plan_create_entity(
-            file_path, language, kind, name, body,
-            decorators=decorators, dry_run=True,
+            file_path, anchor or "end", code, dry_run=True,
         )
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
