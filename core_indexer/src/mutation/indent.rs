@@ -113,13 +113,14 @@ pub fn normalize_indent(
         let trimmed = line.trim_start();
 
         // 3. Build new leading whitespace in target style
+        // `relative` is already a whitespace char count — do NOT multiply by width.
         let new_leading = match style.unit {
-            ' ' => " ".repeat(target_base_len + relative * style.width),
+            ' ' => " ".repeat(target_base_len + relative),
             '\t' => {
-                let tabs = (target_base_len + relative * style.width) / style.width;
+                let tabs = (target_base_len + relative) / style.width.max(1);
                 "\t".repeat(tabs)
             }
-            _ => " ".repeat(target_base_len + relative * style.width),
+            _ => " ".repeat(target_base_len + relative),
         };
 
         result.push_str(&new_leading);

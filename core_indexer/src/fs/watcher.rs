@@ -64,6 +64,7 @@ impl Default for WatcherConfig {
 struct EventBridge {
     tx: Sender<BatchEvent>,
     exclude_patterns: Arc<Vec<String>>,
+    write_guard: std::sync::Arc<crate::mutation::write_guard::WriteGuard>,
     batch_counter: u64,
 }
 
@@ -89,6 +90,19 @@ impl DebounceEventHandler for EventBridge {
                         .unwrap_or("");
                     if !ext.is_empty() && !is_source_extension(ext) {
                         return None;
+                    }
+
+                    // Suppress events for files the mutation engine just wrote
+                    // (WriteGuard). Only hash content if the path is actively
+                    // suppressed, to avoid hashing every file on every event.
+                    if self.write_guard.is_suppressed(&e.path) {
+                        let hash = std::fs::read(&e.path)
+                            .ok()
+                            .map(|b| format!("{:016x}", xxhash_rust::xxh3::xxh3_64(&b)))
+                            .unwrap_or_default();
+                        if self.write_guard.should_drop(&e.path, &hash) {
+                            return None;
+                        }
                     }
 
                     let kind = match e.kind {
@@ -129,6 +143,7 @@ impl FileWatcher {
         let bridge = EventBridge {
             tx,
             exclude_patterns,
+            write_guard: crate::mutation::shared_write_guard(),
             batch_counter: 0,
         };
 

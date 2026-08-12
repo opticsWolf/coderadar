@@ -1,4 +1,4 @@
-# CodeRadar v0.6.2
+# CodeRadar v0.6.3
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -159,6 +159,14 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 | **React Router** | JSX/TSX | `package.json` | JSX `<Route>` declarations, v6 data router objects, `<Link>`/`<NavLink>` navigation tracking |
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
+
+## v0.6.3 Feature Highlights
+
+- **Mutation safety hardened** — stale-write rejection (every edit carries an xxh3_64 content hash of its span, verified before any write → `RejectedStale` on mismatch) and automatic rollback on tainted updates (backup → atomic write → tree-sitter post-parse → restore on introduced syntax errors)
+- **WriteGuard wired up** — mutation writes are suppressed in a shared process-wide guard so the file watcher doesn't re-index the engine's own writes
+- **create_entity fixed** — language-aware code rendering (Python/Rust/Go/JS/TS/Java/C#/PHP/Ruby), real byte spans for top/end anchors, project-relative path canonicalization
+- **Honest error reporting** — `update_file` surfaces `fully_applied=False` instead of swallowing failures; `search_similar` caches the embedding model
+- **524 tests, 0 failures** — 176 Rust + 348 Python
 
 ## v0.6.0 Feature Highlights
 

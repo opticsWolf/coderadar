@@ -28,6 +28,9 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# Cached fastembed model for semantic search (lazy-loaded, reused across queries)
+_EMBED_MODEL = None
+
 # ── Output Budget Constants ───────────────────────────────────────────────
 # Adapted from CodeGraph's getExploreOutputBudget / allocateExploreBudget
 # (MIT License, https://github.com/colbymchenry/codegraph)
@@ -123,7 +126,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.2",
+        version="0.6.3",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -422,8 +425,10 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Change a function/method signature. "
             "With dry_run=True: shows the signature change and all affected call sites. "
-            "With dry_run=False: writes the change AND updates the graph. "
-            "Use inject_defaults=True to inject default argument values at call sites."
+            "With dry_run=False: writes the definition change AND updates the graph. "
+            "NOTE: the definition signature is edited automatically, but call sites are "
+            "returned as unverified_sites (with line numbers) for manual review — "
+            "call-site argument spans are not indexed, so they cannot be auto-edited safely."
         ),
         annotations={
             "read_only_hint": False,
@@ -472,7 +477,10 @@ def create_server(graph: Any) -> MCPServer:
             "Create a new entity (function, class, constant) in a file. "
             "With dry_run=True: shows where the entity would be inserted. "
             "With dry_run=False: inserts the entity into the file AND indexes it. "
-            "Language-aware placement at the appropriate location."
+            "anchor='end' appends at file end, 'top' inserts at file top, "
+            "or pass an entity ID to insert after that entity. "
+            "The code is rendered from name/body/decorators using language-aware "
+            "syntax for common languages."
         ),
         annotations={
             "read_only_hint": False,
@@ -488,10 +496,11 @@ def create_server(graph: Any) -> MCPServer:
         name: str,
         body: str,
         decorators: Optional[list[str]] = None,
+        anchor: str = "end",
         dry_run: bool = True,
     ) -> str:
         """Create a new entity."""
-        return _create_entity(graph, file_path, language, kind, name, body, decorators, dry_run)
+        return _create_entity(graph, file_path, language, kind, name, body, decorators, anchor, dry_run)
 
     # ── codegraph_reindex — full graph refresh ───────────────────────
 
@@ -1115,6 +1124,15 @@ def _compute_embeddings(graph: Any) -> str:
         return f"Embedding generation failed: {e}\n\nEnsure fastembed is installed: pip install fastembed"
 
 
+def _get_embedding_model():
+    """Lazily load and cache the fastembed model (avoid reload per query)."""
+    global _EMBED_MODEL
+    if _EMBED_MODEL is None:
+        from fastembed import TextEmbedding
+        _EMBED_MODEL = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+    return _EMBED_MODEL
+
+
 def _search_similar(graph: Any, query: str, top_k: int) -> str:
     """Semantic/embedding similarity search."""
     try:
@@ -1127,11 +1145,9 @@ def _search_similar(graph: Any, query: str, top_k: int) -> str:
     if not query.strip():
         return "Please provide a natural-language query for semantic search."
 
-    # Try to embed the query using fastembed
+    # Try to embed the query using a cached fastembed model
     try:
-        from fastembed import TextEmbedding
-        model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
-        embedding = list(model.embed([query]))[0]
+        embedding = list(_get_embedding_model().embed([query]))[0]
     except ImportError:
         return (
             "Semantic search requires `fastembed` to be installed. "
@@ -1185,6 +1201,8 @@ def _module_children(graph: Any, module_id: str) -> str:
 
     if not module_id.strip():
         return "Please provide a module ID (e.g. 'src/main.py::module')."
+
+    module_id = _canonical_entity_id(module_id)
 
     try:
         from coderadar._core import module_children as _mc
@@ -1273,6 +1291,7 @@ def _traverse(
     entity = _find_entity(graph, entity_id)
     if not entity:
         return f"Entity `{entity_id}` not found. Try codegraph_search."
+    entity_id = _canonical_entity_id(entity_id)
 
     depth = min(max_depth, 10)
     # Map MCP direction names to MacrameQuery direction
@@ -1326,6 +1345,7 @@ def _replace_body(
 ) -> str:
     """Replace a function body."""
     try:
+        entity_id = _canonical_entity_id(entity_id)
         plan = graph.plan_body_replacement(entity_id, new_body, expected_hash, dry_run=True)
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
@@ -1341,6 +1361,7 @@ def _update_signature(
 ) -> str:
     """Change a function signature."""
     try:
+        entity_id = _canonical_entity_id(entity_id)
         plan = graph.plan_signature_update(
             entity_id, new_signature, inject_defaults=inject_defaults, dry_run=True,
         )
@@ -1355,6 +1376,7 @@ def _update_signature(
 def _rename(graph: Any, entity_id: str, new_name: str, dry_run: bool) -> str:
     """Rename an entity."""
     try:
+        entity_id = _canonical_entity_id(entity_id)
         plan = graph.plan_rename(entity_id, new_name, dry_run=True)
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
@@ -1364,15 +1386,97 @@ def _rename(graph: Any, entity_id: str, new_name: str, dry_run: bool) -> str:
         return f"Mutation failed: {e}"
 
 
+def _render_entity_code(
+    language: str, kind: str, name: str, body: str, decorators: list[str] | None,
+) -> str:
+    """Render a source snippet for a new entity using language-aware syntax."""
+    lang = (language or "").lower()
+    kind_norm = (kind or "function").lower()
+    body = (body or "").rstrip("\n")
+    dec = "\n".join(decorators or [])
+    dec_block = (dec + "\n") if dec else ""
+
+    def indent(text: str, spaces: int = 4) -> str:
+        pad = " " * spaces
+        return "\n".join((pad + line) if line.strip() else line for line in text.split("\n"))
+
+    if kind_norm in ("function", "method", "fn"):
+        if lang in ("python", "py"):
+            return f"{dec_block}def {name}():\n{indent(body)}\n"
+        if lang in ("rust", "rs"):
+            return f"{dec_block}pub fn {name}() {{\n{body}\n}}\n"
+        if lang == "go":
+            return f"{dec_block}func {name}() {{\n{body}\n}}\n"
+        if lang in ("javascript", "typescript", "js", "ts", "jsx", "tsx"):
+            return f"{dec_block}function {name}() {{\n{body}\n}}\n"
+        if lang in ("java",):
+            return f"{dec_block}public void {name}() {{\n{body}\n}}\n"
+        if lang in ("csharp", "cs"):
+            return f"{dec_block}public void {name}() {{\n{body}\n}}\n"
+        if lang in ("php",):
+            return f"{dec_block}function {name}() {{\n{body}\n}}\n"
+        if lang in ("ruby", "rb"):
+            return f"{dec_block}def {name}\n{body}\nend\n"
+        # generic brace language fallback
+        return f"{dec_block}{name}() {{\n{body}\n}}\n"
+
+    if kind_norm in ("class", "struct"):
+        if lang in ("python", "py"):
+            inner = indent(body) or "    pass"
+            return f"{dec_block}class {name}:\n{inner}\n"
+        if lang in ("ruby", "rb"):
+            return f"{dec_block}class {name}\n{body}\nend\n"
+        return f"{dec_block}class {name} {{\n{body}\n}}\n"
+
+    if kind_norm in ("constant", "variable", "const", "var"):
+        if lang in ("python", "py"):
+            return f"{dec_block}{name} = {body or 'None'}\n"
+        if lang == "go":
+            return f"{dec_block}const {name} = {body or 'nil'}\n"
+        if lang in ("javascript", "typescript", "js", "ts"):
+            return f"{dec_block}const {name} = {body or 'null'};\n"
+        return f"{dec_block}{name} = {body or 'null'}\n"
+
+    # Unknown kind: emit the body verbatim
+    return (body + "\n") if body else ""
+
+
+def _canonical_file_path(file_path: str) -> str:
+    r"""Resolve a file path to the project-relative form the graph stores.
+
+    The graph stores entity IDs as `.\relative\path::name` (Windows
+    backslashes, `./`-style prefix). Convert absolute paths to that form so
+    create_entity's reindex step matches existing entities instead of
+    creating duplicates.
+    """
+    import os
+    if os.path.isabs(file_path):
+        try:
+            return '.' + os.sep + os.path.relpath(file_path, os.getcwd())
+        except ValueError:
+            return file_path
+    if file_path.startswith('./') or file_path.startswith('.\\'):
+        return file_path
+    return '.' + os.sep + file_path
+
+
 def _create_entity(
     graph: Any, file_path: str, language: str, kind: str,
-    name: str, body: str, decorators: list[str] | None, dry_run: bool,
+    name: str, body: str, decorators: list[str] | None,
+    anchor: str, dry_run: bool,
 ) -> str:
     """Create a new entity."""
     try:
+        code = _render_entity_code(language, kind, name, body, decorators)
+        if not code.strip():
+            return "Cannot render entity: provide a non-empty body or kind."
+        target = _canonical_file_path(file_path)
+        # If the anchor is an entity ID (not 'top'/'end'), canonicalize it too
+        anchor_norm = anchor or "end"
+        if anchor_norm not in ("top", "end"):
+            anchor_norm = _canonical_entity_id(anchor_norm)
         plan = graph.plan_create_entity(
-            file_path, language, kind, name, body,
-            decorators=decorators, dry_run=True,
+            target, anchor_norm, code, dry_run=True,
         )
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
@@ -1434,9 +1538,9 @@ def _reindex(graph: Any, with_embeddings: bool = False) -> str:
     """Full reindex of the project."""
     try:
         from coderadar._core import analyze as _analyze, graph_stats
-        import os
-        cwd = os.getcwd()
-        _analyze(cwd)
+        # Use relative root ('.') to keep entity IDs consistent with startup
+        # (analyze('.')) — absolute os.getcwd() would change ID prefixes.
+        _analyze('.')
         stats = graph_stats()
         lines = [
             "## Reindex Complete",
@@ -1475,7 +1579,14 @@ def _update_file(graph: Any, file_path: str, content: str | None) -> str:
         return "Please provide a file path."
 
     try:
-        graph.update_file(file_path, content)
+        report = graph.update_file(file_path, content)
+        if not report.fully_applied:
+            return (
+                f"## Update Failed\n\n"
+                f"- **File:** `{file_path}`\n"
+                f"- **Reason:** {report.parse_quality}\n"
+                f"- **Parse errors:** {report.parse_errors}\n"
+            )
         return (
             f"## File Updated\n\n"
             f"- **File:** `{file_path}`\n"
@@ -1556,11 +1667,52 @@ def _render_relationships(
     return lines
 
 
+def _canonical_entity_id(entity_id: str) -> str:
+    """Resolve an entity ID to its canonical in-graph form.
+
+    Handles both relative (`.\\...`) and absolute (`D:\\...`) path prefixes
+    by probing the graph with a few candidate forms.
+    """
+    try:
+        from coderadar._core import lookup_entity
+    except ImportError:
+        return entity_id
+    if lookup_entity(entity_id):
+        return entity_id
+
+    import os
+    candidates: list[str] = []
+
+    # Relative → absolute
+    if entity_id.startswith('.\\') or entity_id.startswith('./'):
+        candidates.append(os.path.join(os.getcwd(), entity_id[2:]))
+
+    # Absolute → relative (with ./ prefix and bare)
+    if os.path.isabs(entity_id):
+        try:
+            rel = os.path.relpath(entity_id, os.getcwd())
+            candidates.append('.' + os.sep + rel)
+            candidates.append(rel)
+        except ValueError:
+            pass
+
+    # Normalize separators both ways
+    normalized: list[str] = []
+    for c in candidates:
+        normalized.append(c.replace('/', '\\'))
+        normalized.append(c.replace('\\', '/'))
+
+    for c in normalized:
+        if lookup_entity(c):
+            return c
+    return entity_id
+
+
 def _find_entity(graph: Any, entity_id: str) -> dict | None:
     try:
         from coderadar._core import lookup_entity
-        return lookup_entity(entity_id)
-    except ImportError:
+        return lookup_entity(_canonical_entity_id(entity_id))
+    except (ImportError, RuntimeError):
         return None
 
 
