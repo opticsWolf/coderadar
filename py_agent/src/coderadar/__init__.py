@@ -354,25 +354,21 @@ class CodeGraph:
         generated = 0
         cached = 0
         errors = 0
+        try:
+            from coderadar._core import set_embedding
+        except ImportError:
+            return {"generated": 0, "cached": 0, "total": len(targets), "errors": 1}
         for target, vec in zip(targets, results):
             if vec is None:
-                cached += 1  # dedup cache hit — already has embedding
+                cached += 1
                 continue
             try:
-                from coderadar._core import set_embedding
-                set_embedding(target.entity_id, list(vec))
+                set_embedding(target.id, list(vec), target.content_hash)
                 generated += 1
-            except (ImportError, RuntimeError) as e:
+            except RuntimeError as e:
                 errors += 1
 
         return {"generated": generated, "cached": cached, "total": len(targets), "errors": errors}
-
-        return {
-            "generated": generated,
-            "cached": dedup.metrics["cache_hit"],
-            "total": len(targets),
-            "errors": 0,
-        }
 
     # ── Update ─────────────────────────────────────────────────────────
 

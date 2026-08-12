@@ -43,39 +43,35 @@ class EmbeddingDedup:
         to_embed: List[EmbedTarget],
         db: Any,
     ) -> List[Optional[List[float]]]:
-        """Embed a batch of entities with deduplication.
+        """Embed a batch with deduplication.
 
-        Args:
-            to_embed: List of entities to embed.
-            db: LadybugDB connection for cache lookup.
-
-        Returns:
-            List of embedding vectors (None for cache hits — already in DB).
+        Returns list where each element is:
+          - vector (List[float]) for new embeddings to store
+          - None for hash-cached entities (skip)
         """
-        out: List[Optional[List[float]]] = []
+        CACHE_HIT = object()  # unique sentinel
+        out: List[Any] = []
 
         for entity in to_embed:
-            cached = self._get_cached(db, entity.id, entity.content_hash)
-            if cached is not None:
+            if self._get_cached(db, entity.id, entity.content_hash):
                 self.metrics["cache_hit"] += 1
-                out.append(None)  # Already in DB
+                out.append(CACHE_HIT)
             else:
                 self.metrics["cache_miss"] += 1
-                out.append(None)  # Placeholder — will be filled
+                out.append(None)
 
-        # Find indices that need actual embedding
+        # Find indices needing actual embedding (None, not CACHE_HIT)
         miss_indices = [i for i, v in enumerate(out) if v is None]
         if miss_indices:
-            bodies = [to_embed[i].body[:self.max_body_tokens * 4]  # rough char estimate
+            bodies = [to_embed[i].body[:self.max_body_tokens * 4]
                       for i in miss_indices]
             vectors = self._model_embed(bodies)
             for i, vec in zip(miss_indices, vectors):
                 out[i] = vec
-                self._store_cached(db, to_embed[i].id,
-                                   to_embed[i].content_hash, vec)
                 self.metrics["generated"] += 1
 
-        return out
+        # Convert CACHE_HIT → None (caller skips None entries)
+        return [None if v is CACHE_HIT else v for v in out]
 
     def _model_embed(self, texts: List[str]) -> List[List[float]]:
         """Run the embedding model on a batch of texts."""
@@ -90,23 +86,17 @@ class EmbeddingDedup:
         result = list(self._model.embed(texts, batch_size=self.batch_size))
         return [r.tolist() for r in result]
 
-    def _get_cached(self, db: Any, entity_id: str, content_hash: str) -> Optional[List[float]]:
-        """Check if an embedding is already cached for this (id, hash) pair."""
+    def _get_cached(self, db: Any, entity_id: str, content_hash: str) -> bool:
+        """Check if embedding is cached AND hash matches (not stale)."""
         try:
             from coderadar._core import lookup_entity
             entity = lookup_entity(entity_id)
             if entity and entity.get("has_embedding"):
-                return None  # Already has embedding; skip
-        except ImportError:
+                stored_hash = entity.get("embedding_hash", "")
+                return stored_hash == content_hash
+        except (ImportError, RuntimeError):
             pass
-        return None
-
-    def _store_cached(self, db: Any, entity_id: str, content_hash: str,
-                      vector: List[float]) -> None:
-        """Store a newly computed embedding via graph update."""
-        # In production: update the entity's embedding field via mutation
-        # For now, embeddings are stored in-memory via ProjectedGraph
-        pass
+        return False
 
     def cache_hit_rate(self) -> float:
         """Return the current cache hit rate."""
@@ -114,6 +104,7 @@ class EmbeddingDedup:
         if total == 0:
             return 0.0
         return self.metrics["cache_hit"] / total
+
 
 
 class EmbedTarget:

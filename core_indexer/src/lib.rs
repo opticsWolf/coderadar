@@ -136,7 +136,8 @@ fn module_to_dict(py: Python<'_>, m: &Module) -> PyResult<PyObject> {
     dict.set_item("constants", m.constants.clone())?;
     dict.set_item("type_aliases", m.type_aliases.clone())?;
     dict.set_item("file_version", m.file_version)?;
-    dict.set_item("has_embedding", !m.embedding.0.is_empty())?;
+    dict.set_item("has_embedding", !m.embedding.vec.is_empty())?;
+    dict.set_item("embedding_hash", m.embedding.hash.clone())?;
     Ok(dict.into())
 }
 
@@ -167,7 +168,9 @@ fn class_to_dict(py: Python<'_>, c: &Class) -> PyResult<PyObject> {
     dict.set_item("name_span_end", c.name_span.end)?;
     let bases: Vec<String> = c.bases.iter().map(|b| b.name.clone()).collect();
     dict.set_item("bases", bases)?;
-    dict.set_item("has_embedding", !c.embedding.0.is_empty())?;
+    dict.set_item("has_embedding", !c.embedding.vec.is_empty())?;
+    dict.set_item("embedding_hash", c.embedding.hash.clone())?;
+    dict.set_item("embedding_hash", c.embedding.hash.clone())?;
     Ok(dict.into())
 }
 
@@ -211,8 +214,9 @@ fn function_to_dict(py: Python<'_>, f: &Function) -> PyResult<PyObject> {
     dict.set_item("span_end", f.span.end)?;
     dict.set_item("name_span_start", f.name_span.start)?;
     dict.set_item("name_span_end", f.name_span.end)?;
-    if !f.embedding.0.is_empty() {
+    if !f.embedding.vec.is_empty() {
         dict.set_item("has_embedding", true)?;
+        dict.set_item("embedding_hash", f.embedding.hash.clone())?;
     }
     // Build signature string from parameters
     let params: Vec<String> = f.parameters.iter()
@@ -247,7 +251,8 @@ fn import_to_dict(py: Python<'_>, i: &Import) -> PyResult<PyObject> {
     dict.set_item("start_line", i.line)?;
     dict.set_item("name_span_start", i.name_span.start)?;
     dict.set_item("name_span_end", i.name_span.end)?;
-    dict.set_item("has_embedding", !i.embedding.0.is_empty())?;
+    dict.set_item("has_embedding", !i.embedding.vec.is_empty())?;
+    dict.set_item("embedding_hash", i.embedding.hash.clone())?;
     Ok(dict.into())
 }
 
@@ -261,7 +266,9 @@ fn constant_to_dict(py: Python<'_>, c: &Constant) -> PyResult<PyObject> {
     }
     dict.set_item("span_start", c.span.start)?;
     dict.set_item("span_end", c.span.end)?;
-    dict.set_item("has_embedding", !c.embedding.0.is_empty())?;
+    dict.set_item("has_embedding", !c.embedding.vec.is_empty())?;
+    dict.set_item("embedding_hash", c.embedding.hash.clone())?;
+    dict.set_item("embedding_hash", c.embedding.hash.clone())?;
     Ok(dict.into())
 }
 
@@ -273,7 +280,8 @@ fn type_alias_to_dict(py: Python<'_>, ta: &TypeAlias) -> PyResult<PyObject> {
     dict.set_item("target", &ta.target)?;
     dict.set_item("span_start", ta.span.start)?;
     dict.set_item("span_end", ta.span.end)?;
-    dict.set_item("has_embedding", !ta.embedding.0.is_empty())?;
+    dict.set_item("has_embedding", !ta.embedding.vec.is_empty())?;
+    dict.set_item("embedding_hash", ta.embedding.hash.clone())?;
     Ok(dict.into())
 }
 
@@ -920,8 +928,8 @@ fn search_similar(
 
         // Scan all entity maps for non-empty embeddings
         let mut collect = |scored: &mut Vec<(f64, String)>, id: &str, emb: &EmbeddingVec| {
-            if !emb.0.is_empty() {
-                let sim = cosine_similarity(&query_vec, &emb.0);
+            if !emb.vec.is_empty() {
+                let sim = cosine_similarity(&query_vec, &emb.vec);
                 scored.push((sim, id.to_string()));
             }
         };
@@ -1088,16 +1096,17 @@ fn register_synthetic_edge(
 /// Called from Python's compute_embeddings() pipeline. The embedding is
 /// written directly into the in-memory Function.embedding field, making it
 /// immediately available for search_similar() queries.
+/// content_hash: xxHash64 hex of the entity body — used for incremental dedup.
 #[pyfunction]
 fn set_embedding(
-    entity_id: &str, embedding: Vec<f64>,
+    entity_id: &str, embedding: Vec<f64>, content_hash: &str,
 ) -> PyResult<PyObject> {
     let mut guard = GLOBAL_GRAPH.write();
     let graph = guard.as_mut()
         .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
             "No graph loaded — run coderadar analyze first"
         ))?;
-    graph.set_embedding(entity_id, &embedding)
+    graph.set_embedding(entity_id, &embedding, content_hash)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);

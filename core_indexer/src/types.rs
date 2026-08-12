@@ -8,9 +8,19 @@ use std::sync::Arc;
 // ── EntityId (v3.6 §3.1) ────────────────────────────────────────────────────
 
 /// Wrapper around Vec<f64> that defaults to empty.
-/// Used for embedding vectors on all entity types.
-#[derive(Clone, Debug, Default)]
-pub struct EmbeddingVec(pub Vec<f64>);
+/// Embedding vector with content-hash for deduplication.
+/// Hash is xxHash64 hex of entity body; empty = no embedding stored.
+#[derive(Clone, Debug)]
+pub struct EmbeddingVec {
+    pub vec: Vec<f64>,
+    pub hash: String,
+}
+
+impl Default for EmbeddingVec {
+    fn default() -> Self {
+        EmbeddingVec { vec: vec![], hash: String::new() }
+    }
+}
 // Stable dotted-path identity, e.g. "src/auth.py::UserService.create".
 // Used as Macrame concept IDs and ProjectedGraph hashmap keys.
 
