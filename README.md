@@ -1,4 +1,4 @@
-# CodeRadar v0.6.3
+# CodeRadar v0.6.4
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -159,6 +159,16 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 | **React Router** | JSX/TSX | `package.json` | JSX `<Route>` declarations, v6 data router objects, `<Link>`/`<NavLink>` navigation tracking |
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
+
+## v0.6.4 Feature Highlights
+
+- **Query engine fixed** — Pest `WHERE` clauses now match (atomic `path` rule yielded `Path([])`, non-silent `operand`/`value` wrappers fell through to a string-literal arm; `name == "x"` / `name contains "x"` / `caller_count > 0` all returned 0 rows). Fixed path parsing, operand/value recursion, and Int/Float mixed comparison arms.
+- **`and`/`or` chains fixed** — boolean folds panicked (`parts.remove(1)` assumed the keyword was a pest pair, but string literals are silent); rewritten as left-associative folds.
+- **`imports` query fixed** — `target_kind` is now derived from `ImportResolution` (function/class/module/import/external/wildcard/dynamic/unresolved) so `imports where target_kind == "external"` works.
+- **`traverse` edge filter fixed** — `codegraph_traverse` returned "No neighbors" because the fallback filtered entity `kind` ("function") against edge types ("calls"); now matches the edge type case-insensitively.
+- **Anonymous functions skipped** — anon callbacks no longer collapse to one empty-name `"file::"` entity; named functions stay accurate (calls still attributed to enclosing fn via stack frames).
+- **Query UX** — single-quoted strings now parse; empty-query prompt shows even without a loaded graph.
+- **531 tests, 0 failures** — 180 Rust + 351 Python (extended E2E + TestQueryTool with real-row assertions)
 
 ## v0.6.3 Feature Highlights
 

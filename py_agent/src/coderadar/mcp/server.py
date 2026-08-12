@@ -126,7 +126,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.3",
+        version="0.6.4",
         instructions=SERVER_INSTRUCTIONS,
     )
 
