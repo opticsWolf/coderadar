@@ -1429,21 +1429,13 @@ impl CodeGraph {
         // IMPORTS edges: importer module → imported target module.
         // Direction adopted project-wide: importer depends on target, so
         // source=importer, target=imported (the import “dependency”).
-        //
-        // PHASE-3B LIMITATION (see docs/traversal-matrix.md §1.4): modules are
-        // NOT persisted as Macrame concepts (the extractor emits no Module
-        // unit; `build_fragment` builds them in-memory only). An IMPORTS edge
-        // between module ids therefore has no FK target and assert_edges_bulk
-        // errors with FOREIGN KEY constraint failed. The in-memory `importers`
-        // index (built by resolve_imports) IS still populated and is what the
-        // Rust `traverse` binding reads — so imports *traversal* works today;
-        // only the *persisted* path is deferred until modules become concepts.
+        // Modules are now persisted as Macrame concepts (synthesize_module_unit
+        // prepends a Module unit in extract_only / index_file_inner / update_file),
+        // so the FK target exists. External targets are still skipped.
         for (target_mod, importer_mods) in projection.importers.iter() {
             for importer in importer_mods.iter() {
                 if importer.starts_with("external::")
                     || target_mod.starts_with("external::")
-                    || projection.modules.contains_key(importer)
-                    || projection.modules.contains_key(target_mod)
                 {
                     continue;
                 }
@@ -1667,6 +1659,26 @@ impl CodeGraph {
         Ok((count, concepts))
     }
 
+    /// Synthesize the file-level Module unit. The single-pass extractor emits
+    /// Class/Function/Import/Constant/TypeAlias units but no Module unit (it walks
+    /// tree-sitter nodes, not files). We need a Module unit so `build_concept`
+    /// persists the module as a Macrame concept — IMPORTS edges (module → module)
+    /// then have a valid FK target (see persist_edges).
+    pub(crate) fn synthesize_module_unit(file_path: &str, language: &Language) -> ExtractedUnit {
+        let stem = std::path::Path::new(file_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        ExtractedUnit::Module(ExtractedModule {
+            id: format!("{}::module", file_path),
+            name: stem.to_string(),
+            path: PathBuf::from(file_path),
+            language: language.clone(),
+            parse_quality: ParseQuality::Clean,
+            content_hash: 0,
+        })
+    }
+
     /// Parse+extract only — no projection mutation, no persistence.
     /// Returns (units, concepts) for later batch insert. Thread-safe:
     /// creates its own tree-sitter Parser per invocation.
@@ -1690,8 +1702,9 @@ impl CodeGraph {
             .ok_or_else(|| "Failed to parse source".to_string())?;
         let root_node = tree.root_node();
 
-        let units = crate::extract::single_pass::extract_single_pass(
+        let mut units = crate::extract::single_pass::extract_single_pass(
             source, root_node, &compiled_query, file_path);
+        units.insert(0, Self::synthesize_module_unit(file_path, language));
 
         let lang_str = format!("{:?}", language).to_lowercase();
         let concepts: Vec<macrame::ConceptUpsert> = units
@@ -1892,8 +1905,9 @@ impl CodeGraph {
         let root_node = tree.root_node();
 
         // Phase 2+3: Single-pass cursor-driven extraction
-        let units = crate::extract::single_pass::extract_single_pass(
+        let mut units = crate::extract::single_pass::extract_single_pass(
             source, root_node, &compiled_query, file_path);
+        units.insert(0, Self::synthesize_module_unit(file_path, language));
 
         // Phase 3: Insert into ProjectedGraph
         let count = units.len();
@@ -2323,13 +2337,20 @@ impl CodeGraph {
             .ok_or_else(|| "Failed to parse source".to_string())?;
         let root_node = tree.root_node();
 
-        let units = crate::extract::single_pass::extract_single_pass(
+        let mut units = crate::extract::single_pass::extract_single_pass(
             &source, root_node, &compiled_query, file_path);
+        units.insert(0, Self::synthesize_module_unit(file_path, &lang));
 
         // Phase 3: Diff old vs new entities, only update what changed
         let mut projection = (*self.snapshot()).clone();
         let (new_count, removed_count) = self.apply_diff_update(
             &mut projection, &units, file_path, &lang);
+
+        // Phase 3b: Persist concepts BEFORE edges — IMPORTS/EXTENDS/etc. edges
+        // assert FK references against concept ids, so the module (and other)
+        // concepts must already be committed.
+        let lang_str = format!("{:?}", lang).to_lowercase();
+        let _ = self.persist_entities(&units, file_path, &lang_str);
 
         // Phase 4: Compute MRO for all classes, then resolve calls (scoped to this file)
         self.compute_all_mro(&mut projection);
@@ -2358,9 +2379,7 @@ impl CodeGraph {
             }
         }
 
-        // Phase 5: Persist to Macrame if store attached
-        let lang_str = format!("{:?}", lang).to_lowercase();
-        let _ = self.persist_entities(&units, file_path, &lang_str);
+        // Phase 5: (concepts already persisted in Phase 3b, before edges)
 
         Ok((new_count, removed_count, affected_files))
     }
@@ -4272,19 +4291,22 @@ class I implements G.H, J { }
         let call_edges: usize = projection.callees_by_caller.values().map(|s| s.len()).sum();
         let importer_edges: usize = projection.importers.values().map(|s| s.len()).sum();
         let subclass_edges: usize = projection.subclasses.values().map(|s| s.len()).sum();
+        let override_edges: usize = projection.overrides_base.len();
 
         // Sanity: the fixture produced real non-call edges that D should persist.
         assert!(importer_edges > 0, "fixture should resolve >=1 import, got {}", importer_edges);
         assert!(subclass_edges > 0, "fixture should resolve >=1 subclass, got {}", subclass_edges);
+        assert!(override_edges > 0, "fixture should resolve >=1 override, got {}", override_edges);
 
         let persisted = graph.persist_edges(&projection)
             .expect("persist_edges should succeed (concepts present, no FK violation)");
         // persist_edges pushes one assertion per CALL + IMPORTS + EXTENDS + OVERRIDES
-        // edge, so the persisted total must exceed the call-only count — proving
-        // the new kinds reach Macrame without error.
-        assert!(persisted > call_edges,
-                "persist_edges should include IMPORTS/EXTENDS/OVERRIDES, got {} vs calls {}",
-                persisted, call_edges);
+        // edge (fixture has no external/builtin targets), so the persisted total
+        // must equal the exact sum — proving IMPORTS edges now reach Macrame
+        // (module concepts are persisted by synthesize_module_unit).
+        let expected = call_edges + importer_edges + subclass_edges + override_edges;
+        assert_eq!(persisted, expected,
+                "persist_edges should persist CALLS+IMPORTS+EXTENDS+OVERRIDES exactly");
     }
 
     #[test]

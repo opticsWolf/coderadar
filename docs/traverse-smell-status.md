@@ -18,7 +18,7 @@ what each finding means, and the remaining plan. It complements
 | Phase 1 — generalized Rust `traverse` binding; delete Python BFS | ✅ done | `4024bc0` |
 | Phase 3A — honesty pass (`export`/`load_snapshot` raise loudly) | ✅ done | `f498c66` |
 | Phase 2 caveat 1 — `member_expression` base stringification | ✅ done (committed below) |
-| Phase 2 caveat 2 — Module concepts → unblock IMPORTS persistence | ⏳ not started |
+| Phase 2 caveat 2 — Module concepts → unblock IMPORTS persistence | ✅ done (committed below) |
 | Phase 4 — native Rust smell engine | ⏳ not started |
 
 Current working tree: **committed** — see §2.1 (Phase 2 caveat 1 landed).
@@ -136,26 +136,33 @@ correctly stay unresolved — resolving external→local would be wrong.)
 
 ## 3. What is NOT started (remaining plan)
 
-### 3.1 Phase 2 caveat 2 — Module concepts → unblock IMPORTS persistence
-`persist_edges` guards IMPORTS out because **modules are never persisted as
-Macrame concepts** — the extractor emits no `ExtractedUnit::Module` (only
-Class/Function/Import/Constant/TypeAlias), so module→module IMPORTS edges
-fail Macrame's FK constraint (verified by the D.5 test before the guard:
-`FOREIGN KEY constraint failed`).
+### 3.1 Phase 2 caveat 2 — Module concepts → unblock IMPORTS persistence — ✅ DONE
 
-Plan:
-1. Make extraction emit `ExtractedUnit::Module` (build_fragment already has
-   a dead `ExtractedUnit::Module(_) => {}` arm — it was anticipated).
-2. Confirm `build_concept`'s `ExtractedUnit::Module` arm (storage.rs:293
-   already exists and builds a `kind=module` concept).
-3. Remove the IMPORTS guard in `persist_edges` (the
-   `projection.modules.contains_key(...)` early-continue).
-4. Update the D.5 test to assert IMPORTS edges reach Macrame.
+**Root cause:** `persist_edges` guarded IMPORTS out because modules were
+never persisted as Macrame concepts — the extractor emitted no
+`ExtractedUnit::Module` (only Class/Function/Import/Constant/TypeAlias),
+so `build_concept` never produced a `kind=module` concept and module→module
+IMPORTS edges failed Macrame's FK constraint.
 
-Risk: medium — touches the extraction emit path + verify module concept
-ids match what IMPORTS edges reference. The in-memory `importers` index
-already powers imports *traversal*; only the persisted/temporal path is
-blocked.
+**The fix:**
+- Added `synthesize_module_unit(file_path, language)` (graph.rs) that
+  builds an `ExtractedUnit::Module` with id `"{}::module"` (matching
+  build_fragment's synthetic module id).
+- Prepend it in `extract_only` (analyze path), `index_file_inner`
+  (index_file/accumulate path), and `update_file` — so `build_concept`
+  persists a module concept on every path.
+- `update_file`: moved `persist_entities` **before** `persist_edges` (was
+  after) — edges assert FK references against concept ids, so concepts
+  must commit first.
+- Removed the `projection.modules.contains_key(...)` IMPORTS guard in
+  `persist_edges` (kept the `external::` guards).
+- Strengthened `test_persist_edges_emits_imports_and_extends` to assert
+  `persisted == calls + imports + extends + overrides` (exact, not just
+  `> calls`).
+
+**Verification:** 195 Rust + 351 Python = 546, 0 failures. Real-world
+`analyze` on codegraph-main completes cleanly (605 files, 7646 entities,
+no FK error).
 
 ### 3.2 Phase 4 — native Rust smell engine
 Per the consolidated plan:
@@ -205,16 +212,18 @@ with Phase 2.
 
 ## 5. Immediate next actions (in order)
 
-1. **Phase 2 caveat 2** — Module concepts (next): make extraction emit
-   `ExtractedUnit::Module`, wire `build_fragment`/`build_concept`'s
-   existing dead Module arms, remove the IMPORTS guard in `persist_edges`,
-   update the D.5 test.
-2. **Phase 4 (smell engine)** can start in parallel now.
-3. Update `docs/traversal-matrix.md` "Populated?" column: extends/overrides
-   coverage is no longer "heuristic-only" — TS/JS extends is now captured.
+1. **Phase 4 (smell engine)** — the last remaining phase. Independent of
+   traversal; can start now.
+2. Sync `docs/traversal-matrix.md` §1.5 (PyO3 version note is already
+   modernized; §1.4 updated).
+3. Consider updating the matrix's "Populated?" / "not persisted" columns
+   (§1.4 and the D row) to reflect that IMPORTS/EXTENDS/OVERRIDES are now
+   persisted (Phase 2 caveat 2 done).
 
 ## 6. Test budget
 
 - Baseline before this branch: 180 Rust + 351 Python = 531.
 - After Phase D + 1 + 3A: 194 Rust + 351 Python = **545**.
-- After Phase 2 caveat 1: 195 Rust + 351 Python = **546, 0 failures**.
+- After Phase 2 caveat 1: 195 Rust + 351 Python = **546**.
+- After Phase 2 caveat 2: 195 Rust + 351 Python = **546, 0 failures**
+  (same test count; D.5 assertion strengthened from `>` to exact `==`).

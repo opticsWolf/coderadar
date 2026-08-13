@@ -102,12 +102,14 @@ design ("the fallback can only honour call-edge requests").
 ### 1.4 `assert_edges_bulk` signature (`graph.rs:1112`)
 
 The surrounding fn is `persist_edges(&self, projection: &ProjectedGraph)
--> Result<usize, macrame::DbError>` (`graph.rs:~1098`). It loops only
-`projection.callees_by_caller` and asserts `"CALLS"` edges
-(`graph.rs:1122`), filtering `external::`/`builtins.` targets. Batches at
-200, calls `store.assert_edges_bulk(...)`. **Only CALLS + synthetic
-framework edges** (`register_synthetic_edge`, `graph.rs:1156`, arbitrary
-`kind` string) reach Macrame. No IMPORTS/EXTENDS/OVERRIDES are persisted.
+-> Result<usize, macrame::DbError>` (`graph.rs:~1397`). It asserts CALLS +
+IMPORTS + EXTENDS + OVERRIDES edges (batched at 200, filtering
+`external::`/`builtins.` targets). **Updated (Phase 2 caveat 2):** IMPORTS
+eges are no longer guarded out — `synthesize_module_unit` now prepends a
+Module unit in `extract_only`/`index_file_inner`/`update_file`, so
+`build_concept` persists modules as Macrame concepts and the module→module
+FK target exists. (The guard previously existed because modules were
+in-memory-only; see the old §1.4 note.)
 
 ### 1.5 PyO3 version
 
