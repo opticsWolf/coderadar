@@ -605,6 +605,7 @@ impl CodeGraph {
             file_to_modules: HashMap::new(),
             module_by_dotted_name: HashMap::new(),
             importers: HashMap::new(),
+            imports_by_importer: HashMap::new(),
             callers_by_callee: HashMap::new(),
             callees_by_caller: HashMap::new(),
             subclasses: HashMap::new(),
@@ -865,9 +866,15 @@ impl CodeGraph {
                 if let Some(t) = target_mod_id {
                     projection
                         .importers
-                        .entry(t)
+                        .entry(t.clone())
                         .or_default()
                         .insert(mid.clone());
+                    // Forward index: importer → targets it depends on.
+                    projection
+                        .imports_by_importer
+                        .entry(mid.clone())
+                        .or_default()
+                        .insert(t);
                 }
             }
         }
@@ -939,6 +946,83 @@ impl CodeGraph {
                 }
             }
         }
+    }
+
+    // ── Traversal core (pure Rust, GIL-free, unit-testable) ──────────────
+    // The lib.rs `traverse` pyfunction is a thin wrapper that validates args,
+    // acquires the snapshot via with_graph, calls `traverse_bfs`, and
+    // materializes PyDicts. Keeping the BFS here lets graph.rs unit tests
+    // exercise it on a local CodeGraph snapshot without GLOBAL_GRAPH.
+
+    /// One (entity, edge_kind, direction) neighbor lookup — pure Rust. The
+    /// single place where each edge kind's reverse/forward index mapping is
+    /// spelled out. `up`/`down` are pre-computed booleans (Send-friendly).
+    pub(crate) fn neighbors_of(
+        snap: &ProjectedGraph, id: &str, kind: &str, up: bool, down: bool,
+    ) -> Vec<EntityId> {
+        let mut out: Vec<EntityId> = Vec::new();
+        let mut push_set = |s: Option<&std::collections::BTreeSet<String>>| {
+            if let Some(s) = s { out.extend(s.iter().cloned()); }
+        };
+        match kind {
+            "calls" => {
+                if up { push_set(snap.callers_by_callee.get(id)); }
+                if down { push_set(snap.callees_by_caller.get(id)); }
+            }
+            "imports" => {
+                if up { push_set(snap.importers.get(id)); }
+                if down { push_set(snap.imports_by_importer.get(id)); }
+            }
+            "extends" => {
+                if up { push_set(snap.subclasses.get(id)); }
+                if down { if let Some(c) = snap.classes.get(id) { out.extend(c.resolved_bases.iter().cloned()); } }
+            }
+            "overrides" => {
+                if up { push_set(snap.overridden_by.get(id)); }
+                if down { if let Some(b) = snap.overrides_base.get(id) { out.push(b.clone()); } }
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// Generalized edge-kind BFS over the in-memory `ProjectedGraph`.
+    ///
+    /// Returns `(entity_id, depth, edge_kind_that_reached_it)` tuples. The
+    /// start entity is included at depth 0 with an empty edge-kind string.
+    /// Cycles are handled by inserting into `visited` *before* enqueueing
+    /// (not on pop), so diamonds produce one entry per reachable node.
+    ///
+    /// `kinds` must already be normalised lower-case (`inherits` → `extends`).
+    pub(crate) fn traverse_bfs(
+        snap: &ProjectedGraph,
+        start_id: &str,
+        max_depth: usize,
+        kinds: &[String],
+        up: bool,
+        down: bool,
+    ) -> Vec<(EntityId, usize, String)> {
+        use std::collections::{HashSet, VecDeque};
+        let mut visited: HashSet<String> = HashSet::new();
+        let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+        let mut out: Vec<(String, usize, String)> = Vec::new();
+
+        queue.push_back((start_id.to_string(), 0usize));
+        visited.insert(start_id.to_string());
+        out.push((start_id.to_string(), 0, String::new()));
+
+        while let Some((cur, depth)) = queue.pop_front() {
+            if depth >= max_depth { continue; }
+            for kind in kinds {
+                for nb in Self::neighbors_of(snap, &cur, kind, up, down) {
+                    if visited.insert(nb.clone()) {
+                        out.push((nb.clone(), depth + 1, kind.clone()));
+                        queue.push_back((nb, depth + 1));
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Run the resolution cascade on all functions, or scoped to a single file.
@@ -1650,6 +1734,7 @@ impl CodeGraph {
             file_to_modules: HashMap::new(),
             module_by_dotted_name: HashMap::new(),
             importers: HashMap::new(),
+            imports_by_importer: HashMap::new(),
             callers_by_callee: HashMap::new(),
             callees_by_caller: HashMap::new(),
             subclasses: HashMap::new(),
@@ -2995,6 +3080,172 @@ mod tests {
             .expect("Child.helper should be indexed");
         assert_eq!(projection.overrides_base.get(&child_foo), Some(&base_foo),
                    "overrides_base[Child.helper] should be Base.helper");
+    }
+
+// ── Phase 1: traverse_bfs (generalized Rust traversal) ──────────────
+
+    /// Build a fresh projection with the Phase-D passes run, from sources.
+    fn snapshot_from(sources: &[(&str, &str)]) -> ProjectedGraph {
+        let graph = CodeGraph::new(GraphConfig::default());
+        for (src, path) in sources {
+            let lang = Language::from_extension(
+                std::path::Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("py"),
+            );
+            graph.index_file(src, path, &lang).unwrap();
+        }
+        let mut projection = (*graph.snapshot()).clone();
+        graph.compute_all_mro(&mut projection);
+        graph.resolve_class_hierarchy(&mut projection);
+        graph.resolve_imports(&mut projection);
+        graph.resolve_overrides(&mut projection);
+        graph.resolve_all_calls(&mut projection);
+        projection
+    }
+
+    fn fn_id_of(proj: &ProjectedGraph, name: &str) -> String {
+        proj.functions.iter().find(|(_, f)| f.name == name).map(|(id, _)| id.clone())
+            .unwrap_or_else(|| panic!("function `{}` should be indexed", name))
+    }
+
+    #[test]
+    fn test_traverse_calls_downstream_depth() {
+        // a → b → c
+        let proj = snapshot_from(&[
+            ("def a(): b()\ndef b(): c()\ndef c(): pass\n", "chain.py"),
+        ]);
+        let a = fn_id_of(&proj, "a");
+        let reached = CodeGraph::traverse_bfs(&proj, &a, 1, &["calls".to_string()], false, true);
+        // depth 0 = a, depth 1 = b. c is at depth 2, beyond max_depth=1.
+        let ids: Vec<&str> = reached.iter().map(|(id, _, _)| id.as_str()).collect();
+        assert!(ids.contains(&a.as_str()), "start a included at depth 0");
+        assert!(reached.iter().any(|(id, _, _)| proj.functions.get(id).map_or(false, |f| f.name == "b")),
+                "b reached at depth 1, got {:?}", reached);
+        assert!(!reached.iter().any(|(id, _, _)| proj.functions.get(id).map_or(false, |f| f.name == "c")),
+                "c should NOT be reached at max_depth=1");
+        // depth tags
+        assert_eq!(reached.iter().find(|(id, _, _)| id == &a).unwrap().1, 0);
+        assert_eq!(reached.iter().find(|(_, _, ek)| ek == "calls").map(|(_, d, _)| *d), Some(1));
+    }
+
+    #[test]
+    fn test_traverse_calls_upstream() {
+        // a → b → c ; upstream from c yields c, b, a
+        let proj = snapshot_from(&[
+            ("def a(): b()\ndef b(): c()\ndef c(): pass\n", "chain.py"),
+        ]);
+        let c = fn_id_of(&proj, "c");
+        let reached = CodeGraph::traverse_bfs(&proj, &c, 5, &["calls".to_string()], true, false);
+        let names: Vec<String> = reached.iter().filter_map(|(id, _, _)|
+            proj.functions.get(id).map(|f| f.name.clone())).collect();
+        assert!(names.contains(&"c".to_string()) && names.contains(&"b".to_string()) && names.contains(&"a".to_string()),
+                "upstream from c should reach b and a, got {:?}", names);
+    }
+
+    #[test]
+    fn test_traverse_cycle_terminates() {
+        // a ↔ b (mutual call). BFS must terminate, each node once.
+        let proj = snapshot_from(&[
+            ("def a(): b()\ndef b(): a()\n", "cycle.py"),
+        ]);
+        let a = fn_id_of(&proj, "a");
+        let reached = CodeGraph::traverse_bfs(&proj, &a, 10, &["calls".to_string()], true, true);
+        // start a + b = 2 distinct (cycle doesn't duplicate).
+        assert_eq!(reached.len(), 2, "cycle should yield exactly 2 nodes, got {:?}", reached);
+    }
+
+    #[test]
+    fn test_traverse_diamond_one_entry_per_node() {
+        // a → b, a → c, b → d, c → d. d reached once.
+        let proj = snapshot_from(&[
+            ("def a(): b(); c()\ndef b(): d()\ndef c(): d()\ndef d(): pass\n", "diamond.py"),
+        ]);
+        let a = fn_id_of(&proj, "a");
+        let reached = CodeGraph::traverse_bfs(&proj, &a, 5, &["calls".to_string()], false, true);
+        let d_count = reached.iter().filter(|(id, _, _)| proj.functions.get(id).map_or(false, |f| f.name == "d")).count();
+        assert_eq!(d_count, 1, "d should appear exactly once in a diamond, got {}", d_count);
+        assert_eq!(reached.len(), 4, "a,b,c,d each once = 4, got {}", reached.len());
+    }
+
+    #[test]
+    fn test_traverse_max_depth_zero_returns_only_start() {
+        let proj = snapshot_from(&[
+            ("def a(): b()\ndef b(): pass\n", "md0.py"),
+        ]);
+        let a = fn_id_of(&proj, "a");
+        let reached = CodeGraph::traverse_bfs(&proj, &a, 0, &["calls".to_string()], false, true);
+        assert_eq!(reached.len(), 1, "max_depth=0 yields only the start node");
+        assert_eq!(reached[0].0, a);
+        assert_eq!(reached[0].1, 0);
+    }
+
+    #[test]
+    fn test_traverse_empty_edge_kinds_returns_only_start() {
+        let proj = snapshot_from(&[
+            ("def a(): b()\ndef b(): pass\n", "empty.py"),
+        ]);
+        let a = fn_id_of(&proj, "a");
+        let reached = CodeGraph::traverse_bfs(&proj, &a, 5, &[], true, true);
+        assert_eq!(reached.len(), 1, "empty edge_kinds yields only the start node");
+    }
+
+    #[test]
+    fn test_traverse_imports_upstream_nonempty() {
+        // b imports c (module-level). importers[c_mod] = {b_mod}.
+        let proj = snapshot_from(&[
+            ("def utility(): pass\n", "src/c.py"),
+            ("from src.c import utility\ndef helper(): utility()\n", "src/b.py"),
+        ]);
+        let c_mod = proj.modules.iter()
+            .find(|(_, m)| m.path.to_string_lossy().contains("c.py"))
+            .map(|(id, _)| id.clone()).unwrap();
+        let reached = CodeGraph::traverse_bfs(&proj, &c_mod, 3, &["imports".to_string()], true, false);
+        let who: Vec<&str> = reached.iter().map(|(id, _, _)| id.as_str()).collect();
+        // start c_mod at depth 0; b_mod at depth 1.
+        assert!(who.iter().any(|id| proj.modules.get(*id).map_or(false, |m| m.path.to_string_lossy().contains("b.py"))),
+                "imports upstream from c should reach b, got {:?}", who);
+    }
+
+    #[test]
+    fn test_traverse_extends_downstream_via_resolved_bases() {
+        // B(A) same module → resolved_bases[B] = [A], so extends downstream from B reaches A.
+        let proj = snapshot_from(&[
+            ("class A:\n    def m(self): pass\nclass B(A):\n    def m(self): pass\n", "hier.py"),
+        ]);
+        let b_id = proj.classes.iter().find(|(_, c)| c.name == "B").map(|(id, _)| id.clone()).unwrap();
+        let reached = CodeGraph::traverse_bfs(&proj, &b_id, 3, &["extends".to_string()], false, true);
+        let names: Vec<String> = reached.iter().filter_map(|(id, _, _)|
+            proj.classes.get(id).map(|c| c.name.clone())).collect();
+        assert!(names.contains(&"A".to_string()), "extends downstream from B should reach A, got {:?}", names);
+    }
+
+    #[test]
+    fn test_traverse_overrides_upstream_from_base() {
+        // Base.helper overridden by Child.helper → overridden_by[base] = {child}.
+        let proj = snapshot_from(&[
+            ("class Base:\n    def helper(self): pass\nclass Child(Base):\n    def helper(self): pass\n", "ovr.py"),
+        ]);
+        let base_f = proj.functions.iter()
+            .find(|(_, f)| f.name == "helper" && f.parent_class.as_deref().map_or(false, |pc|
+                proj.classes.get(pc).map_or(false, |c| c.name == "Base")))
+            .map(|(id, _)| id.clone()).unwrap();
+        let reached = CodeGraph::traverse_bfs(&proj, &base_f, 3, &["overrides".to_string()], true, false);
+        let names: Vec<String> = reached.iter().filter_map(|(id, _, _)|
+            proj.functions.get(id).map(|f| f.name.clone())).collect();
+        assert!(names.contains(&"helper".to_string()) && reached.len() >= 2,
+                "overrides upstream from Base.helper should reach Child.helper, got {:?}", reached);
+    }
+
+    #[test]
+    fn test_traverse_inherits_alias_for_extends() {
+        // The pyfunction normalizes "inherits"→"extends"; traverse_bfs itself
+        // only knows "extends", confirming the alias mapping in lib.rs. Here
+        // we just assert "extends" works (alias coverage is in the Python layer).
+        let proj = snapshot_from(&[
+            ("class A:\n    pass\nclass B(A):\n    pass\n", "alias.py"),
+        ]);
+        let b_id = proj.classes.iter().find(|(_, c)| c.name == "B").map(|(id, _)| id.clone()).unwrap();
+        let reached = CodeGraph::traverse_bfs(&proj, &b_id, 3, &["extends".to_string()], false, true);
+        assert!(reached.iter().any(|(id, _, _)| proj.classes.get(id).map_or(false, |c| c.name == "A")));
     }
 
     #[test]

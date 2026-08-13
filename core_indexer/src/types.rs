@@ -1006,6 +1006,10 @@ pub struct ProjectedGraph {
     pub module_by_dotted_name: HashMap<(Language, String), EntityId>,
 
     pub importers: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Forward import index: importer module → set of modules it imports.
+    /// Symmetric to `importers` (target → importers). Built by
+    /// `resolve_imports`; powers downstream `imports` traversal.
+    pub imports_by_importer: HashMap<EntityId, BTreeSet<EntityId>>,
     pub callers_by_callee: HashMap<EntityId, BTreeSet<EntityId>>,
     pub callees_by_caller: HashMap<EntityId, BTreeSet<EntityId>>,
     pub subclasses: HashMap<EntityId, BTreeSet<EntityId>>,

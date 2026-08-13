@@ -48,6 +48,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(resolve_symbol, m)?)?;
     m.add_function(wrap_pyfunction!(callers_of, m)?)?;
     m.add_function(wrap_pyfunction!(callees_of, m)?)?;
+    m.add_function(wrap_pyfunction!(traverse, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entity, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -898,6 +899,105 @@ fn callees_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
         let mut results = Vec::with_capacity(callee_ids.len());
         for cid in &callee_ids {
             if let Some(d) = entity_ref_to_dict(py, cid, snap) {
+                results.push(d);
+            }
+        }
+        Ok(results)
+    })
+}
+
+/// Generalized edge-kind traversal over the in-memory `ProjectedGraph`.
+///
+/// Thin PyO3 wrapper around `CodeGraph::traverse_bfs` (graph.rs): validates
+/// direction + the `as_of` honesty guard, acquires the snapshot via
+/// `with_graph`, releases the GIL for the BFS, and re-acquires it only to
+/// materialize result dicts. The BFS itself is pure Rust and unit-tested in
+/// graph.rs (no GLOBAL_GRAPH needed there).
+///
+/// Edge kinds (case-insensitive; `inherits` is an alias for `extends`):
+///   - `calls`    → callers_by_callee / callees_by_caller
+///   - `imports`  → importers (upstream) / imports_by_importer (downstream)
+///   - `extends`  → subclasses (upstream) / Class.resolved_bases (downstream)
+///   - `overrides`→ overridden_by (upstream) / overrides_base (downstream)
+///
+/// Direction accepts both vocabularies: `in`/`upstream`, `out`/`downstream`,
+/// `both`. Upstream = dependents (who calls/imports/extends me).
+///
+/// The start entity is included at depth 0; each reached neighbor is tagged
+/// with its BFS depth and the edge kind that first reached it. Entities not
+/// present in the graph (e.g. `external::` targets) are naturally filtered —
+/// `entity_ref_to_dict` returns `None` for them.
+#[pyfunction]
+#[pyo3(signature = (start_id, max_depth, edge_kinds, direction, as_of=None))]
+fn traverse(
+    py: Python<'_>,
+    start_id: &str,
+    max_depth: usize,
+    edge_kinds: Vec<String>,
+    direction: &str,
+    as_of: Option<String>,
+) -> PyResult<Vec<PyObject>> {
+    // ── Direction normalization ────────────────────────────────────
+    let (up, down) = match direction.trim().to_ascii_lowercase().as_str() {
+        "in" | "upstream" => (true, false),
+        "out" | "downstream" => (false, true),
+        "both" => (true, true),
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Unknown direction `{other}` (expected upstream/in, downstream/out, both)"
+            )));
+        }
+    };
+
+    // ── Honesty guard: temporal traversal is not wired in the BFS ────
+    // Phase 3B will route `as_of` to Macrame `load_subgraph_with`. Reject
+    // loudly rather than silently returning current-state data for a past
+    // timestamp.
+    if as_of.is_some() {
+        return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            "Temporal traversal (as_of) is not implemented. Use codegraph_as_of \
+             for point-in-time reconstruction, or omit as_of for current-state \
+             traversal."
+        ));
+    }
+
+    with_graph(|_graph, snap| {
+        // ── Validate start exists ─────────────────────────────────
+        if entity_ref_to_dict(py, start_id, snap).is_none() {
+            return Ok(Vec::new());
+        }
+
+        // Normalize + dedupe edge kinds (`inherits` → `extends`).
+        let kinds: Vec<String> = {
+            let mut v: Vec<String> = edge_kinds
+                .iter()
+                .map(|k| {
+                    let k = k.trim().to_ascii_lowercase();
+                    if k == "inherits" { "extends".to_string() } else { k }
+                })
+                .collect();
+            v.sort();
+            v.dedup();
+            v
+        };
+
+        let snap_owned: std::sync::Arc<ProjectedGraph> = snap.clone();
+        let snap_for_bfs: std::sync::Arc<ProjectedGraph> = snap_owned.clone();
+        let start = start_id.to_string();
+
+        // ── BFS (GIL released) ────────────────────────────────────
+        let reached: Vec<(String, usize, String)> = py.allow_threads(move || {
+            crate::graph::CodeGraph::traverse_bfs(&snap_for_bfs, &start, max_depth, &kinds, up, down)
+        });
+
+        // ── Materialize dicts (GIL held) ─────────────────────────
+        let mut results = Vec::with_capacity(reached.len());
+        for (id, depth, ek) in reached {
+            if let Some(d) = entity_ref_to_dict(py, &id, &snap_owned) {
+                if let Ok(dd) = d.downcast_bound::<pyo3::types::PyDict>(py) {
+                    let _ = dd.set_item("depth", depth);
+                    let _ = dd.set_item("edge_type", &ek);
+                }
                 results.push(d);
             }
         }
