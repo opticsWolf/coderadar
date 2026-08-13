@@ -57,6 +57,11 @@ jobs:
           command: sdist
           args: --out dist --manifest-path core_indexer/Cargo.toml
 
+      - name: Verify LICENSE included in sdist
+        run: |
+          tar -tzf dist/*.tar.gz | grep -qE '(^|/)LICENSE' && \
+            echo "LICENSE present in sdist"
+
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
