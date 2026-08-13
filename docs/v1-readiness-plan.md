@@ -106,16 +106,26 @@ Replaces the (correctly-killed) package-path idea with three signal-aware fixes:
   `test_ambiguous_base_emits_finding`, `test_import_aware_base_resolution`).
   203 Rust + 358 Python = **561, 0 failures**.
 
-### 2.2 Basic Alias Awareness in `find_module_by_dotted_name`
+### 2.2 Basic Alias Awareness in `find_module_by_dotted_name` — ✅ done
 
-- Currently path-suffix only; `@/components/Button` fails to resolve to
-  `src/components/Button`.
-- Implement a lightweight, heuristic alias resolver for v1 (common
-  conventions: `@/*` → `src/*`, `~/*` → `src/*`). No full `tsconfig.json` /
-  `pyproject.toml` parser.
-- **Defer:** full config parsing + path mapping → post-v1.
-- **Test:** Rust unit test — `find_module_by_dotted_name("@/models/user", …)`
-  resolves to `…/src/models/user`.
+- **Alias normalization:** `@/...` and `~/...` → `src/...` (common Vite/Next/
+  tsconfig convention) before suffix matching. No config parsing (post-v1).
+- **Root-cause fix (the real blocker):** TS/JS `import { X } from '...'` was
+  misclassified as `ModuleImport { module: "" }`, losing both the module and
+  the names — so `import_aware_base` had nothing to key on, and the empty
+  module "resolved" to an arbitrary `.ts` file. `parse_import_statement` now
+  parses the `string` source + `import_clause`/`named_imports`/`import_specifier`
+  (incl. `type X` and default imports), producing a proper `FromImport`/
+  `RelativeImport` (with a slash-trim after the leading dots).
+- **Result:** ambiguous bases on codegraph-main **4 → 0** (the `FakeWorker
+  implements PoolWorker` case now resolves via its `type` import).
+- **Side effect (correctness):** `resolved_imports` dropped 1968 → 884 because
+  the old empty-module bug counted every TS named import as "resolved" to an
+  arbitrary module; they now resolve correctly or stay `Unresolved`.
+- **Defer:** full `tsconfig.json`/`pyproject.toml` path-map parsing → post-v1.
+- **Tests:** `test_alias_aware_module_resolution`,
+  `test_ts_typeonly_import_aware_base_resolution`.
+  205 Rust + 358 Python = **563, 0 failures**.
 
 ### 2.3 Traversal Degradation Visibility
 

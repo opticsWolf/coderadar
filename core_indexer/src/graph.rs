@@ -441,6 +441,19 @@ pub(crate) fn find_module_by_dotted_name(
     dotted_name: &str,
     _current_module: &str,
 ) -> Option<String> {
+    // 2.2: normalize common TS path aliases before suffix matching.
+    // `@/...` and `~/...` conventionally map to `src/...` (Vite/Next/tsconfig).
+    let normalized;
+    let dotted_name: &str = if dotted_name.starts_with("@/") {
+        normalized = format!("src/{}", &dotted_name[2..]);
+        &normalized
+    } else if dotted_name.starts_with("~/") {
+        normalized = format!("src/{}", &dotted_name[2..]);
+        &normalized
+    } else {
+        dotted_name
+    };
+
     /// Extensions we recognize; also handles /__init__.* patterns for
     /// Python-style packages (__init__.py), Elixir (__init__.ex), etc.
     const KNOWN_EXTENSIONS: &[&str] = &[
@@ -3236,6 +3249,46 @@ class I implements G.H, J { }
         assert_eq!(f.class_name, "Consumer");
         assert_eq!(f.base_name, "Service");
         assert_eq!(f.candidates.len(), 2, "expected 2 candidates, got {:?}", f.candidates);
+    }
+
+    #[test]
+    fn test_ts_typeonly_import_aware_base_resolution() {
+        // TS `import { type PoolWorker } from '../src/mcp/query-pool'` must be
+        // parsed as a relative import with the name captured, so import-aware
+        // base resolution (2.1c) resolves FakeWorker → query-pool.PoolWorker.
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class PoolWorker {}\n", "src/mcp/query-pool.ts");
+        index_source(&graph, "class PoolWorker {}\n", "src/resolution/resolver-pool.ts");
+        index_source(&graph,
+            "import { type PoolWorker } from '../src/mcp/query-pool';\nclass FakeWorker implements PoolWorker {}\n",
+            "__tests__/query-pool.test.ts");
+        let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_imports(&mut projection);
+        graph.compute_all_mro(&mut projection);
+        graph.resolve_class_hierarchy(&mut projection);
+
+        let fake = projection.classes.values().find(|c| c.name == "FakeWorker").unwrap();
+        assert_eq!(fake.resolved_bases.len(), 1,
+            "FakeWorker should resolve PoolWorker via type-only import, got {:?}", fake.resolved_bases);
+        let base = projection.classes.get(&fake.resolved_bases[0]).unwrap();
+        let base_mod = projection.modules.get(&base.parent_module).unwrap();
+        assert!(base_mod.path.to_string_lossy().ends_with("query-pool.ts"),
+            "FakeWorker must resolve to query-pool.PoolWorker, got {}", base_mod.path.to_string_lossy());
+        assert!(projection.ambiguous_bases.is_empty(),
+            "import-aware should disambiguate, got {:?}", projection.ambiguous_bases);
+    }
+
+    #[test]
+    fn test_alias_aware_module_resolution() {
+        // `@/models/user` should resolve to `src/models/user` (2.2 alias).
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class User {}\n", "src/models/user.ts");
+        let projection = (*graph.snapshot()).clone();
+        let target = crate::graph::find_module_by_dotted_name(&projection, "@/models/user", "");
+        assert!(target.is_some(), "@/models/user should resolve via alias");
+        let m = projection.modules.get(&target.unwrap()).unwrap();
+        assert!(m.path.to_string_lossy().ends_with("src/models/user.ts"),
+            "alias should resolve to src/models/user.ts, got {}", m.path.to_string_lossy());
     }
 
     #[test]

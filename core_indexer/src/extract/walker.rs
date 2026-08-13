@@ -550,11 +550,39 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
 }
 
 /// Parse an `import_statement` node: `import os`, `import os.path as p`
+/// Parse an `import_statement` node. Handles bare `import foo` /
+/// `import foo as bar` plus the TS/JS forms `import { ... } from '...'`,
+/// `import Foo from '...'`, and `import '...'`.
 pub fn parse_import_statement(node: Node, source: &str) -> ImportKind {
+    // TS/JS from-import: the module source is a `string` child.
+    let mut find_cur = node.walk();
+    if let Some(string_node) = node.children(&mut find_cur).find(|c| c.kind() == "string") {
+        let module = strip_import_quotes(
+            string_node.utf8_text(source.as_bytes()).unwrap_or(""),
+        )
+        .to_string();
+        let names = collect_ts_import_names(node, source);
+        let level = count_leading_dots(&module);
+        if level > 0 {
+            let module_after = if level < module.len() {
+                module[level..].trim_start_matches('/').to_string()
+            } else {
+                String::new()
+            };
+            return ImportKind::RelativeImport { level, module: Some(module_after), names };
+        }
+        if names.is_empty() {
+            // `import 'x'` — side-effect import, no symbols.
+            return ImportKind::Side { module };
+        }
+        return ImportKind::FromImport { module, names };
+    }
+
+    // Bare `import foo` / `import foo as bar`.
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
-            "dotted_name" => {
+            "dotted_name" | "identifier" => {
                 let module = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
                 return ImportKind::ModuleImport {
                     module,
@@ -577,6 +605,78 @@ pub fn parse_import_statement(node: Node, source: &str) -> ImportKind {
         }
     }
     ImportKind::ModuleImport { module: String::new(), alias: None }
+}
+
+/// Strip surrounding quotes from a `string` node's text (`'x'` → `x`).
+fn strip_import_quotes(s: &str) -> &str {
+    let s = s.trim();
+    let b = s.as_bytes();
+    if b.len() >= 2 {
+        let (first, last) = (b[0] as char, b[b.len() - 1] as char);
+        if (first == '\'' && last == '\'') || (first == '"' && last == '"') {
+            return &s[1..s.len() - 1];
+        }
+    }
+    s
+}
+
+/// Collect `import { A, B as C, type D } from '...'` names (TS/JS).
+fn collect_ts_import_names(node: Node, source: &str) -> Vec<(String, Option<String>)> {
+    let mut names = Vec::new();
+    collect_ts_import_names_rec(node, source, &mut names);
+    names
+}
+
+fn collect_ts_import_names_rec(
+    node: Node, source: &str, out: &mut Vec<(String, Option<String>)>,
+) {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "import_specifier" => {
+                let (name, alias) = import_specifier_name_alias(child, source);
+                if !name.is_empty() {
+                    out.push((name, alias));
+                }
+            }
+            "named_imports" | "import_clause" => {
+                collect_ts_import_names_rec(child, source, out);
+            }
+            "identifier" => {
+                // Default import: `import Foo from 'x'`.
+                let text = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                if !text.is_empty() {
+                    out.push((text, None));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Extract `name` + optional `alias` from an `import_specifier` node
+/// (`Foo`, `Foo as Bar`, `type Foo`).
+fn import_specifier_name_alias(node: Node, source: &str) -> (String, Option<String>) {
+    let mut name = String::new();
+    let mut alias = None;
+    let mut seen_as = false;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "as" => seen_as = true,
+            "type" => {} // type-only import keyword — ignore
+            k if is_identifier_kind(k) => {
+                let text = child.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+                if seen_as {
+                    alias = Some(text);
+                } else if name.is_empty() {
+                    name = text;
+                }
+            }
+            _ => {}
+        }
+    }
+    (name, alias)
 }
 
 /// Parse an `import_from_statement` node: `from foo import bar`, `from . import x`

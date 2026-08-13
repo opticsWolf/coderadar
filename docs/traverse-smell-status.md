@@ -287,6 +287,8 @@ Both Phase-2 caveats (formerly "in progress, 1 test failing" and
   (5 Rust metrics/rule tests + 5 Python e2e tests).
 - After 2.1a/2.1b/2.1c (base-resolution): 203 Rust + 358 Python = **561, 0 failures**
   (3 Rust base-resolution tests + 2 Python Phase-1 tests).
+- After 2.2 (alias + TS import parsing): 205 Rust + 358 Python = **563, 0 failures**
+  (2 Rust tests: alias resolution + TS type-only import).
 
 ---
 
@@ -329,12 +331,13 @@ wiring bugs. They cap `subclasses`/`overrides`/`importers` coverage.
 - **External bases stay unresolved by design** — `extends React.Component`,
   `Error`, `EventEmitter` are not local classes; resolving external→local
   would be wrong.
-- **`find_module_by_dotted_name`** matches by file-path suffix; it is weak
-  for relative TS imports (`../src/...`) and `@/...` aliases (correctly
-  `Unresolved` for those). This is now the *only* remaining ambiguity on
-  codegraph-main: `FakeWorker implements PoolWorker` via
-  `'../src/mcp/query-pool'` stays unresolved because the import itself doesn't
-  resolve. Tracked as plan item 2.2.
+- **`find_module_by_dotted_name`** matches by file-path suffix. 2.2 added
+  `@/...`/`~/...` → `src/...` alias normalization, and fixed the TS/JS
+  `import { X } from '...'` parser (which had dropped the module + names).
+  Ambiguous bases on codegraph-main are now **0** (was 4). Remaining ceiling:
+  full `tsconfig.json`/`pyproject.toml` path-map parsing (post-v1) and
+  same-directory relative imports (`./sibling`) that lose directory context
+  under path-suffix matching.
 
 ### 7.4 Cross-cutting roadmap deferrals (unchanged, out of this branch)
 - **SQLite PRAGMAs (#6)** — Macrame's `configure()` is private; tuning
