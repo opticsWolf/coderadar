@@ -28,18 +28,27 @@ Add the four verified findings to the living checkpoint:
 - **Traversal latency** — no real-repo benchmark exists; the bench harness is
   synthetic (50/200/100 modules).
 
-### 1.2 Resolver Lift Measurement (gate for 2.1)
+### 1.2 Resolver Lift Measurement (gate for 2.1) — ✅ done
 
-Before implementing same-package precedence, measure the actual ROI on
-`codegraph-main`.
+Measured on `codegraph-main` (605 files, 1176 classes, 36 base references):
 
-- Write a diagnostic (Python via MCP, or a Rust unit test) that runs
-  `resolve_base_by_name` over all classes in `codegraph-main`.
-- Count classes that currently return `None` due to ambiguity. For each,
-  check whether a same-package (or same-module) filter reduces the candidate
-  set to exactly 1.
-- **Gate:** lift < 5 resolved subclasses → skip 2.1, go straight to Phase 3.
-  Lift ≥ 5 → proceed to 2.1.
+| Outcome | Count |
+|---|---|
+| resolved (current 2 tiers) | 28 |
+| ambiguous (→ `None` today) | 4 |
+| not-found (external/builtin) | 4 |
+
+- Same-directory filter fixes: **0** of the 4 ambiguous.
+- Same-top-level-package filter fixes: **0**.
+
+The 4 ambiguous cases are disambiguable only by semantics, not by package path:
+- `Base` appears 3× in the *same* directory (kernel-parity fixture: Dart/Rust/
+  C++ copies) — a same-package filter cannot split same-package.
+- `FakeWorker extends PoolWorker` (test pkg) with `PoolWorker` in `src/mcp`
+  and `src/resolution` — neither matches the caller's package.
+
+**Gate result: lift = 0 < 5 → SKIP 2.1.** Same-package precedence would not
+move the needle on this codebase; go straight to Phase 3.
 
 ### 1.3 Update `docs/traversal-matrix.md` columns
 
@@ -69,7 +78,12 @@ Before implementing same-package precedence, measure the actual ROI on
 degradation, failed class resolution, silent traversal truncation, and the
 `as_of` NotImplementedError.*
 
-### 2.1 Same-Package Precedence in `resolve_base_by_name`
+### 2.1 Same-Package Precedence in `resolve_base_by_name` — ⛔ skipped (gate: lift 0 < 5)
+
+Measured ROI is zero on `codegraph-main` (§1.2): all 4 ambiguous bases are
+same-package or test-vs-src collisions that a package-path filter cannot
+split. Deferred until a monorepo with genuine same-package collisions is in
+scope. (Kept for reference; do **not** implement for v1.)
 
 - When ambiguity occurs (multiple classes share a name), do **not** return
   `None` immediately:
