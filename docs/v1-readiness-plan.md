@@ -178,18 +178,20 @@ degradation, failed class resolution, silent traversal truncation, and the
 
 ## Phase 4: Release Engineering
 
-### 4.1 Publish the missing sdist
+### 4.1 Publish the missing sdist — ✅ done (`8aaca76`)
 
-- **Current state:** `.github/workflows/release.yml` already has an `sdist`
+- **Current state:** `.github/workflows/release.yml` already had an `sdist`
   job (`maturin sdist`) plus a `publish` job that uploads wheels + sdist.
-- **Root cause of the missing v0.6.4 sdist:** `maturin sdist` requires the
-  LICENSE file inside the tarball; it was absent until `4f40d1f` added
-  `[tool.maturin] include = ["LICENSE"]` to `pyproject.toml` — *after* the
-  v0.6.4 tag, so that fix was never released.
-- **Action:** verify the `sdist` job end-to-end (command, `--out`, artifact
-  merge in `publish`), apply any remaining release.yml fix if the v0.6.5 run
-  reveals one, and confirm the v0.6.5 tag push publishes both wheels and the
-  sdist to PyPI.
+- **Root cause of the missing v0.6.4 sdist:** `maturin sdist` produced a
+  tarball without the LICENSE file (absent from `[tool.maturin] include`), so
+  PyPI rejected the sdist while accepting the wheels. The fix (`4f40d1f`:
+  `[tool.maturin] include = ["LICENSE"]`) landed *after* the v0.6.4 tag and
+  was never re-released.
+- **Done:** added a regression guard to the `sdist` job — a "Verify LICENSE
+  included in sdist" step (`tar -tzf dist/*.tar.gz | grep -qE '(^|/)LICENSE'`)
+  that fails the job fast and blocks `publish` if LICENSE ever drops out.
+- **Remaining:** confirm the v0.6.5 tag push publishes both wheels and the
+  sdist to PyPI (verify on PyPI — no further code change expected).
 
 ---
 
