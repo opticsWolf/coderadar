@@ -801,36 +801,106 @@ pub fn extract_function_name(node: Node, source: &str) -> String {
     "".to_string()
 }
 
-/// Extract base classes from a class node's superclass field.
+/// Extract base classes from a class node's superclass/heritage fields.
 pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
-    node
-        .child_by_field_name("superclasses")
-        .or_else(|| node.child_by_field_name("superclass"))
-        .or_else(|| node.child_by_field_name("bases"))
-        .map(|sc| {
-            let mut cursor = sc.walk();
-            sc.children(&mut cursor)
-                .filter(|child| child.kind() == "identifier"
-                    || child.kind() == "type_identifier"
-                    || child.kind() == "constant"
-                    || child.kind() == "name")
-                .filter_map(|id| {
-                    id.utf8_text(source.as_bytes()).ok().map(|txt| {
-                        if is_builtin_type(txt) {
-                            return None;
-                        }
-                        Some(UnresolvedRef {
-                            name: txt.to_string(),
-                            path: vec![],
-                            line: id.start_position().row + 1,
-                            col: id.start_position().column as usize,
-                        })
-                    })
-                })
-                .flatten()
-                .collect()
+    fn is_base_node_kind(k: &str) -> bool {
+        matches!(k, "identifier" | "type_identifier" | "constant" | "name"
+            // Qualified bases (`extends React.Component`, `implements Models.Base`).
+            // Previously dropped — capped extends coverage at the base-name
+            // heuristic (matrix §0). Captured here as a dotted name.
+            | "member_expression" | "qualified_type" | "scoped_type_id"
+            | "qualified_identifier" | "nested_type_identifier" | "generic_type")
+    }
+
+    // Grammars expose base classes very differently:
+    //   Python:  class_definition → `superclasses:` → argument_list of identifiers
+    //   TS/JS:   class_declaration → class_heritage → `extends_clause value:`
+    //            + `implements_clause` (comma-separated children)
+    //   Java/Kt: `superclass:` field directly on the class node
+    // So walk the node's descendants and pull base nodes from every source.
+    let mut base_nodes: Vec<Node> = Vec::new();
+    let mut dfs: Vec<Node> = vec![node];
+    while let Some(n) = dfs.pop() {
+        // (a) Direct base fields — Python `superclasses`, Java/Kotlin `superclass`.
+        let fields: [Option<Node>; 3] = [
+            n.child_by_field_name("superclasses"),
+            n.child_by_field_name("superclass"),
+            n.child_by_field_name("bases"),
+        ];
+        for f in fields.into_iter().flatten() {
+            let mut c = f.walk();
+            let kids: Vec<Node> = f.children(&mut c).collect();
+            let base_kids: Vec<Node> = kids.iter().copied()
+                .filter(|k| is_base_node_kind(k.kind())).collect();
+            if !base_kids.is_empty() {
+                base_nodes.extend(base_kids);
+            } else if is_base_node_kind(f.kind()) {
+                base_nodes.push(f);
+            }
+        }
+        // (b) TS/JS heritage clauses.
+        match n.kind() {
+            "extends_clause" => {
+                if let Some(v) = n.child_by_field_name("value") {
+                    base_nodes.push(v);
+                }
+            }
+            "implements_clause" => {
+                let mut c = n.walk();
+                base_nodes.extend(n.children(&mut c).filter(|k| is_base_node_kind(k.kind())));
+            }
+            _ => {}
+        }
+        // Descend.
+        let mut c = n.walk();
+        let kids: Vec<Node> = n.children(&mut c).collect();
+        for k in kids.into_iter().rev() { dfs.push(k); }
+    }
+
+    // De-duplicate by source byte range (a base may be seen via overlapping
+    // field checks) and emit one UnresolvedRef per base.
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    base_nodes
+        .into_iter()
+        .filter_map(|id| {
+            if !seen.insert(id.id()) { return None; }
+            let dotted = dotted_name_of(&id, source.as_bytes());
+            let leaf = dotted.rsplit('.').next().unwrap_or(&dotted);
+            if dotted.is_empty() || is_builtin_type(leaf) { return None; }
+            Some(UnresolvedRef {
+                name: dotted,
+                path: vec![],
+                line: id.start_position().row + 1,
+                col: id.start_position().column as usize,
+            })
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+/// Join the leaf identifiers of a (possibly qualified) base node into a
+/// dotted name (`React.Component`, `module.Foo`). Falls back to the node's
+/// raw text if no identifier children are found. Used by
+/// `extract_base_classes` for member_expression/qualified_type bases.
+fn dotted_name_of(node: &Node, source_bytes: &[u8]) -> String {
+    let mut leaves: Vec<String> = Vec::new();
+    // Pre-order DFS collecting identifier-like leaves.
+    let mut stack: Vec<Node> = vec![*node];
+    while let Some(n) = stack.pop() {
+        if matches!(n.kind(), "identifier" | "type_identifier" | "name" | "property_identifier") {
+            if let Ok(t) = n.utf8_text(source_bytes) {
+                leaves.push(t.to_string());
+            }
+        }
+        let mut c = n.walk();
+        let children: Vec<Node> = n.children(&mut c).collect();
+        // push in reverse so left-to-right order is preserved on pop
+        for ch in children.into_iter().rev() { stack.push(ch); }
+    }
+    if leaves.is_empty() {
+        node.utf8_text(source_bytes).map(|s| s.split_whitespace().collect::<Vec<_>>().join("")).unwrap_or_default()
+    } else {
+        leaves.join(".")
+    }
 }
 
 /// Extract Go receiver type from method_declaration.

@@ -2854,6 +2854,43 @@ mod tests {
                 "Should have method speak");
     }
 
+    #[test]
+    fn test_member_expression_base_is_stringified_not_dropped() {
+        // Phase 2 caveat-1: TS/JS `extends X.Y` (member_expression) and simple
+        // `extends E` were BOTH silently dropped by extract_base_classes — the
+        // superclass lives under `class_heritage → extends_clause value:`, not a
+        // `superclasses`/`superclass` field on `class_declaration`. Bases are now
+        // captured (qualified ones as dotted names).
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "class X { }
+class Sub extends X.Y { }
+class D extends E { }
+class I implements G.H, J { }
+",
+            "src/qualified.ts");
+        let snap = graph.snapshot();
+
+        let sub = snap.classes.values().find(|c| c.name == "Sub")
+            .expect("Sub should be indexed");
+        assert!(sub.bases.iter().any(|b| b.name == "X.Y"),
+                "member_expression base should be captured as X.Y, got {:?}",
+                sub.bases.iter().map(|b| b.name.clone()).collect::<Vec<_>>());
+
+        let d = snap.classes.values().find(|c| c.name == "D")
+            .expect("D should be indexed");
+        assert!(d.bases.iter().any(|b| b.name == "E"),
+                "simple TS extends base should be captured as E, got {:?}",
+                d.bases.iter().map(|b| b.name.clone()).collect::<Vec<_>>());
+
+        let i = snap.classes.values().find(|c| c.name == "I")
+            .expect("I should be indexed");
+        assert!(i.bases.iter().any(|b| b.name == "G.H")
+                && i.bases.iter().any(|b| b.name == "J"),
+                "implements bases should be captured as G.H and J, got {:?}",
+                i.bases.iter().map(|b| b.name.clone()).collect::<Vec<_>>());
+    }
+
     // ── Go Indexing Tests ──────────────────────────────────────
 
     #[test]
@@ -4369,3 +4406,4 @@ mod tests {
         assert_eq!(failures, 0, "{} query files failed to compile", failures);
     }
 }
+
