@@ -82,22 +82,31 @@ move the needle on this codebase; go straight to Phase 3.
 degradation, failed class resolution, silent traversal truncation, and the
 `as_of` NotImplementedError.*
 
-### 2.1 Same-Package Precedence in `resolve_base_by_name` — ⛔ skipped (gate: lift 0 < 5)
+### 2.1 Base-resolution ambiguity — revised (replaces package-path idea)
 
-Measured ROI is zero on `codegraph-main` (§1.2): all 4 ambiguous bases are
-same-package or test-vs-src collisions that a package-path filter cannot
-split. Deferred until a monorepo with genuine same-package collisions is in
-scope. (Kept for reference; do **not** implement for v1.)
+The §1.2 gate correctly killed *package-path* precedence (lift 0), but the 4
+ambiguous cases are fixable with the right signal, not package path:
 
-- When ambiguity occurs (multiple classes share a name), do **not** return
-  `None` immediately:
-  1. Filter candidates by matching the caller's package/module path.
-  2. Exactly one match → return it.
-  3. Multiple remain → deterministic tiebreak (alphabetical by module path),
-     rather than silent failure.
-- **Constraint:** keep `External`/`Builtin` bases unresolved by design.
-- **Test:** Rust unit test — two classes named `Service` in different
-  packages; assert a subclass in package A resolves to the base in package A.
+- **2.1a Language-aware filtering — implement now.** `Class` has no `language`
+  field, but `Module.language` exists → derive caller language from
+  `parent_module` and filter the global-unique candidate set to same-language
+  classes before the uniqueness check. Strictly correct (a Rust class never
+  extends a Dart class); fixes the 3 `Base` parity fixtures. ~5 lines.
+  Caveat: treat TS/JS as one family (a `.ts` class may extend a `.js` class).
+- **2.1b Ambiguity findings — implement now.** When 2+ candidates remain, push
+  a structured `AmbiguousBase` finding (caller, base name, candidates) instead
+  of silently returning `None`; expose via `graph_stats()` (or a dedicated
+  pyfunction) and surface in the MCP layer. Converts silent graph truncation
+  into actionable feedback. Same philosophy as 2.3.
+- **2.1c Import-aware resolution — defer post-v1.** Use the caller module's
+  `Import.raw` + `Import.resolution` (`Module(id)`/`Symbol(id)`) to find the
+  exact module the base name was imported from. Correct compiler-style fix,
+  but only 1 of 4 cases needs it (the `PoolWorker` test fixture), so it is
+  medium-effort / low-ROI for v1.
+- **Constraint (unchanged):** keep `External`/`Builtin` bases unresolved.
+- **Tests:** 2.1a — same-name classes in Dart/Rust/C++ files; assert a Rust
+  caller resolves to the Rust base. 2.1b — ambiguous case emits a finding with
+  both candidate paths.
 
 ### 2.2 Basic Alias Awareness in `find_module_by_dotted_name`
 
