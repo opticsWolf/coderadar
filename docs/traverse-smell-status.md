@@ -212,18 +212,25 @@ no FK error).
 
 ## 3. Phase 4 — native Rust smell engine (NOT started)
 
+> **Full design reference:** [`docs/smell-rules-reference.md`](smell-rules-reference.md)
+> — canonical spec for the 9 rules, the `SmellRule` trait, `SmellEngine`,
+> `SmellRegistry` pyclass, `get_smells` MCP tool, the metrics-pass signal
+> table, and the adaptation notes mapping the design to CodeRadar's actual
+> types. **Read that first before implementing.**
+
 This is the **only remaining phase of the original plan**, and the single
 largest gap on this branch. Nothing exists yet:
 
 - **No `smells/` Rust module.** The planned structure is absent:
   - 4.1 metric pass (cyclomatic, `nesting_depth`, `param_count`, WMC, CBO;
-    LCOM4/ATFD already deferred to 4.5) — **not computed anywhere**.
+    LCOM4/ATFD already deferred to 4.5) — **not computed anywhere**. The
+    full signal table + derivation is in `smell-rules-reference.md` §2/§10.
   - 4.2 `smells/rule.rs` — `SmellRule` trait, `EvalContext`, `Finding`,
-    `Scope`, `Severity` — **not written**.
-  - 4.3 concrete rules (struct-based thresholds) + `SmellEngine`
-    (`Vec<Box<dyn SmellRule>>` loop) — **not written**.
+    `Scope`, `Severity` — **not written** (spec: ref §3/§4).
+  - 4.3 9 concrete rules (struct-based thresholds) + `SmellEngine`
+    (`Vec<Box<dyn SmellRule>>` loop) — **not written** (spec: ref §5/§6).
   - 4.4 `SmellRegistry` PyClass + `@mcp.tool("get_smells")` in server.py —
-    **not written**.
+    **not written** (spec: ref §7/§8).
 - **MCP tool surface is still 17 tools, not 18.** There is no
   `get_smells` tool (verified: `server.py` has 17 `@mcp.tool` registrations,
   none named `get_smells`).
@@ -234,8 +241,9 @@ largest gap on this branch. Nothing exists yet:
   native metrics pass.
 
 **Design guidance (already decided in planning):** independent of
-traversal, no blockers — can start immediately. It is the natural next
-commit after this doc lands.
+traversal, no blockers — can start immediately. Implementation order is
+spelled out in `smell-rules-reference.md` §11 (metrics pass → types/trait →
+rules/engine → registry/MCP → tests).
 
 ---
 
@@ -249,8 +257,9 @@ Both Phase-2 caveats (formerly "in progress, 1 test failing" and
 
 ## 5. Immediate next actions (in order)
 
-1. **Phase 4 smell engine** — start with 4.1 (metrics) since rules (§4.3)
-   depend on it. Land as one commit per sub-step.
+1. **Phase 4 smell engine** — see [`docs/smell-rules-reference.md`](smell-rules-reference.md)
+   for the full spec. Start with 4.1 (metrics pass) since rules (§4.3) depend
+   on it. Land as one commit per sub-step.
 2. (Optional, parallel) **`as_of` temporal traversal** — route
    `CodeGraphStore::traverse` (storage.rs:144, exists but unexposed) through
    the binding once persisted IMPORTS/EXTENDS/OVERRIDES edges are confirmed
