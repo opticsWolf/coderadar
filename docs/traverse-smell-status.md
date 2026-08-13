@@ -20,7 +20,7 @@ resolve back-fill ahead of schedule).
 > | — (ceiling 1) | Phase 2 | TS/JS extends/implements base capture | `5bdba61` | ✅ |
 > | — (ceiling 2) | Phase 2 | Module concepts → IMPORTS persistence | `c0bc99e` | ✅ |
 > | E(part) | — | `as_of` temporal traversal | — | ⛔ deferred (Phase 3B) |
-> | F | Phase 4 | Native Rust smell engine | — | ⛔ not started |
+> | F | Phase 4 | Native Rust smell engine | `91021ac` | ✅ done |
 
 ---
 
@@ -35,11 +35,11 @@ resolve back-fill ahead of schedule).
 | Phase 2 caveat 2 — Module concepts → IMPORTS persistence | ✅ done | `c0bc99e` |
 | `as_of` temporal traversal (matrix step E, 2nd half) | ⛔ deferred | — |
 | Snapshot I/O + cold-start (`load`/`export` real impl) | ⛔ deferred (Phase 3B) | — |
-| Phase 4 — native Rust smell engine | ⛔ not started | — |
+| Phase 4 — native Rust smell engine | ✅ done | `91021ac` |
 
 **Working tree: clean** (all of the above committed on `traverse_smell`,
-5 commits ahead of main @ `4f40d1f`).
-**Test budget: 195 Rust + 351 Python = 546, 0 failures.**
+8 commits ahead of main @ `4f40d1f`).
+**Test budget: 200 Rust + 356 Python = 556, 0 failures.**
 
 ---
 
@@ -210,40 +210,43 @@ no FK error).
 
 ---
 
-## 3. Phase 4 — native Rust smell engine (NOT started)
+## 3. Phase 4 — native Rust smell engine (DONE)
 
-> **Full design reference:** [`docs/smell-rules-reference.md`](smell-rules-reference.md)
-> — canonical spec for the 9 rules, the `SmellRule` trait, `SmellEngine`,
-> `SmellRegistry` pyclass, `get_smells` MCP tool, the metrics-pass signal
-> table, and the adaptation notes mapping the design to CodeRadar's actual
-> types. **Read that first before implementing.**
+> **Design reference:** [`docs/smell-rules-reference.md`](smell-rules-reference.md).
+> Shipped in `91021ac`.
 
-This is the **only remaining phase of the original plan**, and the single
-largest gap on this branch. Nothing exists yet:
+The headline "smell" half of the branch name is now implemented. All four
+sub-steps landed:
 
-- **No `smells/` Rust module.** The planned structure is absent:
-  - 4.1 metric pass (cyclomatic, `nesting_depth`, `param_count`, WMC, CBO;
-    LCOM4/ATFD already deferred to 4.5) — **not computed anywhere**. The
-    full signal table + derivation is in `smell-rules-reference.md` §2/§10.
-  - 4.2 `smells/rule.rs` — `SmellRule` trait, `EvalContext`, `Finding`,
-    `Scope`, `Severity` — **not written** (spec: ref §3/§4).
-  - 4.3 9 concrete rules (struct-based thresholds) + `SmellEngine`
-    (`Vec<Box<dyn SmellRule>>` loop) — **not written** (spec: ref §5/§6).
-  - 4.4 `SmellRegistry` PyClass + `@mcp.tool("get_smells")` in server.py —
-    **not written** (spec: ref §7/§8).
-- **MCP tool surface is still 17 tools, not 18.** There is no
-  `get_smells` tool (verified: `server.py` has 17 `@mcp.tool` registrations,
-  none named `get_smells`).
-- **No metrics on the `Function`/`Class` structs.** Existing derivable
-  metrics are limited to `line_count` (`exit_line - line`), `param_count`
-  (`parameters.len()`), `caller_count`/`callee_count` (reverse indexes),
-  `method_count` (scan by `parent_class`) — all via Pest queries, not a
-  native metrics pass.
+- **4.1 Metrics pass** — `smells/metrics.rs` computes cyclomatic (1 +
+  decision points), `nesting_depth`, and `return_count` from the tree-sitter
+  AST in `extract/single_pass.rs`, carried on the new `Function.metrics`
+  field (`types::FunctionMetrics`). `LOC`, `param_count`, `field_count`, and
+  the class roll-ups `WMC` / `max_method_cyclomatic` / `CBO` are derived at
+  engine-run time in `smells/engine.rs`.
+- **4.2 `smells/rule.rs` + `smells/types.rs`** — `SmellRule` trait, `Scope`,
+  `Severity`, `Finding`, `EvalContext` (adapted: `entity_id` / `entity_name`
+  instead of the design's non-existent `EntityRef`; see ref §12).
+- **4.3 9 rules + `SmellEngine`** — god-class, long-method,
+  long-parameter-list, deep-nesting, data-class, high-cyclomatic-complexity,
+  brain-method, excessive-returns, too-many-fields; scope-routed evaluation
+  loop. `SmellRegistry` indexes findings by entity + rule id (pure Rust,
+  adapting the reference's `#[pyclass]` sketch — see ref §7 note).
+- **4.4 `get_smells` pyfunction + MCP tool** — `lib.rs::get_smells`
+  (`with_graph` + `py.allow_threads`), exposed as `codegraph_get_smells` in
+  `server.py`. MCP surface is now **18 tools**.
 
-**Design guidance (already decided in planning):** independent of
-traversal, no blockers — can start immediately. Implementation order is
-spelled out in `smell-rules-reference.md` §11 (metrics pass → types/trait →
-rules/engine → registry/MCP → tests).
+**Bonus fix required by the class rules:** `Class.fields` was never
+populated (both extractors emitted `fields: Vec::new()`; `Tag::Field` was
+silently ignored) — so `too-many-fields` / `data-class` could never fire.
+`extract/single_pass.rs` now attributes class-level `@field` captures to the
+enclosing class (skipping module-level and method-local assignments).
+
+**Verification:** 5 new Rust tests (metrics + rule boundaries) + 5 new Python
+e2e tests (`tests/test_smells.py`) over a fixture with known smells — all
+green. The fixture yields 5 findings: long-parameter-list (Info, 5 params),
+long-method (Medium, cyclomatic 12), high-cyclomatic-complexity (High, 12),
+data-class (High, 11 fields / WMC 0), too-many-fields (Medium, 11 fields).
 
 ---
 
@@ -257,9 +260,10 @@ Both Phase-2 caveats (formerly "in progress, 1 test failing" and
 
 ## 5. Immediate next actions (in order)
 
-1. **Phase 4 smell engine** — see [`docs/smell-rules-reference.md`](smell-rules-reference.md)
-   for the full spec. Start with 4.1 (metrics pass) since rules (§4.3) depend
-   on it. Land as one commit per sub-step.
+1. (Done — `91021ac`) **Phase 4 smell engine** — see
+   [`docs/smell-rules-reference.md`](smell-rules-reference.md). Shipped with
+   metrics pass, 9 rules, engine + registry, `get_smells` pyfunction + MCP
+   tool, and field extraction.
 2. (Optional, parallel) **`as_of` temporal traversal** — route
    `CodeGraphStore::traverse` (storage.rs:144, exists but unexposed) through
    the binding once persisted IMPORTS/EXTENDS/OVERRIDES edges are confirmed
@@ -279,6 +283,8 @@ Both Phase-2 caveats (formerly "in progress, 1 test failing" and
 - After Phase 2 caveat 1: 195 Rust + 351 Python = **546**.
 - After Phase 2 caveat 2: 195 Rust + 351 Python = **546, 0 failures**
   (same count; D.5 assertion strengthened from `>` to exact `==`).
+- After Phase 4 (smell engine): 200 Rust + 356 Python = **556, 0 failures**
+  (5 Rust metrics/rule tests + 5 Python e2e tests).
 
 ---
 
@@ -339,6 +345,11 @@ wiring bugs. They cap `subclasses`/`overrides`/`importers` coverage:
   `build_fragment`; method lookup scans `projection.functions` by
   `parent_class` (the `resolve_one_function` pattern). A reader must not
   expect `class.methods` to be meaningful.
+- **`class.fields` IS populated as of `91021ac`** — the single-pass extractor
+  attributes class-level `@field` captures to `ExtractedClass.fields`
+  (skipping module-level and method-local assignments), so `field_count` /
+  `too-many-fields` / `data-class` work. This was previously empty in both
+  extractors.
 - **`Module` is a synthetic in-memory entity** — `build_fragment`/`insert_extracted`
   build it at the end (id `"{}::module"`). It is *now* also persisted as a
   concept (§1.5), but its member lists (`classes`/`functions`/`imports`/…)
@@ -349,12 +360,13 @@ wiring bugs. They cap `subclasses`/`overrides`/`importers` coverage:
   `extract_single_pass` (which is node-driven and has no `Language`).
 
 ### 7.6 Net assessment
-The branch's *traversal* goal is met for **current-state, in-memory**
-traversal across all 4 edge kinds, with the data actually populated behind
-them. What remains is:
-1. **Phase 4 smell engine** — zero code, the headline "smell" half of the
-   branch name (start now, §3).
-2. **Temporal reads** (`as_of` traversal + cold-start) — persistence is
+Both halves of the branch name now exist. The *traversal* goal is met for
+**current-state, in-memory** traversal across all 4 edge kinds with data
+populated behind them, and the *smell* goal is met by the native Rust engine
+(§3). What remains is:
+1. **Temporal reads** (`as_of` traversal + cold-start) — persistence is
    write-only until Phase 3B.
-3. **Heuristic depth** — resolution coverage beyond same-module/global-unique
-   and path-suffix import matching (optional deepening).
+2. **Heuristic depth** — resolution coverage beyond same-module/global-unique
+   and path-suffix import matching, plus a couple of smell-metric ceilings
+   (CBO is base+call-based, not field-type-aware; the decision-point set is a
+   deterministic approximation of McCabe) — optional deepening.
