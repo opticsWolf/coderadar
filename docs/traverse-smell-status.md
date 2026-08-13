@@ -285,6 +285,8 @@ Both Phase-2 caveats (formerly "in progress, 1 test failing" and
   (same count; D.5 assertion strengthened from `>` to exact `==`).
 - After Phase 4 (smell engine): 200 Rust + 356 Python = **556, 0 failures**
   (5 Rust metrics/rule tests + 5 Python e2e tests).
+- After 2.1a/2.1b/2.1c (base-resolution): 203 Rust + 358 Python = **561, 0 failures**
+  (3 Rust base-resolution tests + 2 Python Phase-1 tests).
 
 ---
 
@@ -315,18 +317,24 @@ real limitation a reader should not mistake for "done".
 
 ### 7.3 Resolve heuristic ceilings (correct-but-incomplete coverage)
 These are honest limits of the base-name + import resolution heuristics, not
-wiring bugs. They cap `subclasses`/`overrides`/`importers` coverage:
+wiring bugs. They cap `subclasses`/`overrides`/`importers` coverage.
 
-- **`resolve_base_by_name`** returns `None` on *ambiguity* — if two or more
-  classes share a name across the project, neither resolves. No
-  relative-path-aware or same-package-before-global precedence.
+- **`resolve_base_by_name`** now has three tiers (2.1): (1) same-module,
+  (2) import-aware — the caller imported the name from one module (2.1c),
+  (3) global unique-name fallback filtered to the caller's language family
+  (`Language::same_family`, TS/JS = one family — 2.1a). Ambiguity is no
+  longer silent: `resolve_class_hierarchy` emits `AmbiguousBase` findings
+  surfaced via `index_edge_stats` (2.1b). On codegraph-main this cut
+  ambiguous bases 4 → 1.
 - **External bases stay unresolved by design** — `extends React.Component`,
   `Error`, `EventEmitter` are not local classes; resolving external→local
-  would be wrong. This is the dominant ceiling on codegraph-main (subclasses
-  28, overrides 7, with the remainder mostly external/ambiguous inheritance).
+  would be wrong.
 - **`find_module_by_dotted_name`** matches by file-path suffix; it is weak
-  for `@/...` aliases and bare package names (correctly `Unresolved` for
-  those). No tsconfig/pyproject alias awareness.
+  for relative TS imports (`../src/...`) and `@/...` aliases (correctly
+  `Unresolved` for those). This is now the *only* remaining ambiguity on
+  codegraph-main: `FakeWorker implements PoolWorker` via
+  `'../src/mcp/query-pool'` stays unresolved because the import itself doesn't
+  resolve. Tracked as plan item 2.2.
 
 ### 7.4 Cross-cutting roadmap deferrals (unchanged, out of this branch)
 - **SQLite PRAGMAs (#6)** — Macrame's `configure()` is private; tuning

@@ -82,31 +82,29 @@ move the needle on this codebase; go straight to Phase 3.
 degradation, failed class resolution, silent traversal truncation, and the
 `as_of` NotImplementedError.*
 
-### 2.1 Base-resolution ambiguity — revised (replaces package-path idea)
+### 2.1 Base-resolution ambiguity — ✅ done (2.1a/2.1b/2.1c)
 
-The §1.2 gate correctly killed *package-path* precedence (lift 0), but the 4
-ambiguous cases are fixable with the right signal, not package path:
+Replaces the (correctly-killed) package-path idea with three signal-aware fixes:
 
-- **2.1a Language-aware filtering — implement now.** `Class` has no `language`
-  field, but `Module.language` exists → derive caller language from
-  `parent_module` and filter the global-unique candidate set to same-language
-  classes before the uniqueness check. Strictly correct (a Rust class never
-  extends a Dart class); fixes the 3 `Base` parity fixtures. ~5 lines.
-  Caveat: treat TS/JS as one family (a `.ts` class may extend a `.js` class).
-- **2.1b Ambiguity findings — implement now.** When 2+ candidates remain, push
-  a structured `AmbiguousBase` finding (caller, base name, candidates) instead
-  of silently returning `None`; expose via `graph_stats()` (or a dedicated
-  pyfunction) and surface in the MCP layer. Converts silent graph truncation
-  into actionable feedback. Same philosophy as 2.3.
-- **2.1c Import-aware resolution — defer post-v1.** Use the caller module's
-  `Import.raw` + `Import.resolution` (`Module(id)`/`Symbol(id)`) to find the
-  exact module the base name was imported from. Correct compiler-style fix,
-  but only 1 of 4 cases needs it (the `PoolWorker` test fixture), so it is
-  medium-effort / low-ROI for v1.
+- **2.1a Language-family filtering — done.** `Language::same_family` (TS/JS =
+  one family); `base_candidates` tier-3 filters the global fallback to the
+  caller's language family. Fixes the 3 `Base` parity fixtures (ambiguous
+  4 → 1 on codegraph-main).
+- **2.1b Ambiguity findings — done.** `resolve_class_hierarchy` pushes
+  `AmbiguousBase { class_name, base_name, candidates }` (new `ProjectedGraph`
+  field) instead of silently returning `None`; `index_edge_stats` exposes
+  `ambiguous_bases` count + `ambiguous_base_details` (truncated to 20).
+- **2.1c Import-aware resolution — done.** `import_aware_base` reads the
+  caller module's `FromImport`/`RelativeImport` names and matches against the
+  resolved `Import.resolution` module; `resolve_imports` now runs *first* in
+  the cascade (reordered in `analyze` + `update_file`). Unit-tested; the last
+  codegraph-main case (`FakeWorker implements PoolWorker` via a relative TS
+  import) stays unresolved only because `find_module_by_dotted_name` can't
+  resolve `../src/...` — that is the §7.3/2.2 ceiling, not a 2.1c bug.
 - **Constraint (unchanged):** keep `External`/`Builtin` bases unresolved.
-- **Tests:** 2.1a — same-name classes in Dart/Rust/C++ files; assert a Rust
-  caller resolves to the Rust base. 2.1b — ambiguous case emits a finding with
-  both candidate paths.
+- **Tests:** +3 Rust (`test_language_family_filters_base_candidates`,
+  `test_ambiguous_base_emits_finding`, `test_import_aware_base_resolution`).
+  203 Rust + 358 Python = **561, 0 failures**.
 
 ### 2.2 Basic Alias Awareness in `find_module_by_dotted_name`
 

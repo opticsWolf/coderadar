@@ -524,9 +524,9 @@ fn analyze(root: &str) -> PyResult<PyObject> {
     // Compute MRO and run resolution cascade on all calls
     {
         let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_imports(&mut projection);
         graph.compute_all_mro(&mut projection);
         graph.resolve_class_hierarchy(&mut projection);
-        graph.resolve_imports(&mut projection);
         graph.resolve_overrides(&mut projection);
         graph.resolve_all_calls(&mut projection);
         // Persist resolved edges to Macrame store
@@ -1050,6 +1050,21 @@ fn index_edge_stats(py: Python<'_>) -> PyResult<PyObject> {
         dict.set_item("importer_keys", snap.importers.len())?;
         dict.set_item("subclass_keys", snap.subclasses.len())?;
         dict.set_item("overridden_by_keys", snap.overridden_by.len())?;
+        // Ambiguous base-resolution findings (2.1b): count + truncated details.
+        dict.set_item("ambiguous_bases", snap.ambiguous_bases.len())?;
+        let details: Vec<PyObject> = snap
+            .ambiguous_bases
+            .iter()
+            .take(20)
+            .map(|a| {
+                let d = PyDict::new(py);
+                d.set_item("class", &a.class_name)?;
+                d.set_item("base", &a.base_name)?;
+                d.set_item("candidates", a.candidates.clone())?;
+                Ok(d.into())
+            })
+            .collect::<PyResult<_>>()?;
+        dict.set_item("ambiguous_base_details", details)?;
         Ok(dict.into())
     })
 }

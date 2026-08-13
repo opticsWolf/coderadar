@@ -242,6 +242,7 @@ mod tests {
             subclasses: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
+            ambiguous_bases: Vec::new(),
         }
     }
 

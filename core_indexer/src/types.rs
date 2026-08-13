@@ -222,6 +222,17 @@ impl Language {
         }
     }
 
+    /// Whether two languages share an inheritance family. TypeScript and
+    /// JavaScript are one family (a `.ts` class may extend a `.js` class);
+    /// every other language is its own family.
+    pub fn same_family(&self, other: &Language) -> bool {
+        match (self, other) {
+            (Language::TypeScript, Language::JavaScript)
+            | (Language::JavaScript, Language::TypeScript) => true,
+            _ => self == other,
+        }
+    }
+
     /// Name used by tree-sitter-language-pack for grammar lookup.
     pub fn pack_name(&self) -> &'static str {
         match self {
@@ -1008,6 +1019,17 @@ pub struct WalkContext<'a> {
 
 // ── ProjectedGraph types (§3.4) — used by graph.rs ──────────────────────────
 
+/// A base-class reference that could not be resolved because multiple
+/// candidates matched after language-family filtering (2.1b). Surfaced via
+/// `index_edge_stats` so the MCP status path can warn instead of silently
+/// dropping the inheritance edge.
+#[derive(Clone, Debug)]
+pub struct AmbiguousBase {
+    pub class_name: String,
+    pub base_name: String,
+    pub candidates: Vec<EntityId>,
+}
+
 #[derive(Clone)]
 pub struct ProjectedGraph {
     pub modules: HashMap<EntityId, Arc<Module>>,
@@ -1035,6 +1057,9 @@ pub struct ProjectedGraph {
     /// Direction semantics adopted project-wide: a method overrides its
     /// *dependency* (the base), so `overrides_base[m]` = downstream dep.
     pub overrides_base: HashMap<EntityId, EntityId>,
+    /// Ambiguous base-resolution findings (2.1b), populated by
+    /// `resolve_class_hierarchy` and read by `index_edge_stats`.
+    pub ambiguous_bases: Vec<AmbiguousBase>,
 }
 
 // ── ResolvedEdge (§3.4a, §6.1a) — used by resolution engine ─────────────────

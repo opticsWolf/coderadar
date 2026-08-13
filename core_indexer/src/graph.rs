@@ -611,6 +611,7 @@ impl CodeGraph {
             subclasses: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
+            ambiguous_bases: Vec::new(),
         };
 
         Self {
@@ -745,35 +746,101 @@ impl CodeGraph {
 
     /// Resolve a base-class *name* to a concrete class EntityId.
     ///
-    /// Heuristic, two tiers (deliberately *separate* from `compute_c3_mro`
+    /// Heuristic, three tiers (deliberately *separate* from `compute_c3_mro`
     /// so MRO behaviour — and thus call resolution — is untouched):
-    ///   1. exact same-`parent_module` name match (consistent with MRO);
-    ///   2. fallback to a project-globally-unique name match (exactly one
-    ///      class with that name anywhere) — resolves the common single-
-    ///      definition case (`class Repo(BaseModel)`) across files.
+    ///   1. exact same-`parent_module` name match;
+    ///   2. import-aware match (the caller imported this exact name from one
+    ///      module — 2.1c);
+    ///   3. project-global unique-name match filtered to the caller's
+    ///      language family (2.1a).
     /// Returns `None` when ambiguous (multiple candidates) or not found.
     fn resolve_base_by_name(
         projection: &ProjectedGraph, base_name: &str, current_module: &str,
     ) -> Option<String> {
-        // (1) same-module exact match
-        let mut same_mod: Option<String> = None;
-        for (id, c) in &projection.classes {
-            if c.name == base_name && c.parent_module == current_module {
-                if same_mod.is_some() { return None; }
-                same_mod = Some(id.clone());
-            }
+        let candidates = Self::base_candidates(projection, base_name, current_module);
+        if candidates.len() == 1 {
+            Some(candidates[0].clone())
+        } else {
+            None
         }
-        if let Some(id) = same_mod { return Some(id); }
+    }
 
-        // (2) global unique-name fallback
-        let mut global: Option<String> = None;
-        for (id, c) in &projection.classes {
-            if c.name == base_name {
-                if global.is_some() { return None; }
-                global = Some(id.clone());
+    /// All candidate classes for a base name, in resolution priority order.
+    /// `resolve_base_by_name` and the ambiguity findings (2.1b) both read
+    /// this; the latter needs the full candidate set, not just the winner.
+    fn base_candidates(
+        projection: &ProjectedGraph, base_name: &str, current_module: &str,
+    ) -> Vec<String> {
+        // (1) same-module exact match
+        let same_mod: Vec<String> = projection
+            .classes
+            .iter()
+            .filter(|(_, c)| c.name == base_name && c.parent_module == current_module)
+            .map(|(id, _)| id.clone())
+            .collect();
+        if !same_mod.is_empty() {
+            return same_mod;
+        }
+
+        // (2) import-aware: the caller imported this exact name from one module
+        if let Some(id) = Self::import_aware_base(projection, base_name, current_module) {
+            return vec![id];
+        }
+
+        // (3) global fallback, filtered to the caller's language family (2.1a)
+        let caller_lang = projection.modules.get(current_module).map(|m| m.language);
+        projection
+            .classes
+            .iter()
+            .filter(|(_, c)| c.name == base_name)
+            .filter(|(_, c)| {
+                let candidate_lang = projection.modules.get(&c.parent_module).map(|m| m.language);
+                match (caller_lang, candidate_lang) {
+                    (Some(cl), Some(cl2)) => cl.same_family(&cl2),
+                    _ => true, // missing language info → keep candidate
+                }
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Import-aware base resolution (2.1c). If the caller's module imports the
+    /// base name from exactly one module and that module holds a unique class
+    /// with that name, resolve to it. Reads `Import.resolution`, which is
+    /// populated by `resolve_imports` — so `resolve_imports` must run first.
+    fn import_aware_base(
+        projection: &ProjectedGraph, base_name: &str, current_module: &str,
+    ) -> Option<String> {
+        let module = projection.modules.get(current_module)?;
+        for imp_id in &module.imports {
+            let imp = match projection.imports.get(imp_id) {
+                Some(i) => i,
+                None => continue,
+            };
+            // Named imports carry the symbol we can match; module/star/side
+            // imports do not name a specific class, so they can't disambiguate.
+            let names: Vec<&str> = match &imp.kind {
+                crate::types::ImportKind::FromImport { names, .. }
+                | crate::types::ImportKind::RelativeImport { names, .. } => {
+                    names.iter().map(|(n, _)| n.as_str()).collect()
+                }
+                _ => Vec::new(),
+            };
+            if !names.iter().any(|n| *n == base_name) {
+                continue;
+            }
+            if let crate::types::ImportResolution::Module(target) = &imp.resolution {
+                let mut found: Option<String> = None;
+                for (id, c) in &projection.classes {
+                    if c.name == base_name && &c.parent_module == target {
+                        if found.is_some() { return None; } // 2+ in target → ambiguous
+                        found = Some(id.clone());
+                    }
+                }
+                if found.is_some() { return found; }
             }
         }
-        global
+        None
     }
 
     /// Resolve class inheritance: fill `Class.resolved_bases` and invert
@@ -781,22 +848,33 @@ impl CodeGraph {
     /// (idempotent rebuild). Same-module + global-unique heuristic.
     pub fn resolve_class_hierarchy(&self, projection: &mut ProjectedGraph) {
         projection.subclasses.clear();
+        projection.ambiguous_bases.clear();
         let class_ids: Vec<String> =
             projection.classes.keys().cloned().collect();
 
         for cid in &class_ids {
-            let (bases, parent_module, is_tco) = match projection.classes.get(cid) {
-                Some(c) => (c.bases.clone(), c.parent_module.clone(), c.is_type_checking_only),
+            let (bases, parent_module, is_tco, class_name) = match projection.classes.get(cid) {
+                Some(c) => (
+                    c.bases.clone(),
+                    c.parent_module.clone(),
+                    c.is_type_checking_only,
+                    c.name.clone(),
+                ),
                 None => continue,
             };
             if is_tco { continue; }
 
             let mut resolved: Vec<String> = Vec::with_capacity(bases.len());
             for b in &bases {
-                if let Some(base_id) =
-                    Self::resolve_base_by_name(projection, &b.name, &parent_module)
-                {
-                    resolved.push(base_id);
+                let candidates = Self::base_candidates(projection, &b.name, &parent_module);
+                match candidates.len() {
+                    1 => resolved.push(candidates[0].clone()),
+                    n if n > 1 => projection.ambiguous_bases.push(crate::types::AmbiguousBase {
+                        class_name: class_name.clone(),
+                        base_name: b.name.clone(),
+                        candidates,
+                    }),
+                    _ => {} // 0 candidates: external/builtin — correctly unresolved
                 }
             }
 
@@ -1753,6 +1831,7 @@ impl CodeGraph {
             subclasses: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
+            ambiguous_bases: Vec::new(),
         };
 
         let mut module_classes: Vec<EntityId> = Vec::new();
@@ -2355,9 +2434,9 @@ impl CodeGraph {
         let _ = self.persist_entities(&units, file_path, &lang_str);
 
         // Phase 4: Compute MRO for all classes, then resolve calls (scoped to this file)
+        self.resolve_imports(&mut projection);
         self.compute_all_mro(&mut projection);
         self.resolve_class_hierarchy(&mut projection);
-        self.resolve_imports(&mut projection);
         self.resolve_overrides(&mut projection);
         self.resolve_calls_scoped(&mut projection, Some(file_path));
         let _ = self.persist_edges(&projection);
@@ -3109,6 +3188,82 @@ class I implements G.H, J { }
                 "b.py's Import entity should resolve to Module(c), got {:?}", b_imports);
     }
 
+    // ── 2.1a / 2.1b / 2.1c: base-resolution heuristics ──────────
+
+    #[test]
+    fn test_language_family_filters_base_candidates() {
+        // Two `Base` classes in different languages; a Python caller must
+        // resolve to the Python one (2.1a), not be ambiguous across C++.
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class Base:\n    pass\n", "base.py");
+        index_source(&graph, "class Base {};\n", "base.cpp");
+        index_source(&graph, "class Child(Base):\n    pass\n", "main.py");
+        let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_imports(&mut projection);
+        graph.compute_all_mro(&mut projection);
+        graph.resolve_class_hierarchy(&mut projection);
+
+        let child = projection.classes.values().find(|c| c.name == "Child").unwrap();
+        assert_eq!(child.resolved_bases.len(), 1,
+            "Child should resolve to one Base, got {:?}", child.resolved_bases);
+        let base = projection.classes.get(&child.resolved_bases[0]).unwrap();
+        let base_mod = projection.modules.get(&base.parent_module).unwrap();
+        assert!(base_mod.path.to_string_lossy().ends_with("base.py"),
+            "Child must resolve to the Python Base, not {}", base_mod.path.to_string_lossy());
+        assert!(projection.ambiguous_bases.is_empty(),
+            "unexpected ambiguity: {:?}", projection.ambiguous_bases);
+    }
+
+    #[test]
+    fn test_ambiguous_base_emits_finding() {
+        // Two Python `Service` classes in different packages; a caller with no
+        // import cannot disambiguate → must emit an AmbiguousBase finding (2.1b).
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class Service:\n    pass\n", "pkg_a/service.py");
+        index_source(&graph, "class Service:\n    pass\n", "pkg_b/service.py");
+        index_source(&graph, "class Consumer(Service):\n    pass\n", "main.py");
+        let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_imports(&mut projection);
+        graph.compute_all_mro(&mut projection);
+        graph.resolve_class_hierarchy(&mut projection);
+
+        let consumer = projection.classes.values().find(|c| c.name == "Consumer").unwrap();
+        assert!(consumer.resolved_bases.is_empty(),
+            "ambiguous base must stay unresolved");
+        assert_eq!(projection.ambiguous_bases.len(), 1,
+            "expected 1 finding, got {:?}", projection.ambiguous_bases);
+        let f = &projection.ambiguous_bases[0];
+        assert_eq!(f.class_name, "Consumer");
+        assert_eq!(f.base_name, "Service");
+        assert_eq!(f.candidates.len(), 2, "expected 2 candidates, got {:?}", f.candidates);
+    }
+
+    #[test]
+    fn test_import_aware_base_resolution() {
+        // Two `PoolWorker` classes; the caller imports it from query_pool, so
+        // resolution must use the import target (2.1c), not guess.
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class PoolWorker:\n    pass\n", "src/mcp/query_pool.py");
+        index_source(&graph, "class PoolWorker:\n    pass\n", "src/resolution/resolver_pool.py");
+        index_source(&graph,
+            "from src.mcp.query_pool import PoolWorker\nclass FakeWorker(PoolWorker):\n    pass\n",
+            "test_fake.py");
+        let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_imports(&mut projection);
+        graph.compute_all_mro(&mut projection);
+        graph.resolve_class_hierarchy(&mut projection);
+
+        let fake = projection.classes.values().find(|c| c.name == "FakeWorker").unwrap();
+        assert_eq!(fake.resolved_bases.len(), 1,
+            "FakeWorker should resolve PoolWorker via import, got {:?}", fake.resolved_bases);
+        let base = projection.classes.get(&fake.resolved_bases[0]).unwrap();
+        let base_mod = projection.modules.get(&base.parent_module).unwrap();
+        assert!(base_mod.path.to_string_lossy().ends_with("query_pool.py"),
+            "FakeWorker must resolve to query_pool.PoolWorker, got {}", base_mod.path.to_string_lossy());
+        assert!(projection.ambiguous_bases.is_empty(),
+            "import-aware should disambiguate, got {:?}", projection.ambiguous_bases);
+    }
+
     #[test]
     fn test_resolve_overrides_populates_overridden_by() {
         // Base.helper overridden by Child.helper (same module). Child's MRO is
@@ -3153,9 +3308,9 @@ class I implements G.H, J { }
             graph.index_file(src, path, &lang).unwrap();
         }
         let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_imports(&mut projection);
         graph.compute_all_mro(&mut projection);
         graph.resolve_class_hierarchy(&mut projection);
-        graph.resolve_imports(&mut projection);
         graph.resolve_overrides(&mut projection);
         graph.resolve_all_calls(&mut projection);
         projection
