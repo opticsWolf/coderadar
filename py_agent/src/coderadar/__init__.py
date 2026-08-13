@@ -732,9 +732,12 @@ def load(db_path: str) -> CodeGraph:
     Returns:
         A CodeGraph restored from the bitemporal ledger.
     """
-    graph = CodeGraph(db_path)
-    # Macrame reconstruct(None) loads the latest state
-    return graph
+    raise NotImplementedError(
+        "load(db_path) is not implemented — the in-memory ProjectedGraph is not "
+        "yet restorable from the Macrame ledger without re-parsing source. "
+        "Call analyze(root) to rebuild the graph. Cold-start persistence is "
+        "Phase 3B work (see docs/traversal-matrix.md §3)."
+    )
 
 
 def watch(root: str) -> "Watcher":

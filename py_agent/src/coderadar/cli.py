@@ -401,8 +401,11 @@ def export(path: str, fmt: str):
     """Export snapshot."""
     import coderadar
     graph = coderadar.CodeGraph()
-    graph.export_snapshot(path)
-    console.print(f"[green]Snapshot exported to {path}[/green]")
+    try:
+        graph.export_snapshot(path)
+        console.print(f"[green]Snapshot exported to {path}[/green]")
+    except NotImplementedError as e:
+        console.print(f"[yellow]export_snapshot is not implemented:[/yellow] {e}")
 
 
 @main.command()
@@ -410,9 +413,12 @@ def export(path: str, fmt: str):
 def load_snapshot(snapshot: str):
     """Load and verify snapshot integrity."""
     import coderadar
-    graph = coderadar.load(snapshot)
-    stats = graph.stats()
-    console.print(f"[green]Snapshot loaded: {stats}[/green]")
+    try:
+        graph = coderadar.load(snapshot)
+        stats = graph.stats()
+        console.print(f"[green]Snapshot loaded: {stats}[/green]")
+    except NotImplementedError as e:
+        console.print(f"[yellow]load_snapshot is not implemented:[/yellow] {e}")
 
 
 @main.command()

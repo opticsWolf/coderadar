@@ -1118,12 +1118,31 @@ pub(crate) fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
 }
 
 // ── Snapshot I/O ───────────────────────────────────────────────────────────
+//
+// Honesty pass: these were silent `Ok(())` stubs — `export_snapshot` is
+// wired through cli.py (`coderadar export`) and would silently produce no
+// file; `load_snapshot` is not yet called from Python but the `load(db_path)`
+// entry exists. Both now raise loudly so callers see the truth rather than a
+// silent no-op. In-memory persistence (cold-start without re-analyze) is Phase
+// 3B work — see docs/traversal-matrix.md §3.
 
 #[pyfunction]
-fn export_snapshot(_path: &str) -> PyResult<()> { Ok(()) }
+fn export_snapshot(_path: &str) -> PyResult<()> {
+    Err(pyo3::exceptions::PyNotImplementedError::new_err(
+        "export_snapshot(path) is not implemented. The in-memory ProjectedGraph \
+         is rebuilt by analyze() on each run; serialising it to disk is Phase 3B \
+         work (see docs/traversal-matrix.md §3)."
+    ))
+}
 
 #[pyfunction]
-fn load_snapshot(_path: &str) -> PyResult<()> { Ok(()) }
+fn load_snapshot(_path: &str) -> PyResult<()> {
+    Err(pyo3::exceptions::PyNotImplementedError::new_err(
+        "load_snapshot(path) is not implemented. Load a project by calling \
+         analyze(root); the Macrame-ledger-backed cold-start is Phase 3B work \
+         (see docs/traversal-matrix.md §3)."
+    ))
+}
 
 // ── File Watcher Bindings ──────────────────────────────────────────────
 
