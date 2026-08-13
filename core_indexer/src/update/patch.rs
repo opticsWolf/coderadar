@@ -97,6 +97,7 @@ pub fn apply_patch(
                                 source: f.source,
                                 signature_hash: f.signature_hash,
                                 body_hash: f.body_hash,
+                                metrics: f.metrics,
                                 is_type_checking_only: f.is_type_checking_only,
                                 parse_quality: f.parse_quality,
                                 content_hash: 0,

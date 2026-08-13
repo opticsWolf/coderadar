@@ -1,0 +1,9 @@
+pub mod brain_method;
+pub mod data_class;
+pub mod deep_nesting;
+pub mod excessive_returns;
+pub mod god_class;
+pub mod high_cyclomatic_complexity;
+pub mod long_method;
+pub mod long_parameter_list;
+pub mod too_many_fields;

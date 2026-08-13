@@ -742,6 +742,19 @@ pub struct Class {
     pub embedding: EmbeddingVec,
 }
 
+/// AST-derived structural metrics computed during single-pass extraction.
+/// Cheap to compute (one walk over the function's tree-sitter node); carried
+/// on `Function` so the smell engine needs no re-parse of source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FunctionMetrics {
+    /// Cyclomatic complexity: 1 + number of control-flow decision points.
+    pub cyclomatic: usize,
+    /// Maximum control-flow nesting depth within the body.
+    pub nesting_depth: usize,
+    /// Number of `return` statements in the body.
+    pub return_count: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct Function {
     pub id: EntityId,
@@ -763,6 +776,7 @@ pub struct Function {
     pub source: SourceType,
     pub signature_hash: u64,
     pub body_hash: u64,
+    pub metrics: FunctionMetrics,
     pub is_type_checking_only: bool,
     pub parse_quality: ParseQuality,
     pub content_hash: u64,
@@ -877,6 +891,7 @@ pub struct ExtractedFunction {
     pub parse_quality: ParseQuality,
     pub signature_hash: u64,
     pub body_hash: u64,
+    pub metrics: FunctionMetrics,
     pub span: ByteSpan,
     pub name_span: ByteSpan,
     pub params_span: ByteSpan,

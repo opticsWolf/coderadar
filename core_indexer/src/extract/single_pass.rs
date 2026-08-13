@@ -56,6 +56,8 @@ pub struct CursorExtractor<'a> {
     fn_ref_candidates: Vec<(usize, String, usize, usize)>,
     /// Track current function index for call attribution
     current_function_idx: Option<usize>,
+    /// Track current class index for field attribution
+    current_class_idx: Option<usize>,
     /// Docstring info for attachment
     pending_docstring: Option<(usize, String, usize)>,
     /// All function names for fn_ref resolution
@@ -72,6 +74,7 @@ impl<'a> CursorExtractor<'a> {
             frames: Vec::new(),
             fn_ref_candidates: Vec::new(),
             current_function_idx: None,
+            current_class_idx: None,
             pending_docstring: None,
             fn_names: HashSet::new(),
         }
@@ -143,6 +146,18 @@ impl<'a> CursorExtractor<'a> {
                         break;
                     }
                 }
+            } else if popped.kind == EmittedKind::Class {
+                // Restore current_class_idx when leaving a class
+                self.current_class_idx = None;
+                for frame in self.frames.iter().rev() {
+                    if frame.kind == EmittedKind::Class {
+                        self.current_class_idx = self.units.iter().enumerate()
+                            .rev()
+                            .find(|(_, u)| matches!(u, ExtractedUnit::Class(c) if c.qualified_name == frame.qualified_name))
+                            .map(|(i, _)| i);
+                        break;
+                    }
+                }
             }
         }
     }
@@ -199,7 +214,8 @@ impl<'a> CursorExtractor<'a> {
             Tag::Docstring => {
                 self.pending_docstring = emit_docstring_node(node, self.source);
             }
-            Tag::Decorator | Tag::Field | Tag::ClassBase
+            Tag::Field => self.emit_field(node),
+            Tag::Decorator | Tag::ClassBase
             | Tag::FunctionParam | Tag::FunctionReturn
             | Tag::CallReceiver | Tag::ImportFromClause
             | Tag::ImportSpecifier | Tag::Export => {
@@ -252,6 +268,7 @@ impl<'a> CursorExtractor<'a> {
             decorators_span: spans.decorators_span,
         }));
 
+        self.current_class_idx = Some(unit_idx);
         self.record_emitted(node.id() as usize, unit_idx, &qualified_name,
                             EmittedKind::Class, node.end_byte());
         self.frames.push(Frame {
@@ -259,6 +276,44 @@ impl<'a> CursorExtractor<'a> {
             qualified_name,
             kind: EmittedKind::Class,
         });
+    }
+
+    /// Capture a class-level field (e.g. `x = 1` or `x: int = 1` in a class
+    /// body). Module-level assignments (no enclosing class) and local
+    /// assignments inside methods (enclosing function frame) are skipped.
+    fn emit_field(&mut self, node: Node) {
+        if self.current_class_idx.is_none() || self.current_function_idx.is_some() {
+            return;
+        }
+        let Some(name_node) = node
+            .child_by_field_name("left")
+            .or_else(|| node.child_by_field_name("name"))
+        else {
+            return;
+        };
+        let name = name_node.utf8_text(self.source.as_bytes()).unwrap_or("").to_string();
+        if name.is_empty() {
+            return;
+        }
+        let annotation = node
+            .child_by_field_name("type")
+            .and_then(|t| t.utf8_text(self.source.as_bytes()).ok())
+            .map(|s| s.to_string());
+        let span = ByteSpan { start: node.start_byte(), end: node.end_byte() };
+        let name_span = ByteSpan { start: name_node.start_byte(), end: name_node.end_byte() };
+
+        let idx = self.current_class_idx.unwrap();
+        if let Some(ExtractedUnit::Class(ref mut class)) = self.units.get_mut(idx) {
+            class.fields.push(ExtractedField {
+                name,
+                annotation,
+                source: SourceType::Impl,
+                default_value: None,
+                is_class_var: true,
+                span,
+                name_span,
+            });
+        }
     }
 
     fn emit_function(&mut self, node: Node) {
@@ -336,6 +391,7 @@ impl<'a> CursorExtractor<'a> {
             parse_quality: ParseQuality::Clean,
             signature_hash: 0,
             body_hash: 0,
+            metrics: crate::smells::metrics::compute_function_metrics(node, self.source),
             span: spans.full_span,
             name_span: spans.name_span,
             params_span: spans.params_span,

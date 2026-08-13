@@ -564,6 +564,7 @@ mod tests {
             parse_quality: ParseQuality::Clean,
             signature_hash: 0,
             body_hash: 0,
+            metrics: crate::types::FunctionMetrics::default(),
             span: ByteSpan { start: 100, end: 200 },
             name_span: ByteSpan { start: 104, end: 107 },
             params_span: ByteSpan { start: 0, end: 0 },

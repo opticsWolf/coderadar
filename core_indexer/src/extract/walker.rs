@@ -457,6 +457,7 @@ fn emit_for_node(node: Node, info: &TagInfo, ctx: &mut WalkContext) -> Option<Fr
                 parse_quality: ParseQuality::Clean,
                 signature_hash: 0,
                 body_hash: 0,
+                metrics: crate::types::FunctionMetrics::default(),
                 span: spans.full_span,
                 name_span: spans.name_span,
                 params_span: spans.params_span,

@@ -52,21 +52,22 @@ name. This table is the contract between the metrics pass and the rules.
 
 | Signal | Scope | Source | Notes |
 |---|---|---|---|
-| `LOC` | method | struct | `Function.exit_line - Function.line` (already derivable) |
-| `param_count` | method | struct | `Function.parameters.len()` (already derivable) |
-| `cyclomatic` | method | AST | 1 + decision points (`if`, `for`, `while`, `case`, `catch`, `&&`, `\|\|`, `?:`, `loop`, …) |
-| `nesting_depth` | method | AST | max control-flow nesting depth in the body |
-| `return_count` | method | AST | count of `return` statements |
-| `field_count` | class | struct | `Class.fields.len()` (already derivable) |
-| `WMC` | class | AST+struct | Σ `cyclomatic` over the class's methods |
+| `LOC` | method | struct | `(exit_line - line) + 1` (inclusive; from `Function` struct) |
+| `param_count` | method | struct | `Function.parameters.len()` |
+| `cyclomatic` | method | AST | 1 + decision points (`if`, `for`, `while`, `case`, `catch`, `&&`, `\|\|`, `?:`, `loop`, …) — computed in `extract/single_pass.rs` via `smells::metrics` |
+| `nesting_depth` | method | AST | max control-flow nesting depth in the body — same metrics pass |
+| `return_count` | method | AST | count of `return` statements — same metrics pass |
+| `field_count` | class | struct | `Class.fields.len()` — **now populated**: `extract/single_pass.rs` emits class-level `@field` captures into `ExtractedClass.fields` |
+| `WMC` | class | AST+struct | Σ `cyclomatic` over the class's methods (scan by `parent_class`) |
 | `max_method_cyclomatic` | class | AST+struct | max `cyclomatic` among the class's methods |
 | `CBO` | class | edges+struct | distinct other classes referenced (resolved calls → `parent_class`, `resolved_bases`, field/instantiation types) |
 
-**Signals already available from existing structs** (`LOC`, `param_count`,
-`field_count`) can be computed with zero AST work. The AST-derived signals
-(`cyclomatic`, `nesting_depth`, `return_count`, and the class-level roll-ups
-`WMC` / `max_method_cyclomatic`) require a new metrics pass over the
-`Function`/`Class` body spans.
+**Where each signal is computed:** `LOC` / `param_count` / `field_count` come
+from struct fields at engine-run time (`smells/engine.rs`); `cyclomatic` /
+`nesting_depth` / `return_count` are computed in the extraction metrics pass
+(`smells/metrics.rs`, stored on `Function.metrics`); the class roll-ups `WMC` /
+`max_method_cyclomatic` and `CBO` are derived in `metrics_for_class` from the
+resolved graph.
 
 ---
 
@@ -708,9 +709,20 @@ impl SmellEngine {
 
 ---
 
-## 7. Python Integration (`SmellRegistry` PyClass)
+## 7. Python Integration (`SmellRegistry`)
 
-File: `core_indexer/src/smells/registry.rs`
+> **Implementation note (how this actually shipped).** The `#[pyclass]` sketch
+> below was **adapted** during implementation (see §12): `SmellRegistry` is a
+> pure-Rust struct in `smells/engine.rs` (same `get_smells` /
+> `get_all_smells` / `get_smells_by_rule` API), and the FFI surface is a
+> `#[pyfunction] fn get_smells(entity_id=None, rule_id=None)` in `lib.rs` that
+> runs the engine via `with_graph` + `py.allow_threads` and materializes dicts
+> — matching this codebase's existing `traverse` / `graph_stats` pattern
+> (findings #5 in `traverse-smell-status.md`: the "pass `ProjectedGraph` into
+> Python" sketch is outdated). No `registry.rs` file exists; the logic lives in
+> `engine.rs`.
+
+File: `core_indexer/src/smells/engine.rs` (registry) + `lib.rs` (pyfunction)
 
 ```rust
 use pyo3::prelude::*;

@@ -88,6 +88,7 @@ more for the same answer.
 - `codegraph_module_children` — list classes/functions/imports in a module
 - `codegraph_as_of` — query the graph at a past timestamp ("what did X look like at commit Y?")
 - `codegraph_traverse` — generic edge traversal with direction and depth control
+- `codegraph_get_smells` — detect architectural code smells (god-class, long-method, long-parameter-list, deep-nesting, data-class, high-cyclomatic-complexity, brain-method, excessive-returns, too-many-fields)
 
 ## Mutation pipeline (LLM-writable code)
 
@@ -126,7 +127,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.4",
+        version="0.0.1",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -391,6 +392,34 @@ def create_server(graph: Any) -> MCPServer:
     ) -> str:
         """Generic edge traversal."""
         return _traverse(graph, entity_id, direction, edge_kinds, max_depth)
+
+    # ── codegraph_get_smells — code smell detection ─────────────────
+
+    @mcp.tool(
+        description=(
+            "Detect code smells (architectural issues) across the indexed codebase. "
+            "Run without arguments to list all findings, or filter by entity_id "
+            "(exact match) and/or rule_id (one of: god-class, long-method, "
+            "long-parameter-list, deep-nesting, data-class, "
+            "high-cyclomatic-complexity, brain-method, excessive-returns, "
+            "too-many-fields). Each finding carries a severity, a human message, "
+            "and the metric signals (WMC, CBO, LOC, cyclomatic, nesting_depth, "
+            "param_count, field_count, return_count, max_method_cyclomatic) that "
+            "triggered it."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def codegraph_get_smells(
+        entity_id: Optional[str] = None,
+        rule_id: Optional[str] = None,
+    ) -> str:
+        """Detect architectural code smells."""
+        return _get_smells(graph, entity_id, rule_id)
 
     # ── coderadar_replace_body ────────────────────────────────────
 
@@ -1272,6 +1301,45 @@ def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
             lines.append(f"`{name}` — not found at {timestamp}")
         lines.append("")
 
+    return "\n".join(lines)
+
+
+def _get_smells(graph: Any, entity_id: str | None, rule_id: str | None) -> str:
+    """Run the native smell engine and render findings as markdown."""
+    try:
+        from coderadar._core import get_smells as _get_smells_rust, graph_stats
+        stats = graph_stats()
+        if stats.get("functions", 0) == 0 and stats.get("classes", 0) == 0:
+            return "No index available. Run codegraph_reindex first."
+    except (ImportError, RuntimeError):
+        return "CodeRadar extension not available."
+
+    try:
+        findings = _get_smells_rust(entity_id, rule_id)
+    except Exception as e:
+        return f"Smell detection failed: {e}"
+
+    if not findings:
+        scope = []
+        if entity_id:
+            scope.append(f"entity `{entity_id}`")
+        if rule_id:
+            scope.append(f"rule={rule_id}")
+        suffix = f" for {' and '.join(scope)}" if scope else ""
+        return f"## Code smells\n\nNo findings{suffix}."
+
+    lines = ["## Code smells", f"Found {len(findings)} finding(s)", ""]
+    for f in findings:
+        sev = f.get("severity", "?")
+        name = f.get("entity_name") or f.get("entity_id", "?")
+        lines.append(
+            f"- **[{sev}]** `{f.get('rule_id', '?')}` — "
+            f"{name}: {f.get('message', '')}"
+        )
+        signals = f.get("signals") or {}
+        if signals:
+            sig = ", ".join(f"{k}={v:g}" for k, v in signals.items())
+            lines.append(f"  - signals: {sig}")
     return "\n".join(lines)
 
 

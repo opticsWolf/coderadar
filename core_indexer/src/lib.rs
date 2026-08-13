@@ -8,6 +8,7 @@ pub mod graph;
 pub mod mutation;
 pub mod query;
 pub mod resolve;
+pub mod smells;
 pub mod storage;
 pub mod types;
 pub mod update;
@@ -53,6 +54,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
     m.add_function(wrap_pyfunction!(index_edge_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(get_smells, m)?)?;
     m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;;
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
@@ -1050,6 +1052,72 @@ fn index_edge_stats(py: Python<'_>) -> PyResult<PyObject> {
         dict.set_item("overridden_by_keys", snap.overridden_by.len())?;
         Ok(dict.into())
     })
+}
+
+/// Detect code smells (architectural issues) across the resolved graph.
+///
+/// Runs the native `SmellEngine` (see `smells/`) over the current snapshot
+/// with the GIL released, then materializes findings as dicts. Findings can
+/// be filtered by `entity_id` and/or `rule_id`; each carries its rule id,
+/// entity id + name, severity, message, and the metric signals that triggered
+/// it.
+#[pyfunction]
+#[pyo3(signature = (entity_id=None, rule_id=None))]
+fn get_smells(
+    py: Python<'_>,
+    entity_id: Option<String>,
+    rule_id: Option<String>,
+) -> PyResult<Vec<PyObject>> {
+    with_graph(|_graph, snap| {
+        let engine = crate::smells::engine::SmellEngine::new();
+        let snap_owned: Arc<ProjectedGraph> = snap.clone();
+        let findings = py.allow_threads(move || engine.run(&snap_owned));
+
+        let mut results = Vec::with_capacity(findings.len());
+        for f in &findings {
+            if let Some(ref eid) = entity_id {
+                if &f.entity_id != eid {
+                    continue;
+                }
+            }
+            if let Some(ref rid) = rule_id {
+                if &f.rule_id != rid {
+                    continue;
+                }
+            }
+
+            let dict = PyDict::new(py);
+            dict.set_item("rule_id", &f.rule_id)?;
+            dict.set_item("entity_id", &f.entity_id)?;
+            dict.set_item("severity", f.severity.as_str())?;
+            dict.set_item("message", &f.message)?;
+            if let Some(name) = entity_name_of(&f.entity_id, &snap) {
+                dict.set_item("entity_name", name)?;
+            }
+
+            let signals = PyDict::new(py);
+            for (k, v) in &f.signals {
+                signals.set_item(k, *v)?;
+            }
+            dict.set_item("signals", signals)?;
+
+            results.push(dict.into());
+        }
+        Ok(results)
+    })
+}
+
+/// Look up a human-readable name for an entity id.
+fn entity_name_of(entity_id: &str, snap: &ProjectedGraph) -> Option<String> {
+    if let Some(f) = snap.functions.get(entity_id) {
+        Some(f.name.clone())
+    } else if let Some(c) = snap.classes.get(entity_id) {
+        Some(c.name.clone())
+    } else if let Some(m) = snap.modules.get(entity_id) {
+        Some(m.name.clone())
+    } else {
+        None
+    }
 }
 
 /// Vector similarity search against entity embeddings.
