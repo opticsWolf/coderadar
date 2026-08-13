@@ -359,7 +359,47 @@ wiring bugs. They cap `subclasses`/`overrides`/`importers` coverage:
   — `synthesize_module_unit` fills that gap at the callers, not inside
   `extract_single_pass` (which is node-driven and has no `Language`).
 
-### 7.6 Net assessment
+### 7.6 Silent degradation (traversal + CBO)
+
+`neighbors_of` and `traverse_bfs` silently skip unresolved/unknown entities:
+
+- `neighbors_of` returns `vec![]` for any id absent from the index (unresolved
+  base, unknown entity); `traverse_bfs` does not validate the start id — an
+  unknown entity yields a result containing *only* the start node at depth 0,
+  with no error or flag.
+- `target_class_of` maps `Unresolved` / `Builtin` / `External` → `None`, so
+  unresolved bases are silently uncounted in CBO.
+- No warning surfaces to MCP clients. Tracked as plan item 2.3 (traversal
+  degradation visibility).
+
+### 7.7 Smell-rule regression coverage gap
+
+- Per-rule files (`smells/rules/*.rs`) contain **zero** `#[test]` each; all
+  Rust coverage lives in `engine.rs` (3 boundary tests) + `metrics.rs` (1).
+- `deep-nesting`, `brain-method`, `excessive-returns` have **no regression
+  coverage**; `god-class` has only a negative/AND-boundary test (never asserts
+  it fires).
+- Python `test_smells.py` asserts rule *presence* on a fixture, not golden
+  `severity`/`message`/`signals` snapshots. Tracked as plan items 3.1/3.2.
+
+### 7.8 Concurrency mechanism (documented, safe)
+
+- `GLOBAL_GRAPH` is `parking_lot::RwLock<Option<CodeGraph>>`; `with_graph`
+  takes a **shared** read lock and hands out an `Arc<ProjectedGraph>`
+  snapshot — N concurrent readers are safe.
+- Nuance: `get_smells` runs the engine *under* the read guard (the `Arc`
+  clone keeps data stable but the lock is not released early), so an
+  in-flight smell run briefly blocks a writer (`reindex`/`update_file`).
+  Tracked as plan item 2.6 (release the read lock before engine run).
+- No concurrent-read smoke test exists yet. Tracked as plan item 1.5.
+
+### 7.9 Traversal latency benchmark gap
+
+- The bench harness (`TestBenchmarkPipeline`) is synthetic (50/200/100
+  modules); there is no cold-start `analyze()` or depth-3 `traverse` latency
+  number on a `codegraph-main`-sized repo. Tracked as plan item 1.4.
+
+### 7.10 Net assessment
 Both halves of the branch name now exist. The *traversal* goal is met for
 **current-state, in-memory** traversal across all 4 edge kinds with data
 populated behind them, and the *smell* goal is met by the native Rust engine

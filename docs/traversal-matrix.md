@@ -7,6 +7,14 @@ binding work. It records the actual state of the in-memory reverse indexes,
 resolves every `⚠ VERIFY` in the implementation plan against the real code,
 and corrects one assumption that turned out to be false.
 
+> **Status update (post-backfill).** The §0 headline and the §2 matrix below
+> describe the *pre-backfill* state. The backfill has since landed — `445b0c4`
+> (resolve backfill: `subclasses`/`importers`/`overridden_by` + `overrides_base`),
+> `4024bc0` (`imports_by_importer`), `c0bc99e` (Module concepts so
+> IMPORTS/EXTENDS/OVERRIDES persist). The §2 table and the §2 derivation
+> verdict are updated in place below; all other sections remain historical.
+> Current state lives in `traverse-smell-status.md`.
+
 ---
 
 ## 0. Headline finding (corrects the plan)
@@ -150,28 +158,24 @@ added there alongside `callers_of`/`callees_of` (`lib.rs:49-50`).
 | Edge kind | Out-index (downstream) | In-index (upstream) | Populated? | Macrame-persisted? | TS extractor emits source? |
 |-----------|------------------------|----------------------|------------|--------------------|----------------------------|
 | `calls`   | `callees_by_caller`    | `callers_by_callee`  | ✅ built in `build_fragment` from resolved/raw calls | ✅ `CALLS` + synthetic | ✅ `function.calls`/`resolved_calls` |
-| `imports`  | *(none)* — `Import` has no importer field, would need `imports_by_importer` | `importers` (field) | ❌ **never populated**; `Import.resolution` stuck at `Unresolved` | ❌ not persisted | ⚠ partial — Import entities exist in `proj.imports`, but no resolution/back-index |
-| `extends`  | derive from `Class.parent_class` / `resolved_bases` | `subclasses` (field) | ❌ `subclasses` **never populated**; `resolved_bases` stuck at `vec![]` (fwd side empty too); only `parent_class: Option` is set from the AST | ❌ not persisted | ✅ `Class.parent_class` + raw `bases` extracted |
-| `overrides`| *(none)* — `Function` has no "overrides base" field | `overridden_by` (field) | ❌ **never populated** | ❌ not persisted | ⚠ not extracted as an edge |
+| `imports`  | `imports_by_importer` (added `4024bc0`) | `importers` (field) | ✅ populated by `resolve_imports` (`445b0c4`); `Import.resolution` set | ✅ persisted (`c0bc99e`) | ✅ Import entities + resolution/back-index |
+| `extends`  | derive from `Class.resolved_bases` | `subclasses` (field) | ✅ populated by `resolve_class_hierarchy` (`445b0c4`); `resolved_bases` filled | ✅ persisted (`445b0c4`/`c0bc99e`) | ✅ `Class.parent_class` + raw `bases` extracted |
+| `overrides`| `overrides_base` (added `445b0c4`) | `overridden_by` (field) | ✅ populated by `resolve_overrides` (`445b0c4`) | ✅ persisted (`445b0c4`) | ✅ detected from MRO |
 
 "Populated?" is the column the original plan was missing. It is the gating
 fact for everything downstream.
 
-### Downstream-derivation verdict (resolves the "build symmetric indexes vs derive" fork)
+### Downstream-derivation verdict (resolved — backfill landed)
 
-- **`extends` downstream**: `Class.parent_class: Option<EntityId>` (and
-  `resolved_bases: Vec<EntityId>`, once filled) gives a **single/Vec field
-  lookup — no forward index needed**. Cheap to derive.
-- **`imports` downstream**: `Import` has **no importer field** and
-  `resolution` is `Unresolved`. A forward index `imports_by_importer` is
-  required (or an O(E) scan).
-- **`overrides` downstream**: `Function` has **no "overrides base" field**.
-  A forward index `overrides_base` is required (or an O(E) scan, or MRO
-  inference — non-trivial).
+- **`extends` downstream**: `Class.resolved_bases` now filled → single/Vec
+  field lookup, no forward index needed.
+- **`imports` downstream**: `imports_by_importer` forward index **now built**
+  (`resolve_imports`, `4024bc0`).
+- **`overrides` downstream**: `overrides_base` forward index **now built**
+  (`resolve_overrides`, `445b0c4`).
 
-Net: even after a resolve backfill, traversal symmetry needs **two new
-forward indexes** (`imports_by_importer`, `overrides_base`). `extends`
-needs none (derive from the struct field).
+Net: the two forward indexes this section predicted are now in place;
+traversal symmetry holds across all 4 kinds (see `traverse-smell-status.md`).
 
 ---
 
