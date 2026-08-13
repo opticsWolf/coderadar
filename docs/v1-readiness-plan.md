@@ -56,19 +56,23 @@ move the needle on this codebase; go straight to Phase 3.
   matrix's "Populated?" / "not persisted" columns are stale.
 - Sync them; only `as_of` reads remain deferred.
 
-### 1.4 Real-repo traversal latency benchmark
+### 1.4 Real-repo traversal latency benchmark — ✅ done (`tests/test_v1_gaps.py`)
 
-- The bench harness is synthetic (50/200/100 modules). Add a real-repo
-  variant against `codegraph-main` measuring cold-start `analyze()` and
-  depth-3 `traverse` BFS latency.
-- Record the numbers in `traverse-smell-status.md` §7.
+- Added `test_real_repo_traversal_latency` (skips if `codegraph-main` absent;
+  path overridable via `CODEGRAPH_MAIN` env var).
+- Measured: cold-start `analyze()` = **~46s** (605 files, 7646 entities);
+  depth-3 `traverse` = **0.4ms / 28 nodes**. Numbers recorded in
+  `traverse-smell-status.md` §7.9.
 
-### 1.5 Concurrent-read smoke test
+### 1.5 Concurrent-read smoke test — ✅ done (`tests/test_v1_gaps.py`)
 
-- Pin the verified concurrency mechanism: N concurrent `get_smells` /
-  `traverse` reads against one `GLOBAL_GRAPH` must all return correct results
-  and must not deadlock; a concurrent writer must still acquire the write lock.
-- Guards the `parking_lot::RwLock` (N-reader) property against regressions.
+- Added `test_concurrent_reads`: 8 threads × 3 iters × 13 entity ids run
+  `traverse` + `get_smells` concurrently; asserts exact result count (312),
+  zero errors, and no deadlock (60s join timeout).
+- Covers the `parking_lot::RwLock` N-reader property end-to-end through the
+  FFI (`py.allow_threads` releases the GIL during BFS/engine run).
+- The "writer must still acquire the write lock" half is not asserted (hard
+  to schedule deterministically); its starvation concern is tracked under 2.6.
 
 ---
 

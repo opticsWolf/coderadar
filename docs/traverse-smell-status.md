@@ -398,6 +398,10 @@ wiring bugs. They cap `subclasses`/`overrides`/`importers` coverage:
 - The bench harness (`TestBenchmarkPipeline`) is synthetic (50/200/100
   modules); there is no cold-start `analyze()` or depth-3 `traverse` latency
   number on a `codegraph-main`-sized repo. Tracked as plan item 1.4.
+- **Measured (plan 1.4, `tests/test_v1_gaps.py`):** cold-start `analyze()` on
+  codegraph-main (605 files, 7646 entities) = **~46s**; depth-3 `traverse`
+  from a single function = **0.4ms / 28 nodes**. `analyze()` dominates; the
+  BFS is sub-millisecond.
 
 ### 7.10 Net assessment
 Both halves of the branch name now exist. The *traversal* goal is met for
