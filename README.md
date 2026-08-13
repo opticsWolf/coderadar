@@ -45,8 +45,8 @@ Python Layer (CLI, Visualizers, Framework Resolvers, GraphRAG, MCP Server)
         │
     PyO3 FFI  +  register_synthetic_edge() bridge
         │
-Rust Core (ProjectedGraph, Tree-sitter 18-lang, Parallel Extraction,
-           Resolution Cascade L1-L3, Query Engine, Mutation Engine)
+Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
+           Resolution Cascade L1-L3, Query Engine, Mutation Engine, Smell Engine)
         │
     Macrame DB (bitemporal persistence with valid_from/valid_to timestamps)
 ```
@@ -54,8 +54,8 @@ Rust Core (ProjectedGraph, Tree-sitter 18-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 509 (168 Rust + 341 Python) |
-| **MCP Tools** | 17 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file) |
+| **Tests** | 556 (200 Rust + 356 Python) |
+| **MCP Tools** | 18 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, get_smells, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
 | **Agents** | MCP server with explore, node, search, affected tools |
@@ -160,6 +160,15 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
 
+## v0.0.1 Feature Highlights
+
+- **Native Rust code-smell engine** — 9 structural smells (god-class, long-method, long-parameter-list, deep-nesting, data-class, high-cyclomatic-complexity, brain-method, excessive-returns, too-many-fields) with severity tiers, exposed via the `codegraph_get_smells` MCP tool (filter by `entity_id` and/or `rule_id`)
+- **AST metrics pass** — cyclomatic complexity, nesting depth, and return count computed during single-pass extraction (`Function.metrics`), so the engine needs no source re-parse; class-level roll-ups (WMC, max-method cyclomatic, CBO) derived from the resolved graph
+- **Class-field extraction** — class-level `@field` captures now populate `Class.fields` (previously always empty), unblocking the class-scope rules
+- **Generalized `traverse` binding** — native-Rust BFS across all 4 edge kinds (calls, imports, extends, overrides) with `py.allow_threads`, replacing the pure-Python fallback
+- **Resolve back-fill** — `subclasses`, `importers`, and `overrides` reverse indexes populated (previously silently empty); cross-file MRO; TS/JS `extends`/`implements` base capture; Module concepts emitted so IMPORTS edges persist to Macrame
+- **556 tests, 0 failures** — 200 Rust + 356 Python
+
 ## v0.6.4 Feature Highlights
 
 - **Query engine fixed** — Pest `WHERE` clauses now match (atomic `path` rule yielded `Path([])`, non-silent `operand`/`value` wrappers fell through to a string-literal arm; `name == "x"` / `name contains "x"` / `caller_count > 0` all returned 0 rows). Fixed path parsing, operand/value recursion, and Int/Float mixed comparison arms.
@@ -234,6 +243,7 @@ core_indexer/              # Rust core
     mutation/              # AST-aware refactoring (rope, indent, WriteGuard)
     fs/                    # File watcher (notify) + git integration
     graph.rs               # In-memory ProjectedGraph + parallel extraction + reverse indexes
+    smells/                # Native code-smell engine (metrics pass, 9 rules, engine, registry)
     storage.rs             # Macrame concept/edge persistence
     lib.rs                 # PyO3 FFI bindings
 
@@ -243,12 +253,12 @@ py_agent/src/coderadar/    # Python layer
     agent/                 # GraphRAG query pipeline
     lsp/                   # Persistent LSP warm pool
     mutation/              # Tool router for LLM
-    mcp/                   # MCP server (explore, node, search, affected)
+    mcp/                   # MCP server (explore, node, search, affected, get_smells, …)
     query/                 # Query planner + templates + cache
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Specifications + code review + performance roadmap
-tests/                     # 140 Python tests (E2E, MCP, framework resolvers, benchmarks)
+tests/                     # 356 Python tests (E2E, MCP, smells, framework resolvers, benchmarks)
 ```
 
 ## Configuration
