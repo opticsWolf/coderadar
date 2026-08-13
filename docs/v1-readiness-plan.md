@@ -41,6 +41,26 @@ Before implementing same-package precedence, measure the actual ROI on
 - **Gate:** lift < 5 resolved subclasses → skip 2.1, go straight to Phase 3.
   Lift ≥ 5 → proceed to 2.1.
 
+### 1.3 Update `docs/traversal-matrix.md` columns
+
+- IMPORTS/EXTENDS/OVERRIDES edges are now persisted (since `c0bc99e`); the
+  matrix's "Populated?" / "not persisted" columns are stale.
+- Sync them; only `as_of` reads remain deferred.
+
+### 1.4 Real-repo traversal latency benchmark
+
+- The bench harness is synthetic (50/200/100 modules). Add a real-repo
+  variant against `codegraph-main` measuring cold-start `analyze()` and
+  depth-3 `traverse` BFS latency.
+- Record the numbers in `traverse-smell-status.md` §7.
+
+### 1.5 Concurrent-read smoke test
+
+- Pin the verified concurrency mechanism: N concurrent `get_smells` /
+  `traverse` reads against one `GLOBAL_GRAPH` must all return correct results
+  and must not deadlock; a concurrent writer must still acquire the write lock.
+- Guards the `parking_lot::RwLock` (N-reader) property against regressions.
+
 ---
 
 ## Phase 2: Core Heuristics & MCP Visibility (v1 blockers)
@@ -102,6 +122,29 @@ degradation, failed class resolution, silent traversal truncation, and the
      state, assert in-memory BFS matches persisted `as_of` results.
 - **Scope:** "plumbing-with-a-test" — unblocks the temporal-read surface.
 
+### 2.6 Release the `get_smells` read lock before engine run
+
+- `with_graph` holds the `GLOBAL_GRAPH` read guard for the duration of the
+  closure, so `get_smells` runs the engine *under* the read lock — an
+  in-flight smell run briefly blocks a writer (`reindex`/`update_file`).
+- Snapshot the `Arc<ProjectedGraph>`, drop the read guard, then run the
+  engine on the owned clone (snapshot semantics are fine for a read).
+- **Test:** covered by 1.5 — concurrent `get_smells` + a writer must not
+  deadlock and the writer must not be starved.
+
+### 2.7 Populate `class.methods` (derived denormalization)
+
+- `class.methods` is always `vec![]` — a footgun every consumer trips on
+  exactly once, and methods are looked up far more often than fields.
+- Populate it in `build_fragment` as a **derived** field computed from
+  `projection.functions` by `parent_class` on every build (mirroring the
+  `class.fields` fix in `91021ac`). Recomputed each index/analyze/update, so
+  there is no separate manual source of truth to drift — the single source
+  remains `functions` + `parent_class`.
+- **Do not** introduce a second write path; read-only denormalization only.
+- **Test:** assert `class.methods` is non-empty for a known class, and that
+  CBO / override detection / smell rules still produce identical results.
+
 ---
 
 ## Phase 3: Test & Correctness Hardening (v1 blocker)
@@ -133,17 +176,20 @@ degradation, failed class resolution, silent traversal truncation, and the
 
 ---
 
-## Phase 4: Structural Cleanup (post-v1 / stretch)
+## Phase 4: Release Engineering
 
-### 4.1 `class.methods` Denormalization Strategy
+### 4.1 Publish the missing sdist
 
-- `class.methods` is always `vec![]` (footgun). Populating it creates a second
-  source of truth alongside `projection.functions`.
-- **v1:** leave as `vec![]`; document the invariant clearly. Do **not**
-  populate it as a cache (sync risk > footgun).
-- **Post-v1:** file an issue to migrate all scan sites (CBO, override
-  detection, smell rules) to read from a populated `class.methods`, removing
-  the scan-`projection.functions`-by-`parent_class` pattern.
+- **Current state:** `.github/workflows/release.yml` already has an `sdist`
+  job (`maturin sdist`) plus a `publish` job that uploads wheels + sdist.
+- **Root cause of the missing v0.6.4 sdist:** `maturin sdist` requires the
+  LICENSE file inside the tarball; it was absent until `4f40d1f` added
+  `[tool.maturin] include = ["LICENSE"]` to `pyproject.toml` — *after* the
+  v0.6.4 tag, so that fix was never released.
+- **Action:** verify the `sdist` job end-to-end (command, `--out`, artifact
+  merge in `publish`), apply any remaining release.yml fix if the v0.6.5 run
+  reveals one, and confirm the v0.6.5 tag push publishes both wheels and the
+  sdist to PyPI.
 
 ---
 
