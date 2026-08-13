@@ -1,4 +1,4 @@
-# CodeRadar v0.0.1
+# CodeRadar v0.6.5
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -160,7 +160,7 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
 
-## v0.0.1 Feature Highlights
+## v0.6.5 Feature Highlights
 
 - **Native Rust code-smell engine** — 9 structural smells (god-class, long-method, long-parameter-list, deep-nesting, data-class, high-cyclomatic-complexity, brain-method, excessive-returns, too-many-fields) with severity tiers, exposed via the `codegraph_get_smells` MCP tool (filter by `entity_id` and/or `rule_id`)
 - **AST metrics pass** — cyclomatic complexity, nesting depth, and return count computed during single-pass extraction (`Function.metrics`), so the engine needs no source re-parse; class-level roll-ups (WMC, max-method cyclomatic, CBO) derived from the resolved graph
