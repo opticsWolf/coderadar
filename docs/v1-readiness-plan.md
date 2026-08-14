@@ -168,6 +168,10 @@ Replaces the (correctly-killed) package-path idea with three signal-aware fixes:
   topology + edge types but not depth).
 - Round-trip test: analyze (a→b), capture ts, mutate (a→c), re-analyze, then
   `as_of(ts)` returns b but NOT c. 206 Rust + 361 Python = **567, 0 failures**.
+- **Follow-up (review Item 7):** the `as_of` path now snapshots the
+  `Arc<ProjectedGraph>` + `Arc<CodeGraphStore>` under the read guard and
+  releases it BEFORE `traverse_at` — mirroring 2.6, so a slow DB traversal no
+  longer blocks a writer. Also added `test_as_of_upstream_and_both_rejected`.
 
 ### 2.6 Release the `get_smells` read lock before engine run — ✅ done
 
@@ -178,6 +182,11 @@ Replaces the (correctly-killed) package-path idea with three signal-aware fixes:
   blocks a writer (`reindex`/`update_file`).
 - Output unchanged; covered by the existing `test_concurrent_reads` (1.5) +
   `test_smells.py`. 206 Rust + 361 Python = **567, 0 failures**.
+- **Follow-up (review test gap):** `test_get_smells_releases_read_lock_for_writer`
+  races `analyze` (writer) against an in-flight engine run on a synthetic
+  4000-class graph and asserts the writer completes while the engine is still
+  running — a direct regression guard for the pre-2.6 deadlock/starve bug.
+  (Also renamed `ts_open` → `ts_now`, `macrame_dir` → `macrame_direction`.)
 
 ### 2.7 Populate `class.methods` (derived denormalization) — ✅ done
 

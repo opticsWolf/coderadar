@@ -149,6 +149,24 @@ def test_as_of_temporal_traversal():
     assert "c" not in names1, f"as_of(ts1) should not include c (added later), got {names1}"
 
 
+def test_as_of_upstream_and_both_rejected():
+    """Plan 2.5 — as_of traversal is downstream-only; upstream/both must raise."""
+    import os
+    import tempfile
+    from datetime import datetime, timezone
+
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, "a.py"), "w") as f:
+        f.write("def a():\n    return b()\n\ndef b(): return 1\n")
+    analyze(d)
+    a_id = next(f["id"] for f in search_entities("a", 5, "function") if f["name"] == "a")
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+
+    for direction in ("in", "upstream", "both"):
+        with pytest.raises(NotImplementedError):
+            traverse(a_id, 2, ["calls"], direction, ts)
+
+
 def test_concurrent_reads():
     """Plan 1.5 — N concurrent get_smells/traverse reads must not deadlock.
 
@@ -196,4 +214,88 @@ def test_concurrent_reads():
     print(
         f"\n[1.5] {N_THREADS} threads x {ITERS} iters x {len(ids)} ids: "
         f"{len(results)} traverse results in {elapsed:.2f}s, 0 errors"
+    )
+
+
+@pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+@pytest.mark.slow
+def test_get_smells_releases_read_lock_for_writer():
+    """Plan 2.6 — a writer must not be starved by an in-flight smell run.
+
+    Builds a synthetic graph large enough that the smell engine runs for a
+    measurable time, then races `analyze` (writer) against `get_smells`.
+    Asserts the writer completes while the engine is STILL running — i.e. the
+    `GLOBAL_GRAPH` read lock was released before the engine loop (2.6), not
+    held throughout (which would block the writer, or deadlock, pre-2.6).
+    """
+    import os
+    import tempfile
+
+    def _gen(n):
+        lines = []
+        for i in range(n):
+            lines.append(f"class C{i}:")
+            lines.append(f"    f0 = {i}")
+            lines.append(f"    f1 = {i + 1}")
+            for j in range(3):
+                lines.append(f"    def m{j}(self, x):")
+                lines.append("        return x + 1")
+        return "\n".join(lines) + "\n"
+
+    big = tempfile.mkdtemp()
+    with open(os.path.join(big, "big.py"), "w") as f:
+        f.write(_gen(4000))
+    analyze(big)
+
+    # Baseline: how long does the engine run take on this graph?
+    t0 = time.perf_counter()
+    get_smells(None, None)
+    smell_ms = (time.perf_counter() - t0) * 1000
+    if smell_ms < 300:
+        pytest.skip(f"graph too small to measure lock release ({smell_ms:.0f}ms)")
+
+    small = tempfile.mkdtemp()
+    with open(os.path.join(small, "s.py"), "w") as f:
+        f.write("def helper():\n    return 1\n")
+
+    state = {"smell_done": False, "writer_done": False, "writer_ms": None}
+
+    def run_smells():
+        try:
+            get_smells(None, None)
+        finally:
+            state["smell_done"] = True
+
+    def run_writer():
+        t0 = time.perf_counter()
+        try:
+            analyze(small)
+        finally:
+            state["writer_ms"] = (time.perf_counter() - t0) * 1000
+            state["writer_done"] = True
+
+    smell_t = threading.Thread(target=run_smells, daemon=True)
+    writer_t = threading.Thread(target=run_writer, daemon=True)
+    smell_t.start()
+    time.sleep(0.2)  # let the engine enter its run loop (snapshot is instant)
+    writer_t.start()
+
+    writer_t.join(timeout=30)
+    assert state["writer_done"], (
+        "writer was starved/deadlocked — read lock held during the engine run"
+    )
+
+    engine_still_running = not state["smell_done"]
+    smell_t.join(timeout=30)
+    assert not smell_t.is_alive(), "smell thread did not finish"
+
+    print(
+        f"\n[2.6] smell run {smell_ms:.0f}ms baseline; writer finished in "
+        f"{state['writer_ms']:.0f}ms while engine "
+        f"{'still running' if engine_still_running else 'already done'}"
+    )
+
+    assert engine_still_running, (
+        f"writer waited for the smell run to finish ({state['writer_ms']:.0f}ms "
+        f"vs {smell_ms:.0f}ms baseline) — read lock was held during the engine loop"
     )

@@ -301,6 +301,9 @@ Both Phase-2 caveats (formerly "in progress, 1 test failing" and
   `test_class_methods_populated_27`).
 - After Phase 3 (smell golden tests): **572, 0 failures** (4 Python
   `test_smells_golden.py`).
+- After review follow-ups (as_of lock release + 2 regression tests): **574, 0
+  failures** (2 Python: `test_as_of_upstream_and_both_rejected` +
+  `test_get_smells_releases_read_lock_for_writer`).
 
 ---
 

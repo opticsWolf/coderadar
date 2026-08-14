@@ -1008,36 +1008,48 @@ fn traverse(
             .collect();
         let start_owned = start_id.to_string();
         let ts_owned = ts.to_string();
-        return with_graph(move |graph, snap| {
-            let store = match &graph.store {
-                Some(s) => s.clone(),
+        // Snapshot graph + store under the read lock, then release the lock
+        // BEFORE the DB traversal — a slow `load_subgraph_with` must not
+        // block a writer (`reindex`/`update_file`). Mirrors the 2.6 fix.
+        let (snap, store) = {
+            let guard = GLOBAL_GRAPH.read();
+            match guard.as_ref() {
+                Some(g) => (g.snapshot(), g.store.clone()),
                 None => {
                     return Err(pyo3::exceptions::PyRuntimeError::new_err(
-                        "No persistent store — temporal traversal needs a .coderadar store",
+                        "No graph loaded — run coderadar init first",
                     ));
                 }
-            };
-            let sub = py
-                .allow_threads({
-                    let s = start_owned.clone();
-                    let e = edge_types.clone();
-                    let t = ts_owned.clone();
-                    move || store.traverse_at(&s, max_depth, &e, &t)
-                })
-                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("as_of traversal failed: {e:?}")))?;
-            let reached = subgraph_bfs(&sub, &start_owned, max_depth);
-            let mut results = Vec::with_capacity(reached.len());
-            for (id, depth, ek) in reached {
-                if let Some(d) = entity_ref_to_dict(py, &id, snap) {
-                    if let Ok(dd) = d.downcast_bound::<pyo3::types::PyDict>(py) {
-                        let _ = dd.set_item("depth", depth);
-                        let _ = dd.set_item("edge_type", &ek);
-                    }
-                    results.push(d);
-                }
             }
-            Ok(results)
-        });
+        };
+        let store = match store {
+            Some(s) => s,
+            None => {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "No persistent store — temporal traversal needs a .coderadar store",
+                ));
+            }
+        };
+        let sub = py
+            .allow_threads({
+                let s = start_owned.clone();
+                let e = edge_types.clone();
+                let t = ts_owned.clone();
+                move || store.traverse_at(&s, max_depth, &e, &t)
+            })
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("as_of traversal failed: {e:?}")))?;
+        let reached = subgraph_bfs(&sub, &start_owned, max_depth);
+        let mut results = Vec::with_capacity(reached.len());
+        for (id, depth, ek) in reached {
+            if let Some(d) = entity_ref_to_dict(py, &id, &snap) {
+                if let Ok(dd) = d.downcast_bound::<pyo3::types::PyDict>(py) {
+                    let _ = dd.set_item("depth", depth);
+                    let _ = dd.set_item("edge_type", &ek);
+                }
+                results.push(d);
+            }
+        }
+        return Ok(results);
     }
 
     // ── Current-state in-memory BFS ─────────────────────────────────

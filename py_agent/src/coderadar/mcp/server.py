@@ -1372,17 +1372,17 @@ def _traverse(
 
     depth = min(max_depth, 10)
     # Map MCP direction names to MacrameQuery direction
-    macrame_dir = {"downstream": "out", "upstream": "in", "both": "both"}.get(direction, "both")
+    macrame_direction = {"downstream": "out", "upstream": "in", "both": "both"}.get(direction, "both")
 
     try:
-        results = graph.traverse(entity_id, depth, edge_kinds, macrame_dir)
+        results = graph.traverse(entity_id, depth, edge_kinds, macrame_direction)
     except Exception as e:
         return f"Traversal failed: {e}"
 
     # 2.3: surface silent truncation — count targets the walk could not follow.
     try:
         from coderadar._core import traverse_unresolved
-        unresolved = traverse_unresolved(entity_id, depth, edge_kinds or [], macrame_dir)
+        unresolved = traverse_unresolved(entity_id, depth, edge_kinds or [], macrame_direction)
     except Exception:
         unresolved = 0
 
