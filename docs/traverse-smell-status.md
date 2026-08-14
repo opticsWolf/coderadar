@@ -295,6 +295,8 @@ Both Phase-2 caveats (formerly "in progress, 1 test failing" and
   (1 Python `test_unverified_sites_warning`).
 - After 2.5 (as_of traversal + timestamp fix): 206 Rust + 361 Python = **567, 0 failures**
   (1 Python `test_as_of_temporal_traversal`).
+- After 2.6 (get_smells lock release): **567, 0 failures** (no new test —
+  covered by 1.5 + test_smells.py).
 
 ---
 
@@ -411,11 +413,11 @@ wiring bugs. They cap `subclasses`/`overrides`/`importers` coverage.
 - `GLOBAL_GRAPH` is `parking_lot::RwLock<Option<CodeGraph>>`; `with_graph`
   takes a **shared** read lock and hands out an `Arc<ProjectedGraph>`
   snapshot — N concurrent readers are safe.
-- Nuance: `get_smells` runs the engine *under* the read guard (the `Arc`
-  clone keeps data stable but the lock is not released early), so an
-  in-flight smell run briefly blocks a writer (`reindex`/`update_file`).
-  Tracked as plan item 2.6 (release the read lock before engine run).
-- No concurrent-read smoke test exists yet. Tracked as plan item 1.5.
+- **Fixed (2.6):** `get_smells` now uses `with_graph_snapshot` — the read
+  guard is dropped before the engine runs, so a smell run no longer blocks a
+  writer (`reindex`/`update_file`).
+- Concurrent-read smoke test added (1.5, `test_concurrent_reads`): 8 threads ×
+  3 iters × 13 ids, 0 errors, no deadlock.
 
 ### 7.9 Traversal latency benchmark gap
 

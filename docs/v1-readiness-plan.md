@@ -169,15 +169,15 @@ Replaces the (correctly-killed) package-path idea with three signal-aware fixes:
 - Round-trip test: analyze (a→b), capture ts, mutate (a→c), re-analyze, then
   `as_of(ts)` returns b but NOT c. 206 Rust + 361 Python = **567, 0 failures**.
 
-### 2.6 Release the `get_smells` read lock before engine run
+### 2.6 Release the `get_smells` read lock before engine run — ✅ done
 
-- `with_graph` holds the `GLOBAL_GRAPH` read guard for the duration of the
-  closure, so `get_smells` runs the engine *under* the read lock — an
-  in-flight smell run briefly blocks a writer (`reindex`/`update_file`).
-- Snapshot the `Arc<ProjectedGraph>`, drop the read guard, then run the
-  engine on the owned clone (snapshot semantics are fine for a read).
-- **Test:** covered by 1.5 — concurrent `get_smells` + a writer must not
-  deadlock and the writer must not be starved.
+- Added `with_graph_snapshot` (clones the `Arc<ProjectedGraph>` under the read
+  guard, then drops the guard BEFORE running the closure).
+- `get_smells` now uses it — the smell engine runs on the owned snapshot with
+  the `GLOBAL_GRAPH` read lock released, so an in-flight smell run no longer
+  blocks a writer (`reindex`/`update_file`).
+- Output unchanged; covered by the existing `test_concurrent_reads` (1.5) +
+  `test_smells.py`. 206 Rust + 361 Python = **567, 0 failures**.
 
 ### 2.7 Populate `class.methods` (derived denormalization)
 

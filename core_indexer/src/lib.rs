@@ -94,6 +94,27 @@ where
     }
 }
 
+/// Like `with_graph`, but the read lock is released BEFORE `f` runs — `f`
+/// receives an owned `Arc<ProjectedGraph>` snapshot. For long-running reads
+/// (the smell engine) that must not block a writer (`reindex`/`update_file`).
+fn with_graph_snapshot<F, R>(f: F) -> PyResult<R>
+where
+    F: FnOnce(Arc<ProjectedGraph>) -> PyResult<R>,
+{
+    let snap = {
+        let guard = GLOBAL_GRAPH.read();
+        match guard.as_ref() {
+            Some(g) => g.snapshot(),
+            None => {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                    "No graph loaded — run coderadar init first",
+                ));
+            }
+        }
+    };
+    f(snap)
+}
+
 // ── PyO3-exposed Graph wrapper ─────────────────────────────────────────────
 
 #[pyclass(name = "CodeGraph")]
@@ -1212,7 +1233,7 @@ fn get_smells(
     entity_id: Option<String>,
     rule_id: Option<String>,
 ) -> PyResult<Vec<PyObject>> {
-    with_graph(|_graph, snap| {
+    with_graph_snapshot(|snap| {
         let engine = crate::smells::engine::SmellEngine::new();
         let snap_owned: Arc<ProjectedGraph> = snap.clone();
         let findings = py.allow_threads(move || engine.run(&snap_owned));
