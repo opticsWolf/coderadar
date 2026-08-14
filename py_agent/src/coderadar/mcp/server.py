@@ -1379,6 +1379,13 @@ def _traverse(
     except Exception as e:
         return f"Traversal failed: {e}"
 
+    # 2.3: surface silent truncation — count targets the walk could not follow.
+    try:
+        from coderadar._core import traverse_unresolved
+        unresolved = traverse_unresolved(entity_id, depth, edge_kinds or [], macrame_dir)
+    except Exception:
+        unresolved = 0
+
     if not results:
         return (
             f"## Traverse from `{entity.get('name', entity_id)}`\n\n"
@@ -1398,6 +1405,11 @@ def _traverse(
         f"Found {len(results)} reachable entities",
         "",
     ]
+    if unresolved > 0:
+        lines.append(
+            f"⚠️ Traversal incomplete: {unresolved} outgoing target(s) "
+            f"could not be resolved and were excluded from the walk."
+        )
 
     for d in sorted(by_depth.keys()):
         items = by_depth[d]

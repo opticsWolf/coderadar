@@ -289,6 +289,8 @@ Both Phase-2 caveats (formerly "in progress, 1 test failing" and
   (3 Rust base-resolution tests + 2 Python Phase-1 tests).
 - After 2.2 (alias + TS import parsing): 205 Rust + 358 Python = **563, 0 failures**
   (2 Rust tests: alias resolution + TS type-only import).
+- After 2.3 (traversal degradation visibility): 206 Rust + 359 Python = **565, 0 failures**
+  (1 Rust `count_unresolved_targets` + 1 Python `traverse_unresolved`).
 
 ---
 
@@ -380,8 +382,12 @@ wiring bugs. They cap `subclasses`/`overrides`/`importers` coverage.
   with no error or flag.
 - `target_class_of` maps `Unresolved` / `Builtin` / `External` → `None`, so
   unresolved bases are silently uncounted in CBO.
-- No warning surfaces to MCP clients. Tracked as plan item 2.3 (traversal
-  degradation visibility).
+- No warning surfaces to MCP clients for the *unknown-entity* case, but the
+  *unresolved-outgoing-edge* case is now surfaced (2.3): `traverse_unresolved`
+  + the MCP `_traverse` renderer append a `⚠️ Traversal incomplete: N …`
+  warning when the walk skips external/unresolved outgoing targets. The
+  CBO silent-skip (previous bullet) remains by design — unresolved targets
+  are simply not counted toward coupling.
 
 ### 7.7 Smell-rule regression coverage gap
 

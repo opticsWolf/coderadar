@@ -50,6 +50,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(callers_of, m)?)?;
     m.add_function(wrap_pyfunction!(callees_of, m)?)?;
     m.add_function(wrap_pyfunction!(traverse, m)?)?;
+    m.add_function(wrap_pyfunction!(traverse_unresolved, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entity, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -1004,6 +1005,64 @@ fn traverse(
             }
         }
         Ok(results)
+    })
+}
+
+/// Count unresolved outgoing targets across the traversal from `start_id`.
+/// Mirrors `traverse` (same BFS, direction/kinds normalization) but returns
+/// the number of targets the walk could NOT follow — surfaces silent
+/// truncation (plan 2.3) without changing the `traverse` contract.
+#[pyfunction]
+#[pyo3(signature = (start_id, max_depth, edge_kinds, direction))]
+fn traverse_unresolved(
+    py: Python<'_>,
+    start_id: &str,
+    max_depth: usize,
+    edge_kinds: Vec<String>,
+    direction: &str,
+) -> PyResult<usize> {
+    let (up, down) = match direction.trim().to_ascii_lowercase().as_str() {
+        "in" | "upstream" => (true, false),
+        "out" | "downstream" => (false, true),
+        "both" => (true, true),
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "Unknown direction `{other}` (expected upstream/in, downstream/out, both)"
+            )));
+        }
+    };
+
+    let kinds: Vec<String> = {
+        let mut v: Vec<String> = edge_kinds
+            .iter()
+            .map(|k| {
+                let k = k.trim().to_ascii_lowercase();
+                if k == "inherits" { "extends".to_string() } else { k }
+            })
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+
+    with_graph(|_graph, snap| {
+        if entity_ref_to_dict(py, start_id, snap).is_none() {
+            return Ok(0);
+        }
+        let snap_owned: std::sync::Arc<ProjectedGraph> = snap.clone();
+        let start = start_id.to_string();
+        let snap_for_bfs = snap_owned.clone();
+        let kinds_for_bfs = kinds.clone();
+        let reached: Vec<(String, usize, String)> = py.allow_threads(move || {
+            crate::graph::CodeGraph::traverse_bfs(&snap_for_bfs, &start, max_depth, &kinds_for_bfs, up, down)
+        });
+        let total: usize = reached
+            .iter()
+            .map(|(id, _, _)| {
+                crate::graph::CodeGraph::count_unresolved_targets(&snap_owned, id, &kinds, down)
+            })
+            .sum();
+        Ok(total)
     })
 }
 

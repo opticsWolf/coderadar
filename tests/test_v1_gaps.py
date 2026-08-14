@@ -19,7 +19,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "py_agent" / "src"))
 
 try:
-    from coderadar._core import analyze, search_entities, traverse, get_smells
+    from coderadar._core import analyze, search_entities, traverse, get_smells, traverse_unresolved
     _CORE_AVAILABLE = True
 except ImportError:
     _CORE_AVAILABLE = False
@@ -69,6 +69,27 @@ def test_real_repo_traversal_latency():
 
 
 @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+def test_traverse_unresolved_counts():
+    """Plan 2.3 — traverse_unresolved reports targets the walk can't follow."""
+    import os
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, "mod.py"), "w") as f:
+        f.write("def foo():\n    undefined_func()\n")
+    analyze(d)
+
+    funcs = search_entities("foo", 5, "function")
+    assert funcs
+    foo_id = funcs[0]["id"]
+
+    n = traverse_unresolved(foo_id, 2, ["calls"], "both")
+    assert n == 1, f"expected 1 unresolved call, got {n}"
+
+    n_up = traverse_unresolved(foo_id, 2, ["calls"], "in")
+    assert n_up == 0, f"expected 0 upstream unresolved, got {n_up}"
+
+
 def test_concurrent_reads():
     """Plan 1.5 — N concurrent get_smells/traverse reads must not deadlock.
 

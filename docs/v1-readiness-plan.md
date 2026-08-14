@@ -127,15 +127,18 @@ Replaces the (correctly-killed) package-path idea with three signal-aware fixes:
   `test_ts_typeonly_import_aware_base_resolution`.
   205 Rust + 358 Python = **563, 0 failures**.
 
-### 2.3 Traversal Degradation Visibility
+### 2.3 Traversal Degradation Visibility — ✅ done
 
-- `traverse_bfs` silently skips unresolved bases, returning a truncated graph
-  with no warning.
-- Update the MCP traversal wrapper: when the walk is known to have unresolved
-  outgoing edges (or the result set is smaller than expected), append a
-  warning: `⚠️ Traversal incomplete: N targets were unresolved and excluded.`
-- **Note:** may require `traverse_bfs` to return a count of skipped targets
-  rather than silently filtering.
+- Added `CodeGraph::count_unresolved_targets` (counts `External` + `Unresolved`
+  calls and `Unresolved` imports — downstream only; upstream reverse indexes
+  are complete). `Builtin` is excluded (ubiquitous, expected).
+- Added `traverse_unresolved(start_id, max_depth, edge_kinds, direction)`
+  pyfunction (mirrors `traverse`'s BFS, returns the skipped-target count).
+- `_traverse` (server.py) now appends
+  `⚠️ Traversal incomplete: N outgoing target(s) could not be resolved and
+  were excluded from the walk.` when N > 0.
+- Tests: `test_count_unresolved_targets` (Rust) +
+  `test_traverse_unresolved_counts` (Python). 206 Rust + 359 Python = **565, 0 failures**.
 
 ### 2.4 MCP `unverified_sites` Loud Warning
 

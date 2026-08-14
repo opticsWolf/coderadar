@@ -1116,6 +1116,45 @@ impl CodeGraph {
         out
     }
 
+    /// Count outgoing targets that the traversal cannot follow for a node
+    /// (downstream only — the reverse/upstream indexes are complete).
+    /// Counts genuine resolution failures (`Unresolved`) and non-local
+    /// (`External`) calls/imports, but NOT `Builtin` (expected, ubiquitous).
+    /// Used by the `traverse_unresolved` pyfunction to surface silent
+    /// traversal truncation (plan 2.3).
+    pub(crate) fn count_unresolved_targets(
+        snap: &ProjectedGraph, id: &str, kinds: &[String], down: bool,
+    ) -> usize {
+        if !down {
+            return 0;
+        }
+        let mut total = 0;
+        for kind in kinds {
+            match kind.as_str() {
+                "calls" => {
+                    if let Some(f) = snap.functions.get(id) {
+                        total += f.resolved_calls.iter()
+                            .filter(|rc| matches!(rc,
+                                crate::types::ResolvedCall::External(_)
+                                | crate::types::ResolvedCall::Unresolved { .. }))
+                            .count();
+                    }
+                }
+                "imports" => {
+                    if let Some(m) = snap.modules.get(id) {
+                        total += m.imports.iter()
+                            .filter(|imp_id| snap.imports.get(*imp_id).map_or(false, |i| {
+                                matches!(i.resolution, crate::types::ImportResolution::Unresolved)
+                            }))
+                            .count();
+                    }
+                }
+                _ => {}
+            }
+        }
+        total
+    }
+
     /// Run the resolution cascade on all functions, or scoped to a single file.
     /// When `scope_file` is Some, only clears and rebuilds edges for functions
     /// in that file — used by `update_file` for O(changed) instead of O(all).
@@ -3289,6 +3328,39 @@ class I implements G.H, J { }
         let m = projection.modules.get(&target.unwrap()).unwrap();
         assert!(m.path.to_string_lossy().ends_with("src/models/user.ts"),
             "alias should resolve to src/models/user.ts, got {}", m.path.to_string_lossy());
+    }
+
+    #[test]
+    fn test_count_unresolved_targets() {
+        // 2.3: count unresolved outgoing calls + imports (downstream only).
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def foo():\n    undefined_func()\n", "mod.py");
+        index_source(&graph, "import nonexistent_module\ndef bar(): pass\n", "mod2.py");
+        let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_imports(&mut projection);
+        graph.resolve_all_calls(&mut projection);
+
+        let foo = projection.functions.values().find(|f| f.name == "foo").unwrap();
+        let calls_kind = vec!["calls".to_string()];
+        assert_eq!(
+            CodeGraph::count_unresolved_targets(&projection, &foo.id, &calls_kind, true),
+            1,
+            "foo should have 1 unresolved call"
+        );
+        assert_eq!(
+            CodeGraph::count_unresolved_targets(&projection, &foo.id, &calls_kind, false),
+            0,
+            "upstream should report 0 unresolved"
+        );
+
+        let mod2 = projection.modules.values()
+            .find(|m| m.path.to_string_lossy().contains("mod2.py")).unwrap();
+        let imports_kind = vec!["imports".to_string()];
+        assert_eq!(
+            CodeGraph::count_unresolved_targets(&projection, &mod2.id, &imports_kind, true),
+            1,
+            "mod2 should have 1 unresolved import"
+        );
     }
 
     #[test]
