@@ -154,8 +154,9 @@ pub fn metrics_for_function(f: &Function) -> HashMap<String, f64> {
 /// Class metrics: field_count from `fields`, WMC = Σ method cyclomatic,
 /// max_method_cyclomatic = max over methods, CBO = distinct coupled classes.
 ///
-/// `Class.methods` is always empty (see status doc §7.5) — method membership
-/// is recovered by scanning `functions` for `parent_class == class.id`.
+/// `Class.methods` IS populated (2.7), but method membership is still recovered
+/// by scanning `functions` for `parent_class == class.id` — keeping a single
+/// source of truth and parity with the rest of the engine.
 pub fn metrics_for_class(c: &Class, graph: &ProjectedGraph) -> HashMap<String, f64> {
     let mut m = HashMap::new();
     m.insert("field_count".to_string(), c.fields.len() as f64);

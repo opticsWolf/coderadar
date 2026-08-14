@@ -179,18 +179,21 @@ Replaces the (correctly-killed) package-path idea with three signal-aware fixes:
 - Output unchanged; covered by the existing `test_concurrent_reads` (1.5) +
   `test_smells.py`. 206 Rust + 361 Python = **567, 0 failures**.
 
-### 2.7 Populate `class.methods` (derived denormalization)
+### 2.7 Populate `class.methods` (derived denormalization) — ✅ done
 
-- `class.methods` is always `vec![]` — a footgun every consumer trips on
-  exactly once, and methods are looked up far more often than fields.
-- Populate it in `build_fragment` as a **derived** field computed from
-  `projection.functions` by `parent_class` on every build (mirroring the
-  `class.fields` fix in `91021ac`). Recomputed each index/analyze/update, so
-  there is no separate manual source of truth to drift — the single source
-  remains `functions` + `parent_class`.
-- **Do not** introduce a second write path; read-only denormalization only.
-- **Test:** assert `class.methods` is non-empty for a known class, and that
-  CBO / override detection / smell rules still produce identical results.
+- Added `CodeGraph::populate_class_methods` — derives `Class.methods` from
+  `projection.functions` grouped by `parent_class` on every resolve cascade
+  (read-only denormalization; single source of truth stays `functions` +
+  `parent_class`). No separate write path.
+- Called in BOTH production cascades: `analyze` (lib.rs) and `update_file`
+  (graph.rs) — so it runs after all fragments are merged and captures
+  cross-file methods (e.g. Rust `impl` in another file), not just same-file.
+- Deterministic order (methods sorted by EntityId).
+- Side benefit: query `method_count` (`cls.methods.len()`) now returns real
+  values instead of 0.
+- Smell rules (CBO/WMC) and override detection still scan `functions`
+  directly, so their output is byte-identical. Added `test_class_methods_populated_27`.
+  207 Rust + 361 Python = **568, 0 failures**.
 
 ---
 

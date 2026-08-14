@@ -547,6 +547,7 @@ fn analyze(root: &str) -> PyResult<PyObject> {
     {
         let mut projection = (*graph.snapshot()).clone();
         graph.resolve_imports(&mut projection);
+        graph.populate_class_methods(&mut projection);
         graph.compute_all_mro(&mut projection);
         graph.resolve_class_hierarchy(&mut projection);
         graph.resolve_overrides(&mut projection);

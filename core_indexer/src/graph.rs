@@ -971,6 +971,37 @@ impl CodeGraph {
         }
     }
 
+    /// 2.7: Populate `Class.methods` as a **derived** field — computed from
+    /// `projection.functions` grouped by `parent_class` on every resolve
+    /// cascade. The single source of truth stays `functions` + `parent_class`;
+    /// this is read-only denormalization (no separate write path), so it can
+    /// never drift. Runs after all fragments are merged, so cross-file methods
+    /// (e.g. a Rust `impl` block in another file) are captured.
+    pub fn populate_class_methods(&self, projection: &mut ProjectedGraph) {
+        let mut by_parent: HashMap<String, Vec<String>> = HashMap::new();
+        for (fid, f) in projection.functions.iter() {
+            if let Some(pc) = &f.parent_class {
+                by_parent.entry(pc.clone()).or_default().push(fid.clone());
+            }
+        }
+        let class_ids: Vec<String> = projection.classes.keys().cloned().collect();
+        for cid in class_ids {
+            let mut methods = by_parent.remove(&cid).unwrap_or_default();
+            methods.sort();
+            let changed = projection
+                .classes
+                .get(&cid)
+                .map_or(false, |c| c.methods != methods);
+            if changed {
+                if let Some(class) = projection.classes.get(&cid) {
+                    let mut c = (**class).clone();
+                    c.methods = methods;
+                    projection.classes.insert(cid, Arc::new(c));
+                }
+            }
+        }
+    }
+
     /// Detect method overrides across the class MRO and populate the
     /// `overridden_by` reverse index (base → overriding methods) and the
     /// `overrides_base` forward index (override → its single base).
@@ -981,9 +1012,10 @@ impl CodeGraph {
         projection.overridden_by.clear();
         projection.overrides_base.clear();
 
-        // Per-class method map (name → own func id), built by parent_class scan
-        // — class.methods is intentionally never populated (see build_fragment),
-        // so we scan functions, mirroring resolve_one_function.
+        // Per-class method map (name → own func id), built by parent_class scan.
+        // class.methods IS now populated (populate_class_methods, 2.7), but we
+        // still scan functions here for parity with resolve_one_function's MRO
+        // method lookup (which also scans, not reads class.methods).
         let class_ids: Vec<String> =
             projection.classes.keys().cloned().collect();
 
@@ -2487,6 +2519,7 @@ impl CodeGraph {
 
         // Phase 4: Compute MRO for all classes, then resolve calls (scoped to this file)
         self.resolve_imports(&mut projection);
+        self.populate_class_methods(&mut projection);
         self.compute_all_mro(&mut projection);
         self.resolve_class_hierarchy(&mut projection);
         self.resolve_overrides(&mut projection);
@@ -3924,6 +3957,29 @@ class I implements G.H, J { }
         let callees = graph.callees_of(bar_id);
         assert!(callees.contains(&baz_id.to_string()),
                 "bar() should call baz() via self, got {:?}", callees);
+    }
+
+    #[test]
+    fn test_class_methods_populated_27() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "class Foo:\n    def bar(self): pass\n    def baz(self): pass\n",
+            "foo.py");
+
+        let mut projection = (*graph.snapshot()).clone();
+        graph.populate_class_methods(&mut projection);
+
+        let foo = projection.classes.values().find(|c| c.name == "Foo").unwrap();
+        assert_eq!(foo.methods.len(), 2, "class.methods should list 2 methods");
+        let names: Vec<&str> = foo.methods.iter()
+            .filter_map(|mid| projection.functions.get(mid))
+            .map(|f| f.name.as_str())
+            .collect();
+        assert!(names.contains(&"bar") && names.contains(&"baz"),
+                "class.methods should list bar and baz, got {:?}", names);
+        // Deterministic ordering (sorted by EntityId).
+        assert!(foo.methods.windows(2).all(|w| w[0] <= w[1]),
+                "methods should be sorted");
     }
 
     #[test]

@@ -297,6 +297,8 @@ Both Phase-2 caveats (formerly "in progress, 1 test failing" and
   (1 Python `test_as_of_temporal_traversal`).
 - After 2.6 (get_smells lock release): **567, 0 failures** (no new test —
   covered by 1.5 + test_smells.py).
+- After 2.7 (class.methods denormalization): **568, 0 failures** (1 Rust
+  `test_class_methods_populated_27`).
 
 ---
 
@@ -363,10 +365,12 @@ wiring bugs. They cap `subclasses`/`overrides`/`importers` coverage.
   `⚠️ WARNING` when `unverified_sites` is non-empty (both dry-run and apply).
 
 ### 7.5 Structural invariants (documented, not bugs)
-- **`class.methods: Vec<EntityId>` is always `vec![]`** — never populated by
-  `build_fragment`; method lookup scans `projection.functions` by
-  `parent_class` (the `resolve_one_function` pattern). A reader must not
-  expect `class.methods` to be meaningful.
+- **`class.methods: Vec<EntityId>` is populated as of 2.7** — `populate_class_methods`
+  derives it from `projection.functions` grouped by `parent_class` on every
+  resolve cascade (read-only denormalization; single source of truth stays
+  `functions` + `parent_class`). This also makes the query `method_count` field
+  (exec.rs `cls.methods.len()`) return real values. Method *lookup* still scans
+  `functions` (parity with `resolve_one_function`).
 - **`class.fields` IS populated as of `91021ac`** — the single-pass extractor
   attributes class-level `@field` captures to `ExtractedClass.fields`
   (skipping module-level and method-local assignments), so `field_count` /
