@@ -140,13 +140,16 @@ Replaces the (correctly-killed) package-path idea with three signal-aware fixes:
 - Tests: `test_count_unresolved_targets` (Rust) +
   `test_traverse_unresolved_counts` (Python). 206 Rust + 359 Python = **565, 0 failures**.
 
-### 2.4 MCP `unverified_sites` Loud Warning
+### 2.4 MCP `unverified_sites` Loud Warning — ✅ done
 
-- In the `update_signature` renderer, check the `unverified_sites` count.
-  If > 0, prepend/append a visible warning:
-  `⚠️ WARNING: N call sites could not be verified/rewritten. Manual review required.`
-- Converts silent correctness degradation into an operational signal, without
-  arg-span indexing.
+- `_format_mutation_plan` (dry-run) and `_format_mutation_applied` (apply) now
+  emit `⚠️ **WARNING: N call site(s) could not be verified/rewritten. Manual
+  review required.**` when `unverified_sites` is non-empty.
+- The apply path previously **dropped** unverified sites entirely (only the
+  dry-run showed them); all 4 mutation tools (`replace_body`,
+  `update_signature`, `rename`, `create_entity`) now pass
+  `plan.unverified_sites` through to the applied-result renderer.
+- Test: `test_unverified_sites_warning`. 206 Rust + 360 Python = **566, 0 failures**.
 
 ### 2.5 `as_of` Traversal Adapter & Binding (moved from Phase 4)
 

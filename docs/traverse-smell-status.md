@@ -291,6 +291,8 @@ Both Phase-2 caveats (formerly "in progress, 1 test failing" and
   (2 Rust tests: alias resolution + TS type-only import).
 - After 2.3 (traversal degradation visibility): 206 Rust + 359 Python = **565, 0 failures**
   (1 Rust `count_unresolved_targets` + 1 Python `traverse_unresolved`).
+- After 2.4 (unverified_sites warning): 206 Rust + 360 Python = **566, 0 failures**
+  (1 Python `test_unverified_sites_warning`).
 
 ---
 
@@ -351,7 +353,8 @@ wiring bugs. They cap `subclasses`/`overrides`/`importers` coverage.
 - **Plugin API, Stack Graphs, Distributed snapshots** — post-v1.
 - **Call-site cascade for `update_signature`** — argument spans are not
   indexed, so call-site arg rewrites surface as `unverified_sites` instead
-  of being auto-edited.
+  of being auto-edited. Mitigated by 2.4: the MCP renderer now emits a loud
+  `⚠️ WARNING` when `unverified_sites` is non-empty (both dry-run and apply).
 
 ### 7.5 Structural invariants (documented, not bugs)
 - **`class.methods: Vec<EntityId>` is always `vec![]`** — never populated by

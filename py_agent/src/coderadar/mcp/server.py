@@ -1439,7 +1439,7 @@ def _replace_body(
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
         result = graph.apply(plan)
-        return _format_mutation_applied(result)
+        return _format_mutation_applied(result, plan.unverified_sites)
     except Exception as e:
         return f"Mutation failed: {e}"
 
@@ -1457,7 +1457,7 @@ def _update_signature(
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
         result = graph.apply(plan)
-        return _format_mutation_applied(result)
+        return _format_mutation_applied(result, plan.unverified_sites)
     except Exception as e:
         return f"Mutation failed: {e}"
 
@@ -1470,7 +1470,7 @@ def _rename(graph: Any, entity_id: str, new_name: str, dry_run: bool) -> str:
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
         result = graph.apply(plan)
-        return _format_mutation_applied(result)
+        return _format_mutation_applied(result, plan.unverified_sites)
     except Exception as e:
         return f"Mutation failed: {e}"
 
@@ -1570,7 +1570,7 @@ def _create_entity(
         if dry_run:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
         result = graph.apply(plan)
-        return _format_mutation_applied(result)
+        return _format_mutation_applied(result, plan.unverified_sites)
     except Exception as e:
         return f"Mutation failed: {e}"
 
@@ -1593,7 +1593,10 @@ def _format_mutation_plan(plan: Any) -> str:
 
     if plan.unverified_sites:
         lines.append("")
-        lines.append(f"### Unverified Call Sites ({len(plan.unverified_sites)})")
+        lines.append(
+            f"⚠️ **WARNING: {len(plan.unverified_sites)} call site(s) could not be "
+            f"verified/rewritten. Manual review required.**"
+        )
         for site in plan.unverified_sites[:10]:
             lines.append(f"- `{site}`")
 
@@ -1606,7 +1609,7 @@ def _format_mutation_plan(plan: Any) -> str:
     return "\n".join(lines)
 
 
-def _format_mutation_applied(result: Any) -> str:
+def _format_mutation_applied(result: Any, unverified_sites: list | None = None) -> str:
     """Format a MutationResult after application."""
     lines = ["## Mutation Applied", ""]
     lines.append(f"- **Status:** {result.status}")
@@ -1618,6 +1621,14 @@ def _format_mutation_applied(result: Any) -> str:
         lines.append(f"- **Syntax errors:** {len(result.syntax_errors)}")
     if result.backup_path:
         lines.append(f"- **Backup:** `{result.backup_path}`")
+    if unverified_sites:
+        lines.append("")
+        lines.append(
+            f"⚠️ **WARNING: {len(unverified_sites)} call site(s) could not be "
+            f"verified/rewritten. Manual review required.**"
+        )
+        for site in unverified_sites[:10]:
+            lines.append(f"- `{site}`")
     lines.append("")
     lines.append("Graph has been updated — subsequent queries will reflect the change.")
     return "\n".join(lines)
