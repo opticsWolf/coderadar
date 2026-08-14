@@ -197,32 +197,31 @@ Replaces the (correctly-killed) package-path idea with three signal-aware fixes:
 
 ---
 
-## Phase 3: Test & Correctness Hardening (v1 blocker)
+## Phase 3: Test & Correctness Hardening (v1 blocker) — ✅ done
 
 *Goal: protect against the substring-approximation risk in the smell engine.*
 
-### 3.1 Add Fixtures for Uncovered Rules
+### 3.1 Add Fixtures for Uncovered Rules — ✅ done
 
-- `deep-nesting` — a function with 4+ levels of nested `if`/`for`.
-- `brain-method` — high cyclomatic + high LOC + deep nesting.
-- `excessive-returns` — a function with > 5 `return` statements.
-- **Positive `god-class`** — both too many fields AND too many methods
-  (complements the existing negative test).
+- `tests/fixtures/python/smells/golden/deep_nesting.py` — 4 nested `if`s.
+- `tests/fixtures/python/smells/golden/brain_method.py` — `brain()` cyclomatic
+  15 + `helper()` 5 → WMC 20.
+- `tests/fixtures/python/smells/golden/excessive_returns.py` — 6 `return`s.
+- `tests/fixtures/python/smells/golden/god_class.py` — **positive** god-class:
+  4 methods × 12 `if`s (WMC 52) + 5 same-file bases (CBO 5).
+  (NB: the actual god-class rule is WMC >= 47 AND CBO >= 5 — not "fields +
+  methods" as the original plan text said.)
 
-### 3.2 Upgrade Python Assertions to Golden Snapshots
+### 3.2 Upgrade Python Assertions to Golden Snapshots — ✅ done
 
-- Replace `"rule_id" in findings` presence checks with strict golden
-  snapshots: exact `rule_id`, `severity`, `entity_name`, and `signals`.
-- Severity values are `Info` / `Medium` / `High` / `Critical` (from
-  `Severity::as_str`). Example (matches the existing fixture):
-  ```python
-  assert {
-      "rule_id": "long-parameter-list",
-      "severity": "Info",
-      "entity_name": "too_many_params",
-      "signals": {"param_count": 5},
-  } in findings
-  ```
+- `tests/test_smells_golden.py` asserts exact `rule_id`, `severity`,
+  `entity_name`, and `signals` for all four rules (subset match — findings
+  also carry `entity_id`/`message`, which are path/format-dependent).
+- Locked values:
+  - deep-nesting → Medium, `{"nesting_depth": 4.0}`
+  - excessive-returns → Medium, `{"return_count": 6.0}`
+  - brain-method → High, `{"max_method_cyclomatic": 15.0, "WMC": 20.0}`
+  - god-class → Medium, `{"WMC": 52.0, "CBO": 5.0}`
 
 ---
 

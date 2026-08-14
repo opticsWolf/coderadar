@@ -299,6 +299,8 @@ Both Phase-2 caveats (formerly "in progress, 1 test failing" and
   covered by 1.5 + test_smells.py).
 - After 2.7 (class.methods denormalization): **568, 0 failures** (1 Rust
   `test_class_methods_populated_27`).
+- After Phase 3 (smell golden tests): **572, 0 failures** (4 Python
+  `test_smells_golden.py`).
 
 ---
 
