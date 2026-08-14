@@ -1,4 +1,4 @@
-# CodeRadar v0.6.5
+# CodeRadar v0.6.6
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -159,6 +159,14 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 | **React Router** | JSX/TSX | `package.json` | JSX `<Route>` declarations, v6 data router objects, `<Link>`/`<NavLink>` navigation tracking |
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
+
+## v0.6.6 Feature Highlights
+
+- **Base-resolution heuristics** — language-family filtering (TypeScript/JavaScript treated as one inheritance family), import-aware base resolution, and `@/`/`~/` → `src/` path-alias normalization. TypeScript `import { X, type T } from '...'` now parses correctly (previously misclassified as an empty module); ambiguous base candidates are surfaced via `index_edge_stats` (real-world: 4 → 0)
+- **Traversal honesty** — `traverse_unresolved` + an MCP warning reveal targets the walk couldn't follow instead of silently truncating; all four mutation renderers emit a loud ⚠️ `unverified_sites` warning; `traverse(as_of=<ts>)` now reads the Macrame bitemporal ledger (downstream)
+- **Correctness fixes** — edges were being asserted with the 9999 open sentinel as `valid_from` (breaking temporal reads); inline date math double-added the epoch offset (every timestamp was ~year 5910); `Class.methods` is now derived denormalization (query `method_count` returns real values); `get_smells` and `as_of` release the graph read lock before long-running work
+- **Smell golden tests** — exact-signal snapshots for deep-nesting, brain-method, excessive-returns, and a positive god-class fixture
+- **574 tests, 0 failures** — 207 Rust + 367 Python
 
 ## v0.6.5 Feature Highlights
 
