@@ -952,48 +952,84 @@ fn traverse(
         }
     };
 
-    // ── Honesty guard: temporal traversal is not wired in the BFS ────
-    // Phase 3B will route `as_of` to Macrame `load_subgraph_with`. Reject
-    // loudly rather than silently returning current-state data for a past
-    // timestamp.
-    if as_of.is_some() {
-        return Err(pyo3::exceptions::PyNotImplementedError::new_err(
-            "Temporal traversal (as_of) is not implemented. Use codegraph_as_of \
-             for point-in-time reconstruction, or omit as_of for current-state \
-             traversal."
-        ));
+    // ── Normalize + dedupe edge kinds (`inherits` → `extends`) ──────
+    let kinds: Vec<String> = {
+        let mut v: Vec<String> = edge_kinds
+            .iter()
+            .map(|k| {
+                let k = k.trim().to_ascii_lowercase();
+                if k == "inherits" { "extends".to_string() } else { k }
+            })
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+
+    // ── Temporal traversal: route `as_of` to Macrame (downstream only) ──
+    if let Some(ts) = as_of {
+        if up {
+            return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+                "as_of traversal supports downstream ('out') only — Macrame's \
+                 TraversalBuilder follows outgoing edges",
+            ));
+        }
+        let edge_types: Vec<String> = kinds
+            .iter()
+            .filter_map(|k| match k.as_str() {
+                "calls" => Some("CALLS".to_string()),
+                "imports" => Some("IMPORTS".to_string()),
+                "extends" => Some("EXTENDS".to_string()),
+                "overrides" => Some("OVERRIDES".to_string()),
+                _ => None,
+            })
+            .collect();
+        let start_owned = start_id.to_string();
+        let ts_owned = ts.to_string();
+        return with_graph(move |graph, snap| {
+            let store = match &graph.store {
+                Some(s) => s.clone(),
+                None => {
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                        "No persistent store — temporal traversal needs a .coderadar store",
+                    ));
+                }
+            };
+            let sub = py
+                .allow_threads({
+                    let s = start_owned.clone();
+                    let e = edge_types.clone();
+                    let t = ts_owned.clone();
+                    move || store.traverse_at(&s, max_depth, &e, &t)
+                })
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("as_of traversal failed: {e:?}")))?;
+            let reached = subgraph_bfs(&sub, &start_owned, max_depth);
+            let mut results = Vec::with_capacity(reached.len());
+            for (id, depth, ek) in reached {
+                if let Some(d) = entity_ref_to_dict(py, &id, snap) {
+                    if let Ok(dd) = d.downcast_bound::<pyo3::types::PyDict>(py) {
+                        let _ = dd.set_item("depth", depth);
+                        let _ = dd.set_item("edge_type", &ek);
+                    }
+                    results.push(d);
+                }
+            }
+            Ok(results)
+        });
     }
 
+    // ── Current-state in-memory BFS ─────────────────────────────────
     with_graph(|_graph, snap| {
-        // ── Validate start exists ─────────────────────────────────
         if entity_ref_to_dict(py, start_id, snap).is_none() {
             return Ok(Vec::new());
         }
-
-        // Normalize + dedupe edge kinds (`inherits` → `extends`).
-        let kinds: Vec<String> = {
-            let mut v: Vec<String> = edge_kinds
-                .iter()
-                .map(|k| {
-                    let k = k.trim().to_ascii_lowercase();
-                    if k == "inherits" { "extends".to_string() } else { k }
-                })
-                .collect();
-            v.sort();
-            v.dedup();
-            v
-        };
-
         let snap_owned: std::sync::Arc<ProjectedGraph> = snap.clone();
         let snap_for_bfs: std::sync::Arc<ProjectedGraph> = snap_owned.clone();
         let start = start_id.to_string();
-
-        // ── BFS (GIL released) ────────────────────────────────────
+        let kinds_for_bfs = kinds.clone();
         let reached: Vec<(String, usize, String)> = py.allow_threads(move || {
-            crate::graph::CodeGraph::traverse_bfs(&snap_for_bfs, &start, max_depth, &kinds, up, down)
+            crate::graph::CodeGraph::traverse_bfs(&snap_for_bfs, &start, max_depth, &kinds_for_bfs, up, down)
         });
-
-        // ── Materialize dicts (GIL held) ─────────────────────────
         let mut results = Vec::with_capacity(reached.len());
         for (id, depth, ek) in reached {
             if let Some(d) = entity_ref_to_dict(py, &id, &snap_owned) {
@@ -1006,6 +1042,40 @@ fn traverse(
         }
         Ok(results)
     })
+}
+
+/// BFS over a Macrame `Subgraph` to recover (node, depth, edge_type) tuples.
+/// `Subgraph` stores topology + edge types but not BFS depth, so depth is
+/// recomputed here (the `as_of` path uses this instead of the in-memory BFS).
+fn subgraph_bfs(
+    sub: &macrame::graph::Subgraph,
+    start: &str,
+    max_depth: usize,
+) -> Vec<(String, usize, String)> {
+    use std::collections::{HashSet, VecDeque};
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
+    let mut out: Vec<(String, usize, String)> = Vec::new();
+    if !sub.contains_node(start) {
+        return out;
+    }
+    visited.insert(start.to_string());
+    queue.push_back((start.to_string(), 0usize));
+    out.push((start.to_string(), 0usize, String::new()));
+    while let Some((cur, depth)) = queue.pop_front() {
+        if depth >= max_depth {
+            continue;
+        }
+        for edge in sub.out_edges(&cur) {
+            let target = edge.node(sub).to_string();
+            let etype = edge.edge_type(sub).to_string();
+            if visited.insert(target.clone()) {
+                out.push((target.clone(), depth + 1, etype));
+                queue.push_back((target, depth + 1));
+            }
+        }
+    }
+    out
 }
 
 /// Count unresolved outgoing targets across the traversal from `start_id`.

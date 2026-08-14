@@ -151,17 +151,23 @@ Replaces the (correctly-killed) package-path idea with three signal-aware fixes:
   `plan.unverified_sites` through to the applied-result renderer.
 - Test: `test_unverified_sites_warning`. 206 Rust + 360 Python = **566, 0 failures**.
 
-### 2.5 `as_of` Traversal Adapter & Binding (moved from Phase 4)
+### 2.5 `as_of` Traversal Adapter & Binding — ✅ done
 
-- `CodeGraphStore::traverse` exists but is unexposed; our persisted edge kinds
-  (`calls`/`imports`/`extends`/`overrides`) don't map 1:1 to Macrame's
-  `TraversalBuilder` semantics.
-- **Action:**
-  1. Write an adapter mapping our 4 edge kinds to Macrame's traversal types.
-  2. Expose `traverse(as_of=<ts>)` via PyO3.
-  3. Round-trip test: analyze a repo, mutate it, traverse `as_of` the original
-     state, assert in-memory BFS matches persisted `as_of` results.
-- **Scope:** "plumbing-with-a-test" — unblocks the temporal-read surface.
+- **Blocking bugs found + fixed:** `persist_edges` asserted edges with
+  `valid_from = TS_OPEN` (the 9999-12-31 *open* sentinel meant for `valid_to`),
+  and `build_concept`'s inline date math double-added the 719468 epoch offset
+  (every timestamp was ~year 5910). Both fixed — `now_iso8601()` now produces a
+  correct UTC timestamp, used for concepts AND edges.
+- `CodeGraphStore::traverse_at(start, depth, edge_types, ts)` added (the old
+  `traverse` now delegates with `"now"`).
+- `traverse(as_of=<ts>)` now routes **downstream** traversals to Macrame's
+  `load_subgraph_with(ts)`; edge kinds map `calls→CALLS`, `imports→IMPORTS`,
+  `extends→EXTENDS`, `overrides→OVERRIDES`. Upstream/both `as_of` raises
+  `NotImplementedError` (Macrame's builder is out-edge-only).
+- `subgraph_bfs` recomputes BFS depth from the `Subgraph` (which stores
+  topology + edge types but not depth).
+- Round-trip test: analyze (a→b), capture ts, mutate (a→c), re-analyze, then
+  `as_of(ts)` returns b but NOT c. 206 Rust + 361 Python = **567, 0 failures**.
 
 ### 2.6 Release the `get_smells` read lock before engine run
 

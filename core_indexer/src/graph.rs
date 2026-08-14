@@ -1535,7 +1535,7 @@ impl CodeGraph {
 
         let mut edge_count = 0usize;
         let mut batch: Vec<macrame::graph::EdgeAssertion> = Vec::new();
-        let ts_open = crate::storage::TS_OPEN;
+        let ts_open = crate::storage::now_iso8601();
 
         for (caller, callees) in projection.callees_by_caller.iter() {
             for callee in callees.iter() {
@@ -1546,7 +1546,7 @@ impl CodeGraph {
                 }
                 batch.push(
                     EdgeAssertion::new(caller.as_str(), callee.as_str(), "CALLS")
-                        .valid_from(ts_open)
+                        .valid_from(ts_open.as_str())
                         .weight(1.0),
                 );
                 edge_count += 1;
@@ -1571,7 +1571,7 @@ impl CodeGraph {
                 }
                 batch.push(
                     EdgeAssertion::new(importer.as_str(), target_mod.as_str(), "IMPORTS")
-                        .valid_from(ts_open)
+                        .valid_from(ts_open.as_str())
                         .weight(1.0),
                 );
                 edge_count += 1;
@@ -1591,7 +1591,7 @@ impl CodeGraph {
                 }
                 batch.push(
                     EdgeAssertion::new(cid.as_str(), base_id.as_str(), "EXTENDS")
-                        .valid_from(ts_open)
+                        .valid_from(ts_open.as_str())
                         .weight(1.0),
                 );
                 edge_count += 1;
@@ -1608,7 +1608,7 @@ impl CodeGraph {
             }
             batch.push(
                 EdgeAssertion::new(override_fid.as_str(), base_fid.as_str(), "OVERRIDES")
-                    .valid_from(ts_open)
+                    .valid_from(ts_open.as_str())
                     .weight(1.0),
             );
             edge_count += 1;
@@ -1649,9 +1649,9 @@ impl CodeGraph {
 
         // Persist to Macrame if store attached
         if let Some(store) = self.store.as_ref() {
-            let ts_open = crate::storage::TS_OPEN;
+            let ts_open = crate::storage::now_iso8601();
             let edge = macrame::graph::EdgeAssertion::new(source_id, target_id, kind)
-                .valid_from(ts_open)
+                .valid_from(ts_open.as_str())
                 .weight(1.0);
             let _ = store.assert_edges_bulk(vec![edge]);
         }

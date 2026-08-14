@@ -293,6 +293,8 @@ Both Phase-2 caveats (formerly "in progress, 1 test failing" and
   (1 Rust `count_unresolved_targets` + 1 Python `traverse_unresolved`).
 - After 2.4 (unverified_sites warning): 206 Rust + 360 Python = **566, 0 failures**
   (1 Python `test_unverified_sites_warning`).
+- After 2.5 (as_of traversal + timestamp fix): 206 Rust + 361 Python = **567, 0 failures**
+  (1 Python `test_as_of_temporal_traversal`).
 
 ---
 
@@ -302,17 +304,19 @@ This is the "is anything left hanging?" section. Everything below is
 **deliberately out of scope for this branch's committed work**, but is a
 real limitation a reader should not mistake for "done".
 
-### 7.1 Temporal traversal — `as_of` (matrix step E, 2nd half) ⛔
-- `traverse(as_of=<ts>)` raises `PyNotImplementedError` (lib.rs:956). Only
-  current-state traversal works.
-- `CodeGraphStore::traverse` (storage.rs:144, `TraversalBuilder` +
-  `load_subgraph_with(..., "now", …)`) **exists in Macrame but is not
-  exposed to Python** — the binding never calls it.
-- `codegraph_as_of` MCP tool does point-in-time *reconstruction* (materialised
-  state at a timestamp), **not** point-in-time *traversal*.
-- **Impact:** persisted IMPORTS/EXTENDS/OVERRIDES/CALLS edges (§1.4/§1.5) are
-  write-only today. They're in the ledger but nothing reads them back except
-  a full re-`analyze()`.
+### 7.1 Temporal traversal — `as_of` (partially done — 2.5) ⛔ upstream still deferred
+
+- `traverse(as_of=<ts>)` now works for **downstream** traversals (2.5): it
+  routes to Macrame's `load_subgraph_with(ts)` with edge kinds mapped to
+  `CALLS`/`IMPORTS`/`EXTENDS`/`OVERRIDES`. Upstream/both still raises
+  `NotImplementedError` (Macrame's builder is out-edge-only).
+- **Fixed en route:** edges were persisted with `valid_from = TS_OPEN` (the
+  open sentinel meant for `valid_to`), and the inline date math double-added
+  the epoch offset — so timestamps were bogus (~year 5910) and temporal reads
+  couldn't work. `now_iso8601()` now produces a correct UTC timestamp.
+- `codegraph_as_of` still does point-in-time *reconstruction*; full upstream
+  temporal traversal and edge-closing (removed edges still appear cumulative)
+  remain deferred.
 
 ### 7.2 Snapshot I/O + cold-start (Phase 3B) ⛔
 - `export_snapshot(path)` / `load_snapshot(path)` → `PyNotImplementedError`.

@@ -116,6 +116,39 @@ def test_unverified_sites_warning():
     assert "WARNING" not in out3, out3
 
 
+def test_as_of_temporal_traversal():
+    """Plan 2.5 — traverse(as_of=ts) reads the Macrame ledger temporally."""
+    import os
+    import tempfile
+    import time
+    from datetime import datetime, timezone
+
+    def now_ts():
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, "a.py"), "w") as f:
+        f.write("def a():\n    return b()\n\ndef b(): return 1\n")
+    analyze(d)
+    ts1 = now_ts()
+    a_id = next(f["id"] for f in search_entities("a", 5, "function") if f["name"] == "a")
+
+    res = traverse(a_id, 2, ["calls"], "out", ts1)
+    names = [r.get("name") for r in res]
+    assert "b" in names, f"as_of(ts1) should include b, got {names}"
+
+    # Mutate: a now calls c instead of b; ensure a new second passes.
+    time.sleep(1.2)
+    with open(os.path.join(d, "a.py"), "w") as f:
+        f.write("def a():\n    return c()\n\ndef b(): return 1\n\ndef c(): return 2\n")
+    analyze(d)
+
+    res1 = traverse(a_id, 2, ["calls"], "out", ts1)
+    names1 = [r.get("name") for r in res1]
+    assert "b" in names1, f"as_of(ts1) should still include b, got {names1}"
+    assert "c" not in names1, f"as_of(ts1) should not include c (added later), got {names1}"
+
+
 def test_concurrent_reads():
     """Plan 1.5 — N concurrent get_smells/traverse reads must not deadlock.
 

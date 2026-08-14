@@ -52,6 +52,23 @@ pub mod edge_type {
 /// Key lifespan timestamp — the Macrame open sentinel for "still true".
 pub const TS_OPEN: &str = "9999-12-31T00:00:00.000000Z";
 
+/// Current UTC time as an RFC 3339 timestamp (no chrono dependency).
+/// Used as `valid_from` for concepts AND edges so the bitemporal ledger can
+/// distinguish *when* a fact was asserted (temporal traversal depends on it).
+pub fn now_iso8601() -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = now.as_secs();
+    let days_since_epoch = secs / 86400;
+    let secs_of_day = secs % 86400;
+    let hours = secs_of_day / 3600;
+    let minutes = (secs_of_day % 3600) / 60;
+    let seconds = secs_of_day % 60;
+    let (y, m, d) = civil_from_days(days_since_epoch as i64);
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000000Z", y, m, d, hours, minutes, seconds)
+}
+
 // ── CodeGraphStore — owns the Macrame Database + Runtime ────────────────────
 
 pub struct CodeGraphStore {
@@ -139,19 +156,31 @@ impl CodeGraphStore {
         self.runtime.block_on(self.db.write_bulk_atomic(edges))
     }
 
-    /// Traverse the graph from a source entity.
+    /// Traverse the graph from a source entity (current state).
     pub fn traverse(
         &self,
         start_id: &str,
         max_depth: usize,
         edge_types: &[&str],
     ) -> macrame::Result<Subgraph> {
+        let types: Vec<String> = edge_types.iter().map(|s| s.to_string()).collect();
+        self.traverse_at(start_id, max_depth, &types, "now")
+    }
+
+    /// Traverse the graph as it existed at `ts` (temporal read).
+    pub fn traverse_at(
+        &self,
+        start_id: &str,
+        max_depth: usize,
+        edge_types: &[String],
+        ts: &str,
+    ) -> macrame::Result<Subgraph> {
         let mut traversal = TraversalBuilder::new(start_id)
             .max_depth(max_depth);
         if !edge_types.is_empty() {
-            traversal = traversal.edge_types(edge_types.iter().map(|s| s.to_string()).collect());
+            traversal = traversal.edge_types(edge_types.to_vec());
         }
-        self.runtime.block_on(self.db.load_subgraph_with(&traversal, "now", 10_000_000))
+        self.runtime.block_on(self.db.load_subgraph_with(&traversal, ts, 10_000_000))
     }
 
     /// Reconstruct state as of a timestamp.
@@ -170,20 +199,7 @@ pub fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> C
 
     let content = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".into());
 
-    // Build a valid RFC 3339 timestamp for valid_from (current time)
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    // Manual ISO 8601 formatting to avoid chrono dependency
-    let days_since_epoch = secs / 86400;
-    let secs_of_day = secs % 86400;
-    let hours = secs_of_day / 3600;
-    let minutes = (secs_of_day % 3600) / 60;
-    let seconds = secs_of_day % 60;
-    // Calculate year/month/day from days since epoch (approximate, good enough for timestamps)
-    let (y, m, d) = civil_from_days(days_since_epoch as i64 + 719468); // 719468 = days from 0000-01-01 to 1970-01-01
-    let valid_from = format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000000Z", y, m, d, hours, minutes, seconds);
+    let valid_from = now_iso8601();
 
     ConceptUpsert {
         id: entity_id,
