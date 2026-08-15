@@ -118,8 +118,14 @@ impl Default for MutationConfig {
             max_edits_per_plan: 500, max_body_tokens: 4000,
             backup_retention_hours: 24, post_verify: true, max_repair_attempts: 3,
             require_clean_git: false,
-            allow: vec!["src/".into(), "lib/".into(), "tests/".into(), "scripts/".into()],
+            // An empty allow list means "anywhere inside the project root".
+            // A populated one is a strict whitelist, so the default cannot be
+            // one: nothing reads .coderadar.toml yet (plan §3), which would
+            // make a shipped whitelist the effective policy for every layout
+            // and refuse writes to any project not shaped like src/lib/tests.
+            allow: vec![],
             deny: vec![".git/".into(), ".harness/".into(), ".codegraph/".into(),
+                       ".coderadar/".into(),
                        "/migrations/".into(), "/*.lock".into(), "/generated/".into()],
         }
     }

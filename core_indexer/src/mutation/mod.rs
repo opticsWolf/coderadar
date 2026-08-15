@@ -64,6 +64,8 @@ pub enum MutationStatus {
     Applied,
     RolledBack,
     RejectedStale,
+    /// Refused by `MutationConfig` before any file was read or written.
+    RejectedPolicy,
 }
 
 #[derive(Clone, Debug)]
@@ -191,9 +193,48 @@ pub fn shared_write_guard() -> std::sync::Arc<WriteGuard> {
         .clone()
 }
 
+/// Does `rel` — a project-relative path with forward slashes — match `pattern`?
+///
+/// Patterns come from `MutationConfig` and use the three shapes its defaults
+/// carry: a leading directory (`src/`), an interior path fragment
+/// (`/migrations/`), and an extension glob (`/*.lock`).
+fn path_matches(rel: &str, pattern: &str) -> bool {
+    if let Some(ext) = pattern.strip_prefix("/*") {
+        return !ext.is_empty() && rel.ends_with(ext);
+    }
+    let fragment = pattern.strip_prefix('/').unwrap_or(pattern);
+    if fragment.is_empty() {
+        return false;
+    }
+    rel.starts_with(fragment) || rel.contains(&format!("/{}", fragment))
+}
+
+/// Resolve `path` to an absolute, symlink-free form.
+///
+/// The file may not exist yet (`create_entity`), so fall back to canonicalizing
+/// the parent directory and re-attaching the file name — enough to defeat
+/// `..` traversal, which is the point.
+fn canonicalize_target(path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    if let Ok(c) = std::fs::canonicalize(p) {
+        return c;
+    }
+    match (p.parent(), p.file_name()) {
+        (Some(parent), Some(name)) => match std::fs::canonicalize(parent) {
+            Ok(c) => c.join(name),
+            Err(_) => p.to_path_buf(),
+        },
+        _ => p.to_path_buf(),
+    }
+}
+
 pub struct MutationEngine {
     pub write_guard: std::sync::Arc<WriteGuard>,
     pub config: crate::graph::MutationConfig,
+    /// Root the mutation is confined to. `None` disables the containment check
+    /// — set it from the indexed root so a plan cannot reach outside the
+    /// project it was planned against.
+    pub project_root: Option<std::path::PathBuf>,
 }
 
 impl MutationEngine {
@@ -201,7 +242,103 @@ impl MutationEngine {
         Self {
             write_guard: shared_write_guard(),
             config,
+            project_root: None,
         }
+    }
+
+    /// Confine writes to `root`.
+    pub fn with_project_root(mut self, root: impl AsRef<std::path::Path>) -> Self {
+        self.project_root = std::fs::canonicalize(root.as_ref())
+            .ok()
+            .or_else(|| Some(root.as_ref().to_path_buf()));
+        self
+    }
+
+    /// Gate a plan against `MutationConfig` before anything is read or written.
+    ///
+    /// The trust boundary is the FFI, not the Python caller: `apply_mutation`
+    /// accepts an arbitrary JSON plan — any file, any byte span, and an
+    /// `expected_hash` that defaults to empty, which the stale check skips. So
+    /// the policy has to be enforced here, where every path arrives.
+    ///
+    /// Returns the reason the plan is refused, or `Ok(())`.
+    fn check_policy(&self, plan: &MutationPlan) -> Result<(), String> {
+        if !self.config.enabled {
+            return Err("mutation engine is disabled by configuration".into());
+        }
+
+        if plan.edits.len() > self.config.max_edits_per_plan {
+            return Err(format!(
+                "plan carries {} edits, over the configured limit of {}",
+                plan.edits.len(),
+                self.config.max_edits_per_plan
+            ));
+        }
+
+        if self.config.require_clean_git {
+            let repo = self
+                .project_root
+                .clone()
+                .unwrap_or_else(|| std::path::PathBuf::from("."));
+            match crate::fs::git::is_worktree_clean(&repo.to_string_lossy()) {
+                Ok(true) => {}
+                Ok(false) => {
+                    return Err("worktree has uncommitted changes and \
+                                require_clean_git is set"
+                        .into())
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "require_clean_git is set but the worktree could not be \
+                         checked: {:?}",
+                        e
+                    ))
+                }
+            }
+        }
+
+        for edit in &plan.edits {
+            // An empty hash tells apply() to skip the stale check. Only
+            // create_entity legitimately has nothing to compare against.
+            if edit.expected_hash.is_empty() && plan.tool != "create_entity" {
+                return Err(format!(
+                    "edit on {} carries no expected_hash — refusing to write \
+                     without a stale-content guard",
+                    edit.file
+                ));
+            }
+
+            let target = canonicalize_target(&edit.file);
+
+            let rel = match &self.project_root {
+                Some(root) => match target.strip_prefix(root) {
+                    Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+                    Err(_) => {
+                        return Err(format!(
+                            "{} is outside the project root {}",
+                            target.display(),
+                            root.display()
+                        ))
+                    }
+                },
+                None => target.to_string_lossy().replace('\\', "/"),
+            };
+
+            if let Some(pattern) = self.config.deny.iter().find(|p| path_matches(&rel, p)) {
+                return Err(format!("{} is deny-listed by \"{}\"", rel, pattern));
+            }
+
+            if !self.config.allow.is_empty()
+                && !self.config.allow.iter().any(|p| path_matches(&rel, p))
+            {
+                return Err(format!(
+                    "{} is outside the configured allow list {:?}",
+                    rel, self.config.allow
+                ));
+            }
+        }
+
+        Ok(())
     }
 
     /// Plan a body replacement — replaces the function/method body only.
@@ -815,6 +952,34 @@ impl MutationEngine {
     pub fn apply(&mut self, plan: &MutationPlan) -> MutationResult {
         use std::io::Write;
 
+        // ── Phase 0: Policy ─────────────────────────────────────────────
+        // Before anything is read or written. See check_policy for why the
+        // gate lives here rather than in the Python caller.
+        if let Err(reason) = self.check_policy(plan) {
+            return MutationResult {
+                status: MutationStatus::RejectedPolicy,
+                files_written: vec![],
+                syntax_errors: vec![SyntaxDiagnostic {
+                    file: plan
+                        .edits
+                        .first()
+                        .map(|e| e.file.clone())
+                        .unwrap_or_default(),
+                    line: 0,
+                    column: 0,
+                    message: format!("policy rejected the plan — {}", reason),
+                    offending_span: ByteSpan { start: 0, end: 0 },
+                }],
+                reindex: ReindexSummary {
+                    files: 0,
+                    entities_updated: 0,
+                    edges_updated: 0,
+                    duration_ms: 0,
+                },
+                backup_path: None,
+            };
+        }
+
         // Group edits by file path (all edits carry real byte spans)
         let mut by_file: HashMap<String, Vec<MutationEdit>> = HashMap::new();
         for edit in &plan.edits {
@@ -1035,6 +1200,215 @@ mod tests {
             unverified_sites: vec![],
             warnings: vec![],
         }
+    }
+
+    // ── Policy gate (plan §0.5) ────────────────────────────────────────
+    //
+    // apply_mutation deserializes an arbitrary JSON plan from Python: any
+    // file, any byte span, and an expected_hash that defaults to empty — which
+    // apply() reads as "skip the stale check". These pin the gate that stops
+    // that being a write primitive for anything on disk.
+
+    /// A hashed edit on a normal file inside the root, so the other tests are
+    /// known to be rejecting for the reason they name.
+    fn hashed_plan(file: &str, span: ByteSpan, source: &str) -> MutationPlan {
+        MutationPlan {
+            id: "t".into(),
+            tool: "rename_symbol".into(),
+            affected_files: vec![file.to_string()],
+            edits: vec![MutationEdit {
+                file: file.to_string(),
+                span,
+                replacement: "x".into(),
+                expected_hash: hash_span(source.as_bytes(), span),
+            }],
+            diff_preview: String::new(),
+            unverified_sites: vec![],
+            warnings: vec![],
+        }
+    }
+
+    #[test]
+    fn test_policy_allows_a_hashed_edit_inside_the_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mod.py");
+        std::fs::write(&path, "value = 1\n").unwrap();
+
+        let mut eng = engine().with_project_root(dir.path());
+        let plan = hashed_plan(
+            &path.to_string_lossy(),
+            ByteSpan { start: 0, end: 5 },
+            "value = 1\n",
+        );
+        assert_eq!(eng.apply(&plan).status, MutationStatus::Applied);
+    }
+
+    #[test]
+    fn test_policy_rejects_writes_outside_the_project_root() {
+        let project = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let path = elsewhere.path().join("victim.py");
+        std::fs::write(&path, "secret = 1\n").unwrap();
+
+        let mut eng = engine().with_project_root(project.path());
+        let plan = hashed_plan(
+            &path.to_string_lossy(),
+            ByteSpan { start: 0, end: 6 },
+            "secret = 1\n",
+        );
+
+        let result = eng.apply(&plan);
+        assert_eq!(result.status, MutationStatus::RejectedPolicy);
+        assert!(result.syntax_errors[0].message.contains("outside the project root"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret = 1\n");
+    }
+
+    #[test]
+    fn test_policy_rejects_deny_listed_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let path = dir.path().join(".git").join("config");
+        std::fs::write(&path, "[core]\n").unwrap();
+
+        let mut eng = engine().with_project_root(dir.path());
+        let plan = hashed_plan(
+            &path.to_string_lossy(),
+            ByteSpan { start: 0, end: 6 },
+            "[core]\n",
+        );
+
+        let result = eng.apply(&plan);
+        assert_eq!(result.status, MutationStatus::RejectedPolicy);
+        assert!(result.syntax_errors[0].message.contains("deny-listed"));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[core]\n");
+    }
+
+    #[test]
+    fn test_policy_rejects_edits_with_no_stale_guard() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mod.py");
+        std::fs::write(&path, "value = 1\n").unwrap();
+
+        let mut eng = engine().with_project_root(dir.path());
+        let mut plan = hashed_plan(
+            &path.to_string_lossy(),
+            ByteSpan { start: 0, end: 5 },
+            "value = 1\n",
+        );
+        plan.edits[0].expected_hash = String::new();
+
+        let result = eng.apply(&plan);
+        assert_eq!(result.status, MutationStatus::RejectedPolicy);
+        assert!(result.syntax_errors[0].message.contains("no expected_hash"));
+    }
+
+    #[test]
+    fn test_policy_allows_create_entity_without_a_hash() {
+        // create_entity inserts into empty space — there is nothing to hash.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.py");
+        std::fs::write(&path, "").unwrap();
+        let file = path.to_string_lossy().to_string();
+
+        let mut eng = engine().with_project_root(dir.path());
+        let created = plan(vec![MutationEdit {
+            file,
+            span: ByteSpan { start: 0, end: 0 },
+            replacement: "x = 1\n".into(),
+            expected_hash: String::new(),
+        }]);
+        assert_eq!(eng.apply(&created).status, MutationStatus::Applied);
+    }
+
+    #[test]
+    fn test_policy_rejects_plans_over_the_edit_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mod.py");
+        std::fs::write(&path, "value = 1\n").unwrap();
+
+        let mut config = MutationConfig::default();
+        config.max_edits_per_plan = 1;
+        let mut eng = MutationEngine::new(config).with_project_root(dir.path());
+
+        let mut over = hashed_plan(
+            &path.to_string_lossy(),
+            ByteSpan { start: 0, end: 5 },
+            "value = 1\n",
+        );
+        over.edits.push(over.edits[0].clone());
+
+        let result = eng.apply(&over);
+        assert_eq!(result.status, MutationStatus::RejectedPolicy);
+        assert!(result.syntax_errors[0].message.contains("over the configured limit"));
+    }
+
+    #[test]
+    fn test_policy_rejects_traversal_out_of_the_root() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = project.path().parent().unwrap().join("escape.py");
+        std::fs::write(&outside, "x = 1\n").unwrap();
+
+        let escaping = project.path().join("..").join("escape.py");
+        let mut eng = engine().with_project_root(project.path());
+        let plan = hashed_plan(&escaping.to_string_lossy(), ByteSpan { start: 0, end: 1 }, "x = 1\n");
+
+        assert_eq!(eng.apply(&plan).status, MutationStatus::RejectedPolicy);
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn test_policy_rejects_when_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mod.py");
+        std::fs::write(&path, "value = 1\n").unwrap();
+
+        let mut config = MutationConfig::default();
+        config.enabled = false;
+        let mut eng = MutationEngine::new(config).with_project_root(dir.path());
+        let plan = hashed_plan(
+            &path.to_string_lossy(),
+            ByteSpan { start: 0, end: 5 },
+            "value = 1\n",
+        );
+
+        assert_eq!(eng.apply(&plan).status, MutationStatus::RejectedPolicy);
+    }
+
+    #[test]
+    fn test_allow_list_is_a_whitelist_when_populated() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src").join("ok.py"), "a = 1\n").unwrap();
+        std::fs::write(dir.path().join("other.py"), "a = 1\n").unwrap();
+
+        let mut config = MutationConfig::default();
+        config.allow = vec!["src/".into()];
+
+        let inside = dir.path().join("src").join("ok.py");
+        let mut eng = MutationEngine::new(config.clone()).with_project_root(dir.path());
+        let ok = hashed_plan(&inside.to_string_lossy(), ByteSpan { start: 0, end: 1 }, "a = 1\n");
+        assert_eq!(eng.apply(&ok).status, MutationStatus::Applied);
+
+        let outside = dir.path().join("other.py");
+        let mut eng = MutationEngine::new(config).with_project_root(dir.path());
+        let refused = hashed_plan(&outside.to_string_lossy(), ByteSpan { start: 0, end: 1 }, "a = 1\n");
+        let result = eng.apply(&refused);
+        assert_eq!(result.status, MutationStatus::RejectedPolicy);
+        assert!(result.syntax_errors[0].message.contains("allow list"));
+    }
+
+    #[test]
+    fn test_path_matches_pattern_shapes() {
+        assert!(path_matches("src/a.py", "src/"));
+        assert!(path_matches("pkg/src/a.py", "src/"));
+        assert!(!path_matches("mysrc/a.py", "src/"));
+
+        assert!(path_matches("app/migrations/0001.py", "/migrations/"));
+        assert!(path_matches("migrations/0001.py", "/migrations/"));
+
+        assert!(path_matches("uv.lock", "/*.lock"));
+        assert!(path_matches("sub/poetry.lock", "/*.lock"));
+        assert!(!path_matches("locked.py", "/*.lock"));
     }
 
     #[test]

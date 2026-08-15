@@ -208,8 +208,7 @@ class ToolRouter:
         return ToolResult(call_id=call.call_id, success=False, result=None,
                           error="No graph available")
 
-    def check_policy(self, plan: Any) -> bool:
-        """Check mutation policy before applying."""
-        # Verify: enabled, deny-listed paths, max_files_per_plan, max_edits_per_plan,
-        # require_clean_git
-        return True
+    # Mutation policy is enforced in MutationEngine::apply on the Rust side —
+    # the trust boundary is the FFI, not this router, since apply_mutation
+    # accepts an arbitrary plan from any caller. A stub here read as
+    # implemented and returned True unconditionally; it was never called.

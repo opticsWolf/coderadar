@@ -368,8 +368,13 @@ class TestMutationToolRouter:
             assert "Unknown tool" not in (result.error or ""), \
                 f"Tool {tool} should be recognized, got: {result.error}"
 
-    def test_policy_check_returns_true_by_default(self, router):
-        assert router.check_policy(MagicMock()) is True
+    def test_router_does_not_claim_to_enforce_policy(self, router):
+        """Policy lives in MutationEngine::apply — the FFI is the trust boundary.
+
+        The router used to carry a check_policy stub that returned True and was
+        never called, which read as an implemented gate.
+        """
+        assert not hasattr(router, "check_policy")
 
     def test_tool_call_dataclass_fields(self):
         from coderadar.mutation.tool_router import ToolCall, ToolResult

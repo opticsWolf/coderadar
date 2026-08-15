@@ -60,7 +60,7 @@ class TestMCPCreation:
         from coderadar.mcp.server import create_server
         server = create_server(None)
         assert server.name == "CodeRadar"
-        assert server.version == "0.6.14"
+        assert server.version == "0.6.15"
 
     def test_server_has_call_tool(self):
         from coderadar.mcp.server import create_server
@@ -953,12 +953,14 @@ class TestMutationTools:
         from coderadar._core import analyze
         from coderadar import CodeGraph
         from coderadar.mcp.server import _render_entity_code, _create_entity
-        analyze(str(E2E_DIR))
 
-        # Create a writable target file
+        # Create a writable target file, then index the directory holding it:
+        # the mutation policy confines writes to the indexed root, so the
+        # target has to live inside the project that was analyzed.
         target = tmp_path / "new_mod.py"
         target.write_text("existing = 1", encoding="utf-8")
         target_s = str(target)
+        analyze(str(tmp_path))
 
         code = _render_entity_code("python", "function", "created_fn", "return 42", None)
         cg = CodeGraph()
@@ -990,6 +992,31 @@ class TestMutationTools:
         result = cg.apply(plan)
         assert result.status == "RejectedStale"
         assert target.read_text(encoding="utf-8") == "def fop():\n    return 1\n"
+
+    @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+    def test_apply_refuses_to_write_outside_the_indexed_root(self, tmp_path):
+        """apply_mutation takes an arbitrary JSON plan, so containment is
+        enforced in the engine, not by the caller that built the plan."""
+        from coderadar._core import analyze
+        from coderadar import CodeGraph, MutationEdit, MutationPlan
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / "mod.py").write_text("value = 1\n", encoding="utf-8")
+        analyze(str(project))
+
+        outsider = tmp_path / "outside.py"
+        outsider.write_text("secret = 1\n", encoding="utf-8")
+
+        plan = MutationPlan(
+            id="handcrafted", tool="create_entity",
+            edits=[MutationEdit(file=str(outsider), replacement="owned = 1\n",
+                                span_start=0, span_end=0)],
+            affected_files=[str(outsider)],
+            diff_preview="", unverified_sites=[], warnings=[],
+        )
+        result = CodeGraph().apply(plan)
+        assert result.status == "RejectedPolicy"
+        assert outsider.read_text(encoding="utf-8") == "secret = 1\n"
 
     @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
     def test_rename_class_definition_and_subclasses(self, tmp_path):

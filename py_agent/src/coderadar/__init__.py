@@ -74,7 +74,7 @@ class MutationEdit:
 @dataclass(frozen=True)
 class MutationResult:
     """Result of applying a mutation plan."""
-    status: Literal["Applied", "RolledBack", "RejectedStale"]
+    status: Literal["Applied", "RolledBack", "RejectedStale", "RejectedPolicy"]
     files_written: List[str]
     syntax_errors: List[dict]
     backup_path: Optional[str] = None
@@ -581,7 +581,15 @@ class CodeGraph:
                     pass
             if isinstance(result, dict) and not result.get("applied", True):
                 raw_status = str(result.get("status", "RolledBack"))
-                status = "RejectedStale" if "RejectedStale" in raw_status else "RolledBack"
+                # Rejections carry why the write did not happen; collapsing
+                # them all to RolledBack loses that (a policy refusal is not a
+                # failed write).
+                if "RejectedStale" in raw_status:
+                    status = "RejectedStale"
+                elif "RejectedPolicy" in raw_status:
+                    status = "RejectedPolicy"
+                else:
+                    status = "RolledBack"
                 return MutationResult(
                     status=status,
                     files_written=result.get("files_written", []),

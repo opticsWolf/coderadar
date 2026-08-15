@@ -56,7 +56,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
     m.add_function(wrap_pyfunction!(index_edge_stats, m)?)?;
     m.add_function(wrap_pyfunction!(get_smells, m)?)?;
-    m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;;
+    m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
@@ -77,6 +77,22 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 static GLOBAL_GRAPH: std::sync::LazyLock<RwLock<Option<CodeGraph>>> =
     std::sync::LazyLock::new(|| RwLock::new(None));
+
+/// Root the current graph was indexed from.
+///
+/// The mutation policy confines writes to it, so a plan cannot reach outside
+/// the project it was planned against. Set by `analyze`.
+static INDEXED_ROOT: std::sync::LazyLock<RwLock<Option<std::path::PathBuf>>> =
+    std::sync::LazyLock::new(|| RwLock::new(None));
+
+/// Build a MutationEngine confined to the indexed root.
+fn mutation_engine() -> mutation::MutationEngine {
+    let engine = mutation::MutationEngine::new(crate::graph::MutationConfig::default());
+    match INDEXED_ROOT.read().clone() {
+        Some(root) => engine.with_project_root(root),
+        None => engine,
+    }
+}
 
 fn with_graph<F, R>(f: F) -> PyResult<R>
 where
@@ -559,6 +575,9 @@ fn analyze(root: &str) -> PyResult<PyObject> {
 
     let mut guard = GLOBAL_GRAPH.write();
     *guard = Some(graph);
+    *INDEXED_ROOT.write() = std::fs::canonicalize(root)
+        .ok()
+        .or_else(|| Some(std::path::PathBuf::from(root)));
 
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
@@ -661,8 +680,7 @@ fn plan_body_replacement(
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|_graph, snap| {
-        let config = crate::graph::MutationConfig::default();
-        let engine = mutation::MutationEngine::new(config);
+        let engine = mutation_engine();
         let plan = engine.plan_body_replacement(
             entity_id, new_body, expected_hash, dry_run.unwrap_or(false), snap,
         ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
@@ -678,8 +696,7 @@ fn plan_signature_update(
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|_graph, snap| {
-        let config = crate::graph::MutationConfig::default();
-        let engine = mutation::MutationEngine::new(config);
+        let engine = mutation_engine();
         let plan = engine.plan_signature_update(
             entity_id, new_signature,
             &call_site_values.unwrap_or_default(),
@@ -696,8 +713,7 @@ fn plan_rename(
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|_graph, snap| {
-        let config = crate::graph::MutationConfig::default();
-        let engine = mutation::MutationEngine::new(config);
+        let engine = mutation_engine();
         let plan = engine.plan_rename(
             entity_id, new_name,
             include_strings.unwrap_or(false), dry_run.unwrap_or(false), snap,
@@ -712,8 +728,7 @@ fn plan_create_entity(
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|_graph, snap| {
-        let config = crate::graph::MutationConfig::default();
-        let engine = mutation::MutationEngine::new(config);
+        let engine = mutation_engine();
         let plan = engine.plan_create_entity(
             target_file, anchor, code,
             dry_run.unwrap_or(false), snap,
@@ -765,8 +780,7 @@ fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
     };
 
     with_graph(|_graph, _snap| {
-        let config = crate::graph::MutationConfig::default();
-        let mut engine = mutation::MutationEngine::new(config);
+        let mut engine = mutation_engine();
         let result = engine.apply(&plan);
         let dict = PyDict::new(py);
         dict.set_item("applied", matches!(result.status, mutation::MutationStatus::Applied))?;
