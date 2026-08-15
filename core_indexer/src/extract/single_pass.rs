@@ -20,6 +20,23 @@ use crate::extract::walker::{
 };
 use crate::types::*;
 
+/// Content hash of `source[start..end]`, or 0 for an empty or invalid range.
+///
+/// `apply_diff_update` compares these to decide whether an entity changed. They
+/// were hardcoded to 0, so the comparison was `0 != 0` and update_file never
+/// re-inserted a function that already existed — edits to existing functions
+/// never reached the graph in watch mode.
+fn hash_span(source: &str, start: usize, end: usize) -> u64 {
+    if end <= start {
+        return 0;
+    }
+    source
+        .as_bytes()
+        .get(start..end)
+        .map(xxhash_rust::xxh3::xxh3_64)
+        .unwrap_or(0)
+}
+
 /// An emitted entity's metadata, stored for parent-chain context resolution.
 #[derive(Clone)]
 struct Emitted {
@@ -389,8 +406,8 @@ impl<'a> CursorExtractor<'a> {
             source: SourceType::Impl,
             is_type_checking_only: false,
             parse_quality: ParseQuality::Clean,
-            signature_hash: 0,
-            body_hash: 0,
+            signature_hash: hash_span(self.source, spans.full_span.start, spans.body_span.start),
+            body_hash: hash_span(self.source, spans.body_span.start, spans.body_span.end),
             metrics: crate::smells::metrics::compute_function_metrics(node, self.source),
             span: spans.full_span,
             name_span: spans.name_span,

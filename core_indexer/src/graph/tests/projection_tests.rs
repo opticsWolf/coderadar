@@ -26,8 +26,6 @@ use super::*;
 
     /// All three ingest paths must agree on every span they record.
     #[test]
-    #[ignore = "single_pass sets signature_hash/body_hash to 0, so apply_diff_update \
-                never sees an existing function as changed and never re-inserts it"]
     fn test_index_file_and_update_file_agree_on_spans() {
         let source = "def greet(name, greeting=\"hi\"):\n    return greeting\n";
 
@@ -44,6 +42,37 @@ use super::*;
         assert_eq!(via_index.params_span, via_update.params_span);
         assert_eq!(via_index.body_span, via_update.body_span);
         assert_eq!(via_index.parameters.len(), via_update.parameters.len());
+    }
+
+    /// A body edit that leaves the signature alone must still reach the graph.
+    #[test]
+    fn test_update_file_reindexes_a_changed_function() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        graph.index_file("def f():\n    return 1\n", "chg.py", &Language::Python).unwrap();
+        let before = graph.snapshot().functions.get("chg.py::f").cloned().unwrap();
+
+        let (added, removed, _) = graph
+            .update_file("chg.py", Some("def f():\n    return 2\n"), None)
+            .unwrap();
+        // A changed entity is replaced in place: one insert, and no removal —
+        // the removal counter tracks entities that disappeared from the file.
+        assert_eq!((added, removed), (1, 0));
+
+        let after = graph.snapshot().functions.get("chg.py::f").cloned().unwrap();
+        assert_ne!(before.body_hash, after.body_hash, "body_hash must track the body");
+        assert_eq!(before.signature_hash, after.signature_hash, "signature is unchanged");
+    }
+
+    /// An unchanged file must not churn the projection — that is the whole point
+    /// of the diff.
+    #[test]
+    fn test_update_file_skips_unchanged_functions() {
+        let source = "def f():\n    return 1\n\n\ndef g():\n    return 2\n";
+        let graph = CodeGraph::new(GraphConfig::default());
+        graph.index_file(source, "same.py", &Language::Python).unwrap();
+
+        let (added, removed, _) = graph.update_file("same.py", Some(source), None).unwrap();
+        assert_eq!((added, removed), (0, 0), "nothing changed, nothing to do");
     }
 
     #[test]
