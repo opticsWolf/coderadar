@@ -96,6 +96,18 @@ fn module_file_path(projection: &ProjectedGraph, module_id: &str) -> String {
         .to_string()
 }
 
+/// Confirm that `span` in `source` still holds the identifier the index recorded.
+///
+/// Spans are captured at index time. The stale-write hash carried on every edit
+/// is computed from the same read the span was resolved against, so it proves
+/// the file did not change between *plan* and *apply* — it says nothing about
+/// whether the graph still matches disk. This is the check that does.
+fn span_holds_name(source: &[u8], span: ByteSpan, name: &str) -> bool {
+    source
+        .get(span.start..span.end)
+        .is_some_and(|bytes| bytes == name.as_bytes())
+}
+
 /// Convert a 1-indexed line + 0-indexed byte column to an absolute byte offset.
 fn line_col_to_byte(source: &[u8], line: usize, col: usize) -> Option<usize> {
     let mut line_start = 0usize;
@@ -406,6 +418,17 @@ impl MutationEngine {
         // 1. Definition: rewrite name_span
         let def_file = module_file_path(projection, &fn_entity.parent_module);
         let def_source = std::fs::read(&def_file).unwrap_or_default();
+        // The definition anchors the whole rename — if the index no longer
+        // agrees with disk here, every span in this plan is suspect. Fail the
+        // plan rather than renaming call sites against a definition we would
+        // have mangled.
+        if !span_holds_name(&def_source, name_span, &fn_entity.name) {
+            return Err(MutationError::StaleIndex {
+                file: def_file,
+                expected: fn_entity.name.clone(),
+                span: name_span,
+            });
+        }
         let def_hash = hash_span(&def_source, name_span);
         edits.push(MutationEdit {
             file: def_file.clone(),
@@ -448,19 +471,40 @@ impl MutationEngine {
                     };
 
                     if call.path.is_empty() {
-                        // Simple call `foo()` — name starts at (line, col)
-                        if let Some(start) = line_col_to_byte(&caller_source, call.line, call.col) {
-                            let end = (start + call.name.len()).min(caller_source.len());
-                            let span = ByteSpan { start, end };
-                            edits.push(MutationEdit {
-                                file: caller_file.clone(),
-                                span,
-                                replacement: new_name.to_string(),
-                                expected_hash: hash_span(&caller_source, span),
-                            });
-                            if !affected.contains(&caller_file) {
-                                affected.push(caller_file.clone());
+                        // Simple call `foo()` — name starts at (line, col), as
+                        // recorded at index time. Only emit an edit if the bytes
+                        // there are still the name we are renaming; otherwise the
+                        // file has moved under the index and we would overwrite
+                        // whatever now sits at that line and column.
+                        let verified = line_col_to_byte(&caller_source, call.line, call.col)
+                            .map(|start| ByteSpan {
+                                start,
+                                end: (start + call.name.len()).min(caller_source.len()),
+                            })
+                            .filter(|span| span_holds_name(&caller_source, *span, &call.name));
+
+                        match verified {
+                            Some(span) => {
+                                edits.push(MutationEdit {
+                                    file: caller_file.clone(),
+                                    span,
+                                    replacement: new_name.to_string(),
+                                    expected_hash: hash_span(&caller_source, span),
+                                });
+                                if !affected.contains(&caller_file) {
+                                    affected.push(caller_file.clone());
+                                }
                             }
+                            None => unverified.push(UnverifiedSite {
+                                file: caller_file.clone(),
+                                line: call.line as u32,
+                                snippet: call.name.clone(),
+                                reason: format!(
+                                    "Call site no longer holds \"{}\" at line {} col {} — \
+                                     file changed since indexing; reindex and retry",
+                                    call.name, call.line, call.col
+                                ),
+                            }),
                         }
                     } else {
                         // Method/attribute call `obj.foo()` — needs manual review
@@ -489,6 +533,13 @@ impl MutationEngine {
         if let Some(cls) = projection.classes.get(entity_id) {
             let cls_file = module_file_path(projection, &cls.parent_module);
             let cls_source = std::fs::read(&cls_file).unwrap_or_default();
+            if !span_holds_name(&cls_source, cls.name_span, &cls.name) {
+                return Err(MutationError::StaleIndex {
+                    file: cls_file,
+                    expected: cls.name.clone(),
+                    span: cls.name_span,
+                });
+            }
             edits.push(MutationEdit {
                 file: cls_file.clone(),
                 span: cls.name_span,
@@ -768,6 +819,13 @@ fn rollback_all(backups: &[(String, String)]) {
 #[derive(Debug)]
 pub enum MutationError {
     EntityNotFound(String),
+    /// A span recorded at index time no longer holds the identifier it named —
+    /// the index is stale relative to disk. Reindex and re-plan.
+    StaleIndex {
+        file: String,
+        expected: String,
+        span: ByteSpan,
+    },
     ParseFailed(String),
     PolicyViolation { path: String, reason: String },
     HashMismatch { file: String, expected: String, actual: String },

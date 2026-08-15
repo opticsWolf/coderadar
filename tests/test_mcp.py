@@ -60,7 +60,7 @@ class TestMCPCreation:
         from coderadar.mcp.server import create_server
         server = create_server(None)
         assert server.name == "CodeRadar"
-        assert server.version == "0.6.8"
+        assert server.version == "0.6.9"
 
     def test_server_has_call_tool(self):
         from coderadar.mcp.server import create_server
@@ -990,6 +990,61 @@ class TestMutationTools:
         result = cg.apply(plan)
         assert result.status == "RejectedStale"
         assert target.read_text(encoding="utf-8") == "def fop():\n    return 1\n"
+
+    @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+    def test_rename_skips_call_site_that_moved_since_indexing(self, tmp_path):
+        """A call site whose (line, col) no longer holds the name yields no edit.
+
+        Call-site spans are reconstructed from the line/col recorded at index
+        time, and the stale-write hash is computed from the same read — so it
+        cannot catch an index that has drifted from disk. Without the span
+        check, planning here rewrites three bytes of `def caller():`.
+        """
+        from coderadar._core import analyze
+        from coderadar import CodeGraph
+        target = tmp_path / "moved_mod.py"
+        target.write_text(
+            "def foo():\n    return 1\n\n\ndef caller():\n    return foo()\n",
+            encoding="utf-8",
+        )
+        analyze(str(tmp_path))
+
+        eid = f"{target}::foo"
+        cg = CodeGraph()
+        before = cg.plan_rename(eid, "bar", dry_run=True)
+        assert len(before.edits) == 2, "definition + call site expected while fresh"
+
+        # Insert a line *between* the definition and the caller: the definition's
+        # byte span is untouched, but the call site slides down one line.
+        target.write_text(
+            "def foo():\n    return 1\n\n\n# inserted out-of-band\ndef caller():\n"
+            "    return foo()\n",
+            encoding="utf-8",
+        )
+
+        after = cg.plan_rename(eid, "bar", dry_run=True)
+        assert len(after.edits) == 1, "only the definition should survive verification"
+        assert after.edits[0].span_start == before.edits[0].span_start
+
+        # And the file the call site lives in is left alone entirely.
+        cg.apply(after)
+        assert "def caller():" in target.read_text(encoding="utf-8")
+
+    @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+    def test_rename_rejects_stale_definition(self, tmp_path):
+        """A definition span that no longer holds the name fails the whole plan."""
+        from coderadar._core import analyze
+        from coderadar import CodeGraph
+        target = tmp_path / "shifted_mod.py"
+        target.write_text("def foo():\n    return 1\n", encoding="utf-8")
+        analyze(str(tmp_path))
+
+        # Prepend a line — every byte span in the file shifts.
+        target.write_text("import os\ndef foo():\n    return 1\n", encoding="utf-8")
+
+        cg = CodeGraph()
+        with pytest.raises(RuntimeError, match="StaleIndex"):
+            cg.plan_rename(f"{target}::foo", "bar", dry_run=True)
 
     @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
     def test_apply_rolls_back_tainted_update(self, tmp_path):
