@@ -40,6 +40,9 @@ dist/
 .harness/metrics.json
 .harness/codegraph.sock
 
+# Run logs
+*.log
+
 # OS junk
 .DS_Store
 Thumbs.db

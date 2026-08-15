@@ -8,8 +8,12 @@ on:
 
 jobs:
   test-rust:
-    name: Rust tests
-    runs-on: ubuntu-latest
+    name: Rust tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -31,8 +35,12 @@ jobs:
         run: cargo test --package core_indexer
 
   test-python:
-    name: Python tests
-    runs-on: ubuntu-latest
+    name: Python tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -54,5 +62,38 @@ jobs:
           uv run maturin develop --release --manifest-path core_indexer/Cargo.toml
           uv pip install -e ".[dev]"
 
+      # The whole suite, not a subset — `testpaths = ["tests"]` in pyproject.toml
+      # is the source of truth for what CI runs.
       - name: Run Python tests
-        run: uv run pytest tests/test_e2e.py tests/test_mcp.py tests/test_framework_resolvers.py -v
+        run: uv run pytest -q
+
+  lint:
+    name: Lint (advisory)
+    runs-on: ubuntu-latest
+    # Non-blocking for now: these surface the existing warning backlog
+    # (plan §5.2) without gating merges. Flip to blocking once it is cleared.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy --package core_indexer --all-targets
+
+      - name: ruff
+        run: uvx ruff check py_agent/src tests
