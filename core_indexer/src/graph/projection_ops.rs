@@ -281,7 +281,7 @@ impl CodeGraph {
                         id: f.id.clone(), name: f.name.clone(),
                         parent_module: module_id.clone(),
                         parent_class: f.parent_class.clone(),
-                        parameters: vec![], return_type: f.return_type.clone(),
+                        parameters: f.parameters.clone(), return_type: f.return_type.clone(),
                         calls: f.calls.clone(), resolved_calls: vec![],
                         decorators: f.decorators.clone(), setter_of: None,
                         line: f.line, exit_line: f.exit_line,
