@@ -152,8 +152,17 @@ def main():
     for name in spec['tests']:
         s, e = find_fn(lines, name)
         spans.append((s, e, name))
-    # sanity: no overlaps
+    # resolve overlaps: a comment block between two tests is claimed by BOTH
+    # the forward-scan of the earlier span and the backward extension of the
+    # later one. Positional rule (same as production extraction): comments go
+    # with the FOLLOWING item, so trim the earlier span's end.
     spans.sort()
+    for i in range(len(spans) - 1):
+        if spans[i][1] >= spans[i + 1][0]:
+            b = spans[i + 1][0] - 1
+            while b > spans[i][0] and lines[b].strip() == '':
+                b -= 1
+            spans[i] = (spans[i][0], b, spans[i][2])
     for (a1, b1, n1), (a2, b2, n2) in zip(spans, spans[1:]):
         assert b1 < a2, f'overlap {n1} / {n2}'
 
