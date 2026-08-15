@@ -223,7 +223,7 @@ def spec_embeddings(sl):
 
 def spec_indexing(sl):
     d = impl_spec(sl, 'indexing.rs',
-                  ['use std::collections::HashMap;', '', 'use super::CodeGraph;',
+                  ['use std::collections::HashMap;', 'use std::path::PathBuf;', 'use std::sync::Arc;', '', 'use super::CodeGraph;',
                    'use crate::types::*;'],
                   ['ts_language', 'index_file', 'index_file_accumulate', 'synthesize_module_unit',
                    'extract_only', 'build_fragment', 'index_file_inner'])
