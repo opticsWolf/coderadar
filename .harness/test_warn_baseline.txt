@@ -25,7 +25,7 @@ unused import: `self` @ core_indexer/src/resolve/orchestrator.rs
 unused import: `std::path::PathBuf` @ core_indexer/src/fs/git.rs
 unused import: `std::sync::Arc` @ core_indexer/src/storage.rs
 unused variable: `exc` @ core_indexer/src/graph/tests/mod.rs
-unused variable: `fid` @ core_indexer/src/graph/tests/mod.rs
+unused variable: `fid` @ core_indexer/src/graph/tests/import_graph_tests.rs
 unused variable: `fragment` @ core_indexer/src/resolve/stack_graph.rs
 unused variable: `full_name` @ core_indexer/src/resolve/orchestrator.rs
 unused variable: `guard` @ core_indexer/src/lib.rs
