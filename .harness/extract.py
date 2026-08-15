@@ -201,7 +201,7 @@ def spec_traversal(sl):
 
 def spec_resolve_calls(sl):
     return impl_spec(sl, 'resolve_calls.rs',
-                     ['use std::collections::HashMap;', '', 'use super::CodeGraph;',
+                     ['use super::CodeGraph;','use super::ImportGraph;',
                       'use super::module_resolution::{find_module_by_dotted_name, find_symbol_in_module};',
                       'use crate::types::*;'],
                      ['resolve_all_calls', 'resolve_one_function', 'resolve_calls_scoped'],
