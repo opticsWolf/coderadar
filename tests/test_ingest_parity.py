@@ -91,45 +91,29 @@ def test_update_file_preserves_parameters(indexed):
 
 
 def test_update_file_matches_analyze_field_for_field(indexed):
-    """Full-dict parity, so the next dropped field fails here rather than silently.
-
-    Path-shaped fields are normalized before comparing: the two paths spell
-    separators differently, which is its own defect and has its own test below.
-    """
-    path_fields = ("id", "parent_id", "parent_module", "file_path")
-
-    def flatten(entity: dict) -> dict:
-        return {
-            k: (_norm(v) if k in path_fields and isinstance(v, str) else v)
-            for k, v in entity.items()
-        }
-
-    before = {k: flatten(v) for k, v in _entities().items()}
+    """Full-dict parity, so the next dropped field fails here rather than silently."""
+    before = _entities()
 
     update_file(str(indexed), None, True)
-    after = {k: flatten(v) for k, v in _entities().items()}
+    after = _entities()
 
     for eid, entity in before.items():
         assert after[eid] == entity, f"{eid} differs after update_file"
 
 
-@pytest.mark.xfail(
-    reason="apply_diff_update re-inserts under a normalized id while the walker "
-           "stores the OS spelling, so every updated entity is duplicated",
-    strict=True,
-)
 def test_update_file_does_not_duplicate_entities(indexed):
     """Ids must not fork across the two ingest paths.
 
-    `analyze` stores `.\\p.py::f`; `update_file` inserts `p.py::f` alongside it
-    instead of replacing it, so watch mode and post-mutation reindex both grow
-    a second copy of every entity they touch.
+    `analyze` stored `.\\p.py::f` while `update_file` inserted `p.py::f`
+    alongside it instead of replacing it, so watch mode and post-mutation
+    reindex both grew a second copy of every entity they touched — and the id
+    an agent held from one call no longer named the live entity on the next.
     """
-    before = len(_entities())
+    before = [e["id"] for kind in ("function", "class") for e in search_entities("", 200, kind)]
     update_file(str(indexed), None, True)
+    after = [e["id"] for kind in ("function", "class") for e in search_entities("", 200, kind)]
 
-    raw = [e["id"] for kind in ("function", "class") for e in search_entities("", 200, kind)]
-    assert len(raw) == before, f"entity count grew from {before} to {len(raw)}: {raw}"
+    assert sorted(after) == sorted(before), "entity ids must survive update_file unchanged"
 
 
 def test_signatures_carry_their_parameters(indexed):

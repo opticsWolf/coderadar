@@ -163,11 +163,47 @@ impl CodeGraph {
         // 1. Collect old entity hashes from projection.
         //    Normalize entity IDs for cross-platform prefix matching.
         let normalized_file_path = normalize_path_str(file_path);
-        let old_hashes: std::collections::HashMap<EntityId, (u64, u64)> = projection
+
+        // Map normalized id → the exact spelling the projection already stores.
+        //
+        // `analyze` walks with OS separators and records `.\p.py::f`; this path
+        // normalizes first and extracts `p.py::f`. Inserting under the extracted
+        // spelling left the walker's entry untouched, so every updated entity
+        // was duplicated and its id — the handle agents hold across calls —
+        // silently forked. Reuse the stored spelling instead.
+        let mut existing_ids: std::collections::HashMap<EntityId, EntityId> =
+            std::collections::HashMap::new();
+        {
+            let mut note = |id: &EntityId| {
+                let normalized = normalize_path_str(id);
+                if normalized.starts_with(&normalized_file_path) {
+                    existing_ids.entry(normalized).or_insert_with(|| id.clone());
+                }
+            };
+            for id in projection.functions.keys() { note(id); }
+            for id in projection.classes.keys() { note(id); }
+            for id in projection.imports.keys() { note(id); }
+            for id in projection.constants.keys() { note(id); }
+            for id in projection.type_aliases.keys() { note(id); }
+            for id in projection.modules.keys() { note(id); }
+        }
+        let canonical = |id: &str| -> EntityId {
+            existing_ids
+                .get(&normalize_path_str(id))
+                .cloned()
+                .unwrap_or_else(|| id.to_string())
+        };
+
+        // Keyed by normalized id so the lookup in step 4 can find it — it was
+        // keyed raw and looked up normalized, so every function missed and was
+        // re-inserted, defeating the diff.
+        let old_hashes: std::collections::HashMap<EntityId, (EntityId, u64, u64)> = projection
             .functions
             .iter()
             .filter(|(id, _)| normalize_path_str(id).starts_with(&normalized_file_path))
-            .map(|(id, f)| (id.clone(), (f.signature_hash, f.body_hash)))
+            .map(|(id, f)| {
+                (normalize_path_str(id), (id.clone(), f.signature_hash, f.body_hash))
+            })
             .collect();
 
         let old_classes: std::collections::BTreeSet<EntityId> = projection
@@ -223,10 +259,10 @@ impl CodeGraph {
             *removed += 1;
         };
 
-        let module_id = format!("{}::module", file_path);
+        let module_id = canonical(&format!("{}::module", file_path));
 
-        for id in old_hashes.keys().filter(|id| !new_funcs.contains(&normalize_id(id))) {
-            remove_entity(id, projection, &mut removed);
+        for (_, (stored_id, _, _)) in old_hashes.iter().filter(|(n, _)| !new_funcs.contains(*n)) {
+            remove_entity(stored_id, projection, &mut removed);
         }
         for id in old_classes.iter().filter(|id| !new_classes.contains(&normalize_id(id))) {
             remove_entity(id, projection, &mut removed);
@@ -246,7 +282,7 @@ impl CodeGraph {
             let id = unit.entity_id();
             let needs_insert = match unit {
                 ExtractedUnit::Function(f) => {
-                    old_hashes.get(&normalize_id(&f.id)).map_or(true, |(sig, body)| {
+                    old_hashes.get(&normalize_id(&f.id)).map_or(true, |(_, sig, body)| {
                         f.signature_hash != *sig || f.body_hash != *body
                     })
                 }
@@ -262,9 +298,10 @@ impl CodeGraph {
                 continue;
             }
 
-            // Remove old version first (for modified entities) — use normalized ID
-            // since old projection IDs may use different path separators.
-            let norm_id = normalize_id(&id);
+            // Remove the old version first (for modified entities). Use the id
+            // the projection actually stores it under, not the normalized one —
+            // removing a spelling that is not there leaves a duplicate behind.
+            let norm_id = canonical(&id);
             projection.functions.remove(&norm_id);
             projection.classes.remove(&norm_id);
             projection.imports.remove(&norm_id);
@@ -277,10 +314,11 @@ impl CodeGraph {
 
             match unit {
                 ExtractedUnit::Function(f) => {
+                    let entity_id = canonical(&f.id);
                     let func = Function {
-                        id: f.id.clone(), name: f.name.clone(),
+                        id: entity_id.clone(), name: f.name.clone(),
                         parent_module: module_id.clone(),
-                        parent_class: f.parent_class.clone(),
+                        parent_class: f.parent_class.as_deref().map(canonical),
                         parameters: f.parameters.clone(), return_type: f.return_type.clone(),
                         calls: f.calls.clone(), resolved_calls: vec![],
                         decorators: f.decorators.clone(), setter_of: None,
@@ -296,15 +334,16 @@ impl CodeGraph {
                         params_span: f.params_span, body_span: f.body_span,
                         decorators_span: f.decorators_span, embedding: EmbeddingVec::default(),
                     };
-                    projection.functions.insert(f.id.clone(), Arc::new(func));
+                    projection.functions.insert(entity_id, Arc::new(func));
                     inserted += 1;
                 }
                 ExtractedUnit::Class(c) => {
+                    let entity_id = canonical(&c.id);
                     let class = Class {
-                        id: c.id.clone(), name: c.name.clone(),
+                        id: entity_id.clone(), name: c.name.clone(),
                         grammar_kind: c.grammar_kind.clone(),
                         parent_module: module_id.clone(),
-                        parent_class: c.parent_class.clone(),
+                        parent_class: c.parent_class.as_deref().map(canonical),
                         bases: c.bases.clone(), resolved_bases: vec![],
                         mro: vec![], mro_error: false, methods: vec![],
                         fields: c.fields.iter().map(|ef| Field {
@@ -323,21 +362,22 @@ impl CodeGraph {
                         span: c.span, name_span: c.name_span,
                         body_span: c.body_span, decorators_span: c.decorators_span,
                         embedding: EmbeddingVec::default(),                    };
-                    projection.classes.insert(c.id.clone(), Arc::new(class));
+                    projection.classes.insert(entity_id, Arc::new(class));
                     inserted += 1;
                 }
                 ExtractedUnit::Import(i) => {
+                    let entity_id = canonical(&i.id);
                     let import = Import {
-                        id: i.id.clone(), raw: i.raw.clone(),
+                        id: entity_id.clone(), raw: i.raw.clone(),
                         kind: i.kind.clone(),
                         resolution: ImportResolution::Unresolved,
                         line: i.line, is_type_only: i.is_type_only,
                         name_span: i.name_span,
                         embedding: EmbeddingVec::default(),                    };
-                    projection.imports.insert(i.id.clone(), Arc::new(import));
+                    projection.imports.insert(entity_id.clone(), Arc::new(import));
                     if let Some(mod_arc) = projection.modules.get(&module_id) {
                         let mut m = (**mod_arc).clone();
-                        m.imports.push(i.id.clone());
+                        m.imports.push(entity_id);
                         projection.modules.insert(module_id.clone(), Arc::new(m));
                     }
                     // Build import graph edges
@@ -364,22 +404,24 @@ impl CodeGraph {
                     inserted += 1;
                 }
                 ExtractedUnit::Constant(k) => {
+                    let entity_id = canonical(&k.id);
                     let constant = Constant {
-                        id: k.id.clone(), name: k.name.clone(),
+                        id: entity_id.clone(), name: k.name.clone(),
                         annotation: k.annotation.clone(), source: k.source,
                         default_value: k.default_value.clone(),
                         span: k.span, name_span: k.name_span,
                         embedding: EmbeddingVec::default(),                    };
-                    projection.constants.insert(k.id.clone(), Arc::new(constant));
+                    projection.constants.insert(entity_id, Arc::new(constant));
                     inserted += 1;
                 }
                 ExtractedUnit::TypeAlias(ta) => {
+                    let entity_id = canonical(&ta.id);
                     let alias = TypeAlias {
-                        id: ta.id.clone(), name: ta.name.clone(),
+                        id: entity_id.clone(), name: ta.name.clone(),
                         target: ta.target.clone(), source: ta.source,
                         span: ta.span, name_span: ta.name_span,
                         embedding: EmbeddingVec::default(),                    };
-                    projection.type_aliases.insert(ta.id.clone(), Arc::new(alias));
+                    projection.type_aliases.insert(entity_id, Arc::new(alias));
                     inserted += 1;
                 }
                 _ => {}
