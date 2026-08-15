@@ -22,8 +22,10 @@ pub struct CallEdge {
 }
 
 pub struct CallGraph {
-    graph: StableDiGraph<CallNode, CallEdge>,
-    path_to_node: DashMap<String, NodeIndex>,
+    // pub(super): accessed by the shared test helpers in `tests/mod.rs`
+    // (make_call_node / make_call_edge), which live outside this module.
+    pub(super) graph: StableDiGraph<CallNode, CallEdge>,
+    pub(super) path_to_node: DashMap<String, NodeIndex>,
 }
 
 impl CallGraph {
