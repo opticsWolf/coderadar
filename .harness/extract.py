@@ -233,8 +233,8 @@ def spec_indexing(sl):
 
 def spec_projection_ops(sl):
     return impl_spec(sl, 'projection_ops.rs',
-                     ['use std::collections::{BTreeSet, HashMap};', '', 'use super::CodeGraph;',
-                      'use super::module_resolution::normalize_path_str;',
+                     ['use std::collections::BTreeSet;', 'use std::path::PathBuf;', 'use std::sync::Arc;', '', 'use super::CodeGraph;',
+                      'use super::module_resolution::{find_module_by_dotted_name, normalize_path_str}',
                       'use crate::types::*;'],
                      ['remove_file_entities', 'apply_diff_update', 'update_file', 'insert_extracted'],
                      subs=[('    fn insert_extracted(', '    pub(super) fn insert_extracted(')])
