@@ -217,7 +217,7 @@ def spec_persistence(sl):
 
 def spec_embeddings(sl):
     return impl_spec(sl, 'embeddings.rs',
-                     ['use super::CodeGraph;', 'use crate::types::*;'],
+                     ['use std::sync::Arc;', '', 'use super::CodeGraph;', 'use crate::types::*;'],
                      ['set_embedding', 'clear_embeddings_for_file', 'set_module_star_exports'])
 
 

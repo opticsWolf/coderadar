@@ -17,6 +17,12 @@ def parse(path):
             out.append((msg, loc))
     return out
 
+raw = open('check_now.txt', encoding='utf-8').read()
+err_lines = [l for l in raw.splitlines() if l.startswith('error[') or l.startswith('error:')]
+if err_lines:
+    print('COMPILE ERRORS PRESENT (warning comparison unreliable):')
+    for l in err_lines[:5]:
+        print('  ' + l)
 now = parse('check_now.txt')
 base = []
 for x in open('warn_baseline.txt', encoding='utf-8').read().splitlines():
@@ -33,4 +39,5 @@ for m, l in added:
 for m, l in removed:
     print(f'REMOVED: {m}  @ {l}')
 print(f'total now={len(now)} baseline={len(base)} added={len(added)} removed={len(removed)}')
-sys.exit(0 if not added and len(now) == len(base) else 1)
+bad = bool(err_lines) or bool(added) or len(now) != len(base)
+sys.exit(0 if not bad else 1)
