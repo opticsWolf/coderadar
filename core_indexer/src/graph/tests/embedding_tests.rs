@@ -3,6 +3,8 @@
 use super::*;
 
     #[test]
+    // ── Embedding Pipeline Tests ────────────────────────────────
+
     fn test_function_embedding_field() {
         let graph = CodeGraph::new(GraphConfig::default());
         index_source(&graph, "def add(a, b): return a + b\n", "math.py");

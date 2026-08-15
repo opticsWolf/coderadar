@@ -3,6 +3,8 @@
 use super::*;
 
     #[test]
+    // ── Persistence Tests ────────────────────────────────────────
+
     fn test_persist_entities_no_store_returns_zero() {
         let graph = CodeGraph::new(GraphConfig::default());
         let units: Vec<ExtractedUnit> = vec![];
@@ -98,6 +100,8 @@ use super::*;
 
     // ── v3.6: Cross-file fn-ref via imports ──────────────────────
     #[test]
+    // ── v3.6: Macrame temporal query tests ──────────────────────
+
     fn test_temporal_concepts_persisted() {
         let (graph, _dir) = graph_with_temp_store();
         index_source(&graph, "def caller(): callee()\ndef callee(): pass\n", "tp_test.py");

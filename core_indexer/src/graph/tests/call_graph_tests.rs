@@ -42,5 +42,3 @@ use super::*;
         let graph = CodeGraph::new(GraphConfig::default());
         assert!(graph.callers_of("nonexistent").is_empty());
     }
-
-    // ── Kotlin Indexing Tests ───────────────────────────────────

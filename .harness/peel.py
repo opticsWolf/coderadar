@@ -137,7 +137,15 @@ def find_fn(lines, name):
         if (lj.startswith('    fn ') or lj.startswith('    #[')) and not lj.startswith('        '):
             break
         j += 1
-    e = j - 1
+    # back up over the NEXT item's leading attrs/comments so they stay with it
+    k = j
+    while k > idx + 1:
+        prev = lines[k - 1].strip()
+        if prev.startswith('#[') or prev.startswith('//'):
+            k -= 1
+        else:
+            break
+    e = k - 1
     while e > s and lines[e].strip() == '':
         e -= 1
     return s, e

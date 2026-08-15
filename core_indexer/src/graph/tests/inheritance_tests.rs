@@ -191,10 +191,6 @@ use super::*;
         assert_eq!(projection.overrides_base.get(&child_foo), Some(&base_foo),
                    "overrides_base[Child.helper] should be Base.helper");
     }
-
-// ── Phase 1: traverse_bfs (generalized Rust traversal) ──────────────
-
-    /// Build a fresh projection with the Phase-D passes run, from sources.
     #[test]
     fn test_builtin_type_bases_filtered() {
         // Classes inheriting from builtin types should not track those as refs

@@ -3,6 +3,8 @@
 use super::*;
 
     #[test]
+    // ── MRO / C3 Linearization Tests ────────────────────────────
+
     fn test_c3_mro_single_inheritance() {
         let graph = CodeGraph::new(GraphConfig::default());
         index_source(&graph,
@@ -76,5 +78,3 @@ use super::*;
             }
         }
     }
-
-    // ── Ruby Indexing Tests ─────────────────────────────────────

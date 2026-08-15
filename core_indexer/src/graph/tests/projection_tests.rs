@@ -54,5 +54,3 @@ use super::*;
         assert!(snap.classes.contains_key("animals.py::Dog"));
         assert!(!snap.classes.contains_key("animals.py::Cat"));
     }
-
-    // ── Persistence Tests ────────────────────────────────────────
