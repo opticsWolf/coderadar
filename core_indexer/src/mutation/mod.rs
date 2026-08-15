@@ -397,7 +397,152 @@ impl MutationEngine {
     }
 
     /// Plan a symbol rename across the codebase.
+    ///
+    /// Dispatches on entity kind up front. Functions and classes are referenced
+    /// in different shapes — call sites versus base-class lists — so each gets
+    /// its own plan path.
     pub fn plan_rename(
+        &self,
+        entity_id: &str,
+        new_name: &str,
+        include_strings: bool,
+        dry_run: bool,
+        projection: &ProjectedGraph,
+    ) -> Result<MutationPlan, MutationError> {
+        if projection.functions.contains_key(entity_id) {
+            self.plan_rename_function(entity_id, new_name, include_strings, dry_run, projection)
+        } else if projection.classes.contains_key(entity_id) {
+            self.plan_rename_class(entity_id, new_name, include_strings, dry_run, projection)
+        } else {
+            Err(MutationError::EntityNotFound(entity_id.to_string()))
+        }
+    }
+
+    /// Verify a reference recorded at `(line, col)` and turn it into an edit.
+    ///
+    /// `name` is what the index says sits there. If the bytes disagree the file
+    /// has moved under the index, and we record an unverified site rather than
+    /// overwrite whatever now occupies that position.
+    #[allow(clippy::too_many_arguments)]
+    fn push_reference_edit(
+        source: &[u8],
+        file: &str,
+        line: usize,
+        col: usize,
+        name: &str,
+        new_name: &str,
+        edits: &mut Vec<MutationEdit>,
+        affected: &mut Vec<String>,
+        unverified: &mut Vec<UnverifiedSite>,
+    ) {
+        let verified = line_col_to_byte(source, line, col)
+            .map(|start| ByteSpan {
+                start,
+                end: (start + name.len()).min(source.len()),
+            })
+            .filter(|span| span_holds_name(source, *span, name));
+
+        match verified {
+            Some(span) => {
+                edits.push(MutationEdit {
+                    file: file.to_string(),
+                    span,
+                    replacement: new_name.to_string(),
+                    expected_hash: hash_span(source, span),
+                });
+                if !affected.iter().any(|f| f == file) {
+                    affected.push(file.to_string());
+                }
+            }
+            None => unverified.push(UnverifiedSite {
+                file: file.to_string(),
+                line: line as u32,
+                snippet: name.to_string(),
+                reason: format!(
+                    "Reference no longer holds \"{}\" at line {} col {} — \
+                     file changed since indexing; reindex and retry",
+                    name, line, col
+                ),
+            }),
+        }
+    }
+
+    /// Rewrite every call site whose resolved target is one of `targets`.
+    ///
+    /// A class is reachable under more than one id — as itself and as its
+    /// synthesized constructor — so the caller passes every spelling.
+    fn collect_call_site_edits(
+        &self,
+        targets: &[String],
+        new_name: &str,
+        projection: &ProjectedGraph,
+        edits: &mut Vec<MutationEdit>,
+        affected: &mut Vec<String>,
+        unverified: &mut Vec<UnverifiedSite>,
+    ) -> Result<usize, MutationError> {
+        let mut callers: Vec<String> = targets
+            .iter()
+            .filter_map(|t| projection.callers_by_callee.get(t.as_str()))
+            .flat_map(|set| set.iter().cloned())
+            .collect();
+        callers.sort();
+        callers.dedup();
+
+        if callers.len() > self.config.max_files_per_plan {
+            return Err(MutationError::TooManyFiles(callers.len()));
+        }
+
+        for caller_id in &callers {
+            let Some(caller_fn) = projection.functions.get(caller_id) else {
+                continue;
+            };
+            let caller_file = module_file_path(projection, &caller_fn.parent_module);
+            let caller_source = std::fs::read(&caller_file).unwrap_or_default();
+
+            for (i, rc) in caller_fn.resolved_calls.iter().enumerate() {
+                let targets_entity = match rc {
+                    ResolvedCall::Function(id)
+                    | ResolvedCall::Method { method: id, .. }
+                    | ResolvedCall::Constructor(id) => targets.iter().any(|t| t == id),
+                    _ => false,
+                };
+                if !targets_entity {
+                    continue;
+                }
+
+                // resolved_calls is parallel to calls — use index i
+                let Some(call) = caller_fn.calls.get(i) else {
+                    continue;
+                };
+
+                if call.path.is_empty() {
+                    Self::push_reference_edit(
+                        &caller_source,
+                        &caller_file,
+                        call.line,
+                        call.col,
+                        &call.name,
+                        new_name,
+                        edits,
+                        affected,
+                        unverified,
+                    );
+                } else {
+                    // Method/attribute call `obj.foo()` — needs manual review
+                    unverified.push(UnverifiedSite {
+                        file: caller_file.clone(),
+                        line: call.line as u32,
+                        snippet: format!("{}.{}", call.path.join("."), call.name),
+                        reason: "Method/attribute call-site rename needs manual review".into(),
+                    });
+                }
+            }
+        }
+
+        Ok(callers.len())
+    }
+
+    fn plan_rename_function(
         &self,
         entity_id: &str,
         new_name: &str,
@@ -429,95 +574,23 @@ impl MutationEngine {
                 span: name_span,
             });
         }
-        let def_hash = hash_span(&def_source, name_span);
         edits.push(MutationEdit {
             file: def_file.clone(),
             span: name_span,
             replacement: new_name.to_string(),
-            expected_hash: def_hash,
+            expected_hash: hash_span(&def_source, name_span),
         });
         affected.push(def_file);
 
-        // 2. Caller side: rewrite every resolved reference name_span
-        let callers = projection
-            .callers_by_callee
-            .get(entity_id)
-            .cloned()
-            .unwrap_or_default();
-
-        if callers.len() > self.config.max_files_per_plan {
-            return Err(MutationError::TooManyFiles(callers.len()));
-        }
-
-        for caller_id in &callers {
-            if let Some(caller_fn) = projection.functions.get(caller_id) {
-                let caller_file = module_file_path(projection, &caller_fn.parent_module);
-                let caller_source = std::fs::read(&caller_file).unwrap_or_default();
-
-                for (i, rc) in caller_fn.resolved_calls.iter().enumerate() {
-                    let targets_entity = match rc {
-                        ResolvedCall::Function(id)
-                        | ResolvedCall::Method { method: id, .. }
-                        | ResolvedCall::Constructor(id) => id == entity_id,
-                        _ => false,
-                    };
-                    if !targets_entity {
-                        continue;
-                    }
-
-                    // resolved_calls is parallel to calls — use index i
-                    let Some(call) = caller_fn.calls.get(i) else {
-                        continue;
-                    };
-
-                    if call.path.is_empty() {
-                        // Simple call `foo()` — name starts at (line, col), as
-                        // recorded at index time. Only emit an edit if the bytes
-                        // there are still the name we are renaming; otherwise the
-                        // file has moved under the index and we would overwrite
-                        // whatever now sits at that line and column.
-                        let verified = line_col_to_byte(&caller_source, call.line, call.col)
-                            .map(|start| ByteSpan {
-                                start,
-                                end: (start + call.name.len()).min(caller_source.len()),
-                            })
-                            .filter(|span| span_holds_name(&caller_source, *span, &call.name));
-
-                        match verified {
-                            Some(span) => {
-                                edits.push(MutationEdit {
-                                    file: caller_file.clone(),
-                                    span,
-                                    replacement: new_name.to_string(),
-                                    expected_hash: hash_span(&caller_source, span),
-                                });
-                                if !affected.contains(&caller_file) {
-                                    affected.push(caller_file.clone());
-                                }
-                            }
-                            None => unverified.push(UnverifiedSite {
-                                file: caller_file.clone(),
-                                line: call.line as u32,
-                                snippet: call.name.clone(),
-                                reason: format!(
-                                    "Call site no longer holds \"{}\" at line {} col {} — \
-                                     file changed since indexing; reindex and retry",
-                                    call.name, call.line, call.col
-                                ),
-                            }),
-                        }
-                    } else {
-                        // Method/attribute call `obj.foo()` — needs manual review
-                        unverified.push(UnverifiedSite {
-                            file: caller_file.clone(),
-                            line: call.line as u32,
-                            snippet: format!("{}.{}", call.path.join("."), call.name),
-                            reason: "Method/attribute call-site rename needs manual review".into(),
-                        });
-                    }
-                }
-            }
-        }
+        // 2. Caller side: rewrite every verified reference
+        let caller_count = self.collect_call_site_edits(
+            std::slice::from_ref(&entity_id.to_string()),
+            new_name,
+            projection,
+            &mut edits,
+            &mut affected,
+            &mut unverified,
+        )?;
 
         // 3. String-literal occurrences (only if include_strings=true)
         if include_strings {
@@ -529,43 +602,150 @@ impl MutationEngine {
             });
         }
 
-        // 4. Also check classes
-        if let Some(cls) = projection.classes.get(entity_id) {
-            let cls_file = module_file_path(projection, &cls.parent_module);
-            let cls_source = std::fs::read(&cls_file).unwrap_or_default();
-            if !span_holds_name(&cls_source, cls.name_span, &cls.name) {
-                return Err(MutationError::StaleIndex {
-                    file: cls_file,
-                    expected: cls.name.clone(),
-                    span: cls.name_span,
-                });
-            }
-            edits.push(MutationEdit {
-                file: cls_file.clone(),
-                span: cls.name_span,
-                replacement: new_name.to_string(),
-                expected_hash: hash_span(&cls_source, cls.name_span),
-            });
-            if !affected.contains(&cls_file) {
-                affected.push(cls_file);
-            }
-        }
-
-        let plan_id = ulid::Ulid::new().to_string();
-
         Ok(MutationPlan {
-            id: plan_id,
+            id: ulid::Ulid::new().to_string(),
             tool: "rename_symbol".to_string(),
             edits,
             affected_files: affected,
             diff_preview: if dry_run {
                 format!("rename \"{}\" → \"{}\" in {} file(s)",
-                    fn_entity.name, new_name, callers.len() + 1)
+                    fn_entity.name, new_name, caller_count + 1)
             } else {
                 String::new()
             },
             unverified_sites: unverified,
             warnings: Vec::new(),
+        })
+    }
+
+    /// Rename a class: its definition, every subclass's base list, and every
+    /// construction site.
+    fn plan_rename_class(
+        &self,
+        entity_id: &str,
+        new_name: &str,
+        include_strings: bool,
+        dry_run: bool,
+        projection: &ProjectedGraph,
+    ) -> Result<MutationPlan, MutationError> {
+        let cls = projection
+            .classes
+            .get(entity_id)
+            .ok_or_else(|| MutationError::EntityNotFound(entity_id.to_string()))?;
+
+        let mut edits = Vec::new();
+        let mut affected = Vec::new();
+        let mut unverified = Vec::new();
+
+        // 1. Definition: rewrite name_span
+        let def_file = module_file_path(projection, &cls.parent_module);
+        let def_source = std::fs::read(&def_file).unwrap_or_default();
+        if !span_holds_name(&def_source, cls.name_span, &cls.name) {
+            return Err(MutationError::StaleIndex {
+                file: def_file,
+                expected: cls.name.clone(),
+                span: cls.name_span,
+            });
+        }
+        edits.push(MutationEdit {
+            file: def_file.clone(),
+            span: cls.name_span,
+            replacement: new_name.to_string(),
+            expected_hash: hash_span(&def_source, cls.name_span),
+        });
+        affected.push(def_file);
+
+        // 2. Subclasses: `class Sub(Old)` → `class Sub(New)`
+        let subclasses = projection
+            .subclasses
+            .get(entity_id)
+            .cloned()
+            .unwrap_or_default();
+
+        for sub_id in &subclasses {
+            let Some(sub) = projection.classes.get(sub_id.as_str()) else {
+                continue;
+            };
+            let sub_file = module_file_path(projection, &sub.parent_module);
+            let sub_source = std::fs::read(&sub_file).unwrap_or_default();
+
+            for base in sub.bases.iter().filter(|b| b.name == cls.name) {
+                if base.path.is_empty() {
+                    Self::push_reference_edit(
+                        &sub_source,
+                        &sub_file,
+                        base.line,
+                        base.col,
+                        &base.name,
+                        new_name,
+                        &mut edits,
+                        &mut affected,
+                        &mut unverified,
+                    );
+                } else {
+                    // Qualified base `mod.Old` — the reference spans more than
+                    // the bare name; leave it to review.
+                    unverified.push(UnverifiedSite {
+                        file: sub_file.clone(),
+                        line: base.line as u32,
+                        snippet: format!("{}.{}", base.path.join("."), base.name),
+                        reason: "Qualified base-class reference needs manual review".into(),
+                    });
+                }
+            }
+        }
+
+        // 3. Construction sites. A `Old()` call resolves under the class id or
+        // under its constructor id depending on the cascade layer that matched,
+        // so ask for both.
+        let targets = vec![entity_id.to_string(), format!("{}.__init__", entity_id)];
+        let caller_count = self.collect_call_site_edits(
+            &targets,
+            new_name,
+            projection,
+            &mut edits,
+            &mut affected,
+            &mut unverified,
+        )?;
+
+        let mut warnings = Vec::new();
+        if caller_count == 0 {
+            // The cascade currently classifies `Old()` as an External call
+            // (resolve_calls.rs edge target `external::Old`), so construction
+            // sites produce no callers_by_callee entry to walk. Say so rather
+            // than let the definition be renamed out from under them.
+            warnings.push(format!(
+                "No construction sites resolved for \"{}\" — `{}(...)` calls are not \
+                 rewritten by this plan; check them manually",
+                cls.name, cls.name
+            ));
+        }
+
+        // 4. String-literal occurrences (only if include_strings=true)
+        if include_strings {
+            unverified.push(UnverifiedSite {
+                file: module_file_path(projection, &cls.parent_module),
+                line: 0,
+                snippet: format!("string-literal references to \"{}\"", cls.name),
+                reason: "String-literal rename requires manual review".into(),
+            });
+        }
+
+        Ok(MutationPlan {
+            id: ulid::Ulid::new().to_string(),
+            tool: "rename_symbol".to_string(),
+            edits,
+            affected_files: affected,
+            diff_preview: if dry_run {
+                format!(
+                    "rename class \"{}\" → \"{}\": {} subclass(es), {} construction site(s)",
+                    cls.name, new_name, subclasses.len(), caller_count
+                )
+            } else {
+                String::new()
+            },
+            unverified_sites: unverified,
+            warnings,
         })
     }
 

@@ -60,7 +60,7 @@ class TestMCPCreation:
         from coderadar.mcp.server import create_server
         server = create_server(None)
         assert server.name == "CodeRadar"
-        assert server.version == "0.6.9"
+        assert server.version == "0.6.10"
 
     def test_server_has_call_tool(self):
         from coderadar.mcp.server import create_server
@@ -990,6 +990,55 @@ class TestMutationTools:
         result = cg.apply(plan)
         assert result.status == "RejectedStale"
         assert target.read_text(encoding="utf-8") == "def fop():\n    return 1\n"
+
+    @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+    def test_rename_class_definition_and_subclasses(self, tmp_path):
+        """Renaming a class rewrites its definition and every subclass base list.
+
+        plan_rename used to look the id up in `projection.functions` first, so a
+        class id returned EntityNotFound before the class branch was reached.
+        """
+        from coderadar._core import analyze
+        from coderadar import CodeGraph
+        target = tmp_path / "cls_mod.py"
+        target.write_text(
+            "class Base:\n"
+            "    def hello(self):\n"
+            "        return 1\n"
+            "\n"
+            "\n"
+            "class Child(Base):\n"
+            "    def hi(self):\n"
+            "        return 2\n",
+            encoding="utf-8",
+        )
+        analyze(str(tmp_path))
+
+        cg = CodeGraph()
+        plan = cg.plan_rename(f"{target}::Base", "Foundation", dry_run=True)
+        assert len(plan.edits) == 2, f"definition + subclass base expected, got {plan.edits}"
+
+        # Construction sites are not resolved by the cascade today (`Base()`
+        # lands as an External call), so the plan says so rather than leaving
+        # them silently un-renamed.
+        assert any("construction site" in w.lower() for w in plan.warnings)
+
+        assert cg.apply(plan).status == "Applied"
+        content = target.read_text(encoding="utf-8")
+        assert "class Foundation:" in content
+        assert "class Child(Foundation):" in content
+        assert "Base" not in content
+
+    @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+    def test_rename_unknown_entity_kind_is_reported(self, tmp_path):
+        from coderadar._core import analyze
+        from coderadar import CodeGraph
+        (tmp_path / "empty_mod.py").write_text("x = 1\n", encoding="utf-8")
+        analyze(str(tmp_path))
+
+        cg = CodeGraph()
+        with pytest.raises(RuntimeError, match="EntityNotFound"):
+            cg.plan_rename("nope.py::ghost", "spirit", dry_run=True)
 
     @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
     def test_rename_skips_call_site_that_moved_since_indexing(self, tmp_path):
