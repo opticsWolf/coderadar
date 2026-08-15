@@ -1,4 +1,4 @@
-comparison is useless due to type limits @ core_indexer/src/graph/tests/mod.rs
+comparison is useless due to type limits @ core_indexer/src/graph/tests/projection_tests.rs
 field `language_rules` is never read @ core_indexer/src/resolve/stack_graph.rs
 fields `unit_idx`, `qualified_name`, `kind`, and `end_byte` are never read @ core_indexer/src/extract/single_pass.rs
 function `make_class` is never used @ core_indexer/src/update/diff.rs
