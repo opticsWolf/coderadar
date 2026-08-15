@@ -154,52 +154,14 @@ impl CodeGraph {
             match unit {
                 ExtractedUnit::Module(_) => {}
                 ExtractedUnit::Class(c) => {
-                    let class = Class {
-                        id: c.id.clone(), name: c.name.clone(),
-                        grammar_kind: c.grammar_kind.clone(),
-                        parent_module: module_id.clone(),
-                        parent_class: c.parent_class.clone(),
-                        bases: c.bases.clone(), resolved_bases: vec![],
-                        mro: vec![], mro_error: false, methods: vec![],
-                        fields: c.fields.iter().map(|ef| Field {
-                            name: ef.name.clone(), annotation: ef.annotation.clone(),
-                            source: ef.source.clone(),
-                            default_value: ef.default_value.clone(),
-                            is_class_var: ef.is_class_var,
-                            span: ef.name_span, name_span: ef.name_span,
-                        }).collect(),
-                        source: c.source.clone(), decorators: c.decorators.clone(),
-                        effective: EffectiveClass::Plain,
-                        is_type_checking_only: c.is_type_checking_only,
-                        line: c.line, exit_line: c.exit_line,
-                        docstring: c.docstring.clone(),
-                        parse_quality: ParseQuality::Clean, content_hash: 0,
-                        span: c.span, name_span: c.name_span,
-                        body_span: c.body_span, decorators_span: c.decorators_span,
-                        embedding: EmbeddingVec::default(),                    };
+                    let class = Class::from_extracted(
+                        c, c.id.clone(), module_id.clone(), c.parent_class.clone());
                     projection.classes.insert(class.id.clone(), Arc::new(class));
                     module_classes.push(c.id.clone());
                 }
                 ExtractedUnit::Function(f) => {
-                    let func = Function {
-                        id: f.id.clone(), name: f.name.clone(),
-                        parent_module: module_id.clone(),
-                        parent_class: f.parent_class.clone(),
-                        parameters: f.parameters.clone(), return_type: f.return_type.clone(),
-                        calls: f.calls.clone(), resolved_calls: vec![],
-                        decorators: f.decorators.clone(), setter_of: None,
-                        line: f.line, exit_line: f.exit_line,
-                        docstring: f.docstring.clone(), kind: f.kind.clone(),
-                        is_async: f.is_async, is_generator: f.is_generator,
-                        source: f.source.clone(),
-                        signature_hash: f.signature_hash, body_hash: f.body_hash,
-                        metrics: f.metrics,
-                        is_type_checking_only: f.is_type_checking_only,
-                        parse_quality: ParseQuality::Clean, content_hash: 0,
-                        span: f.span, name_span: f.name_span,
-                        params_span: f.params_span, body_span: f.body_span,
-                        decorators_span: f.decorators_span, embedding: EmbeddingVec::default(),
-                    };
+                    let func = Function::from_extracted(
+                        f, f.id.clone(), module_id.clone(), f.parent_class.clone());
                     projection.functions.insert(func.id.clone(), Arc::new(func));
                     module_functions.push(f.id.clone());
                 }

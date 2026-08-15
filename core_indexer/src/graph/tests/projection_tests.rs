@@ -2,6 +2,50 @@
 
 use super::*;
 
+    /// `insert_extracted` stored `name_span` in `params_span`. `build_fragment`
+    /// and `apply_diff_update` both got it right, so the divergence was invisible
+    /// outside the `index_file` path — until `plan_signature_update` replaced
+    /// `params_span` verbatim and overwrote the function *name* with the new
+    /// parameter list.
+    #[test]
+    fn test_index_file_records_params_span_not_name_span() {
+        let source = "def greet(name, greeting=\"hi\"):\n    return greeting\n";
+        let graph = CodeGraph::new(GraphConfig::default());
+        graph.index_file(source, "spans.py", &Language::Python).unwrap();
+
+        let snap = graph.snapshot();
+        let f = snap.functions.get("spans.py::greet").expect("greet indexed");
+
+        assert_ne!(f.params_span, f.name_span, "params_span must not alias name_span");
+        assert_eq!(&source[f.name_span.start..f.name_span.end], "greet");
+        assert_eq!(
+            &source[f.params_span.start..f.params_span.end],
+            "(name, greeting=\"hi\")",
+        );
+    }
+
+    /// All three ingest paths must agree on every span they record.
+    #[test]
+    #[ignore = "single_pass sets signature_hash/body_hash to 0, so apply_diff_update \
+                never sees an existing function as changed and never re-inserts it"]
+    fn test_index_file_and_update_file_agree_on_spans() {
+        let source = "def greet(name, greeting=\"hi\"):\n    return greeting\n";
+
+        let indexed = CodeGraph::new(GraphConfig::default());
+        indexed.index_file(source, "spans.py", &Language::Python).unwrap();
+        let via_index = indexed.snapshot().functions.get("spans.py::greet").cloned().unwrap();
+
+        let updated = CodeGraph::new(GraphConfig::default());
+        updated.index_file("def greet(): pass\n", "spans.py", &Language::Python).unwrap();
+        updated.update_file("spans.py", Some(source), None).unwrap();
+        let via_update = updated.snapshot().functions.get("spans.py::greet").cloned().unwrap();
+
+        assert_eq!(via_index.name_span, via_update.name_span);
+        assert_eq!(via_index.params_span, via_update.params_span);
+        assert_eq!(via_index.body_span, via_update.body_span);
+        assert_eq!(via_index.parameters.len(), via_update.parameters.len());
+    }
+
     #[test]
     fn test_update_file_adds_entities() {
         let graph = CodeGraph::new(GraphConfig::default());

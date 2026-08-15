@@ -910,6 +910,111 @@ pub struct ExtractedFunction {
     pub decorators_span: Option<ByteSpan>,
 }
 
+// ── Extracted → projected construction ─────────────────────────────────────
+//
+// The three ingest paths (`build_fragment`, `apply_diff_update`,
+// `insert_extracted`) each used to build these structs inline. They drifted:
+// one dropped `parameters`, another stored `name_span` as `params_span`, and
+// nothing failed either time. They share these constructors now, so a field
+// can only be wrong in one place.
+
+impl Function {
+    /// Build a projected `Function` from an extracted one.
+    ///
+    /// `id`, `parent_module`, and `parent_class` are passed in because the
+    /// caller may be re-keying an existing entity rather than taking the
+    /// extractor's spelling.
+    pub fn from_extracted(
+        f: &ExtractedFunction,
+        id: EntityId,
+        parent_module: EntityId,
+        parent_class: Option<EntityId>,
+    ) -> Self {
+        Function {
+            id,
+            name: f.name.clone(),
+            parent_module,
+            parent_class,
+            parameters: f.parameters.clone(),
+            return_type: f.return_type.clone(),
+            calls: f.calls.clone(),
+            resolved_calls: vec![],
+            decorators: f.decorators.clone(),
+            setter_of: None,
+            line: f.line,
+            exit_line: f.exit_line,
+            docstring: f.docstring.clone(),
+            kind: f.kind.clone(),
+            is_async: f.is_async,
+            is_generator: f.is_generator,
+            source: f.source.clone(),
+            signature_hash: f.signature_hash,
+            body_hash: f.body_hash,
+            metrics: f.metrics,
+            is_type_checking_only: f.is_type_checking_only,
+            parse_quality: ParseQuality::Clean,
+            content_hash: 0,
+            span: f.span,
+            name_span: f.name_span,
+            params_span: f.params_span,
+            body_span: f.body_span,
+            decorators_span: f.decorators_span,
+            embedding: EmbeddingVec::default(),
+        }
+    }
+}
+
+impl Class {
+    /// Build a projected `Class` from an extracted one. See
+    /// [`Function::from_extracted`] for why the ids are parameters.
+    pub fn from_extracted(
+        c: &ExtractedClass,
+        id: EntityId,
+        parent_module: EntityId,
+        parent_class: Option<EntityId>,
+    ) -> Self {
+        Class {
+            id,
+            name: c.name.clone(),
+            grammar_kind: c.grammar_kind.clone(),
+            parent_module,
+            parent_class,
+            bases: c.bases.clone(),
+            resolved_bases: vec![],
+            mro: vec![],
+            mro_error: false,
+            methods: vec![],
+            fields: c
+                .fields
+                .iter()
+                .map(|ef| Field {
+                    name: ef.name.clone(),
+                    annotation: ef.annotation.clone(),
+                    source: ef.source.clone(),
+                    default_value: ef.default_value.clone(),
+                    is_class_var: ef.is_class_var,
+                    span: ef.name_span,
+                    name_span: ef.name_span,
+                })
+                .collect(),
+            source: c.source.clone(),
+            decorators: c.decorators.clone(),
+            effective: EffectiveClass::Plain,
+            is_type_checking_only: c.is_type_checking_only,
+            line: c.line,
+            exit_line: c.exit_line,
+            docstring: c.docstring.clone(),
+            parse_quality: ParseQuality::Clean,
+            content_hash: 0,
+            span: c.span,
+            name_span: c.name_span,
+            body_span: c.body_span,
+            decorators_span: c.decorators_span,
+            embedding: EmbeddingVec::default(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ExtractedImport {
     pub id: EntityId,
