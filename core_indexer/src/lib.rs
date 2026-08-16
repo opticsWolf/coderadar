@@ -60,10 +60,13 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
+    m.add_function(wrap_pyfunction!(register_synthetic_edges_bulk, m)?)?;
     m.add_function(wrap_pyfunction!(set_embedding, m)?)?;
+    m.add_function(wrap_pyfunction!(set_embeddings_bulk, m)?)?;
     m.add_function(wrap_pyfunction!(clear_embeddings_for_file, m)?)?;
     m.add_function(wrap_pyfunction!(module_children, m)?)?;
     m.add_function(wrap_pyfunction!(set_module_star_exports, m)?)?;
+    m.add_function(wrap_pyfunction!(set_module_star_exports_bulk, m)?)?;
     m.add_function(wrap_pyfunction!(start_watcher, m)?)?;
     m.add_function(wrap_pyfunction!(next_watcher_batch, m)?)?;
     m.add_function(wrap_pyfunction!(next_watcher_batch_timeout, m)?)?;
@@ -1514,6 +1517,29 @@ fn register_synthetic_edge(
     Ok(dict.into())
 }
 
+/// Register many synthetic edges in one pass.
+///
+/// `edges` is a list of `(source_id, target_id, kind)`. The framework
+/// resolvers emit one edge per route/handler pair; the single-edge call clones
+/// the whole projection each time.
+#[pyfunction]
+fn register_synthetic_edges_bulk(
+    edges: Vec<(String, String, String)>,
+) -> PyResult<PyObject> {
+    let mut guard = GLOBAL_GRAPH.write();
+    let graph = guard.as_mut()
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
+            "No graph loaded — run coderadar analyze first"
+        ))?;
+    let registered = graph.register_synthetic_edges_bulk(edges)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+    let py = unsafe { Python::assume_gil_acquired() };
+    let dict = PyDict::new(py);
+    dict.set_item("ok", true)?;
+    dict.set_item("registered", registered)?;
+    Ok(dict.into())
+}
+
 /// Store an embedding vector on a function entity in the projected graph.
 ///
 /// Called from Python's compute_embeddings() pipeline. The embedding is
@@ -1534,6 +1560,30 @@ fn set_embedding(
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
     dict.set_item("ok", true)?;
+    Ok(dict.into())
+}
+
+/// Store many embeddings in one pass.
+///
+/// `entries` is a list of `(entity_id, embedding, content_hash)`. Each
+/// `set_embedding` call clones the entire projection, so embedding N entities
+/// one at a time is O(N²); this clones once. Returns `applied` and the ids
+/// that matched no entity.
+#[pyfunction]
+fn set_embeddings_bulk(
+    entries: Vec<(String, Vec<f64>, String)>,
+) -> PyResult<PyObject> {
+    let mut guard = GLOBAL_GRAPH.write();
+    let graph = guard.as_mut()
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
+            "No graph loaded — run coderadar analyze first"
+        ))?;
+    let (applied, missing) = graph.set_embeddings_bulk(entries);
+    let py = unsafe { Python::assume_gil_acquired() };
+    let dict = PyDict::new(py);
+    dict.set_item("ok", true)?;
+    dict.set_item("applied", applied)?;
+    dict.set_item("missing", missing)?;
     Ok(dict.into())
 }
 
@@ -1631,5 +1681,27 @@ fn set_module_star_exports(module_id: &str, names: Vec<String>) -> PyResult<PyOb
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
     dict.set_item("ok", true)?;
+    Ok(dict.into())
+}
+
+/// Set `__all__` for many modules in one pass.
+///
+/// `entries` is a list of `(module_id, names)`. The per-module call clones the
+/// whole projection each time; analyze() has one module with `__all__` per
+/// file, so that is a clone per file.
+#[pyfunction]
+fn set_module_star_exports_bulk(
+    entries: Vec<(String, Vec<String>)>,
+) -> PyResult<PyObject> {
+    let mut guard = GLOBAL_GRAPH.write();
+    let graph = guard.as_mut()
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
+            "No graph loaded — run coderadar analyze first"
+        ))?;
+    let applied = graph.set_module_star_exports_bulk(entries);
+    let py = unsafe { Python::assume_gil_acquired() };
+    let dict = PyDict::new(py);
+    dict.set_item("ok", true)?;
+    dict.set_item("applied", applied)?;
     Ok(dict.into())
 }

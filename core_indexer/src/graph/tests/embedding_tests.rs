@@ -27,6 +27,111 @@ use super::*;
         let sim = cosine_similarity(&[1.0, 2.0], &[1.0, 2.0]);
         assert!((sim - 1.0).abs() < 0.001, "Identical=1, got {}", sim);
     }
+    // ── Bulk writes (plan §2.1) ──────────────────────────────────
+    //
+    // Each of these APIs clones the whole ProjectedGraph. Called once per
+    // entity/module/edge, that is O(N²) in Arc clones — the dominant cost of
+    // `coderadar init --with-embeddings`. The bulk forms clone once.
+
+    #[test]
+    fn test_set_embeddings_bulk_applies_every_entry() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph,
+            "def add(a, b): return a + b\ndef sub(a, b): return a - b\nclass Calc: pass\n",
+            "math.py");
+
+        let (applied, missing) = graph.set_embeddings_bulk(vec![
+            ("math.py::add".into(), vec![0.1, 0.2], "h1".into()),
+            ("math.py::sub".into(), vec![0.3, 0.4], "h2".into()),
+            ("math.py::Calc".into(), vec![0.5, 0.6], "h3".into()),
+        ]);
+
+        assert_eq!(applied, 3);
+        assert!(missing.is_empty());
+        let snap = graph.snapshot();
+        assert_eq!(snap.functions.get("math.py::add").unwrap().embedding.vec, vec![0.1, 0.2]);
+        assert_eq!(snap.functions.get("math.py::sub").unwrap().embedding.hash, "h2");
+        assert_eq!(snap.classes.get("math.py::Calc").unwrap().embedding.vec, vec![0.5, 0.6]);
+    }
+
+    #[test]
+    fn test_set_embeddings_bulk_reports_unknown_ids_without_dropping_the_rest() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def add(a, b): return a + b\n", "math.py");
+
+        let (applied, missing) = graph.set_embeddings_bulk(vec![
+            ("math.py::ghost".into(), vec![9.9], "h".into()),
+            ("math.py::add".into(), vec![0.1], "h".into()),
+        ]);
+
+        assert_eq!(applied, 1);
+        assert_eq!(missing, vec!["math.py::ghost".to_string()]);
+        let snap = graph.snapshot();
+        assert_eq!(snap.functions.get("math.py::add").unwrap().embedding.vec, vec![0.1]);
+    }
+
+    /// The single-entity API is the one-element case of the bulk one now, so
+    /// its not-found error has to survive the delegation.
+    #[test]
+    fn test_set_embedding_still_errors_on_an_unknown_id() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def add(a, b): return a + b\n", "math.py");
+        let err = graph.set_embedding("math.py::ghost", &[0.1], "h").unwrap_err();
+        assert!(err.contains("math.py::ghost"), "{}", err);
+    }
+
+    #[test]
+    fn test_set_module_star_exports_bulk_applies_every_entry() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def a(): pass\n", "one.py");
+        index_source(&graph, "def b(): pass\n", "two.py");
+
+        let applied = graph.set_module_star_exports_bulk(vec![
+            ("one.py::module".into(), vec!["a".to_string()]),
+            ("two.py::module".into(), vec!["b".to_string()]),
+            ("missing.py::module".into(), vec!["c".to_string()]),
+        ]);
+
+        assert_eq!(applied, 2, "unknown modules are skipped, not counted");
+        let snap = graph.snapshot();
+        assert_eq!(snap.modules.get("one.py::module").unwrap().star_exports,
+                   Some(vec!["a".to_string()]));
+        assert_eq!(snap.modules.get("two.py::module").unwrap().star_exports,
+                   Some(vec!["b".to_string()]));
+    }
+
+    #[test]
+    fn test_register_synthetic_edges_bulk_wires_both_directions() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def handler(): pass\ndef other(): pass\n", "views.py");
+
+        let registered = graph.register_synthetic_edges_bulk(vec![
+            ("route::/a".into(), "views.py::handler".into(), "ROUTE".into()),
+            ("route::/b".into(), "views.py::other".into(), "ROUTE".into()),
+        ]).unwrap();
+
+        assert_eq!(registered, 2);
+        let snap = graph.snapshot();
+        assert!(snap.callees_by_caller.get("route::/a").unwrap()
+                    .contains("views.py::handler"));
+        assert!(snap.callers_by_callee.get("views.py::other").unwrap()
+                    .contains("route::/b"));
+    }
+
+    #[test]
+    fn test_bulk_writes_are_no_ops_when_empty() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def add(a, b): return a + b\n", "math.py");
+        let before = graph.snapshot();
+
+        assert_eq!(graph.set_embeddings_bulk(vec![]), (0, vec![]));
+        assert_eq!(graph.set_module_star_exports_bulk(vec![]), 0);
+        assert_eq!(graph.register_synthetic_edges_bulk(vec![]).unwrap(), 0);
+
+        assert!(std::sync::Arc::ptr_eq(&before, &graph.snapshot()),
+                "an empty batch must not swap the projection");
+    }
+
     #[test]
     fn test_set_embedding_stores_vector() {
         let graph = CodeGraph::new(GraphConfig::default());

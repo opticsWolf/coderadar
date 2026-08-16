@@ -375,24 +375,31 @@ class CodeGraph:
             return {"generated": 0, "cached": 0, "total": 0, "errors": 1}
 
         results = dedup.embed_batch(targets, db=None)
-        generated = 0
         cached = 0
-        errors = 0
         try:
-            from coderadar._core import set_embedding
+            from coderadar._core import set_embeddings_bulk
         except ImportError:
             return {"generated": 0, "cached": 0, "total": len(targets), "errors": 1}
+
+        # One call, one projection clone. Looping set_embedding cloned the
+        # whole ProjectedGraph per entity — O(N²) on a project of any size.
+        entries = []
         for target, vec in zip(targets, results):
             if vec is None:
                 cached += 1
                 continue
-            try:
-                set_embedding(target.id, list(vec), target.content_hash)
-                generated += 1
-            except RuntimeError as e:
-                errors += 1
+            entries.append((target.id, list(vec), target.content_hash))
 
-        return {"generated": generated, "cached": cached, "total": len(targets), "errors": errors}
+        try:
+            report = set_embeddings_bulk(entries)
+        except RuntimeError:
+            return {"generated": 0, "cached": cached,
+                    "total": len(targets), "errors": len(entries)}
+
+        generated = int(report.get("applied", 0))
+        errors = len(report.get("missing", []))
+        return {"generated": generated, "cached": cached,
+                "total": len(targets), "errors": errors}
 
     # ── Update ─────────────────────────────────────────────────────────
 
@@ -729,15 +736,23 @@ def analyze(root: str) -> CodeGraph:
     # Must run after Rust analysis populates modules, before MCP server reads.
     try:
         from coderadar.resolvers.exports import extract_all_exports
-        from coderadar._core import set_module_star_exports
+        from coderadar._core import set_module_star_exports_bulk
         import pathlib
+        # Collected, then applied in one call: the per-module variant clones
+        # the whole ProjectedGraph each time, i.e. once per file with __all__.
+        star_exports = []
         for py_file in pathlib.Path(root).rglob("*.py"):
             try:
                 source = py_file.read_text(encoding="utf-8")
                 names = extract_all_exports(source)
                 if names:
-                    set_module_star_exports(f"{py_file}::module", names)
-            except (OSError, UnicodeDecodeError, RuntimeError):
+                    star_exports.append((f"{py_file}::module", names))
+            except (OSError, UnicodeDecodeError):
+                pass
+        if star_exports:
+            try:
+                set_module_star_exports_bulk(star_exports)
+            except RuntimeError:
                 pass
     except ImportError:
         pass

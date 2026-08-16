@@ -24,6 +24,9 @@ def _run_framework_extraction(project_root: Path) -> dict:
     from coderadar.resolvers import ALL_RESOLVERS
 
     results = {"routes": 0, "handlers": 0, "frameworks": [], "edges_registered": 0}
+    # Collected across every resolver and file, then registered in one call:
+    # the per-edge variant clones the whole ProjectedGraph each time.
+    synthetic_edges: list[tuple[str, str, str]] = []
     for resolver_cls in ALL_RESOLVERS:
         resolver = resolver_cls()
         if not resolver.detect(project_root):
@@ -39,18 +42,19 @@ def _run_framework_extraction(project_root: Path) -> dict:
             extraction = resolver.extract(str(py_file), source)
             results["routes"] += len(extraction.nodes)
             results["handlers"] += len(extraction.edges)
-            # v3.6: Register synthetic edges in the Rust graph
-            try:
-                from coderadar._core import register_synthetic_edge
-                for edge in extraction.edges:
-                    register_synthetic_edge(
-                        edge.source_id, edge.target_id,
-                        edge.kind.upper(),
-                    )
-                    results["edges_registered"] += 1
-            except (ImportError, RuntimeError) as e:
-                # Graph not loaded or _core not available — edges displayed only
-                pass
+            synthetic_edges.extend(
+                (edge.source_id, edge.target_id, edge.kind.upper())
+                for edge in extraction.edges
+            )
+
+    if synthetic_edges:
+        try:
+            from coderadar._core import register_synthetic_edges_bulk
+            report = register_synthetic_edges_bulk(synthetic_edges)
+            results["edges_registered"] = int(report.get("registered", 0))
+        except (ImportError, RuntimeError):
+            # Graph not loaded or _core not available — edges displayed only
+            pass
     return results
 
 
@@ -63,11 +67,13 @@ def _extract_star_exports(project_root: Path) -> int:
     """
     from coderadar.resolvers.exports import extract_all_exports
     try:
-        from coderadar._core import set_module_star_exports
+        from coderadar._core import set_module_star_exports_bulk
     except ImportError:
         return 0
 
-    count = 0
+    # Collected, then applied in one call — the per-module variant clones the
+    # whole ProjectedGraph each time.
+    entries: list[tuple[str, list[str]]] = []
     for py_file in project_root.rglob("*.py"):
         try:
             source = py_file.read_text(encoding="utf-8")
@@ -75,17 +81,18 @@ def _extract_star_exports(project_root: Path) -> int:
             continue
         names = extract_all_exports(source)
         if names:
-            module_id = f"{py_file}::module"
-            try:
-                set_module_star_exports(module_id, names)
-                count += 1
-            except RuntimeError:
-                pass
-    return count
+            entries.append((f"{py_file}::module", names))
+    if not entries:
+        return 0
+    try:
+        report = set_module_star_exports_bulk(entries)
+    except RuntimeError:
+        return 0
+    return int(report.get("applied", 0))
 
 
 @click.group()
-@click.version_option(version="0.6.17", prog_name="coderadar",
+@click.version_option(version="0.6.18", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.

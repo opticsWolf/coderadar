@@ -132,26 +132,54 @@ impl CodeGraph {
         target_id: &str,
         kind: &str,
     ) -> Result<(), String> {
+        self.register_synthetic_edges_bulk(vec![(
+            source_id.to_string(),
+            target_id.to_string(),
+            kind.to_string(),
+        )])
+        .map(|_| ())
+    }
+
+    /// Register many synthetic edges against a single projection clone.
+    ///
+    /// The 13 framework resolvers call this once per route/handler edge, and
+    /// each single-edge call used to clone the whole `ProjectedGraph`.
+    /// Returns the number of edges registered.
+    pub fn register_synthetic_edges_bulk(
+        &self,
+        edges: Vec<(String, String, String)>,
+    ) -> Result<usize, String> {
+        if edges.is_empty() {
+            return Ok(0);
+        }
         let mut projection = (*self.snapshot()).clone();
-        projection.callees_by_caller
-            .entry(source_id.to_string())
-            .or_default()
-            .insert(target_id.to_string());
-        projection.callers_by_callee
-            .entry(target_id.to_string())
-            .or_default()
-            .insert(source_id.to_string());
+        for (source_id, target_id, _kind) in &edges {
+            projection.callees_by_caller
+                .entry(source_id.clone())
+                .or_default()
+                .insert(target_id.clone());
+            projection.callers_by_callee
+                .entry(target_id.clone())
+                .or_default()
+                .insert(source_id.clone());
+        }
         self.commit_projection(projection);
 
         // Persist to Macrame if store attached
         if let Some(store) = self.store.as_ref() {
             let ts_now = crate::storage::now_iso8601();
-            let edge = macrame::graph::EdgeAssertion::new(source_id, target_id, kind)
-                .valid_from(ts_now.as_str())
-                .weight(1.0);
-            let _ = store.assert_edges_bulk(vec![edge]);
+            let batch: Vec<_> = edges
+                .iter()
+                .map(|(source_id, target_id, kind)| {
+                    macrame::graph::EdgeAssertion::new(
+                        source_id.as_str(), target_id.as_str(), kind.as_str())
+                        .valid_from(ts_now.as_str())
+                        .weight(1.0)
+                })
+                .collect();
+            let _ = store.assert_edges_bulk(batch);
         }
 
-        Ok(())
+        Ok(edges.len())
     }
 }

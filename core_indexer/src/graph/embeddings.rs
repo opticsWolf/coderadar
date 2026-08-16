@@ -5,32 +5,70 @@ use crate::types::*;
 
 impl CodeGraph {
     /// Store an embedding vector on any entity type.
-    /// Updates the in-memory embedding field and commits the projection.
+    ///
+    /// One call clones the whole projection, so embedding a project one entity
+    /// at a time is O(N²) in Arc clones. Prefer [`set_embeddings_bulk`] for
+    /// more than a handful of entities — this is the single-entity case of it.
+    ///
+    /// [`set_embeddings_bulk`]: CodeGraph::set_embeddings_bulk
     pub fn set_embedding(
         &self,
         entity_id: &str,
         embedding: &[f64],
         content_hash: &str,
     ) -> Result<(), String> {
-        let mut projection = (*self.snapshot()).clone();
-        let emb = EmbeddingVec { vec: embedding.to_vec(), hash: content_hash.to_string() };
-        if let Some(e) = projection.functions.get_mut(entity_id) {
-            std::sync::Arc::make_mut(e).embedding = emb.clone();
-        } else if let Some(e) = projection.classes.get_mut(entity_id) {
-            std::sync::Arc::make_mut(e).embedding = emb.clone();
-        } else if let Some(e) = projection.modules.get_mut(entity_id) {
-            std::sync::Arc::make_mut(e).embedding = emb.clone();
-        } else if let Some(e) = projection.imports.get_mut(entity_id) {
-            std::sync::Arc::make_mut(e).embedding = emb.clone();
-        } else if let Some(e) = projection.constants.get_mut(entity_id) {
-            std::sync::Arc::make_mut(e).embedding = emb.clone();
-        } else if let Some(e) = projection.type_aliases.get_mut(entity_id) {
-            std::sync::Arc::make_mut(e).embedding = emb.clone();
-        } else {
-            return Err(format!("Entity not found: {}", entity_id));
+        let entries = vec![(
+            entity_id.to_string(),
+            embedding.to_vec(),
+            content_hash.to_string(),
+        )];
+        let (_, missing) = self.set_embeddings_bulk(entries);
+        match missing.into_iter().next() {
+            Some(id) => Err(format!("Entity not found: {}", id)),
+            None => Ok(()),
         }
+    }
+
+    /// Store many embeddings against a single projection clone.
+    ///
+    /// Returns `(applied, missing_ids)`. `compute_embeddings` looped
+    /// `set_embedding` over every entity, cloning the entire `ProjectedGraph`
+    /// once per entity — 10,000 full clones on a 10k-entity project, which is
+    /// the dominant cost of `coderadar init --with-embeddings`.
+    pub fn set_embeddings_bulk(
+        &self,
+        entries: Vec<(String, Vec<f64>, String)>,
+    ) -> (usize, Vec<String>) {
+        if entries.is_empty() {
+            return (0, vec![]);
+        }
+        let mut projection = (*self.snapshot()).clone();
+        let mut applied = 0usize;
+        let mut missing = Vec::new();
+
+        for (entity_id, embedding, content_hash) in entries {
+            let emb = EmbeddingVec { vec: embedding, hash: content_hash };
+            if let Some(e) = projection.functions.get_mut(&entity_id) {
+                Arc::make_mut(e).embedding = emb;
+            } else if let Some(e) = projection.classes.get_mut(&entity_id) {
+                Arc::make_mut(e).embedding = emb;
+            } else if let Some(e) = projection.modules.get_mut(&entity_id) {
+                Arc::make_mut(e).embedding = emb;
+            } else if let Some(e) = projection.imports.get_mut(&entity_id) {
+                Arc::make_mut(e).embedding = emb;
+            } else if let Some(e) = projection.constants.get_mut(&entity_id) {
+                Arc::make_mut(e).embedding = emb;
+            } else if let Some(e) = projection.type_aliases.get_mut(&entity_id) {
+                Arc::make_mut(e).embedding = emb;
+            } else {
+                missing.push(entity_id);
+                continue;
+            }
+            applied += 1;
+        }
+
         self.commit_projection(projection);
-        Ok(())
+        (applied, missing)
     }
 
     /// Clear embedding vectors for all entities in a file.
@@ -84,12 +122,28 @@ impl CodeGraph {
         module_id: &str,
         names: Vec<String>,
     ) {
+        self.set_module_star_exports_bulk(vec![(module_id.to_string(), names)]);
+    }
+
+    /// Set `__all__` for many modules against a single projection clone.
+    ///
+    /// `analyze()` calls this once per module with `__all__`; one clone per
+    /// module is the same O(N²) shape as [`set_embeddings_bulk`].
+    ///
+    /// [`set_embeddings_bulk`]: CodeGraph::set_embeddings_bulk
+    pub fn set_module_star_exports_bulk(&self, entries: Vec<(String, Vec<String>)>) -> usize {
+        if entries.is_empty() {
+            return 0;
+        }
         let mut projection = (*self.snapshot()).clone();
-        if let Some(module) = projection.modules.get(module_id) {
-            let mut m = (**module).clone();
-            m.star_exports = Some(names);
-            projection.modules.insert(module_id.to_string(), Arc::new(m));
+        let mut applied = 0usize;
+        for (module_id, names) in entries {
+            if let Some(module) = projection.modules.get_mut(&module_id) {
+                Arc::make_mut(module).star_exports = Some(names);
+                applied += 1;
+            }
         }
         self.commit_projection(projection);
+        applied
     }
 }

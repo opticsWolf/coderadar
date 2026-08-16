@@ -598,6 +598,33 @@ class TestCodeRadarAPI:
             b.update_file("a.py", "def foo(): pass\n")
         # Should not raise
 
+    def test_compute_embeddings_writes_in_one_bulk_call(self, monkeypatch):
+        """Looping set_embedding cloned the whole projection per entity."""
+        try:
+            from coderadar._core import analyze
+            import coderadar._core as core
+            from coderadar import CodeGraph
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        from pathlib import Path
+        e2e = Path(__file__).parent / "fixtures" / "python" / "e2e_project"
+        analyze(str(e2e))
+
+        calls = []
+        real_bulk = core.set_embeddings_bulk
+
+        def counting_bulk(entries):
+            calls.append(len(entries))
+            return real_bulk(entries)
+
+        monkeypatch.setattr(core, "set_embeddings_bulk", counting_bulk)
+
+        report = CodeGraph().compute_embeddings()
+        assert isinstance(report, dict)
+        if report["generated"]:
+            assert len(calls) == 1, f"expected one bulk write, got {len(calls)}"
+            assert calls[0] == report["generated"] + report["errors"]
+
     def test_update_file_reports_failure(self):
         try:
             from coderadar._core import analyze
