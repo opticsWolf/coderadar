@@ -60,7 +60,7 @@ class TestMCPCreation:
         from coderadar.mcp.server import create_server
         server = create_server(None)
         assert server.name == "CodeRadar"
-        assert server.version == "0.6.16"
+        assert server.version == "0.6.17"
 
     def test_server_has_call_tool(self):
         from coderadar.mcp.server import create_server
@@ -890,6 +890,75 @@ class TestTraverse:
         from coderadar.mcp.server import _traverse
         result = _traverse(None, "nonexistent::ghost", "both", None, 3)
         assert "not found" in result.lower() or "codegraph" in result.lower()
+
+
+class TestUninitializedIndex:
+    """The primary tools before any index exists.
+
+    They guarded with `except ImportError`, but `with_graph` raises
+    PyRuntimeError, so a fresh session got a RuntimeError traceback instead of
+    the guidance message written for exactly this case.
+    """
+
+    @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+    def test_primary_tools_return_guidance_in_a_fresh_interpreter(self):
+        """Run out-of-process: an in-process test inherits an indexed graph."""
+        import json
+        import subprocess
+
+        probe = (
+            "import sys, json;"
+            f"sys.path.insert(0, {str(Path(__file__).parent.parent / 'py_agent' / 'src')!r});"
+            "from coderadar.mcp.server import _explore, _search, _node_detail, _affected;"
+            "calls = {"
+            "  'explore': lambda: _explore(None, 'User', [], 'both', 8),"
+            "  'search': lambda: _search(None, 'User', None, 10),"
+            "  'node': lambda: _node_detail(None, 'x.py::User', False),"
+            "  'affected': lambda: _affected(None, 'x.py::User', 3),"
+            "};"
+            "out = {};"
+            "\nfor name, call in calls.items():\n"
+            "    try:\n"
+            "        out[name] = call()\n"
+            "    except Exception as e:\n"
+            "        out[name] = 'RAISED %s: %s' % (type(e).__name__, e)\n"
+            "print(json.dumps(out))"
+        )
+        proc = subprocess.run([sys.executable, "-c", probe],
+                              capture_output=True, text=True)
+        assert proc.returncode == 0, proc.stderr
+        results = json.loads(proc.stdout.strip().splitlines()[-1])
+
+        for name, message in results.items():
+            assert not message.startswith("RAISED"), f"{name}: {message}"
+            assert "coderadar init" in message, f"{name} gave no guidance: {message}"
+
+    def test_decorator_reports_no_index_when_the_graph_is_missing(self, monkeypatch):
+        import coderadar._core as core
+        from coderadar.mcp.server import NO_INDEX_MESSAGE, requires_index
+
+        def no_graph():
+            raise RuntimeError("No graph loaded — run coderadar init first")
+
+        monkeypatch.setattr(core, "graph_stats", no_graph)
+
+        @requires_index
+        def tool(_graph):
+            raise AssertionError("must not run without an index")
+
+        assert tool(None) == NO_INDEX_MESSAGE
+
+    def test_decorator_runs_the_tool_once_an_index_exists(self, monkeypatch):
+        import coderadar._core as core
+        from coderadar.mcp.server import requires_index
+
+        monkeypatch.setattr(core, "graph_stats", lambda: {"modules": 3})
+
+        @requires_index
+        def tool(_graph):
+            return "ran"
+
+        assert tool(None) == "ran"
 
 
 class TestMutationTools:

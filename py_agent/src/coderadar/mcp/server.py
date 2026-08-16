@@ -17,6 +17,7 @@ Improvements adapted from CodeGraph (MIT License, https://github.com/colbymchenr
 
 from __future__ import annotations
 
+import functools
 import re
 import os
 from collections import deque
@@ -127,7 +128,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.16",
+        version="0.6.17",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -823,19 +824,44 @@ def _trim_to_char_budget(body_lines: list[str], max_chars: int) -> list[str]:
 
 # ── Tool Implementations ─────────────────────────────────────────────────
 
+NO_INDEX_MESSAGE = (
+    "No index available. Run `coderadar init` in the project root first."
+)
+NO_EXTENSION_MESSAGE = "CodeRadar extension not available."
+
+
+def requires_index(func):
+    """Return a message instead of raising when there is no index yet.
+
+    Every tool carried its own copy of this guard, and every copy caught only
+    ImportError — but `with_graph` raises PyRuntimeError ("No graph loaded"),
+    so before the first index the tools raised a RuntimeError at the agent
+    instead of the message written for exactly that case. The friendly path
+    was reachable only when a graph was loaded *and* empty, which never
+    happens.
+    """
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> str:
+        try:
+            from coderadar._core import graph_stats
+            if graph_stats().get("modules", 0) == 0:
+                return NO_INDEX_MESSAGE
+        except ImportError:
+            return NO_EXTENSION_MESSAGE
+        except RuntimeError:
+            # No graph loaded — the state this guard exists for.
+            return NO_INDEX_MESSAGE
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
+@requires_index
 def _explore(
     graph: Any, query: str, symbols: list[str],
     direction: str, max_files: int,
 ) -> str:
     """Execute codegraph_explore."""
-    try:
-        from coderadar._core import graph_stats
-        stats = graph_stats()
-        if stats.get("modules", 0) == 0:
-            return "No index available. Run `coderadar init` in the project root first."
-    except ImportError:
-        return "CodeRadar extension not available."
-
     names = _parse_names(query, symbols)
     if not names:
         return (
@@ -896,15 +922,9 @@ def _explore(
     return result
 
 
+@requires_index
 def _node_detail(graph: Any, entity_id: str, include_neighbors: bool) -> str:
     """Get full entity details."""
-    try:
-        from coderadar._core import graph_stats
-        if graph_stats().get("modules", 0) == 0:
-            return "No index available. Run `coderadar init` first."
-    except ImportError:
-        return "CodeRadar extension not available."
-
     entity = _find_entity(graph, entity_id)
     if not entity:
         return (
@@ -968,15 +988,9 @@ def _node_detail(graph: Any, entity_id: str, include_neighbors: bool) -> str:
     return "\n".join(lines)
 
 
+@requires_index
 def _search(graph: Any, query: str, kind: str | None, top_k: int) -> str:
     """Keyword search for symbols."""
-    try:
-        from coderadar._core import graph_stats
-        if graph_stats().get("modules", 0) == 0:
-            return "No index available. Run `coderadar init` first."
-    except ImportError:
-        return "CodeRadar extension not available."
-
     if not query.strip():
         return "Please provide a query to search for."
 
@@ -1016,15 +1030,9 @@ def _search(graph: Any, query: str, kind: str | None, top_k: int) -> str:
     return "\n".join(lines)
 
 
+@requires_index
 def _affected(graph: Any, entity_id: str, max_depth: int) -> str:
     """Transitive impact analysis."""
-    try:
-        from coderadar._core import graph_stats
-        if graph_stats().get("modules", 0) == 0:
-            return "No index available. Run `coderadar init` first."
-    except ImportError:
-        return "CodeRadar extension not available."
-
     entity = _find_entity(graph, entity_id)
     if not entity:
         return f"Entity `{entity_id}` not found. Try codegraph_search."
@@ -1164,15 +1172,9 @@ def _get_embedding_model():
     return _EMBED_MODEL
 
 
+@requires_index
 def _search_similar(graph: Any, query: str, top_k: int) -> str:
     """Semantic/embedding similarity search."""
-    try:
-        from coderadar._core import graph_stats
-        if graph_stats().get("modules", 0) == 0:
-            return "No index available. Run `coderadar init` first."
-    except (ImportError, RuntimeError):
-        return "CodeRadar extension not available."
-
     if not query.strip():
         return "Please provide a natural-language query for semantic search."
 
