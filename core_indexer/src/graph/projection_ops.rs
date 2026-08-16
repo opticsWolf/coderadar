@@ -496,7 +496,9 @@ impl CodeGraph {
         self.resolve_class_hierarchy(&mut projection);
         self.resolve_overrides(&mut projection);
         self.resolve_calls_scoped(&mut projection, Some(file_path));
-        let _ = self.persist_edges(&projection);
+        // Scoped: an edit to one file must not re-assert the project's whole
+        // edge set (plan §1.2).
+        let _ = self.persist_edges_scoped(&projection, Some(file_path));
         self.commit_projection(projection);
 
         // Track affected files (this file + any callers)

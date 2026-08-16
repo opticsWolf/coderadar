@@ -235,3 +235,79 @@ use super::*;
         let meta = std::fs::metadata(&db_path).unwrap();
         assert!(meta.len() > 0, "db should have persisted data");
     }
+
+    // ── Scoped persistence (plan §1.2) ───────────────────────────────────
+
+    /// Build the same fixture as the unscoped test: two files whose entities
+    /// are wired to each other, so scoping has something to exclude.
+    fn projection_with_cross_file_edges(graph: &CodeGraph) -> ProjectedGraph {
+        index_source(graph, "class Base:\n    def m(self): pass\n", "base.py");
+        index_source(graph, "class Sub(Base):\n    def m(self): pass\n", "sub.py");
+        index_source(graph, "def util(): pass\n", "src/u.py");
+        index_source(graph, "from src.u import util\ndef app(): util()\n", "src/app.py");
+
+        let mut projection = (*graph.snapshot()).clone();
+        graph.compute_all_mro(&mut projection);
+        graph.resolve_class_hierarchy(&mut projection);
+        graph.resolve_imports(&mut projection);
+        graph.resolve_overrides(&mut projection);
+        graph.resolve_all_calls(&mut projection);
+        projection
+    }
+
+    /// The point of the change: a one-file edit must not re-assert the
+    /// project's whole edge set.
+    #[test]
+    fn test_persist_edges_scoped_writes_fewer_edges_than_unscoped() {
+        let (graph, _dir) = graph_with_temp_store();
+        let projection = projection_with_cross_file_edges(&graph);
+
+        let all = graph.persist_edges(&projection).unwrap();
+        let scoped = graph
+            .persist_edges_scoped(&projection, Some("sub.py"))
+            .unwrap();
+
+        assert!(scoped > 0, "the scoped file does have edges");
+        assert!(scoped < all, "scoped {} should be below unscoped {}", scoped, all);
+    }
+
+    /// Either endpoint counts: `sub.py::Sub` extends `base.py::Base`, and
+    /// scoping to base.py must still carry that edge, or an edit to a base
+    /// class would silently drop its subclasses from the ledger.
+    #[test]
+    fn test_persist_edges_scoped_includes_edges_pointing_into_the_file() {
+        let (graph, _dir) = graph_with_temp_store();
+        let projection = projection_with_cross_file_edges(&graph);
+
+        let scoped = graph
+            .persist_edges_scoped(&projection, Some("base.py"))
+            .unwrap();
+
+        assert!(scoped > 0,
+                "EXTENDS/OVERRIDES edges aimed at base.py are in base.py's scope");
+    }
+
+    /// No entity id starts with this prefix, so nothing is in scope — the
+    /// filter must exclude rather than fall back to everything.
+    #[test]
+    fn test_persist_edges_scoped_to_an_unknown_file_writes_nothing() {
+        let (graph, _dir) = graph_with_temp_store();
+        let projection = projection_with_cross_file_edges(&graph);
+
+        let scoped = graph
+            .persist_edges_scoped(&projection, Some("not_indexed.py"))
+            .unwrap();
+
+        assert_eq!(scoped, 0);
+    }
+
+    #[test]
+    fn test_persist_edges_scoped_none_matches_the_unscoped_form() {
+        let (graph, _dir) = graph_with_temp_store();
+        let projection = projection_with_cross_file_edges(&graph);
+
+        assert_eq!(
+            graph.persist_edges_scoped(&projection, None).unwrap(),
+            graph.persist_edges(&projection).unwrap()
+        );
+    }

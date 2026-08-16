@@ -24,9 +24,44 @@ impl CodeGraph {
         &self,
         projection: &ProjectedGraph,
     ) -> Result<usize, macrame::DbError> {
+        self.persist_edges_scoped(projection, None)
+    }
+
+    /// Persist edges, optionally only those touching one file.
+    ///
+    /// `update_file` used to call the unscoped form, so editing one function
+    /// re-asserted every CALLS, IMPORTS, EXTENDS and OVERRIDES edge in the
+    /// project with a fresh `valid_from` — tens of thousands of writes per
+    /// save on a 558-file tree. Each duplicate is also a new version that
+    /// `as_of` has to reconstruct through, so the ledger grew without bound
+    /// and got slower as it grew.
+    ///
+    /// An edge is in scope when *either* endpoint lives in the changed file:
+    /// a call into an edited function changed as surely as a call out of one.
+    /// This mirrors `resolve_calls_scoped`, which already made the same split
+    /// for resolution.
+    pub fn persist_edges_scoped(
+        &self,
+        projection: &ProjectedGraph,
+        scope_file: Option<&str>,
+    ) -> Result<usize, macrame::DbError> {
+        use super::module_resolution::normalize_path_str;
+
         let store = match self.store.as_ref() {
             Some(s) => s,
             None => return Ok(0),
+        };
+
+        // Entity ids are `<file>::<name>`, so the file is a prefix — but the
+        // projection stores whichever separators the walker saw, hence the
+        // normalization on both sides.
+        let scope_prefix = scope_file.map(|f| format!("{}::", normalize_path_str(f)));
+        let in_scope = |a: &str, b: &str| match &scope_prefix {
+            None => true,
+            Some(prefix) => {
+                normalize_path_str(a).starts_with(prefix.as_str())
+                    || normalize_path_str(b).starts_with(prefix.as_str())
+            }
         };
 
         let mut edge_count = 0usize;
@@ -38,6 +73,9 @@ impl CodeGraph {
                 // Skip edges where target is external/builtin (no concept entry)
                 // and edges where the target would violate FK constraints
                 if callee.starts_with("external::") || callee.starts_with("builtins.") {
+                    continue;
+                }
+                if !in_scope(caller, callee) {
                     continue;
                 }
                 batch.push(
@@ -65,6 +103,9 @@ impl CodeGraph {
                 {
                     continue;
                 }
+                if !in_scope(importer, target_mod) {
+                    continue;
+                }
                 batch.push(
                     EdgeAssertion::new(importer.as_str(), target_mod.as_str(), "IMPORTS")
                         .valid_from(ts_now.as_str())
@@ -85,6 +126,9 @@ impl CodeGraph {
                 if cid.starts_with("external::") || base_id.starts_with("external::") {
                     continue;
                 }
+                if !in_scope(cid, base_id) {
+                    continue;
+                }
                 batch.push(
                     EdgeAssertion::new(cid.as_str(), base_id.as_str(), "EXTENDS")
                         .valid_from(ts_now.as_str())
@@ -100,6 +144,9 @@ impl CodeGraph {
         // OVERRIDES edges: override method → base method.
         for (override_fid, base_fid) in projection.overrides_base.iter() {
             if override_fid.starts_with("external::") || base_fid.starts_with("external::") {
+                continue;
+            }
+            if !in_scope(override_fid, base_fid) {
                 continue;
             }
             batch.push(

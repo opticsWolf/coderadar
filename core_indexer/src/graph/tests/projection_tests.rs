@@ -195,15 +195,9 @@ use super::*;
         store.live_concept_ids().unwrap()
     }
 
-    fn graph_with_store(dir: &tempfile::TempDir) -> CodeGraph {
-        let store = crate::storage::CodeGraphStore::open(dir.path().join("t.db")).unwrap();
-        CodeGraph::new(GraphConfig::default()).with_store(store)
-    }
-
     #[test]
     fn test_update_file_retires_removed_entities_in_the_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let graph = graph_with_store(&dir);
+        let (graph, _dir) = graph_with_temp_store();
         index_source(&graph, "class Dog: pass\nclass Cat: pass\n", "animals.py");
         assert!(live_ids(&graph).contains(&"animals.py::Cat".to_string()));
 
@@ -218,8 +212,7 @@ use super::*;
 
     #[test]
     fn test_remove_file_entities_retires_the_whole_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let graph = graph_with_store(&dir);
+        let (graph, _dir) = graph_with_temp_store();
         index_source(&graph, "def a(): pass\ndef b(): pass\n", "gone.py");
         index_source(&graph, "def c(): pass\n", "kept.py");
 
