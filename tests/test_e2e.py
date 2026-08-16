@@ -432,6 +432,50 @@ class TestWatcherPipeline:
         finally:
             stop_watcher()
 
+    def test_watcher_honours_a_custom_debounce(self, tmp_path):
+        """`--debounce` was stored and never passed to the binding (§1.4)."""
+        from coderadar._core import (
+            analyze, start_watcher, next_watcher_batch_timeout, stop_watcher,
+        )
+
+        target = tmp_path / "tuned.py"
+        target.write_text("def a(): pass\n")
+        analyze(str(tmp_path))
+
+        start_watcher([str(tmp_path)], 30)
+        try:
+            target.write_text("def a(): pass\ndef b(): pass\n")
+            import time
+            time.sleep(0.3)
+            batch = next_watcher_batch_timeout(3000)
+            assert batch is not None, "a 30 ms debounce still delivers events"
+            assert any("tuned" in p for p, _ in batch)
+        finally:
+            stop_watcher()
+
+    def test_watcher_skips_files_over_the_size_limit(self, tmp_path):
+        """`max_file_size_bytes` was configurable and never consulted (§1.4)."""
+        from coderadar._core import (
+            analyze, start_watcher, next_watcher_batch_timeout, stop_watcher,
+        )
+
+        small = tmp_path / "small.py"
+        small.write_text("x = 1\n")
+        analyze(str(tmp_path))
+
+        # 200-byte ceiling: the big file's events must not reach the batch.
+        start_watcher([str(tmp_path)], 30, 200)
+        try:
+            (tmp_path / "huge.py").write_text("# padding\n" * 500)
+            import time
+            time.sleep(0.4)
+            batch = next_watcher_batch_timeout(1500)
+            paths = [p for p, _ in (batch or [])]
+            assert not any("huge" in p for p in paths), \
+                f"a file over the limit must be skipped: {paths}"
+        finally:
+            stop_watcher()
+
     def test_watcher_timeout_returns_none(self, tmp_path):
         """When no file changes occur, timeout returns None."""
         from coderadar._core import start_watcher, next_watcher_batch_timeout, stop_watcher

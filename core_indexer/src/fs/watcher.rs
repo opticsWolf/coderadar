@@ -86,6 +86,7 @@ fn classify(path: &std::path::Path, kind: DebouncedEventKind) -> FileChangeKind 
 struct EventBridge {
     tx: Sender<BatchEvent>,
     exclude_patterns: Arc<Vec<String>>,
+    max_file_size_bytes: u64,
     write_guard: std::sync::Arc<crate::mutation::write_guard::WriteGuard>,
     batch_counter: u64,
 }
@@ -112,6 +113,17 @@ impl DebounceEventHandler for EventBridge {
                         .unwrap_or("");
                     if !ext.is_empty() && !is_source_extension(ext) {
                         return None;
+                    }
+
+                    // `max_file_size_bytes` was configurable and never
+                    // consulted, so a vendored 40 MB generated file was
+                    // re-parsed on every touch. Deletions are exempt: a path
+                    // that is gone has no size, and dropping its event would
+                    // leave the entities behind — the bug §1.3 just fixed.
+                    if let Ok(meta) = std::fs::metadata(&e.path) {
+                        if meta.len() > self.max_file_size_bytes {
+                            return None;
+                        }
                     }
 
                     // Suppress events for files the mutation engine just wrote
@@ -161,6 +173,7 @@ impl FileWatcher {
         let bridge = EventBridge {
             tx,
             exclude_patterns,
+            max_file_size_bytes: config.max_file_size_bytes,
             write_guard: crate::mutation::shared_write_guard(),
             batch_counter: 0,
         };

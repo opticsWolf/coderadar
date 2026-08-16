@@ -1437,12 +1437,26 @@ static GLOBAL_WATCHER: std::sync::LazyLock<std::sync::Mutex<Option<crate::fs::wa
     std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 /// Start the file watcher on the given paths. Must have run analyze() first.
+///
+/// `debounce_ms` was accepted by `coderadar watch --debounce` and by
+/// `CodeGraph.watch(...)`, stored, and never read: this binding took only
+/// `paths`, so every watcher ran at the 100 ms default no matter what the
+/// user asked for. Same for `max_file_size_bytes`, which the config declared
+/// and nothing enforced (plan §1.4).
 #[pyfunction]
-fn start_watcher(paths: Vec<String>) -> PyResult<()> {
+#[pyo3(signature = (paths, debounce_ms=None, max_file_size_bytes=None))]
+fn start_watcher(
+    paths: Vec<String>,
+    debounce_ms: Option<u64>,
+    max_file_size_bytes: Option<u64>,
+) -> PyResult<()> {
     use crate::fs::watcher::{FileWatcher, WatcherConfig};
+    let defaults = WatcherConfig::default();
     let config = WatcherConfig {
         watch_paths: paths,
-        ..WatcherConfig::default()
+        debounce_ms: debounce_ms.unwrap_or(defaults.debounce_ms),
+        max_file_size_bytes: max_file_size_bytes.unwrap_or(defaults.max_file_size_bytes),
+        ..defaults
     };
     let watcher = FileWatcher::start(config)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;

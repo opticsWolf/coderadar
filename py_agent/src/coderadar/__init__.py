@@ -873,7 +873,9 @@ class Watcher:
             return
 
         self._running = True
-        start_watcher(self._paths)
+        # `--debounce` was stored here and never passed on, so every watcher
+        # ran at the 100 ms default whatever the user asked for.
+        start_watcher(self._paths, self._debounce_ms)
         print(f"CodeRadar watcher: watching {self._paths}")
 
         try:
