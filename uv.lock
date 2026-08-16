@@ -503,7 +503,7 @@ wheels = [
 
 [[package]]
 name = "coderadar-rs"
-version = "0.6.18"
+version = "0.6.19"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

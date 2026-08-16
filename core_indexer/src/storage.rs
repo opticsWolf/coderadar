@@ -134,6 +134,125 @@ impl CodeGraphStore {
         self.runtime.block_on(self.db.write_concepts(concepts.to_vec()))
     }
 
+    /// Retire concepts and close every open edge that touches them.
+    ///
+    /// `retired: true` appeared nowhere in the codebase: a deleted function, a
+    /// renamed class, a removed import all stayed "currently true" in the
+    /// ledger forever, so `as_of` for any past instant returned a superset
+    /// that only ever grew. Retirement is what makes the temporal claim true.
+    ///
+    /// Bitemporally this is an assertion, not an erasure: the current row is
+    /// replaced by one carrying `valid_to = now` and `retired = 1`, while the
+    /// original row survives in the log, so `reconstruct` at an earlier
+    /// instant still sees the entity alive.
+    ///
+    /// Returns `(concepts_retired, edges_retired)`.
+    pub fn retire_entities(&self, entity_ids: &[String]) -> macrame::Result<(usize, usize)> {
+        if entity_ids.is_empty() {
+            return Ok((0, 0));
+        }
+        let ts = now_iso8601();
+        self.runtime.block_on(async {
+            let conn = self.db.diagnostic_conn().await?;
+
+            // Title and content are carried over: the upsert overwrites every
+            // column, so reading them back is what keeps the retired row a
+            // record of the entity rather than a blank tombstone.
+            let mut concepts: Vec<ConceptUpsert> = Vec::new();
+            for id in entity_ids {
+                let mut rows = conn
+                    .query(
+                        "SELECT title, content, valid_from FROM concepts \
+                         WHERE id = ?1 AND retired = 0",
+                        libsql::params![id.as_str()],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                if let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                    concepts.push(ConceptUpsert {
+                        id: id.clone(),
+                        title: row.get::<String>(0).unwrap_or_default(),
+                        content: row.get::<String>(1).unwrap_or_default(),
+                        embedding_model: None,
+                        valid_from: row.get::<String>(2).unwrap_or_else(|_| ts.clone()),
+                        valid_to: ts.clone(),
+                        retired: true,
+                    });
+                }
+            }
+
+            // Open edges on either side. An edge whose endpoint is gone is not
+            // a fact about the code any more, whichever end went.
+            let mut open_edges: Vec<(String, String, String, String)> = Vec::new();
+            for id in entity_ids {
+                let mut rows = conn
+                    .query(
+                        "SELECT source_id, target_id, edge_type, valid_from \
+                         FROM links_current \
+                         WHERE valid_to > ?2 AND (source_id = ?1 OR target_id = ?1)",
+                        // `> now` rather than `= TS_OPEN`: edges carry
+                        // macrame's own open sentinel, concepts carry ours,
+                        // and the two spellings differ. Openness is the
+                        // property that matters, not which sentinel says so.
+                        libsql::params![id.as_str(), ts.as_str()],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                    open_edges.push((
+                        row.get::<String>(0).unwrap_or_default(),
+                        row.get::<String>(1).unwrap_or_default(),
+                        row.get::<String>(2).unwrap_or_default(),
+                        row.get::<String>(3).unwrap_or_default(),
+                    ));
+                }
+            }
+            open_edges.sort();
+            open_edges.dedup();
+
+            let mut edges_retired = 0usize;
+            for (source, target, etype, valid_from) in &open_edges {
+                // NotFound means something else closed it first; that is the
+                // desired end state either way.
+                if self
+                    .db
+                    .retire_edge(source.as_str(), target.as_str(), etype.as_str(),
+                                 valid_from.as_str(), ts.as_str())
+                    .await
+                    .is_ok()
+                {
+                    edges_retired += 1;
+                }
+            }
+
+            let concepts_retired = concepts.len();
+            if concepts_retired > 0 {
+                self.db.write_concepts(concepts).await?;
+            }
+            Ok((concepts_retired, edges_retired))
+        })
+    }
+
+    /// Ids of every concept the ledger still holds to be true.
+    ///
+    /// The counterpart to [`Self::retire_entities`]: retirement is only
+    /// meaningful if something can tell the difference, and until now nothing
+    /// read the `retired` column at all.
+    pub fn live_concept_ids(&self) -> macrame::Result<Vec<String>> {
+        self.runtime.block_on(async {
+            let conn = self.db.diagnostic_conn().await?;
+            let mut rows = conn
+                .query("SELECT id FROM concepts WHERE retired = 0 ORDER BY id", ())
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok(out)
+        })
+    }
+
     /// Assert a single edge.
     pub fn assert_edge(
         &self,
@@ -429,5 +548,133 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed["confidence"], "direct");
         assert_eq!(parsed["line"], "42");
+    }
+
+    // ── Retirement (plan §1.1) ───────────────────────────────────────────
+    //
+    // Before this, `retired: true` was written nowhere: the ledger recorded
+    // every entity that had ever existed as still existing.
+
+    fn temp_store() -> (tempfile::TempDir, CodeGraphStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("t.db")).unwrap();
+        (dir, store)
+    }
+
+    /// One row per id, so the count is also an assertion that retirement
+    /// replaces the current row rather than adding a second live one.
+    fn live_concept_ids(store: &CodeGraphStore) -> Vec<String> {
+        store.live_concept_ids().unwrap()
+    }
+
+    fn open_edge_count(store: &CodeGraphStore) -> i64 {
+        store.runtime.block_on(async {
+            let conn = store.db.diagnostic_conn().await.unwrap();
+            let mut rows = conn
+                .query(
+                    "SELECT COUNT(*) FROM links_current WHERE valid_to > ?1",
+                    libsql::params![now_iso8601()],
+                )
+                .await
+                .unwrap();
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap()
+        })
+    }
+
+    fn seed(store: &CodeGraphStore) {
+        let ts = now_iso8601();
+        let concept = |id: &str| ConceptUpsert {
+            id: id.to_string(),
+            title: id.rsplit("::").next().unwrap().to_string(),
+            content: "{}".to_string(),
+            embedding_model: None,
+            valid_from: ts.clone(),
+            valid_to: TS_OPEN.to_string(),
+            retired: false,
+        };
+        store
+            .upsert_concepts_bulk(&[
+                concept("a.py::caller"),
+                concept("a.py::callee"),
+                concept("b.py::bystander"),
+            ])
+            .unwrap();
+        store
+            .assert_edge("a.py::caller", "a.py::callee", "CALLS", "{}", &ts, 1.0)
+            .unwrap();
+        store
+            .assert_edge("b.py::bystander", "a.py::callee", "CALLS", "{}", &ts, 1.0)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_retire_entities_closes_the_concept() {
+        let (_dir, store) = temp_store();
+        seed(&store);
+        assert_eq!(live_concept_ids(&store).len(), 3);
+
+        let (concepts, _) = store.retire_entities(&["a.py::callee".to_string()]).unwrap();
+
+        assert_eq!(concepts, 1);
+        assert_eq!(
+            live_concept_ids(&store),
+            vec!["a.py::caller".to_string(), "b.py::bystander".to_string()]
+        );
+    }
+
+    /// An edge is retired when *either* endpoint goes: a call into a deleted
+    /// function is no more a fact about the code than a call out of one.
+    #[test]
+    fn test_retire_entities_closes_edges_on_both_sides() {
+        let (_dir, store) = temp_store();
+        seed(&store);
+        assert_eq!(open_edge_count(&store), 2);
+
+        let (_, edges) = store.retire_entities(&["a.py::callee".to_string()]).unwrap();
+
+        assert_eq!(edges, 2, "both the incoming and the outgoing edge close");
+        assert_eq!(open_edge_count(&store), 0);
+    }
+
+    #[test]
+    fn test_retire_entities_leaves_untouched_entities_alone() {
+        let (_dir, store) = temp_store();
+        seed(&store);
+
+        store.retire_entities(&["b.py::bystander".to_string()]).unwrap();
+
+        assert!(live_concept_ids(&store).contains(&"a.py::caller".to_string()));
+        assert_eq!(
+            open_edge_count(&store),
+            1,
+            "only the bystander's edge closes; caller→callee is untouched"
+        );
+    }
+
+    #[test]
+    fn test_retire_entities_is_a_no_op_for_unknown_or_empty_ids() {
+        let (_dir, store) = temp_store();
+        seed(&store);
+
+        assert_eq!(store.retire_entities(&[]).unwrap(), (0, 0));
+        assert_eq!(
+            store.retire_entities(&["nowhere.py::ghost".to_string()]).unwrap(),
+            (0, 0)
+        );
+        assert_eq!(live_concept_ids(&store).len(), 3);
+    }
+
+    /// Retiring twice must not error or resurrect anything — the watcher can
+    /// deliver the same deletion more than once.
+    #[test]
+    fn test_retire_entities_is_idempotent() {
+        let (_dir, store) = temp_store();
+        seed(&store);
+
+        store.retire_entities(&["a.py::callee".to_string()]).unwrap();
+        let (concepts, edges) = store.retire_entities(&["a.py::callee".to_string()]).unwrap();
+
+        assert_eq!((concepts, edges), (0, 0), "nothing left open to close");
+        assert_eq!(live_concept_ids(&store).len(), 2);
     }
 }

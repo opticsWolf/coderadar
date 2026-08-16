@@ -184,3 +184,61 @@ use super::*;
         assert!(snap.classes.contains_key("animals.py::Dog"));
         assert!(!snap.classes.contains_key("animals.py::Cat"));
     }
+
+    // ── Retirement reaches the ledger (plan §1.1) ────────────────────────
+
+    /// Live concept ids in the attached store, so a removal can be checked
+    /// where it used never to land: the projection dropped the entity and the
+    /// ledger kept claiming it was still there.
+    fn live_ids(graph: &CodeGraph) -> Vec<String> {
+        let store = graph.store.as_ref().expect("store attached");
+        store.live_concept_ids().unwrap()
+    }
+
+    fn graph_with_store(dir: &tempfile::TempDir) -> CodeGraph {
+        let store = crate::storage::CodeGraphStore::open(dir.path().join("t.db")).unwrap();
+        CodeGraph::new(GraphConfig::default()).with_store(store)
+    }
+
+    #[test]
+    fn test_update_file_retires_removed_entities_in_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = graph_with_store(&dir);
+        index_source(&graph, "class Dog: pass\nclass Cat: pass\n", "animals.py");
+        assert!(live_ids(&graph).contains(&"animals.py::Cat".to_string()));
+
+        graph.update_file("animals.py", Some("class Dog: pass\n"), None).unwrap();
+
+        let live = live_ids(&graph);
+        assert!(!live.contains(&"animals.py::Cat".to_string()),
+                "the deleted class must not stay current: {:?}", live);
+        assert!(live.contains(&"animals.py::Dog".to_string()),
+                "the surviving class must stay current: {:?}", live);
+    }
+
+    #[test]
+    fn test_remove_file_entities_retires_the_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let graph = graph_with_store(&dir);
+        index_source(&graph, "def a(): pass\ndef b(): pass\n", "gone.py");
+        index_source(&graph, "def c(): pass\n", "kept.py");
+
+        let mut projection = (*graph.snapshot()).clone();
+        let removed = graph.remove_file_entities(&mut projection, "gone.py");
+        graph.commit_projection(projection);
+
+        assert!(!removed.is_empty());
+        let live = live_ids(&graph);
+        assert!(live.iter().all(|id| !id.starts_with("gone.py")),
+                "nothing from the deleted file stays current: {:?}", live);
+        assert!(live.contains(&"kept.py::c".to_string()), "{:?}", live);
+    }
+
+    /// A graph with no store must not panic or complain when entities go.
+    #[test]
+    fn test_removal_without_a_store_is_silent() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "class Dog: pass\nclass Cat: pass\n", "animals.py");
+        let outcome = graph.update_file("animals.py", Some("class Dog: pass\n"), None).unwrap();
+        assert_eq!(outcome.entities_removed, 1);
+    }

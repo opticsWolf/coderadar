@@ -7,6 +7,31 @@ use super::module_resolution::{find_module_by_dotted_name, normalize_path_str};
 use crate::types::*;
 
 impl CodeGraph {
+    /// Close removed entities in the persistent ledger.
+    ///
+    /// Removal used to touch the in-memory projection only. The store kept
+    /// every concept and edge open forever, so `as_of` for any past instant
+    /// answered with a set that only ever grew — a deleted function stayed
+    /// "currently true" in a database whose whole point is knowing when
+    /// things stopped being true.
+    ///
+    /// Best-effort by design: the projection is the source of truth for
+    /// queries, and a ledger write that fails must not fail the update. It is
+    /// reported, not swallowed.
+    pub(crate) fn retire_in_store<'a>(&self, ids: impl IntoIterator<Item = &'a EntityId>) {
+        let store = match &self.store {
+            Some(store) => store,
+            None => return,
+        };
+        let ids: Vec<String> = ids.into_iter().cloned().collect();
+        if ids.is_empty() {
+            return;
+        }
+        if let Err(e) = store.retire_entities(&ids) {
+            eprintln!("Warning: could not retire {} removed entities: {:?}", ids.len(), e);
+        }
+    }
+
     /// Remove all entities belonging to a file from the projection.
     /// Returns set of entity IDs that were removed (for downstream resolution).
     pub fn remove_file_entities(
@@ -61,6 +86,7 @@ impl CodeGraph {
                 callers.retain(|cid| !removed.contains(cid));
                 !callers.is_empty()
             });
+            self.retire_in_store(removed.iter());
             return removed;
         }
 
@@ -145,6 +171,7 @@ impl CodeGraph {
             !callers.is_empty()
         });
 
+        self.retire_in_store(removed.iter());
         removed
     }
 
@@ -243,9 +270,15 @@ impl CodeGraph {
 
         let mut inserted = 0usize;
         let mut removed = 0usize;
+        // Kept so the ledger can be told what went away; the counter alone
+        // says how many, which is not enough to retire them.
+        let mut removed_ids: Vec<EntityId> = Vec::new();
 
         // 3. Remove entities that don't exist in new units
-        let remove_entity = |id: &str, proj: &mut ProjectedGraph, removed: &mut usize| {
+        let remove_entity = |id: &str,
+                             proj: &mut ProjectedGraph,
+                             removed: &mut usize,
+                             removed_ids: &mut Vec<EntityId>| {
             proj.functions.remove(id);
             proj.classes.remove(id);
             proj.imports.remove(id);
@@ -256,25 +289,26 @@ impl CodeGraph {
             proj.callees_by_caller.remove(id);
             proj.subclasses.remove(id);
             proj.overridden_by.remove(id);
+            removed_ids.push(id.to_string());
             *removed += 1;
         };
 
         let module_id = canonical(&format!("{}::module", file_path));
 
         for (_, (stored_id, _, _)) in old_hashes.iter().filter(|(n, _)| !new_funcs.contains(*n)) {
-            remove_entity(stored_id, projection, &mut removed);
+            remove_entity(stored_id, projection, &mut removed, &mut removed_ids);
         }
         for id in old_classes.iter().filter(|id| !new_classes.contains(&normalize_id(id))) {
-            remove_entity(id, projection, &mut removed);
+            remove_entity(id, projection, &mut removed, &mut removed_ids);
         }
         for id in old_imports.iter().filter(|id| !new_imports.contains(&normalize_id(id))) {
-            remove_entity(id, projection, &mut removed);
+            remove_entity(id, projection, &mut removed, &mut removed_ids);
         }
         for id in old_constants.iter().filter(|id| !new_constants.contains(&normalize_id(id))) {
-            remove_entity(id, projection, &mut removed);
+            remove_entity(id, projection, &mut removed, &mut removed_ids);
         }
         for id in old_aliases.iter().filter(|id| !new_aliases.contains(&normalize_id(id))) {
-            remove_entity(id, projection, &mut removed);
+            remove_entity(id, projection, &mut removed, &mut removed_ids);
         }
 
         // 4. Insert new entities + re-insert changed ones (hash mismatch)
@@ -391,6 +425,8 @@ impl CodeGraph {
                 _ => {}
             }
         }
+
+        self.retire_in_store(removed_ids.iter());
 
         (inserted, removed)
     }

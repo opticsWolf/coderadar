@@ -38,7 +38,10 @@ tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 regex = "1"
-libsql = "0.6"
+# Must track macrame-db's own libsql: `diagnostic_conn()` hands back one of
+# *its* Connections, and two semver-incompatible libsql versions in the tree
+# make that value untouchable from here.
+libsql = "0.9"
 smol_str = "0.2"
 ulid = "1.1"
 postcard = "1.0"
