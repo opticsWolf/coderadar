@@ -16,6 +16,14 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 
+class EmbeddingUnavailable(RuntimeError):
+    """The embedding model cannot be loaded, so no vector can be produced.
+
+    Raised rather than returning a placeholder vector: a stored placeholder is
+    indistinguishable from a real embedding downstream.
+    """
+
+
 class EmbeddingDedup:
     """Content-addressed embedding cache.
 
@@ -79,9 +87,19 @@ class EmbeddingDedup:
             try:
                 from fastembed import TextEmbedding
                 self._model = TextEmbedding(model_name=self.model_name)
-            except ImportError:
-                logger.warning("fastembed not installed; returning zero vectors")
-                return [[0.0] * self.dimension for _ in texts]
+            except ImportError as exc:
+                # Zero vectors used to be returned here. They are stored with a
+                # valid content hash, so `has_embedding` goes true and the dedup
+                # cache treats them as fresh for ever — semantic search is then
+                # silently and permanently poisoned. Fail loudly instead.
+                logger.error("fastembed not installed; cannot embed",
+                             model=self.model_name)
+                raise EmbeddingUnavailable(
+                    f"fastembed is not installed, so {self.model_name!r} cannot "
+                    "embed anything. Install it (`uv add fastembed`) or skip the "
+                    "embedding step; storing placeholder vectors would poison the "
+                    "dedup cache."
+                ) from exc
 
         result = list(self._model.embed(texts, batch_size=self.batch_size))
         return [r.tolist() for r in result]

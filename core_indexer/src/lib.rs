@@ -216,7 +216,6 @@ fn class_to_dict(py: Python<'_>, c: &Class) -> PyResult<PyObject> {
     dict.set_item("bases", bases)?;
     dict.set_item("has_embedding", !c.embedding.vec.is_empty())?;
     dict.set_item("embedding_hash", c.embedding.hash.clone())?;
-    dict.set_item("embedding_hash", c.embedding.hash.clone())?;
     Ok(dict.into())
 }
 
@@ -313,7 +312,6 @@ fn constant_to_dict(py: Python<'_>, c: &Constant) -> PyResult<PyObject> {
     dict.set_item("span_start", c.span.start)?;
     dict.set_item("span_end", c.span.end)?;
     dict.set_item("has_embedding", !c.embedding.vec.is_empty())?;
-    dict.set_item("embedding_hash", c.embedding.hash.clone())?;
     dict.set_item("embedding_hash", c.embedding.hash.clone())?;
     Ok(dict.into())
 }
@@ -857,72 +855,64 @@ fn lookup_entity(py: Python<'_>, entity_id: &str) -> PyResult<Option<PyObject>> 
     })
 }
 
+/// Name-match score, or None when the name does not match at all.
+///
+/// `weight` scales the three tiers (exact / prefix / contains) so that a kind
+/// can be ranked below another for the same name — a module named `parser`
+/// should not outrank the function `parser`.
+fn name_score(name: &str, query_lower: &str, weight: usize) -> Option<usize> {
+    let name_lower = name.to_lowercase();
+    if name_lower == query_lower {
+        Some(100 * weight)
+    } else if name_lower.starts_with(query_lower) {
+        Some(50 * weight)
+    } else if name_lower.contains(query_lower) {
+        Some(25 * weight)
+    } else {
+        None
+    }
+}
+
 /// Search entities by name substring match (case-insensitive).
+///
+/// Covers every entity kind the projection holds. `compute_embeddings` asks
+/// for `import`, `constant` and `type_alias` as well as the big three, and
+/// `codegraph_search_similar` advertises them; they used to come back empty,
+/// so those three kinds were never embedded.
 #[pyfunction]
 fn search_entities(py: Python<'_>, query: &str, top_k: usize, kind: Option<&str>) -> PyResult<Vec<PyObject>> {
     with_graph(|_graph, snap| {
         let query_lower = query.to_lowercase();
         let mut results: Vec<(usize, PyObject)> = Vec::new(); // (score, dict)
         let kind_filter = kind.map(|k| k.to_lowercase());
+        let wants = |k: &str| {
+            kind_filter.is_none() || kind_filter.as_deref() == Some(k)
+        };
 
-        // Score: exact match = 100, starts-with = 50, contains = 25
-
-        // Search functions
-        if kind_filter.is_none() || kind_filter.as_deref() == Some("function") {
-            for (_id, f) in &snap.functions {
-                let name_lower = f.name.to_lowercase();
-                let score = if name_lower == query_lower {
-                    100
-                } else if name_lower.starts_with(&query_lower) {
-                    50
-                } else if name_lower.contains(&query_lower) {
-                    25
-                } else {
-                    continue;
-                };
-                if let Ok(d) = function_to_dict(py, f) {
-                    results.push((score, d));
+        // Weight 10 = full rank; the containers (module) and the leaf kinds
+        // sit below the named definitions a search is usually after.
+        macro_rules! scan {
+            ($kind:literal, $map:expr, $field:ident, $to_dict:path, $weight:expr) => {
+                if wants($kind) {
+                    for (_id, e) in $map.iter() {
+                        if let Some(score) = name_score(&e.$field, &query_lower, $weight) {
+                            if let Ok(d) = $to_dict(py, e) {
+                                results.push((score, d));
+                            }
+                        }
+                    }
                 }
-            }
+            };
         }
 
-        // Search classes
-        if kind_filter.is_none() || kind_filter.as_deref() == Some("class") {
-            for (_id, c) in &snap.classes {
-                let name_lower = c.name.to_lowercase();
-                let score = if name_lower == query_lower {
-                    100
-                } else if name_lower.starts_with(&query_lower) {
-                    50
-                } else if name_lower.contains(&query_lower) {
-                    25
-                } else {
-                    continue;
-                };
-                if let Ok(d) = class_to_dict(py, c) {
-                    results.push((score, d));
-                }
-            }
-        }
-
-        // Search modules
-        if kind_filter.is_none() || kind_filter.as_deref() == Some("module") {
-            for (_id, m) in &snap.modules {
-                let name_lower = m.name.to_lowercase();
-                let score = if name_lower == query_lower {
-                    90
-                } else if name_lower.starts_with(&query_lower) {
-                    40
-                } else if name_lower.contains(&query_lower) {
-                    20
-                } else {
-                    continue;
-                };
-                if let Ok(d) = module_to_dict(py, m) {
-                    results.push((score, d));
-                }
-            }
-        }
+        scan!("function", snap.functions, name, function_to_dict, 10);
+        scan!("class", snap.classes, name, class_to_dict, 10);
+        scan!("type_alias", snap.type_aliases, name, type_alias_to_dict, 10);
+        scan!("constant", snap.constants, name, constant_to_dict, 9);
+        scan!("module", snap.modules, name, module_to_dict, 9);
+        // An import's "name" is its raw statement text, which is noisier than
+        // a definition name, so it ranks last.
+        scan!("import", snap.imports, raw, import_to_dict, 8);
 
         // Sort by score descending, take top_k
         results.sort_by(|a, b| b.0.cmp(&a.0));

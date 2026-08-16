@@ -285,6 +285,42 @@ class TestEmbeddingDedup:
                 assert results[0] is not None
                 assert len(results[0]) == 896
 
+    def test_missing_fastembed_raises_instead_of_returning_zero_vectors(self):
+        """A placeholder vector is indistinguishable from a real one downstream.
+
+        Stored with a valid content hash it makes `has_embedding` true, the
+        dedup cache treats it as fresh for ever, and semantic search is
+        silently and permanently poisoned. It must fail loudly instead.
+        """
+        import builtins
+        from coderadar.embedding.dedup import EmbeddingDedup, EmbeddingUnavailable
+
+        dedup = EmbeddingDedup()
+        real_import = builtins.__import__
+
+        def no_fastembed(name, *args, **kwargs):
+            if name == "fastembed" or name.startswith("fastembed."):
+                raise ImportError("No module named 'fastembed'")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", no_fastembed):
+            with pytest.raises(EmbeddingUnavailable):
+                dedup._model_embed(["def foo(): pass"])
+
+    def test_embed_batch_propagates_the_unavailable_model(self):
+        """The failure must reach the caller, not be swallowed into a batch."""
+        from coderadar.embedding.dedup import (
+            EmbeddingDedup, EmbedTarget, EmbeddingUnavailable,
+        )
+        dedup = EmbeddingDedup()
+        target = EmbedTarget("fn3", "def baz(): pass", "hash789", "function")
+
+        with patch.object(dedup, "_get_cached", return_value=None):
+            with patch.object(dedup, "_model_embed",
+                              side_effect=EmbeddingUnavailable("no model")):
+                with pytest.raises(EmbeddingUnavailable):
+                    dedup.embed_batch([target], MagicMock())
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Mutation Tool Router Tests

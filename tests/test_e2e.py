@@ -194,6 +194,26 @@ class TestFullPipeline:
         services_mods = [r for r in results if "services" in r.get("name", "")]
         assert len(services_mods) > 0, "Should find services module"
 
+    def test_search_finds_imports(self):
+        """`kind="import"` used to return nothing at all.
+
+        search_entities only scanned functions, classes and modules, so the
+        three further kinds compute_embeddings asks for were never embedded
+        and codegraph_search_similar could never surface them.
+        """
+        results = search_entities("", 50, kind="import")
+        assert results, "the e2e project imports something"
+        assert all(r.get("kind") == "import" for r in results), results
+
+    def test_search_import_kind_is_filtered_out_of_other_kinds(self):
+        """The kind filter still partitions: an import is not a function."""
+        functions = search_entities("", 50, kind="function")
+        assert functions and not any(r.get("kind") == "import" for r in functions)
+
+    def test_unfiltered_search_spans_kinds(self):
+        kinds = {r.get("kind") for r in search_entities("", 200, None)}
+        assert {"function", "class", "module", "import"} <= kinds, kinds
+
     def test_cross_file_indexing(self):
         """Cross-file imports and calls should work."""
         # Re-analyze cross_file fixtures
