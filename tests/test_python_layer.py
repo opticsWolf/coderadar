@@ -674,6 +674,39 @@ class TestCodeRadarAPI:
         assert report.parse_errors == 0
         assert report.elapsed_ms > 0.0, "elapsed_ms was hardcoded to 0.0"
 
+    def test_remove_file_drops_a_deleted_files_entities(self, tmp_path):
+        """A deleted file used to live on in the graph until the next analyze."""
+        try:
+            from coderadar._core import analyze, search_entities
+            from coderadar import CodeGraph
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        gone = tmp_path / "gone.py"
+        gone.write_text("def doomed():\n    return 1\n", encoding="utf-8")
+        (tmp_path / "kept.py").write_text(
+            "def survivor():\n    return 2\n", encoding="utf-8")
+        analyze(str(tmp_path))
+        assert any(e["name"] == "doomed" for e in search_entities("doomed", 20, None))
+
+        graph = CodeGraph()
+        gone.unlink()
+        removed = graph.remove_file(str(gone))
+
+        assert removed >= 1, "the module and its function should both go"
+        assert not any(e["name"] == "doomed" for e in search_entities("doomed", 20, None))
+        assert any(e["name"] == "survivor" for e in search_entities("survivor", 20, None))
+
+    def test_remove_file_reports_zero_for_a_file_that_was_never_indexed(self, tmp_path):
+        try:
+            from coderadar._core import analyze
+            from coderadar import CodeGraph
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        (tmp_path / "only.py").write_text("x = 1\n", encoding="utf-8")
+        analyze(str(tmp_path))
+
+        assert CodeGraph().remove_file(str(tmp_path / "never.py")) == 0
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Pest Query Grammar Tests (parseable examples from §7.2a)

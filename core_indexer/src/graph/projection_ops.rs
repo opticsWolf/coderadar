@@ -175,6 +175,27 @@ impl CodeGraph {
         removed
     }
 
+    /// Drop a deleted file from the graph entirely.
+    ///
+    /// `update_file` cannot express this: it re-reads the file, and a file
+    /// that is gone has no content to diff against. Without this the watcher
+    /// had nothing to call on a deletion, so removed files stayed in the
+    /// projection, in the ledger, and in every query result until the next
+    /// full `analyze`.
+    ///
+    /// Returns the ids that went away.
+    pub fn remove_file(&self, file_path: &str) -> Vec<EntityId> {
+        let normalized = normalize_path_str(file_path);
+        let mut projection = (*self.snapshot()).clone();
+        let removed = self.remove_file_entities(&mut projection, &normalized);
+        // The file→module mapping outlives the module otherwise, and a
+        // recreated file would resolve to an id that is no longer there.
+        projection.file_to_modules.remove(&PathBuf::from(&normalized));
+        projection.file_to_modules.remove(&PathBuf::from(file_path));
+        self.commit_projection(projection);
+        removed.into_iter().collect()
+    }
+
     /// Diff-based incremental update: compare new units against existing projection
     /// entities and only insert/remove entities that actually changed. Unchanged
     /// entities (same ID + same content hashes) are left in place, avoiding

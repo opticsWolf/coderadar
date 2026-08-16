@@ -35,6 +35,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(analyze, m)?)?;
     m.add_function(wrap_pyfunction!(query_graph, m)?)?;
     m.add_function(wrap_pyfunction!(update_file, m)?)?;
+    m.add_function(wrap_pyfunction!(remove_file, m)?)?;
     {
         use git_bindings::{git_worktree_clean, git_blame, git_changed_files};
         m.add_function(wrap_pyfunction!(git_worktree_clean, m)?)?;
@@ -678,6 +679,21 @@ fn update_file(
         dict.set_item("parse_quality", quality)?;
         dict.set_item("parse_errors", outcome.parse_errors)?;
         dict.set_item("elapsed_ms", outcome.elapsed_ms)?;
+        Ok(dict.into())
+    })
+}
+
+/// Drop a deleted file's entities from the graph and retire them (plan §1.3).
+#[pyfunction]
+fn remove_file(file_path: &str) -> PyResult<PyObject> {
+    let py = unsafe { Python::assume_gil_acquired() };
+    with_graph(|graph, _snap| {
+        let started = std::time::Instant::now();
+        let removed = graph.remove_file(file_path);
+        let dict = PyDict::new(py);
+        dict.set_item("entities_removed", removed.len())?;
+        dict.set_item("removed_ids", removed)?;
+        dict.set_item("elapsed_ms", started.elapsed().as_secs_f64() * 1000.0)?;
         Ok(dict.into())
     })
 }

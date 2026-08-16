@@ -49,6 +49,10 @@ pub mod edge_type {
     pub const OVERRIDES: &str = "OVERRIDES";
 }
 
+/// Serialises every libSQL open in this process — `Database::open` and
+/// `diagnostic_conn` alike (see [`CodeGraphStore::open_diagnostic_conn`]).
+static DIAGNOSTIC_OPEN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Key lifespan timestamp — the Macrame open sentinel for "still true".
 pub const TS_OPEN: &str = "9999-12-31T00:00:00.000000Z";
 
@@ -73,33 +77,51 @@ pub fn now_iso8601() -> String {
 
 pub struct CodeGraphStore {
     pub db: Database,
-    /// Held for the lifetime of the Database. Tokio's block_on needs a runtime.
-    #[allow(dead_code)]
-    runtime: Runtime,
+}
+
+/// One tokio runtime for every store in the process.
+///
+/// Each `CodeGraphStore` used to build its own, so N stores meant N runtimes
+/// and N worker-thread pools, all opening and tearing down libSQL databases.
+/// That teardown is where the suite faulted with STATUS_ACCESS_VIOLATION once
+/// enough stores existed in one process (5 bad runs in 15; 0 in 30 with a
+/// shared runtime). Production only ever opens one store, so this costs it
+/// nothing and gives the tests the same shape production has.
+fn runtime() -> &'static Runtime {
+    static RUNTIME: std::sync::LazyLock<Runtime> = std::sync::LazyLock::new(|| {
+        Runtime::new().expect("tokio runtime for Macrame")
+    });
+    &RUNTIME
 }
 
 impl CodeGraphStore {
     /// Open or create a Macrame database at `path`.
     pub fn open(path: impl AsRef<Path>) -> macrame::Result<Self> {
-        let runtime = Runtime::new().expect("tokio runtime for Macrame");
-        let db = runtime.block_on(Database::open(path))?;
-        Ok(Self { db, runtime })
+        Self::open_with_cadence(path, None)
     }
 
     /// Open with a snapshot cadence (production).
+    ///
+    /// Serialised with every other libSQL open in this process — see
+    /// [`DIAGNOSTIC_OPEN_LOCK`]. Opening is the racing operation, and it does
+    /// not care whether the opener is a diagnostic read or a whole database.
     pub fn open_with_cadence(
         path: impl AsRef<Path>,
         cadence: Option<SnapshotCadence>,
     ) -> macrame::Result<Self> {
-        let runtime = Runtime::new().expect("tokio runtime");
-        let db = runtime.block_on(Database::open_with_cadence(path, cadence))?;
-        Ok(Self { db, runtime })
+        let db = {
+            let _open_guard = DIAGNOSTIC_OPEN_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            runtime().block_on(Database::open_with_cadence(path, cadence))?
+        };
+        Ok(Self { db })
     }
 
     /// Synchronous wrapper around Macrame's async upsert.
     pub fn upsert_entity(&self, unit: &ExtractedUnit, file_path: &str, language: &str) -> macrame::Result<()> {
         let concept = build_concept(unit, file_path, language);
-        self.runtime.block_on(self.db.upsert_concept(concept))
+        runtime().block_on(self.db.upsert_concept(concept))
     }
 
     /// Synchronous wrapper — bulk upsert entities from one file.
@@ -120,7 +142,7 @@ impl CodeGraphStore {
             .iter()
             .map(|unit| build_concept(unit, file_path, language))
             .collect();
-        self.runtime.block_on(self.db.write_concepts(concepts))?;
+        runtime().block_on(self.db.write_concepts(concepts))?;
         Ok(())
     }
 
@@ -131,7 +153,38 @@ impl CodeGraphStore {
         if concepts.is_empty() {
             return Ok(0);
         }
-        self.runtime.block_on(self.db.write_concepts(concepts.to_vec()))
+        runtime().block_on(self.db.write_concepts(concepts.to_vec()))
+    }
+
+    /// Open a read-only diagnostic connection, one at a time process-wide.
+    ///
+    /// `diagnostic_conn` is the only `Database` method that opens the file, so
+    /// N callers is N concurrent libSQL opens — upstream risk R15, which
+    /// presents as an access violation (0xC0000005) or, worse, as a *returned*
+    /// SQLite error ("database is locked") that reads like a fact about the
+    /// data. macrame documents this and deliberately does not serialise it for
+    /// you, on the grounds that the connection is the caller's own. So this is
+    /// the caller doing it: one outstanding open at a time, which is enough.
+    ///
+    /// The guard is returned rather than dropped here, and callers hold it for
+    /// as long as they use the connection, so a diagnostic read is one
+    /// outstanding handle rather than one outstanding `open`.
+    ///
+    /// This is not what fixed the access violation the store tests were
+    /// hitting — sharing one tokio runtime across stores was (see
+    /// [`runtime`]). It stays because the risk it bounds is real and
+    /// documented upstream, and because it costs a diagnostic path nothing.
+    fn open_diagnostic_conn(
+        &self,
+    ) -> macrame::Result<(std::sync::MutexGuard<'static, ()>, libsql::Connection)> {
+        // Poisoning carries no meaning here: the guard protects nothing but
+        // access to a file, so a panicking caller leaves no inconsistent state
+        // behind for the next one to find.
+        let guard = DIAGNOSTIC_OPEN_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let conn = runtime().block_on(self.db.diagnostic_conn())?;
+        Ok((guard, conn))
     }
 
     /// Retire concepts and close every open edge that touches them.
@@ -152,8 +205,8 @@ impl CodeGraphStore {
             return Ok((0, 0));
         }
         let ts = now_iso8601();
-        self.runtime.block_on(async {
-            let conn = self.db.diagnostic_conn().await?;
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
 
             // Title and content are carried over: the upsert overwrites every
             // column, so reading them back is what keeps the retired row a
@@ -239,8 +292,8 @@ impl CodeGraphStore {
     /// meaningful if something can tell the difference, and until now nothing
     /// read the `retired` column at all.
     pub fn live_concept_ids(&self) -> macrame::Result<Vec<String>> {
-        self.runtime.block_on(async {
-            let conn = self.db.diagnostic_conn().await?;
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
             let mut rows = conn
                 .query("SELECT id FROM concepts WHERE retired = 0 ORDER BY id", ())
                 .await
@@ -267,12 +320,12 @@ impl CodeGraphStore {
             .valid_from(valid_from)
             .weight(weight)
             .properties(properties_json);
-        self.runtime.block_on(self.db.assert_edge(edge))
+        runtime().block_on(self.db.assert_edge(edge))
     }
 
     /// Bulk assert edges (atomic — one transaction stamp per D-014).
     pub fn assert_edges_bulk(&self, edges: Vec<EdgeAssertion>) -> macrame::Result<usize> {
-        self.runtime.block_on(self.db.write_bulk_atomic(edges))
+        runtime().block_on(self.db.write_bulk_atomic(edges))
     }
 
     /// Traverse the graph from a source entity (current state).
@@ -299,12 +352,12 @@ impl CodeGraphStore {
         if !edge_types.is_empty() {
             traversal = traversal.edge_types(edge_types.to_vec());
         }
-        self.runtime.block_on(self.db.load_subgraph_with(&traversal, ts, 10_000_000))
+        runtime().block_on(self.db.load_subgraph_with(&traversal, ts, 10_000_000))
     }
 
     /// Reconstruct state as of a timestamp.
     pub fn reconstruct(&self, ts: &str) -> macrame::Result<MaterializedState> {
-        self.runtime.block_on(self.db.reconstruct(ts))
+        runtime().block_on(self.db.reconstruct(ts))
     }
 }
 
@@ -568,8 +621,8 @@ mod tests {
     }
 
     fn open_edge_count(store: &CodeGraphStore) -> i64 {
-        store.runtime.block_on(async {
-            let conn = store.db.diagnostic_conn().await.unwrap();
+        let (_diag_guard, conn) = store.open_diagnostic_conn().unwrap();
+        runtime().block_on(async {
             let mut rows = conn
                 .query(
                     "SELECT COUNT(*) FROM links_current WHERE valid_to > ?1",

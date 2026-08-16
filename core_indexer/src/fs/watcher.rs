@@ -60,6 +60,28 @@ impl Default for WatcherConfig {
     }
 }
 
+/// Decide what actually happened to `path`.
+///
+/// `notify-debouncer-mini` only ever reports `Any` / `AnyContinuous` — it
+/// collapses create, write and remove into one kind — so `FileChangeKind::
+/// Delete` was declared and never constructed, and the Python loop's delete
+/// branch was dead. Delete a file in watch mode and its entities lived on in
+/// the projection, in the ledger, and in every query result.
+///
+/// The filesystem still knows: a path that is gone when the event is handled
+/// was removed (or renamed away, which is a removal of this path either way).
+/// The race — deleted then recreated within the debounce window — resolves as
+/// "still there", which is the correct answer.
+fn classify(path: &std::path::Path, kind: DebouncedEventKind) -> FileChangeKind {
+    if !path.exists() {
+        return FileChangeKind::Delete;
+    }
+    match kind {
+        DebouncedEventKind::AnyContinuous => FileChangeKind::Modify,
+        _ => FileChangeKind::Any,
+    }
+}
+
 /// Bridge: converts debouncer events into channel messages.
 struct EventBridge {
     tx: Sender<BatchEvent>,
@@ -105,11 +127,7 @@ impl DebounceEventHandler for EventBridge {
                         }
                     }
 
-                    let kind = match e.kind {
-                        DebouncedEventKind::Any => FileChangeKind::Any,
-                        DebouncedEventKind::AnyContinuous => FileChangeKind::Modify,
-                        _ => FileChangeKind::Any,
-                    };
+                    let kind = classify(&e.path, e.kind);
 
                     Some(FileChange { path, kind })
                 })
@@ -237,5 +255,49 @@ mod tests {
         let result = FileWatcher::start(config);
         // OK either way — the key is it doesn't panic
         let _ = result;
+    }
+
+    // ── Deletion classification (plan §1.3) ──────────────────────────────
+
+    /// The debouncer reports `Any` for a removal exactly as it does for a
+    /// write, so the filesystem is the only thing that can tell them apart.
+    #[test]
+    fn test_a_vanished_path_is_a_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gone.py");
+
+        assert_eq!(
+            classify(&path, DebouncedEventKind::Any),
+            FileChangeKind::Delete
+        );
+    }
+
+    #[test]
+    fn test_an_existing_path_is_never_a_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("here.py");
+        std::fs::write(&path, "x = 1
+").unwrap();
+
+        assert_eq!(classify(&path, DebouncedEventKind::Any), FileChangeKind::Any);
+        assert_eq!(
+            classify(&path, DebouncedEventKind::AnyContinuous),
+            FileChangeKind::Modify
+        );
+    }
+
+    /// Deleted and recreated inside the debounce window: the file is there
+    /// when the event is handled, so it is a modification, not a removal.
+    #[test]
+    fn test_a_recreated_path_is_not_a_delete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("churn.py");
+        std::fs::write(&path, "x = 1
+").unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "x = 2
+").unwrap();
+
+        assert_eq!(classify(&path, DebouncedEventKind::Any), FileChangeKind::Any);
     }
 }

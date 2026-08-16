@@ -235,3 +235,43 @@ use super::*;
         let outcome = graph.update_file("animals.py", Some("class Dog: pass\n"), None).unwrap();
         assert_eq!(outcome.entities_removed, 1);
     }
+
+    // ── Deletions reach the graph (plan §1.3) ────────────────────────────
+
+    #[test]
+    fn test_remove_file_drops_entities_and_retires_them() {
+        let (graph, _dir) = graph_with_temp_store();
+        index_source(&graph, "def a(): pass\ndef b(): pass\n", "gone.py");
+        index_source(&graph, "def c(): pass\n", "kept.py");
+
+        let removed = graph.remove_file("gone.py");
+
+        assert!(removed.len() >= 2, "functions + module, got {:?}", removed);
+        let snap = graph.snapshot();
+        assert!(!snap.functions.contains_key("gone.py::a"));
+        assert!(snap.functions.contains_key("kept.py::c"));
+        let live = graph.store.as_ref().unwrap().live_concept_ids().unwrap();
+        assert!(live.iter().all(|id| !id.starts_with("gone.py")), "{:?}", live);
+    }
+
+    /// The file→module mapping outlived the module, so a recreated file
+    /// resolved to an id that was no longer in the projection.
+    #[test]
+    fn test_remove_file_clears_the_file_to_module_mapping() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def a(): pass\n", "gone.py");
+
+        graph.remove_file("gone.py");
+
+        let snap = graph.snapshot();
+        assert!(!snap.file_to_modules.contains_key(&std::path::PathBuf::from("gone.py")));
+    }
+
+    #[test]
+    fn test_remove_file_is_a_no_op_for_an_unknown_file() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, "def a(): pass\n", "kept.py");
+
+        assert!(graph.remove_file("never_indexed.py").is_empty());
+        assert!(graph.snapshot().functions.contains_key("kept.py::a"));
+    }

@@ -454,6 +454,22 @@ class CodeGraph:
             fully_applied=False, epoch_before=0, epoch_after=1,
         )
 
+    def remove_file(self, file_path: str) -> int:
+        """Drop a deleted file's entities from the graph.
+
+        `update_file` cannot do this — it re-reads the file, and a deleted
+        file has no content to diff. Returns the number of entities removed.
+        """
+        try:
+            from coderadar._core import remove_file as _remove_file_rust
+        except ImportError as exc:
+            raise CodeRadarError(
+                "The coderadar._core extension is not built; "
+                "nothing can be removed from the graph."
+            ) from exc
+        result = _remove_file_rust(file_path)
+        return int(result.get("entities_removed", 0))
+
     def watch(self, paths: Optional[List[str]] = None,
               debounce_ms: int = 100) -> "Watcher":
         """Start watching paths for file changes and auto-update the graph.
@@ -866,7 +882,16 @@ class Watcher:
                 if batch is None:
                     break
                 for file_path, change_kind in batch:
-                    if change_kind in ("Modify", "Any", "AnyContinuous"):
+                    # The watcher stats the path, so "Delete" now actually
+                    # arrives; before, a deleted file's entities lived on in
+                    # the graph until the next full analyze.
+                    if change_kind == "Delete":
+                        try:
+                            removed = self._graph.remove_file(file_path)
+                            print(f"  - {file_path} ({removed} entities removed)")
+                        except Exception as e:
+                            print(f"  {file_path}: {e}")
+                    elif change_kind in ("Modify", "Any", "AnyContinuous"):
                         try:
                             report = self._graph.update_file(file_path)
                             print(f"  {file_path} ({report.parse_quality})")

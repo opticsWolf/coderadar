@@ -388,6 +388,50 @@ class TestWatcherPipeline:
         finally:
             stop_watcher()
 
+    def test_watcher_reports_a_deletion_and_the_graph_drops_the_file(self, tmp_path):
+        """Deleting a watched file used to leave its entities in the graph.
+
+        `notify-debouncer-mini` collapses every event to `Any`, so the kind
+        never said "deleted" and both the Rust `Delete` variant and the Python
+        delete branch were unreachable. The watcher now stats the path.
+        """
+        from coderadar._core import (
+            analyze, start_watcher, next_watcher_batch_timeout, stop_watcher,
+            remove_file, search_entities,
+        )
+
+        doomed = tmp_path / "doomed_mod.py"
+        doomed.write_text("def doomed_fn(): pass\n")
+        (tmp_path / "kept_mod.py").write_text("def kept_fn(): pass\n")
+        analyze(str(tmp_path))
+        assert len(search_entities("doomed_fn", 10, kind="function")) >= 1
+
+        start_watcher([str(tmp_path)])
+        try:
+            doomed.unlink()
+
+            import time
+            time.sleep(0.3)
+
+            batch = next_watcher_batch_timeout(3000)
+            assert batch is not None, "Watcher should detect the deletion"
+            kinds = {p: k for p, k in batch}
+            doomed_events = [k for p, k in kinds.items() if "doomed_mod" in p]
+            assert doomed_events, f"Batch should contain doomed_mod.py: {list(kinds)}"
+            assert all(k == "Delete" for k in doomed_events), \
+                f"A vanished path must be reported as Delete, got {doomed_events}"
+
+            for file_path, kind in batch:
+                if kind == "Delete":
+                    remove_file(file_path)
+
+            assert not search_entities("doomed_fn", 10, kind="function"), \
+                "the deleted file's entities must leave the graph"
+            assert len(search_entities("kept_fn", 10, kind="function")) >= 1, \
+                "the surviving file is untouched"
+        finally:
+            stop_watcher()
+
     def test_watcher_timeout_returns_none(self, tmp_path):
         """When no file changes occur, timeout returns None."""
         from coderadar._core import start_watcher, next_watcher_batch_timeout, stop_watcher
