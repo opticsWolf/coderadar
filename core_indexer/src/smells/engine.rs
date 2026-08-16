@@ -62,8 +62,11 @@ impl SmellEngine {
 
         // Class scope.
         if let Some(rules) = rules_by_scope.get(&Scope::Class) {
+            // Both class metrics used to scan every function, so the pass was
+            // O(classes × functions) twice over. One grouping serves both.
+            let methods = methods_by_class(graph);
             for (id, c) in &graph.classes {
-                let metrics = metrics_for_class(c, graph);
+                let metrics = metrics_for_class(c, graph, &methods);
                 let ctx = EvalContext {
                     entity_id: id.as_str(),
                     entity_name: c.name.as_str(),
@@ -151,37 +154,57 @@ pub fn metrics_for_function(f: &Function) -> HashMap<String, f64> {
     m
 }
 
+/// `class id → its methods`, built once per pass.
+pub type MethodsByClass<'a> = HashMap<&'a str, Vec<&'a Function>>;
+
+/// Group every method under its class in one pass over `functions`.
+pub fn methods_by_class(graph: &ProjectedGraph) -> MethodsByClass<'_> {
+    let mut index: MethodsByClass = HashMap::new();
+    for f in graph.functions.values() {
+        if let Some(class_id) = &f.parent_class {
+            index.entry(class_id.as_str()).or_default().push(f.as_ref());
+        }
+    }
+    index
+}
+
 /// Class metrics: field_count from `fields`, WMC = Σ method cyclomatic,
 /// max_method_cyclomatic = max over methods, CBO = distinct coupled classes.
 ///
 /// `Class.methods` IS populated (2.7), but method membership is still recovered
 /// by scanning `functions` for `parent_class == class.id` — keeping a single
 /// source of truth and parity with the rest of the engine.
-pub fn metrics_for_class(c: &Class, graph: &ProjectedGraph) -> HashMap<String, f64> {
+pub fn metrics_for_class(
+    c: &Class,
+    graph: &ProjectedGraph,
+    methods: &MethodsByClass<'_>,
+) -> HashMap<String, f64> {
     let mut m = HashMap::new();
     m.insert("field_count".to_string(), c.fields.len() as f64);
 
     let mut wmc = 0usize;
     let mut max_cyclo = 0usize;
-    for f in graph.functions.values() {
-        if f.parent_class.as_ref() == Some(&c.id) {
-            let cyc = f.metrics.cyclomatic;
-            wmc += cyc;
-            if cyc > max_cyclo {
-                max_cyclo = cyc;
-            }
+    for f in methods.get(c.id.as_str()).into_iter().flatten() {
+        let cyc = f.metrics.cyclomatic;
+        wmc += cyc;
+        if cyc > max_cyclo {
+            max_cyclo = cyc;
         }
     }
     m.insert("WMC".to_string(), wmc as f64);
     m.insert("max_method_cyclomatic".to_string(), max_cyclo as f64);
-    m.insert("CBO".to_string(), coupling_between_objects(c, graph) as f64);
+    m.insert("CBO".to_string(), coupling_between_objects(c, graph, methods) as f64);
 
     m
 }
 
 /// Coupling Between Objects: distinct other classes this class depends on,
 /// via resolved bases and resolved call targets of its methods.
-fn coupling_between_objects(c: &Class, graph: &ProjectedGraph) -> usize {
+fn coupling_between_objects(
+    c: &Class,
+    graph: &ProjectedGraph,
+    methods: &MethodsByClass<'_>,
+) -> usize {
     let mut coupled: HashSet<EntityId> = HashSet::new();
 
     for b in &c.resolved_bases {
@@ -190,10 +213,7 @@ fn coupling_between_objects(c: &Class, graph: &ProjectedGraph) -> usize {
         }
     }
 
-    for f in graph.functions.values() {
-        if f.parent_class.as_ref() != Some(&c.id) {
-            continue;
-        }
+    for f in methods.get(c.id.as_str()).into_iter().flatten() {
         for call in &f.resolved_calls {
             if let Some(target_class) = target_class_of(call, graph) {
                 if target_class != c.id {

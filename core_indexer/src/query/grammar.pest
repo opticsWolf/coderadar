@@ -34,7 +34,11 @@ agg_expr = { agg_func ~ "(" ~ (path | "*") ~ ")" ~ "as" ~ identifier }
 select_item   = { agg_expr | path }
 select_clause = { "select" ~ select_item ~ ("," ~ select_item)* }
 group_by_clause = { "group" ~ "by" ~ path ~ ("," ~ path)* }
-order_by_clause = { "order" ~ "by" ~ path ~ ("asc" | "desc")? }
+// `order_dir` is a named rule on purpose: Pest emits no pair for an inline
+// string literal, so an anonymous ("asc" | "desc") parses and then vanishes,
+// leaving every ORDER BY ascending.
+order_dir       = { "asc" | "desc" }
+order_by_clause = { "order" ~ "by" ~ path ~ order_dir? }
 limit_clause    = { "limit" ~ number }
 
 entity = { "modules" | "classes" | "functions" | "imports" | "calls" | "fields" }

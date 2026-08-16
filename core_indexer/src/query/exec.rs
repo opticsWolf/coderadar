@@ -63,6 +63,159 @@ impl QueryValue {
     }
 }
 
+
+// ── Lazy field materialisation (plan §2.4) ─────────────────────────────────
+//
+// Every scan used to build a complete `QueryRow` — including cloned caller and
+// callee id lists — for every entity in the graph, evaluate the WHERE clause,
+// and drop the row. `functions where name = "x"` allocated the whole graph to
+// return one row. Fields are now built twice: once with only what the
+// predicate reads, then, for survivors only, with what the output needs.
+
+/// Which fields a caller actually needs.
+#[derive(Clone, Debug)]
+enum FieldSet {
+    All,
+    Only(std::collections::HashSet<String>),
+}
+
+impl FieldSet {
+    fn wants(&self, key: &str) -> bool {
+        match self {
+            FieldSet::All => true,
+            FieldSet::Only(keys) => keys.contains(key),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        matches!(self, FieldSet::Only(keys) if keys.is_empty())
+    }
+
+    /// Fields the WHERE clause reads.
+    ///
+    /// A derived call looks up fields by names that are its *arguments*
+    /// (`contains(decorators, "x")`) or hardcoded in its implementation, so
+    /// any of them collapses this to `All`. Guessing narrower would silently
+    /// change which rows match, and a query engine that quietly returns the
+    /// wrong rows is worse than one that allocates.
+    fn for_predicate(pred: Option<&Predicate>) -> Self {
+        let mut keys = std::collections::HashSet::new();
+        match pred {
+            None => FieldSet::Only(keys),
+            Some(p) => {
+                if collect_predicate_fields(p, &mut keys) {
+                    FieldSet::All
+                } else {
+                    FieldSet::Only(keys)
+                }
+            }
+        }
+    }
+
+    /// Fields the result rows need. An empty SELECT means "everything".
+    fn for_output(query: &ParsedQuery) -> Self {
+        if query.select.is_empty() {
+            return FieldSet::All;
+        }
+        let mut keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for item in &query.select {
+            match item {
+                SelectItem::Path(path) => {
+                    keys.insert(path.clone());
+                }
+                // Aggregates are filled in by the group-by phase, but their
+                // source column still has to exist to be aggregated over.
+                SelectItem::Aggregate { path, .. } => {
+                    keys.insert(path.clone());
+                }
+            }
+        }
+        if let Some(order) = &query.order_by {
+            keys.insert(order.path.clone());
+        }
+        for path in &query.group_by {
+            keys.insert(path.clone());
+        }
+        FieldSet::Only(keys)
+    }
+}
+
+/// Collect `Path` operand names; returns true if a derived call was seen, in
+/// which case the collected set is not to be trusted.
+fn collect_predicate_fields(
+    pred: &Predicate,
+    keys: &mut std::collections::HashSet<String>,
+) -> bool {
+    match pred {
+        Predicate::Comparison { left, op: _, right } => {
+            collect_operand_fields(left, keys) || collect_operand_fields(right, keys)
+        }
+        Predicate::Not(inner) => collect_predicate_fields(inner, keys),
+        Predicate::And(a, b) | Predicate::Or(a, b) => {
+            let l = collect_predicate_fields(a, keys);
+            let r = collect_predicate_fields(b, keys);
+            l || r
+        }
+    }
+}
+
+fn collect_operand_fields(
+    op: &Operand,
+    keys: &mut std::collections::HashSet<String>,
+) -> bool {
+    match op {
+        Operand::Path(parts) => {
+            keys.insert(parts.join("."));
+            false
+        }
+        Operand::ListValue(items) => items
+            .iter()
+            .map(|i| collect_operand_fields(i, keys))
+            .fold(false, |a, b| a || b),
+        Operand::DerivedCall { .. } => true,
+        Operand::StringValue(_) | Operand::NumberValue(_) | Operand::BoolValue(_) => false,
+    }
+}
+
+/// Insert a field only when it is wanted — the value expression is not
+/// evaluated otherwise, which is the whole point.
+macro_rules! put {
+    ($fields:expr, $want:expr, $key:literal, $value:expr) => {
+        if $want.wants($key) {
+            $fields.insert($key.to_string(), $value);
+        }
+    };
+}
+
+/// Apply the SELECT projection to a surviving row.
+fn finish(
+    fields: HashMap<String, QueryValue>,
+    query: &ParsedQuery,
+) -> HashMap<String, QueryValue> {
+    if query.select.is_empty() {
+        fields
+    } else {
+        project_fields(&fields, &query.select)
+    }
+}
+
+/// How many rows a scan may stop after.
+///
+/// Only when nothing downstream needs to see the rows it would discard:
+/// `ORDER BY` picks the top N from all of them, and a grouping counts them.
+fn pushdown_limit(query: &ParsedQuery) -> Option<usize> {
+    match query.limit {
+        Some(limit) if query.order_by.is_none() && query.group_by.is_empty() => {
+            Some(limit as usize)
+        }
+        _ => None,
+    }
+}
+
+fn reached(rows: &[QueryRow], cap: Option<usize>) -> bool {
+    matches!(cap, Some(cap) if rows.len() >= cap)
+}
+
 /// Execute a parsed query against a snapshot.
 pub fn execute_query(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
     let rows = match query.entity {
@@ -89,298 +242,306 @@ pub fn execute_query(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<Quer
 }
 
 fn scan_functions(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
+    let probe_want = FieldSet::for_predicate(query.where_clause.as_ref());
+    let output_want = FieldSet::for_output(query);
+    let cap = pushdown_limit(query);
     let mut rows = Vec::new();
+
     for (_id, fn_val) in snapshot.functions.iter() {
-
-        // Build a row with all function fields
-        let mut fields = HashMap::new();
-        fields.insert("name".to_string(), QueryValue::String(fn_val.name.clone()));
-        fields.insert(
-            "line".to_string(),
-            QueryValue::Int(fn_val.line as i64),
-        );
-        fields.insert(
-            "line_count".to_string(),
-            QueryValue::Int((fn_val.exit_line - fn_val.line) as i64),
-        );
-        fields.insert(
-            "is_async".to_string(),
-            QueryValue::Bool(fn_val.is_async),
-        );
-        fields.insert(
-            "decorators".to_string(),
-            QueryValue::List(
-                fn_val
-                    .decorators
-                    .iter()
-                    .map(|d| QueryValue::String(d.clone()))
-                    .collect(),
-            ),
-        );
-
-        // ── Reverse-index enrichment ──────────────────────────────────
-        fields.insert(
-            "caller_count".to_string(),
-            QueryValue::Int(
-                snapshot
-                    .callers_by_callee
-                    .get(fn_val.id.as_str())
-                    .map(|s| s.len() as i64)
-                    .unwrap_or(0),
-            ),
-        );
-        fields.insert(
-            "callee_count".to_string(),
-            QueryValue::Int(
-                snapshot
-                    .callees_by_caller
-                    .get(fn_val.id.as_str())
-                    .map(|s| s.len() as i64)
-                    .unwrap_or(0),
-            ),
-        );
-        fields.insert(
-            "callers".to_string(),
-            QueryValue::List(
-                snapshot
-                    .callers_by_callee
-                    .get(fn_val.id.as_str())
-                    .map(|s| s.iter().map(|id| QueryValue::String(id.clone())).collect())
-                    .unwrap_or_default(),
-            ),
-        );
-        fields.insert(
-            "callees".to_string(),
-            QueryValue::List(
-                snapshot
-                    .callees_by_caller
-                    .get(fn_val.id.as_str())
-                    .map(|s| s.iter().map(|id| QueryValue::String(id.clone())).collect())
-                    .unwrap_or_default(),
-            ),
-        );
-
-        // Resolved calls as entity IDs
-        fields.insert(
-            "resolved_call_targets".to_string(),
-            QueryValue::List(
-                fn_val
-                    .resolved_calls
-                    .iter()
-                    .filter_map(|rc| match rc {
-                        ResolvedCall::Function(id) | ResolvedCall::Method { method: id, .. } | ResolvedCall::Constructor(id) => {
-                            Some(QueryValue::String(id.clone()))
-                        }
-                        ResolvedCall::External(s) => Some(QueryValue::String(s.clone())),
-                        ResolvedCall::Builtin(s) => Some(QueryValue::String(s.clone())),
-                        _ => None,
-                    })
-                    .collect(),
-            ),
-        );
-        fields.insert(
-            "parameter_count".to_string(),
-            QueryValue::Int(fn_val.parameters.len() as i64),
-        );
-        if let Some(ref rt) = fn_val.return_type {
-            fields.insert("return_type".to_string(), QueryValue::String(rt.clone()));
-        }
-
-        // Evaluate WHERE clause
         if let Some(pred) = &query.where_clause {
-            if !evaluate_predicate(pred, &fields) {
+            let probe = function_fields(fn_val, snapshot, &probe_want);
+            if !evaluate_predicate(pred, &probe) {
                 continue;
             }
         }
-
-        // Apply SELECT projection
-        let projected = if query.select.is_empty() {
-            fields
-        } else {
-            project_fields(&fields, &query.select)
-        };
-
-        rows.push(QueryRow {
-            fields: projected,
-        });
+        let fields = function_fields(fn_val, snapshot, &output_want);
+        rows.push(QueryRow { fields: finish(fields, query) });
+        if reached(&rows, cap) {
+            break;
+        }
     }
     rows
+}
+
+fn function_fields(
+    fn_val: &Function,
+    snapshot: &ProjectedGraph,
+    want: &FieldSet,
+) -> HashMap<String, QueryValue> {
+    let mut fields = HashMap::new();
+    if want.is_empty() {
+        return fields;
+    }
+
+    put!(fields, want, "name", QueryValue::String(fn_val.name.clone()));
+    put!(fields, want, "line", QueryValue::Int(fn_val.line as i64));
+    put!(fields, want, "line_count",
+         QueryValue::Int((fn_val.exit_line - fn_val.line) as i64));
+    put!(fields, want, "is_async", QueryValue::Bool(fn_val.is_async));
+    put!(fields, want, "decorators", QueryValue::List(
+        fn_val.decorators.iter().map(|d| QueryValue::String(d.clone())).collect()));
+
+    // ── Reverse-index enrichment ──────────────────────────────────
+    put!(fields, want, "caller_count", QueryValue::Int(
+        snapshot.callers_by_callee.get(fn_val.id.as_str())
+            .map(|s| s.len() as i64).unwrap_or(0)));
+    put!(fields, want, "callee_count", QueryValue::Int(
+        snapshot.callees_by_caller.get(fn_val.id.as_str())
+            .map(|s| s.len() as i64).unwrap_or(0)));
+    put!(fields, want, "callers", QueryValue::List(
+        snapshot.callers_by_callee.get(fn_val.id.as_str())
+            .map(|s| s.iter().map(|id| QueryValue::String(id.clone())).collect())
+            .unwrap_or_default()));
+    put!(fields, want, "callees", QueryValue::List(
+        snapshot.callees_by_caller.get(fn_val.id.as_str())
+            .map(|s| s.iter().map(|id| QueryValue::String(id.clone())).collect())
+            .unwrap_or_default()));
+
+    // Resolved calls as entity IDs
+    put!(fields, want, "resolved_call_targets", QueryValue::List(
+        fn_val.resolved_calls.iter()
+            .filter_map(|rc| match rc {
+                ResolvedCall::Function(id)
+                | ResolvedCall::Method { method: id, .. }
+                | ResolvedCall::Constructor(id) => Some(QueryValue::String(id.clone())),
+                ResolvedCall::External(s) => Some(QueryValue::String(s.clone())),
+                ResolvedCall::Builtin(s) => Some(QueryValue::String(s.clone())),
+                _ => None,
+            })
+            .collect()));
+    put!(fields, want, "parameter_count",
+         QueryValue::Int(fn_val.parameters.len() as i64));
+    if let Some(ref rt) = fn_val.return_type {
+        put!(fields, want, "return_type", QueryValue::String(rt.clone()));
+    }
+
+    fields
 }
 
 fn scan_classes(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
+    let probe_want = FieldSet::for_predicate(query.where_clause.as_ref());
+    let output_want = FieldSet::for_output(query);
+    let cap = pushdown_limit(query);
     let mut rows = Vec::new();
-    for (_id, cls) in snapshot.classes.iter() {
-        // cls is Arc<Class>
-        let mut fields = HashMap::new();
-        fields.insert("name".to_string(), QueryValue::String(cls.name.clone()));
-        fields.insert(
-            "line".to_string(),
-            QueryValue::Int(cls.line as i64),
-        );
-        fields.insert(
-            "method_count".to_string(),
-            QueryValue::Int(cls.methods.len() as i64),
-        );
-        fields.insert(
-            "decorators".to_string(),
-            QueryValue::List(
-                cls.decorators
-                    .iter()
-                    .map(|d| QueryValue::String(d.clone()))
-                    .collect(),
-            ),
-        );
 
+    for (_id, cls) in snapshot.classes.iter() {
         if let Some(pred) = &query.where_clause {
-            if !evaluate_predicate(pred, &fields) {
+            if !evaluate_predicate(pred, &class_fields(cls, &probe_want)) {
                 continue;
             }
         }
-
-        let projected = if query.select.is_empty() {
-            fields
-        } else {
-            project_fields(&fields, &query.select)
-        };
-        rows.push(QueryRow {
-            fields: projected,
-        });
+        let fields = class_fields(cls, &output_want);
+        rows.push(QueryRow { fields: finish(fields, query) });
+        if reached(&rows, cap) {
+            break;
+        }
     }
     rows
+}
+
+fn class_fields(cls: &Class, want: &FieldSet) -> HashMap<String, QueryValue> {
+    let mut fields = HashMap::new();
+    if want.is_empty() {
+        return fields;
+    }
+    put!(fields, want, "name", QueryValue::String(cls.name.clone()));
+    put!(fields, want, "line", QueryValue::Int(cls.line as i64));
+    put!(fields, want, "method_count", QueryValue::Int(cls.methods.len() as i64));
+    put!(fields, want, "decorators", QueryValue::List(
+        cls.decorators.iter().map(|d| QueryValue::String(d.clone())).collect()));
+    fields
 }
 
 fn scan_modules(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
+    let probe_want = FieldSet::for_predicate(query.where_clause.as_ref());
+    let output_want = FieldSet::for_output(query);
+    let cap = pushdown_limit(query);
     let mut rows = Vec::new();
-    for (_id, module) in snapshot.modules.iter() {
-        let mut fields = HashMap::new();
-        fields.insert("name".into(), QueryValue::String(module.name.clone()));
-        fields.insert("path".into(), QueryValue::String(module.path.to_string_lossy().to_string()));
-        fields.insert("language".into(), QueryValue::String(format!("{:?}", module.language)));
-        fields.insert("class_count".into(), QueryValue::Int(module.classes.len() as i64));
-        fields.insert("function_count".into(), QueryValue::Int(module.functions.len() as i64));
-        fields.insert("import_count".into(), QueryValue::Int(module.imports.len() as i64));
 
+    for (_id, module) in snapshot.modules.iter() {
         if let Some(pred) = &query.where_clause {
-            if !evaluate_predicate(pred, &fields) {
+            if !evaluate_predicate(pred, &module_fields(module, &probe_want)) {
                 continue;
             }
         }
-        let projected = if query.select.is_empty() { fields } else { project_fields(&fields, &query.select) };
-        rows.push(QueryRow { fields: projected });
+        let fields = module_fields(module, &output_want);
+        rows.push(QueryRow { fields: finish(fields, query) });
+        if reached(&rows, cap) {
+            break;
+        }
     }
     rows
+}
+
+fn module_fields(module: &Module, want: &FieldSet) -> HashMap<String, QueryValue> {
+    let mut fields = HashMap::new();
+    if want.is_empty() {
+        return fields;
+    }
+    put!(fields, want, "name", QueryValue::String(module.name.clone()));
+    put!(fields, want, "path",
+         QueryValue::String(module.path.to_string_lossy().to_string()));
+    put!(fields, want, "language",
+         QueryValue::String(format!("{:?}", module.language)));
+    put!(fields, want, "class_count", QueryValue::Int(module.classes.len() as i64));
+    put!(fields, want, "function_count", QueryValue::Int(module.functions.len() as i64));
+    put!(fields, want, "import_count", QueryValue::Int(module.imports.len() as i64));
+    fields
 }
 
 fn scan_imports(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
+    let probe_want = FieldSet::for_predicate(query.where_clause.as_ref());
+    let output_want = FieldSet::for_output(query);
+    let cap = pushdown_limit(query);
     let mut rows = Vec::new();
+
     for (_id, import) in snapshot.imports.iter() {
-        let mut fields = HashMap::new();
-        fields.insert("raw".into(), QueryValue::String(import.raw.clone()));
-        fields.insert("kind".into(), QueryValue::String(format!("{:?}", import.kind)));
-        fields.insert("line".into(), QueryValue::Int(import.line as i64));
-        fields.insert("is_type_only".into(), QueryValue::Bool(import.is_type_only));
-
-        // Resolved target + its kind, derived from the resolution variant so
-        // `imports where target_kind == "function"` / `... == "external"` work.
-        match &import.resolution {
-            ImportResolution::Module(id) | ImportResolution::Symbol(SymbolId::Module(id)) => {
-                fields.insert("resolved_module".into(), QueryValue::String(id.clone()));
-                fields.insert("target_kind".into(), QueryValue::String("module".into()));
-            }
-            ImportResolution::Symbol(SymbolId::Function(id)) => {
-                fields.insert("resolved_target".into(), QueryValue::String(id.clone()));
-                fields.insert("target_kind".into(), QueryValue::String("function".into()));
-            }
-            ImportResolution::Symbol(SymbolId::Class(id)) => {
-                fields.insert("resolved_target".into(), QueryValue::String(id.clone()));
-                fields.insert("target_kind".into(), QueryValue::String("class".into()));
-            }
-            ImportResolution::Symbol(SymbolId::Import(id)) => {
-                fields.insert("resolved_target".into(), QueryValue::String(id.clone()));
-                fields.insert("target_kind".into(), QueryValue::String("import".into()));
-            }
-            ImportResolution::External { distribution } => {
-                fields.insert("resolved_target".into(), QueryValue::String(
-                    distribution.clone().unwrap_or_else(|| "external".into())
-                ));
-                fields.insert("target_kind".into(), QueryValue::String("external".into()));
-            }
-            ImportResolution::Wildcard { module, .. } => {
-                fields.insert("resolved_module".into(), QueryValue::String(module.clone()));
-                fields.insert("target_kind".into(), QueryValue::String("wildcard".into()));
-            }
-            ImportResolution::Dynamic => {
-                fields.insert("target_kind".into(), QueryValue::String("dynamic".into()));
-            }
-            ImportResolution::Unresolved => {
-                fields.insert("target_kind".into(), QueryValue::String("unresolved".into()));
-            }
-        }
-
         if let Some(pred) = &query.where_clause {
-            if !evaluate_predicate(pred, &fields) {
+            if !evaluate_predicate(pred, &import_fields(import, &probe_want)) {
                 continue;
             }
         }
-        let projected = if query.select.is_empty() { fields } else { project_fields(&fields, &query.select) };
-        rows.push(QueryRow { fields: projected });
+        let fields = import_fields(import, &output_want);
+        rows.push(QueryRow { fields: finish(fields, query) });
+        if reached(&rows, cap) {
+            break;
+        }
     }
     rows
+}
+
+fn import_fields(import: &Import, want: &FieldSet) -> HashMap<String, QueryValue> {
+    let mut fields = HashMap::new();
+    if want.is_empty() {
+        return fields;
+    }
+    put!(fields, want, "raw", QueryValue::String(import.raw.clone()));
+    put!(fields, want, "kind", QueryValue::String(format!("{:?}", import.kind)));
+    put!(fields, want, "line", QueryValue::Int(import.line as i64));
+    put!(fields, want, "is_type_only", QueryValue::Bool(import.is_type_only));
+
+    // Resolved target + its kind, derived from the resolution variant so
+    // `imports where target_kind == "function"` / `... == "external"` work.
+    match &import.resolution {
+        ImportResolution::Module(id) | ImportResolution::Symbol(SymbolId::Module(id)) => {
+            put!(fields, want, "resolved_module", QueryValue::String(id.clone()));
+            put!(fields, want, "target_kind", QueryValue::String("module".into()));
+        }
+        ImportResolution::Symbol(SymbolId::Function(id)) => {
+            put!(fields, want, "resolved_target", QueryValue::String(id.clone()));
+            put!(fields, want, "target_kind", QueryValue::String("function".into()));
+        }
+        ImportResolution::Symbol(SymbolId::Class(id)) => {
+            put!(fields, want, "resolved_target", QueryValue::String(id.clone()));
+            put!(fields, want, "target_kind", QueryValue::String("class".into()));
+        }
+        ImportResolution::Symbol(SymbolId::Import(id)) => {
+            put!(fields, want, "resolved_target", QueryValue::String(id.clone()));
+            put!(fields, want, "target_kind", QueryValue::String("import".into()));
+        }
+        ImportResolution::External { distribution } => {
+            put!(fields, want, "resolved_target", QueryValue::String(
+                distribution.clone().unwrap_or_else(|| "external".into())));
+            put!(fields, want, "target_kind", QueryValue::String("external".into()));
+        }
+        ImportResolution::Wildcard { module, .. } => {
+            put!(fields, want, "resolved_module", QueryValue::String(module.clone()));
+            put!(fields, want, "target_kind", QueryValue::String("wildcard".into()));
+        }
+        ImportResolution::Dynamic => {
+            put!(fields, want, "target_kind", QueryValue::String("dynamic".into()));
+        }
+        ImportResolution::Unresolved => {
+            put!(fields, want, "target_kind", QueryValue::String("unresolved".into()));
+        }
+    }
+    fields
 }
 
 fn scan_calls(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
+    let probe_want = FieldSet::for_predicate(query.where_clause.as_ref());
+    let output_want = FieldSet::for_output(query);
+    let cap = pushdown_limit(query);
     let mut rows = Vec::new();
+
     // Produce one row per call edge from the callers_by_callee reverse index
     for (source_id, callees) in snapshot.callees_by_caller.iter() {
         for target_id in callees.iter() {
-            let mut fields = HashMap::new();
-            fields.insert("source".into(), QueryValue::String(source_id.clone()));
-            fields.insert("target".into(), QueryValue::String(target_id.clone()));
-
-            // Look up target kind
-            if let Some(_fn) = snapshot.functions.get(target_id) {
-                fields.insert("target_kind".into(), QueryValue::String("function".into()));
-            } else if let Some(_cls) = snapshot.classes.get(target_id) {
-                fields.insert("target_kind".into(), QueryValue::String("class".into()));
-            } else {
-                fields.insert("target_kind".into(), QueryValue::String("external".into()));
-            }
-
             if let Some(pred) = &query.where_clause {
-                if !evaluate_predicate(pred, &fields) {
+                let probe = call_fields(source_id, target_id, snapshot, &probe_want);
+                if !evaluate_predicate(pred, &probe) {
                     continue;
                 }
             }
-            let projected = if query.select.is_empty() { fields } else { project_fields(&fields, &query.select) };
-            rows.push(QueryRow { fields: projected });
+            let fields = call_fields(source_id, target_id, snapshot, &output_want);
+            rows.push(QueryRow { fields: finish(fields, query) });
+            if reached(&rows, cap) {
+                return rows;
+            }
         }
     }
     rows
 }
 
+fn call_fields(
+    source_id: &str,
+    target_id: &str,
+    snapshot: &ProjectedGraph,
+    want: &FieldSet,
+) -> HashMap<String, QueryValue> {
+    let mut fields = HashMap::new();
+    if want.is_empty() {
+        return fields;
+    }
+    put!(fields, want, "source", QueryValue::String(source_id.to_string()));
+    put!(fields, want, "target", QueryValue::String(target_id.to_string()));
+    put!(fields, want, "target_kind", QueryValue::String(
+        if snapshot.functions.contains_key(target_id) {
+            "function".to_string()
+        } else if snapshot.classes.contains_key(target_id) {
+            "class".to_string()
+        } else {
+            "external".to_string()
+        }));
+    fields
+}
+
 fn scan_fields(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
+    let probe_want = FieldSet::for_predicate(query.where_clause.as_ref());
+    let output_want = FieldSet::for_output(query);
+    let cap = pushdown_limit(query);
     let mut rows = Vec::new();
+
     // Fields live on classes — iterate classes and emit each field as a row
     for (_class_id, cls) in snapshot.classes.iter() {
         for field in cls.fields.iter() {
-            let mut fields = HashMap::new();
-            fields.insert("name".into(), QueryValue::String(field.name.clone()));
-            fields.insert("parent_class".into(), QueryValue::String(cls.id.clone()));
-            if let Some(ref ann) = field.annotation {
-                fields.insert("type_annotation".into(), QueryValue::String(ann.clone()));
-            }
-            fields.insert("is_class_var".into(), QueryValue::Bool(field.is_class_var));
-
             if let Some(pred) = &query.where_clause {
-                if !evaluate_predicate(pred, &fields) {
+                if !evaluate_predicate(pred, &field_fields(field, cls, &probe_want)) {
                     continue;
                 }
             }
-            let projected = if query.select.is_empty() { fields } else { project_fields(&fields, &query.select) };
-            rows.push(QueryRow { fields: projected });
+            let fields = field_fields(field, cls, &output_want);
+            rows.push(QueryRow { fields: finish(fields, query) });
+            if reached(&rows, cap) {
+                return rows;
+            }
         }
     }
     rows
+}
+
+fn field_fields(field: &Field, cls: &Class, want: &FieldSet) -> HashMap<String, QueryValue> {
+    let mut fields = HashMap::new();
+    if want.is_empty() {
+        return fields;
+    }
+    put!(fields, want, "name", QueryValue::String(field.name.clone()));
+    put!(fields, want, "parent_class", QueryValue::String(cls.id.clone()));
+    if let Some(ref ann) = field.annotation {
+        put!(fields, want, "type_annotation", QueryValue::String(ann.clone()));
+    }
+    put!(fields, want, "is_class_var", QueryValue::Bool(field.is_class_var));
+    fields
 }
 
 /// Evaluate a WHERE predicate against a row's field values.

@@ -3,6 +3,11 @@ use super::ImportGraph;
 use super::module_resolution::{find_module_by_dotted_name, find_symbol_in_module};
 use crate::types::*;
 
+/// `class id → [(method name, method id)]`, in the order the projection's
+/// function map yields them — the same order the scans it replaces saw, so
+/// first-wins name resolution is unchanged.
+type MethodsByClass = std::collections::HashMap<EntityId, Vec<(String, String)>>;
+
 impl CodeGraph {
     /// Run the resolution cascade on all functions, or scoped to a single file.
     /// When `scope_file` is Some, only clears and rebuilds edges for functions
@@ -24,6 +29,7 @@ impl CodeGraph {
         calls: &[crate::types::UnresolvedRef],
         sibling_funcs: &std::collections::HashMap<String, String>,
         import_targets: &std::collections::HashMap<String, String>,
+        methods_by_class: &MethodsByClass,
         projection: &ProjectedGraph,
         import_graph: &ImportGraph,
         orchestrator: &mut crate::resolve::orchestrator::ResolutionOrchestrator,
@@ -36,27 +42,26 @@ impl CodeGraph {
             .get(func_id)
             .and_then(|f| f.parent_class.clone());
 
+        // This used to scan *every* function once per MRO node and once more
+        // for the function's own class — O(functions² × mro_depth), paid
+        // independently by each resolve thread. `methods_by_class` is the same
+        // grouping computed once per pass.
         let mro_methods: std::collections::HashMap<String, String> =
             if let Some(ref class_id) = my_parent_class {
                 let mut methods = std::collections::HashMap::new();
+                let mut absorb = |cid: &str, methods: &mut std::collections::HashMap<String, String>| {
+                    for (name, fid) in methods_by_class.get(cid).into_iter().flatten() {
+                        methods.entry(name.clone()).or_insert_with(|| fid.clone());
+                    }
+                };
                 if let Some(class) = projection.classes.get(class_id) {
                     for node in &class.mro {
                         if let MroNode::Class(ref cid) = node {
-                            for (fid, f) in projection.functions.iter() {
-                                if f.parent_class.as_ref() == Some(cid) {
-                                    methods.entry(f.name.clone())
-                                        .or_insert_with(|| fid.clone());
-                                }
-                            }
+                            absorb(cid, &mut methods);
                         }
                     }
                 }
-                for (fid, f) in projection.functions.iter() {
-                    if f.parent_class.as_ref() == Some(class_id) {
-                        methods.entry(f.name.clone())
-                            .or_insert_with(|| fid.clone());
-                    }
-                }
+                absorb(class_id, &mut methods);
                 methods
             } else {
                 std::collections::HashMap::new()
@@ -123,26 +128,12 @@ impl CodeGraph {
     /// Resolve calls scoped to a single file (or all if None).
     pub(super) fn resolve_calls_scoped(&self, projection: &mut ProjectedGraph, scope_file: Option<&str>) {
         use crate::resolve::orchestrator::ResolutionOrchestrator;
-        use crate::resolve::signature::ScoredDef;
 
         let mut orchestrator = ResolutionOrchestrator::new();
         // v0.5: Use the shared import graph (edges built during insert_extracted)
         // instead of a fresh empty graph, enabling multi-hop transitive resolution.
         let import_graph_guard = self.import_graph.read();
         let import_graph_ref: &crate::graph::ImportGraph = &import_graph_guard;
-
-        // Build definition pool for signature matching (L3)
-        let _definitions_pool: Vec<ScoredDef> = projection
-            .functions
-            .values()
-            .map(|f| ScoredDef {
-                entity_id: f.id.clone(),
-                name: f.name.clone(),
-                arity: f.parameters.len(),
-                file_path: f.parent_module.clone(),
-                score: 0.0,
-            })
-            .collect();
 
         // Collect calls (before mutating functions map)
         let all_calls: Vec<(String, Vec<crate::types::UnresolvedRef>)> = projection
@@ -201,6 +192,30 @@ impl CodeGraph {
             by_module.entry(pm).or_default().push((&entry.0, &entry.1));
         }
 
+        // One pass over the functions, replacing two scans that each ran once
+        // per module (siblings) and once per MRO node per function (methods).
+        // Both were O(F) inside an O(F) loop; this is the grouping they were
+        // recomputing.
+        let mut siblings_by_module: std::collections::HashMap<EntityId, std::collections::HashMap<String, String>> =
+            std::collections::HashMap::new();
+        let mut methods_by_class: MethodsByClass = std::collections::HashMap::new();
+        for (id, f) in projection.functions.iter() {
+            // `insert`, not `or_insert`: the scan this replaces collected into
+            // a HashMap, so a duplicate name kept the last one seen.
+            siblings_by_module
+                .entry(f.parent_module.clone())
+                .or_default()
+                .insert(f.name.clone(), id.clone());
+            if let Some(class_id) = &f.parent_class {
+                methods_by_class
+                    .entry(class_id.clone())
+                    .or_default()
+                    .push((f.name.clone(), id.clone()));
+            }
+        }
+        let siblings_by_module: std::collections::HashMap<EntityId, std::sync::Arc<std::collections::HashMap<String, String>>> =
+            siblings_by_module.into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect();
+
         // Phase A: Build per-module lookups and collect work items.
         // Use Arc<HashMap> so per-function work items share the module lookups
         // (avoids 501×501 HashMap clones in the single-file 500-varargs case).
@@ -213,14 +228,10 @@ impl CodeGraph {
         let mut all_work: Vec<WorkItem> = Vec::new();
 
         for (parent_module, module_entries) in &by_module {
-            let sibling_funcs = std::sync::Arc::new(
-                projection
-                    .functions
-                    .iter()
-                    .filter(|(_, f)| &f.parent_module == parent_module)
-                    .map(|(id, f)| (f.name.clone(), id.clone()))
-                    .collect::<std::collections::HashMap<String, String>>(),
-            );
+            let sibling_funcs = siblings_by_module
+                .get(parent_module.as_str())
+                .cloned()
+                .unwrap_or_default();
 
             let mut import_targets_map = std::collections::HashMap::new();
             if let Some(module) = projection.modules.get(parent_module) {
@@ -292,6 +303,7 @@ impl CodeGraph {
             let chunk_size = (all_work.len() + num_threads - 1) / num_threads;
             let results_mutex = std::sync::Mutex::new(Vec::<ResolveResult>::new());
             let projection_ro: &ProjectedGraph = projection;  // shared borrow
+            let methods_ref: &MethodsByClass = &methods_by_class;
 
             std::thread::scope(|s| {
                 let results_ref = &results_mutex;
@@ -306,7 +318,7 @@ impl CodeGraph {
                         for (fid, calls, lkp) in &chunk_owned {
                             let (rc, ep) = Self::resolve_one_function(
                                 fid, calls,
-                                &lkp.0, &lkp.1,
+                                &lkp.0, &lkp.1, methods_ref,
                                 projection_ro, import_graph,
                                 &mut orch);
                             local.push((fid.clone(), rc, ep));
@@ -323,7 +335,7 @@ impl CodeGraph {
             for (fid, calls, lkp) in &all_work {
                 let (rc, ep) = Self::resolve_one_function(
                     fid, calls,
-                    &lkp.0, &lkp.1,
+                    &lkp.0, &lkp.1, &methods_by_class,
                     projection, import_graph_ref,
                     &mut orchestrator);
                 results_vec.push((fid.clone(), rc, ep));

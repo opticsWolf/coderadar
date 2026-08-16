@@ -744,3 +744,80 @@ class TestPestQueries:
             pytest.skip("Rust extension not built")
         except Exception as e:
             pytest.fail(f"Query '{query}' failed: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Query executor: lazy rows and limit pushdown (plan §2.4)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestQueryExecution:
+    """The executor used to materialise every row before filtering it.
+
+    These pin the observable contract that the laziness must not change:
+    same rows, same fields, same ordering.
+    """
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def indexed(tmp_path_factory):
+        try:
+            from coderadar._core import analyze
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        root = tmp_path_factory.mktemp("queryable")
+        (root / "a.py").write_text(
+            "import os\n"
+            "\n"
+            "def alpha():\n"
+            "    return 1\n"
+            "\n"
+            "def beta():\n"
+            "    return alpha()\n"
+            "\n"
+            "class Widget:\n"
+            "    def one(self): pass\n"
+            "    def two(self): pass\n",
+            encoding="utf-8",
+        )
+        (root / "b.py").write_text(
+            "def gamma():\n    return 3\n\nclass Gadget:\n    def only(self): pass\n",
+            encoding="utf-8",
+        )
+        analyze(str(root))
+        import coderadar
+        return coderadar.CodeGraph()
+
+    def test_where_returns_only_matching_rows(self, indexed):
+        rows = list(indexed.query('functions where name == "alpha"'))
+        assert [r["name"] for r in rows] == ["alpha"]
+
+    def test_a_filtered_row_still_carries_every_field(self, indexed):
+        """Survivors are built with the full field set, not the probe set."""
+        rows = list(indexed.query('functions where name == "beta"'))
+        assert len(rows) == 1, rows
+        for key in ("name", "line", "line_count", "is_async", "caller_count",
+                    "callee_count", "parameter_count"):
+            assert key in rows[0], f"{key} missing from {sorted(rows[0])}"
+
+    def test_select_projects_and_the_predicate_field_may_be_absent(self, indexed):
+        rows = list(indexed.query('functions select name where name == "gamma"'))
+        assert rows and all(set(r) == {"name"} for r in rows), rows
+
+    def test_limit_stops_the_scan_without_changing_the_shape(self, indexed):
+        assert len(list(indexed.query("functions limit 2"))) == 2
+
+    def test_limit_with_order_by_still_takes_the_top_rows(self, indexed):
+        """Pushdown must not apply here: ORDER BY needs every row first."""
+        rows = list(indexed.query("classes order by method_count desc limit 1"))
+        assert len(rows) == 1
+        assert rows[0]["method_count"] == 2, rows
+
+    def test_a_derived_call_predicate_still_sees_its_fields(self, indexed):
+        """`contains(...)` reads fields the predicate never names, so the
+        executor has to fall back to building all of them."""
+        rows = list(indexed.query('imports where kind contains "Module"'))
+        assert rows, "the os import should match"
+
+    def test_unmatched_predicate_returns_no_rows(self, indexed):
+        assert list(indexed.query('functions where name == "nonexistent_zzz"')) == []

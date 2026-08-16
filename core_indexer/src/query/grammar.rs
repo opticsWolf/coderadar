@@ -93,7 +93,7 @@ pub struct OrderBy {
     pub direction: OrderDir,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OrderDir {
     Asc,
     Desc,
@@ -329,19 +329,20 @@ fn parse_group_by(pair: Pair<Rule>) -> Vec<String> {
 
 fn parse_order_by(pair: Pair<Rule>) -> Option<OrderBy> {
     // Pest doesn't produce pairs for literal strings like "order", "by".
-    // Inner pairs: [path, direction?]
+    // Inner pairs: [path, order_dir?]
     let parts: Vec<_> = pair.into_inner().collect();
-    if parts.is_empty() {
-        return None;
-    }
-    let path = parts[0].as_str().to_string();
-    let direction = if parts.len() > 1 {
-        match parts[1].as_str() {
-            "desc" => OrderDir::Desc,
-            _ => OrderDir::Asc,
-        }
-    } else {
-        OrderDir::Asc
+    let path = parts
+        .iter()
+        .find(|p| p.as_rule() == Rule::path)?
+        .as_str()
+        .to_string();
+    let direction = match parts
+        .iter()
+        .find(|p| p.as_rule() == Rule::order_dir)
+        .map(|p| p.as_str())
+    {
+        Some("desc") => OrderDir::Desc,
+        _ => OrderDir::Asc,
     };
     Some(OrderBy { path, direction })
 }
@@ -388,16 +389,27 @@ mod tests {
     #[test]
     fn test_parse_with_order_by() {
         let q = parse_query("classes order by method_count desc").unwrap();
-        // For debugging: print all inner rules seen by parse_query
-        let pairs = QueryParser::parse(Rule::query, "classes order by method_count desc").unwrap();
-        let qp = pairs.into_iter().next().unwrap();
-        let inner: Vec<_> = qp.into_inner().map(|p| format!("{:?}", p.as_rule())).collect();
-        eprintln!("Inner rules: {:?}", inner);
+        let order = q.order_by.expect("order_by is None");
+        assert_eq!(order.path, "method_count");
+        assert_eq!(order.direction, OrderDir::Desc);
+    }
 
-        assert!(q.order_by.is_some(), "order_by is None. Inner rules: {:?}", inner);
-        if let Some(order) = q.order_by {
-            assert_eq!(order.path, "method_count");
-        }
+    #[test]
+    fn test_order_by_direction_is_not_swallowed() {
+        // `desc` used to be an inline literal in the grammar, so Pest matched
+        // it and emitted no pair for it — every ORDER BY came back ascending.
+        let asc = parse_query("classes order by name asc").unwrap().order_by.unwrap();
+        assert_eq!(asc.direction, OrderDir::Asc);
+
+        let bare = parse_query("classes order by name").unwrap().order_by.unwrap();
+        assert_eq!(bare.direction, OrderDir::Asc, "no direction means ascending");
+
+        let dotted = parse_query("functions order by module.name desc")
+            .unwrap()
+            .order_by
+            .unwrap();
+        assert_eq!(dotted.path, "module.name");
+        assert_eq!(dotted.direction, OrderDir::Desc);
     }
 
     #[test]
