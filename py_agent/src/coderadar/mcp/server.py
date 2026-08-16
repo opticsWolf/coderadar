@@ -127,7 +127,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.15",
+        version="0.6.16",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -1681,11 +1681,18 @@ def _update_file(graph: Any, file_path: str, content: str | None) -> str:
     try:
         report = graph.update_file(file_path, content)
         if not report.fully_applied:
+            # This branch was dead until the Rust side stopped hardcoding a
+            # clean parse. tree-sitter recovers rather than failing, so the
+            # graph did take entities from the file — just not reliably the
+            # ones inside the region it had to recover from.
             return (
-                f"## Update Failed\n\n"
+                f"## Update Incomplete\n\n"
                 f"- **File:** `{file_path}`\n"
-                f"- **Reason:** {report.parse_quality}\n"
+                f"- **Parse quality:** {report.parse_quality}\n"
                 f"- **Parse errors:** {report.parse_errors}\n"
+                f"\nThe file was indexed from a recovered parse — entities in "
+                f"the broken region may be missing or wrong. Fix the syntax "
+                f"and update again.\n"
             )
         return (
             f"## File Updated\n\n"

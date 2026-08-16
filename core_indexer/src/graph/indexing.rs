@@ -52,7 +52,16 @@ impl CodeGraph {
     /// tree-sitter nodes, not files). We need a Module unit so `build_concept`
     /// persists the module as a Macrame concept — IMPORTS edges (module → module)
     /// then have a valid FK target (see persist_edges).
-    pub(crate) fn synthesize_module_unit(file_path: &str, language: &Language) -> ExtractedUnit {
+    ///
+    /// `root` is the parsed tree's root, so the module carries the file's real
+    /// parse outcome: tree-sitter recovers from syntax errors rather than
+    /// failing, so a file that does not parse still produces entities.
+    pub(crate) fn synthesize_module_unit(
+        file_path: &str,
+        language: &Language,
+        source: &str,
+        root: tree_sitter::Node,
+    ) -> ExtractedUnit {
         let stem = std::path::Path::new(file_path)
             .file_stem()
             .and_then(|s| s.to_str())
@@ -62,8 +71,8 @@ impl CodeGraph {
             name: stem.to_string(),
             path: PathBuf::from(file_path),
             language: language.clone(),
-            parse_quality: ParseQuality::Clean,
-            content_hash: 0,
+            parse_quality: crate::extract::node_quality(root),
+            content_hash: crate::extract::hash_span(source, 0, source.len()),
         })
     }
 
@@ -92,7 +101,7 @@ impl CodeGraph {
 
         let mut units = crate::extract::single_pass::extract_single_pass(
             source, root_node, &compiled_query, file_path);
-        units.insert(0, Self::synthesize_module_unit(file_path, language));
+        units.insert(0, Self::synthesize_module_unit(file_path, language, source, root_node));
 
         let lang_str = format!("{:?}", language).to_lowercase();
         let concepts: Vec<macrame::ConceptUpsert> = units
@@ -149,10 +158,16 @@ impl CodeGraph {
         let mut module_imports: Vec<EntityId> = Vec::new();
         let mut module_constants: Vec<EntityId> = Vec::new();
         let mut module_type_aliases: Vec<EntityId> = Vec::new();
+        // Carried onto the projected Module below — see insert_extracted.
+        let mut module_quality = ParseQuality::Clean;
+        let mut module_content_hash = 0u64;
 
         for unit in units {
             match unit {
-                ExtractedUnit::Module(_) => {}
+                ExtractedUnit::Module(m) => {
+                    module_quality = m.parse_quality;
+                    module_content_hash = m.content_hash;
+                }
                 ExtractedUnit::Class(c) => {
                     let class = Class::from_extracted(
                         c, c.id.clone(), module_id.clone(), c.parent_class.clone());
@@ -228,7 +243,7 @@ impl CodeGraph {
             classes: module_classes, functions: module_functions,
             imports: module_imports, constants: module_constants,
             type_aliases: module_type_aliases,
-            parse_quality: ParseQuality::Clean, file_version: 1, content_hash: 0,
+            parse_quality: module_quality, file_version: 1, content_hash: module_content_hash,
                         embedding: EmbeddingVec::default(),        };
         projection.modules.insert(module_id.clone(), Arc::new(module));
         projection.file_to_modules.insert(PathBuf::from(file_path), vec![module_id]);
@@ -259,7 +274,7 @@ impl CodeGraph {
         // Phase 2+3: Single-pass cursor-driven extraction
         let mut units = crate::extract::single_pass::extract_single_pass(
             source, root_node, &compiled_query, file_path);
-        units.insert(0, Self::synthesize_module_unit(file_path, language));
+        units.insert(0, Self::synthesize_module_unit(file_path, language, source, root_node));
 
         // Phase 3: Insert into ProjectedGraph
         let count = units.len();

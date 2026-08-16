@@ -396,13 +396,18 @@ impl CodeGraph {
     }
 
     /// Update a single file in-place: re-index and diff against the current graph.
-    /// Returns (entities_added, entities_removed, affected_files).
+    ///
+    /// The report used to be fabricated at the FFI boundary — `parse_quality:
+    /// "clean"`, `parse_errors: 0`, `elapsed_ms: 0.0` regardless of what
+    /// happened — which made the Python and MCP failure branches keyed off
+    /// `parse_quality` dead code. It is measured here now.
     pub fn update_file(
         &self,
         file_path: &str,
         content: Option<&str>,
         _force: Option<bool>,
-    ) -> Result<(usize, usize, Vec<String>), String> {
+    ) -> Result<UpdateOutcome, String> {
+        let started = std::time::Instant::now();
         // Normalize path for consistent lookups
         let normalized = normalize_path_str(file_path);
         let file_path = normalized.as_str();
@@ -435,7 +440,7 @@ impl CodeGraph {
 
         let mut units = crate::extract::single_pass::extract_single_pass(
             &source, root_node, &compiled_query, file_path);
-        units.insert(0, Self::synthesize_module_unit(file_path, &lang));
+        units.insert(0, Self::synthesize_module_unit(file_path, &lang, &source, root_node));
 
         // Phase 3: Diff old vs new entities, only update what changed
         let mut projection = (*self.snapshot()).clone();
@@ -478,7 +483,14 @@ impl CodeGraph {
 
         // Phase 5: (concepts already persisted in Phase 3b, before edges)
 
-        Ok((new_count, removed_count, affected_files))
+        Ok(UpdateOutcome {
+            entities_added: new_count,
+            entities_removed: removed_count,
+            affected_files,
+            parse_quality: crate::extract::node_quality(root_node),
+            parse_errors: crate::extract::count_parse_errors(root_node),
+            elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+        })
     }
 
     /// Insert ExtractedUnits into a ProjectedGraph (used by index_file and update).
@@ -500,13 +512,17 @@ impl CodeGraph {
         let mut module_imports: Vec<EntityId> = Vec::new();
         let mut module_constants: Vec<EntityId> = Vec::new();
         let mut module_type_aliases: Vec<EntityId> = Vec::new();
+        // Carried onto the projected Module below. synthesize_module_unit reads
+        // both off the parsed tree, so a file tree-sitter had to recover from
+        // is recorded as Partial rather than reported clean.
+        let mut module_quality = ParseQuality::Clean;
+        let mut module_content_hash = 0u64;
 
         for unit in units {
             match unit {
                 ExtractedUnit::Module(m) => {
-                    // If a module entity is present, use its ID
-                    // (but tree-sitter walker doesn't emit Module entities)
-                    let _ = m;
+                    module_quality = m.parse_quality;
+                    module_content_hash = m.content_hash;
                 }
                 ExtractedUnit::Class(c) => {
                     let class = Class::from_extracted(
@@ -631,9 +647,9 @@ impl CodeGraph {
             imports: module_imports,
             constants: module_constants,
             type_aliases: module_type_aliases,
-            parse_quality: ParseQuality::Clean,
+            parse_quality: module_quality,
             file_version: 1,
-            content_hash: 0,
+            content_hash: module_content_hash,
                         embedding: EmbeddingVec::default(),        };
         projection.modules.insert(module_id.clone(), Arc::new(module));
         projection.file_to_modules

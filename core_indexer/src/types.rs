@@ -874,6 +874,7 @@ pub struct ExtractedClass {
     pub source: SourceType,
     pub is_type_checking_only: bool,
     pub parse_quality: ParseQuality,
+    pub content_hash: u64,
     pub span: ByteSpan,
     pub name_span: ByteSpan,
     pub body_span: ByteSpan,
@@ -900,6 +901,7 @@ pub struct ExtractedFunction {
     pub source: SourceType,
     pub is_type_checking_only: bool,
     pub parse_quality: ParseQuality,
+    pub content_hash: u64,
     pub signature_hash: u64,
     pub body_hash: u64,
     pub metrics: FunctionMetrics,
@@ -908,6 +910,19 @@ pub struct ExtractedFunction {
     pub params_span: ByteSpan,
     pub body_span: ByteSpan,
     pub decorators_span: Option<ByteSpan>,
+}
+
+/// What one `update_file` actually did, as measured rather than assumed.
+#[derive(Clone, Debug)]
+pub struct UpdateOutcome {
+    pub entities_added: usize,
+    pub entities_removed: usize,
+    pub affected_files: Vec<String>,
+    /// `Partial` when tree-sitter had to recover from a syntax error. The file
+    /// still yields entities, so "it indexed" is not the same as "it parsed".
+    pub parse_quality: ParseQuality,
+    pub parse_errors: usize,
+    pub elapsed_ms: f64,
 }
 
 // ── Extracted → projected construction ─────────────────────────────────────
@@ -952,8 +967,8 @@ impl Function {
             body_hash: f.body_hash,
             metrics: f.metrics,
             is_type_checking_only: f.is_type_checking_only,
-            parse_quality: ParseQuality::Clean,
-            content_hash: 0,
+            parse_quality: f.parse_quality,
+            content_hash: f.content_hash,
             span: f.span,
             name_span: f.name_span,
             params_span: f.params_span,
@@ -1004,8 +1019,8 @@ impl Class {
             line: c.line,
             exit_line: c.exit_line,
             docstring: c.docstring.clone(),
-            parse_quality: ParseQuality::Clean,
-            content_hash: 0,
+            parse_quality: c.parse_quality,
+            content_hash: c.content_hash,
             span: c.span,
             name_span: c.name_span,
             body_span: c.body_span,

@@ -656,17 +656,25 @@ fn update_file(
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|graph, _snap| {
-        let (added, removed, affected) = graph
+        let outcome = graph
             .update_file(file_path, content, force)
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+        let quality = match outcome.parse_quality {
+            crate::types::ParseQuality::Clean => "clean",
+            crate::types::ParseQuality::Partial => "partial",
+            crate::types::ParseQuality::Tainted => "tainted",
+            crate::types::ParseQuality::Deferred => "deferred",
+        };
         let dict = PyDict::new(py);
-        dict.set_item("fully_applied", true)?;
-        dict.set_item("entities_added", added)?;
-        dict.set_item("entities_removed", removed)?;
-        dict.set_item("affected_files", affected)?;
-        dict.set_item("parse_quality", "clean")?;
-        dict.set_item("parse_errors", 0)?;
-        dict.set_item("elapsed_ms", 0.0_f64)?;
+        // "Fully applied" means the file parsed cleanly and the graph took
+        // every entity in it; a recovered parse is a partial update.
+        dict.set_item("fully_applied", outcome.parse_errors == 0)?;
+        dict.set_item("entities_added", outcome.entities_added)?;
+        dict.set_item("entities_removed", outcome.entities_removed)?;
+        dict.set_item("affected_files", outcome.affected_files)?;
+        dict.set_item("parse_quality", quality)?;
+        dict.set_item("parse_errors", outcome.parse_errors)?;
+        dict.set_item("elapsed_ms", outcome.elapsed_ms)?;
         Ok(dict.into())
     })
 }

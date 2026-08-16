@@ -60,7 +60,7 @@ class TestMCPCreation:
         from coderadar.mcp.server import create_server
         server = create_server(None)
         assert server.name == "CodeRadar"
-        assert server.version == "0.6.15"
+        assert server.version == "0.6.16"
 
     def test_server_has_call_tool(self):
         from coderadar.mcp.server import create_server

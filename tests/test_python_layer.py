@@ -613,6 +613,40 @@ class TestCodeRadarAPI:
         assert report.parse_errors >= 1
         assert "Error" in report.parse_quality
 
+    def test_update_file_reports_a_recovered_parse(self, tmp_path):
+        """The report used to be hardcoded clean, so this branch was dead."""
+        try:
+            from coderadar._core import analyze
+            from coderadar import CodeGraph
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        target = tmp_path / "recovered.py"
+        target.write_text("def f():\n    return 1\n", encoding="utf-8")
+        analyze(str(tmp_path))
+
+        graph = CodeGraph()
+        report = graph.update_file(str(target), "def f(:\n    return 1\n")
+        assert report.fully_applied is False
+        assert report.parse_errors >= 1
+        assert report.parse_quality == "partial"
+
+    def test_update_file_reports_real_timing_on_a_clean_parse(self, tmp_path):
+        try:
+            from coderadar._core import analyze
+            from coderadar import CodeGraph
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        target = tmp_path / "clean.py"
+        target.write_text("def f():\n    return 1\n", encoding="utf-8")
+        analyze(str(tmp_path))
+
+        graph = CodeGraph()
+        report = graph.update_file(str(target), "def f():\n    return 2\n")
+        assert report.fully_applied is True
+        assert report.parse_quality == "clean"
+        assert report.parse_errors == 0
+        assert report.elapsed_ms > 0.0, "elapsed_ms was hardcoded to 0.0"
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Pest Query Grammar Tests (parseable examples from §7.2a)

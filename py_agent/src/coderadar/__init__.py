@@ -421,11 +421,15 @@ class CodeGraph:
                     epoch_after=1,
                 )
         except ImportError:
+            # Nothing parsed anything, so "Clean" and fully_applied=True were
+            # a report about work that did not happen.
             return UpdateReport(
                 affected_files=[file_path], changed_symbols=[],
                 new_unresolved_references=[], newly_resolved_references=[],
-                elapsed_ms=0.0, parse_quality="Clean", parse_errors=0,
-                fully_applied=True, epoch_before=0, epoch_after=1,
+                elapsed_ms=0.0,
+                parse_quality="Error: the coderadar._core extension is not built",
+                parse_errors=1,
+                fully_applied=False, epoch_before=0, epoch_after=1,
             )
         except RuntimeError as e:
             return UpdateReport(
@@ -559,49 +563,59 @@ class CodeGraph:
         """
         try:
             from coderadar._core import apply_mutation as _am, clear_embeddings_for_file
-            result = _am(json.dumps({
-                "id": plan.id,
-                "tool": plan.tool,
-                "edits": [{"file": e.file, "span_start": e.span_start or 0,
-                           "span_end": e.span_end or 0, "replacement": e.replacement,
-                           "expected_hash": e.expected_hash or ""} for e in plan.edits],
-                "affected_files": plan.affected_files,
-            }))
-            # Reindex changed files so the graph reflects the new content
+        except ImportError as exc:  # pragma: no cover - requires an unbuilt extension
+            # This used to fall through to status="Applied" with
+            # files_written=plan.affected_files — reporting a write that could
+            # not have happened, because the code that writes is missing.
+            raise CodeRadarError(
+                "the coderadar._core extension is not built, so no mutation "
+                "can be applied"
+            ) from exc
+
+        result = _am(json.dumps({
+            "id": plan.id,
+            "tool": plan.tool,
+            "edits": [{"file": e.file, "span_start": e.span_start or 0,
+                       "span_end": e.span_end or 0, "replacement": e.replacement,
+                       "expected_hash": e.expected_hash or ""} for e in plan.edits],
+            "affected_files": plan.affected_files,
+        }))
+        if not isinstance(result, dict):
+            raise CodeRadarError(f"apply_mutation returned {type(result).__name__}, "
+                                 "expected a result dict")
+
+        applied = bool(result.get("applied", False))
+        if applied:
+            # Only a plan that reached disk changes what the graph should hold.
             for f in plan.affected_files:
                 try:
                     self.update_file(f)
                 except Exception:
                     pass
-            # Invalidate stale embeddings for all affected files
             for f in plan.affected_files:
                 try:
                     clear_embeddings_for_file(f)
                 except RuntimeError:
                     pass
-            if isinstance(result, dict) and not result.get("applied", True):
-                raw_status = str(result.get("status", "RolledBack"))
-                # Rejections carry why the write did not happen; collapsing
-                # them all to RolledBack loses that (a policy refusal is not a
-                # failed write).
-                if "RejectedStale" in raw_status:
-                    status = "RejectedStale"
-                elif "RejectedPolicy" in raw_status:
-                    status = "RejectedPolicy"
-                else:
-                    status = "RolledBack"
-                return MutationResult(
-                    status=status,
-                    files_written=result.get("files_written", []),
-                    syntax_errors=result.get("errors", []),
-                    backup_path=result.get("backup_path"),
-                )
-        except ImportError:
-            pass
+
+        raw_status = str(result.get("status", ""))
+        if applied:
+            status = "Applied"
+        elif "RejectedStale" in raw_status:
+            status = "RejectedStale"
+        elif "RejectedPolicy" in raw_status:
+            # A policy refusal is not a failed write; collapsing every
+            # non-Applied status to RolledBack lost the reason.
+            status = "RejectedPolicy"
+        else:
+            status = "RolledBack"
+
         return MutationResult(
-            status="Applied",
-            files_written=plan.affected_files,
-            syntax_errors=[],
+            status=status,
+            # The files the engine says it wrote, not the ones the plan hoped to.
+            files_written=result.get("files_written", []),
+            syntax_errors=result.get("errors", []),
+            backup_path=result.get("backup_path"),
         )
 
     # ── Persistence ────────────────────────────────────────────────────

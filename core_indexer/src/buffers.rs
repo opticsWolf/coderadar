@@ -562,6 +562,7 @@ mod tests {
             source: SourceType::Impl,
             is_type_checking_only: false,
             parse_quality: ParseQuality::Clean,
+            content_hash: 0,
             signature_hash: 0,
             body_hash: 0,
             metrics: crate::types::FunctionMetrics::default(),
