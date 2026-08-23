@@ -1310,6 +1310,32 @@ fn callees_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
 /// with its BFS depth and the edge kind that first reached it. Entities not
 /// present in the graph (e.g. `external::` targets) are naturally filtered —
 /// `entity_ref_to_dict` returns `None` for them.
+/// Every edge kind `neighbors_of` knows how to walk.
+///
+/// Named here because an empty `edge_kinds` from Python means "all of them",
+/// not "none of them" — every docstring above this boundary says so, and the
+/// BFS loops over the kinds it is given, so an empty list used to walk
+/// nowhere and return only the start node.
+const ALL_EDGE_KINDS: [&str; 4] = ["calls", "extends", "imports", "overrides"];
+
+/// Lower-case, dedupe, alias `inherits` → `extends`, and read empty as all.
+fn normalize_edge_kinds(edge_kinds: &[String]) -> Vec<String> {
+    let mut v: Vec<String> = edge_kinds
+        .iter()
+        .map(|k| {
+            let k = k.trim().to_ascii_lowercase();
+            if k == "inherits" { "extends".to_string() } else { k }
+        })
+        .filter(|k| !k.is_empty())
+        .collect();
+    if v.is_empty() {
+        return ALL_EDGE_KINDS.iter().map(|k| k.to_string()).collect();
+    }
+    v.sort();
+    v.dedup();
+    v
+}
+
 #[pyfunction]
 #[pyo3(signature = (start_id, max_depth, edge_kinds, direction, as_of=None))]
 fn traverse(
@@ -1333,18 +1359,7 @@ fn traverse(
     };
 
     // ── Normalize + dedupe edge kinds (`inherits` → `extends`) ──────
-    let kinds: Vec<String> = {
-        let mut v: Vec<String> = edge_kinds
-            .iter()
-            .map(|k| {
-                let k = k.trim().to_ascii_lowercase();
-                if k == "inherits" { "extends".to_string() } else { k }
-            })
-            .collect();
-        v.sort();
-        v.dedup();
-        v
-    };
+    let kinds: Vec<String> = normalize_edge_kinds(&edge_kinds);
 
     // ── Temporal traversal: route `as_of` to Macrame (downstream only) ──
     if let Some(ts) = as_of {
@@ -1494,18 +1509,7 @@ fn traverse_unresolved(
         }
     };
 
-    let kinds: Vec<String> = {
-        let mut v: Vec<String> = edge_kinds
-            .iter()
-            .map(|k| {
-                let k = k.trim().to_ascii_lowercase();
-                if k == "inherits" { "extends".to_string() } else { k }
-            })
-            .collect();
-        v.sort();
-        v.dedup();
-        v
-    };
+    let kinds: Vec<String> = normalize_edge_kinds(&edge_kinds);
 
     with_graph(|_graph, snap| {
         if !entity_exists(snap, start_id) {

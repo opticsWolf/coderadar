@@ -18,6 +18,10 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Literal, Optional, Union
 
+# The caller/callee indexes the facade walks carry exactly one kind of
+# edge. Named so explore() can answer honestly when asked for another.
+EDGE_KIND_CALLS = "calls"
+
 # ── Public API Types ────────────────────────────────────────────────────────
 
 from dataclasses import dataclass, field
@@ -176,72 +180,76 @@ class CodeGraph:
         max_depth: int = 3,
         edge_kinds: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """Traverse the graph from start_id via Macrame.
+        """Walk the call graph outward from start_id.
 
-        Uses Macrame's TraversalBuilder for subgraph loading, then
-        enriches results with entity metadata from ProjectedGraph.
+        Breadth-first, so the depth reported for an entity is the length of
+        the shortest path to it, and an entity reached both ways is reported
+        once — at whichever depth found it first.
 
         Args:
-            start_id: EntityId to start traversal from (e.g. "src/models.py::User").
+            start_id: EntityId to start from (e.g. "src/models.py::User").
             direction: "in" (callers), "out" (callees), or "both".
-            max_depth: Maximum traversal depth.
-            edge_kinds: Filter by edge kinds (e.g. ["calls", "imports"]).
-                        None means all kinds.
+            max_depth: How many hops to take. 0 returns nothing.
+            edge_kinds: Filter by edge kind. The only kind this walk follows
+                        is "calls"; anything else selects nothing. None means
+                        no filter. For imports and containment use traverse().
 
         Returns:
             List of dicts with `entity_id`, `edge_kind`, `direction`, `depth`.
         """
-        # Macrame traversal returns subgraph via TraversalBuilder
-        # For now, use ProjectedGraph reverse indexes as fallback
+        if edge_kinds is not None and EDGE_KIND_CALLS not in edge_kinds:
+            return []
+
+        directions: List[str] = (
+            ["out", "in"] if direction == "both" else [direction]
+        )
         results: List[Dict[str, Any]] = []
         visited: set = {start_id}
+        frontier: List[str] = [start_id]
 
-        if direction in ("out", "both"):
-            edges = self._get_outgoing(start_id, edge_kinds)
-            for e in edges:
-                if e["target"] not in visited:
-                    visited.add(e["target"])
-                    results.append({
-                        "entity_id": e["target"],
-                        "edge_kind": e["kind"],
-                        "direction": "out",
-                        "depth": 1,
-                    })
-
-        if direction in ("in", "both"):
-            edges = self._get_incoming(start_id, edge_kinds)
-            for e in edges:
-                if e["source"] not in visited:
-                    visited.add(e["source"])
-                    results.append({
-                        "entity_id": e["source"],
-                        "edge_kind": e["kind"],
-                        "direction": "in",
-                        "depth": 1,
-                    })
+        for depth in range(1, max(max_depth, 0) + 1):
+            next_frontier: List[str] = []
+            for current in frontier:
+                for way in directions:
+                    rows = (
+                        self._get_outgoing(current)
+                        if way == "out"
+                        else self._get_incoming(current)
+                    )
+                    for row in rows:
+                        # These rows are entities, not edge records: the edge
+                        # is implied by which index they came out of.
+                        neighbour = row.get("id")
+                        if not neighbour or neighbour in visited:
+                            continue
+                        visited.add(neighbour)
+                        next_frontier.append(neighbour)
+                        results.append({
+                            "entity_id": neighbour,
+                            "edge_kind": EDGE_KIND_CALLS,
+                            "direction": way,
+                            "depth": depth,
+                        })
+            if not next_frontier:
+                break
+            frontier = next_frontier
 
         return results
 
-    def _get_incoming(self, entity_id: str, edge_kinds: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """Internal: get incoming edges for an entity."""
+    def _get_incoming(self, entity_id: str) -> List[Dict[str, Any]]:
+        """Internal: the entities that call entity_id."""
         # Delegates to Rust core via _core module
         try:
             from coderadar._core import callers_of as _callers_of
-            raw = _callers_of(entity_id)
-            if edge_kinds:
-                return [r for r in raw if r.get("kind") in edge_kinds]
-            return raw
+            return _callers_of(entity_id)
         except ImportError:
             return []
 
-    def _get_outgoing(self, entity_id: str, edge_kinds: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-        """Internal: get outgoing edges for an entity."""
+    def _get_outgoing(self, entity_id: str) -> List[Dict[str, Any]]:
+        """Internal: the entities entity_id calls."""
         try:
             from coderadar._core import callees_of as _callees_of
-            raw = _callees_of(entity_id)
-            if edge_kinds:
-                return [r for r in raw if r.get("kind") in edge_kinds]
-            return raw
+            return _callees_of(entity_id)
         except ImportError:
             return []
 

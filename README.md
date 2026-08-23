@@ -1,4 +1,4 @@
-# CodeRadar v0.6.6
+# CodeRadar v0.6.43
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -54,31 +54,35 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 556 (200 Rust + 356 Python) |
+| **Tests** | 800 (250 Rust + 550 Python) |
 | **MCP Tools** | 18 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, get_smells, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
-| **Agents** | MCP server with explore, node, search, affected tools |
+| **Agents** | MCP server over stdio — finds the project root, indexes in the background, and exits with its client |
 
 ## Quick Start
 
 ```bash
 pip install coderadar-rs
 
-# Initial analysis (includes framework detection)
-coderadar init src/
+# Write .coderadar.toml, create the store, run the first analysis
+coderadar init
 
 # Query
 coderadar query "functions where is_async == true"
 
-# Explore call flows
-coderadar explore UserService.create --direction downstream
+# Trace call flows
+coderadar callers "src/services.py::UserService.create"
+coderadar callees "src/services.py::UserService.create"
 
 # Watch for changes
 coderadar watch src/ --debounce 50
 
-# Visualize
-coderadar visualize module_graph --format graphviz src/
+# Visualize (hierarchy, dependencies, call-graph)
+coderadar visualize call-graph --format graphviz -o calls.dot
+
+# Serve the graph to an MCP client (Claude Code, Cursor, ...)
+coderadar mcp serve
 ```
 
 ## Python API
@@ -86,15 +90,18 @@ coderadar visualize module_graph --format graphviz src/
 ```python
 import coderadar
 
-# Initial analysis
+# Index into memory. `coderadar init` is what creates the persistent store —
+# analyze only writes to one that already exists, so a wrong path cannot
+# leave a `.coderadar/` behind for the next root lookup to find.
 graph = coderadar.analyze("src/")
 
 # Query
 for cls in graph.query("classes where inherits_from contains 'BaseModel'"):
     print(cls.name, [m.name for m in cls.methods])
 
-# Framework-aware exploration (Django/Flask/FastAPI/Go/Actix routes included)
-flow = graph.explore(["UserService.create"], direction="downstream")
+# Call-graph walk — rows of {entity_id, edge_kind, direction, depth}
+flow = graph.explore("src/services.py::UserService.create",
+                     direction="out", max_depth=2)
 
 # Callers (includes framework edges: route → handler)
 callers = graph.callers_of("views.py::user_detail")
@@ -110,13 +117,69 @@ plan = graph.plan_body_replacement(
 )
 
 # Module children resolution
-children = graph.module_children("src/auth.py::auth")
+from coderadar._core import module_children
+children = module_children("src/auth.py::module")
 for cls in children["classes"]:
     print(cls["name"], cls["grammar_kind"])
 
 # Temporal queries (Macrame bitemporal)
 past = graph.as_of("2026-08-01T00:00:00Z")
+
+# Graph walk across calls / imports / extends / overrides — full entity rows,
+# with the start node at depth 0. edge_types=None walks all four kinds.
+neighbors = graph.traverse("src/auth.py::validate_user", max_depth=3, direction="both")
+
+# Code smells (native Rust engine, 9 rules)
+from coderadar._core import get_smells
+for finding in get_smells(rule_id="god-class"):
+    print(finding["entity_name"], finding["severity"], finding["message"])
 ```
+
+## MCP Server
+
+```bash
+coderadar mcp serve            # walks up from the cwd looking for the project
+coderadar mcp serve --path .   # or say where it is
+```
+
+```json
+{
+  "mcpServers": {
+    "coderadar": {
+      "command": "uv",
+      "args": ["run", "coderadar", "mcp", "serve"]
+    }
+  }
+}
+```
+
+MCP clients launch servers from wherever they happen to be, so the server does
+not assume the cwd is the project:
+
+- **Finding the project.** `rootUri` and `workspaceFolders` are LSP concepts
+  and do not exist in MCP, so the ladder is what MCP actually offers — the
+  client's `roots/list`, then `--path`, then the cwd. Each candidate is walked
+  *up* looking for a `.coderadar/` or `.coderadar.toml` marker, stopping before
+  the home directory. A confirmed root on a lower rung beats an unconfirmed one
+  higher up: a marker on disk says where the project is, while a client root
+  says where the client is.
+- **Asking the client.** `roots/list` is a server-to-client request and
+  awaiting one during `initialize` deadlocks, so it is asked lazily on the
+  first tool call — once, and only if nothing on disk confirmed the root.
+- **Same directory as the index.** The process moves onto the resolved root
+  before indexing, because entity ids carry the path the walk started from
+  while every read helper resolves against the cwd.
+- **Fast handshake.** Indexing runs on a background thread; a tool call that
+  arrives early waits, then reports elapsed seconds rather than answering from
+  a half-built graph.
+- **Saying where it looked.** A "no index" reply names the directory being
+  served and how that directory was chosen, so an agent pointed at the wrong
+  project can say so.
+- **One project per server.** Every tool takes an optional `project_path`; a
+  path that is not the served root is refused with the reason, not quietly
+  answered from the wrong codebase.
+- **Not outliving the client.** Handshake timeout, parent-process watchdog, and
+  teardown when stdin closes.
 
 ## Language Support
 
@@ -159,6 +222,50 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 | **React Router** | JSX/TSX | `package.json` | JSX `<Route>` declarations, v6 data router objects, `<Link>`/`<NavLink>` navigation tracking |
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
+
+## v0.6.43 Feature Highlights
+
+The v0.7 improvement plan, start to finish — write-path correctness, temporal
+truth, scaling, dead-code retirement, configuration, and the MCP layer.
+
+- **Write path.** `update_signature` had never worked: it wrote a whole
+  `def f(a, b):` line into a span covering only `(a)`, so `apply` caught the
+  syntax error and rolled back every time. Rename now verifies its byte spans
+  before emitting edits, class rename is reachable, `apply_diff_update` stops
+  dropping parameters, and mutation policy is enforced at the FFI boundary
+  rather than trusting a plan that arrives as JSON.
+- **Real diffs.** Mutation previews are unified diffs that apply cleanly with
+  `patch`, replacing a positional line-by-line comparison that reported every
+  line after an insertion as changed.
+- **Temporal truth.** Removed entities and edges are retired in the ledger,
+  `persist_edges` is scoped to the changed file, deletions reach the graph, and
+  `graph_stats()` exposes `indexed_at` — the staleness banners read a key that
+  nothing had ever set, so every one of them was unreachable.
+- **Scaling.** Bulk write APIs remove whole-projection clones, resolution and
+  smell lookups are indexed, and query rows are built lazily.
+- **The GIL.** `analyze` and `update_file` release it. Held end to end, an
+  `asyncio.to_thread(analyze, ...)` froze the event loop for the entire index.
+- **Honest silence.** `analyze` reports extraction failures and panicked
+  workers instead of returning a count that cannot distinguish "nothing to do"
+  from "nothing worked".
+- **MCP.** Root resolution, background init, lazy `roots/list`, optional
+  `project_path`, lifecycle hygiene — see the MCP Server section above.
+- **Both graph walks.** `CodeGraph.explore()` read `target`/`source` keys off
+  rows that carry neither, so it raised `KeyError` for any entity that had
+  edges and looked correct only for entities that had none; it also
+  advertised `max_depth` while taking exactly one hop. `traverse()` treated
+  `edge_types=None` — documented as "all kinds" — as an empty kind list, and
+  the BFS loops over the kinds it is given, so the default walk returned the
+  start node and stopped.
+- **Configuration.** `.coderadar.toml` is read by something, key by key, and
+  `coderadar analyze` names any key it could not use. ~100 inert knobs were
+  removed rather than left looking load-bearing.
+- **~4,300 lines of dead code retired**, including the Stack Graphs
+  placeholder.
+- **800 tests, 0 failures** — 250 Rust + 550 Python, including an end-to-end
+  mutation suite (plan → apply → reindex → read the file back) and a
+  parametrised no-index suite that replaced fourteen assertions which could
+  not fail.
 
 ## v0.6.6 Feature Highlights
 
@@ -248,9 +355,10 @@ core_indexer/              # Rust core
     update/                # Incremental diff + patch + WAL
     resolve/               # Resolution cascade (import_graph, orchestrator, signature, cache)
     query/                 # Pest grammar + execution engine
-    mutation/              # AST-aware refactoring (rope, indent, WriteGuard)
+    mutation/              # AST-aware refactoring (rope, indent, unified diffs, WriteGuard)
     fs/                    # File watcher (notify) + git integration
-    graph.rs               # In-memory ProjectedGraph + parallel extraction + reverse indexes
+    graph/                 # In-memory ProjectedGraph, parallel extraction, reverse indexes,
+                           #   call/import/inheritance resolution, traversal, persistence
     smells/                # Native code-smell engine (metrics pass, 9 rules, engine, registry)
     storage.rs             # Macrame concept/edge persistence
     lib.rs                 # PyO3 FFI bindings
@@ -261,12 +369,19 @@ py_agent/src/coderadar/    # Python layer
     agent/                 # GraphRAG query pipeline
     lsp/                   # Persistent LSP warm pool
     mutation/              # Tool router for LLM
-    mcp/                   # MCP server (explore, node, search, affected, get_smells, …)
+    mcp/                   # MCP server
+      server.py            #   18 tools + guidance
+      roots.py             #   project-root ladder and marker walk-up
+      startup.py           #   background index, ensure_ready()
+      lazy.py              #   roots/list retry on the first tool call
+      lifecycle.py         #   handshake timeout, parent watchdog, teardown
     query/                 # Query planner + templates + cache
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Specifications + code review + performance roadmap
-tests/                     # 356 Python tests (E2E, MCP, smells, framework resolvers, benchmarks)
+tests/                     # 550 Python tests (E2E, mutation E2E, MCP, smells,
+                           #   framework resolvers, ingest parity, benchmarks)
+  mcp/                     # Root resolution, background init, lifecycle, project_path
 ```
 
 ## Configuration
@@ -307,7 +422,7 @@ min_confidence = 0.3
 max_import_depth = 3
 ```
 
-`[resolution.signature]`, `[resolution.lsp]` and `[query]` are accepted but not yet read on any live path — they wait on the code that would consume them.
+`[resolution.signature]` and `[query]` are accepted and stored but not yet read on any live path — they wait on the code that would consume them. `[resolution.lsp]` is accepted by the schema and deliberately absent from the starter file: the pool it configures is never constructed, so a value there would only be noise.
 
 ## License
 

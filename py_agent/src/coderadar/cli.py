@@ -117,7 +117,7 @@ def _activate(project_root) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.42", prog_name="coderadar",
+@click.version_option(version="0.6.43", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -560,8 +560,13 @@ def serve(project_path: str | None):
     """Start the CodeRadar MCP server over stdio.
 
     Connect an MCP client (Claude Code, Cursor, etc.) to this server to get
-    code intelligence over the indexed project. The server exposes four tools:
-    codegraph_explore, codegraph_node, codegraph_search, codegraph_affected.
+    code intelligence over the indexed project — 18 tools covering search,
+    exploration, structural and temporal queries, code smells, and the
+    plan/review/apply mutation pipeline.
+
+    With no --path, the project root is found by walking up from the cwd
+    looking for a .coderadar marker, and the client's declared roots are
+    consulted on the first tool call.
 
     Configure your MCP client with:
       {
