@@ -136,7 +136,7 @@ past = graph.as_of("2026-08-01T00:00:00Z")
 | L4 | Embedding (Python) | 0.20–0.39 | Python |
 | L5 | LSP Override | 1.00 | Optional, disabled by default |
 
-> **Stack Graphs (L1 in v3.3 spec) was deferred to post-v1.** CodeGraph ships 30+ languages at production scale with zero Stack Graphs dependency — compiler-grade scope disambiguation is not required for MCP agent use cases.
+> **Stack Graphs (L1 in the v3.3 spec) was deferred to post-v1 and its placeholder module has been removed.** CodeGraph ships 30+ languages at production scale with zero Stack Graphs dependency — compiler-grade scope disambiguation is not required for MCP agent use cases.
 
 ## Framework Resolvers
 
@@ -246,7 +246,7 @@ core_indexer/              # Rust core
   src/
     extract/               # Tree-sitter: tagger (query cursor) + walker (hierarchy) + docstring + decorators
     update/                # Incremental diff + patch + WAL
-    resolve/               # Resolution cascade (import_graph, orchestrator, signature, cache, stack_graph stub)
+    resolve/               # Resolution cascade (import_graph, orchestrator, signature, cache)
     query/                 # Pest grammar + execution engine
     mutation/              # AST-aware refactoring (rope, indent, WriteGuard)
     fs/                    # File watcher (notify) + git integration
@@ -307,7 +307,7 @@ min_confidence = 0.3
 max_import_depth = 3
 ```
 
-`[resolution.stack_graph]`, `[resolution.signature]`, `[resolution.lsp]` and `[query]` are accepted but not yet read on any live path — they wait on the code that would consume them.
+`[resolution.signature]`, `[resolution.lsp]` and `[query]` are accepted but not yet read on any live path — they wait on the code that would consume them.
 
 ## License
 

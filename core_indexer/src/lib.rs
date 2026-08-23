@@ -986,14 +986,6 @@ fn set_config(py: Python<'_>, cfg: &Bound<'_, PyDict>) -> PyResult<PyObject> {
         take!(res, "min_confidence", "resolution.min_confidence",
               c.resolution.min_confidence, f32);
 
-        if let Some(sg) = cfg_section(&res, "stack_graph")? {
-            take!(sg, "rules_dir", "resolution.stack_graph.rules_dir",
-                  c.stack_graph.rules_dir, String);
-            take!(sg, "max_path_depth", "resolution.stack_graph.max_path_depth",
-                  c.stack_graph.max_path_depth, usize);
-            take!(sg, "incremental", "resolution.stack_graph.incremental",
-                  c.stack_graph.incremental, bool);
-        }
         if let Some(ig) = cfg_section(&res, "import_graph")? {
             take!(ig, "max_import_depth", "resolution.import_graph.max_import_depth",
                   c.import_graph.max_import_depth, usize);

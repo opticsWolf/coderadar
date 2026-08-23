@@ -1,12 +1,16 @@
-// CodeRadar v3.6 — Resolution: Orchestrator (§6.5-6.7)
-// Five-layer resolution cascade, staged two-phase commit, ::toplevel sentinel.
+// CodeRadar — Resolution: Orchestrator (§6.5-6.7)
+// Resolution cascade, staged two-phase commit, ::toplevel sentinel.
 //
 // Cascade order (early exit on success):
-//   L1: Stack Graphs      → confidence 0.90–1.00
-//   L2: Import Graph      → confidence 0.80–0.89
-//   L3: Signature Match   → confidence 0.40–0.79
-//   L4: Embedding Fallback → confidence 0.20–0.39  (Python-side, deferred)
-//   L5: LSP Override       → confidence 1.00        (Python-side, deferred)
+//   L1: Import Graph      → confidence 0.80–0.89
+//   L2: Signature Match   → confidence 0.40–0.79
+//   L3: Embedding Fallback → confidence 0.20–0.39  (Python-side, deferred)
+//   L4: LSP Override       → confidence 1.00        (Python-side, deferred)
+//
+// The numbering used to start at a Stack Graphs layer that was never
+// implemented — `resolve_reference` on the placeholder returned None for
+// every input, so what the comments called L2 was in fact the first thing
+// that ran. The placeholder is gone and the layers are numbered as they run.
 
 use std::collections::HashMap;
 
@@ -15,12 +19,11 @@ use crate::types::SymbolId;
 use crate::resolve::import_graph::{rank_candidates, resolve_in_imports};
 use crate::graph::ImportNode;
 use crate::resolve::signature::{signature_match, ScoredDef};
-use crate::resolve::stack_graph::{self, ParsedReference, StackGraphResolver};
+use crate::resolve::ParsedReference;
 use crate::types::*;
 
 /// Orchestrates the five-layer resolution cascade.
 pub struct ResolutionOrchestrator {
-    pub stack_graph: StackGraphResolver,
     pub cache: ResolutionCache,
     pub max_import_depth: usize,
     pub include_same_package: bool,
@@ -44,7 +47,6 @@ impl ResolutionOrchestrator {
     /// in `.coderadar.toml` could not reach the one place that reads them.
     pub fn with_config(config: &crate::graph::ImportGraphConfig) -> Self {
         Self {
-            stack_graph: StackGraphResolver::new(),
             cache: ResolutionCache::new(),
             max_import_depth: config.max_import_depth,
             include_same_package: config.include_same_package,
@@ -54,7 +56,7 @@ impl ResolutionOrchestrator {
 
     // ── Resolution Cascade (§6.1) ──────────────────────────────────────────
 
-    /// Resolve a single reference through L1 → L2 → L3 fallthrough.
+    /// Resolve a single reference through L1 → L2 fallthrough.
     ///
     /// Returns None when all layers fail (the reference stays `Unresolved`).
     /// The caller wraps this in the appropriate `ResolvedEdge` variant.
@@ -66,24 +68,8 @@ impl ResolutionOrchestrator {
         definitions_pool: &[ScoredDef],
         config: &crate::graph::SignatureConfig,
     ) -> Option<ResolvedEdge> {
-        // ── L1: Stack Graphs ────────────────────────────────────────────
-        if let Some(sg) = self.stack_graph.resolve_reference(file_path, reference) {
-            return Some(ResolvedEdge {
-                source_id: format!("{}::{}", file_path, reference.name),
-                target_id: sg.target_name.clone(),
-                confidence: sg.confidence,
-                method: ResolutionMethod::StackGraph,
-                provenance: EdgeProvenance::StackGraph,
-                kind: reference.kind,
-                line: sg.line as usize,
-                call_site_span: ByteSpan { start: 0, end: 0 },
-                args_span: None,
-                target_kind: TargetKind::Internal,
-            });
-        }
-
-        // ── L2: Import Graph + Scope ────────────────────────────────────
-        if let Some((mut matches, l2_conf)) = resolve_in_imports(
+        // ── L1: Import Graph + Scope ────────────────────────────────────
+        if let Some((mut matches, l1_conf)) = resolve_in_imports(
             import_graph,
             file_path,
             &reference.name,
@@ -100,11 +86,11 @@ impl ResolutionOrchestrator {
                 .clone()
                 .unwrap_or_else(|| format!("{}::{}", best.module_path, best.export_name));
 
-            // Clamp confidence into L2 band [0.80, 0.89]
+            // Clamp confidence into L1 band [0.80, 0.89]
             let confidence = if matches.len() == 1 {
                 0.89
             } else {
-                (0.80_f32).max(l2_conf.min(0.89))
+                (0.80_f32).max(l1_conf.min(0.89))
             };
 
             return Some(ResolvedEdge {
@@ -121,7 +107,7 @@ impl ResolutionOrchestrator {
             });
         }
 
-        // ── L3: Signature Match ─────────────────────────────────────────
+        // ── L2: Signature Match ─────────────────────────────────────────
         if let Some(scored) = signature_match(
             &reference.name,
             None, // receiver context not available at this stage

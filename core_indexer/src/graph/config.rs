@@ -6,7 +6,6 @@ pub struct GraphConfig {
     pub project: ProjectConfig,
     pub database: DatabaseConfig,
     pub resolution: ResolutionConfig,
-    pub stack_graph: StackGraphConfig,
     pub import_graph: ImportGraphConfig,
     pub signature: SignatureConfig,
     pub mutation: MutationConfig,
@@ -19,7 +18,6 @@ impl Default for GraphConfig {
             project: ProjectConfig::default(),
             database: DatabaseConfig::default(),
             resolution: ResolutionConfig::default(),
-            stack_graph: StackGraphConfig::default(),
             import_graph: ImportGraphConfig::default(),
             signature: SignatureConfig::default(),
             mutation: MutationConfig::default(),
@@ -66,18 +64,6 @@ pub struct ResolutionConfig {
 impl Default for ResolutionConfig {
     fn default() -> Self {
         Self { min_confidence: 0.3 }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct StackGraphConfig {
-    pub rules_dir: String,
-    pub max_path_depth: usize,
-    pub incremental: bool,
-}
-impl Default for StackGraphConfig {
-    fn default() -> Self {
-        Self { rules_dir: String::new(), max_path_depth: 10, incremental: true }
     }
 }
 

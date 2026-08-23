@@ -73,16 +73,16 @@ class TestConfigLoading:
     def test_custom_config_override(self):
         """Pydantic model should accept field overrides."""
         from coderadar.config import (
-            CodeRadarConfig, ProjectConfig, ResolutionConfig, StackGraphConfig
+            CodeRadarConfig, ImportGraphConfig, ProjectConfig, ResolutionConfig
         )
         cfg = CodeRadarConfig(
             project=ProjectConfig(roots=["src/", "lib/"]),
             resolution=ResolutionConfig(
-                stack_graph=StackGraphConfig(max_path_depth=20)
+                import_graph=ImportGraphConfig(max_import_depth=20)
             ),
         )
         assert cfg.project.roots == ["src/", "lib/"]
-        assert cfg.resolution.stack_graph.max_path_depth == 20
+        assert cfg.resolution.import_graph.max_import_depth == 20
 
     def test_mutation_config_deny_list(self):
         """Deny list should contain sensitive paths."""

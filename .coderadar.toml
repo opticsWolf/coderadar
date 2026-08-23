@@ -64,15 +64,10 @@ include_same_package = true
 # ── Carried, not yet read ──────────────────────────────────────────────────
 # These are accepted and stored, but no live path consults them. They are
 # kept rather than cut because the decision about the code that would read
-# them — stack_graph.rs, signature.rs, the query cache — is a separate one.
+# them — signature.rs, the query cache — is a separate one.
 # Setting them changes nothing today. ([resolution.lsp] is still accepted by
 # the schema and deliberately not written here: the pool it configures is
 # never constructed, so a value would only be noise.)
-
-[resolution.stack_graph]
-rules_dir = ""
-max_path_depth = 10
-incremental = true
 
 [resolution.signature]
 min_score = 0.5

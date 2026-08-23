@@ -17,10 +17,6 @@ class TestPythonImportResolution:
         """from .models import User should resolve within package."""
         pass
 
-    def test_confidence_in_stack_graph_band(self):
-        """L1 edges must have confidence >= 0.90."""
-        pass
-
 
 class TestCyclicCallGraphTerminates:
     """def a(): b() / def b(): a() → find_callers("a", 10) returns, not loops."""

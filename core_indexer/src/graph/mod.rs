@@ -10,7 +10,6 @@ use lru::LruCache;
 use parking_lot::RwLock;
 
 use crate::resolve::cache::ResolutionCache;
-use crate::resolve::stack_graph::StackGraphResolver;
 use crate::storage;
 use crate::types::*;
 use crate::extract;
@@ -66,7 +65,6 @@ pub struct CodeGraph {
     pub projection: RwLock<Arc<ProjectedGraph>>,
 
     // Graph structures (separate locks — not part of projection)
-    pub stack_graph_resolver: RwLock<StackGraphResolver>,
     pub import_graph: RwLock<ImportGraph>,
     pub call_graph: RwLock<CallGraph>,
 
@@ -101,7 +99,6 @@ impl CodeGraph {
         Self {
             store: None, // set by caller with CodeGraph::with_store() for persistence
             projection: RwLock::new(Arc::new(projection)),
-            stack_graph_resolver: RwLock::new(StackGraphResolver::new()),
             import_graph: RwLock::new(ImportGraph::new()),
             call_graph: RwLock::new(CallGraph::new()),
             resolution_cache: RwLock::new(ResolutionCache::new()),

@@ -33,13 +33,6 @@ class ProjectConfig(BaseModel):
     exclude: List[str] = ["**/migrations/**", "**/__pycache__/**", "**/.venv/**"]
 
 
-class StackGraphConfig(BaseModel):
-    """Carried, not read on any live path — see `CodeRadarConfig`."""
-    rules_dir: str = ""
-    max_path_depth: int = 10
-    incremental: bool = True
-
-
 class ImportGraphConfig(BaseModel):
     max_import_depth: int = 3
     include_same_package: bool = True
@@ -79,7 +72,6 @@ class LSPConfig(BaseModel):
 
 class ResolutionConfig(BaseModel):
     min_confidence: float = 0.3
-    stack_graph: StackGraphConfig = Field(default_factory=StackGraphConfig)
     import_graph: ImportGraphConfig = Field(default_factory=ImportGraphConfig)
     signature: SignatureConfig = Field(default_factory=SignatureConfig)
     lsp: LSPConfig = Field(default_factory=LSPConfig)
@@ -151,11 +143,11 @@ class CodeRadarConfig(BaseModel):
     `.harness/config.toml`, whose file was deleted in 105762e while its
     loader stayed behind.
 
-    Four are carried but not yet read, each marked on its own model:
-    `resolution.stack_graph`, `resolution.signature`, `resolution.lsp` and
-    `query`. They wait on the decision about the code that would read them
-    (stack_graph.rs, signature.rs, lsp/pool.py) rather than being cut ahead
-    of it.
+    Three are carried but not yet read, each marked on its own model:
+    `resolution.signature`, `resolution.lsp` and `query`. They wait on the
+    decision about the code that would read them (signature.rs, lsp/pool.py)
+    rather than being cut ahead of it. `resolution.stack_graph` went with
+    stack_graph.rs, which resolved nothing.
     """
     project: ProjectConfig = Field(default_factory=ProjectConfig)
     resolution: ResolutionConfig = Field(default_factory=ResolutionConfig)
