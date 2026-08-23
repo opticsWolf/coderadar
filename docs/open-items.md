@@ -83,10 +83,17 @@ node, so C is the sibling of the case that broke, tested only by proxy.
 
 No production path reaches any of them. `tool_router.py` was already named in
 `v0.7-improvement-plan.md` §4 ("either wire it to the real facade or delete it
-and the tests") and was the one §4 item not resolved. `lsp/` is documented in
-the README's resolution cascade as **L5, "optional, disabled by default"** —
-so its status is at least honest; `agent/` and `tool_router.py` have no such
-cover.
+and the tests") and was the one §4 item not resolved.
+
+`lsp/` was the one the README sold — the resolution cascade listed it as
+**L5, confidence 1.00, "optional, disabled by default"**, which reads as
+shipped-but-off rather than absent. **Resolved before the v0.7.0 tag:** the row
+now reads "**Planned** — not wired into the cascade", with a note that L1–L4
+are what run. The code stays and the claim goes, so the remaining question for
+`lsp/` is ordinary scheduling rather than a documentation gap.
+
+`agent/` and `tool_router.py` are still open on cut-or-wire, and neither is
+sold in the README.
 
 This is the same call §3 and §4 of the v0.7 plan made twice already (~100 inert
 config knobs, ~4,300 lines of dead code, the `mutations` CLI command): **wire

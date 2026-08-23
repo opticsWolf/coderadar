@@ -1,4 +1,4 @@
-# CodeRadar v0.6.47
+# CodeRadar v0.7.0
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -197,7 +197,9 @@ not assume the cwd is the project:
 | L2 | Signature Match | 0.40–0.79 | All |
 | L3 | Framework Resolvers | 0.80–1.00 | Python, Go, Rust |
 | L4 | Embedding (Python) | 0.20–0.39 | Python |
-| L5 | LSP Override | 1.00 | Optional, disabled by default |
+| L5 | LSP Override | — | **Planned** — not wired into the cascade |
+
+> **L5 (LSP Override) is planned, not shipped.** `py_agent/src/coderadar/lsp/` holds a server pool and an override type, but no production path reaches them — the resolution cascade runs L1–L4 only. The row is kept here because the layer numbering is referenced throughout the specs; it will move to shipped when the override is wired behind its config flag.
 
 > **Stack Graphs (L1 in the v3.3 spec) was deferred to post-v1 and its placeholder module has been removed.** CodeGraph ships 30+ languages at production scale with zero Stack Graphs dependency — compiler-grade scope disambiguation is not required for MCP agent use cases.
 
@@ -223,7 +225,7 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
 
-## v0.6.47 Feature Highlights
+## v0.7.0 Feature Highlights
 
 The v0.7 improvement plan, start to finish — write-path correctness, temporal
 truth, scaling, dead-code retirement, configuration, and the MCP layer.

@@ -3,6 +3,6 @@ members = ["core_indexer"]
 resolver = "2"
 
 [workspace.package]
-version = "0.6.48"
+version = "0.7.0"
 edition = "2021"
 license = "MIT"
