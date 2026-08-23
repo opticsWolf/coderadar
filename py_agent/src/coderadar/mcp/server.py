@@ -128,7 +128,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.37",
+        version="0.6.38",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -846,6 +846,15 @@ def requires_index(func):
     """
     @functools.wraps(func)
     def wrapper(*args: Any, **kwargs: Any) -> str:
+        # The index is built on a background thread so the handshake can be
+        # answered immediately; this is where a handler that arrived early
+        # waits for it. Idempotent, so it is also what starts the index if
+        # nothing else has yet.
+        from coderadar.mcp.startup import ensure_ready, progress_message
+        outcome = ensure_ready()
+        if not outcome.ready:
+            return progress_message(outcome)
+
         try:
             from coderadar._core import graph_stats
             if graph_stats().get("modules", 0) == 0:

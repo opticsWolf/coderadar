@@ -117,7 +117,7 @@ def _activate(project_root) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.37", prog_name="coderadar",
+@click.version_option(version="0.6.38", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -576,6 +576,7 @@ def serve(project_path: str | None):
     import coderadar
     from .mcp import serve as mcp_serve
     from .mcp.roots import adopt_project_root, describe, resolve_project_root
+    from .mcp.startup import BackgroundIndex, configure
 
     # MCP clients launch servers from wherever they happen to be, so the cwd
     # is a poor guess and `--path` is optional. Climb the ladder, then move
@@ -593,25 +594,26 @@ def serve(project_path: str | None):
     with contextlib.redirect_stdout(sys.stderr):
         _activate(".")
 
-    # Load the code graph by running analyze() on the project root.
-    # This re-reads all source files, detects changes since last index,
-    # and ensures the in-memory GLOBAL_GRAPH is always fresh.
-    # One-time startup cost (seconds) — the server is long-lived.
+    # Index on a background thread so the client's `initialize` is answered
+    # at once. Indexing a large repo takes minutes, and a client that waits
+    # that long for the handshake concludes the server is hung rather than
+    # starting. Every tool handler calls `ensure_ready()` on its way in, so a
+    # call that arrives early waits for the index and then reports progress
+    # instead of answering from a half-built graph.
+    #
+    # This is only safe because `analyze` releases the GIL; around a
+    # GIL-holding analyze, the background thread would have frozen the event
+    # loop for the whole index.
     #
     # '.' rather than the absolute root on purpose: entity ids are prefixed
     # with the path walked, and `_reindex` re-walks '.' later. Both spellings
     # have to agree or the second index orphans the first one's ids.
-    print("Indexing .../{}...".format(resolved.path.name), file=sys.stderr)
-    graph = coderadar.analyze(".")
-    try:
-        from coderadar._core import graph_stats
-        stats = graph_stats()
-        print(f"Loaded: {stats.get('modules', 0)} modules, "
-              f"{stats.get('functions', 0)} functions, "
-              f"{stats.get('call_edges', 0)} call edges", file=sys.stderr)
-    except ImportError:
-        print("MCP server ready", file=sys.stderr)
-    mcp_serve(graph)
+    index = BackgroundIndex(root=".")
+    configure(index)
+    index.start()
+    print(f"Indexing {resolved.path} in the background...", file=sys.stderr)
+
+    mcp_serve(coderadar.CodeGraph())
 
 
 @main.command()
