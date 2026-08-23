@@ -444,8 +444,33 @@ fn project_walk(root: &str, project: &graph::ProjectConfig) -> ignore::Walk {
 
 // ── analyze() ──────────────────────────────────────────────────────────────
 
+/// What `analyze_inner` has to say once it is done.
+struct AnalyzeOutcome {
+    files_indexed: usize,
+    total_entities: usize,
+    failures: Vec<String>,
+    panicked_workers: usize,
+}
+
 #[pyfunction]
-fn analyze(root: &str) -> PyResult<PyObject> {
+fn analyze(py: Python<'_>, root: &str) -> PyResult<PyObject> {
+    // The walk, the parse, the resolution cascade and the persist all run
+    // with the GIL released. `analyze` used to hold it end to end — 3.3 s on
+    // this project, minutes on a large repo — so any asyncio caller
+    // (`asyncio.to_thread(analyze, ...)`, the MCP server's background init)
+    // froze for the whole index instead of merely waiting on it.
+    let outcome = py.allow_threads(|| analyze_inner(root));
+
+    let dict = PyDict::new(py);
+    dict.set_item("files_indexed", outcome.files_indexed)?;
+    dict.set_item("entities_extracted", outcome.total_entities)?;
+    // Silence used to be indistinguishable from success here.
+    dict.set_item("extraction_failures", outcome.failures)?;
+    dict.set_item("panicked_workers", outcome.panicked_workers)?;
+    Ok(dict.into())
+}
+
+fn analyze_inner(root: &str) -> AnalyzeOutcome {
     use std::fs;
     use crate::types::Language;
 
@@ -666,14 +691,7 @@ fn analyze(root: &str) -> PyResult<PyObject> {
         .ok()
         .or_else(|| Some(std::path::PathBuf::from(root)));
 
-    let py = unsafe { Python::assume_gil_acquired() };
-    let dict = PyDict::new(py);
-    dict.set_item("files_indexed", files_indexed)?;
-    dict.set_item("entities_extracted", total_entities)?;
-    // Silence used to be indistinguishable from success here.
-    dict.set_item("extraction_failures", failures)?;
-    dict.set_item("panicked_workers", panicked_workers)?;
-    Ok(dict.into())
+    AnalyzeOutcome { files_indexed, total_entities, failures, panicked_workers }
 }
 
 // ── query_graph() ──────────────────────────────────────────────────────────
@@ -742,31 +760,36 @@ mod git_bindings {
 
 #[pyfunction]
 fn update_file(
-    file_path: &str, content: Option<&str>, force: Option<bool>,
+    py: Python<'_>, file_path: &str, content: Option<&str>, force: Option<bool>,
 ) -> PyResult<PyObject> {
-    let py = unsafe { Python::assume_gil_acquired() };
-    with_graph(|graph, _snap| {
-        let outcome = graph
-            .update_file(file_path, content, force)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-        let quality = match outcome.parse_quality {
-            crate::types::ParseQuality::Clean => "clean",
-            crate::types::ParseQuality::Partial => "partial",
-            crate::types::ParseQuality::Tainted => "tainted",
-            crate::types::ParseQuality::Deferred => "deferred",
-        };
-        let dict = PyDict::new(py);
-        // "Fully applied" means the file parsed cleanly and the graph took
-        // every entity in it; a recovered parse is a partial update.
-        dict.set_item("fully_applied", outcome.parse_errors == 0)?;
-        dict.set_item("entities_added", outcome.entities_added)?;
-        dict.set_item("entities_removed", outcome.entities_removed)?;
-        dict.set_item("affected_files", outcome.affected_files)?;
-        dict.set_item("parse_quality", quality)?;
-        dict.set_item("parse_errors", outcome.parse_errors)?;
-        dict.set_item("elapsed_ms", outcome.elapsed_ms)?;
-        Ok(dict.into())
-    })
+    // Re-parse, re-resolve and persist without the GIL, like `analyze`. The
+    // lock on the global graph is taken inside, so it is held for the work
+    // and released before the dict is built.
+    let outcome = py.allow_threads(|| {
+        let guard = GLOBAL_GRAPH.read();
+        match guard.as_ref() {
+            Some(graph) => graph.update_file(file_path, content, force),
+            None => Err("No graph loaded — run coderadar init first".to_string()),
+        }
+    }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+
+    let quality = match outcome.parse_quality {
+        crate::types::ParseQuality::Clean => "clean",
+        crate::types::ParseQuality::Partial => "partial",
+        crate::types::ParseQuality::Tainted => "tainted",
+        crate::types::ParseQuality::Deferred => "deferred",
+    };
+    let dict = PyDict::new(py);
+    // "Fully applied" means the file parsed cleanly and the graph took
+    // every entity in it; a recovered parse is a partial update.
+    dict.set_item("fully_applied", outcome.parse_errors == 0)?;
+    dict.set_item("entities_added", outcome.entities_added)?;
+    dict.set_item("entities_removed", outcome.entities_removed)?;
+    dict.set_item("affected_files", outcome.affected_files)?;
+    dict.set_item("parse_quality", quality)?;
+    dict.set_item("parse_errors", outcome.parse_errors)?;
+    dict.set_item("elapsed_ms", outcome.elapsed_ms)?;
+    Ok(dict.into())
 }
 
 /// Drop a deleted file's entities from the graph and retire them (plan §1.3).

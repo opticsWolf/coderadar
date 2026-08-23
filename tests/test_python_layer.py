@@ -1317,3 +1317,88 @@ class TestPlanPreviewsAreDiffs:
         assert "+    return a + 1\n" in preview, preview
         # The file itself must be untouched by a dry run.
         assert target.read_text(encoding="utf-8") == "def f(a):\n    return a\n"
+
+
+class TestAnalyzeReleasesTheGIL:
+    """`analyze` held the GIL for the whole index (measured 3.3s on this repo).
+
+    Any asyncio caller — `asyncio.to_thread(analyze, root)`, the MCP server's
+    background init — froze for the duration rather than merely waiting, so
+    the client saw a hung server instead of a starting one.
+    """
+
+    @staticmethod
+    def _largest_stall(work, tick=0.01):
+        """Run `work`; return (longest ticker gap, wall time of the work)."""
+        import threading
+        import time
+
+        stop = threading.Event()
+        gaps = []
+
+        def ticker():
+            last = time.perf_counter()
+            while not stop.is_set():
+                time.sleep(tick)
+                now = time.perf_counter()
+                gaps.append(now - last)
+                last = now
+
+        t = threading.Thread(target=ticker, daemon=True)
+        t.start()
+        started = time.perf_counter()
+        try:
+            work()
+        finally:
+            wall = time.perf_counter() - started
+            stop.set()
+            t.join(timeout=2)
+        return (max(gaps) if gaps else 0.0), wall
+
+    def test_a_ticker_thread_keeps_running_during_analyze(self, tmp_path):
+        try:
+            from coderadar._core import analyze
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+
+        # Enough files that indexing takes long enough to observe.
+        for i in range(60):
+            (tmp_path / f"m{i}.py").write_text(
+                "\n".join(
+                    f"def f{i}_{j}(a, b):\n    return f{i}_{j - 1}(a, b) if a else b\n"
+                    for j in range(1, 20)
+                ),
+                encoding="utf-8",
+            )
+
+        stall, wall = self._largest_stall(lambda: analyze(str(tmp_path)))
+
+        # Held throughout, the ticker records one gap as long as the whole
+        # index — so the threshold is stated against this run's own wall time
+        # rather than a fixed number that a fast machine could satisfy while
+        # still holding the GIL.
+        assert wall > 0.15, f"fixture indexed too fast to measure ({wall:.3f}s)"
+        assert stall < wall / 2, (
+            f"ticker stalled {stall:.3f}s of a {wall:.3f}s index — GIL held")
+
+    def test_a_ticker_thread_keeps_running_during_update_file(self, tmp_path):
+        try:
+            from coderadar._core import analyze, update_file
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+
+        body = "\n".join(
+            f"def g{j}(a, b):\n    return g{j - 1}(a, b) if a else b\n"
+            for j in range(1, 6000)
+        )
+        target = tmp_path / "big.py"
+        target.write_text(body, encoding="utf-8")
+        analyze(str(tmp_path))
+
+        changed = body.replace("return g1(a, b)", "return g1(b, a)")
+        stall, wall = self._largest_stall(
+            lambda: update_file(str(target), changed, None))
+
+        assert wall > 0.15, f"fixture updated too fast to measure ({wall:.3f}s)"
+        assert stall < wall / 2, (
+            f"ticker stalled {stall:.3f}s of a {wall:.3f}s update — GIL held")
