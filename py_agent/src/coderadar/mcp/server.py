@@ -128,7 +128,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.36",
+        version="0.6.37",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -1657,6 +1657,8 @@ def _reindex(graph: Any, with_embeddings: bool = False) -> str:
         from coderadar._core import analyze as _analyze, graph_stats
         # Use relative root ('.') to keep entity IDs consistent with startup
         # (analyze('.')) — absolute os.getcwd() would change ID prefixes.
+        # The server chdir's onto the resolved project root before serving,
+        # so '.' is the project root by construction rather than by luck.
         _analyze('.')
         stats = graph_stats()
         lines = [
@@ -1794,8 +1796,15 @@ def _render_relationships(
 def _canonical_entity_id(entity_id: str) -> str:
     """Resolve an entity ID to its canonical in-graph form.
 
-    Handles both relative (`.\\...`) and absolute (`D:\\...`) path prefixes
-    by probing the graph with a few candidate forms.
+    The graph is always walked as `.` from the project root — the server
+    chdir's onto the resolved root at startup — so in-graph ids always carry
+    that same relative prefix. What varies is what the *agent* sends: an
+    absolute path it read off a tool result, or the other separator. Those
+    are normalised here.
+
+    This used to also probe relative to absolute, back when the graph prefix
+    could be either because cwd and the analyzed root could differ. That
+    candidate can no longer match anything, so it is gone.
     """
     try:
         from coderadar._core import lookup_entity
@@ -1806,10 +1815,6 @@ def _canonical_entity_id(entity_id: str) -> str:
 
     import os
     candidates: list[str] = []
-
-    # Relative → absolute
-    if entity_id.startswith('.\\') or entity_id.startswith('./'):
-        candidates.append(os.path.join(os.getcwd(), entity_id[2:]))
 
     # Absolute → relative (with ./ prefix and bare)
     if os.path.isabs(entity_id):

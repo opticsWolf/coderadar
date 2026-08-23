@@ -117,7 +117,7 @@ def _activate(project_root) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.36", prog_name="coderadar",
+@click.version_option(version="0.6.37", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -553,9 +553,10 @@ def mcp():
 
 
 @mcp.command()
-@click.option("--path", "project_path", type=click.Path(exists=True), default=".",
-              help="Project root to serve.")
-def serve(project_path: str):
+@click.option("--path", "project_path", type=click.Path(exists=True), default=None,
+              help="Project root to serve. Defaults to walking up from the cwd "
+                   "looking for a .coderadar marker.")
+def serve(project_path: str | None):
     """Start the CodeRadar MCP server over stdio.
 
     Connect an MCP client (Claude Code, Cursor, etc.) to this server to get
@@ -574,15 +575,34 @@ def serve(project_path: str):
     """
     import coderadar
     from .mcp import serve as mcp_serve
+    from .mcp.roots import adopt_project_root, describe, resolve_project_root
 
-    _activate(project_path)
+    # MCP clients launch servers from wherever they happen to be, so the cwd
+    # is a poor guess and `--path` is optional. Climb the ladder, then move
+    # the process onto the answer: every read helper in the server resolves
+    # graph paths against the cwd, and entity ids carry the prefix analyze()
+    # walked, so cwd and root have to be the same directory or lookups miss.
+    resolved = resolve_project_root(path_flag=project_path)
+    adopt_project_root(resolved)
+    print(describe(resolved), file=sys.stderr)
+
+    # stdout is the JSON-RPC transport from here on; anything printed to it
+    # that is not a protocol frame desynchronises the client. _activate
+    # reports ignored config keys through rich, which writes to stdout.
+    import contextlib
+    with contextlib.redirect_stdout(sys.stderr):
+        _activate(".")
 
     # Load the code graph by running analyze() on the project root.
     # This re-reads all source files, detects changes since last index,
     # and ensures the in-memory GLOBAL_GRAPH is always fresh.
     # One-time startup cost (seconds) — the server is long-lived.
-    print(f"Indexing {project_path}...", file=sys.stderr)
-    graph = coderadar.analyze(project_path)
+    #
+    # '.' rather than the absolute root on purpose: entity ids are prefixed
+    # with the path walked, and `_reindex` re-walks '.' later. Both spellings
+    # have to agree or the second index orphans the first one's ids.
+    print("Indexing .../{}...".format(resolved.path.name), file=sys.stderr)
+    graph = coderadar.analyze(".")
     try:
         from coderadar._core import graph_stats
         stats = graph_stats()
