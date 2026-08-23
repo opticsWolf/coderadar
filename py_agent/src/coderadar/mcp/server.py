@@ -128,7 +128,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.34",
+        version="0.6.35",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -606,20 +606,24 @@ def _get_stale_files(file_paths: list[str]) -> list[dict]:
     """
     stale: list[dict] = []
     try:
-        # Check for index timestamp marker
-        # The index stores its snapshot time; we compare file mtime against it
         from coderadar._core import graph_stats
         stats = graph_stats()
-        index_epoch = stats.get("epoch", 0)
-    except ImportError:
+        # This read a key named "epoch" that graph_stats never set, so
+        # `indexed_at` was always 0 and the guard below never passed — every
+        # staleness banner in this server was unreachable. The core now sets
+        # `indexed_at` at each commit_projection.
+        indexed_at = stats.get("indexed_at", 0.0)
+    except (ImportError, RuntimeError):
+        # RuntimeError: no graph loaded yet — nothing to be stale against.
+        return stale
+
+    if not indexed_at:
         return stale
 
     for fp in file_paths:
         try:
             mtime = os.path.getmtime(fp)
-            # Compare file modification time against last index time
-            # (epoch is stored as seconds when indexed; 0 means unknown)
-            if index_epoch > 0 and mtime > index_epoch:
+            if mtime > indexed_at:
                 stale.append({"path": fp, "mtime": mtime})
         except OSError:
             pass

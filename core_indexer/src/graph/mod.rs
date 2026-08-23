@@ -70,6 +70,9 @@ pub struct CodeGraph {
 
     // Configuration (immutable after construction)
     pub config: GraphConfig,
+
+    /// Unix seconds of the last committed projection. See `commit_projection`.
+    pub indexed_at: RwLock<f64>,
 }
 
 impl CodeGraph {
@@ -100,6 +103,7 @@ impl CodeGraph {
             call_graph: RwLock::new(CallGraph::new()),
             resolution_cache: RwLock::new(ResolutionCache::new()),
             config,
+            indexed_at: RwLock::new(0.0),
         }
     }
 
@@ -111,6 +115,19 @@ impl CodeGraph {
     /// Atomically swap the projection with a new version (caller holds write lock).
     pub fn commit_projection(&self, new_projection: ProjectedGraph) {
         *self.projection.write() = Arc::new(new_projection);
+        // Unix seconds of the last commit. `graph_stats()` hands this to the
+        // MCP layer, whose staleness banner compares it against file mtimes;
+        // it used to read a key named "epoch" that nothing ever set, so every
+        // banner in the server was unreachable.
+        *self.indexed_at.write() = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+    }
+
+    /// Unix seconds of the last `commit_projection`, or 0.0 before the first.
+    pub fn indexed_at(&self) -> f64 {
+        *self.indexed_at.read()
     }
 
     // ── Entity access helpers ──────────────────────────────────────────

@@ -60,7 +60,7 @@ class TestMCPCreation:
         from coderadar.mcp.server import create_server
         server = create_server(None)
         assert server.name == "CodeRadar"
-        assert server.version == "0.6.34"
+        assert server.version == "0.6.35"
 
     def test_server_has_call_tool(self):
         from coderadar.mcp.server import create_server
@@ -1302,3 +1302,48 @@ class TestAsOf:
         from coderadar.mcp.server import _as_of
         result = _as_of(None, "2025-01-01T00:00:00Z", "", ["User"])
         assert isinstance(result, str) and len(result) > 0
+
+
+class TestStalenessBannerFires:
+    """`_get_stale_files` read `stats["epoch"]`, a key graph_stats never set.
+
+    So `index_epoch` was always 0, the `> 0` guard never passed, and every
+    staleness banner in the server was unreachable — while `rename` went on
+    writing byte spans derived from a possibly-stale index.
+    """
+
+    def test_graph_stats_carries_indexed_at(self, tmp_path):
+        try:
+            from coderadar._core import analyze, graph_stats
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        import time
+
+        (tmp_path / "s.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        before = time.time()
+        analyze(str(tmp_path))
+        stats = graph_stats()
+
+        assert stats["indexed_at"] >= before
+        assert stats["indexed_at"] <= time.time() + 1
+
+    def test_a_file_touched_after_indexing_reads_as_stale(self, tmp_path):
+        try:
+            from coderadar._core import analyze
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        import os
+        import time
+        from coderadar.mcp.server import _get_stale_files
+
+        target = tmp_path / "s.py"
+        target.write_text("def f():\n    return 1\n", encoding="utf-8")
+        analyze(str(tmp_path))
+
+        assert _get_stale_files([str(target)]) == [], "fresh index, nothing stale"
+
+        future = time.time() + 60
+        os.utime(target, (future, future))
+        stale = _get_stale_files([str(target)])
+
+        assert [s["path"] for s in stale] == [str(target)]

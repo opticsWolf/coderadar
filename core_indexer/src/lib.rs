@@ -1512,7 +1512,7 @@ fn traverse_unresolved(
 /// Get graph statistics.
 #[pyfunction]
 fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
-    with_graph(|_graph, snap| {
+    with_graph(|graph, snap| {
         let dict = PyDict::new(py);
         dict.set_item("modules", snap.modules.len())?;
         dict.set_item("classes", snap.classes.len())?;
@@ -1524,6 +1524,9 @@ fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
         // Total call edges
         let total_calls: usize = snap.callees_by_caller.values().map(|s| s.len()).sum();
         dict.set_item("call_edges", total_calls)?;
+        // Unix seconds of the last projection commit; 0.0 means never indexed.
+        // The MCP staleness banner reads this.
+        dict.set_item("indexed_at", graph.indexed_at())?;
         Ok(dict.into())
     })
 }
