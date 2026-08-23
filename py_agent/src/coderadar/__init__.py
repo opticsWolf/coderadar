@@ -222,48 +222,6 @@ class CodeGraph:
 
         return results
 
-    def as_of(self, timestamp: str) -> "Snapshot":
-        """Return a point-in-time snapshot of the graph via Macrame.
-
-        Macrame stores every version of every entity and edge, so
-        as_of() reconstructs the graph as it existed at timestamp.
-
-        Args:
-            timestamp: ISO-8601 datetime string (e.g. "2025-06-15T10:00:00Z").
-
-        Returns:
-            A Snapshot that supports query/explore/callers_of at that time point.
-        """
-        # Macrame's reconstruct(ts) returns the graph at that timestamp
-        # Wrapped in a lightweight Snapshot handle
-        return Snapshot(self, timestamp)
-
-    def callers_of(self, entity_id: str) -> List[Dict[str, Any]]:
-        """Find all callers of an entity via the reverse call index.
-
-        Uses ProjectedGraph's callers_by_callee reverse index for O(1) lookup.
-
-        Args:
-            entity_id: EntityId to find callers for.
-
-        Returns:
-            List of dicts with caller entity_id, name, file_path, and line.
-        """
-        return self._get_incoming(entity_id, ["calls"])
-
-    def callees_of(self, entity_id: str) -> List[Dict[str, Any]]:
-        """Find all callees called by an entity via the forward call index.
-
-        Uses ProjectedGraph's callees_by_caller forward index.
-
-        Args:
-            entity_id: EntityId to find callees for.
-
-        Returns:
-            List of dicts with callee entity_id, name, file_path, and line.
-        """
-        return self._get_outgoing(entity_id, ["calls"])
-
     def _get_incoming(self, entity_id: str, edge_kinds: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         """Internal: get incoming edges for an entity."""
         # Delegates to Rust core via _core module
@@ -477,7 +435,8 @@ class CodeGraph:
         return int(result.get("entities_removed", 0))
 
     def watch(self, paths: Optional[List[str]] = None,
-              debounce_ms: int = 100) -> "Watcher":
+              debounce_ms: Optional[int] = None,
+              max_file_size_bytes: Optional[int] = None) -> "Watcher":
         """Start watching paths for file changes and auto-update the graph.
 
         Returns a Watcher handle that runs the event loop.
@@ -488,9 +447,11 @@ class CodeGraph:
 
         Args:
             paths: Directories to watch (default: ["src/", "tests/"]).
-            debounce_ms: Debounce window in milliseconds (default: 100).
+            debounce_ms: Debounce window; None takes it from `[watch]`.
+            max_file_size_bytes: Skip larger files; None takes it from `[watch]`.
         """
-        return Watcher(self, paths or ["src/", "tests/"], debounce_ms)
+        return Watcher(self, paths or ["src/", "tests/"], debounce_ms,
+                       max_file_size_bytes)
 
     def batch(self) -> "BatchContext":
         """Context manager for batched updates."""
@@ -800,34 +761,20 @@ def load(db_path: str) -> CodeGraph:
 
 
 def watch(root: str) -> "Watcher":
-    """Start watching a directory for changes.
+    """Index `root`, then return a watcher over it.
+
+    This used to construct a stub `Watcher(root)` defined further down the
+    module, which the real `Watcher` then shadowed — so every call raised
+    `TypeError: __init__() missing 1 required positional argument`. The
+    watcher needs a populated graph to update, hence the `analyze` first.
 
     Usage:
         with coderadar.watch("src/") as w:
             for report in w:
                 print(report.affected_files)
     """
-    return Watcher(root)
-
-
-class Watcher:
-    """File watcher that yields UpdateReports on changes."""
-
-    def __init__(self, root: str):
-        self.root = root
-        self._graph = CodeGraph()
-
-    def __enter__(self) -> "Watcher":
-        return self
-
-    def __exit__(self, *args) -> None:
-        pass
-
-    def __iter__(self) -> "Watcher":
-        return self
-
-    def __next__(self) -> UpdateReport:
-        raise StopIteration  # Stub
+    graph = analyze(root)
+    return graph.watch([root])
 
 
 def resolve(qualified_name: str) -> List[Dict[str, Any]]:
@@ -885,47 +832,132 @@ class Watcher:
             if max_file_size_bytes is None else max_file_size_bytes)
         self._running = False
 
+    def start(self) -> "Watcher":
+        """Begin watching. Idempotent; `run_forever` and iteration call it."""
+        if self._running:
+            return self
+        from coderadar._core import start_watcher
+        # `--debounce` was stored here and never passed on, so every watcher
+        # ran at the 100 ms default whatever the user asked for.
+        start_watcher(self._paths, self._debounce_ms, self._max_file_size_bytes)
+        self._running = True
+        return self
+
+    def _apply(self, batch, echo: bool = False) -> UpdateReport:
+        """Apply one batch of changes to the graph, merged into one report.
+
+        A batch can touch several files, so the per-file reports are folded
+        together: the worst parse quality wins, `fully_applied` is the
+        conjunction, and the epochs span the whole batch.
+        """
+        import time
+        started = time.perf_counter()
+        affected: List[str] = []
+        changed: List[SymbolChange] = []
+        new_unresolved: List[dict] = []
+        newly_resolved: List[dict] = []
+        quality_rank = {"Clean": 0, "Partial": 1, "Tainted": 2}
+        quality = "Clean"
+        parse_errors = 0
+        fully_applied = True
+        epoch_before = None
+        epoch_after = None
+
+        for file_path, change_kind in batch:
+            # The watcher stats the path, so "Delete" now actually arrives;
+            # before, a deleted file's entities lived on in the graph until
+            # the next full analyze.
+            if change_kind == "Delete":
+                try:
+                    removed = self._graph.remove_file(file_path)
+                    affected.append(file_path)
+                    if echo:
+                        print(f"  - {file_path} ({removed} entities removed)")
+                except Exception as e:
+                    fully_applied = False
+                    if echo:
+                        print(f"  {file_path}: {e}")
+                continue
+
+            if change_kind not in ("Modify", "Any", "AnyContinuous", "Create"):
+                continue
+
+            try:
+                report = self._graph.update_file(file_path)
+            except Exception as e:
+                fully_applied = False
+                if echo:
+                    print(f"  {file_path}: {e}")
+                continue
+
+            affected.extend(report.affected_files or [file_path])
+            changed.extend(report.changed_symbols)
+            new_unresolved.extend(report.new_unresolved_references)
+            newly_resolved.extend(report.newly_resolved_references)
+            parse_errors += report.parse_errors
+            fully_applied = fully_applied and report.fully_applied
+            if quality_rank.get(report.parse_quality, 0) > quality_rank[quality]:
+                quality = report.parse_quality
+            if epoch_before is None:
+                epoch_before = report.epoch_before
+            epoch_after = report.epoch_after
+            if echo:
+                prefix = "+" if change_kind == "Create" else " "
+                print(f"  {prefix} {file_path} ({report.parse_quality})")
+
+        return UpdateReport(
+            affected_files=affected,
+            changed_symbols=changed,
+            new_unresolved_references=new_unresolved,
+            newly_resolved_references=newly_resolved,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            parse_quality=quality,
+            parse_errors=parse_errors,
+            fully_applied=fully_applied,
+            epoch_before=epoch_before if epoch_before is not None else 0,
+            epoch_after=epoch_after if epoch_after is not None else 0,
+        )
+
+    def __enter__(self) -> "Watcher":
+        return self.start()
+
+    def __exit__(self, *args) -> None:
+        self.stop()
+
+    def __iter__(self) -> "Watcher":
+        self.start()
+        return self
+
+    def __next__(self) -> UpdateReport:
+        """Block until the next batch, apply it, and return one report."""
+        from coderadar._core import next_watcher_batch
+        while self._running:
+            batch = next_watcher_batch()
+            if batch is None:
+                break
+            report = self._apply(batch)
+            # A batch of ignored paths applies to nothing; keep waiting
+            # rather than handing the caller an empty report.
+            if report.affected_files:
+                return report
+        raise StopIteration
+
     def run_forever(self) -> None:
         """Blocking loop: watch files and update graph on changes."""
         try:
-            from coderadar._core import start_watcher, next_watcher_batch
+            from coderadar._core import next_watcher_batch
+            self.start()
         except ImportError:
             print("Watcher not available")
             return
 
-        self._running = True
-        # `--debounce` was stored here and never passed on, so every watcher
-        # ran at the 100 ms default whatever the user asked for.
-        start_watcher(self._paths, self._debounce_ms, self._max_file_size_bytes)
         print(f"CodeRadar watcher: watching {self._paths}")
-
         try:
             while self._running:
                 batch = next_watcher_batch()
                 if batch is None:
                     break
-                for file_path, change_kind in batch:
-                    # The watcher stats the path, so "Delete" now actually
-                    # arrives; before, a deleted file's entities lived on in
-                    # the graph until the next full analyze.
-                    if change_kind == "Delete":
-                        try:
-                            removed = self._graph.remove_file(file_path)
-                            print(f"  - {file_path} ({removed} entities removed)")
-                        except Exception as e:
-                            print(f"  {file_path}: {e}")
-                    elif change_kind in ("Modify", "Any", "AnyContinuous"):
-                        try:
-                            report = self._graph.update_file(file_path)
-                            print(f"  {file_path} ({report.parse_quality})")
-                        except Exception as e:
-                            print(f"  {file_path}: {e}")
-                    elif change_kind == "Create":
-                        print(f"  + {file_path}")
-                        try:
-                            self._graph.update_file(file_path)
-                        except Exception as e:
-                            print(f"  {file_path}: {e}")
+                self._apply(batch, echo=True)
         except KeyboardInterrupt:
             print("\nWatcher stopped.")
             self._running = False

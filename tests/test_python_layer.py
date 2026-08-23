@@ -1134,3 +1134,78 @@ class TestEmbeddingModelAgreement:
 
         assert fake.call_args.kwargs["model_name"] == model
         assert fake.call_args.kwargs["dimension"] == dimension
+
+
+class TestWatcherIsOneClass:
+    """`__init__.py` defined `Watcher` twice with incompatible signatures.
+
+    The stub came first and the live class shadowed it, so the documented
+    `coderadar.watch(root)` — which called the stub — raised TypeError, and
+    the iteration protocol it advertised belonged to the dead half.
+    """
+
+    def test_module_watch_builds_the_live_watcher(self):
+        from unittest.mock import MagicMock, patch
+        import coderadar
+
+        graph = MagicMock()
+        with patch("coderadar.analyze", return_value=graph) as analyze:
+            watcher = coderadar.watch("src/")
+
+        analyze.assert_called_once_with("src/")
+        graph.watch.assert_called_once_with(["src/"])
+        assert watcher is graph.watch.return_value
+
+    def test_live_watcher_supports_with_and_for(self):
+        import coderadar
+        for attr in ("__enter__", "__exit__", "__iter__", "__next__"):
+            assert hasattr(coderadar.Watcher, attr), attr
+
+    def test_graph_watch_returns_that_class(self):
+        import coderadar
+        watcher = coderadar.CodeGraph().watch(["src/"])
+        assert isinstance(watcher, coderadar.Watcher)
+        assert watcher._paths == ["src/"]
+
+    def test_batch_folds_into_one_report(self):
+        """A batch touching three files yields one merged UpdateReport."""
+        from unittest.mock import MagicMock
+        import coderadar
+
+        def report(quality, errors, applied, before, after):
+            return coderadar.UpdateReport(
+                affected_files=[], changed_symbols=[],
+                new_unresolved_references=[], newly_resolved_references=[],
+                elapsed_ms=1.0, parse_quality=quality, parse_errors=errors,
+                fully_applied=applied, epoch_before=before, epoch_after=after,
+            )
+
+        graph = MagicMock()
+        graph.update_file.side_effect = [
+            report("Clean", 0, True, 4, 5),
+            report("Partial", 2, True, 5, 6),
+        ]
+        graph.remove_file.return_value = 3
+
+        watcher = coderadar.Watcher(graph, ["src/"])
+        merged = watcher._apply([
+            ("a.py", "Modify"), ("b.py", "Create"), ("c.py", "Delete"),
+        ])
+
+        assert merged.affected_files == ["a.py", "b.py", "c.py"]
+        # Worst quality wins; the epochs span the batch.
+        assert merged.parse_quality == "Partial"
+        assert merged.parse_errors == 2
+        assert (merged.epoch_before, merged.epoch_after) == (4, 6)
+        assert merged.fully_applied is True
+
+    def test_a_failing_file_clears_fully_applied(self):
+        from unittest.mock import MagicMock
+        import coderadar
+
+        graph = MagicMock()
+        graph.update_file.side_effect = RuntimeError("parse blew up")
+        merged = coderadar.Watcher(graph, ["src/"])._apply([("a.py", "Modify")])
+
+        assert merged.fully_applied is False
+        assert merged.affected_files == []

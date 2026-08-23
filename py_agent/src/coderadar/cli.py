@@ -117,7 +117,7 @@ def _activate(project_root) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.27", prog_name="coderadar",
+@click.version_option(version="0.6.28", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
