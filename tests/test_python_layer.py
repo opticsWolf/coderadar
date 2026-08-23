@@ -44,7 +44,7 @@ class TestConfigLoading:
         cfg = CodeRadarConfig()
         assert cfg.project.languages == ["python"]
         assert cfg.resolution.min_confidence == 0.3
-        assert cfg.embedding.dimension == 896
+        assert cfg.embedding.dimension == 384
         assert cfg.mutation.enabled is True
         assert cfg.query.default_top_k == 10
 
@@ -93,10 +93,14 @@ class TestConfigLoading:
         assert cfg.servers["rust"] == "rust-analyzer"
 
     def test_embedding_config_dimensions(self):
-        """Embedding config carries both full and truncated dimensions."""
+        """Embedding config carries both full and truncated dimensions.
+
+        384 is BAAI/bge-small-en-v1.5, the model both the index path and the
+        search path load. The pair moves together or similarity breaks.
+        """
         from coderadar.config import EmbeddingConfig
         cfg = EmbeddingConfig()
-        assert cfg.dimension == 896
+        assert cfg.dimension == 384
         assert cfg.truncated_dimension == 64
 
 
@@ -213,8 +217,8 @@ class TestEmbeddingDedup:
     def test_dedup_initialization(self):
         from coderadar.embedding.dedup import EmbeddingDedup
         dedup = EmbeddingDedup()
-        assert dedup.model_name == "jinaai/jina-code-embeddings-0.5b"
-        assert dedup.dimension == 896
+        assert dedup.model_name == "BAAI/bge-small-en-v1.5"
+        assert dedup.dimension == 384
         assert dedup.truncated_dimension == 64
         assert dedup.batch_size == 32
 
@@ -993,3 +997,132 @@ class TestConfiguredMutationPolicy:
         set_config({"mutation": {"enabled": False}})
         result = CodeGraph().apply(self._two_edit_plan(target))
         assert result.status == "RejectedPolicy"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Configuration changing what gets indexed (plan §3, step B)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestConfiguredWalk:
+    """`[project] roots` and `exclude` reach the walk `analyze` runs."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_config(self):
+        try:
+            from coderadar._core import set_config
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        yield
+        set_config({})
+
+    @staticmethod
+    def _project(root):
+        (root / "keep.py").write_text("def kept(): pass\n", encoding="utf-8")
+        (root / "vendor").mkdir()
+        (root / "vendor" / "dep.py").write_text("def vendored(): pass\n",
+                                                encoding="utf-8")
+        (root / "app").mkdir()
+        (root / "app" / "main.py").write_text("def app_fn(): pass\n",
+                                              encoding="utf-8")
+
+    @staticmethod
+    def _names():
+        from coderadar._core import search_entities
+        return {e["name"] for e in search_entities("", 200, "function")}
+
+    def test_without_config_everything_is_indexed(self, tmp_path):
+        from coderadar._core import analyze, set_config
+        self._project(tmp_path)
+        set_config({})
+        analyze(str(tmp_path))
+        assert {"kept", "vendored", "app_fn"} <= self._names()
+
+    def test_exclude_keeps_a_directory_out_of_the_index(self, tmp_path):
+        from coderadar._core import analyze, set_config
+        self._project(tmp_path)
+        set_config({"project": {"exclude": ["vendor/**"]}})
+        analyze(str(tmp_path))
+        names = self._names()
+        assert "vendored" not in names, names
+        assert {"kept", "app_fn"} <= names, names
+
+    def test_roots_narrows_the_walk(self, tmp_path):
+        from coderadar._core import analyze, set_config
+        self._project(tmp_path)
+        set_config({"project": {"roots": ["app"]}})
+        analyze(str(tmp_path))
+        names = self._names()
+        assert "app_fn" in names, names
+        assert "kept" not in names and "vendored" not in names, names
+
+    def test_empty_roots_means_the_whole_project(self, tmp_path):
+        """The default must not narrow anything — a wrong default here is a
+        silently truncated index."""
+        from coderadar._core import analyze, get_config, set_config
+        self._project(tmp_path)
+        set_config({})
+        assert get_config()["project"]["roots"] == []
+        analyze(str(tmp_path))
+        assert {"kept", "vendored", "app_fn"} <= self._names()
+
+
+class TestConfiguredStorePath:
+    @pytest.fixture(autouse=True)
+    def _reset_config(self):
+        try:
+            from coderadar._core import set_config
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        yield
+        set_config({})
+
+    def test_store_lands_where_the_config_says(self, tmp_path):
+        from coderadar._core import analyze, set_config
+        (tmp_path / "m.py").write_text("def f(): pass\n", encoding="utf-8")
+        set_config({"database": {"path": "custom/place/graph.db"}})
+        analyze(str(tmp_path))
+        assert (tmp_path / "custom" / "place" / "graph.db").exists()
+
+    def test_the_default_store_path_is_unchanged(self, tmp_path):
+        from coderadar._core import analyze, set_config
+        (tmp_path / "m.py").write_text("def f(): pass\n", encoding="utf-8")
+        set_config({})
+        analyze(str(tmp_path))
+        assert (tmp_path / ".coderadar" / "store" / "coderadar.db").exists()
+
+
+class TestEmbeddingModelAgreement:
+    """Index-time and query-time must name the same model.
+
+    They used to disagree — jina/896 in the config and EmbeddingDedup,
+    BAAI/384 in compute_embeddings and the MCP search path — which is a
+    search that returns confident nonsense rather than an error.
+    """
+
+    def test_one_source_for_model_and_dimension(self):
+        from coderadar.embedding import embedding_settings
+        model, dimension = embedding_settings()
+        assert isinstance(model, str) and model
+        assert dimension > 0
+
+    def test_dedup_defaults_match_the_configured_pair(self):
+        from coderadar.embedding import EmbeddingDedup, embedding_settings
+        model, dimension = embedding_settings()
+        dedup = EmbeddingDedup()
+        assert (dedup.model_name, dedup.dimension) == (model, dimension)
+
+    def test_compute_embeddings_uses_the_configured_model(self):
+        """Index-time takes its model from the same helper the search does."""
+        from unittest.mock import MagicMock, patch
+        import coderadar
+        from coderadar.embedding import embedding_settings
+        model, dimension = embedding_settings()
+
+        fake = MagicMock()
+        fake.return_value.embed_batch.return_value = []
+        with patch("coderadar.embedding.EmbeddingDedup", fake):
+            coderadar.CodeGraph().compute_embeddings()
+
+        assert fake.call_args.kwargs["model_name"] == model
+        assert fake.call_args.kwargs["dimension"] == dimension

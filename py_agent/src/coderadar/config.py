@@ -20,7 +20,10 @@ from pydantic import BaseModel, Field
 
 class ProjectConfig(BaseModel):
     languages: List[str] = ["python"]
-    roots: List[str] = ["src/", "tests/"]
+    # Empty walks the whole project root. A non-empty default would narrow
+    # indexing for every project that does not set `roots` — the file is
+    # loaded for real now, so a wrong default is a wrong index.
+    roots: List[str] = []
     exclude: List[str] = ["**/migrations/**", "**/__pycache__/**", "**/.venv/**"]
 
 
@@ -73,8 +76,12 @@ class ResolutionConfig(BaseModel):
 
 
 class EmbeddingConfig(BaseModel):
-    model: str = "jinaai/jina-code-embeddings-0.5b"
-    dimension: int = 896
+    # One model, one dimension. Index-time and query-time used to disagree
+    # (jina/896 here, BAAI/384 in compute_embeddings and the MCP search path),
+    # which is a broken search however carefully each half behaves. BAAI is
+    # the pair that already worked end to end.
+    model: str = "BAAI/bge-small-en-v1.5"
+    dimension: int = 384
     truncated_dimension: int = 64
     max_body_tokens: int = 2000
     batch_size: int = 32
@@ -88,7 +95,7 @@ class DatabaseConfig(BaseModel):
     edges as EdgeAssertions with properties. A single .db file contains
     the full bitemporal ledger.
     """
-    path: str = ".coderadar/coderadar.db"
+    path: str = ".coderadar/store/coderadar.db"
     sync_mode: str = "full"  # "full" | "normal" | "off"
     wal_autocheckpoint: int = 1000
 
@@ -218,3 +225,42 @@ def load_harness_config(project_root: Path) -> HarnessConfig:
         raw = tomllib.loads(config_path.read_text())
         return HarnessConfig(**raw)
     return HarnessConfig()
+
+
+def activate_config(project_root: Path) -> "ActivatedConfig":
+    """Load `project_root/.coderadar.toml` and push it into the Rust core.
+
+    Loading alone changed nothing before: every consumer built its own
+    defaults, so `load_config` was called from one test and nowhere else.
+    This is the step that makes the file take effect, and it is what the CLI
+    and the MCP server call at startup.
+
+    Only keys the file actually sets are sent (`exclude_unset`), so a project
+    that omits a section keeps the core's defaults rather than being handed
+    pydantic's — which matters for `[project] roots`, where the model default
+    would otherwise silently narrow indexing to `src/` and `tests/`.
+
+    The core reports back which keys it could use; `ignored` names those that
+    map to nothing yet. Callers may surface it — silence is what let a
+    hundred inert knobs look load-bearing for so long.
+    """
+    cfg = load_config(project_root)
+    payload = cfg.model_dump(exclude_unset=True, mode="json")
+    ignored: List[str] = []
+    try:
+        from coderadar._core import set_config
+    except ImportError:
+        return ActivatedConfig(config=cfg, ignored=ignored, applied={})
+    report = set_config(payload)
+    return ActivatedConfig(
+        config=cfg,
+        ignored=list(report.get("ignored", [])),
+        applied=dict(report.get("applied", {})),
+    )
+
+
+class ActivatedConfig(BaseModel):
+    """The configuration in force, plus what the core made of it."""
+    config: CodeRadarConfig
+    applied: Dict[str, Any] = Field(default_factory=dict)
+    ignored: List[str] = Field(default_factory=list)

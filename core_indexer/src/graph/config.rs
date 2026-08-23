@@ -3,6 +3,8 @@
 
 #[derive(Clone, Debug)]
 pub struct GraphConfig {
+    pub project: ProjectConfig,
+    pub database: DatabaseConfig,
     pub resolution: ResolutionConfig,
     pub stack_graph: StackGraphConfig,
     pub import_graph: ImportGraphConfig,
@@ -16,6 +18,8 @@ pub struct GraphConfig {
 impl Default for GraphConfig {
     fn default() -> Self {
         Self {
+            project: ProjectConfig::default(),
+            database: DatabaseConfig::default(),
             resolution: ResolutionConfig::default(),
             stack_graph: StackGraphConfig::default(),
             import_graph: ImportGraphConfig::default(),
@@ -25,6 +29,37 @@ impl Default for GraphConfig {
             query: QueryConfig::default(),
             git: GitConfig::default(),
         }
+    }
+}
+
+/// What `analyze` walks.
+#[derive(Clone, Debug)]
+pub struct ProjectConfig {
+    /// Subdirectories to index, relative to the project root. Empty (the
+    /// default) walks the whole root, which is what every caller got before
+    /// the config was wired and what a project without `[project] roots`
+    /// keeps getting.
+    pub roots: Vec<String>,
+    /// Glob patterns to skip, on top of the `.gitignore` rules `ignore`
+    /// already applies.
+    pub exclude: Vec<String>,
+}
+impl Default for ProjectConfig {
+    fn default() -> Self {
+        Self { roots: Vec::new(), exclude: Vec::new() }
+    }
+}
+
+/// Where the Macrame store lives.
+#[derive(Clone, Debug)]
+pub struct DatabaseConfig {
+    /// Relative to the project root, or absolute. The default is the path
+    /// `analyze` hardcoded before this was configurable.
+    pub path: String,
+}
+impl Default for DatabaseConfig {
+    fn default() -> Self {
+        Self { path: ".coderadar/store/coderadar.db".to_string() }
     }
 }
 

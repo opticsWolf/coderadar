@@ -334,7 +334,7 @@ class CodeGraph:
 
     # ── Embedding Pipeline ────────────────────────────────────────────
 
-    def compute_embeddings(self, model_name: str = "BAAI/bge-small-en-v1.5",
+    def compute_embeddings(self, model_name: Optional[str] = None,
                            batch_size: int = 32) -> Dict[str, int]:
         """Compute and store embeddings for all indexable entities.
 
@@ -343,15 +343,21 @@ class CodeGraph:
         immediately available for search_similar() queries.
 
         Args:
-            model_name: HuggingFace model name for fastembed.
+            model_name: HuggingFace model name for fastembed. None takes the
+                configured model, which is also what the search path loads —
+                a mismatch there silently breaks similarity.
             batch_size: Batch size for embedding generation.
 
         Returns:
             Dict with metrics: {generated, cached, total, errors}.
         """
-        from .embedding import EmbeddingDedup, EmbedTarget, compute_content_hash
+        from .embedding import (
+            EmbeddingDedup, EmbedTarget, compute_content_hash, embedding_settings,
+        )
 
-        dedup = EmbeddingDedup(model_name=model_name, batch_size=batch_size)
+        configured_model, dimension = embedding_settings()
+        dedup = EmbeddingDedup(model_name=model_name or configured_model,
+                               dimension=dimension, batch_size=batch_size)
         targets: List[EmbedTarget] = []
 
         try:

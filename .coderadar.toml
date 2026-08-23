@@ -3,7 +3,10 @@
 
 [project]
 languages = ["python"]
-roots     = ["src/", "tests/"]
+# `roots` narrows the walk to these subdirectories. Omitted (as here) the
+# whole project root is walked — which is what this repo needs, its sources
+# living under core_indexer/ and py_agent/. Setting it to a directory that
+# does not exist yields an empty index, so leave it out unless you mean it.
 exclude   = ["**/migrations/**", "**/__pycache__/**", "**/.venv/**"]
 
 [python]
@@ -41,18 +44,19 @@ timeout_ms = 5000
 override_threshold = 0.90
 
 [embedding]
-model = "jinaai/jina-code-embeddings-0.5b"
-dimension = 896
+# Index-time and query-time must name the same model: a dimension mismatch
+# produces confident nonsense rather than an error.
+model = "BAAI/bge-small-en-v1.5"
+dimension = 384
 truncated_dimension = 64
 max_body_tokens = 2000
 batch_size = 32
 workers = 2
 
 [database]
-path = ".harness/semantic.db"
-hnsw_ef_construction = 128
-hnsw_m = 16
-hnsw_ef_search = 64
+# Relative to the project root. This is where the Macrame store actually
+# lives; the old value named a .harness/ directory deleted in 105762e.
+path = ".coderadar/store/coderadar.db"
 
 [ingestion]
 batch_chunk_size = 200

@@ -91,8 +91,33 @@ def _extract_star_exports(project_root: Path) -> int:
     return int(report.get("applied", 0))
 
 
+def _activate(project_root) -> None:
+    """Load `.coderadar.toml` for `project_root` and push it into the core.
+
+    Called by every command that touches a project. Nothing read the file
+    before this, so the whole documented config surface had no effect; a
+    command that skips this call silently runs on defaults again.
+
+    Keys the core cannot use are reported on stderr rather than swallowed —
+    an inert knob that stays quiet is what this phase exists to remove.
+    """
+    from pathlib import Path
+    from .config import activate_config
+    try:
+        activated = activate_config(Path(project_root))
+    except Exception as exc:  # a broken config must not kill the command
+        console.print(f"[yellow]Config not applied:[/yellow] {exc}")
+        return
+    if activated.ignored:
+        console.print(
+            f"[dim]Config: {len(activated.ignored)} setting(s) with no consumer "
+            f"were ignored ({', '.join(activated.ignored[:3])}"
+            f"{', ...' if len(activated.ignored) > 3 else ''})[/dim]"
+        )
+
+
 @click.group()
-@click.version_option(version="0.6.25", prog_name="coderadar",
+@click.version_option(version="0.6.26", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -208,6 +233,7 @@ port = 0  # 0 = stdio only
 @click.argument("path", type=click.Path(exists=True), default=".")
 def analyze(path: str):
     """One-shot analysis without persistence."""
+    _activate(path)
     console.print(f"[bold]Analyzing[/bold] {path}...")
     import coderadar
     graph = coderadar.analyze(path)
@@ -259,6 +285,7 @@ def update(file: str, content: Optional[str]):
 @click.argument("path", type=click.Path(exists=True), default=".")
 def watch(path: str):
     """Long-running watcher; JSONL on stdout."""
+    _activate(path)
     import coderadar
     console.print(f"[bold]Watching[/bold] {path}...")
     with coderadar.watch(path) as w:
@@ -548,6 +575,8 @@ def serve(project_path: str):
     """
     import coderadar
     from .mcp import serve as mcp_serve
+
+    _activate(project_path)
 
     # Load the code graph by running analyze() on the project root.
     # This re-reads all source files, detects changes since last index,

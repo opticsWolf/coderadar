@@ -128,7 +128,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.25",
+        version="0.6.26",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -1168,7 +1168,9 @@ def _get_embedding_model():
     global _EMBED_MODEL
     if _EMBED_MODEL is None:
         from fastembed import TextEmbedding
-        _EMBED_MODEL = TextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        from coderadar.embedding import embedding_settings
+        model_name, _dimension = embedding_settings()
+        _EMBED_MODEL = TextEmbedding(model_name=model_name)
     return _EMBED_MODEL
 
 

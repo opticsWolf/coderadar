@@ -384,6 +384,54 @@ fn entity_ref_to_dict(
     }
 }
 
+/// Where the Macrame store file goes for `root`.
+///
+/// `[database] path` is taken relative to the project root unless it is
+/// already absolute, so a config cannot silently scatter stores outside the
+/// project it configures.
+fn store_path_for(root: &str, db: &graph::DatabaseConfig) -> std::path::PathBuf {
+    let configured = std::path::Path::new(&db.path);
+    if configured.is_absolute() {
+        configured.to_path_buf()
+    } else {
+        std::path::Path::new(root).join(configured)
+    }
+}
+
+/// The file walk `analyze` runs, honouring `[project] roots` and `exclude`.
+///
+/// Empty `roots` walks the whole project — the behaviour every caller had
+/// before the config was wired, and the one a project that does not set
+/// `roots` keeps. `exclude` patterns are gitignore-syntax globs applied on
+/// top of the `.gitignore` rules `ignore` already reads.
+fn project_walk(root: &str, project: &graph::ProjectConfig) -> ignore::Walk {
+    let root_path = std::path::Path::new(root);
+    let mut builder = match project.roots.first() {
+        Some(first) => ignore::WalkBuilder::new(root_path.join(first)),
+        None => ignore::WalkBuilder::new(root_path),
+    };
+    for extra in project.roots.iter().skip(1) {
+        builder.add(root_path.join(extra));
+    }
+
+    if !project.exclude.is_empty() {
+        let mut overrides = ignore::overrides::OverrideBuilder::new(root_path);
+        for pattern in &project.exclude {
+            // An override without "!" is a whitelist; negating it makes it a
+            // skip, which is what `exclude` means.
+            if let Err(e) = overrides.add(&format!("!{}", pattern)) {
+                eprintln!("Warning: ignoring bad exclude pattern {:?}: {}", pattern, e);
+            }
+        }
+        match overrides.build() {
+            Ok(o) => { builder.overrides(o); }
+            Err(e) => eprintln!("Warning: exclude patterns not applied: {}", e),
+        }
+    }
+
+    builder.build()
+}
+
 // ── analyze() ──────────────────────────────────────────────────────────────
 
 #[pyfunction]
@@ -391,11 +439,11 @@ fn analyze(root: &str) -> PyResult<PyObject> {
     use std::fs;
     use crate::types::Language;
 
-    let config = (*active_config()).clone();
-    let mut graph = CodeGraph::new(config);
+    let config = active_config();
+    let mut graph = CodeGraph::new((*config).clone());
 
     // Attach Macrame persistent store — Macrame/libSQL needs a file path, not a directory
-    let store_path = std::path::Path::new(root).join(".coderadar").join("store").join("coderadar.db");
+    let store_path = store_path_for(root, &config.database);
     if let Some(parent) = store_path.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {
             eprintln!("Warning: Could not create store directory {:?}: {}", parent, e);
@@ -420,7 +468,7 @@ fn analyze(root: &str) -> PyResult<PyObject> {
             language: Language,
         }
         let mut tasks: Vec<FileTask> = Vec::new();
-        for entry in ignore::Walk::new(root) {
+        for entry in project_walk(root, &config.project) {
             match entry {
                 Ok(entry) => {
                     if !entry.file_type().map_or(false, |ft| ft.is_file()) {
@@ -934,6 +982,15 @@ fn set_config(py: Python<'_>, cfg: &Bound<'_, PyDict>) -> PyResult<PyObject> {
         };
     }
 
+    if let Some(proj) = cfg_section(cfg, "project")? {
+        take!(proj, "roots", "project.roots", c.project.roots, Vec<String>);
+        take!(proj, "exclude", "project.exclude", c.project.exclude, Vec<String>);
+    }
+
+    if let Some(db) = cfg_section(cfg, "database")? {
+        take!(db, "path", "database.path", c.database.path, String);
+    }
+
     if let Some(res) = cfg_section(cfg, "resolution")? {
         take!(res, "min_confidence", "resolution.min_confidence",
               c.resolution.min_confidence, f32);
@@ -1037,6 +1094,15 @@ fn set_config(py: Python<'_>, cfg: &Bound<'_, PyDict>) -> PyResult<PyObject> {
 fn get_config(py: Python<'_>) -> PyResult<PyObject> {
     let c = active_config();
     let out = PyDict::new(py);
+
+    let project = PyDict::new(py);
+    project.set_item("roots", c.project.roots.clone())?;
+    project.set_item("exclude", c.project.exclude.clone())?;
+    out.set_item("project", project)?;
+
+    let database = PyDict::new(py);
+    database.set_item("path", c.database.path.clone())?;
+    out.set_item("database", database)?;
 
     let resolution = PyDict::new(py);
     resolution.set_item("min_confidence", c.resolution.min_confidence)?;
