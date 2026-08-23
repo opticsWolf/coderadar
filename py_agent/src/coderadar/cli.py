@@ -117,7 +117,7 @@ def _activate(project_root) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.29", prog_name="coderadar",
+@click.version_option(version="0.6.30", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -483,16 +483,6 @@ def stats():
     for k, v in s.items():
         table.add_row(k, str(v))
     console.print(table)
-
-
-@main.command()
-@click.argument("qualified_name")
-def resolve_cmd(qualified_name: str):
-    """Show resolution chain (debugging)."""
-    import coderadar
-    chain = coderadar.resolve(qualified_name)
-    for step in chain:
-        console.print(step)
 
 
 @main.command()

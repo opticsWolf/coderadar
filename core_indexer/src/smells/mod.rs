@@ -9,8 +9,10 @@
 //   2. Rule definition   — structs implementing `rule::SmellRule`.
 //   3. Engine execution  — `engine::SmellEngine::run` iterates the resolved
 //                          `ProjectedGraph`, filters by scope, evaluates rules.
-//   4. Annotation        — `engine::SmellRegistry` indexes findings by entity
-//                          and rule id; `lib.rs::get_smells` formats for Python.
+//   4. Annotation        — `lib.rs::get_smells` builds a `SmellEngine` and
+//                          formats its findings for Python. (A `SmellRegistry`
+//                          that indexed findings by entity and rule id used to
+//                          sit here; nothing ever constructed it.)
 //
 // Class-level roll-ups (WMC, max_method_cyclomatic, CBO) and the trivial
 // signals (LOC, param_count, field_count) are computed on the fly in

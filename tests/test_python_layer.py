@@ -388,6 +388,40 @@ class TestMutationToolRouter:
         result = router.route(call)
         assert not result.success
 
+    def test_route_reaches_the_real_planner(self, tmp_path):
+        """The graph=None tests never touched a planner.
+
+        The router's live branches assume attribute access (`plan.id`,
+        `plan.diff_preview`), so this pins them against the facade that
+        actually answers — which returns `MutationPlan`, not a dict.
+        """
+        try:
+            from coderadar._core import analyze
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        from coderadar import CodeGraph
+        from coderadar.mutation.tool_router import ToolCall, ToolRouter
+
+        target = tmp_path / "m.py"
+        target.write_text("def f(a):\n    return a\n", encoding="utf-8")
+        analyze(str(tmp_path))
+        graph = CodeGraph()
+
+        from coderadar._core import search_entities
+        hits = search_entities("f", 10, kind="function")
+        assert hits, "fixture function was not indexed"
+        entity_id = hits[0]["id"]
+
+        result = ToolRouter(graph=graph, dry_run=True).route(ToolCall(
+            tool_name="replace_entity_body",
+            arguments={"entity_id": entity_id,
+                       "new_body": "    return a + 1\n"},
+            call_id="call_live",
+        ))
+
+        assert result.success is True, result.error
+        assert result.result["plan"], "planner returned no plan id"
+
     def test_create_entity_rejects_without_graph(self, router):
         from coderadar.mutation.tool_router import ToolCall
         call = ToolCall(

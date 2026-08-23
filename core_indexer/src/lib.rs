@@ -45,7 +45,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(plan_rename, m)?)?;
     m.add_function(wrap_pyfunction!(plan_create_entity, m)?)?;
     m.add_function(wrap_pyfunction!(apply_mutation, m)?)?;
-    m.add_function(wrap_pyfunction!(resolve_symbol, m)?)?;
     m.add_function(wrap_pyfunction!(callers_of, m)?)?;
     m.add_function(wrap_pyfunction!(callees_of, m)?)?;
     m.add_function(wrap_pyfunction!(traverse, m)?)?;
@@ -900,12 +899,6 @@ fn plan_to_dict(py: Python<'_>, plan: &mutation::MutationPlan) -> PyResult<PyObj
     }).collect();
     dict.set_item("edits", edits)?;
     Ok(dict.into())
-}
-
-#[pyfunction]
-fn resolve_symbol(_qualified_name: &str) -> PyResult<PyObject> {
-    let py = unsafe { Python::assume_gil_acquired() };
-    Ok(PyDict::new(py).into())
 }
 
 // -- Configuration (plan section 3) -----------------------------------------

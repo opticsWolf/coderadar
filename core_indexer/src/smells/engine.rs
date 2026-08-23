@@ -87,57 +87,6 @@ impl SmellEngine {
     }
 }
 
-/// Findings indexed by entity id and rule id for O(1) lookups.
-pub struct SmellRegistry {
-    findings_by_entity: HashMap<EntityId, Vec<Finding>>,
-    findings_by_rule: HashMap<String, Vec<Finding>>,
-    all_findings: Vec<Finding>,
-}
-
-impl SmellRegistry {
-    pub fn new(graph: &ProjectedGraph) -> Self {
-        let engine = SmellEngine::new();
-        let findings = engine.run(graph);
-
-        let mut findings_by_entity: HashMap<EntityId, Vec<Finding>> = HashMap::new();
-        let mut findings_by_rule: HashMap<String, Vec<Finding>> = HashMap::new();
-        for f in &findings {
-            findings_by_entity
-                .entry(f.entity_id.clone())
-                .or_default()
-                .push(f.clone());
-            findings_by_rule
-                .entry(f.rule_id.clone())
-                .or_default()
-                .push(f.clone());
-        }
-
-        Self {
-            findings_by_entity,
-            findings_by_rule,
-            all_findings: findings,
-        }
-    }
-
-    pub fn get_smells(&self, entity_id: &str) -> Vec<&Finding> {
-        self.findings_by_entity
-            .get(entity_id)
-            .map(|v| v.iter().collect())
-            .unwrap_or_default()
-    }
-
-    pub fn get_all_smells(&self) -> &[Finding] {
-        &self.all_findings
-    }
-
-    pub fn get_smells_by_rule(&self, rule_id: &str) -> Vec<&Finding> {
-        self.findings_by_rule
-            .get(rule_id)
-            .map(|v| v.iter().collect())
-            .unwrap_or_default()
-    }
-}
-
 // ── Metric resolution (Phase 4.1 class-level roll-ups) ─────────────────────
 
 /// Method metrics: LOC, param_count come from struct fields; cyclomatic,

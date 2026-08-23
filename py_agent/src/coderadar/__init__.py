@@ -777,15 +777,6 @@ def watch(root: str) -> "Watcher":
     return graph.watch([root])
 
 
-def resolve(qualified_name: str) -> List[Dict[str, Any]]:
-    """Show the resolution chain for a qualified name (debugging)."""
-    try:
-        from coderadar._core import resolve_symbol as _rs
-        return _rs(qualified_name)
-    except ImportError:
-        return []
-
-
 __all__ = [
     "CodeGraph",
     "Snapshot",
@@ -799,7 +790,6 @@ __all__ = [
     "analyze",
     "load",
     "watch",
-    "resolve",
     "StaleHandle",
     "ParseError",
     "ResolutionError",
