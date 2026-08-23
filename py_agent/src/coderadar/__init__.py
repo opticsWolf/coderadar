@@ -864,10 +864,25 @@ __all__ = [
 class Watcher:
     """Live file watcher that auto-updates the CodeGraph on file changes."""
 
-    def __init__(self, graph: "CodeGraph", paths: List[str], debounce_ms: int = 100):
+    def __init__(self, graph: "CodeGraph", paths: List[str],
+                 debounce_ms: Optional[int] = None,
+                 max_file_size_bytes: Optional[int] = None):
+        """None takes the value from `[watch]` in .coderadar.toml.
+
+        An explicit argument still wins, so a CLI flag overrides the file.
+        """
+        from .config import WatchConfig, load_config
+        try:
+            watch = load_config(Path.cwd()).watch
+        except Exception:
+            watch = WatchConfig()
         self._graph = graph
         self._paths = paths
-        self._debounce_ms = debounce_ms
+        self._debounce_ms = (
+            watch.debounce_ms if debounce_ms is None else debounce_ms)
+        self._max_file_size_bytes = (
+            watch.max_file_size_bytes
+            if max_file_size_bytes is None else max_file_size_bytes)
         self._running = False
 
     def run_forever(self) -> None:
@@ -881,7 +896,7 @@ class Watcher:
         self._running = True
         # `--debounce` was stored here and never passed on, so every watcher
         # ran at the 100 ms default whatever the user asked for.
-        start_watcher(self._paths, self._debounce_ms)
+        start_watcher(self._paths, self._debounce_ms, self._max_file_size_bytes)
         print(f"CodeRadar watcher: watching {self._paths}")
 
         try:

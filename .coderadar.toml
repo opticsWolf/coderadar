@@ -1,34 +1,78 @@
-# CodeRadar v3.3 — Main Configuration (§15)
-# Place this in your project root as .coderadar.toml
+# CodeRadar — project configuration
+#
+# Every key below is read by something; the comment says by what. Sections
+# that were documented but inert ([llm], [output], [ingestion], [memory],
+# [git], [python], the hnsw_* knobs, the audit_* knobs) were removed rather
+# than left looking load-bearing. `coderadar analyze` prints a line naming
+# any key it could not use, so an unknown key here will say so.
 
 [project]
-languages = ["python"]
-# `roots` narrows the walk to these subdirectories. Omitted (as here) the
-# whole project root is walked — which is what this repo needs, its sources
-# living under core_indexer/ and py_agent/. Setting it to a directory that
-# does not exist yields an empty index, so leave it out unless you mean it.
-exclude   = ["**/migrations/**", "**/__pycache__/**", "**/.venv/**"]
+# `roots` narrows the walk to these subdirectories, relative to the project
+# root. Omitted (as here) the whole root is walked — which is what this repo
+# needs, its sources living under core_indexer/ and py_agent/. Pointing it at
+# a directory that does not exist yields an empty index, so leave it out
+# unless you mean it. Read by `analyze`.
+# roots = ["src/", "tests/"]
+#
+# Gitignore-syntax globs skipped by the walk, on top of .gitignore itself.
+exclude = ["**/migrations/**", "**/__pycache__/**", "**/.venv/**"]
 
-[python]
-sys_path = ["src/"]
-follow_type_checking_imports = false
-strict_wildcard_imports = true
-extra_known_decorators = [
-    { name = "myapp.cache",       effect = "cached_property" },
-    { name = "myapp.deprecated",  effect = "warn" },
-]
+[database]
+# Where the Macrame store file goes, relative to the project root unless
+# absolute. Read by `analyze`.
+path = ".coderadar/store/coderadar.db"
+
+[embedding]
+# Index-time and query-time must name the same model: a dimension mismatch
+# produces confident nonsense rather than an error. Read by
+# `compute_embeddings` and by the MCP search path, via `embedding_settings`.
+model = "BAAI/bge-small-en-v1.5"
+dimension = 384
+truncated_dimension = 64
+max_body_tokens = 2000
+batch_size = 32
+
+[watch]
+# Read by `coderadar.Watcher`. A CLI flag still overrides these.
+debounce_ms = 100
+max_file_size_bytes = 1048576
+
+[mutation]
+# The policy gate in the Rust engine, enforced at the FFI boundary — a plan
+# arriving as arbitrary JSON is checked against these before any file is read
+# or written.
+enabled = true
+default_dry_run = true
+max_files_per_plan = 100
+max_edits_per_plan = 500
+max_body_tokens = 4000
+backup_retention_hours = 24
+post_verify = true
+max_repair_attempts = 3
+require_clean_git = false
+allow = ["src/", "lib/", "tests/", "scripts/"]
+deny = [".git/", ".coderadar/", "/migrations/", "/*.lock", "/generated/"]
 
 [resolution]
+# Read by the resolution cascade.
 min_confidence = 0.3
+
+[resolution.import_graph]
+max_import_depth = 3
+include_same_package = true
+
+# ── Carried, not yet read ──────────────────────────────────────────────────
+# These are accepted and stored, but no live path consults them. They are
+# kept rather than cut because the decision about the code that would read
+# them — stack_graph.rs, signature.rs, the query cache — is a separate one.
+# Setting them changes nothing today. ([resolution.lsp] is still accepted by
+# the schema and deliberately not written here: the pool it configures is
+# never constructed, so a value would only be noise.)
 
 [resolution.stack_graph]
 rules_dir = ""
 max_path_depth = 10
 incremental = true
-
-[resolution.import_graph]
-max_import_depth = 3
-include_same_package = true
 
 [resolution.signature]
 min_score = 0.5
@@ -36,80 +80,9 @@ name_weight = 0.4
 arity_weight = 0.3
 proximity_weight = 0.3
 
-[resolution.lsp]
-enabled = false
-result_ttl_s = 300
-idle_timeout_s = 600
-timeout_ms = 5000
-override_threshold = 0.90
-
-[embedding]
-# Index-time and query-time must name the same model: a dimension mismatch
-# produces confident nonsense rather than an error.
-model = "BAAI/bge-small-en-v1.5"
-dimension = 384
-truncated_dimension = 64
-max_body_tokens = 2000
-batch_size = 32
-workers = 2
-
-[database]
-# Relative to the project root. This is where the Macrame store actually
-# lives; the old value named a .harness/ directory deleted in 105762e.
-path = ".coderadar/store/coderadar.db"
-
-[ingestion]
-batch_chunk_size = 200
-embedding_budget_ms = 2000
-defer_low_priority_below = 0.6
-
-[memory]
-stack_graph_mb = 60
-call_graph_mb = 40
-resolution_cache_mb = 20
-spill_compression = "zstd"
-
-[mutation]
-enabled = true
-default_dry_run = true
-max_files_per_plan = 100
-max_edits_per_plan = 500
-max_body_tokens = 4000
-backup_dir = ".harness/backups"
-backup_retention_hours = 24
-post_verify = true
-max_repair_attempts = 3
-require_clean_git = false
-allow = ["src/", "lib/", "tests/", "scripts/"]
-deny  = [".git/", ".harness/", "/migrations/", "/*.lock", "/generated/"]
-audit_retention_days = 30
-audit_max_entries = 10000
-audit_summarize_after_days = 7
-
 [query]
 max_depth = 5
 default_top_k = 10
 cache_ttl_seconds = 300
 cache_max_size = 256
 use_rust_graph_for_traversal = true
-
-[git]
-enabled = true
-reindex_on_branch_switch = true
-
-[llm]
-provider = "openai"
-model = "gpt-4o"
-max_context_tokens = 8192
-context_strategy = "structural"
-temperature = 0.1
-api_key_env = "OPENAI_API_KEY"
-
-[performance]
-worker_threads = 4
-debounce_ms = 50
-query_check_interval = 64
-
-[output]
-snapshot_path = "./.coderadar/snapshot.bin"
-journal_path  = "./.coderadar/wal.log"

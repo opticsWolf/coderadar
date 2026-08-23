@@ -42,26 +42,33 @@ class TestConfigLoading:
         """Default CodeRadarConfig should instantiate without errors."""
         from coderadar.config import CodeRadarConfig
         cfg = CodeRadarConfig()
-        assert cfg.project.languages == ["python"]
+        assert cfg.project.roots == []
         assert cfg.resolution.min_confidence == 0.3
         assert cfg.embedding.dimension == 384
         assert cfg.mutation.enabled is True
         assert cfg.query.default_top_k == 10
 
-    def test_default_harness_config_is_valid(self):
-        """Default HarnessConfig should instantiate without errors."""
-        from coderadar.config import HarnessConfig
-        cfg = HarnessConfig()
-        assert cfg.general.watch_paths == ["src/", "tests/"]
-        assert cfg.general.debounce_ms == 500
-        assert cfg.general.max_file_size_bytes == 1_048_576
+    def test_watch_defaults_are_the_watcher_defaults(self):
+        """[watch] replaced the harness file's general section.
+
+        `HarnessConfig`/`.harness/config.toml` are gone (the file went in
+        105762e), and the watcher's two settings moved into `[watch]`, where
+        `Watcher.__init__` actually reads them.
+        """
+        from coderadar.config import CodeRadarConfig
+        cfg = CodeRadarConfig()
+        assert cfg.watch.debounce_ms == 100
+        assert cfg.watch.max_file_size_bytes == 1_048_576
 
     def test_load_config_from_file(self):
         """Load from a real .coderadar.toml file on disk."""
         from coderadar.config import CodeRadarConfig, load_config
         cfg = load_config(Path(__file__).parent.parent)
         assert isinstance(cfg, CodeRadarConfig)
-        assert cfg.project.languages is not None
+        # This repo's own .coderadar.toml leaves `roots` out on purpose (its
+        # sources live under two top-level directories) and sets `exclude`.
+        assert cfg.project.roots == []
+        assert "**/__pycache__/**" in cfg.project.exclude
 
     def test_custom_config_override(self):
         """Pydantic model should accept field overrides."""
@@ -69,12 +76,12 @@ class TestConfigLoading:
             CodeRadarConfig, ProjectConfig, ResolutionConfig, StackGraphConfig
         )
         cfg = CodeRadarConfig(
-            project=ProjectConfig(languages=["python", "rust"]),
+            project=ProjectConfig(roots=["src/", "lib/"]),
             resolution=ResolutionConfig(
                 stack_graph=StackGraphConfig(max_path_depth=20)
             ),
         )
-        assert cfg.project.languages == ["python", "rust"]
+        assert cfg.project.roots == ["src/", "lib/"]
         assert cfg.resolution.stack_graph.max_path_depth == 20
 
     def test_mutation_config_deny_list(self):
@@ -82,7 +89,8 @@ class TestConfigLoading:
         from coderadar.config import MutationConfig
         cfg = MutationConfig()
         assert ".git/" in cfg.deny
-        assert ".harness/" in cfg.deny
+        # `.harness/` was the old name; the store lives under `.coderadar/`.
+        assert ".coderadar/" in cfg.deny
 
     def test_lsp_server_commands(self):
         """Default LSP server commands for known languages."""

@@ -271,26 +271,43 @@ tests/                     # 356 Python tests (E2E, MCP, smells, framework resol
 
 ## Configuration
 
+`.coderadar.toml` at the project root is the only configuration file; `coderadar init` writes a starter one. Every key in it is read by something, and `coderadar analyze` prints a line naming any key it could not use, so a stale or misspelled setting says so instead of sitting silent.
+
 ```toml
 # .coderadar.toml
 [project]
-languages = ["python"]
-roots = ["src/", "tests/"]
+# Omitted, the whole project root is walked. Set it and the walk is confined
+# to these subdirectories — an empty index is the usual sign of a typo here.
+# roots = ["src/", "tests/"]
+exclude = ["**/__pycache__/**", "**/.venv/**"]
 
-[resolution]
-min_confidence = 0.3
+[database]
+path = ".coderadar/store/coderadar.db"
 
-[macrame]
-db_path = ".coderadar/store/coderadar.db"
+[embedding]
+# Indexing and search must name the same model: a dimension mismatch produces
+# confident nonsense rather than an error.
+model = "BAAI/bge-small-en-v1.5"
+dimension = 384
+
+[watch]
+debounce_ms = 100
+max_file_size_bytes = 1048576
 
 [mutation]
 enabled = true
 default_dry_run = true
+allow = ["src/", "lib/", "tests/", "scripts/"]
+deny = [".git/", ".coderadar/", "/migrations/", "/*.lock", "/generated/"]
 
-[performance]
-worker_threads = 4
-debounce_ms = 50
+[resolution]
+min_confidence = 0.3
+
+[resolution.import_graph]
+max_import_depth = 3
 ```
+
+`[resolution.stack_graph]`, `[resolution.signature]`, `[resolution.lsp]` and `[query]` are accepted but not yet read on any live path — they wait on the code that would consume them.
 
 ## License
 

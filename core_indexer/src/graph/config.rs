@@ -9,10 +9,8 @@ pub struct GraphConfig {
     pub stack_graph: StackGraphConfig,
     pub import_graph: ImportGraphConfig,
     pub signature: SignatureConfig,
-    pub memory: MemoryConfig,
     pub mutation: MutationConfig,
     pub query: QueryConfig,
-    pub git: GitConfig,
 }
 
 impl Default for GraphConfig {
@@ -24,10 +22,8 @@ impl Default for GraphConfig {
             stack_graph: StackGraphConfig::default(),
             import_graph: ImportGraphConfig::default(),
             signature: SignatureConfig::default(),
-            memory: MemoryConfig::default(),
             mutation: MutationConfig::default(),
             query: QueryConfig::default(),
-            git: GitConfig::default(),
         }
     }
 }
@@ -116,23 +112,6 @@ impl Default for SignatureConfig {
 }
 
 #[derive(Clone, Debug)]
-pub struct MemoryConfig {
-    pub stack_graph_mb: usize,
-    pub call_graph_mb: usize,
-    pub resolution_cache_mb: usize,
-    pub projected_graph_mb: usize,
-    pub spill_compression: String,
-}
-impl Default for MemoryConfig {
-    fn default() -> Self {
-        Self {
-            stack_graph_mb: 60, call_graph_mb: 40, resolution_cache_mb: 20,
-            projected_graph_mb: 200, spill_compression: "zstd".to_string(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
 pub struct MutationConfig {
     pub enabled: bool,
     pub default_dry_run: bool,
@@ -154,13 +133,15 @@ impl Default for MutationConfig {
             backup_retention_hours: 24, post_verify: true, max_repair_attempts: 3,
             require_clean_git: false,
             // An empty allow list means "anywhere inside the project root".
-            // A populated one is a strict whitelist, so the default cannot be
-            // one: nothing reads .coderadar.toml yet (plan §3), which would
-            // make a shipped whitelist the effective policy for every layout
-            // and refuse writes to any project not shaped like src/lib/tests.
+            // A populated one is a strict whitelist, so the default must not
+            // be one: `.coderadar.toml` is now read, and a shipped whitelist
+            // would become the effective policy for every project that does
+            // not set its own, refusing writes to any layout unlike
+            // src/lib/tests.
             allow: vec![],
-            deny: vec![".git/".into(), ".harness/".into(), ".codegraph/".into(),
-                       ".coderadar/".into(),
+            // `.harness/` and `.codegraph/` were earlier names for the store
+            // directory and are gone; `.coderadar/` is the one in use.
+            deny: vec![".git/".into(), ".coderadar/".into(),
                        "/migrations/".into(), "/*.lock".into(), "/generated/".into()],
         }
     }
@@ -181,13 +162,3 @@ impl Default for QueryConfig {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct GitConfig {
-    pub enabled: bool,
-    pub reindex_on_branch_switch: bool,
-}
-impl Default for GitConfig {
-    fn default() -> Self {
-        Self { enabled: true, reindex_on_branch_switch: true }
-    }
-}

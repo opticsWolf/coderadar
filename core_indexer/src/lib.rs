@@ -1056,23 +1056,6 @@ fn set_config(py: Python<'_>, cfg: &Bound<'_, PyDict>) -> PyResult<PyObject> {
               c.query.use_rust_graph_for_traversal, bool);
     }
 
-    if let Some(g) = cfg_section(cfg, "git")? {
-        take!(g, "enabled", "git.enabled", c.git.enabled, bool);
-        take!(g, "reindex_on_branch_switch", "git.reindex_on_branch_switch",
-              c.git.reindex_on_branch_switch, bool);
-    }
-
-    if let Some(mem) = cfg_section(cfg, "memory")? {
-        take!(mem, "stack_graph_mb", "memory.stack_graph_mb", c.memory.stack_graph_mb, usize);
-        take!(mem, "call_graph_mb", "memory.call_graph_mb", c.memory.call_graph_mb, usize);
-        take!(mem, "resolution_cache_mb", "memory.resolution_cache_mb",
-              c.memory.resolution_cache_mb, usize);
-        take!(mem, "projected_graph_mb", "memory.projected_graph_mb",
-              c.memory.projected_graph_mb, usize);
-        take!(mem, "spill_compression", "memory.spill_compression",
-              c.memory.spill_compression, String);
-    }
-
     let mut leaves = Vec::new();
     cfg_leaf_paths(cfg, "", &mut leaves);
     let mut ignored: Vec<String> = leaves

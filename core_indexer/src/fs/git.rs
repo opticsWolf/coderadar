@@ -5,7 +5,6 @@ use std::path::PathBuf;
 
 use git2::{BlameOptions, DiffOptions, Repository};
 
-use crate::graph::GitConfig;
 
 #[derive(Clone, Debug)]
 pub struct BlameLine {
