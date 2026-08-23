@@ -117,7 +117,7 @@ def _activate(project_root) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.35", prog_name="coderadar",
+@click.version_option(version="0.6.36", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -218,7 +218,7 @@ include_same_package = true
     # Run initial analysis
     console.print(f"\n[bold]Running initial analysis...[/bold]")
     import coderadar
-    graph = coderadar.analyze(str(root))
+    graph = coderadar.analyze(str(root), create_store=True)
     stats = graph.stats()
     console.print(f"  Modules:    {stats.get('modules', 0)}")
     console.print(f"  Classes:    {stats.get('classes', 0)}")

@@ -605,7 +605,7 @@ class TestBenchmarkPipeline:
         )
 
         t0 = time.perf_counter()
-        result = _analyze_rust(str(tmp_path))
+        result = _analyze_rust(str(tmp_path), create_store=True)
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
         stats = graph_stats()
@@ -645,7 +645,7 @@ class TestBenchmarkPipeline:
                 f'def chain_{i}(): return leaf()\n'
             )
 
-        result = _analyze_rust(str(tmp_path))
+        result = _analyze_rust(str(tmp_path), create_store=True)
         stats = graph_stats()
 
         assert result['files_indexed'] == 50
@@ -666,7 +666,7 @@ class TestBenchmarkPipeline:
             (tmp_path / f'small_{i}.py').write_text(
                 f'def f{i}(): return {i}\n'
             )
-        _analyze_rust(str(tmp_path))
+        _analyze_rust(str(tmp_path), create_store=True)
         small_size = sum(
             f.stat().st_size
             for f in (tmp_path / '.coderadar' / 'store').rglob('*')
@@ -682,7 +682,7 @@ class TestBenchmarkPipeline:
                 f'    x = {i}\n'
                 f'    return x * 2\n'
             )
-        _analyze_rust(str(tmp2))
+        _analyze_rust(str(tmp2), create_store=True)
         big_size = sum(
             f.stat().st_size
             for f in (tmp2 / '.coderadar' / 'store').rglob('*')

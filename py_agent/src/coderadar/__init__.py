@@ -696,11 +696,15 @@ class BatchContext:
 
 # ── Top-Level API Functions ─────────────────────────────────────────────────
 
-def analyze(root: str) -> CodeGraph:
+def analyze(root: str, create_store: bool = False) -> CodeGraph:
     """Perform initial analysis of a codebase.
 
     Args:
         root: Path to the project root directory.
+        create_store: Create `.coderadar/store/` if it is missing. Only
+            `coderadar init` should pass True — analyze used to create it
+            unconditionally, which planted the very marker root discovery
+            walks up looking for, making a wrong guess self-confirming.
 
     Returns:
         A CodeGraph backed by Macrame persistence.
@@ -711,7 +715,7 @@ def analyze(root: str) -> CodeGraph:
     """
     try:
         from coderadar._core import analyze as _analyze_rust
-        _analyze_rust(root)
+        _analyze_rust(root, create_store)
     except ImportError:
         pass
 

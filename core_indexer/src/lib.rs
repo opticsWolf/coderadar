@@ -453,13 +453,14 @@ struct AnalyzeOutcome {
 }
 
 #[pyfunction]
-fn analyze(py: Python<'_>, root: &str) -> PyResult<PyObject> {
+#[pyo3(signature = (root, create_store = false))]
+fn analyze(py: Python<'_>, root: &str, create_store: bool) -> PyResult<PyObject> {
     // The walk, the parse, the resolution cascade and the persist all run
     // with the GIL released. `analyze` used to hold it end to end — 3.3 s on
     // this project, minutes on a large repo — so any asyncio caller
     // (`asyncio.to_thread(analyze, ...)`, the MCP server's background init)
     // froze for the whole index instead of merely waiting on it.
-    let outcome = py.allow_threads(|| analyze_inner(root));
+    let outcome = py.allow_threads(|| analyze_inner(root, create_store));
 
     let dict = PyDict::new(py);
     dict.set_item("files_indexed", outcome.files_indexed)?;
@@ -470,23 +471,38 @@ fn analyze(py: Python<'_>, root: &str) -> PyResult<PyObject> {
     Ok(dict.into())
 }
 
-fn analyze_inner(root: &str) -> AnalyzeOutcome {
+fn analyze_inner(root: &str, create_store: bool) -> AnalyzeOutcome {
     use std::fs;
     use crate::types::Language;
 
     let config = active_config();
     let mut graph = CodeGraph::new((*config).clone());
 
-    // Attach Macrame persistent store — Macrame/libSQL needs a file path, not a directory
+    // Attach Macrame persistent store — Macrame/libSQL needs a file path, not
+    // a directory.
+    //
+    // The store directory used to be created unconditionally, which made
+    // `analyze` plant the `.coderadar/` marker that root discovery walks up
+    // looking for: guess a root wrongly once, and the next walk-up finds the
+    // marker analyze just left there and re-confirms the wrong root. So the
+    // directory is only created when the caller says to — `coderadar init`
+    // does, nothing else. Without it, an un-initialised project indexes into
+    // memory and persists nothing, which is recoverable; a mis-planted marker
+    // is not.
     let store_path = store_path_for(root, &config.database);
-    if let Some(parent) = store_path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            eprintln!("Warning: Could not create store directory {:?}: {}", parent, e);
+    let parent_exists = store_path.parent().map(|p| p.exists()).unwrap_or(false);
+    if create_store && !parent_exists {
+        if let Some(parent) = store_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                eprintln!("Warning: Could not create store directory {:?}: {}", parent, e);
+            }
         }
     }
-    match crate::storage::CodeGraphStore::open(&store_path) {
-        Ok(store) => { graph = graph.with_store(store); }
-        Err(e) => { eprintln!("Warning: Macrame store not attached: {:?}", e); }
+    if create_store || parent_exists {
+        match crate::storage::CodeGraphStore::open(&store_path) {
+            Ok(store) => { graph = graph.with_store(store); }
+            Err(e) => { eprintln!("Warning: Macrame store not attached: {:?}", e); }
+        }
     }
 
     let root_path = std::path::Path::new(root);

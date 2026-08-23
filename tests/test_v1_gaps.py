@@ -129,7 +129,7 @@ def test_as_of_temporal_traversal():
     d = tempfile.mkdtemp()
     with open(os.path.join(d, "a.py"), "w") as f:
         f.write("def a():\n    return b()\n\ndef b(): return 1\n")
-    analyze(d)
+    analyze(d, create_store=True)
     ts1 = now_ts()
     a_id = next(f["id"] for f in search_entities("a", 5, "function") if f["name"] == "a")
 

@@ -1123,14 +1123,52 @@ class TestConfiguredStorePath:
         from coderadar._core import analyze, set_config
         (tmp_path / "m.py").write_text("def f(): pass\n", encoding="utf-8")
         set_config({"database": {"path": "custom/place/graph.db"}})
-        analyze(str(tmp_path))
+        analyze(str(tmp_path), create_store=True)
         assert (tmp_path / "custom" / "place" / "graph.db").exists()
 
     def test_the_default_store_path_is_unchanged(self, tmp_path):
         from coderadar._core import analyze, set_config
         (tmp_path / "m.py").write_text("def f(): pass\n", encoding="utf-8")
         set_config({})
-        analyze(str(tmp_path))
+        analyze(str(tmp_path), create_store=True)
+        assert (tmp_path / ".coderadar" / "store" / "coderadar.db").exists()
+
+
+class TestAnalyzeDoesNotPlantTheRootMarker:
+    """`.coderadar/` is what root discovery walks up looking for.
+
+    While analyze created it unconditionally, a single analyze of the wrong
+    directory left a marker there, and the next walk-up found that marker and
+    re-confirmed the wrong root. Creating it is now `coderadar init`'s job.
+    """
+
+    def test_analyze_leaves_no_marker_behind(self, tmp_path):
+        try:
+            from coderadar._core import analyze, set_config
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        (tmp_path / "m.py").write_text("def f(): pass\n", encoding="utf-8")
+        set_config({})
+        try:
+            analyze(str(tmp_path))
+        finally:
+            set_config({})
+        assert not (tmp_path / ".coderadar").exists(), (
+            "analyze planted the marker that root discovery keys on")
+
+    def test_an_existing_store_directory_is_still_used(self, tmp_path):
+        try:
+            from coderadar._core import analyze, set_config
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        (tmp_path / "m.py").write_text("def f(): pass\n", encoding="utf-8")
+        (tmp_path / ".coderadar" / "store").mkdir(parents=True)
+        set_config({})
+        try:
+            analyze(str(tmp_path))
+        finally:
+            set_config({})
+        # An initialised project persists without having to ask again.
         assert (tmp_path / ".coderadar" / "store" / "coderadar.db").exists()
 
 
@@ -1361,8 +1399,11 @@ class TestAnalyzeReleasesTheGIL:
         except ImportError:
             pytest.skip("Rust _core extension not built")
 
-        # Enough files that indexing takes long enough to observe.
-        for i in range(60):
+        # Enough files that indexing takes long enough to observe. This used
+        # to be 60, which cleared the floor only because analyze also wrote a
+        # store; analyze no longer creates one unless asked, so the parse
+        # itself has to carry the measurement.
+        for i in range(300):
             (tmp_path / f"m{i}.py").write_text(
                 "\n".join(
                     f"def f{i}_{j}(a, b):\n    return f{i}_{j - 1}(a, b) if a else b\n"
