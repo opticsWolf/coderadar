@@ -143,7 +143,7 @@ def _ensure_graph(path: str = "."):
 
 
 @click.group()
-@click.version_option(version="0.6.44", prog_name="coderadar",
+@click.version_option(version="0.6.45", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -307,31 +307,16 @@ def update(file: str, content: Optional[str]):
     if content == "-":
         content = sys.stdin.read()
 
-    import coderadar
-    graph = coderadar.CodeGraph()
+    graph = _ensure_graph()
     report = graph.update_file(file, content)
     console.print(f"  Fully applied: {report.fully_applied}")
     console.print(f"  Parse quality: {report.parse_quality}")
     console.print(f"  Parse errors:  {report.parse_errors}")
     console.print(f"  Elapsed:       {report.elapsed_ms:.1f}ms")
-
-
-@main.command()
-@click.argument("path", type=click.Path(exists=True), default=".")
-def watch(path: str):
-    """Long-running watcher; JSONL on stdout."""
-    _activate(path)
-    import coderadar
-    console.print(f"[bold]Watching[/bold] {path}...")
-    with coderadar.watch(path) as w:
-        for report in w:
-            entry = {
-                "affected_files": report.affected_files,
-                "parse_quality": report.parse_quality,
-                "fully_applied": report.fully_applied,
-                "elapsed_ms": report.elapsed_ms,
-            }
-            console.print_json(data=entry)
+    if not report.fully_applied:
+        # This printed "Fully applied: False" and exited 0, so a script
+        # driving updates could not tell a failure from a success.
+        raise SystemExit(1)
 
 
 @main.command()
@@ -470,6 +455,7 @@ def export(path: str, fmt: str):
         console.print(f"[green]Snapshot exported to {path}[/green]")
     except NotImplementedError as e:
         console.print(f"[yellow]export_snapshot is not implemented:[/yellow] {e}")
+        raise SystemExit(1)
 
 
 @main.command()
@@ -483,13 +469,31 @@ def load_snapshot(snapshot: str):
         console.print(f"[green]Snapshot loaded: {stats}[/green]")
     except NotImplementedError as e:
         console.print(f"[yellow]load_snapshot is not implemented:[/yellow] {e}")
+        raise SystemExit(1)
 
 
 @main.command()
-@click.option("--full", is_flag=True, help="Full re-index of all files")
-def rebuild(full: bool):
-    """Full re-index of all files (or incremental)."""
-    console.print(f"[bold]Rebuilding[/bold] {'(full)' if full else '(incremental)'}...")
+@click.argument("path", type=click.Path(exists=True), default=".")
+@click.option("--full", is_flag=True, help="Accepted for compatibility; "
+              "a rebuild is always a full re-index")
+def rebuild(path: str, full: bool):
+    """Re-index the project from scratch.
+
+    This printed "Rebuilding..." and returned — a command that reported
+    success for work it never started.
+    """
+    import coderadar
+
+    _activate(path)
+    console.print(f"[bold]Rebuilding[/bold] {path}...")
+    graph = coderadar.analyze(path)
+    stats = graph.stats()
+    console.print(
+        f"[green]OK[/green]  {stats.get('file_count', 0)} file(s), "
+        f"{stats.get('functions', 0)} function(s), "
+        f"{stats.get('classes', 0)} class(es), "
+        f"{stats.get('call_edges', 0)} call edge(s)"
+    )
 
 
 @main.command()
@@ -565,27 +569,94 @@ def _render(viz_type, fmt, arg_list, graph,
 
 
 @main.command()
-@click.option("--last", type=int, default=20, help="Number of recent mutations")
-def mutations(last: int):
-    """Audit trail from MutationLog."""
-    console.print(f"[bold]Last {last} mutations:[/bold]")
-
-
-@main.command()
 @click.option("--unresolved", is_flag=True, help="Show all unresolved references")
 @click.option("--low-confidence", is_flag=True, help="List edges below min_confidence")
 def diagnose(unresolved: bool, low_confidence: bool):
-    """Show unresolved references or low-confidence edges."""
+    """Show unresolved references or ambiguous edges.
+
+    Both flags used to print a header and no rows, which reads as a clean
+    bill of health rather than a report that was never written.
+    """
+    from coderadar._core import index_edge_stats, search_entities, traverse_unresolved
+
+    if not unresolved and not low_confidence:
+        unresolved = low_confidence = True
+
+    _ensure_graph()
+
     if unresolved:
         console.print("[bold]Unresolved references:[/bold]")
+        rows = []
+        for fn in search_entities("", 1000, "function"):
+            count = traverse_unresolved(fn["id"], 1, ["calls"], "out")
+            if count:
+                rows.append((fn["id"], count))
+        if not rows:
+            console.print("  [green]none[/green]")
+        else:
+            table = Table()
+            table.add_column("Entity", style="cyan")
+            table.add_column("Unresolved call targets", style="yellow")
+            for entity_id, count in sorted(rows, key=lambda r: -r[1]):
+                table.add_row(entity_id, str(count))
+            console.print(table)
+            console.print(
+                f"[dim]{sum(c for _, c in rows)} target(s) the call graph "
+                f"cannot follow, across {len(rows)} function(s)[/dim]"
+            )
+
     if low_confidence:
-        console.print("[bold]Low-confidence edges:[/bold]")
+        console.print("[bold]Ambiguous base classes:[/bold]")
+        stats = index_edge_stats()
+        details = stats.get("ambiguous_base_details") or []
+        if not details:
+            console.print("  [green]none[/green]")
+        else:
+            for detail in details:
+                console.print(f"  {detail}")
+            console.print(f"[dim]{stats.get('ambiguous_bases', 0)} ambiguous[/dim]")
 
 
 @main.command()
 def status():
-    """Daemon health check."""
-    console.print("[green]CodeRadar is running[/green]")
+    """Report what is indexed here, and how stale it is.
+
+    This printed "CodeRadar is running" unconditionally — a health check
+    that could not fail, and that said nothing about the project it was run
+    in.
+    """
+    import time
+    from pathlib import Path
+    from coderadar._core import graph_stats
+
+    root = Path.cwd()
+    config = root / ".coderadar.toml"
+    store = root / ".coderadar" / "store"
+    console.print(f"[bold]Project:[/bold] {root}")
+    console.print(f"  Config: {config if config.exists() else '[yellow]none[/yellow]'}")
+    console.print(f"  Store:  {store if store.exists() else '[yellow]none[/yellow]'}")
+
+    try:
+        stats = graph_stats()
+    except RuntimeError:
+        # Every command runs in its own process, so this is the normal state
+        # outside a server — not a fault.
+        console.print("  Index:  [yellow]not loaded in this process[/yellow]")
+        if not store.exists():
+            console.print("  [dim]Run `coderadar init` to create one.[/dim]")
+        return
+
+    indexed_at = stats.get("indexed_at")
+    age = ""
+    if indexed_at:
+        seconds = max(0.0, time.time() - float(indexed_at))
+        age = f" ({seconds / 60:.0f} min ago)" if seconds >= 60 else " (just now)"
+    console.print(
+        f"  Index:  [green]loaded[/green]{age} — "
+        f"{stats.get('file_count', 0)} file(s), "
+        f"{stats.get('functions', 0)} function(s), "
+        f"{stats.get('classes', 0)} class(es)"
+    )
 
 
 @main.group()
@@ -699,8 +770,11 @@ def git_clean(repo: str):
     try:
         from coderadar._core import git_worktree_clean as _clean
         clean = _clean(repo).get("clean", True)
-    except ImportError:
-        clean = True
+    except (ImportError, RuntimeError) as exc:
+        # Defaulting to `clean = True` here reported a clean worktree for a
+        # check that never ran — the answer a caller is most likely to act on.
+        console.print(f"[red]Could not check the worktree:[/red] {exc}")
+        raise SystemExit(1)
 
     if clean:
         console.print("[green]Worktree clean[/green]")
@@ -737,10 +811,12 @@ def watch(paths, debounce):
 
     PATHS: directories to watch (default: src/ tests/).
     """
-    from coderadar import CodeGraph
-
     watch_paths = list(paths) if paths else ["src/", "tests/"]
-    graph = CodeGraph()
+    # This is the second of two commands that were both named `watch`; the
+    # first was dead (click registers by function name, so this one won) and
+    # took the config activation with it. A watcher updating an empty index
+    # reports changes against nothing.
+    graph = _ensure_graph()
     watcher = graph.watch(watch_paths, debounce_ms=debounce)
     console.print(f"[bold green]Watching:[/bold green] {', '.join(watch_paths)}")
     console.print("[dim]Press Ctrl+C to stop[/dim]")

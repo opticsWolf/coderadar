@@ -1,4 +1,4 @@
-# CodeRadar v0.6.44
+# CodeRadar v0.6.45
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -54,7 +54,7 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 811 (250 Rust + 561 Python) |
+| **Tests** | 824 (250 Rust + 574 Python) |
 | **MCP Tools** | 18 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, get_smells, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
@@ -223,7 +223,7 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
 
-## v0.6.44 Feature Highlights
+## v0.6.45 Feature Highlights
 
 The v0.7 improvement plan, start to finish — write-path correctness, temporal
 truth, scaling, dead-code retirement, configuration, and the MCP layer.
@@ -261,6 +261,22 @@ truth, scaling, dead-code retirement, configuration, and the MCP layer.
   `callees_of` (call edges, not inheritance) and dependency edges pointed at
   import-*statement* entities. All of it now reads the real indexes, and an
   empty graph is an error naming what to do about it.
+- **Commands that answered nothing.** `rebuild` printed "Rebuilding..." and
+  returned without indexing. `status` printed "CodeRadar is running"
+  unconditionally — a health check that could not fail. `diagnose` printed
+  two headers and no rows, which reads as a clean bill of health rather than
+  a report that was never written. All three now report real numbers.
+  `mutations` was removed: it documented an "audit trail from MutationLog"
+  for a MutationLog that exists nowhere in the codebase.
+- **Two commands named `watch`.** Click registers by function name, so the
+  second definition silently replaced the first — and the losing one carried
+  the config activation, leaving the survivor running without ever reading
+  `.coderadar.toml`. The dead one is gone and the live one activates config
+  and indexes before watching.
+- **Exit codes that lied.** `coderadar update` printed "Fully applied:
+  False" and exited 0, so a script driving updates could not tell a failure
+  from a success. `git-clean` defaulted to reporting a clean worktree when
+  the check itself failed — the answer a caller is most likely to act on.
 - **Dead entity fields.** `is_async`, `is_generator`, and `decorators` were
   hardcoded `false`/empty at the single site that builds every function
   entity, for every language — so `functions where is_async == true`, a
@@ -282,7 +298,7 @@ truth, scaling, dead-code retirement, configuration, and the MCP layer.
   removed rather than left looking load-bearing.
 - **~4,300 lines of dead code retired**, including the Stack Graphs
   placeholder.
-- **811 tests, 0 failures** — 250 Rust + 561 Python, including an end-to-end
+- **824 tests, 0 failures** — 250 Rust + 574 Python, including an end-to-end
   mutation suite (plan → apply → reindex → read the file back) and a
   parametrised no-index suite that replaced fourteen assertions which could
   not fail.
@@ -399,7 +415,7 @@ py_agent/src/coderadar/    # Python layer
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Specifications + code review + performance roadmap
-tests/                     # 561 Python tests (E2E, mutation E2E, MCP, smells,
+tests/                     # 574 Python tests (E2E, mutation E2E, MCP, smells,
                            #   framework resolvers, ingest parity, benchmarks)
   mcp/                     # Root resolution, background init, lifecycle, project_path
 ```
