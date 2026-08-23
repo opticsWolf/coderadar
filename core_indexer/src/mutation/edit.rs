@@ -43,25 +43,110 @@ fn rope_clamped_char_bounds(rope: &Rope, span: ByteSpan) -> Result<(usize, usize
     Ok((char_start.min(len_chars), char_end.min(len_chars)))
 }
 
-/// Compute a simple line-based diff between old and new source.
-pub fn compute_diff_preview(old_source: &str, new_source: &str) -> String {
+/// Lines of context around a change in `unified_diff`.
+const DIFF_CONTEXT: usize = 3;
+
+/// Render a unified diff between two versions of one file.
+///
+/// Positional line-by-line comparison — what this replaced — reports every
+/// line after an insertion as changed. This trims the common prefix and
+/// suffix and emits what is left as a single hunk, which is exact: the
+/// output applies cleanly with `patch`.
+pub fn unified_diff(path: &str, old_source: &str, new_source: &str) -> String {
     let old_lines: Vec<&str> = old_source.lines().collect();
     let new_lines: Vec<&str> = new_source.lines().collect();
 
-    let mut diff = String::new();
-    let max_len = old_lines.len().max(new_lines.len());
-
-    for i in 0..max_len {
-        let old_line = old_lines.get(i).unwrap_or(&"");
-        let new_line = new_lines.get(i).unwrap_or(&"");
-
-        if old_line != new_line {
-            diff.push_str(&format!("- {}\n", old_line));
-            diff.push_str(&format!("+ {}\n", new_line));
-        }
+    if old_lines == new_lines {
+        return String::new();
     }
 
-    diff
+    let mut prefix = 0;
+    while prefix < old_lines.len()
+        && prefix < new_lines.len()
+        && old_lines[prefix] == new_lines[prefix]
+    {
+        prefix += 1;
+    }
+
+    let mut suffix = 0;
+    while suffix < old_lines.len() - prefix
+        && suffix < new_lines.len() - prefix
+        && old_lines[old_lines.len() - 1 - suffix] == new_lines[new_lines.len() - 1 - suffix]
+    {
+        suffix += 1;
+    }
+
+    let ctx_start = prefix.saturating_sub(DIFF_CONTEXT);
+    let old_change_end = old_lines.len() - suffix;
+    let new_change_end = new_lines.len() - suffix;
+    let old_ctx_end = (old_change_end + DIFF_CONTEXT).min(old_lines.len());
+    let new_ctx_end = (new_change_end + DIFF_CONTEXT).min(new_lines.len());
+
+    let mut out = String::new();
+    out.push_str(&format!("--- a/{}\n", path));
+    out.push_str(&format!("+++ b/{}\n", path));
+    out.push_str(&format!(
+        "@@ -{},{} +{},{} @@\n",
+        ctx_start + 1,
+        old_ctx_end - ctx_start,
+        ctx_start + 1,
+        new_ctx_end - ctx_start,
+    ));
+    for line in &old_lines[ctx_start..prefix] {
+        out.push_str(&format!(" {}\n", line));
+    }
+    for line in &old_lines[prefix..old_change_end] {
+        out.push_str(&format!("-{}\n", line));
+    }
+    for line in &new_lines[prefix..new_change_end] {
+        out.push_str(&format!("+{}\n", line));
+    }
+    for line in &old_lines[old_change_end..old_ctx_end] {
+        out.push_str(&format!(" {}\n", line));
+    }
+    out
+}
+
+/// Render the diff a plan's edits would produce, file by file.
+///
+/// The plan carries byte spans and replacements; the MCP tool description
+/// promises "a diff preview for review" and the Python layer renders the
+/// result inside a ```diff fence. This reads each touched file, applies that
+/// file's edits in memory, and diffs the two versions — nothing is written.
+///
+/// A file that cannot be read or whose spans do not apply falls back to a
+/// one-line description of the edit rather than an empty preview.
+pub fn diff_preview_for_edits(edits: &[MutationEdit]) -> String {
+    let mut files: Vec<&str> = edits.iter().map(|e| e.file.as_str()).collect();
+    files.sort();
+    files.dedup();
+
+    let mut out = String::new();
+    for file in files {
+        let for_file: Vec<MutationEdit> = edits
+            .iter()
+            .filter(|e| e.file == file)
+            .cloned()
+            .collect();
+        match std::fs::read_to_string(file) {
+            Ok(original) => match apply_edits_to_file(&original, &for_file) {
+                Ok(updated) => out.push_str(&unified_diff(file, &original, &updated)),
+                Err(e) => out.push_str(&format!("# {}: edits do not apply ({:?})\n", file, e)),
+            },
+            Err(e) => {
+                out.push_str(&format!("# {}: cannot be read ({})\n", file, e));
+                for edit in &for_file {
+                    out.push_str(&format!(
+                        "# replace {} bytes at {}..{}\n",
+                        edit.span.end.saturating_sub(edit.span.start),
+                        edit.span.start,
+                        edit.span.end,
+                    ));
+                }
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -115,16 +200,65 @@ mod tests {
     }
 
     #[test]
-    fn test_compute_diff_preview() {
-        let diff = compute_diff_preview("old\nsame\n", "new\nsame\n");
-        assert!(diff.contains("- old"));
-        assert!(diff.contains("+ new"));
+    fn unified_diff_has_headers_and_a_hunk() {
+        let diff = unified_diff("m.py", "old\nsame\n", "new\nsame\n");
+        assert!(diff.starts_with("--- a/m.py\n+++ b/m.py\n"), "{}", diff);
+        assert!(diff.contains("@@ -1,2 +1,2 @@"), "{}", diff);
+        assert!(diff.contains("-old\n"), "{}", diff);
+        assert!(diff.contains("+new\n"), "{}", diff);
+        assert!(diff.contains(" same\n"), "{}", diff);
     }
 
     #[test]
-    fn test_compute_diff_preview_no_changes() {
-        let diff = compute_diff_preview("same\n", "same\n");
-        assert!(diff.is_empty());
+    fn unified_diff_of_identical_sources_is_empty() {
+        assert!(unified_diff("m.py", "same\n", "same\n").is_empty());
+    }
+
+    #[test]
+    fn an_inserted_line_does_not_rewrite_the_rest_of_the_file() {
+        // The positional diff this replaced paired line i with line i, so it
+        // reported every line after an insertion as changed.
+        let old_source = "a\nb\nc\nd\ne\nf\n";
+        let new_source = "a\nb\nc\nINSERTED\nd\ne\nf\n";
+        let diff = unified_diff("m.py", old_source, new_source);
+        assert!(diff.contains("+INSERTED\n"), "{}", diff);
+        assert!(!diff.contains("-d\n"), "d was not touched: {}", diff);
+        assert!(!diff.contains("-e\n"), "e was not touched: {}", diff);
+    }
+
+    #[test]
+    fn diff_preview_reads_the_file_and_applies_the_edits() {
+        let dir = std::env::temp_dir()
+            .join(format!("coderadar_diff_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("m.py");
+        std::fs::write(&file, "def f():\n    return 1\n").unwrap();
+
+        let path = file.to_string_lossy().to_string();
+        let start = "def f():\n    ".len();
+        let edit = MutationEdit {
+            file: path.clone(),
+            span: ByteSpan { start, end: start + "return 1".len() },
+            replacement: "return 2".into(),
+            expected_hash: "".into(),
+        };
+        let preview = diff_preview_for_edits(&[edit]);
+        assert!(preview.contains("-    return 1\n"), "{}", preview);
+        assert!(preview.contains("+    return 2\n"), "{}", preview);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn diff_preview_says_so_when_a_file_is_missing() {
+        let edit = MutationEdit {
+            file: "no/such/file.py".into(),
+            span: ByteSpan { start: 0, end: 4 },
+            replacement: "x".into(),
+            expected_hash: "".into(),
+        };
+        let preview = diff_preview_for_edits(&[edit]);
+        assert!(preview.contains("cannot be read"), "{}", preview);
     }
 
     #[test]

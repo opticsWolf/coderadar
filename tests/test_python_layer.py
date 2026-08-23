@@ -1283,3 +1283,37 @@ class TestEntityDictsAreUniform:
         entity = lookup_entity(hits[0]["id"])
         assert entity["has_embedding"] is False
         assert entity["embedding_hash"] == ""
+
+
+class TestPlanPreviewsAreDiffs:
+    """`diff_preview` said "replace 412 bytes at 1830..2242 in ./x.py::module".
+
+    The MCP tool description promises "a diff preview for review" and renders
+    the string inside a ```diff fence, so an agent following the documented
+    review-then-apply workflow had nothing to review.
+    """
+
+    def test_body_replacement_preview_is_a_unified_diff(self, tmp_path):
+        try:
+            from coderadar._core import analyze, search_entities
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        from coderadar import CodeGraph
+
+        target = tmp_path / "d.py"
+        target.write_text("def f(a):\n    return a\n", encoding="utf-8")
+        analyze(str(tmp_path))
+
+        hits = search_entities("f", 10, kind="function")
+        assert hits, "fixture function was not indexed"
+        plan = CodeGraph().plan_body_replacement(
+            hits[0]["id"], "    return a + 1\n", None, dry_run=True)
+
+        preview = plan.diff_preview
+        assert preview.startswith("--- a/"), preview
+        assert "+++ b/" in preview, preview
+        assert "@@" in preview, preview
+        assert "-    return a\n" in preview, preview
+        assert "+    return a + 1\n" in preview, preview
+        # The file itself must be untouched by a dry run.
+        assert target.read_text(encoding="utf-8") == "def f(a):\n    return a\n"

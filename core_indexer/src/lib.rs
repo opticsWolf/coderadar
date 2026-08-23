@@ -913,6 +913,17 @@ fn plan_to_dict(py: Python<'_>, plan: &mutation::MutationPlan) -> PyResult<PyObj
     dict.set_item("diff_preview", &plan.diff_preview)?;
     dict.set_item("affected_files", &plan.affected_files)?;
     dict.set_item("warnings", &plan.warnings)?;
+    // Missing here, so the MCP layer's "N call sites could not be verified"
+    // warning was always empty however many sites the planner had flagged.
+    let unverified: Vec<PyObject> = plan.unverified_sites.iter().map(|u| {
+        let d = PyDict::new(py);
+        let _ = d.set_item("file", &u.file);
+        let _ = d.set_item("line", u.line);
+        let _ = d.set_item("snippet", &u.snippet);
+        let _ = d.set_item("reason", &u.reason);
+        d.into()
+    }).collect();
+    dict.set_item("unverified_sites", unverified)?;
     // Serialize edits as list of {file, span_start, span_end, replacement, expected_hash}
     let edits: Vec<PyObject> = plan.edits.iter().map(|e| {
         let ed = PyDict::new(py);

@@ -128,7 +128,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.32",
+        version="0.6.33",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -1602,7 +1602,16 @@ def _format_mutation_plan(plan: Any) -> str:
             f"verified/rewritten. Manual review required.**"
         )
         for site in plan.unverified_sites[:10]:
-            lines.append(f"- `{site}`")
+            # The core now sends these across as dicts; they used never to
+            # arrive at all, so this list was always empty.
+            if isinstance(site, dict):
+                where = f"{site.get('file', '?')}:{site.get('line', 0)}"
+                lines.append(
+                    f"- `{where}` — {site.get('reason', '')}"
+                    + (f" (`{site['snippet']}`)" if site.get("snippet") else "")
+                )
+            else:
+                lines.append(f"- `{site}`")
 
     if plan.warnings:
         lines.append("")

@@ -375,24 +375,28 @@ impl MutationEngine {
 
         let plan_id = ulid::Ulid::new().to_string();
 
+        let edits = vec![MutationEdit {
+            file: module_file_path(projection, &fn_entity.parent_module),
+            span: body_span,
+            replacement: normalized_body,
+            expected_hash: edit_expected_hash,
+        }];
+
+        // A real diff, not "replace 412 bytes at 1830..2242": the MCP
+        // tool promises a preview for review and renders it in a ```diff
+        // fence, so the preview has to be one.
+        let preview = if dry_run {
+            crate::mutation::edit::diff_preview_for_edits(&edits)
+        } else {
+            String::new()
+        };
+
         Ok(MutationPlan {
             id: plan_id,
             tool: "replace_entity_body".to_string(),
-            edits: vec![MutationEdit {
-                file: module_file_path(projection, &fn_entity.parent_module),
-                span: body_span,
-                replacement: normalized_body,
-                expected_hash: edit_expected_hash,
-            }],
             affected_files: vec![module_file_path(projection, &fn_entity.parent_module)],
-            diff_preview: if dry_run {
-                format!("replace {} bytes at {}..{} in {}",
-                    body_span.end - body_span.start,
-                    body_span.start, body_span.end,
-                    fn_entity.parent_module)
-            } else {
-                String::new()
-            },
+            diff_preview: preview,
+            edits,
             unverified_sites: Vec::new(),
             warnings: if fn_entity.parse_quality != ParseQuality::Clean {
                 vec!["Entity parse quality is not Clean — body_span may be approximate".into()]
@@ -418,24 +422,11 @@ impl MutationEngine {
             .ok_or_else(|| MutationError::EntityNotFound(entity_id.to_string()))?;
 
         let params_span = fn_entity.params_span;
-        let old_params = &fn_entity.parameters;
 
         // Stale-write guard: hash the current params span content.
         let def_file = module_file_path(projection, &fn_entity.parent_module);
         let def_source = std::fs::read_to_string(&def_file).unwrap_or_default();
         let def_expected_hash = hash_span(def_source.as_bytes(), params_span);
-
-        // 1. Diff old vs new parameters
-        let new_param_names: Vec<&str> = new_signature
-            .split(',')
-            .map(|s| s.trim().split(':').next().unwrap_or("").trim())
-            .filter(|s| !s.is_empty() && *s != "self" && *s != "cls")
-            .collect();
-
-        let old_names: Vec<&str> = old_params
-            .iter()
-            .map(|p| p.name.as_str())
-            .collect();
 
         let mut edits = Vec::new();
         let mut warnings = Vec::new();
@@ -506,6 +497,15 @@ impl MutationEngine {
 
         let plan_id = ulid::Ulid::new().to_string();
 
+        // A real diff, not "replace 412 bytes at 1830..2242": the MCP
+        // tool promises a preview for review and renders it in a ```diff
+        // fence, so the preview has to be one.
+        let preview = if dry_run {
+            crate::mutation::edit::diff_preview_for_edits(&edits)
+        } else {
+            String::new()
+        };
+
         Ok(MutationPlan {
             id: plan_id,
             tool: "update_signature".to_string(),
@@ -520,13 +520,7 @@ impl MutationEngine {
                 files.dedup();
                 files
             },
-            diff_preview: if dry_run {
-                format!("{} param(s) changed, {} call site(s) affected",
-                    old_names.len().abs_diff(new_param_names.len()),
-                    callers.len())
-            } else {
-                String::new()
-            },
+            diff_preview: preview,
             unverified_sites: unverified,
             warnings,
         })
@@ -719,7 +713,7 @@ impl MutationEngine {
         affected.push(def_file);
 
         // 2. Caller side: rewrite every verified reference
-        let caller_count = self.collect_call_site_edits(
+        let _ = self.collect_call_site_edits(
             std::slice::from_ref(&entity_id.to_string()),
             new_name,
             projection,
@@ -738,17 +732,21 @@ impl MutationEngine {
             });
         }
 
+        // A real diff, not "replace 412 bytes at 1830..2242": the MCP
+        // tool promises a preview for review and renders it in a ```diff
+        // fence, so the preview has to be one.
+        let preview = if dry_run {
+            crate::mutation::edit::diff_preview_for_edits(&edits)
+        } else {
+            String::new()
+        };
+
         Ok(MutationPlan {
             id: ulid::Ulid::new().to_string(),
             tool: "rename_symbol".to_string(),
             edits,
             affected_files: affected,
-            diff_preview: if dry_run {
-                format!("rename \"{}\" → \"{}\" in {} file(s)",
-                    fn_entity.name, new_name, caller_count + 1)
-            } else {
-                String::new()
-            },
+            diff_preview: preview,
             unverified_sites: unverified,
             warnings: Vec::new(),
         })
@@ -867,19 +865,21 @@ impl MutationEngine {
             });
         }
 
+        // A real diff, not "replace 412 bytes at 1830..2242": the MCP
+        // tool promises a preview for review and renders it in a ```diff
+        // fence, so the preview has to be one.
+        let preview = if dry_run {
+            crate::mutation::edit::diff_preview_for_edits(&edits)
+        } else {
+            String::new()
+        };
+
         Ok(MutationPlan {
             id: ulid::Ulid::new().to_string(),
             tool: "rename_symbol".to_string(),
             edits,
             affected_files: affected,
-            diff_preview: if dry_run {
-                format!(
-                    "rename class \"{}\" → \"{}\": {} subclass(es), {} construction site(s)",
-                    cls.name, new_name, subclasses.len(), caller_count
-                )
-            } else {
-                String::new()
-            },
+            diff_preview: preview,
             unverified_sites: unverified,
             warnings,
         })
@@ -925,21 +925,28 @@ impl MutationEngine {
 
         let plan_id = ulid::Ulid::new().to_string();
 
+        let edits = vec![MutationEdit {
+            file: target_file.to_string(),
+            span: insert_span,
+            replacement,
+            expected_hash: String::new(),
+        }];
+
+        // A real diff, not "replace 412 bytes at 1830..2242": the MCP
+        // tool promises a preview for review and renders it in a ```diff
+        // fence, so the preview has to be one.
+        let preview = if dry_run {
+            crate::mutation::edit::diff_preview_for_edits(&edits)
+        } else {
+            String::new()
+        };
+
         Ok(MutationPlan {
             id: plan_id,
             tool: "create_entity".to_string(),
-            edits: vec![MutationEdit {
-                file: target_file.to_string(),
-                span: insert_span,
-                replacement,
-                expected_hash: String::new(),
-            }],
             affected_files: vec![target_file.to_string()],
-            diff_preview: if dry_run {
-                format!("insert {} bytes after \"{}\" in {}", code.len(), anchor, target_file)
-            } else {
-                String::new()
-            },
+            diff_preview: preview,
+            edits,
             unverified_sites: Vec::new(),
             warnings: vec![
                 "Preflight parse-check deferred to Python layer".into(),
