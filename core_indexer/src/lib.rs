@@ -1204,6 +1204,9 @@ fn name_score(name: &str, query_lower: &str, weight: usize) -> Option<usize> {
 /// `codegraph_search_similar` advertises them; they used to come back empty,
 /// so those three kinds were never embedded.
 #[pyfunction]
+// `kind` is a filter, not a required argument: without an explicit signature
+// PyO3 makes even an `Option` positional, so every caller had to pass None.
+#[pyo3(signature = (query, top_k, kind = None))]
 fn search_entities(py: Python<'_>, query: &str, top_k: usize, kind: Option<&str>) -> PyResult<Vec<PyObject>> {
     with_graph(|_graph, snap| {
         let query_lower = query.to_lowercase();

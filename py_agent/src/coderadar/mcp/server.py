@@ -142,7 +142,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.41",
+        version="0.6.42",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -1351,9 +1351,15 @@ def _query_graph(graph: Any, query: str) -> str:
     try:
         from coderadar._core import graph_stats
         if graph_stats().get("modules", 0) == 0:
-            return "No index available. Run `coderadar init` first."
-    except (ImportError, RuntimeError):
-        return "CodeRadar extension not available."
+            return _no_index_message()
+    except ImportError:
+        return NO_EXTENSION_MESSAGE
+    except RuntimeError:
+        # No graph loaded. Reporting that as a missing extension sent the
+        # agent off to rebuild the wheel for something `coderadar init`
+        # fixes — these were the last copies of the per-tool guard that
+        # `requires_index` replaced everywhere else.
+        return _no_index_message()
 
     try:
         from coderadar._core import query_graph as _qg
@@ -1384,9 +1390,15 @@ def _compute_embeddings(graph: Any) -> str:
     try:
         from coderadar._core import graph_stats
         if graph_stats().get("modules", 0) == 0:
-            return "No index available. Run codegraph_reindex first."
-    except (ImportError, RuntimeError):
-        return "CodeRadar extension not available."
+            return _no_index_message()
+    except ImportError:
+        return NO_EXTENSION_MESSAGE
+    except RuntimeError:
+        # No graph loaded. Reporting that as a missing extension sent the
+        # agent off to rebuild the wheel for something `coderadar init`
+        # fixes — these were the last copies of the per-tool guard that
+        # `requires_index` replaced everywhere else.
+        return _no_index_message()
 
     try:
         metrics = graph.compute_embeddings()
@@ -1469,9 +1481,15 @@ def _module_children(graph: Any, module_id: str) -> str:
     try:
         from coderadar._core import graph_stats
         if graph_stats().get("modules", 0) == 0:
-            return "No index available. Run `coderadar init` first."
-    except (ImportError, RuntimeError):
-        return "CodeRadar extension not available."
+            return _no_index_message()
+    except ImportError:
+        return NO_EXTENSION_MESSAGE
+    except RuntimeError:
+        # No graph loaded. Reporting that as a missing extension sent the
+        # agent off to rebuild the wheel for something `coderadar init`
+        # fixes — these were the last copies of the per-tool guard that
+        # `requires_index` replaced everywhere else.
+        return _no_index_message()
 
     if not module_id.strip():
         return "Please provide a module ID (e.g. 'src/main.py::module')."
@@ -1508,9 +1526,15 @@ def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
     try:
         from coderadar._core import graph_stats
         if graph_stats().get("modules", 0) == 0:
-            return "No index available. Run `coderadar init` first."
-    except (ImportError, RuntimeError):
-        return "CodeRadar extension not available."
+            return _no_index_message()
+    except ImportError:
+        return NO_EXTENSION_MESSAGE
+    except RuntimeError:
+        # No graph loaded. Reporting that as a missing extension sent the
+        # agent off to rebuild the wheel for something `coderadar init`
+        # fixes — these were the last copies of the per-tool guard that
+        # `requires_index` replaced everywhere else.
+        return _no_index_message()
 
     if not timestamp:
         return "Please provide an ISO 8601 timestamp (e.g. '2025-01-15T10:00:00Z')."
@@ -1553,9 +1577,15 @@ def _get_smells(graph: Any, entity_id: str | None, rule_id: str | None) -> str:
         from coderadar._core import get_smells as _get_smells_rust, graph_stats
         stats = graph_stats()
         if stats.get("functions", 0) == 0 and stats.get("classes", 0) == 0:
-            return "No index available. Run codegraph_reindex first."
-    except (ImportError, RuntimeError):
-        return "CodeRadar extension not available."
+            return _no_index_message()
+    except ImportError:
+        return NO_EXTENSION_MESSAGE
+    except RuntimeError:
+        # No graph loaded. Reporting that as a missing extension sent the
+        # agent off to rebuild the wheel for something `coderadar init`
+        # fixes — these were the last copies of the per-tool guard that
+        # `requires_index` replaced everywhere else.
+        return _no_index_message()
 
     try:
         findings = _get_smells_rust(entity_id, rule_id)
@@ -1594,9 +1624,15 @@ def _traverse(
     try:
         from coderadar._core import graph_stats
         if graph_stats().get("modules", 0) == 0:
-            return "No index available. Run codegraph_reindex first."
-    except (ImportError, RuntimeError):
-        return "CodeRadar extension not available."
+            return _no_index_message()
+    except ImportError:
+        return NO_EXTENSION_MESSAGE
+    except RuntimeError:
+        # No graph loaded. Reporting that as a missing extension sent the
+        # agent off to rebuild the wheel for something `coderadar init`
+        # fixes — these were the last copies of the per-tool guard that
+        # `requires_index` replaced everywhere else.
+        return _no_index_message()
 
     if not entity_id.strip():
         return "Please provide an entity ID to traverse from."
@@ -1671,6 +1707,7 @@ def _traverse(
     return "\n".join(lines)
 
 
+@requires_index
 def _replace_body(
     graph: Any, entity_id: str, new_body: str,
     expected_hash: str | None, dry_run: bool,
@@ -1687,6 +1724,7 @@ def _replace_body(
         return f"Mutation failed: {e}"
 
 
+@requires_index
 def _update_signature(
     graph: Any, entity_id: str, new_signature: str,
     inject_defaults: bool, dry_run: bool,
@@ -1705,6 +1743,7 @@ def _update_signature(
         return f"Mutation failed: {e}"
 
 
+@requires_index
 def _rename(graph: Any, entity_id: str, new_name: str, dry_run: bool) -> str:
     """Rename an entity."""
     try:
@@ -1792,6 +1831,7 @@ def _canonical_file_path(file_path: str) -> str:
     return '.' + os.sep + file_path
 
 
+@requires_index
 def _create_entity(
     graph: Any, file_path: str, language: str, kind: str,
     name: str, body: str, decorators: list[str] | None,
@@ -1925,9 +1965,15 @@ def _update_file(graph: Any, file_path: str, content: str | None) -> str:
     try:
         from coderadar._core import graph_stats
         if graph_stats().get("modules", 0) == 0:
-            return "No index available. Run codegraph_reindex first."
-    except (ImportError, RuntimeError):
-        return "CodeRadar extension not available."
+            return _no_index_message()
+    except ImportError:
+        return NO_EXTENSION_MESSAGE
+    except RuntimeError:
+        # No graph loaded. Reporting that as a missing extension sent the
+        # agent off to rebuild the wheel for something `coderadar init`
+        # fixes — these were the last copies of the per-tool guard that
+        # `requires_index` replaced everywhere else.
+        return _no_index_message()
 
     if not file_path.strip():
         return "Please provide a file path."
@@ -2118,9 +2164,15 @@ def _resolve_ref(graph: Any, name: str, limit: int) -> str:
     try:
         from coderadar._core import graph_stats
         if graph_stats().get("modules", 0) == 0:
-            return "No index available. Run `coderadar init` first."
-    except (ImportError, RuntimeError):
-        return "CodeRadar extension not available."
+            return _no_index_message()
+    except ImportError:
+        return NO_EXTENSION_MESSAGE
+    except RuntimeError:
+        # No graph loaded. Reporting that as a missing extension sent the
+        # agent off to rebuild the wheel for something `coderadar init`
+        # fixes — these were the last copies of the per-tool guard that
+        # `requires_index` replaced everywhere else.
+        return _no_index_message()
 
     if not name.strip():
         return "Please provide a name or path to resolve."

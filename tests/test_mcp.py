@@ -60,7 +60,7 @@ class TestMCPCreation:
         from coderadar.mcp.server import create_server
         server = create_server(None)
         assert server.name == "CodeRadar"
-        assert server.version == "0.6.41"
+        assert server.version == "0.6.42"
 
     def test_server_has_call_tool(self):
         from coderadar.mcp.server import create_server
@@ -439,34 +439,6 @@ class TestMCPServerRoundTrip:
 # Empty/uninitialized graph handling (no Rust needed)
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestUninitializedGraph:
-    """Tool responses when no graph is indexed (defensive default behavior)."""
-
-    def test_explore_empty_graph_returns_help(self):
-        from coderadar.mcp.server import _explore
-        # With _core available but no index, should detect 0 modules
-        result = _explore(None, "User", [], "both", 8)
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_node_detail_empty_graph(self):
-        from coderadar.mcp.server import _node_detail
-        result = _node_detail(None, "test.py::func", False)
-        assert isinstance(result, str)
-        # Either "not found" or "no index" — both are valid defensive responses
-        assert len(result) > 0
-
-    def test_search_empty_graph(self):
-        from coderadar.mcp.server import _search
-        result = _search(None, "test", None, 5)
-        assert isinstance(result, str)
-
-    def test_affected_empty_graph(self):
-        from coderadar.mcp.server import _affected
-        result = _affected(None, "test.py::func", 3)
-        assert isinstance(result, str)
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 # v0.4.1 new features: normalization, budget, staleness
 # ═══════════════════════════════════════════════════════════════════════════
@@ -743,12 +715,6 @@ class TestQueryTimeResolution:
         tool_names = [t.name for t in asyncio.run(server.list_tools())]
         assert "coderadar_resolve" in tool_names
 
-    def test_mcp_resolve_uninitialized_graph(self):
-        """Resolve with no graph returns helpful message."""
-        from coderadar.mcp.server import _resolve_ref
-        result = _resolve_ref(None, "UserService", 5)
-        assert isinstance(result, str) and len(result) > 0
-
     def test_mcp_resolve_empty_query(self):
         """Resolve with empty query returns guidance."""
         from coderadar.mcp.server import _resolve_ref
@@ -794,12 +760,6 @@ class TestInstructionsV059:
 class TestQueryTool:
     """codegraph_query backend validation."""
 
-    def test_query_empty_graph_returns_help(self):
-        from coderadar.mcp.server import _query_graph
-        result = _query_graph(None, "functions where name contains 'test'")
-        assert isinstance(result, str)
-        assert len(result) > 0
-
     def test_query_empty_query_returns_prompt(self):
         from coderadar.mcp.server import _query_graph
         result = _query_graph(None, "")
@@ -811,8 +771,6 @@ class TestQueryTool:
         from coderadar.mcp.server import _query_graph
         # Single-quote WHERE clause must parse and return matching functions.
         result = _query_graph(None, "functions where name contains 'create'")
-        assert isinstance(result, str)
-        assert len(result) > 0
         # Must contain real matched rows, not a parse error / no-results banner.
         assert "create_user" in result, result
         assert "no results" not in result.lower()
@@ -848,12 +806,6 @@ class TestQueryTool:
 class TestModuleChildren:
     """codegraph_module_children backend."""
 
-    def test_module_children_empty_graph(self):
-        from coderadar.mcp.server import _module_children
-        result = _module_children(None, "test.py::module")
-        assert isinstance(result, str)
-        assert len(result) > 0
-
     def test_module_children_empty_id(self):
         from coderadar.mcp.server import _module_children
         result = _module_children(None, "")
@@ -874,12 +826,6 @@ class TestModuleChildren:
 
 class TestTraverse:
     """codegraph_traverse backend."""
-
-    def test_traverse_empty_graph(self):
-        from coderadar.mcp.server import _traverse
-        result = _traverse(None, "test.py::func", "both", None, 3)
-        assert isinstance(result, str)
-        assert len(result) > 0
 
     def test_traverse_empty_entity_id(self):
         from coderadar.mcp.server import _traverse
@@ -968,30 +914,6 @@ class TestUninitializedIndex:
 
 class TestMutationTools:
     """Mutation tools — plan + apply via dry_run toggle."""
-
-    def test_replace_body_uninitialized(self):
-        from coderadar.mcp.server import _replace_body
-        result = _replace_body(None, "test.py::fn", "return 42", None, True)
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_update_signature_uninitialized(self):
-        from coderadar.mcp.server import _update_signature
-        result = _update_signature(None, "test.py::fn", "def fn(x, y):", False, True)
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_rename_uninitialized(self):
-        from coderadar.mcp.server import _rename
-        result = _rename(None, "test.py::fn", "new_fn", True)
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-    def test_create_entity_uninitialized(self):
-        from coderadar.mcp.server import _create_entity
-        result = _create_entity(None, "test.py", "python", "function", "new_fn", "return 1", None, "end", True)
-        assert isinstance(result, str)
-        assert len(result) > 0
 
     def test_render_entity_code_python(self):
         from coderadar.mcp.server import _render_entity_code
@@ -1252,12 +1174,6 @@ class TestMutationTools:
 class TestReindexUpdateFile:
     """codegraph_reindex and codegraph_update_file backends."""
 
-    def test_update_file_empty_graph(self):
-        from coderadar.mcp.server import _update_file
-        result = _update_file(None, "test.py", "def foo(): pass")
-        assert isinstance(result, str)
-        assert len(result) > 0
-
     def test_update_file_empty_path(self):
         from coderadar.mcp.server import _update_file
         result = _update_file(None, "", None)
@@ -1266,12 +1182,6 @@ class TestReindexUpdateFile:
 
 class TestSearchSimilar:
     """codegraph_search_similar backend."""
-
-    def test_search_similar_empty_graph(self):
-        from coderadar.mcp.server import _search_similar
-        result = _search_similar(None, "authentication logic", 5)
-        assert isinstance(result, str)
-        assert len(result) > 0
 
     def test_search_similar_empty_query(self):
         from coderadar.mcp.server import _search_similar
@@ -1282,32 +1192,13 @@ class TestSearchSimilar:
 class TestComputeEmbeddings:
     """codegraph_compute_embeddings backend."""
 
-    def test_compute_embeddings_empty_graph(self):
-        from coderadar.mcp.server import _compute_embeddings
-        result = _compute_embeddings(None)
-        assert isinstance(result, str)
-        assert len(result) > 0
-
-
 class TestAsOf:
     """codegraph_as_of backend."""
-
-    def test_as_of_empty_graph(self):
-        from coderadar.mcp.server import _as_of
-        result = _as_of(None, "2025-01-01T00:00:00Z", "", [])
-        assert isinstance(result, str)
-        assert len(result) > 0
 
     def test_as_of_empty_timestamp(self):
         from coderadar.mcp.server import _as_of
         result = _as_of(None, "", "", [])
         assert "timestamp" in result.lower()
-
-    def test_as_of_with_symbols_uninitialized(self):
-        from coderadar.mcp.server import _as_of
-        result = _as_of(None, "2025-01-01T00:00:00Z", "", ["User"])
-        assert isinstance(result, str) and len(result) > 0
-
 
 class TestStalenessBannerFires:
     """`_get_stale_files` read `stats["epoch"]`, a key graph_stats never set.

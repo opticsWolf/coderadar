@@ -423,20 +423,41 @@ impl MutationEngine {
 
         let params_span = fn_entity.params_span;
 
-        // Stale-write guard: hash the current params span content.
         let def_file = module_file_path(projection, &fn_entity.parent_module);
         let def_source = std::fs::read_to_string(&def_file).unwrap_or_default();
-        let def_expected_hash = hash_span(def_source.as_bytes(), params_span);
+
+        // The MCP tool asks the agent for a whole `def f(a, b) -> str:` line,
+        // but `params_span` is exactly the parenthesised parameter list. The
+        // whole line used to be written into that span, producing
+        // `def greetdef greet(name, punctuation)::` — a syntax error that
+        // `apply` caught and rolled back, so the tool reliably did nothing.
+        let (header_span, replacement) =
+            signature_header(&def_source, params_span, new_signature)?;
+
+        // Stale-write guard: hash what is there now.
+        let def_expected_hash = hash_span(def_source.as_bytes(), header_span);
 
         let mut edits = Vec::new();
         let mut warnings = Vec::new();
         let mut unverified = Vec::new();
 
-        // 2. Definition edit: replace params_span
+        // A different name in the new signature is a rename, and renames have
+        // their own plan because they have to reach call sites. Say so rather
+        // than half-doing it.
+        if let Some(new_name) = signature_name(new_signature) {
+            if new_name != fn_entity.name {
+                warnings.push(format!(
+                    "New signature names `{}` but this entity is `{}` — the \n                     name was left alone. Use rename to change it.",
+                    new_name, fn_entity.name
+                ));
+            }
+        }
+
+        // 2. Definition edit: replace the header from `(` to just before `:`
         edits.push(MutationEdit {
             file: def_file,
-            span: params_span,
-            replacement: new_signature.to_string(),
+            span: header_span,
+            replacement,
             expected_hash: def_expected_hash,
         });
 
@@ -1167,6 +1188,61 @@ fn rollback_all(backups: &[(String, String)]) {
     }
 }
 
+/// The header a signature update rewrites, and the text to put in it.
+///
+/// `params_span` covers exactly `(a, b)`. A Python header can carry a return
+/// annotation between that and the colon, so the span that a whole-signature
+/// replacement owns runs from the opening paren to just before the header's
+/// colon. Anything the caller did not include — a return type they dropped —
+/// is dropped on purpose: they passed a complete signature.
+fn signature_header(
+    source: &str,
+    params_span: ByteSpan,
+    new_signature: &str,
+) -> Result<(ByteSpan, String), MutationError> {
+    let open = new_signature.find('(').ok_or_else(|| {
+        MutationError::ParseFailed(format!(
+            "New signature has no parameter list: {:?}", new_signature
+        ))
+    })?;
+    let mut replacement = new_signature[open..].trim_end().to_string();
+    if replacement.ends_with(':') {
+        replacement.pop();
+        replacement = replacement.trim_end().to_string();
+    }
+
+    let end = header_colon(source, params_span.end).unwrap_or(params_span.end);
+    Ok((ByteSpan { start: params_span.start, end }, replacement))
+}
+
+/// Byte offset of the colon that ends a `def` header, searching from `from`.
+///
+/// Bracket-aware, so a `-> dict[str, int]:` does not end at the wrong place,
+/// and it stops at the newline rather than running into the body.
+fn header_colon(source: &str, from: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    let mut depth: i32 = 0;
+    for i in from..bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b':' if depth <= 0 => return Some(i),
+            b'\n' => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The identifier a supplied signature names, if it names one.
+fn signature_name(new_signature: &str) -> Option<&str> {
+    let open = new_signature.find('(')?;
+    let head = new_signature[..open].trim_end();
+    let name = head.rsplit(|c: char| c.is_whitespace()).next()?.trim();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+
 #[derive(Debug)]
 pub enum MutationError {
     EntityNotFound(String),
@@ -1191,6 +1267,87 @@ mod tests {
     use crate::graph::MutationConfig;
     use crate::types::ByteSpan;
     use std::path::Path;
+
+    /// `params_span` covers `(a, b)`, but the MCP tool asks the agent for a
+    /// whole `def f(a, b) -> str:` line. Writing one into the other produced
+    /// `def greetdef greet(name, punctuation)::` — a syntax error that
+    /// `apply` caught and rolled back, so update_signature reliably did
+    /// nothing at all.
+    mod signature_header_tests {
+        use super::*;
+
+        fn span_of(source: &str, params: &str) -> ByteSpan {
+            let start = source.find(params).expect("params not in source");
+            ByteSpan { start, end: start + params.len() }
+        }
+
+        #[test]
+        fn the_replacement_is_the_parameter_list_not_the_whole_line() {
+            let source = "def greet(name):\n    return name\n";
+            let params = span_of(source, "(name)");
+            let (span, replacement) =
+                signature_header(source, params, "def greet(name, punctuation):").unwrap();
+
+            assert_eq!(replacement, "(name, punctuation)");
+            assert_eq!(&source[span.start..span.end], "(name)");
+        }
+
+        #[test]
+        fn a_return_annotation_is_part_of_the_header() {
+            // params_span stops at `)`, so the old span could not have
+            // reached `-> int` and a new annotation would have landed after
+            // the colon.
+            let source = "def greet(name) -> str:\n    return name\n";
+            let params = span_of(source, "(name)");
+            let (span, replacement) =
+                signature_header(source, params, "def greet(name) -> int:").unwrap();
+
+            assert_eq!(replacement, "(name) -> int");
+            assert_eq!(&source[span.start..span.end], "(name) -> str");
+        }
+
+        #[test]
+        fn a_bracketed_return_type_does_not_end_the_header_early() {
+            let source = "def load(p) -> dict[str, int]:\n    return {}\n";
+            let params = span_of(source, "(p)");
+            let (span, _) = signature_header(source, params, "def load(p, q):").unwrap();
+
+            assert_eq!(&source[span.start..span.end], "(p) -> dict[str, int]");
+        }
+
+        #[test]
+        fn a_bare_parameter_list_is_accepted_too() {
+            let source = "def greet(name):\n    return name\n";
+            let params = span_of(source, "(name)");
+            let (_, replacement) = signature_header(source, params, "(a, b)").unwrap();
+            assert_eq!(replacement, "(a, b)");
+        }
+
+        #[test]
+        fn a_signature_without_parameters_is_refused() {
+            let source = "def greet(name):\n    return name\n";
+            let params = span_of(source, "(name)");
+            assert!(signature_header(source, params, "def greet").is_err());
+        }
+
+        #[test]
+        fn a_missing_colon_falls_back_to_the_parameter_span() {
+            // Truncated or unparsable source must not make the span run off
+            // into the body.
+            let source = "def greet(name)\n";
+            let params = span_of(source, "(name)");
+            let (span, _) = signature_header(source, params, "def greet(a):").unwrap();
+            assert_eq!(span, params);
+        }
+
+        #[test]
+        fn the_name_is_read_back_out_of_a_supplied_signature() {
+            assert_eq!(signature_name("def greet(a, b):"), Some("greet"));
+            assert_eq!(signature_name("async def greet(a):"), Some("greet"));
+            assert_eq!(signature_name("(a, b)"), None);
+            assert_eq!(signature_name("no parens here"), None);
+        }
+    }
 
     fn engine() -> MutationEngine {
         MutationEngine::new(MutationConfig::default())
