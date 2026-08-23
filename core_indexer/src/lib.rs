@@ -292,13 +292,43 @@ fn function_to_dict(py: Python<'_>, f: &Function) -> PyResult<PyObject> {
             s
         })
         .collect();
-    let sig = format!("def {}({})", f.name, params.join(", "));
+    let keyword = declaration_keyword(&f.id);
+    let sig = if keyword.is_empty() {
+        format!("{}({})", f.name, params.join(", "))
+    } else {
+        format!("{} {}({})", keyword, f.name, params.join(", "))
+    };
     if let Some(ref ret) = f.return_type {
         dict.set_item("signature", format!("{} -> {}", sig, ret))?;
     } else {
         dict.set_item("signature", sig)?;
     }
     Ok(dict.into())
+}
+
+/// The keyword a reader of this language expects in front of a signature.
+///
+/// Every signature was rendered `def name(...)` regardless of language, so
+/// a PHP method came back as `def hello()` — wrong for the eight of nine
+/// Tier-1 languages that are not Python, and misleading to an agent about
+/// to call `update_signature` with it.
+fn declaration_keyword(entity_id: &str) -> &'static str {
+    let path = entity_id.split("::").next().unwrap_or("");
+    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        "py" | "pyi" => "def",
+        "rs" => "fn",
+        "go" => "func",
+        "php" => "function",
+        "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx" => "function",
+        "rb" => "def",
+        "kt" | "kts" | "swift" => "fun",
+        "lua" => "function",
+        "ex" | "exs" => "def",
+        // C, C++, Java, C# and friends write the return type instead of a
+        // keyword; an empty prefix is trimmed off below.
+        _ => "",
+    }
 }
 
 fn import_to_dict(py: Python<'_>, i: &Import) -> PyResult<PyObject> {

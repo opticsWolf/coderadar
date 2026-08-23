@@ -332,7 +332,14 @@ impl<'a> CursorExtractor<'a> {
             let rt_node = node.child_by_field_name("return_type")
                 .or_else(|| node.child_by_field_name("returns"));
             rt_node.and_then(|rt| {
-                let rt_text = rt.utf8_text(self.source.as_bytes()).unwrap_or("");
+                // TypeScript's return node is a `type_annotation`, whose text
+                // includes the leading colon — rendering as `-> : string`.
+                let rt_text = rt
+                    .utf8_text(self.source.as_bytes())
+                    .unwrap_or("")
+                    .trim()
+                    .trim_start_matches(':')
+                    .trim();
                 if !rt_text.is_empty() && !is_builtin_type(rt_text) {
                     Some(rt_text.to_string())
                 } else {

@@ -747,8 +747,124 @@ pub fn make_entity_id(file_path: &str, qualified_name: &str) -> String {
 /// Handles typed_parameter (x: int), default_parameter (x: int = 5),
 /// and simple identifier parameters. Extracts name, type annotation,
 /// and default value independently.
+/// Node kinds that hold a function's parameter list, across grammars.
+///
+/// `child_by_field_name("parameters")` covers most, but not all — Kotlin
+/// calls the field something else — so the container is also looked up by
+/// kind.
+const PARAM_CONTAINERS: [&str; 5] = [
+    "parameters", "parameter_list", "formal_parameters",
+    "function_value_parameters", "method_parameters",
+];
+
+/// Node kinds that represent one parameter, across grammars.
+///
+/// Only the Python spellings were handled, so every parameter of every
+/// PHP, Kotlin, C++, Go, Java, Rust and Ruby function was dropped — their
+/// signatures all rendered as `name()`.
+const PARAM_NODES: [&str; 12] = [
+    // Python
+    "identifier", "typed_parameter", "default_parameter",
+    "typed_default_parameter", "keyword_argument",
+    // Everything else
+    "simple_parameter",       // PHP
+    "parameter",              // Kotlin, Rust
+    "parameter_declaration",  // C, C++, Go
+    "formal_parameter",       // Java, C#
+    "optional_parameter",     // Ruby, TypeScript
+    "required_parameter",     // TypeScript
+    "variadic_parameter",     // PHP, TypeScript rest args
+];
+
+/// First identifier anywhere beneath `node`, depth first.
+fn first_identifier(node: Node, source: &str) -> Option<String> {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if matches!(child.kind(),
+                    "identifier" | "variable_name" | "simple_identifier"
+                    | "field_identifier") {
+            if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                if !text.is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+        }
+        if let Some(found) = first_identifier(child, source) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// The identifier inside a parameter node, whatever the grammar calls it.
+fn parameter_name(node: Node, source: &str) -> String {
+    if let Some(named) = node
+        .child_by_field_name("name")
+        .or_else(|| node.child_by_field_name("declarator"))
+        .or_else(|| node.child_by_field_name("pattern"))
+    {
+        // C/C++ wrap the identifier in a declarator chain, and `&`/`*`
+        // declarators hold it as a plain child rather than a field — taking
+        // the node's text there yields "& name" instead of "name".
+        let mut current = named;
+        loop {
+            match current.child_by_field_name("declarator") {
+                Some(inner) => current = inner,
+                None => break,
+            }
+        }
+        if current.kind() == "identifier" {
+            if let Ok(text) = current.utf8_text(source.as_bytes()) {
+                if !text.is_empty() {
+                    return text.to_string();
+                }
+            }
+        } else if let Some(found) = first_identifier(current, source) {
+            return found;
+        } else if let Ok(text) = current.utf8_text(source.as_bytes()) {
+            if !text.is_empty() {
+                return text.to_string();
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if matches!(child.kind(),
+                    "identifier" | "variable_name" | "simple_identifier") {
+            if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                if !text.is_empty() {
+                    return text.to_string();
+                }
+            }
+        }
+    }
+    String::new()
+}
+
+fn direct_param_container(node: Node) -> Option<Node> {
+    let mut cursor = node.walk();
+    let found = node
+        .children(&mut cursor)
+        .find(|c| PARAM_CONTAINERS.contains(&c.kind()));
+    found
+}
+
 pub fn extract_parameters(node: Node, source: &str) -> Vec<Parameter> {
-    let params_node = node.child_by_field_name("parameters");
+    let params_node = node
+        .child_by_field_name("parameters")
+        .or_else(|| direct_param_container(node))
+        // C and C++ hang the parameter list off the declarator chain rather
+        // than off the function node, so a direct-child search finds nothing.
+        .or_else(|| {
+            let mut current = node.child_by_field_name("declarator");
+            while let Some(decl) = current {
+                if let Some(found) = direct_param_container(decl) {
+                    return Some(found);
+                }
+                current = decl.child_by_field_name("declarator");
+            }
+            None
+        });
     let mut params = Vec::new();
 
     if let Some(p_node) = params_node {
@@ -768,19 +884,8 @@ pub fn extract_parameters(node: Node, source: &str) -> Vec<Parameter> {
                         is_keyword_only: false,
                     });
                 }
-            } else if kind == "typed_parameter" || kind == "default_parameter"
-                || kind == "typed_default_parameter" || kind == "keyword_argument"
-            {
-                let name = child
-                    .child_by_field_name("name")
-                    .or_else(|| {
-                        // Some grammars use (identifier) as first child
-                        child.children(&mut child.walk())
-                            .find(|ch| ch.kind() == "identifier")
-                    })
-                    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                    .unwrap_or("")
-                    .to_string();
+            } else if PARAM_NODES.contains(&kind) && kind != "identifier" {
+                let name = parameter_name(child, source);
 
                 // Extract type annotation from the "type" field
                 let annotation = child

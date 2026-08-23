@@ -1,4 +1,4 @@
-# CodeRadar v0.6.46
+# CodeRadar v0.6.47
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -54,7 +54,7 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 827 (250 Rust + 577 Python) |
+| **Tests** | 857 (250 Rust + 607 Python) |
 | **MCP Tools** | 18 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, get_smells, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
@@ -223,7 +223,7 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
 
-## v0.6.46 Feature Highlights
+## v0.6.47 Feature Highlights
 
 The v0.7 improvement plan, start to finish — write-path correctness, temporal
 truth, scaling, dead-code retirement, configuration, and the MCP layer.
@@ -283,6 +283,14 @@ truth, scaling, dead-code retirement, configuration, and the MCP layer.
   False" and exited 0, so a script driving updates could not tell a failure
   from a success. `git-clean` defaulted to reporting a clean worktree when
   the check itself failed — the answer a caller is most likely to act on.
+- **Tier 1 was Python-shaped.** `extract_parameters` only knew the Python
+  grammar's node kinds, so every parameter of every PHP, Kotlin, C, C++, Go,
+  Java, Rust, Ruby and TypeScript function was dropped — a PHP method taking
+  `$name` was indexed as `hello()`. C and C++ hang the parameter list off the
+  declarator chain rather than the function node, so they found nothing even
+  by kind. The rendered keyword was hardcoded `def` for all of them, and
+  TypeScript's return type came back as `-> : string`. Signatures are what an
+  agent reads before calling `update_signature`.
 - **Dead entity fields.** `is_async`, `is_generator`, and `decorators` were
   hardcoded `false`/empty at the single site that builds every function
   entity, for every language — so `functions where is_async == true`, a
@@ -304,7 +312,7 @@ truth, scaling, dead-code retirement, configuration, and the MCP layer.
   removed rather than left looking load-bearing.
 - **~4,300 lines of dead code retired**, including the Stack Graphs
   placeholder.
-- **827 tests, 0 failures** — 250 Rust + 577 Python, including an end-to-end
+- **857 tests, 0 failures** — 250 Rust + 607 Python, including an end-to-end
   mutation suite (plan → apply → reindex → read the file back) and a
   parametrised no-index suite that replaced fourteen assertions which could
   not fail.
@@ -421,7 +429,7 @@ py_agent/src/coderadar/    # Python layer
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Specifications + code review + performance roadmap
-tests/                     # 577 Python tests (E2E, mutation E2E, MCP, smells,
+tests/                     # 607 Python tests (E2E, mutation E2E, MCP, smells,
                            #   framework resolvers, ingest parity, benchmarks)
   mcp/                     # Root resolution, background init, lifecycle, project_path
 ```
