@@ -72,6 +72,10 @@ class BackgroundIndex:
         self._error: Optional[str] = None
         self._started_at: float = 0.0
         self._finished_at: float = 0.0
+        # Bumped by every restart. A thread from a previous generation is a
+        # thread whose answer nobody wants any more, and it must not write
+        # its status over the current one.
+        self._generation = 0
 
     # ── lifecycle ────────────────────────────────────────────────────────
 
@@ -82,27 +86,57 @@ class BackgroundIndex:
                 return
             self._status = IndexStatus.INDEXING
             self._started_at = time.monotonic()
+            generation, root, done = self._generation, self._root, self._done
             self._thread = threading.Thread(
-                target=self._run, name="coderadar-index", daemon=True)
+                target=self._run, args=(generation, root, done),
+                name="coderadar-index", daemon=True)
             self._thread.start()
 
-    def _run(self) -> None:
+    def _run(self, generation: int, root: str, done: threading.Event) -> None:
+        status, error = IndexStatus.READY, None
         try:
             analyze = self._analyze
             if analyze is None:
                 import coderadar
                 analyze = coderadar.analyze
-            analyze(self._root)
+            analyze(root)
         except BaseException as exc:  # noqa: BLE001 — the thread must not die silently
-            with self._lock:
-                self._status = IndexStatus.FAILED
-                self._error = f"{type(exc).__name__}: {exc}"
-        else:
-            with self._lock:
-                self._status = IndexStatus.READY
+            status = IndexStatus.FAILED
+            error = f"{type(exc).__name__}: {exc}"
         finally:
-            self._finished_at = time.monotonic()
-            self._done.set()
+            with self._lock:
+                if generation == self._generation:
+                    self._status = status
+                    self._error = error
+                    self._finished_at = time.monotonic()
+            done.set()
+
+    @property
+    def root(self) -> str:
+        with self._lock:
+            return self._root
+
+    def restart(self, root: Optional[str] = None) -> None:
+        """Index again, optionally somewhere else.
+
+        The lazy root retry uses this: the first tool call may learn from the
+        client that the project is somewhere other than where startup
+        guessed, and the index has to follow. A restart while a previous
+        index is still running lets that one finish into a graph that this
+        one then replaces — the core's `analyze` is a full replacement, not a
+        merge, so the last writer wins and the last writer is this one.
+        """
+        with self._lock:
+            if root is not None:
+                self._root = root
+            self._generation += 1
+            self._thread = None
+            self._done = threading.Event()
+            self._status = IndexStatus.NOT_STARTED
+            self._error = None
+            self._started_at = 0.0
+            self._finished_at = 0.0
+        self.start()
 
     # ── observation ──────────────────────────────────────────────────────
 
@@ -122,7 +156,9 @@ class BackgroundIndex:
         """Start if needed, wait up to `timeout`, and report where we got to."""
         self.start()
         budget = DEFAULT_WAIT_SECONDS if timeout is None else timeout
-        self._done.wait(timeout=budget)
+        with self._lock:
+            done = self._done
+        done.wait(timeout=budget)
         with self._lock:
             status, error = self._status, self._error
         return IndexOutcome(status=status, elapsed=self.elapsed, error=error)

@@ -128,9 +128,17 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.38",
+        version="0.6.39",
         instructions=SERVER_INSTRUCTIONS,
     )
+
+    # `roots/list` is a server-to-client request and MCP gives the server no
+    # `initialize` hook to send one from — awaiting one during the handshake
+    # deadlocks. Middleware is the one place that sees every inbound request
+    # and holds the session, so the top rung of the path ladder is climbed
+    # here, on the first tool call, and only if startup's answer was a guess.
+    from .lazy import make_middleware
+    mcp.middleware.append(make_middleware())
 
     # ── codegraph_explore (§26.2 primary tool) ─────────────────────────
 
@@ -828,10 +836,58 @@ def _trim_to_char_budget(body_lines: list[str], max_chars: int) -> list[str]:
 
 # ── Tool Implementations ─────────────────────────────────────────────────
 
-NO_INDEX_MESSAGE = (
-    "No index available. Run `coderadar init` in the project root first."
+def _no_index_message() -> str:
+    """Say where we looked, so the agent can tell us we looked in the wrong place.
+
+    "No index available. Run `coderadar init`" was a dead end: it named no
+    directory, so an agent served the wrong project had no way to notice, and
+    an agent in the right project had no way to tell whether the index was
+    missing or merely empty. This states the root, how it was chosen, and the
+    one action that fixes each case.
+    """
+    from coderadar.mcp import lazy
+
+    retry = lazy.current()
+    if retry is None:
+        return (
+            "No index available for this project.\n\n"
+            "Run `coderadar init` in the project root, then retry this call."
+        )
+
+    resolved = retry.resolved
+    lines = [
+        f"No code was indexed under `{resolved.path}`, which is where this "
+        f"server is serving from (chosen from: {resolved.source}).",
+        "",
+    ]
+    if resolved.confirmed:
+        lines += [
+            "That directory does carry a `.coderadar` marker, so it is very "
+            "likely the right project and simply has no indexed code yet.",
+            "",
+            "Run `codegraph_reindex` to index it now.",
+        ]
+    else:
+        lines += [
+            "Nothing on disk confirmed that directory as a project root — no "
+            "`.coderadar/` or `.coderadar.toml` was found at or above it.",
+            "",
+            "If that is the wrong project, restart the server with "
+            "`coderadar mcp serve --path <project root>`, or run "
+            "`coderadar init` in the right directory so it can be found "
+            "automatically.",
+            "",
+            "If it is the right project, run `codegraph_reindex` to index it.",
+        ]
+    return "\n".join(lines)
+
+
+NO_EXTENSION_MESSAGE = (
+    "The CodeRadar native extension is not available in this environment, so "
+    "no code intelligence can be served.\n\n"
+    "Install it with `uv run maturin develop --release`, then restart the "
+    "MCP server. Until then, fall back to reading files directly."
 )
-NO_EXTENSION_MESSAGE = "CodeRadar extension not available."
 
 
 def requires_index(func):
@@ -858,12 +914,12 @@ def requires_index(func):
         try:
             from coderadar._core import graph_stats
             if graph_stats().get("modules", 0) == 0:
-                return NO_INDEX_MESSAGE
+                return _no_index_message()
         except ImportError:
             return NO_EXTENSION_MESSAGE
         except RuntimeError:
             # No graph loaded — the state this guard exists for.
-            return NO_INDEX_MESSAGE
+            return _no_index_message()
         return func(*args, **kwargs)
 
     return wrapper

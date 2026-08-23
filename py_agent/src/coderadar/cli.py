@@ -117,7 +117,7 @@ def _activate(project_root) -> None:
 
 
 @click.group()
-@click.version_option(version="0.6.38", prog_name="coderadar",
+@click.version_option(version="0.6.39", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -577,6 +577,7 @@ def serve(project_path: str | None):
     from .mcp import serve as mcp_serve
     from .mcp.roots import adopt_project_root, describe, resolve_project_root
     from .mcp.startup import BackgroundIndex, configure
+    from .mcp.lazy import LazyRootRetry, configure as lazy_configure
 
     # MCP clients launch servers from wherever they happen to be, so the cwd
     # is a poor guess and `--path` is optional. Climb the ladder, then move
@@ -611,6 +612,10 @@ def serve(project_path: str | None):
     index = BackgroundIndex(root=".")
     configure(index)
     index.start()
+
+    # If nothing on disk confirmed the root, the first tool call asks the
+    # client where its workspace is and re-indexes if the answer is better.
+    lazy_configure(LazyRootRetry(resolved, index, path_flag=project_path))
     print(f"Indexing {resolved.path} in the background...", file=sys.stderr)
 
     mcp_serve(coderadar.CodeGraph())

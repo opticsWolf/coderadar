@@ -60,7 +60,7 @@ class TestMCPCreation:
         from coderadar.mcp.server import create_server
         server = create_server(None)
         assert server.name == "CodeRadar"
-        assert server.version == "0.6.38"
+        assert server.version == "0.6.39"
 
     def test_server_has_call_tool(self):
         from coderadar.mcp.server import create_server
@@ -935,7 +935,7 @@ class TestUninitializedIndex:
 
     def test_decorator_reports_no_index_when_the_graph_is_missing(self, monkeypatch):
         import coderadar._core as core
-        from coderadar.mcp.server import NO_INDEX_MESSAGE, requires_index
+        from coderadar.mcp.server import requires_index
 
         def no_graph():
             raise RuntimeError("No graph loaded — run coderadar init first")
@@ -946,7 +946,12 @@ class TestUninitializedIndex:
         def tool(_graph):
             raise AssertionError("must not run without an index")
 
-        assert tool(None) == NO_INDEX_MESSAGE
+        # The message is built per call now, because it names the directory
+        # being served and how that directory was chosen — a fixed string
+        # could not tell an agent it was pointed at the wrong project.
+        message = tool(None)
+        assert "No index" in message
+        assert "coderadar init" in message
 
     def test_decorator_runs_the_tool_once_an_index_exists(self, monkeypatch):
         import coderadar._core as core

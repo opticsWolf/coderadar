@@ -188,6 +188,38 @@ def resolve_project_root(
     return ResolvedRoot(path=raw_cwd, source=CWD, marker=None)
 
 
+def resolve_from_client_roots(uris: Iterable[str]) -> Optional[ResolvedRoot]:
+    """Resolve *only* over the client's declared roots.
+
+    The lazy retry cannot re-run the whole ladder: cwd is always its last
+    rung, and by the time the retry runs the process has already chdir'd onto
+    whatever startup picked — so re-running the ladder would rediscover that
+    same directory and call it a client-driven answer. This considers the
+    client's roots and nothing else, and returns None when none of them are
+    usable, which means "keep what we have".
+    """
+    for uri in uris:
+        as_path = uri_to_path(uri)
+        if as_path is None:
+            continue
+        resolved = _canonical(as_path)
+        if resolved is None:
+            continue
+        marker = find_marker(resolved)
+        if marker is not None:
+            return ResolvedRoot(path=marker.parent, source=CLIENT_ROOT, marker=marker)
+    # No marker anywhere under the client's roots; the first usable one is
+    # still a better guess than a cwd nobody chose.
+    for uri in uris:
+        as_path = uri_to_path(uri)
+        if as_path is None:
+            continue
+        resolved = _canonical(as_path)
+        if resolved is not None:
+            return ResolvedRoot(path=resolved, source=CLIENT_ROOT, marker=None)
+    return None
+
+
 def adopt_project_root(resolved: ResolvedRoot) -> Path:
     """Make the resolved root the process cwd, and report the old one.
 
@@ -218,3 +250,38 @@ def describe(resolved: ResolvedRoot) -> str:
         f"Project root {resolved.path} (from {resolved.source}, no .coderadar marker found — "
         f"run `coderadar init` there if this is the wrong project)"
     )
+
+
+async def client_roots(session: object) -> list[str]:
+    """Ask the connected client where its workspace is (`roots/list`).
+
+    This is the top rung of the ladder, and it can only be climbed from
+    inside a request: MCP has no `initialize` hook, and a server-to-client
+    request awaited during `initialize` deadlocks — the dispatcher does not
+    read further inbound messages until the handshake returns. So the roots
+    dance happens lazily, on the first tool call.
+
+    Returns an empty list for a client that declared no roots capability, or
+    that answers with anything unusable. Never raises: a client that will not
+    answer is a reason to keep the root we have, not to fail the tool call.
+    """
+    try:
+        from mcp.types import ClientCapabilities, RootsCapability
+    except ImportError:
+        return []
+
+    check = getattr(session, "check_client_capability", None) or getattr(
+        session, "check_capability", None)
+    try:
+        if check is not None and not check(ClientCapabilities(roots=RootsCapability())):
+            return []
+        result = await session.list_roots()
+    except Exception:  # noqa: BLE001 — an unhelpful client is not an error
+        return []
+
+    uris: list[str] = []
+    for root in getattr(result, "roots", None) or ():
+        uri = getattr(root, "uri", None)
+        if uri:
+            uris.append(str(uri))
+    return uris
