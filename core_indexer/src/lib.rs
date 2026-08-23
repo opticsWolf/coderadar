@@ -1,7 +1,6 @@
 // CodeRadar v3.6 — Rust Core Library
 // PyO3 bindings for the Python layer (MCP server, CLI, resolvers).
 
-pub mod buffers;
 pub mod extract;
 pub mod fs;
 pub mod graph;
@@ -11,7 +10,6 @@ pub mod resolve;
 pub mod smells;
 pub mod storage;
 pub mod types;
-pub mod update;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

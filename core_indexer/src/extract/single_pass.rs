@@ -1,5 +1,5 @@
 // CodeRadar v0.5.3 — Single-Pass Cursor-Driven Extraction
-// Replaces the two-pass tag_tree + walk_and_extract pipeline with a single
+// Replaced the two-pass tag_tree + walk_and_extract pipeline with a single
 // cursor-driven pass. The QueryCursor visits every tagged node in document
 // order; we emit entities directly from the cursor, using a byte-range
 // frame stack + parent-chain walk for context resolution.

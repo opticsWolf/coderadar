@@ -847,6 +847,27 @@ pub enum ExtractedUnit {
     TypeAlias(ExtractedTypeAlias),
 }
 
+impl ExtractedUnit {
+    /// The entity id this unit will be stored under.
+    ///
+    /// Lived in `update/diff.rs` until that module was retired; the two live
+    /// callers are `storage.rs` and `graph/projection_ops.rs`, so it belongs
+    /// beside the type it destructures.
+    pub fn entity_id(&self) -> EntityId {
+        match self {
+            ExtractedUnit::Module(m) => m.id.clone(),
+            ExtractedUnit::Class(c) => c.id.clone(),
+            ExtractedUnit::Function(f) => f.id.clone(),
+            ExtractedUnit::Import(i) => i.id.clone(),
+            ExtractedUnit::Constant(c) => c.id.clone(),
+            ExtractedUnit::TypeAlias(t) => t.id.clone(),
+            // A field carries no id of its own; its name is unique within
+            // the class that owns it.
+            ExtractedUnit::Field(f) => f.name.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ExtractedModule {
     pub id: EntityId,
