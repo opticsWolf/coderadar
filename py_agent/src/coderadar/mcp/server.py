@@ -142,7 +142,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.45",
+        version="0.6.46",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -1546,12 +1546,21 @@ def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
 
     names = _parse_names(query, symbols)
     if not names:
+        # Both suggestions here named things that do not exist:
+        # `codegraph_query` takes no timestamp, and there is no
+        # `search_entities` tool — an agent following this guidance failed
+        # twice. Nothing is loaded at this point either; `as_of` resolves
+        # per symbol.
         lines = [
             f"## Snapshot at `{timestamp}`",
             "",
-            f"Graph loaded at {timestamp}. Provide symbols to explore, or use:",
-            f"- `codegraph_query` with timestamp to run Pest queries",
-            f"- `search_entities` to find symbols at this point in time",
+            "Pass `symbols` to look entities up as they were at this "
+            "timestamp — for example "
+            f'codegraph_as_of(timestamp="{timestamp}", symbols=["User"]).',
+            "",
+            "Only symbol lookup is reconstructed from the ledger. "
+            "`codegraph_query` and `codegraph_search` always run against the "
+            "current index.",
         ]
         return "\n".join(lines)
 

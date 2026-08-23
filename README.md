@@ -1,4 +1,4 @@
-# CodeRadar v0.6.45
+# CodeRadar v0.6.46
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -54,7 +54,7 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 824 (250 Rust + 574 Python) |
+| **Tests** | 827 (250 Rust + 577 Python) |
 | **MCP Tools** | 18 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, get_smells, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
@@ -223,7 +223,7 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
 
-## v0.6.45 Feature Highlights
+## v0.6.46 Feature Highlights
 
 The v0.7 improvement plan, start to finish — write-path correctness, temporal
 truth, scaling, dead-code retirement, configuration, and the MCP layer.
@@ -268,6 +268,12 @@ truth, scaling, dead-code retirement, configuration, and the MCP layer.
   a report that was never written. All three now report real numbers.
   `mutations` was removed: it documented an "audit trail from MutationLog"
   for a MutationLog that exists nowhere in the codebase.
+- **Guidance that named tools which don't exist.** `codegraph_as_of` told
+  the agent to use "`codegraph_query` with timestamp" and `search_entities`.
+  `codegraph_query` has no timestamp parameter and `search_entities` is not
+  a tool — an agent following that advice failed twice with no way to tell
+  the advice was wrong. A test now checks every tool name any message
+  mentions against the registered set.
 - **Two commands named `watch`.** Click registers by function name, so the
   second definition silently replaced the first — and the losing one carried
   the config activation, leaving the survivor running without ever reading
@@ -298,7 +304,7 @@ truth, scaling, dead-code retirement, configuration, and the MCP layer.
   removed rather than left looking load-bearing.
 - **~4,300 lines of dead code retired**, including the Stack Graphs
   placeholder.
-- **824 tests, 0 failures** — 250 Rust + 574 Python, including an end-to-end
+- **827 tests, 0 failures** — 250 Rust + 577 Python, including an end-to-end
   mutation suite (plan → apply → reindex → read the file back) and a
   parametrised no-index suite that replaced fourteen assertions which could
   not fail.
@@ -415,7 +421,7 @@ py_agent/src/coderadar/    # Python layer
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Specifications + code review + performance roadmap
-tests/                     # 574 Python tests (E2E, mutation E2E, MCP, smells,
+tests/                     # 577 Python tests (E2E, mutation E2E, MCP, smells,
                            #   framework resolvers, ingest parity, benchmarks)
   mcp/                     # Root resolution, background init, lifecycle, project_path
 ```
