@@ -72,6 +72,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(next_watcher_batch, m)?)?;
     m.add_function(wrap_pyfunction!(next_watcher_batch_timeout, m)?)?;
     m.add_function(wrap_pyfunction!(stop_watcher, m)?)?;
+    m.add_function(wrap_pyfunction!(set_config, m)?)?;
+    m.add_function(wrap_pyfunction!(get_config, m)?)?;
     m.add_class::<PyCodeGraph>()?;
     m.add_class::<QueryIterator>()?;
     Ok(())
@@ -89,9 +91,24 @@ static GLOBAL_GRAPH: std::sync::LazyLock<RwLock<Option<CodeGraph>>> =
 static INDEXED_ROOT: std::sync::LazyLock<RwLock<Option<std::path::PathBuf>>> =
     std::sync::LazyLock::new(|| RwLock::new(None));
 
+/// The configuration every consumer in this process reads.
+///
+/// `.coderadar.toml` is loaded and validated on the Python side, then pushed
+/// here by `set_config`. Everything that used to call `GraphConfig::default()`
+/// at its own construction site now reads this instead, so a project's
+/// settings reach `analyze`, the mutation policy and the resolver alike.
+/// Untouched, it *is* `GraphConfig::default()` — no config file means no
+/// behaviour change.
+static ACTIVE_CONFIG: std::sync::LazyLock<RwLock<Arc<graph::GraphConfig>>> =
+    std::sync::LazyLock::new(|| RwLock::new(Arc::new(graph::GraphConfig::default())));
+
+fn active_config() -> Arc<graph::GraphConfig> {
+    ACTIVE_CONFIG.read().clone()
+}
+
 /// Build a MutationEngine confined to the indexed root.
 fn mutation_engine() -> mutation::MutationEngine {
-    let engine = mutation::MutationEngine::new(crate::graph::MutationConfig::default());
+    let engine = mutation::MutationEngine::new(active_config().mutation.clone());
     match INDEXED_ROOT.read().clone() {
         Some(root) => engine.with_project_root(root),
         None => engine,
@@ -146,7 +163,7 @@ pub struct PyCodeGraph {
 impl PyCodeGraph {
     #[new]
     fn new() -> Self {
-        let config = graph::GraphConfig::default();
+        let config = (*active_config()).clone();
         let mut g = CodeGraph::new(config);
         // Seed the global graph from this instance
         let mut guard = GLOBAL_GRAPH.write();
@@ -374,7 +391,7 @@ fn analyze(root: &str) -> PyResult<PyObject> {
     use std::fs;
     use crate::types::Language;
 
-    let config = graph::GraphConfig::default();
+    let config = (*active_config()).clone();
     let mut graph = CodeGraph::new(config);
 
     // Attach Macrame persistent store — Macrame/libSQL needs a file path, not a directory
@@ -844,6 +861,205 @@ fn resolve_symbol(_qualified_name: &str) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     Ok(PyDict::new(py).into())
 }
+
+// -- Configuration (plan section 3) -----------------------------------------
+
+/// Fetch a sub-table, or None when absent. A non-table value is an error.
+fn cfg_section<'py>(
+    parent: &Bound<'py, PyDict>,
+    key: &str,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    match parent.get_item(key)? {
+        None => Ok(None),
+        Some(v) => v.downcast_into::<PyDict>().map(Some).map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(format!(
+                "config section '{}' must be a table",
+                key
+            ))
+        }),
+    }
+}
+
+/// Fetch and convert one key, naming the dotted path when the type is wrong.
+fn cfg_value<'py, T: FromPyObject<'py>>(
+    section: &Bound<'py, PyDict>,
+    key: &str,
+    path: &str,
+) -> PyResult<Option<T>> {
+    match section.get_item(key)? {
+        None => Ok(None),
+        Some(v) => v.extract::<T>().map(Some).map_err(|e| {
+            pyo3::exceptions::PyTypeError::new_err(format!("config '{}': {}", path, e))
+        }),
+    }
+}
+
+/// Every leaf path in a nested config dict, dotted.
+fn cfg_leaf_paths(d: &Bound<'_, PyDict>, prefix: &str, out: &mut Vec<String>) {
+    for (k, v) in d.iter() {
+        let key = k.extract::<String>().unwrap_or_default();
+        let path = if prefix.is_empty() { key } else { format!("{}.{}", prefix, key) };
+        match v.downcast_into::<PyDict>() {
+            Ok(sub) => cfg_leaf_paths(&sub, &path, out),
+            Err(_) => out.push(path),
+        }
+    }
+}
+
+/// Push a `.coderadar.toml`-shaped dict into the process configuration.
+///
+/// The Python layer owns loading and schema validation (pydantic gives better
+/// errors than anything worth writing here); this maps the result onto
+/// `GraphConfig` for every consumer in the process.
+///
+/// Returns `{"applied": {...}, "ignored": [...]}`. `applied` is what landed on
+/// `GraphConfig`; `ignored` names keys the caller sent that map to nothing, so
+/// a config full of aspirational knobs reports itself instead of appearing to
+/// work. Of the applied keys, the ones a consumer actually reads today are the
+/// `mutation.*` policy gate and `resolution.import_graph.*`; the rest are
+/// carried on `GraphConfig` but not yet read by any live path.
+#[pyfunction]
+fn set_config(py: Python<'_>, cfg: &Bound<'_, PyDict>) -> PyResult<PyObject> {
+    let mut c = graph::GraphConfig::default();
+    let applied = PyDict::new(py);
+    let mut consumed: HashSet<String> = HashSet::new();
+
+    macro_rules! take {
+        ($section:expr, $key:literal, $path:literal, $target:expr, $ty:ty) => {
+            if let Some(v) = cfg_value::<$ty>(&$section, $key, $path)? {
+                applied.set_item($path, v.clone())?;
+                $target = v;
+            }
+            consumed.insert($path.to_string());
+        };
+    }
+
+    if let Some(res) = cfg_section(cfg, "resolution")? {
+        take!(res, "min_confidence", "resolution.min_confidence",
+              c.resolution.min_confidence, f32);
+
+        if let Some(sg) = cfg_section(&res, "stack_graph")? {
+            take!(sg, "rules_dir", "resolution.stack_graph.rules_dir",
+                  c.stack_graph.rules_dir, String);
+            take!(sg, "max_path_depth", "resolution.stack_graph.max_path_depth",
+                  c.stack_graph.max_path_depth, usize);
+            take!(sg, "incremental", "resolution.stack_graph.incremental",
+                  c.stack_graph.incremental, bool);
+        }
+        if let Some(ig) = cfg_section(&res, "import_graph")? {
+            take!(ig, "max_import_depth", "resolution.import_graph.max_import_depth",
+                  c.import_graph.max_import_depth, usize);
+            take!(ig, "include_same_package", "resolution.import_graph.include_same_package",
+                  c.import_graph.include_same_package, bool);
+            take!(ig, "max_wildcard_hops", "resolution.import_graph.max_wildcard_hops",
+                  c.import_graph.max_wildcard_hops, u8);
+        }
+        if let Some(sig) = cfg_section(&res, "signature")? {
+            take!(sig, "min_score", "resolution.signature.min_score",
+                  c.signature.min_score, f32);
+            take!(sig, "name_weight", "resolution.signature.name_weight",
+                  c.signature.name_weight, f32);
+            take!(sig, "arity_weight", "resolution.signature.arity_weight",
+                  c.signature.arity_weight, f32);
+            take!(sig, "proximity_weight", "resolution.signature.proximity_weight",
+                  c.signature.proximity_weight, f32);
+            take!(sig, "ambiguous_name_ceiling", "resolution.signature.ambiguous_name_ceiling",
+                  c.signature.ambiguous_name_ceiling, usize);
+        }
+    }
+
+    if let Some(m) = cfg_section(cfg, "mutation")? {
+        take!(m, "enabled", "mutation.enabled", c.mutation.enabled, bool);
+        take!(m, "default_dry_run", "mutation.default_dry_run",
+              c.mutation.default_dry_run, bool);
+        take!(m, "max_files_per_plan", "mutation.max_files_per_plan",
+              c.mutation.max_files_per_plan, usize);
+        take!(m, "max_edits_per_plan", "mutation.max_edits_per_plan",
+              c.mutation.max_edits_per_plan, usize);
+        take!(m, "max_body_tokens", "mutation.max_body_tokens",
+              c.mutation.max_body_tokens, usize);
+        take!(m, "backup_retention_hours", "mutation.backup_retention_hours",
+              c.mutation.backup_retention_hours, u64);
+        take!(m, "post_verify", "mutation.post_verify", c.mutation.post_verify, bool);
+        take!(m, "max_repair_attempts", "mutation.max_repair_attempts",
+              c.mutation.max_repair_attempts, u32);
+        take!(m, "require_clean_git", "mutation.require_clean_git",
+              c.mutation.require_clean_git, bool);
+        take!(m, "allow", "mutation.allow", c.mutation.allow, Vec<String>);
+        take!(m, "deny", "mutation.deny", c.mutation.deny, Vec<String>);
+    }
+
+    if let Some(q) = cfg_section(cfg, "query")? {
+        take!(q, "max_depth", "query.max_depth", c.query.max_depth, usize);
+        take!(q, "default_top_k", "query.default_top_k", c.query.default_top_k, usize);
+        take!(q, "cache_ttl_seconds", "query.cache_ttl_seconds",
+              c.query.cache_ttl_seconds, u64);
+        take!(q, "cache_max_size", "query.cache_max_size", c.query.cache_max_size, usize);
+        take!(q, "use_rust_graph_for_traversal", "query.use_rust_graph_for_traversal",
+              c.query.use_rust_graph_for_traversal, bool);
+    }
+
+    if let Some(g) = cfg_section(cfg, "git")? {
+        take!(g, "enabled", "git.enabled", c.git.enabled, bool);
+        take!(g, "reindex_on_branch_switch", "git.reindex_on_branch_switch",
+              c.git.reindex_on_branch_switch, bool);
+    }
+
+    if let Some(mem) = cfg_section(cfg, "memory")? {
+        take!(mem, "stack_graph_mb", "memory.stack_graph_mb", c.memory.stack_graph_mb, usize);
+        take!(mem, "call_graph_mb", "memory.call_graph_mb", c.memory.call_graph_mb, usize);
+        take!(mem, "resolution_cache_mb", "memory.resolution_cache_mb",
+              c.memory.resolution_cache_mb, usize);
+        take!(mem, "projected_graph_mb", "memory.projected_graph_mb",
+              c.memory.projected_graph_mb, usize);
+        take!(mem, "spill_compression", "memory.spill_compression",
+              c.memory.spill_compression, String);
+    }
+
+    let mut leaves = Vec::new();
+    cfg_leaf_paths(cfg, "", &mut leaves);
+    let mut ignored: Vec<String> = leaves
+        .into_iter()
+        .filter(|p| !consumed.contains(p))
+        .collect();
+    ignored.sort();
+
+    *ACTIVE_CONFIG.write() = Arc::new(c);
+
+    let out = PyDict::new(py);
+    out.set_item("applied", applied)?;
+    out.set_item("ignored", ignored)?;
+    Ok(out.into())
+}
+
+/// The configuration currently in force, as a dict.
+#[pyfunction]
+fn get_config(py: Python<'_>) -> PyResult<PyObject> {
+    let c = active_config();
+    let out = PyDict::new(py);
+
+    let resolution = PyDict::new(py);
+    resolution.set_item("min_confidence", c.resolution.min_confidence)?;
+    let import_graph = PyDict::new(py);
+    import_graph.set_item("max_import_depth", c.import_graph.max_import_depth)?;
+    import_graph.set_item("include_same_package", c.import_graph.include_same_package)?;
+    import_graph.set_item("max_wildcard_hops", c.import_graph.max_wildcard_hops)?;
+    resolution.set_item("import_graph", import_graph)?;
+    out.set_item("resolution", resolution)?;
+
+    let mutation = PyDict::new(py);
+    mutation.set_item("enabled", c.mutation.enabled)?;
+    mutation.set_item("default_dry_run", c.mutation.default_dry_run)?;
+    mutation.set_item("max_files_per_plan", c.mutation.max_files_per_plan)?;
+    mutation.set_item("max_edits_per_plan", c.mutation.max_edits_per_plan)?;
+    mutation.set_item("require_clean_git", c.mutation.require_clean_git)?;
+    mutation.set_item("allow", c.mutation.allow.clone())?;
+    mutation.set_item("deny", c.mutation.deny.clone())?;
+    out.set_item("mutation", mutation)?;
+
+    Ok(out.into())
+}
+
 
 // ── Read Path ──────────────────────────────────────────────────────────────
 

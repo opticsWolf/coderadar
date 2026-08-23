@@ -129,7 +129,7 @@ impl CodeGraph {
     pub(super) fn resolve_calls_scoped(&self, projection: &mut ProjectedGraph, scope_file: Option<&str>) {
         use crate::resolve::orchestrator::ResolutionOrchestrator;
 
-        let mut orchestrator = ResolutionOrchestrator::new();
+        let mut orchestrator = ResolutionOrchestrator::with_config(&self.config.import_graph);
         // v0.5: Use the shared import graph (edges built during insert_extracted)
         // instead of a fresh empty graph, enabling multi-hop transitive resolution.
         let import_graph_guard = self.import_graph.read();
@@ -305,6 +305,8 @@ impl CodeGraph {
             let projection_ro: &ProjectedGraph = projection;  // shared borrow
             let methods_ref: &MethodsByClass = &methods_by_class;
 
+            let import_cfg: &crate::graph::ImportGraphConfig = &self.config.import_graph;
+
             std::thread::scope(|s| {
                 let results_ref = &results_mutex;
                 for chunk in all_work.chunks(chunk_size) {
@@ -314,7 +316,7 @@ impl CodeGraph {
                     let import_graph = import_graph_ref;
                     s.spawn(move || {
                         let mut local = Vec::new();
-                        let mut orch = ResolutionOrchestrator::new();
+                        let mut orch = ResolutionOrchestrator::with_config(import_cfg);
                         for (fid, calls, lkp) in &chunk_owned {
                             let (rc, ep) = Self::resolve_one_function(
                                 fid, calls,

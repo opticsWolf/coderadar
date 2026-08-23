@@ -857,3 +857,139 @@ class TestQueryExecution:
 
     def test_unmatched_predicate_returns_no_rows(self, indexed):
         assert list(indexed.query('functions where name == "nonexistent_zzz"')) == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Configuration reaching the Rust core (plan §3, step A)
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestConfigReachesTheCore:
+    """`.coderadar.toml` used to be read by nobody.
+
+    Every consumer built `GraphConfig::default()` at its own construction
+    site, so the whole documented config surface had zero effect. These pin
+    that a pushed config actually lands, and that keys with no mapping say so
+    instead of appearing to work.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_config(self):
+        """set_config is process-wide; put the defaults back afterwards."""
+        try:
+            from coderadar._core import set_config
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        yield
+        set_config({})
+
+    def test_applied_keys_come_back(self):
+        from coderadar._core import set_config
+        report = set_config({"mutation": {"max_edits_per_plan": 7}})
+        assert report["applied"]["mutation.max_edits_per_plan"] == 7
+        assert report["ignored"] == []
+
+    def test_the_value_is_readable_afterwards(self):
+        from coderadar._core import set_config, get_config
+        set_config({"resolution": {"import_graph": {"max_import_depth": 9}}})
+        assert get_config()["resolution"]["import_graph"]["max_import_depth"] == 9
+
+    def test_unmapped_keys_are_reported_not_silently_dropped(self):
+        """The whole point: a knob that does nothing must say so."""
+        from coderadar._core import set_config
+        report = set_config({
+            "llm": {"provider": "openai", "model": "gpt-4o"},
+            "database": {"hnsw_m": 16},
+            "mutation": {"enabled": True},
+        })
+        assert report["ignored"] == [
+            "database.hnsw_m", "llm.model", "llm.provider",
+        ]
+        assert "mutation.enabled" in report["applied"]
+
+    def test_an_empty_config_restores_the_defaults(self):
+        """set_config replaces, it does not merge — each call starts from
+        GraphConfig::default(), so a removed key reverts."""
+        from coderadar._core import set_config, get_config
+        set_config({"mutation": {"max_files_per_plan": 3}})
+        assert get_config()["mutation"]["max_files_per_plan"] == 3
+        set_config({})
+        assert get_config()["mutation"]["max_files_per_plan"] == 100
+
+    def test_a_wrong_type_names_the_key(self):
+        from coderadar._core import set_config
+        with pytest.raises(TypeError) as exc:
+            set_config({"mutation": {"max_edits_per_plan": "lots"}})
+        assert "mutation.max_edits_per_plan" in str(exc.value)
+
+    def test_a_scalar_where_a_table_belongs_is_an_error(self):
+        from coderadar._core import set_config
+        with pytest.raises(TypeError) as exc:
+            set_config({"mutation": 5})
+        assert "mutation" in str(exc.value)
+
+    def test_lists_survive_the_crossing(self):
+        from coderadar._core import set_config, get_config
+        set_config({"mutation": {"deny": ["vendor/", "/*.lock"]}})
+        assert get_config()["mutation"]["deny"] == ["vendor/", "/*.lock"]
+
+
+class TestConfiguredMutationPolicy:
+    """The mutation policy gate is the one consumer that was already live —
+    it just never saw a configured value."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_config(self):
+        try:
+            from coderadar._core import set_config
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        yield
+        set_config({})
+
+    @staticmethod
+    def _two_edit_plan(target):
+        from coderadar import MutationEdit, MutationPlan
+        edit = MutationEdit(file=str(target), replacement="value = 2\n",
+                            span_start=0, span_end=10)
+        return MutationPlan(
+            id="two-edits", tool="create_entity",
+            edits=[edit, edit],
+            affected_files=[str(target)],
+            diff_preview="", unverified_sites=[], warnings=[],
+        )
+
+    def test_configured_edit_limit_refuses_the_plan(self, tmp_path):
+        from coderadar._core import analyze, set_config
+        from coderadar import CodeGraph
+        target = tmp_path / "mod.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+        analyze(str(tmp_path))
+
+        set_config({"mutation": {"max_edits_per_plan": 1}})
+        result = CodeGraph().apply(self._two_edit_plan(target))
+        assert result.status == "RejectedPolicy"
+        assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+    def test_the_same_plan_passes_the_gate_under_the_default_limit(self, tmp_path):
+        """Proves the refusal above came from the config, not from the plan."""
+        from coderadar._core import analyze, set_config
+        from coderadar import CodeGraph
+        target = tmp_path / "mod.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+        analyze(str(tmp_path))
+
+        set_config({})
+        result = CodeGraph().apply(self._two_edit_plan(target))
+        assert result.status != "RejectedPolicy", result.status
+
+    def test_disabling_mutation_refuses_everything(self, tmp_path):
+        from coderadar._core import analyze, set_config
+        from coderadar import CodeGraph
+        target = tmp_path / "mod.py"
+        target.write_text("value = 1\n", encoding="utf-8")
+        analyze(str(tmp_path))
+
+        set_config({"mutation": {"enabled": False}})
+        result = CodeGraph().apply(self._two_edit_plan(target))
+        assert result.status == "RejectedPolicy"

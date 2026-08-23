@@ -35,11 +35,19 @@ pub struct ResolutionOrchestrator {
 
 impl ResolutionOrchestrator {
     pub fn new() -> Self {
+        Self::with_config(&crate::graph::ImportGraphConfig::default())
+    }
+
+    /// Build an orchestrator that honours the project's import-graph settings.
+    ///
+    /// `new()` hardcoded the two depth knobs, so `[resolution.import_graph]`
+    /// in `.coderadar.toml` could not reach the one place that reads them.
+    pub fn with_config(config: &crate::graph::ImportGraphConfig) -> Self {
         Self {
             stack_graph: StackGraphResolver::new(),
             cache: ResolutionCache::new(),
-            max_import_depth: 3,
-            include_same_package: true,
+            max_import_depth: config.max_import_depth,
+            include_same_package: config.include_same_package,
             transitives_cache: std::collections::HashMap::new(),
         }
     }
@@ -491,6 +499,28 @@ static BUILTINS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_with_config_carries_the_import_graph_settings() {
+        // `new()` hardcoded 3/true, so `[resolution.import_graph]` in
+        // .coderadar.toml reached nothing.
+        let cfg = crate::graph::ImportGraphConfig {
+            max_import_depth: 7,
+            include_same_package: false,
+            max_wildcard_hops: 1,
+        };
+        let orch = ResolutionOrchestrator::with_config(&cfg);
+        assert_eq!(orch.max_import_depth, 7);
+        assert!(!orch.include_same_package);
+    }
+
+    #[test]
+    fn test_new_still_matches_the_defaults() {
+        let orch = ResolutionOrchestrator::new();
+        let default = crate::graph::ImportGraphConfig::default();
+        assert_eq!(orch.max_import_depth, default.max_import_depth);
+        assert_eq!(orch.include_same_package, default.include_same_package);
+    }
 
     #[test]
     fn test_c3_linearization_single_no_bases() {
