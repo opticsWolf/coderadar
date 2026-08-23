@@ -142,7 +142,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.40",
+        version="0.6.41",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -153,6 +153,11 @@ def create_server(graph: Any) -> MCPServer:
     # here, on the first tool call, and only if startup's answer was a guess.
     from .lazy import make_middleware
     mcp.middleware.append(make_middleware())
+
+    # Any inbound message means the client is there, which is what the
+    # handshake timeout is waiting to learn.
+    from .lifecycle import make_middleware as make_lifecycle_middleware
+    mcp.middleware.append(make_lifecycle_middleware())
 
     # ── codegraph_explore (§26.2 primary tool) ─────────────────────────
 
@@ -699,9 +704,26 @@ def create_server(graph: Any) -> MCPServer:
 # ── Entry Point ──────────────────────────────────────────────────────────
 
 def serve(graph: Any) -> None:
-    """Run the MCP server over stdio (blocking)."""
+    """Run the MCP server over stdio (blocking).
+
+    Returns when the transport ends — stdin closing is the client hanging
+    up, and there is nothing to serve after that. The two lifecycle guards
+    cover the cases where the transport never ends on its own: a client that
+    connects and never speaks, and a client that is killed rather than
+    closed.
+    """
+    from .lifecycle import install
+
+    handshake, watchdog = install()
     server = create_server(graph)
-    server.run(transport="stdio")
+    try:
+        server.run(transport="stdio")
+    finally:
+        # stdin closed, or the transport failed. Either way the client is
+        # gone; stop the watchdog so a test or an embedding caller is not
+        # left with a thread that outlives the server it was watching.
+        handshake.disarm()
+        watchdog.stop()
 
 
 # ── Staleness Detection ──────────────────────────────────────────────────
