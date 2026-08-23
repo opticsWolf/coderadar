@@ -114,6 +114,20 @@ After editing code, use the mutation pipeline to keep the graph in sync:
 - **Don't reconstruct a flow by hand** — name the endpoints and explore surfaces the path.
 - **When a file is flagged "⚠ changed on disk after index sync"**, Read those specific files for accurate content. Every file NOT flagged is fresh — still trust codegraph.
 - **If a project isn't indexed**, stop calling codegraph tools for that project and use built-in tools. Indexing is the user's decision — mention `coderadar init` if it comes up, but don't run it yourself.
+
+## One project per server
+
+This server serves a single project — the one named in the "no index" and
+"wrong project" messages. Every tool takes an optional `project_path`; pass
+it when you are working across repositories and want to be told, rather than
+quietly answered from the wrong one. A `project_path` that names the served
+project is accepted; anything else is refused with the reason. To work on a
+second project, start a second server with `coderadar mcp serve --path
+<project root>`.
+
+If a tool reports that indexing is still in progress, that is not an error —
+the first index walks every source file. Retry in a few seconds rather than
+falling back to grep.
 """
 
 
@@ -128,7 +142,7 @@ def create_server(graph: Any) -> MCPServer:
     """
     mcp = MCPServer(
         "CodeRadar",
-        version="0.6.39",
+        version="0.6.40",
         instructions=SERVER_INSTRUCTIONS,
     )
 
@@ -163,8 +177,13 @@ def create_server(graph: Any) -> MCPServer:
         symbols: Optional[list[str]] = None,
         direction: Literal["downstream", "upstream", "both"] = "both",
         max_files: int = 8,
+        project_path: Optional[str] = None,
     ) -> str:
         """Primary code exploration tool."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _explore(graph, query, symbols or [], direction, max_files)
 
     # ── codegraph_node (§26.2 depth tool) ──────────────────────────────
@@ -185,8 +204,13 @@ def create_server(graph: Any) -> MCPServer:
     def codegraph_node(
         id: str,
         include_neighbors: bool = False,
+        project_path: Optional[str] = None,
     ) -> str:
         """Depth drill-down for a single entity."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _node_detail(graph, id, include_neighbors)
 
     # ── codegraph_search (§26.2 discovery tool) ────────────────────────
@@ -208,8 +232,13 @@ def create_server(graph: Any) -> MCPServer:
         query: str,
         kind: Optional[str] = None,
         top_k: int = 10,
+        project_path: Optional[str] = None,
     ) -> str:
         """Symbol discovery via keyword search."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _search(graph, query, kind, top_k)
 
     # ── codegraph_affected (§26.2 impact tool) ─────────────────────────
@@ -230,8 +259,13 @@ def create_server(graph: Any) -> MCPServer:
     def codegraph_affected(
         id: str,
         max_depth: int = 5,
+        project_path: Optional[str] = None,
     ) -> str:
         """Transitive impact analysis."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _affected(graph, id, max_depth)
 
     # ── coderadar_resolve (§F.8 Phase 2: query-time framework resolution) ─
@@ -255,8 +289,13 @@ def create_server(graph: Any) -> MCPServer:
     def coderadar_resolve(
         name: str,
         limit: int = 5,
+        project_path: Optional[str] = None,
     ) -> str:
         """Framework-aware reference resolution."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _resolve_ref(graph, name, limit)
 
     # ── codegraph_query — Pest graph query language ───────────────────
@@ -278,8 +317,13 @@ def create_server(graph: Any) -> MCPServer:
     )
     def codegraph_query(
         query: str,
+        project_path: Optional[str] = None,
     ) -> str:
         """Execute a Pest graph query."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _query_graph(graph, query)
 
     # ── codegraph_search_similar — embedding/semantic search ──────────
@@ -303,8 +347,13 @@ def create_server(graph: Any) -> MCPServer:
     def codegraph_search_similar(
         query: str,
         top_k: int = 10,
+        project_path: Optional[str] = None,
     ) -> str:
         """Semantic similarity search."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _search_similar(graph, query, top_k)
 
     # ── codegraph_compute_embeddings — generate embedding vectors ────
@@ -327,8 +376,13 @@ def create_server(graph: Any) -> MCPServer:
         },
     )
     def codegraph_compute_embeddings(
+        project_path: Optional[str] = None,
     ) -> str:
         """Compute embeddings for semantic search."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _compute_embeddings(graph)
 
     # ── codegraph_module_children — structural discovery ─────────────
@@ -348,8 +402,13 @@ def create_server(graph: Any) -> MCPServer:
     )
     def codegraph_module_children(
         module_id: str,
+        project_path: Optional[str] = None,
     ) -> str:
         """List module children."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _module_children(graph, module_id)
 
     # ── codegraph_as_of — temporal query ─────────────────────────────
@@ -372,8 +431,13 @@ def create_server(graph: Any) -> MCPServer:
         timestamp: str,
         query: str = "",
         symbols: Optional[list[str]] = None,
+        project_path: Optional[str] = None,
     ) -> str:
         """Temporal graph query."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _as_of(graph, timestamp, query, symbols or [])
 
     # ── codegraph_traverse — edge traversal ──────────────────────────
@@ -398,8 +462,13 @@ def create_server(graph: Any) -> MCPServer:
         direction: Literal["downstream", "upstream", "both"] = "both",
         edge_kinds: Optional[list[str]] = None,
         max_depth: int = 3,
+        project_path: Optional[str] = None,
     ) -> str:
         """Generic edge traversal."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _traverse(graph, entity_id, direction, edge_kinds, max_depth)
 
     # ── codegraph_get_smells — code smell detection ─────────────────
@@ -426,8 +495,13 @@ def create_server(graph: Any) -> MCPServer:
     def codegraph_get_smells(
         entity_id: Optional[str] = None,
         rule_id: Optional[str] = None,
+        project_path: Optional[str] = None,
     ) -> str:
         """Detect architectural code smells."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _get_smells(graph, entity_id, rule_id)
 
     # ── coderadar_replace_body ────────────────────────────────────
@@ -453,8 +527,13 @@ def create_server(graph: Any) -> MCPServer:
         new_body: str,
         expected_hash: Optional[str] = None,
         dry_run: bool = True,
+        project_path: Optional[str] = None,
     ) -> str:
         """Replace a function body."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _replace_body(graph, entity_id, new_body, expected_hash, dry_run)
 
     # ── coderadar_update_signature ────────────────────────────────
@@ -480,8 +559,13 @@ def create_server(graph: Any) -> MCPServer:
         new_signature: str,
         inject_defaults: bool = False,
         dry_run: bool = True,
+        project_path: Optional[str] = None,
     ) -> str:
         """Change a function signature."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _update_signature(graph, entity_id, new_signature, inject_defaults, dry_run)
 
     # ── coderadar_rename ────────────────────────────────────────────
@@ -504,8 +588,13 @@ def create_server(graph: Any) -> MCPServer:
         entity_id: str,
         new_name: str,
         dry_run: bool = True,
+        project_path: Optional[str] = None,
     ) -> str:
         """Rename an entity."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _rename(graph, entity_id, new_name, dry_run)
 
     # ── coderadar_create_entity ─────────────────────────────────────
@@ -536,8 +625,13 @@ def create_server(graph: Any) -> MCPServer:
         decorators: Optional[list[str]] = None,
         anchor: str = "end",
         dry_run: bool = True,
+        project_path: Optional[str] = None,
     ) -> str:
         """Create a new entity."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _create_entity(graph, file_path, language, kind, name, body, decorators, anchor, dry_run)
 
     # ── codegraph_reindex — full graph refresh ───────────────────────
@@ -560,8 +654,13 @@ def create_server(graph: Any) -> MCPServer:
     )
     def codegraph_reindex(
         with_embeddings: bool = False,
+        project_path: Optional[str] = None,
     ) -> str:
         """Full reindex with optional embeddings."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _reindex(graph, with_embeddings)
 
     # ── codegraph_update_file — incremental single-file sync ────────
@@ -585,8 +684,13 @@ def create_server(graph: Any) -> MCPServer:
     def codegraph_update_file(
         file_path: str,
         content: Optional[str] = None,
+        project_path: Optional[str] = None,
     ) -> str:
         """Incrementally sync one file."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
         return _update_file(graph, file_path, content)
 
     return mcp
@@ -835,6 +939,50 @@ def _trim_to_char_budget(body_lines: list[str], max_chars: int) -> list[str]:
 
 
 # ── Tool Implementations ─────────────────────────────────────────────────
+
+def _wrong_project(project_path: Optional[str]) -> Optional[str]:
+    """Answer honestly when a tool is asked about a project we are not serving.
+
+    Every tool takes an optional `project_path` because agents working across
+    repositories will pass one, and a tool that silently ignores it answers a
+    question nobody asked — about the wrong codebase, with no sign that
+    anything went wrong.
+
+    This build cannot serve more than one project: the core keeps a single
+    GLOBAL_GRAPH and `analyze` replaces it wholesale rather than merging. So
+    a matching path is accepted and anything else is refused with the reason
+    and the workaround, rather than quietly answered.
+
+    Returns None when the call may proceed, or the message to return instead.
+    """
+    if not project_path:
+        return None
+
+    from pathlib import Path
+
+    from coderadar.mcp import lazy
+
+    try:
+        asked = Path(project_path).expanduser().resolve()
+    except (OSError, RuntimeError):
+        asked = Path(project_path)
+
+    retry = lazy.current()
+    served = retry.resolved.path if retry is not None else Path.cwd().resolve()
+    if asked == served:
+        return None
+
+    return (
+        f"This server is serving `{served}` and cannot answer for "
+        f"`{asked}`.\n\n"
+        "One project per server in this build: the index is a single "
+        "in-process graph, and pointing it elsewhere would replace the "
+        "project every other open tool call is about.\n\n"
+        "Start a second server for that project with "
+        "`coderadar mcp serve --path <project root>`, or drop the "
+        "`project_path` argument to ask about the one being served."
+    )
+
 
 def _no_index_message() -> str:
     """Say where we looked, so the agent can tell us we looked in the wrong place.
