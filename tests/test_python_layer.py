@@ -545,52 +545,44 @@ class TestLSPPool:
 class TestVisualizers:
     """Mermaid and Graphviz output generators."""
 
-    def test_mermaid_hierarchy_renders_classdiagram(self):
-        from coderadar.visualizers.mermaid import generate_mermaid
-        result = generate_mermaid("hierarchy", [])
-        assert "classDiagram" in result
+    # These used to call each renderer with `graph=None` and assert on the
+    # header line — which passed against the hardcoded example diagram every
+    # renderer emitted when it had no data. They asserted the fabrication.
 
-    def test_mermaid_call_graph_renders_flowchart(self):
+    @pytest.mark.parametrize("viz", ["hierarchy", "call-graph", "dependencies"])
+    def test_mermaid_refuses_without_a_graph(self, viz):
+        from coderadar.visualizers import NothingToVisualize
         from coderadar.visualizers.mermaid import generate_mermaid
-        result = generate_mermaid("call-graph", [])
-        assert "flowchart" in result
+        with pytest.raises(NothingToVisualize):
+            generate_mermaid(viz, [])
 
-    def test_mermaid_dependencies_renders_flowchart(self):
+    def test_mermaid_unknown_type_is_an_error(self):
+        from coderadar.visualizers import NothingToVisualize
         from coderadar.visualizers.mermaid import generate_mermaid
-        result = generate_mermaid("dependencies", [])
-        assert "flowchart" in result
+        with pytest.raises(NothingToVisualize):
+            generate_mermaid("bogus", [])
 
-    def test_mermaid_unknown_type_shows_message(self):
-        from coderadar.visualizers.mermaid import generate_mermaid
-        result = generate_mermaid("bogus", [])
-        assert "Unknown" in result
-
-    def test_graphviz_dependency_graph_has_cluster(self):
+    @pytest.mark.parametrize("viz", ["dependencies", "hierarchy", "call-graph"])
+    def test_graphviz_refuses_without_a_graph(self, viz):
+        from coderadar.visualizers import NothingToVisualize
         from coderadar.visualizers.graphviz_viz import generate_dot
-        result = generate_dot("dependencies", [])
-        assert "digraph Dependencies" in result
-        assert "rankdir=LR" in result
+        with pytest.raises(NothingToVisualize):
+            generate_dot(viz, [])
 
-    def test_graphviz_hierarchy(self):
-        from coderadar.visualizers.graphviz_viz import generate_dot
-        result = generate_dot("hierarchy", [])
-        assert "digraph Hierarchy" in result
-
-    def test_call_graph_fan_out(self):
+    def test_call_graph_refuses_without_a_graph(self):
+        from coderadar.visualizers import NothingToVisualize
         from coderadar.visualizers.call_graph import generate_call_graph
-        result = generate_call_graph(["main", "out", "3", "0.7"])
-        assert "flowchart TD" in result
-        assert "main" in result
+        with pytest.raises(NothingToVisualize):
+            generate_call_graph(["main", "out", "3", "0.7"])
 
-    def test_call_graph_fan_in(self):
-        from coderadar.visualizers.call_graph import generate_call_graph
-        result = generate_call_graph(["auth.login", "in"])
-        assert "flowchart TD" in result
-
-    def test_safe_id_replaces_dots(self):
+    def test_safe_id_survives_every_separator(self):
         from coderadar.visualizers.call_graph import _safe_id
-        assert _safe_id("app.services.UserService") == "app_services_UserService"
-        assert _safe_id("path::toplevel") == "path__toplevel"
+        # Ids are prefixed so a leading digit cannot start a node name, and
+        # backslashes are escaped like everything else — a Windows path in
+        # an entity id used to pass straight through into the diagram.
+        assert _safe_id("app.services.UserService") == "n_app_services_UserService"
+        assert _safe_id("path::toplevel") == "n_path__toplevel"
+        assert chr(92) not in _safe_id("src" + chr(92) + "app.py::main")
 
     def test_scc_detection_identifies_cycle(self):
         from coderadar.visualizers.graphviz_viz import _find_sccs

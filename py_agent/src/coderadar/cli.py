@@ -116,8 +116,34 @@ def _activate(project_root) -> None:
         )
 
 
+def _ensure_graph(path: str = "."):
+    """Return a CodeGraph with an index behind it, building one if needed.
+
+    The graph lives in the process that built it. `coderadar init` indexes
+    and exits, so every read-only command that followed it started with an
+    empty core and failed with "No graph loaded — run coderadar init first"
+    — advice the user had just taken. Cross-process cold start from the
+    Macrame ledger (`load_snapshot`) is Phase 3B; until then the honest
+    behaviour is to index here rather than to send the user in a circle.
+    """
+    import coderadar
+    from coderadar._core import graph_stats
+
+    graph = coderadar.CodeGraph()
+    try:
+        graph_stats()
+        return graph
+    except RuntimeError:
+        pass
+
+    _activate(path)
+    console.print("[dim]No graph in this process — indexing first...[/dim]")
+    coderadar.analyze(path)
+    return graph
+
+
 @click.group()
-@click.version_option(version="0.6.43", prog_name="coderadar",
+@click.version_option(version="0.6.44", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -312,8 +338,7 @@ def watch(path: str):
 @click.argument("query_string")
 def query(query_string: str):
     """Execute a Pest query; pretty-print results."""
-    import coderadar
-    graph = coderadar.CodeGraph()
+    graph = _ensure_graph()
     results = list(graph.query(query_string))
 
     if not results:
@@ -339,9 +364,8 @@ def query(query_string: str):
 def traverse(start_id: str, depth: int, edges: str, direction: str):
     """Traverse the graph from start_id via Macrame."""
     from .query import MacrameQuery
-    import coderadar
 
-    graph = coderadar.CodeGraph()
+    graph = _ensure_graph()
     mq = MacrameQuery(graph)
     edge_types = [e.strip() for e in edges.split(",")] if edges else None
     results = mq.traverse(start_id, depth, edge_types, direction)
@@ -364,9 +388,8 @@ def traverse(start_id: str, depth: int, edges: str, direction: str):
 def callers(entity_id: str):
     """List callers of an entity."""
     from .query import MacrameQuery
-    import coderadar
 
-    graph = coderadar.CodeGraph()
+    graph = _ensure_graph()
     mq = MacrameQuery(graph)
     results = mq.callers_of(entity_id)
 
@@ -385,9 +408,8 @@ def callers(entity_id: str):
 def callees(entity_id: str):
     """List callees called by an entity."""
     from .query import MacrameQuery
-    import coderadar
 
-    graph = coderadar.CodeGraph()
+    graph = _ensure_graph()
     mq = MacrameQuery(graph)
     results = mq.callees_of(entity_id)
 
@@ -406,8 +428,7 @@ def shell():
     """REPL with persistent graph in memory."""
     console.print("[bold]CodeRadar Shell[/bold]")
     console.print("Type 'help' for commands, 'exit' to quit.")
-    import coderadar
-    graph = coderadar.CodeGraph()
+    graph = _ensure_graph()
 
     while True:
         try:
@@ -474,8 +495,7 @@ def rebuild(full: bool):
 @main.command()
 def stats():
     """Counts, parse-error summary, memory usage."""
-    import coderadar
-    graph = coderadar.CodeGraph()
+    graph = _ensure_graph()
     s = graph.stats()
     table = Table(title="Graph Statistics")
     table.add_column("Metric", style="cyan")
@@ -492,35 +512,56 @@ def stats():
 @click.option("--format", "fmt", default="mermaid")
 def visualize(viz_type: str, args: tuple, output: Optional[str], fmt: str):
     """Run a visualizer: hierarchy, dependencies, call-graph."""
+    from .visualizers import NothingToVisualize
     from .visualizers.mermaid import generate_mermaid
     from .visualizers.graphviz_viz import generate_dot
     from .visualizers.call_graph import generate_call_graph
-    import coderadar
 
-    graph = coderadar.CodeGraph()
+    graph = _ensure_graph()
     arg_list = list(args)
 
+    try:
+        text = _render(viz_type, fmt, arg_list, graph,
+                       generate_dot, generate_mermaid, generate_call_graph)
+    except NothingToVisualize as exc:
+        # Exiting 0 here is how a fabricated diagram used to reach the user.
+        console.print(f"[red]Nothing to visualize:[/red] {exc}")
+        raise SystemExit(1)
+
+    if text is None:
+        console.print(f"[red]Unknown visualization type: {viz_type}[/red]")
+        raise SystemExit(1)
+
+    if output:
+        Path(output).write_text(text, encoding="utf-8")
+        console.print(f"[green]Written to {output}[/green]")
+    else:
+        console.print(text)
+
+
+def _render(viz_type, fmt, arg_list, graph,
+            generate_dot, generate_mermaid, generate_call_graph):
+    """Pick a renderer. Returns None for an unknown type."""
     if viz_type == "hierarchy":
-        if fmt == "graphviz" or fmt == "dot":
+        if fmt in ("graphviz", "dot"):
             text = generate_dot("hierarchy", arg_list, graph)
         else:
             text = generate_mermaid("hierarchy", arg_list, graph)
     elif viz_type == "dependencies":
-        if fmt == "graphviz" or fmt == "dot":
+        if fmt in ("graphviz", "dot"):
             text = generate_dot("dependencies", arg_list, graph)
         else:
             text = generate_mermaid("dependencies", arg_list, graph)
     elif viz_type == "call-graph":
-        text = generate_call_graph(arg_list, graph)
+        # --format is honoured here too; call_graph.py renders Mermaid only,
+        # so graphviz goes through the dot renderer like the other two.
+        if fmt in ("graphviz", "dot"):
+            text = generate_dot("call-graph", arg_list, graph)
+        else:
+            text = generate_call_graph(arg_list, graph)
     else:
-        console.print(f"[red]Unknown visualization type: {viz_type}[/red]")
-        return
-
-    if output:
-        Path(output).write_text(text)
-        console.print(f"[green]Written to {output}[/green]")
-    else:
-        console.print(text)
+        return None
+    return text
 
 
 @main.command()

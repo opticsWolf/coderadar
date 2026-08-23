@@ -270,56 +270,81 @@ class TestVisualizerPipeline:
     def setup_class(cls):
         analyze(str(E2E_DIR))
 
-    def test_mermaid_hierarchy_with_graph(self):
-        """Mermaid hierarchy should produce classDiagram output."""
+    def test_mermaid_hierarchy_names_the_real_classes(self):
         from coderadar.visualizers.mermaid import generate_mermaid
         from coderadar import CodeGraph
-        graph = CodeGraph()
-        output = generate_mermaid("hierarchy", [], graph)
-        assert output.startswith("classDiagram") or "classDiagram" in output
-        assert "User" in output or len(output) > 20
+        output = generate_mermaid("hierarchy", [], CodeGraph())
+        assert output.startswith("classDiagram")
+        assert "User" in output and "UserService" in output
 
-    def test_mermaid_dependencies_with_graph(self):
-        """Mermaid dependencies should produce graph output."""
-        from coderadar.visualizers.mermaid import generate_mermaid
-        from coderadar import CodeGraph
-        graph = CodeGraph()
-        output = generate_mermaid("dependencies", [], graph)
-        assert "graph" in output.lower() or "flowchart" in output.lower()
+    def test_graphviz_hierarchy_draws_the_real_inheritance(self):
+        """AdminUser extends User in the fixture; the edge has to be there.
 
-    def test_graphviz_hierarchy_with_graph(self):
-        """Graphviz hierarchy should produce DOT output."""
-        from coderadar.visualizers.graphviz_viz import generate_dot
+        `_iter_classes` used to call a `CodeGraph.search_entities` that does
+        not exist and swallow the AttributeError, so this renderer only ever
+        emitted the demo diagram — and the old assertion (`startswith
+        "digraph Hierarchy"`) passed against it.
+        """
+        from coderadar.visualizers.graphviz_viz import _safe_id, generate_dot
         from coderadar import CodeGraph
-        graph = CodeGraph()
-        output = generate_dot("hierarchy", [], graph)
+        output = generate_dot("hierarchy", [], CodeGraph())
+
         assert output.startswith("digraph Hierarchy")
-        assert "rankdir" in output
+        assert "AdminUser" in output and "User" in output
+        assert "BaseModel" not in output, "demo data came back"
+        edges = [ln for ln in output.splitlines() if "->" in ln]
+        assert edges, "no inheritance edge was drawn"
 
-    def test_graphviz_dependencies_with_graph(self):
-        """Graphviz dependencies should produce DOT with cycle detection."""
+    def test_graphviz_dependencies_draws_module_to_module_edges(self):
         from coderadar.visualizers.graphviz_viz import generate_dot
         from coderadar import CodeGraph
-        graph = CodeGraph()
-        output = generate_dot("dependencies", [], graph)
+        output = generate_dot("dependencies", [], CodeGraph())
+
         assert output.startswith("digraph Dependencies")
-        assert "rankdir=LR" in output
+        assert "app.main" not in output, "demo data came back"
+        # services imports models — an import *statement* entity is not a
+        # dependency, which is what the edges used to point at.
+        assert "import@" not in output
+        assert "models" in output and "services" in output
+        assert [ln for ln in output.splitlines() if "->" in ln]
 
-    def test_graphviz_fallback_without_graph(self):
-        """Graphviz should produce demo output when graph is None."""
+    def test_dot_ids_are_parseable_on_windows_paths(self):
         from coderadar.visualizers.graphviz_viz import generate_dot
-        output = generate_dot("hierarchy", [], graph=None)
-        assert "BaseModel" in output
-        assert "UserService" in output
+        from coderadar import CodeGraph
+        for viz in ("hierarchy", "dependencies"):
+            output = generate_dot(viz, [], CodeGraph())
+            for line in output.splitlines():
+                # Backslashes are DOT escapes; only the tooltip strings may
+                # legitimately contain one.
+                if "tooltip=" not in line:
+                    assert chr(92) not in line, line
 
-    def test_call_graph_with_graph(self):
-        """Call graph should produce mermaid flowchart."""
+    def test_call_graph_refuses_on_an_entity_with_no_calls(self):
+        """`User` is a class — it calls nothing and nothing calls it.
+
+        This used to assert `len(output) > 0` against the fabricated
+        `main --> validate_input` stub.
+        """
+        from coderadar.visualizers import NothingToVisualize
         from coderadar.visualizers.call_graph import generate_call_graph
         from coderadar import CodeGraph
-        graph = CodeGraph()
-        output = generate_call_graph(["User"], graph)
-        assert len(output) > 0
-        assert "graph" in output.lower() or "flowchart" in output.lower() or "User" in output
+        with pytest.raises(NothingToVisualize):
+            generate_call_graph(["User"], CodeGraph())
+
+    def test_call_graph_draws_a_real_call(self):
+        from coderadar.visualizers.call_graph import generate_call_graph
+        from coderadar._core import search_entities
+        from coderadar import CodeGraph
+
+        caller = next(
+            (h["id"] for h in search_entities("", 200, "function")
+             if callees_of(h["id"])), None)
+        if caller is None:  # pragma: no cover - fixture would be edge-free
+            pytest.skip("no call edges in the e2e fixture")
+
+        output = generate_call_graph([caller, "out", "2"], CodeGraph())
+        assert output.startswith("flowchart TD")
+        assert "validate_input" not in output and "db_query" not in output
 
 
 @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")

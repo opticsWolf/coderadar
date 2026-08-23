@@ -13,8 +13,9 @@ use crate::extract::docstring::preceding_docstring;
 use crate::extract::spans::extract_byte_spans;
 use crate::extract::tagger::CompiledQuery;
 use crate::extract::walker::{
-    classify_class_like, derive_function_kind,
+    classify_class_like, derive_function_kind, detect_async, detect_generator,
     emit_call_for_node, extract_base_classes, extract_class_name,
+    extract_decorators,
     extract_function_name, extract_go_receiver_type, extract_parameters,
     make_entity_id, parse_import_from_statement, parse_import_statement,
 };
@@ -318,7 +319,8 @@ impl<'a> CursorExtractor<'a> {
             None
         };
 
-        let kind = derive_function_kind(&[], is_method);
+        let decorators = extract_decorators(node, self.source);
+        let kind = derive_function_kind(&decorators, is_method);
         let line = node.start_position().row + 1;
         let exit_line = node.end_position().row + 1;
         let spans = extract_byte_spans(node);
@@ -357,11 +359,11 @@ impl<'a> CursorExtractor<'a> {
             parameters: params,
             return_type,
             calls: Vec::new(),
-            decorators: Vec::new(),
+            decorators,
             docstring,
             kind,
-            is_async: false,
-            is_generator: false,
+            is_async: detect_async(node),
+            is_generator: detect_generator(node),
             line,
             exit_line,
             source: SourceType::Impl,

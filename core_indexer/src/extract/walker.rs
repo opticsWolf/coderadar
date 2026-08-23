@@ -623,6 +623,97 @@ pub fn emit_call_for_node(node: Node, source: &str, units: &mut [ExtractedUnit],
 // ── End extracted emit_* helpers ───────────────────────────────────────────
 
 /// Determine the FunctionKind from decorators and method status.
+/// Does this declaration carry an `async` modifier?
+///
+/// These three properties were hardcoded `false`/empty at the single site
+/// that builds every function entity, so `is_async`, `is_generator`, and
+/// `decorators` were dead for every language — and `functions where
+/// is_async == true`, a documented query, could never match anything.
+///
+/// The modifier shows up as a bare `async` token: a direct child in Python
+/// and JS/TS, and one level down inside `function_modifiers` in Rust.
+pub fn detect_async(node: Node) -> bool {
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() == "async" {
+            return true;
+        }
+        if child.kind() == "function_modifiers" {
+            let mut inner = child.walk();
+            if child.children(&mut inner).any(|m| m.kind() == "async") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Does this function yield?
+///
+/// Walks the body but stops at any nested function or class: a generator
+/// defined inside a plain function does not make the outer one a generator.
+/// JS/TS mark it on the declaration instead (`function*`), so a `*` child
+/// or a `generator_*` node kind counts without a walk.
+pub fn detect_generator(node: Node) -> bool {
+    if node.kind().starts_with("generator_") {
+        return true;
+    }
+    let mut cursor = node.walk();
+    if node.children(&mut cursor).any(|c| c.kind() == "*") {
+        return true;
+    }
+    let Some(body) = node.child_by_field_name("body") else {
+        return false;
+    };
+    fn yields(node: Node) -> bool {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            let kind = child.kind();
+            if kind == "yield" || kind == "yield_expression" {
+                return true;
+            }
+            // A nested definition has its own generator-ness.
+            if kind.contains("function") || kind.contains("class_definition") {
+                continue;
+            }
+            if yields(child) {
+                return true;
+            }
+        }
+        false
+    }
+    yields(body)
+}
+
+/// Decorators attached to a declaration, in source order, with the `@`.
+///
+/// In Python the decorators are siblings inside a `decorated_definition`
+/// parent rather than children of the function, which is why reading only
+/// the function node returned nothing.
+pub fn extract_decorators(node: Node, source: &str) -> Vec<String> {
+    fn collect(parent: Node, source: &str, out: &mut Vec<String>) {
+        let mut cursor = parent.walk();
+        for child in parent.children(&mut cursor) {
+            if child.kind() == "decorator" {
+                if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                    out.push(text.trim().to_string());
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    if let Some(parent) = node.parent() {
+        if parent.kind() == "decorated_definition" {
+            collect(parent, source, &mut out);
+        }
+    }
+    if out.is_empty() {
+        collect(node, source, &mut out);
+    }
+    out
+}
+
 pub fn derive_function_kind(decorators: &[String], is_method: bool) -> FunctionKind {
     if !is_method {
         return FunctionKind::Free;

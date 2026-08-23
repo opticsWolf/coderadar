@@ -1,4 +1,4 @@
-# CodeRadar v0.6.43
+# CodeRadar v0.6.44
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -54,7 +54,7 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 800 (250 Rust + 550 Python) |
+| **Tests** | 811 (250 Rust + 561 Python) |
 | **MCP Tools** | 18 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, get_smells, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
@@ -223,7 +223,7 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
 
-## v0.6.43 Feature Highlights
+## v0.6.44 Feature Highlights
 
 The v0.7 improvement plan, start to finish — write-path correctness, temporal
 truth, scaling, dead-code retirement, configuration, and the MCP layer.
@@ -250,6 +250,26 @@ truth, scaling, dead-code retirement, configuration, and the MCP layer.
   from "nothing worked".
 - **MCP.** Root resolution, background init, lazy `roots/list`, optional
   `project_path`, lifecycle hygiene — see the MCP Server section above.
+- **Visualizers drew fiction.** Every renderer answered an empty or
+  unreadable graph with a hardcoded example — `BaseModel <|-- UserService`,
+  `auth.login --> db.query` — and returned it as a normal result with exit 0.
+  Both DOT renderers reached it *always*: they enumerated entities through a
+  `CodeGraph.search_entities` that does not exist, swallowed the
+  `AttributeError`, and fell through, so every DOT diagram ever produced was
+  demo data. The Mermaid side text-searched for the word "class", matching
+  `from dataclasses import dataclass`. Inheritance edges were read from
+  `callees_of` (call edges, not inheritance) and dependency edges pointed at
+  import-*statement* entities. All of it now reads the real indexes, and an
+  empty graph is an error naming what to do about it.
+- **Dead entity fields.** `is_async`, `is_generator`, and `decorators` were
+  hardcoded `false`/empty at the single site that builds every function
+  entity, for every language — so `functions where is_async == true`, a
+  documented query, could never match, and `derive_function_kind` classified
+  every `@property` and `@staticmethod` as a plain method.
+- **A cold CLI.** The graph lives in the process that built it, so every
+  read-only command after `coderadar init` started empty and answered "No
+  graph loaded — run coderadar init first", which the user had just done.
+  They now index on demand until cold start from the ledger lands.
 - **Both graph walks.** `CodeGraph.explore()` read `target`/`source` keys off
   rows that carry neither, so it raised `KeyError` for any entity that had
   edges and looked correct only for entities that had none; it also
@@ -262,7 +282,7 @@ truth, scaling, dead-code retirement, configuration, and the MCP layer.
   removed rather than left looking load-bearing.
 - **~4,300 lines of dead code retired**, including the Stack Graphs
   placeholder.
-- **800 tests, 0 failures** — 250 Rust + 550 Python, including an end-to-end
+- **811 tests, 0 failures** — 250 Rust + 561 Python, including an end-to-end
   mutation suite (plan → apply → reindex → read the file back) and a
   parametrised no-index suite that replaced fourteen assertions which could
   not fail.
@@ -379,7 +399,7 @@ py_agent/src/coderadar/    # Python layer
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Specifications + code review + performance roadmap
-tests/                     # 550 Python tests (E2E, mutation E2E, MCP, smells,
+tests/                     # 561 Python tests (E2E, mutation E2E, MCP, smells,
                            #   framework resolvers, ingest parity, benchmarks)
   mcp/                     # Root resolution, background init, lifecycle, project_path
 ```

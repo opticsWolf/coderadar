@@ -63,17 +63,17 @@ def generate_call_graph(args: list, graph: Optional[Any] = None) -> str:
                     lines.append(f"    {safe_src} --> {safe_dst}")
             return "\n".join(lines)
 
-    # Fallback stub
-    safe_root = _safe_id(func_name)
-    lines.append(f"    {safe_root}[\"{func_name}\"]")
-    if direction == "out":
-        lines.append(f"    {safe_root} --> validate_input")
-        lines.append(f"    {safe_root} --> db_query")
-    else:
-        lines.append(f"    api_handler --> {safe_root}")
-        lines.append(f"    cron_job --> {safe_root}")
+    from . import NothingToVisualize
 
-    return "\n".join(lines)
+    if graph is None:
+        raise NothingToVisualize(
+            "No graph was provided to the call-graph renderer.")
+    raise NothingToVisualize(
+        f"No call edges found {'from' if direction == 'out' else 'to'} "
+        f"`{func_name}`. Either the index is empty (run `coderadar analyze` "
+        f"in this process first — the CLI does not yet load a stored graph) "
+        f"or that function neither calls nor is called by anything indexed."
+    )
 
 
 def _gather_fan_out(graph, entity_id: str, depth: int,
@@ -115,5 +115,6 @@ def _gather_fan_in(graph, entity_id: str, depth: int,
 
 
 def _safe_id(name: str) -> str:
-    """Convert a function name to a safe Mermaid node ID."""
-    return name.replace(".", "_").replace(":", "_").replace("::", "__").replace("/", "_")
+    """A Mermaid-safe node id (see `mermaid._safe_id`)."""
+    from .mermaid import _safe_id as _shared
+    return _shared(name)

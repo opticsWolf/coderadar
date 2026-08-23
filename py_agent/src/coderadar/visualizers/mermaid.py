@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from . import NothingToVisualize
+
 
 def generate_mermaid(viz_type: str, args: List[str],
                      graph: Optional[Any] = None) -> str:
@@ -29,13 +31,18 @@ def generate_mermaid(viz_type: str, args: List[str],
         return _mermaid_call_graph(args, graph)
     elif viz_type == "dependencies":
         return _mermaid_dependency_graph(args, graph)
-    else:
-        return f"graph TD\n    A[Unknown viz type: {viz_type}]"
+    raise NothingToVisualize(f"Unknown visualization type: {viz_type}")
 
 
 def _safe_id(name: str) -> str:
-    """Convert an entity name/ID to a safe Mermaid node ID."""
-    return name.replace(".", "_").replace(":", "_").replace("::", "__").replace("/", "_")
+    """A Mermaid-safe node id.
+
+    Entity ids carry path separators — backslashes on Windows — which the
+    chained `.replace` calls this used to do left untouched.
+    """
+    return "n_" + "".join(
+        ch if (ch.isalnum() or ch == "_") else "_" for ch in name
+    )
 
 
 def _truncated_label(qualified: str, max_len: int = 40) -> str:
@@ -60,7 +67,9 @@ def _mermaid_class_hierarchy(args: List[str],
             # Walk all classes and their subclasses
             visited = set()
 
-            for cls_id, cls_data in _iter_classes(graph):
+            classes = list(_iter_classes(graph))
+            by_name = {c.get("name", ""): cid for cid, c in classes}
+            for cls_id, cls_data in classes:
                 safe = _safe_id(cls_id)
                 label = _truncated_label(cls_data.get("name", cls_id))
                 lines.append(f"    class {safe} {{")
@@ -68,29 +77,26 @@ def _mermaid_class_hierarchy(args: List[str],
                 lines.append(f"    }}")
                 visited.add(cls_id)
 
-            # Add inheritance edges from subclass index
-            for cls_id in visited:
-                callees = graph.callees_of(cls_id)
-                for c in callees:
-                    if c.get("id") in visited:
+            # Inheritance comes from the resolved `bases` names; callees_of
+            # returns call edges, which are not inheritance.
+            for cls_id, cls_data in classes:
+                for base in cls_data.get("bases") or []:
+                    base_id = by_name.get(base)
+                    if base_id and base_id != cls_id:
                         lines.append(
-                            f"    {_safe_id(c['id'])} <|-- {_safe_id(cls_id)}"
+                            f"    {_safe_id(base_id)} <|-- {_safe_id(cls_id)}"
                         )
 
             if len(visited) > 0:
                 return "\n".join(lines)
-        except Exception:
-            pass
+        except Exception as exc:
+            raise NothingToVisualize(
+                f"Could not read the class hierarchy: {exc}") from exc
 
-    # Fallback stub
-    lines.append("    class BaseModel {")
-    lines.append("        +name: str")
-    lines.append("    }")
-    lines.append("    class UserService {")
-    lines.append("        +create()")
-    lines.append("    }")
-    lines.append("    BaseModel <|-- UserService")
-    return "\n".join(lines)
+    raise NothingToVisualize(
+        "No classes in the index. Run `coderadar analyze` in this process "
+        "first — the CLI does not yet load a stored graph."
+    )
 
 
 # ── Call Graph ──────────────────────────────────────────────────────────
@@ -122,12 +128,11 @@ def _mermaid_call_graph(args: List[str],
                     lines.append(f"    {safe_src} --> {safe_dst}")
             return "\n".join(lines)
 
-    # Fallback stub
-    lines.append("    A[auth.login] --> B[db.query]")
-    lines.append("    A --> C[validate_token]")
-    lines.append("    B --> D[execute_sql]")
-    lines.append("    C -.->|confidence: 0.85| D")
-    return "\n".join(lines)
+    raise NothingToVisualize(
+        "No call edges found for that entity. Either the index is empty "
+        "(run `coderadar analyze` in this process first) or nothing indexed "
+        "calls it and it calls nothing indexed."
+    )
 
 
 def _gather_call_edges(graph, entity_id: str, depth: int,
@@ -186,22 +191,25 @@ def _mermaid_dependency_graph(args: List[str],
 
             if len(module_names) > 0:
                 return "\n".join(lines)
-        except Exception:
-            pass
+        except NothingToVisualize:
+            raise
+        except Exception as exc:
+            raise NothingToVisualize(f"Could not read the graph: {exc}") from exc
 
-    # Fallback stub
-    lines.append("    A[app.main] --> B[app.services]")
-    lines.append("    A --> C[app.models]")
-    lines.append("    B --> C")
-    lines.append("    B --> D[lib.utils]")
-    return "\n".join(lines)
+    raise NothingToVisualize(
+        "No module dependencies in the index. Run `coderadar analyze` in "
+        "this process first — the CLI does not yet load a stored graph."
+    )
 
 
 def _iter_classes(graph):
-    """Iterate over all class entities in the graph."""
-    try:
-        from coderadar._core import search_entities
-        for cls in search_entities("class", 500):
-            yield cls.get("id", ""), cls
-    except Exception:
-        pass
+    """Iterate over all class entities in the graph.
+
+    This used to *text-search* for the word "class", which matches
+    `from dataclasses import dataclass` and every docstring mentioning one,
+    and misses any class whose name does not contain it. An empty query with
+    a kind filter enumerates the real thing.
+    """
+    from coderadar._core import search_entities
+    for cls in search_entities("", 500, "class"):
+        yield cls.get("id", ""), cls
