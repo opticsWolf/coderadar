@@ -1,7 +1,7 @@
 // CodeRadar v3.6 — Core Types & Enums
 // §3 Data Models — EntityId-based identity, Macrame-backed persistence, ProjectedGraph.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -194,7 +194,12 @@ impl Language {
             "zig" | "zon" => Language::Zig,
             "r" | "R" => Language::R,
             // Tier 2 added
-            "sh" | "bash" => Language::Bash,
+            // `.zsh` used to land on Language::Shell further down, which the
+            // compiler reported as unreachable for "sh"/"bash". Both variants
+            // load the bash grammar; only the .scm query set differs, and
+            // bash.scm is the richer one, so all three shells share it.
+            // Language::Shell stays for the rc dotfiles matched above.
+            "sh" | "bash" | "zsh" => Language::Bash,
             "dart" => Language::Dart,
             "proto" => Language::Protobuf,
             "dockerfile" => Language::Dockerfile,
@@ -206,7 +211,6 @@ impl Language {
             "hs" | "lhs" => Language::Haskell,
             // Batch 3
             "nix" => Language::Nix,
-            "sh" | "bash" | "zsh" => Language::Shell,
             "groovy" | "gvy" => Language::Groovy,
             "pl" | "pm" => Language::Perl,
             "sv" | "svh" => Language::SystemVerilog,
@@ -448,8 +452,8 @@ pub fn is_builtin_type(name: &str) -> bool {
         | "Int" | "Long" | "Short" | "Byte" | "Float" | "Double"
         | "Boolean" | "Char" | "Unit" | "String"
         | "Any" | "AnyRef" | "AnyVal" | "Nothing" | "Null"
-        // Swift
-        | "Int" | "Double" | "Bool" | "Error"
+        // Swift ("Int" and "Double" are already listed under Scala)
+        | "Bool" | "Error"
         // TS/JS
         | "string" | "number" | "boolean" | "never" | "any"
         | "unknown" | "object" | "symbol" | "bigint"
@@ -1267,6 +1271,22 @@ pub struct StagedChange {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zsh_gets_the_same_language_as_sh_and_bash() {
+        // `.zsh` used to map to Language::Shell, whose arm also listed
+        // "sh" | "bash" and was therefore unreachable for those two. All
+        // three load the bash grammar; bash.scm is the richer query set.
+        assert_eq!(Language::from_extension("zsh"), Language::Bash);
+        assert_eq!(Language::from_extension("sh"), Language::Bash);
+        assert_eq!(Language::from_extension("bash"), Language::Bash);
+    }
+
+    #[test]
+    fn shell_rc_files_still_map_to_shell() {
+        assert_eq!(Language::from_filename(".zshrc"), Language::Shell);
+        assert_eq!(Language::from_filename(".bashrc"), Language::Shell);
+    }
+
     use super::*;
 
     #[test]

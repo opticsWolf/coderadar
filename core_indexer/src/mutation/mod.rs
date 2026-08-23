@@ -12,7 +12,6 @@ pub mod write_guard;
 
 use std::collections::HashMap;
 
-use ropey::Rope;
 
 use crate::mutation::edit::apply_edits_to_file;
 use crate::mutation::indent::{detect_indent_style, normalize_indent};

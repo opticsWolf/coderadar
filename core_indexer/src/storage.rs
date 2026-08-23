@@ -6,7 +6,6 @@ use macrame::prelude::*;
 use macrame::graph::{Subgraph, EdgeAssertion, TraversalBuilder};
 use macrame::temporal::{MaterializedState, SnapshotCadence};
 use std::path::Path;
-use std::sync::Arc;
 use tokio::runtime::Runtime;
 
 use crate::types::*;
@@ -402,7 +401,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 
 /// Build entity metadata JSON for a ConceptUpsert.content field.
 fn entity_meta<'a>(unit: &'a ExtractedUnit, file_path: &'a str, language: &'a str) -> (&'a str, &'a str, serde_json::Value) {
-    use serde_json::{json, Value};
+    use serde_json::json;
 
     let base = json!({
         annotation::FILE_PATH: file_path,
@@ -495,7 +494,7 @@ fn span_to_str(span: ByteSpan) -> String {
 
 /// Build a JSON properties string for edge assertions.
 pub fn edge_properties_json(props: &[(&str, &str)]) -> String {
-    use serde_json::{json, Value};
+    use serde_json::Value;
     let mut map = serde_json::Map::new();
     for (k, v) in props {
         map.insert(k.to_string(), Value::String(v.to_string()));

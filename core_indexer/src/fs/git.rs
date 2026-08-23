@@ -1,7 +1,6 @@
 // CodeRadar v3.6 — Git Integration (§12)
 // Branch-switch detection, .gitignore integration, and blame annotation.
 
-use std::path::PathBuf;
 
 use git2::{BlameOptions, DiffOptions, Repository};
 

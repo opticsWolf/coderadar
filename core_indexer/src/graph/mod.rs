@@ -6,13 +6,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lru::LruCache;
 use parking_lot::RwLock;
 
 use crate::resolve::cache::ResolutionCache;
-use crate::storage;
 use crate::types::*;
-use crate::extract;
 
 pub mod config;
 

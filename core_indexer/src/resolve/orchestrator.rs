@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use crate::resolve::cache::{ResolutionCache, Resolution};
+use crate::resolve::cache::ResolutionCache;
 use crate::types::SymbolId;
 use crate::resolve::import_graph::{rank_candidates, resolve_in_imports};
 use crate::graph::ImportNode;
@@ -335,7 +335,7 @@ impl ResolutionOrchestrator {
                 // module.submodule.Class.method → resolve left to right
                 // For now, try the last segment as the name in the parent scope
                 let parent = call.path.last().cloned().unwrap_or_default();
-                let full_name = format!("{}::{}", parent, name);
+                let _full_name = format!("{}::{}", parent, name);
                 ResolvedCall::Unresolved {
                     reason: UnresolvedReason::TypeInferenceRequired,
                     raw: call.clone(),
@@ -348,7 +348,7 @@ impl ResolutionOrchestrator {
     fn resolve_simple_name(
         &mut self,
         name: &str,
-        import_graph: &crate::graph::ImportGraph,
+        _import_graph: &crate::graph::ImportGraph,
     ) -> ResolvedCall {
         // Builtins check
         if BUILTINS.contains(&name) {
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn test_c3_linearization_single_no_bases() {
-        let mut orchestrator = ResolutionOrchestrator::new();
+        let orchestrator = ResolutionOrchestrator::new();
         let cache = HashMap::new();
         let (mro, complete) = orchestrator.c3_linearize("A", &[], &cache);
         assert!(complete);
@@ -523,7 +523,7 @@ mod tests {
         let mut cache = HashMap::new();
         cache.insert("B".to_string(), vec![MroNode::Class("B".into()), MroNode::Class("C".into())]);
 
-        let mut orchestrator = ResolutionOrchestrator::new();
+        let orchestrator = ResolutionOrchestrator::new();
         let (mro, complete) = orchestrator.c3_linearize("A", &["B".into()], &cache);
         assert!(complete);
         assert_eq!(mro[0], MroNode::Class("A".into()));
@@ -543,7 +543,7 @@ mod tests {
         // C's MRO: C → A
         cache.insert("C".into(), vec![MroNode::Class("C".into()), MroNode::Class("A".into())]);
 
-        let mut orchestrator = ResolutionOrchestrator::new();
+        let orchestrator = ResolutionOrchestrator::new();
         let (mro, complete) = orchestrator.c3_linearize("D", &["B".into(), "C".into()], &cache);
         assert!(complete);
         // D → B → C → A
@@ -586,7 +586,7 @@ mod tests {
     #[test]
     fn test_keep_external_edges() {
         // External edges are always kept regardless of coverage.
-        let mut orchestrator = ResolutionOrchestrator::new();
+        let orchestrator = ResolutionOrchestrator::new();
         let mut edges = vec![
             ResolvedEdge {
                 source_id: "mod.py::foo".into(),
@@ -610,7 +610,7 @@ mod tests {
     fn test_suppress_internal_dead_end() {
         // An internal edge to a target with no outbound edges is suppressed.
         // foo calls bar, but bar calls nobody — the internal chain ends.
-        let mut orchestrator = ResolutionOrchestrator::new();
+        let orchestrator = ResolutionOrchestrator::new();
         let mut edges = vec![
             ResolvedEdge {
                 source_id: "mod.py::foo".into(),
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn test_keep_covered_internal_edge() {
         // foo calls bar, AND bar calls baz — bar is covered, keep the edge.
-        let mut orchestrator = ResolutionOrchestrator::new();
+        let orchestrator = ResolutionOrchestrator::new();
         let mut edges = vec![
             ResolvedEdge {
                 source_id: "mod.py::foo".into(),
@@ -675,7 +675,7 @@ mod tests {
     fn test_mixed_internal_external_flow() {
         // foo calls bar (internal), bar calls os.path.exist (external).
         // bar is covered so foo→bar stays. External os.path always stays.
-        let mut orchestrator = ResolutionOrchestrator::new();
+        let orchestrator = ResolutionOrchestrator::new();
         let mut edges = vec![
             ResolvedEdge {
                 source_id: "mod.py::foo".into(),

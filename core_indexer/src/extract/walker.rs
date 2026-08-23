@@ -11,8 +11,6 @@ use tree_sitter::Node;
 
 use crate::types::*;
 
-use super::docstring::preceding_docstring;
-use super::spans::extract_byte_spans;
 
 /// For grammars that use a single node kind for multiple class-like
 /// For grammars that use a single node kind for multiple class-like

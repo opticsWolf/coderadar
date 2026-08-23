@@ -67,7 +67,7 @@ pub fn compute_diff_preview(old_source: &str, new_source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mutation::{MutationEdit, MutationError};
+    use crate::mutation::MutationEdit;
     use crate::types::ByteSpan;
 
     #[test]

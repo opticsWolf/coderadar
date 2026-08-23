@@ -1243,3 +1243,43 @@ class TestWatcherIsOneClass:
 
         assert merged.fully_applied is False
         assert merged.affected_files == []
+
+
+class TestAnalyzeReportsWhatItCouldNotDo:
+    """`analyze` swallowed extraction errors and worker panics with Err(_)."""
+
+    def test_stats_carry_the_failure_channels(self, tmp_path):
+        try:
+            from coderadar._core import analyze
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        (tmp_path / "ok.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+        stats = analyze(str(tmp_path))
+
+        # Present and empty on a clean run — the point is that a non-clean run
+        # can now say so instead of reporting plain success.
+        assert stats["extraction_failures"] == []
+        assert stats["panicked_workers"] == 0
+        assert stats["files_indexed"] >= 1
+
+
+class TestEntityDictsAreUniform:
+    def test_has_embedding_is_set_for_an_un_embedded_function(self, tmp_path):
+        """function_to_dict set the key only when the vector was non-empty.
+
+        Every other *_to_dict always sets it, so `entity["has_embedding"]`
+        raised KeyError for precisely the functions that lacked one.
+        """
+        try:
+            from coderadar._core import analyze, lookup_entity, search_entities
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        (tmp_path / "e.py").write_text("def unembedded():\n    return 1\n",
+                                       encoding="utf-8")
+        analyze(str(tmp_path))
+
+        hits = search_entities("unembedded", 5, kind="function")
+        assert hits, "fixture function was not indexed"
+        entity = lookup_entity(hits[0]["id"])
+        assert entity["has_embedding"] is False
+        assert entity["embedding_hash"] == ""

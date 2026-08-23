@@ -79,7 +79,7 @@ use std::path::PathBuf;
         assert!(trans.iter().any(|n| n.path.to_string_lossy().to_string().contains("lib.py")),
             "consumer should transitively reach lib.py");
 
-        for (fid, func) in &snap.functions {
+        for (_fid, func) in &snap.functions {
             if func.name == "consumer" {
                 let resolved: Vec<_> = func.resolved_calls.iter()
                     .filter_map(|rc| match rc {

@@ -6,9 +6,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{
-    DebounceEventHandler, DebounceEventResult, DebouncedEvent, DebouncedEventKind,
+    DebounceEventHandler, DebounceEventResult, DebouncedEventKind,
     new_debouncer,
 };
 

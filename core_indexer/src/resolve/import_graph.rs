@@ -2,7 +2,7 @@
 // Walk the import graph BFS to collect modules exporting a reference name.
 
 use crate::graph::ImportGraph;
-use crate::types::{EntityId, Export, ExportSource};
+use crate::types::{EntityId, ExportSource};
 
 /// A candidate match found via import-graph traversal.
 #[derive(Clone, Debug)]

@@ -49,7 +49,7 @@ impl CodeGraph {
         let mro_methods: std::collections::HashMap<String, String> =
             if let Some(ref class_id) = my_parent_class {
                 let mut methods = std::collections::HashMap::new();
-                let mut absorb = |cid: &str, methods: &mut std::collections::HashMap<String, String>| {
+                let absorb = |cid: &str, methods: &mut std::collections::HashMap<String, String>| {
                     for (name, fid) in methods_by_class.get(cid).into_iter().flatten() {
                         methods.entry(name.clone()).or_insert_with(|| fid.clone());
                     }
@@ -146,7 +146,17 @@ impl CodeGraph {
         let calls_to_resolve: Vec<&(String, Vec<crate::types::UnresolvedRef>)> = if let Some(fp) = scope_file {
             all_calls.iter().filter(|(fid, _)| {
                 projection.functions.get(fid.as_str())
-                    .map(|f| f.parent_module.contains(fp))
+                    .map(|f| {
+                        // `parent_module` is "<path>::module". This compared
+                        // with `contains`, so scoping to `a.py` also swept in
+                        // `xa.py` and `a.pyi` — re-resolving their calls and
+                        // clearing their edges on an edit that missed them.
+                        let path = f.parent_module
+                            .rsplit_once("::")
+                            .map(|(p, _)| p)
+                            .unwrap_or(f.parent_module.as_str());
+                        path == fp
+                    })
                     .unwrap_or(false)
             }).collect()
         } else {

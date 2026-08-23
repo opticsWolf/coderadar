@@ -161,13 +161,11 @@ impl PyCodeGraph {
     #[new]
     fn new() -> Self {
         let config = (*active_config()).clone();
-        let mut g = CodeGraph::new(config);
-        // Seed the global graph from this instance
-        let mut guard = GLOBAL_GRAPH.write();
-        let inner = Arc::new(RwLock::new(g));
-        // Can't move out of CodeGraph, so clone the projection
-        // The global graph is separate; PyCodeGraph holds its own instance
-        Self { inner: inner.clone() }
+        // This used to take GLOBAL_GRAPH.write() into an unused guard under
+        // a comment about seeding the global graph. It seeded nothing and
+        // blocked every other writer for the length of the constructor.
+        // PyCodeGraph holds its own instance; the global graph is separate.
+        Self { inner: Arc::new(RwLock::new(CodeGraph::new(config))) }
     }
 
     fn query(&self, query_str: &str) -> PyResult<QueryIterator> {
@@ -273,10 +271,12 @@ fn function_to_dict(py: Python<'_>, f: &Function) -> PyResult<PyObject> {
     dict.set_item("span_end", f.span.end)?;
     dict.set_item("name_span_start", f.name_span.start)?;
     dict.set_item("name_span_end", f.name_span.end)?;
-    if !f.embedding.vec.is_empty() {
-        dict.set_item("has_embedding", true)?;
-        dict.set_item("embedding_hash", f.embedding.hash.clone())?;
-    }
+    // Set unconditionally, like every other *_to_dict: this branch left the
+    // key absent for un-embedded functions, so Python code reading
+    // entity["has_embedding"] raised KeyError for exactly the entities it
+    // was asking about.
+    dict.set_item("has_embedding", !f.embedding.vec.is_empty())?;
+    dict.set_item("embedding_hash", f.embedding.hash.clone())?;
     // Build signature string from parameters
     let params: Vec<String> = f.parameters.iter()
         .map(|p| {
@@ -347,12 +347,25 @@ fn type_alias_to_dict(py: Python<'_>, ta: &TypeAlias) -> PyResult<PyObject> {
 
 /// Convert a thin entity reference (just ID + name + kind) to a dict.
 /// Used for callers_of / callees_of which return lists of EntityIds.
+/// Does the projection know this entity id, under any kind?
+///
+/// Cheaper than the `entity_ref_to_dict(...).is_none()` this replaced, which
+/// built a full PyDict — parameters, spans, decorators — only to drop it.
+fn entity_exists(snap: &ProjectedGraph, entity_id: &str) -> bool {
+    snap.functions.contains_key(entity_id)
+        || snap.classes.contains_key(entity_id)
+        || snap.modules.contains_key(entity_id)
+        || snap.imports.contains_key(entity_id)
+        || snap.constants.contains_key(entity_id)
+        || snap.type_aliases.contains_key(entity_id)
+}
+
 fn entity_ref_to_dict(
     py: Python<'_>, entity_id: &str, snap: &ProjectedGraph,
 ) -> Option<PyObject> {
     // Try each entity type and also resolve file_path from parent module
     if let Some(f) = snap.functions.get(entity_id) {
-        let mut dict = function_to_dict(py, f).ok()?;
+        let dict = function_to_dict(py, f).ok()?;
         // Resolve file_path from parent module
         if let Ok(d) = dict.downcast_bound::<PyDict>(py) {
             if let Some(m) = snap.modules.get(&f.parent_module) {
@@ -361,7 +374,7 @@ fn entity_ref_to_dict(
         }
         Some(dict)
     } else if let Some(c) = snap.classes.get(entity_id) {
-        let mut dict = class_to_dict(py, c).ok()?;
+        let dict = class_to_dict(py, c).ok()?;
         if let Ok(d) = dict.downcast_bound::<PyDict>(py) {
             if let Some(m) = snap.modules.get(&c.parent_module) {
                 let _ = d.set_item("file_path", m.path.to_string_lossy().to_string());
@@ -454,6 +467,12 @@ fn analyze(root: &str) -> PyResult<PyObject> {
     let root_path = std::path::Path::new(root);
     let mut total_entities = 0usize;
     let mut files_indexed = 0usize;
+    // Files that would not extract, and workers that died taking a whole
+    // bucket of files with them. Both were `Err(_) => {}`, so an arbitrary
+    // slice of the project could be missing from the index while analyze
+    // reported plain success.
+    let mut failures: Vec<String> = Vec::new();
+    let mut panicked_workers: usize = 0;
     let mut all_concepts: Vec<macrame::ConceptUpsert> = Vec::new();
 
     if root_path.is_dir() {
@@ -551,6 +570,7 @@ fn analyze(root: &str) -> PyResult<PyObject> {
                 if bucket.is_empty() { continue; }
                 handles.push(s.spawn(move || {
                     let mut results = Vec::new();
+                    let mut errors: Vec<String> = Vec::new();
                     for task in &bucket {
                         match CodeGraph::extract_only(
                             &task.source, &task.path, &task.language)
@@ -564,16 +584,19 @@ fn analyze(root: &str) -> PyResult<PyObject> {
                                     &units, &task.path, &task.language);
                                 results.push((fragment, concepts));
                             }
-                            Err(_) => {}
+                            Err(e) => errors.push(format!("{}: {:?}", task.path, e)),
                         }
                     }
-                    results
+                    (results, errors)
                 }));
             }
             for h in handles {
                 match h.join() {
-                    Ok(chunk_results) => all_results.push(chunk_results),
-                    Err(_) => {} // thread panic — skip this chunk
+                    Ok((chunk_results, chunk_errors)) => {
+                        all_results.push(chunk_results);
+                        failures.extend(chunk_errors);
+                    }
+                    Err(_) => panicked_workers += 1,
                 }
             }
         });
@@ -647,6 +670,9 @@ fn analyze(root: &str) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
     dict.set_item("files_indexed", files_indexed)?;
     dict.set_item("entities_extracted", total_entities)?;
+    // Silence used to be indistinguishable from success here.
+    dict.set_item("extraction_failures", failures)?;
+    dict.set_item("panicked_workers", panicked_workers)?;
     Ok(dict.into())
 }
 
@@ -660,9 +686,9 @@ fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {
         let rows = execute_query(snap, &parsed);
         let results: Vec<PyObject> = rows
             .into_iter()
-            .map(|r| r.into_pyobject(py))
+            .map(|r| r.to_pyobject(py))
             .collect();
-        Ok(results.into_py(py))
+        Ok(results.into_pyobject(py).unwrap().into_any().unbind())
     })
 }
 
@@ -700,7 +726,7 @@ mod git_bindings {
     }
 
     #[pyfunction]
-    pub fn git_changed_files(py: Python<'_>, repo_path: &str,
+    pub fn git_changed_files(_py: Python<'_>, repo_path: &str,
                              old_oid: Option<&str>, new_oid: Option<&str>) -> PyResult<Vec<String>> {
         let old = old_oid.and_then(|s| git2::Oid::from_str(s).ok());
         let new = new_oid.and_then(|s| git2::Oid::from_str(s).ok());
@@ -1333,7 +1359,7 @@ fn traverse(
 
     // ── Current-state in-memory BFS ─────────────────────────────────
     with_graph(|_graph, snap| {
-        if entity_ref_to_dict(py, start_id, snap).is_none() {
+        if !entity_exists(snap, start_id) {
             return Ok(Vec::new());
         }
         let snap_owned: std::sync::Arc<ProjectedGraph> = snap.clone();
@@ -1429,7 +1455,7 @@ fn traverse_unresolved(
     };
 
     with_graph(|_graph, snap| {
-        if entity_ref_to_dict(py, start_id, snap).is_none() {
+        if !entity_exists(snap, start_id) {
             return Ok(0);
         }
         let snap_owned: std::sync::Arc<ProjectedGraph> = snap.clone();
@@ -1588,7 +1614,7 @@ fn search_similar(
         let mut scored: Vec<(f64, String)> = Vec::new();
 
         // Scan all entity maps for non-empty embeddings
-        let mut collect = |scored: &mut Vec<(f64, String)>, id: &str, emb: &EmbeddingVec| {
+        let collect = |scored: &mut Vec<(f64, String)>, id: &str, emb: &EmbeddingVec| {
             if !emb.vec.is_empty() {
                 let sim = cosine_similarity(&query_vec, &emb.vec);
                 scored.push((sim, id.to_string()));
@@ -1615,7 +1641,7 @@ fn search_similar(
                     .or_else(|| snap.imports.get(&id).and_then(|i| import_to_dict(py, i).ok()))
                     .or_else(|| snap.constants.get(&id).and_then(|c| constant_to_dict(py, c).ok()))
                     .or_else(|| snap.type_aliases.get(&id).and_then(|ta| type_alias_to_dict(py, ta).ok()));
-                dict.map(|mut d| {
+                dict.map(|d| {
                     if let Ok(dict) = d.downcast_bound::<PyDict>(py) {
                         let _ = dict.set_item("similarity", sim);
                     }

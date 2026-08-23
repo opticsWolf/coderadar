@@ -28,7 +28,7 @@ pub enum QueryValue {
 }
 
 impl QueryRow {
-    pub fn into_pyobject(self, py: Python<'_>) -> PyObject {
+    pub fn to_pyobject(self, py: Python<'_>) -> PyObject {
         let dict = pyo3::types::PyDict::new(py);
         for (k, v) in &self.fields {
             match v {
@@ -37,7 +37,7 @@ impl QueryRow {
                 QueryValue::Float(f) => { dict.set_item(k, f).ok(); }
                 QueryValue::Bool(b) => { dict.set_item(k, b).ok(); }
                 QueryValue::List(l) => {
-                    let py_list: Vec<PyObject> = l.iter().map(|v| v.clone().into_pyobject(py)).collect();
+                    let py_list: Vec<PyObject> = l.iter().map(|v| v.clone().to_pyobject(py)).collect();
                     dict.set_item(k, py_list).ok();
                 }
                 QueryValue::Null => { dict.set_item(k, py.None()).ok(); }
@@ -48,15 +48,18 @@ impl QueryRow {
 }
 
 impl QueryValue {
-    pub fn into_pyobject(self, py: Python<'_>) -> PyObject {
+    pub fn to_pyobject(self, py: Python<'_>) -> PyObject {
         match self {
-            QueryValue::String(s) => s.into_py(py),
-            QueryValue::Int(i) => i.into_py(py),
-            QueryValue::Float(f) => f.into_py(py),
-            QueryValue::Bool(b) => b.into_py(py),
+            // `IntoPy::into_py` is deprecated and goes away in PyO3 0.24;
+            // these conversions are all infallible (Error = Infallible), so
+            // the unwraps cannot fire.
+            QueryValue::String(s) => s.into_pyobject(py).unwrap().into_any().unbind(),
+            QueryValue::Int(i) => i.into_pyobject(py).unwrap().into_any().unbind(),
+            QueryValue::Float(f) => f.into_pyobject(py).unwrap().into_any().unbind(),
+            QueryValue::Bool(b) => b.into_pyobject(py).unwrap().to_owned().into_any().unbind(),
             QueryValue::List(l) => {
-                let list: Vec<PyObject> = l.into_iter().map(|v| v.into_pyobject(py)).collect();
-                list.into_py(py)
+                let list: Vec<PyObject> = l.into_iter().map(|v| v.to_pyobject(py)).collect();
+                list.into_pyobject(py).unwrap().into_any().unbind()
             }
             QueryValue::Null => py.None(),
         }
@@ -783,7 +786,7 @@ impl QueryIterator {
         }
         let row = self.rows[self.position].clone();
         self.position += 1;
-        Ok(Some(row.into_pyobject(py)))
+        Ok(Some(row.to_pyobject(py)))
     }
 
     fn cancel(&self) {

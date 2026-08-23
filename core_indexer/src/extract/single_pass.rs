@@ -4,7 +4,7 @@
 // order; we emit entities directly from the cursor, using a byte-range
 // frame stack + parent-chain walk for context resolution.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use streaming_iterator::StreamingIterator;
 use tree_sitter::Node;
@@ -21,15 +21,6 @@ use crate::extract::walker::{
 use crate::types::*;
 
 use super::{hash_span, node_quality};
-
-/// An emitted entity's metadata, stored for parent-chain context resolution.
-#[derive(Clone)]
-struct Emitted {
-    unit_idx: usize,
-    qualified_name: String,
-    kind: EmittedKind,
-    end_byte: usize,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum EmittedKind {
@@ -50,8 +41,6 @@ pub struct CursorExtractor<'a> {
     source: &'a str,
     file_path: &'a str,
     units: Vec<ExtractedUnit>,
-    /// node_id → emitted metadata
-    emitted: HashMap<usize, Emitted>,
     /// byte-range stack for nesting context
     frames: Vec<Frame>,
     /// fn-ref candidates: (func_unit_idx, name, line, col)
@@ -72,7 +61,6 @@ impl<'a> CursorExtractor<'a> {
             source,
             file_path,
             units: Vec::new(),
-            emitted: HashMap::new(),
             frames: Vec::new(),
             fn_ref_candidates: Vec::new(),
             current_function_idx: None,
@@ -191,17 +179,6 @@ impl<'a> CursorExtractor<'a> {
         (parent_qname, parent_class)
     }
 
-    /// Register an emitted entity for context resolution.
-    fn record_emitted(&mut self, node_id: usize, unit_idx: usize,
-                       qualified_name: &str, kind: EmittedKind, end_byte: usize) {
-        self.emitted.insert(node_id, Emitted {
-            unit_idx,
-            qualified_name: qualified_name.to_string(),
-            kind,
-            end_byte,
-        });
-    }
-
     // ── Tag dispatch ────────────────────────────────────────────────────
 
     fn dispatch(&mut self, node: Node, tag: Tag) {
@@ -272,8 +249,6 @@ impl<'a> CursorExtractor<'a> {
         }));
 
         self.current_class_idx = Some(unit_idx);
-        self.record_emitted(node.id() as usize, unit_idx, &qualified_name,
-                            EmittedKind::Class, node.end_byte());
         self.frames.push(Frame {
             end_byte: node.end_byte(),
             qualified_name,
@@ -402,9 +377,6 @@ impl<'a> CursorExtractor<'a> {
             body_span: spans.body_span,
             decorators_span: spans.decorators_span,
         }));
-
-        self.record_emitted(node.id() as usize, unit_idx, &qualified_name,
-                            EmittedKind::Function, node.end_byte());
 
         // Scan this function's body subtree for fn-ref patterns inline
         scan_subtree_for_fn_ref(node, self.source, unit_idx, &mut self.fn_ref_candidates);

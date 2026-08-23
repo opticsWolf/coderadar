@@ -149,10 +149,13 @@ use super::*;
         let outcome = result.unwrap();
         let (added, removed) = (outcome.entities_added, outcome.entities_removed);
 
-        // Diff semantics: bar changed (body_hash differs) → 1 remove + 1 insert
-        // baz is new → 1 insert. foo unchanged → 0 ops.
+        // baz is new, and bar's changed body rewrites it under the same id.
         assert!(added >= 1, "Should insert at least 1, got {}", added);
-        assert!(removed >= 0, "Should remove at least 0, got {}", removed);
+        // The assertion here was `removed >= 0`, always true on a usize. The
+        // real count is 0: a changed entity is rewritten in place, so nothing
+        // is retired. Removal is what happens when an entity disappears —
+        // test_update_file_removes_entities covers that.
+        assert_eq!(removed, 0, "a rewritten entity is not a removed one");
 
         let snap = graph.snapshot();
         assert!(snap.functions.contains_key("mod.py::baz"), "Should have new baz");

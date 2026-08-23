@@ -94,7 +94,7 @@ impl ResolutionCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::UnresolvedReason;
+    
 
     #[test]
     fn test_cache_insert_and_get() {

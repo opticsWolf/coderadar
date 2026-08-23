@@ -203,7 +203,7 @@ use super::*;
         let exc = snap.classes.values()
             .find(|c| c.name == "MyException");
         assert!(exc.is_some(), "should have MyException class");
-        let exc = exc.unwrap();
+        let _exc = exc.unwrap();
         // Exception is not a builtin-type (it's a class), so it stays
         // But int IS filtered by is_builtin_type
         let myint = snap.classes.values()
