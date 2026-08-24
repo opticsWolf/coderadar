@@ -18,11 +18,13 @@ from coderadar.mcp.roots import (
     CLIENT_ROOT,
     CWD,
     PATH_FLAG,
+    PROJECT_PATH,
     ResolvedRoot,
     adopt_project_root,
     describe,
     find_marker,
     resolve_project_root,
+    resolve_selector,
     uri_to_path,
 )
 
@@ -161,6 +163,84 @@ class TestRootUris:
         resolved = resolve_project_root(
             client_roots=["https://example.com/repo"], cwd=str(cwd))
         assert resolved.path == cwd.resolve()
+
+
+class TestResolveSelector:
+    """Tool calls name projects the way agents see them, not as bare roots.
+
+    A ``project_path`` argument arrives as a file from an editor tab, a
+    subdirectory from an earlier explore, or occasionally the root itself.
+    All of them mean "the project this belongs to", so the selector applies
+    the same walk-up the startup ladder uses and lands on the marker parent
+    in every case. This is what lets a tool accept paths inside the served
+    project instead of refusing anything that is not byte-identical to it.
+    """
+
+    def test_a_file_inside_the_project_resolves_to_the_root(self, tmp_path):
+        nested = _project(tmp_path)
+        source = nested / "m.py"
+        source.write_text("x = 1\n", encoding="utf-8")
+        resolved = resolve_selector(str(source))
+        assert resolved.path == tmp_path.resolve()
+        assert resolved.marker == (tmp_path / ".coderadar").resolve()
+        assert resolved.source == PROJECT_PATH
+
+    def test_a_subdirectory_resolves_to_the_root(self, tmp_path):
+        nested = _project(tmp_path)
+        resolved = resolve_selector(str(nested))
+        assert resolved.path == tmp_path.resolve()
+        assert resolved.confirmed
+
+    def test_the_root_itself_resolves_to_itself(self, tmp_path):
+        _project(tmp_path)
+        resolved = resolve_selector(str(tmp_path))
+        assert resolved.path == tmp_path.resolve()
+        assert resolved.confirmed
+
+    def test_an_unmarked_directory_is_accepted_but_not_confirmed(self, tmp_path):
+        bare = tmp_path / "bare"
+        bare.mkdir()
+        resolved = resolve_selector(str(bare))
+        assert resolved.path == bare.resolve()
+        assert not resolved.confirmed
+        assert "no .coderadar marker" in describe(resolved)
+
+    def test_a_path_with_no_usable_component_returns_none(self, tmp_path):
+        # Every component missing — there is no directory to be "in".
+        assert resolve_selector(str(tmp_path / "a" / "b" / "c")) is None
+
+    def test_a_nonexistent_name_under_a_real_dir_reads_as_its_file(self, tmp_path):
+        # Same leniency the ladder gets from _canonical: an unknown leaf is a
+        # file of the nearest real directory, so it still selects that
+        # directory's project.
+        nested = _project(tmp_path)
+        resolved = resolve_selector(str(nested / "not-yet-written.py"))
+        assert resolved.path == tmp_path.resolve()
+        assert resolved.confirmed
+
+    def test_a_relative_path_is_resolved_against_the_cwd(self, tmp_path, monkeypatch):
+        nested = _project(tmp_path)
+        previous = Path(os.getcwd())
+        try:
+            os.chdir(nested)
+            resolved = resolve_selector("m.py") if (nested / "m.py").exists() \
+                else resolve_selector(".")
+            assert resolved.path == tmp_path.resolve()
+        finally:
+            os.chdir(previous)
+
+    def test_a_tilde_path_expands(self, monkeypatch, tmp_path):
+        home = tmp_path / "home"
+        project = home / "proj"
+        (project / ".coderadar").mkdir(parents=True)
+        # expanduser reads these, not Path.home — set both so the test is
+        # honest on Windows and POSIX alike.
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+
+        resolved = resolve_selector("~/proj")
+        assert resolved.path == project.resolve()
+        assert resolved.confirmed
 
 
 class TestAdoptingTheRoot:
