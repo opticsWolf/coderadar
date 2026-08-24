@@ -55,7 +55,7 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
 | **Tests** | 857 (250 Rust + 607 Python) |
-| **MCP Tools** | 18 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, get_smells, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file) |
+| **MCP Tools** | 19 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, get_smells, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file, set_project) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
 | **Agents** | MCP server over stdio — finds the project root, indexes in the background, and exits with its client |
@@ -175,9 +175,15 @@ not assume the cwd is the project:
 - **Saying where it looked.** A "no index" reply names the directory being
   served and how that directory was chosen, so an agent pointed at the wrong
   project can say so.
-- **One project per server.** Every tool takes an optional `project_path`; a
-  path that is not the served root is refused with the reason, not quietly
-  answered from the wrong codebase.
+- **One project at a time.** Every tool takes an optional `project_path`; a path
+  inside the served project (a file, a subdirectory, or the root itself) is
+  accepted via nearest-marker resolution; another project is refused with the
+  reason, not quietly answered from the wrong codebase.
+- **Switching projects without restarting.** `codegraph_set_project` re-runs
+  startup against a new root from inside a tool call: that project's config
+  and mutation policy take effect, indexing restarts in the background, and an
+  explicit switch outranks the client's declared workspace for the rest of the
+  connection.
 - **Not outliving the client.** Handshake timeout, parent-process watchdog, and
   teardown when stdin closes.
 
@@ -422,7 +428,7 @@ py_agent/src/coderadar/    # Python layer
     lsp/                   # Persistent LSP warm pool
     mutation/              # Tool router for LLM
     mcp/                   # MCP server
-      server.py            #   18 tools + guidance
+      server.py            #   19 tools + guidance
       roots.py             #   project-root ladder and marker walk-up
       startup.py           #   background index, ensure_ready()
       lazy.py              #   roots/list retry on the first tool call
