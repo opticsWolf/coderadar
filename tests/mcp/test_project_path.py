@@ -36,22 +36,30 @@ def _serving(path: Path) -> None:
 
 
 class TestTheSchema:
+    #: `codegraph_set_project` names a project rather than asking about one,
+    #: so it has no project_path argument of its own.
+    NO_PROJECT_PATH_TOOLS = {"codegraph_set_project"}
+
     def test_every_tool_offers_project_path(self):
         tools = server_mod.create_server(None)._tool_manager.list_tools()
-        assert len(tools) == 18
+        assert len(tools) == 19
 
         without = [
             t.name for t in tools
             if "project_path" not in (t.parameters or {}).get("properties", {})
+            and t.name not in self.NO_PROJECT_PATH_TOOLS
         ]
         assert without == []
 
     def test_project_path_is_never_required(self):
         # An agent that does not care which project must not have to say so.
+        # The exception is codegraph_set_project: there, the argument does
+        # not ask about a project — it names the one to switch to.
         tools = server_mod.create_server(None)._tool_manager.list_tools()
         required = [
             t.name for t in tools
             if "project_path" in ((t.parameters or {}).get("required") or [])
+            and t.name not in self.NO_PROJECT_PATH_TOOLS
         ]
         assert required == []
 
@@ -101,7 +109,7 @@ class TestTheGuard:
         assert str(served.resolve()) in message
         assert str(other.resolve()) in message
         # Refusing without a way forward is just a dead end.
-        assert "coderadar mcp serve --path" in message
+        assert "codegraph_set_project" in message
 
     def test_with_no_retry_handle_the_cwd_is_what_we_serve(self, tmp_path):
         # A directly constructed server has no root handle; the process cwd

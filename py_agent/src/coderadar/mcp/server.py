@@ -116,15 +116,19 @@ After editing code, use the mutation pipeline to keep the graph in sync:
 - **When a file is flagged "⚠ changed on disk after index sync"**, Read those specific files for accurate content. Every file NOT flagged is fresh — still trust codegraph.
 - **If a project isn't indexed**, stop calling codegraph tools for that project and use built-in tools. Indexing is the user's decision — mention `coderadar init` if it comes up, but don't run it yourself.
 
-## One project per server
+## One project at a time
 
-This server serves a single project — the one named in the "no index" and
-"wrong project" messages. Every tool takes an optional `project_path`; pass
-it when you are working across repositories and want to be told, rather than
-quietly answered from the wrong one. A `project_path` that names the served
-project is accepted; anything else is refused with the reason. To work on a
-second project, start a second server with `coderadar mcp serve --path
-<project root>`.
+This server serves a single project at a time — the one named in the "no
+index" and "wrong project" messages. Every tool takes an optional
+`project_path`; pass it when you want to be told, rather than quietly
+answered from the wrong one. A `project_path` inside the served project (a
+file, a subdirectory, or the root itself) is accepted; another project is
+refused with the reason.
+
+To work on a different project, call `codegraph_set_project` with any path
+inside it — this server switches there, re-reads that project's config and
+re-indexes in the background. Switching is wholesale: after it, earlier
+event ids from the previous project are no longer valid.
 
 If a tool reports that indexing is still in progress, that is not an error —
 the first index walks every source file. Retry in a few seconds rather than
@@ -699,6 +703,31 @@ def create_server(graph: Any) -> MCPServer:
 
         return _update_file(graph, file_path, content)
 
+    # ── codegraph_set_project — switch the served project ───────────
+
+    @mcp.tool(
+        description=(
+            "Switch this server to a different project. All other tools then "
+            "verify their project_path against this root. Pass any directory, "
+            "subdirectory or file inside the target project — the nearest "
+            ".coderadar marker at or above it defines the root; pass "
+            "confirm=true only if the directory has no marker and you want it "
+            "served anyway. Config and mutation policy are re-read from the "
+            "new project, and indexing restarts in the background. Switching "
+            "replaces the graph wholesale: calls racing a switch get the old "
+            "or new answer, never a mix."
+        ),
+        annotations={
+            "read_only_hint": False,
+            "destructive_hint": False,
+            "idempotent_hint": False,
+            "open_world_hint": True,
+        },
+    )
+    def codegraph_set_project(project_path: str, confirm: bool = False) -> str:
+        """Switch the served project."""
+        return _set_project(project_path, confirm)
+
     return mcp
 
 
@@ -963,6 +992,19 @@ def _trim_to_char_budget(body_lines: list[str], max_chars: int) -> list[str]:
 
 # ── Tool Implementations ─────────────────────────────────────────────────
 
+def _served_root() -> Path:
+    """The root this server currently serves.
+
+    The lazy retry handle holds it once startup ran; a directly constructed
+    server (tests, embedders) falls back to the process cwd, by the same
+    reasoning that made serve chdir onto the root.
+    """
+    from coderadar.mcp import lazy
+
+    retry = lazy.current()
+    return retry.resolved.path if retry is not None else Path.cwd().resolve()
+
+
 def _wrong_project(project_path: Optional[str]) -> Optional[str]:
     """Answer honestly when a tool is asked about a project we are not serving.
 
@@ -995,8 +1037,7 @@ def _wrong_project(project_path: Optional[str]) -> Optional[str]:
             "one) and retry."
         )
 
-    retry = lazy.current()
-    served = retry.resolved.path if retry is not None else Path.cwd().resolve()
+    served = _served_root()
     # Windows paths keep their drive-letter casing through resolve(); compare
     # case-insensitively so D:/User and d:/user are one directory everywhere.
     if os.path.normcase(str(selected.path)) == os.path.normcase(str(served)):
@@ -1006,11 +1047,10 @@ def _wrong_project(project_path: Optional[str]) -> Optional[str]:
         f"This server is serving `{served}` and cannot answer for "
         f"`{selected.path}`.\n\n"
         "One project at a time in this build: the index is a single "
-        "in-process graph, and pointing it elsewhere would replace the "
-        "project every other open tool call is about.\n\n"
-        "Start a second server for that project with "
-        "`coderadar mcp serve --path <project root>`, or drop the "
-        "`project_path` argument to ask about the one being served."
+        "in-process graph. To ask about that other project instead, call "
+        f"`codegraph_set_project` with `{selected.path}` — this server "
+        "switches there and re-indexes. Or drop the `project_path` argument "
+        f"to keep asking about `{served}`."
     )
 
 
@@ -1050,13 +1090,113 @@ def _no_index_message() -> str:
             "Nothing on disk confirmed that directory as a project root — no "
             "`.coderadar/` or `.coderadar.toml` was found at or above it.",
             "",
-            "If that is the wrong project, restart the server with "
+            "If that is the wrong project, call `codegraph_set_project` with "
+            "the right directory to switch this server there, restart with "
             "`coderadar mcp serve --path <project root>`, or run "
             "`coderadar init` in the right directory so it can be found "
             "automatically.",
             "",
             "If it is the right project, run `codegraph_reindex` to index it.",
         ]
+    return "\n".join(lines)
+
+
+def _set_project(project_path: str, confirm: bool = False) -> str:
+    """Switch the served project, and say what happened.
+
+    One project at a time is the shape of the core — a single GLOBAL_GRAPH
+    that `analyze` replaces wholesale — so switching means re-running the
+    whole start-up sequence against the new root: config in, process moved,
+    index restarted. Every step already exists from launch; this orders them
+    for a tool call instead.
+
+    The order matters. Config first, so `[mutation]` policy and excludes are
+    read from the *new* project before anything walks it; chdir second, so
+    entity ids and every cwd-relative helper agree with the root; restart
+    last, so the generation bump cannot race the config swap.
+
+    An explicit tool call outranks everything: the lazy roots/list retry is
+    retired for the rest of the connection, because an agent that named the
+    project it wants must not be second-guessed by whatever the host declares
+    as its workspace.
+    """
+    from coderadar.config import activate_config
+    from coderadar.mcp import lazy, startup
+    from coderadar.mcp.roots import adopt_project_root, resolve_selector
+
+    selected = resolve_selector(project_path)
+    if selected is None:
+        return (
+            f"`{project_path}` names no readable directory, so no project "
+            "can be selected from it. Pass a directory (or any file inside "
+            "one) and retry."
+        )
+
+    if not selected.confirmed and not confirm:
+        return (
+            f"No `.coderadar/` or `.coderadar.toml` was found at or above "
+            f"`{selected.path}`, so nothing confirms that directory as a "
+            "project root.\n\n"
+            "Run `coderadar init` there if it should be one, or re-call "
+            "with confirm=true to serve it anyway (unmarked roots are "
+            "served as bare guesses, same as at startup)."
+        )
+
+    # Already there? Say so rather than silently re-indexing the same tree.
+    served_now = _served_root()
+    if os.path.normcase(str(selected.path)) == os.path.normcase(str(served_now)):
+        return (
+            f"Already serving `{selected.path}` — nothing to switch. Use "
+            "`codegraph_reindex` to refresh the index."
+        )
+
+    lines = [f"Switched to `{selected.path}`"]
+    if selected.confirmed:
+        lines[0] += f" (marker {selected.marker.name})"
+    else:
+        lines[0] += " — unconfirmed: no marker found, serving on your say-so"
+
+    # 1. Config from the NEW project, before anything reads it.
+    try:
+        activated = activate_config(selected.path)
+        if activated.ignored:
+            lines.append(
+                f"Config: {len(activated.ignored)} setting(s) with no "
+                f"consumer were ignored ({', '.join(activated.ignored[:3])}" +
+                (", ..." if len(activated.ignored) > 3 else "") + ")."
+            )
+    except Exception as exc:  # noqa: BLE001 — a broken config must not strand the server on the old project
+        lines.append(
+            f"WARNING: config not applied ({type(exc).__name__}: {exc}) — "
+            "this project runs on defaults, including default mutation "
+            "policy."
+        )
+        structlog.get_logger(__name__).warning(
+            "mcp.set_project.config_failed", root=str(selected.path),
+            error=str(exc))
+
+    # 2. Move the process: entity ids and cwd-relative helpers follow.
+    adopt_project_root(selected)
+
+    # 3. Re-index in the background; ensure_ready makes callers wait or
+    #    report progress, never answer from the old graph.
+    index = startup.current()
+    if index is not None:
+        index.restart(".")
+        lines.append("Indexing restarted in the background — tool calls "
+                     "will wait for it or report progress.")
+    else:
+        lines.append("No background index handle in this process — call "
+                     "`codegraph_reindex` to build the new graph.")
+
+    # 4. The explicit choice outranks the client's workspace forever after.
+    retry = lazy.current()
+    if retry is not None:
+        retry.mark_user_chosen(selected)
+
+    structlog.get_logger(__name__).info(
+        "mcp.project.switched", to=str(selected.path),
+        confirmed=selected.confirmed)
     return "\n".join(lines)
 
 
