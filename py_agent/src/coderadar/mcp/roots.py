@@ -42,6 +42,8 @@ MARKERS = (".coderadar", ".coderadar.toml")
 CLIENT_ROOT = "client root"
 PATH_FLAG = "--path"
 CWD = "cwd"
+#: Source name for a root named by a tool call's ``project_path`` argument.
+PROJECT_PATH = "project_path"
 
 
 @dataclass(frozen=True)
@@ -218,6 +220,32 @@ def resolve_from_client_roots(uris: Iterable[str]) -> Optional[ResolvedRoot]:
         if resolved is not None:
             return ResolvedRoot(path=resolved, source=CLIENT_ROOT, marker=None)
     return None
+
+
+def resolve_selector(project_path: str) -> Optional[ResolvedRoot]:
+    """Resolve a tool call's ``project_path`` argument the way agents mean it.
+
+    Agents rarely pass a project *root*: they pass a source file they can see
+    in an editor, a subdirectory they explored earlier, or a path with a
+    trailing component that only looks redundant. All of them mean "the
+    project this thing belongs to", which is exactly what the walk-up finds —
+    the same rule the startup ladder applies to its own candidates. A bare
+    directory with no marker anywhere above it is still answered, but with
+    ``marker=None`` so the caller says out loud that nothing confirmed it.
+
+    Returns None only when no part of the path names a usable directory —
+    the same rule ``_canonical`` applies for the ladder: a nonexistent name
+    under a real directory is read as a file of that directory, but a path
+    whose every component is missing is a caller error worth naming, not a
+    project to guess about.
+    """
+    resolved = _canonical(Path(project_path))
+    if resolved is None:
+        return None
+    marker = find_marker(resolved)
+    if marker is not None:
+        return ResolvedRoot(path=marker.parent, source=PROJECT_PATH, marker=marker)
+    return ResolvedRoot(path=resolved, source=PROJECT_PATH, marker=None)
 
 
 def adopt_project_root(resolved: ResolvedRoot) -> Path:
