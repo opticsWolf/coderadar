@@ -161,6 +161,50 @@ class TestWhatWeDoWithTheAnswer:
         assert retry.resolved.path == confirmed
 
 
+class TestExplicitChoice:
+    """A codegraph_set_project call outranks everything, forever.
+
+    The lazy retry exists because startup's guess can be wrong. Once the
+    agent has named the project itself there is nothing left to ask about —
+    and asking anyway would let the host's declared workspace override an
+    explicit decision, which is exactly backwards.
+    """
+
+    def test_marking_suppresses_the_question(self, tmp_path):
+        resolved = ResolvedRoot(path=tmp_path, source="cwd", marker=None)
+        retry = LazyRootRetry(resolved, _idle_index(), index_is_empty=lambda: True)
+        assert retry.should_ask()
+
+        chosen = tmp_path / "chosen"
+        chosen.mkdir()
+        retry.mark_user_chosen(ResolvedRoot(
+            path=chosen, source="project_path", marker=None))
+        assert not retry.should_ask()
+
+    def test_the_session_is_never_consulted_after_marking(self, tmp_path):
+        session = _Session([])
+        resolved = ResolvedRoot(path=tmp_path, source="cwd", marker=None)
+        retry = LazyRootRetry(resolved, _idle_index(), index_is_empty=lambda: True)
+        retry.mark_user_chosen(ResolvedRoot(
+            path=tmp_path / "x", source="project_path", marker=None))
+        asyncio.run(retry.attempt(session))
+        assert session.asked == 0
+
+    def test_the_recorded_root_is_described_afterwards(self, tmp_path):
+        chosen = _project(tmp_path / "chosen")
+        retry = LazyRootRetry(
+            ResolvedRoot(path=tmp_path, source="cwd", marker=None),
+            _idle_index(),
+        )
+        retry.mark_user_chosen(ResolvedRoot(
+            path=chosen,
+            source="project_path",
+            marker=chosen / ".coderadar",
+        ))
+        assert "chosen" in retry.describe()
+        assert "marker .coderadar" in retry.describe()
+
+
 class _BrokenSession:
     def check_client_capability(self, capability):
         return True

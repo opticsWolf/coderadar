@@ -74,6 +74,20 @@ class LazyRootRetry:
 
     # ── action ───────────────────────────────────────────────────────────
 
+    def mark_user_chosen(self, resolved: ResolvedRoot) -> None:
+        """Record an explicit ``codegraph_set_project`` choice.
+
+        An explicit tool call is the strongest signal there is — stronger
+        than a marker found at startup, and much stronger than the client's
+        declared workspace. The retry is marked attempted so the lazy
+        roots/list dance can never fire again: an agent that named the
+        project it wants does not want middleware second-guessing that with
+        whatever the host happens to declare as its workspace root.
+        """
+        with self._lock:
+            self._attempted = True
+            self.resolved = resolved
+
     async def attempt(self, session: Any) -> bool:
         """Ask, re-resolve, and move if the answer is better. Returns whether
         anything changed."""
