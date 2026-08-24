@@ -1,4 +1,4 @@
-# CodeRadar v0.7.0
+# CodeRadar v0.7.2
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -54,7 +54,7 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 857 (250 Rust + 607 Python) |
+| **Tests** | 883 (250 Rust + 633 Python) |
 | **MCP Tools** | 19 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, get_smells, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file, set_project) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
@@ -230,6 +230,29 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 | **React Router** | JSX/TSX | `package.json` | JSX `<Route>` declarations, v6 data router objects, `<Link>`/`<NavLink>` navigation tracking |
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
+
+## v0.7.2 Feature Highlights
+
+- **Runtime project switching** — the new `codegraph_set_project` MCP tool
+  (19 total) re-runs startup against a new root from inside a tool call:
+  that project's `.coderadar.toml` config and mutation policy take effect,
+  indexing restarts in the background, and an explicit switch outranks the
+  client's declared workspace for the rest of the connection. Unmarked roots
+  require `confirm=true`; switching to the current root is a no-op that says
+  so.
+- **`project_path` reads like agents mean it** — a file, subdirectory, or
+  root inside the served project is accepted via nearest-marker walk-up
+  (`resolve_selector`), replacing a byte-exact root comparison that refused
+  editor-tab paths and explored directories. Windows drive-letter casing can
+  no longer split one directory in two.
+- **Refusals name the way out** — "wrong project" replies point at
+  `codegraph_set_project` instead of telling the agent to edit mcp.json and
+  restart the server.
+- **One writable project at a time, unchanged** — mutation confinement
+  follows the switched root automatically: `analyze(root)` re-tightens
+  `INDEXED_ROOT`, so policy, stale-write hashes and rollback need no
+  redesign. E2E tests prove an escape-path mutation into the previous
+  project never touches disk.
 
 ## v0.7.0 Feature Highlights
 
@@ -437,7 +460,7 @@ py_agent/src/coderadar/    # Python layer
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Specifications + code review + performance roadmap
-tests/                     # 607 Python tests (E2E, mutation E2E, MCP, smells,
+tests/                     # 633 Python tests (E2E, mutation E2E, MCP, smells,
                            #   framework resolvers, ingest parity, benchmarks)
   mcp/                     # Root resolution, background init, lifecycle, project_path
 ```

@@ -143,7 +143,7 @@ def _ensure_graph(path: str = "."):
 
 
 @click.group()
-@click.version_option(version="0.7.1", prog_name="coderadar",
+@click.version_option(version="0.7.2", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
