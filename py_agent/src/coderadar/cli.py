@@ -143,7 +143,7 @@ def _ensure_graph(path: str = "."):
 
 
 @click.group()
-@click.version_option(version="0.7.1", prog_name="coderadar",
+@click.version_option(version="0.7.2", prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.
@@ -672,7 +672,7 @@ def serve(project_path: str | None):
     """Start the CodeRadar MCP server over stdio.
 
     Connect an MCP client (Claude Code, Cursor, etc.) to this server to get
-    code intelligence over the indexed project — 18 tools covering search,
+    code intelligence over the indexed project — 19 tools covering search,
     exploration, structural and temporal queries, code smells, and the
     plan/review/apply mutation pipeline.
 

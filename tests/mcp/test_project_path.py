@@ -36,22 +36,30 @@ def _serving(path: Path) -> None:
 
 
 class TestTheSchema:
+    #: `codegraph_set_project` names a project rather than asking about one,
+    #: so it has no project_path argument of its own.
+    NO_PROJECT_PATH_TOOLS = {"codegraph_set_project"}
+
     def test_every_tool_offers_project_path(self):
         tools = server_mod.create_server(None)._tool_manager.list_tools()
-        assert len(tools) == 18
+        assert len(tools) == 19
 
         without = [
             t.name for t in tools
             if "project_path" not in (t.parameters or {}).get("properties", {})
+            and t.name not in self.NO_PROJECT_PATH_TOOLS
         ]
         assert without == []
 
     def test_project_path_is_never_required(self):
         # An agent that does not care which project must not have to say so.
+        # The exception is codegraph_set_project: there, the argument does
+        # not ask about a project — it names the one to switch to.
         tools = server_mod.create_server(None)._tool_manager.list_tools()
         required = [
             t.name for t in tools
             if "project_path" in ((t.parameters or {}).get("required") or [])
+            and t.name not in self.NO_PROJECT_PATH_TOOLS
         ]
         assert required == []
 
@@ -72,6 +80,22 @@ class TestTheGuard:
         _serving(tmp_path)
         assert server_mod._wrong_project(str(nested / "..")) is None
 
+    def test_a_subdirectory_of_the_served_project_is_accepted(self, tmp_path):
+        """Agents pass directories they explored, not canonical roots."""
+        (tmp_path / ".coderadar").mkdir()
+        deep = tmp_path / "src" / "deep"
+        deep.mkdir(parents=True)
+        _serving(tmp_path)
+        assert server_mod._wrong_project(str(deep)) is None
+
+    def test_a_file_inside_the_served_project_is_accepted(self, tmp_path):
+        """An editor tab's path means "the project this file lives in"."""
+        (tmp_path / ".coderadar").mkdir()
+        source = tmp_path / "m.py"
+        source.write_text("x = 1\n", encoding="utf-8")
+        _serving(tmp_path)
+        assert server_mod._wrong_project(str(source)) is None
+
     def test_another_project_is_refused_with_a_reason(self, tmp_path):
         served = tmp_path / "served"
         other = tmp_path / "other"
@@ -85,12 +109,17 @@ class TestTheGuard:
         assert str(served.resolve()) in message
         assert str(other.resolve()) in message
         # Refusing without a way forward is just a dead end.
-        assert "coderadar mcp serve --path" in message
+        assert "codegraph_set_project" in message
 
     def test_with_no_retry_handle_the_cwd_is_what_we_serve(self, tmp_path):
         # A directly constructed server has no root handle; the process cwd
         # is the project by the same reasoning that made serve chdir onto it.
         assert server_mod._wrong_project(os.getcwd()) is None
+
+    def test_an_unreadable_path_is_named_as_the_problem(self, tmp_path):
+        message = server_mod._wrong_project(str(tmp_path / "a" / "b" / "c"))
+        assert message is not None
+        assert "no readable directory" in message
 
 
 class TestATool:
