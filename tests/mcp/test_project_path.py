@@ -72,6 +72,22 @@ class TestTheGuard:
         _serving(tmp_path)
         assert server_mod._wrong_project(str(nested / "..")) is None
 
+    def test_a_subdirectory_of_the_served_project_is_accepted(self, tmp_path):
+        """Agents pass directories they explored, not canonical roots."""
+        (tmp_path / ".coderadar").mkdir()
+        deep = tmp_path / "src" / "deep"
+        deep.mkdir(parents=True)
+        _serving(tmp_path)
+        assert server_mod._wrong_project(str(deep)) is None
+
+    def test_a_file_inside_the_served_project_is_accepted(self, tmp_path):
+        """An editor tab's path means "the project this file lives in"."""
+        (tmp_path / ".coderadar").mkdir()
+        source = tmp_path / "m.py"
+        source.write_text("x = 1\n", encoding="utf-8")
+        _serving(tmp_path)
+        assert server_mod._wrong_project(str(source)) is None
+
     def test_another_project_is_refused_with_a_reason(self, tmp_path):
         served = tmp_path / "served"
         other = tmp_path / "other"
@@ -91,6 +107,11 @@ class TestTheGuard:
         # A directly constructed server has no root handle; the process cwd
         # is the project by the same reasoning that made serve chdir onto it.
         assert server_mod._wrong_project(os.getcwd()) is None
+
+    def test_an_unreadable_path_is_named_as_the_problem(self, tmp_path):
+        message = server_mod._wrong_project(str(tmp_path / "a" / "b" / "c"))
+        assert message is not None
+        assert "no readable directory" in message
 
 
 class TestATool:

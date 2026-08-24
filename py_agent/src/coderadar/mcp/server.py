@@ -21,6 +21,7 @@ import functools
 import re
 import os
 from collections import deque
+from pathlib import Path
 from typing import Any, Literal, Optional
 
 from mcp.server import MCPServer
@@ -970,34 +971,41 @@ def _wrong_project(project_path: Optional[str]) -> Optional[str]:
     question nobody asked — about the wrong codebase, with no sign that
     anything went wrong.
 
-    This build cannot serve more than one project: the core keeps a single
-    GLOBAL_GRAPH and `analyze` replaces it wholesale rather than merging. So
-    a matching path is accepted and anything else is refused with the reason
-    and the workaround, rather than quietly answered.
+    This build serves one project at a time: the core keeps a single
+    GLOBAL_GRAPH and `analyze` replaces it wholesale rather than merging. But
+    the argument is read the way agents mean it: the selector walks up from
+    whatever was passed — a file, a subdirectory, or the root itself — to the
+    nearest `.coderadar` marker, so anything inside the served project is
+    accepted. Only a path that lands in some other project is refused, with
+    the reason and the way out rather than a quietly wrong answer.
 
     Returns None when the call may proceed, or the message to return instead.
     """
     if not project_path:
         return None
 
-    from pathlib import Path
-
     from coderadar.mcp import lazy
+    from coderadar.mcp.roots import resolve_selector
 
-    try:
-        asked = Path(project_path).expanduser().resolve()
-    except (OSError, RuntimeError):
-        asked = Path(project_path)
+    selected = resolve_selector(project_path)
+    if selected is None:
+        return (
+            f"`{project_path}` names no readable directory, so no project "
+            "can be selected from it. Pass a directory (or any file inside "
+            "one) and retry."
+        )
 
     retry = lazy.current()
     served = retry.resolved.path if retry is not None else Path.cwd().resolve()
-    if asked == served:
+    # Windows paths keep their drive-letter casing through resolve(); compare
+    # case-insensitively so D:/User and d:/user are one directory everywhere.
+    if os.path.normcase(str(selected.path)) == os.path.normcase(str(served)):
         return None
 
     return (
         f"This server is serving `{served}` and cannot answer for "
-        f"`{asked}`.\n\n"
-        "One project per server in this build: the index is a single "
+        f"`{selected.path}`.\n\n"
+        "One project at a time in this build: the index is a single "
         "in-process graph, and pointing it elsewhere would replace the "
         "project every other open tool call is about.\n\n"
         "Start a second server for that project with "
