@@ -29,7 +29,10 @@ class QueryCache:
         entry = self._cache.get(key)
         if entry is None:
             return None
-        if time.monotonic() - entry.timestamp > self._ttl_seconds:
+        # >=, not >: a ttl of 0 means "never valid", and on Windows two
+        # monotonic() reads around a set() can be equal — a strict compare
+        # made ttl=0 entries immortal there while Linux timers masked it.
+        if time.monotonic() - entry.timestamp >= self._ttl_seconds:
             del self._cache[key]
             return None
         return entry.value
@@ -45,9 +48,10 @@ class QueryCache:
 
     def prune_expired(self) -> int:
         now = time.monotonic()
+        # Same >= as get(): ttl=0 expires everything, deterministically.
         expired = [
             k for k, v in self._cache.items()
-            if now - v.timestamp > self._ttl_seconds
+            if now - v.timestamp >= self._ttl_seconds
         ]
         for k in expired:
             del self._cache[k]
