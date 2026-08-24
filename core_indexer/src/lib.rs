@@ -1580,6 +1580,17 @@ fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
         // Unix seconds of the last projection commit; 0.0 means never indexed.
         // The MCP staleness banner reads this.
         dict.set_item("indexed_at", graph.indexed_at())?;
+        // Where the loaded graph was walked from. Callers compare it against
+        // their own cwd: a graph belongs to one directory, and reusing dir
+        // A's graph to answer about dir B is how stale, wrong-tree answers
+        // look exactly like fresh ones.
+        dict.set_item(
+            "indexed_root",
+            INDEXED_ROOT
+                .read()
+                .clone()
+                .map(|p| p.to_string_lossy().into_owned()),
+        )?;
         Ok(dict.into())
     })
 }

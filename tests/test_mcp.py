@@ -57,10 +57,14 @@ class TestMCPCreation:
     """Server creation and instruction validation."""
 
     def test_create_server_has_correct_name_and_version(self):
+        import coderadar
+
         from coderadar.mcp.server import create_server
         server = create_server(None)
         assert server.name == "CodeRadar"
-        assert server.version == "0.7.1"
+        # One version constant everywhere: the handshake reports what the
+        # package declares, so a bump cannot leave a hardcoded string behind.
+        assert server.version == coderadar.__version__
 
     def test_server_has_call_tool(self):
         from coderadar.mcp.server import create_server

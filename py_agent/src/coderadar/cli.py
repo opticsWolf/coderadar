@@ -11,6 +11,8 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from . import __version__
+
 console = Console()
 
 
@@ -125,25 +127,36 @@ def _ensure_graph(path: str = "."):
     — advice the user had just taken. Cross-process cold start from the
     Macrame ledger (`load_snapshot`) is Phase 3B; until then the honest
     behaviour is to index here rather than to send the user in a circle.
+
+    A loaded graph is only reused when it belongs to *this* directory: the
+    core records the root each index walked, and a graph from somewhere else
+    answers every question about this tree wrongly while looking completely
+    healthy. Different root — or no graph — means index here.
     """
     import coderadar
     from coderadar._core import graph_stats
 
     graph = coderadar.CodeGraph()
     try:
-        graph_stats()
-        return graph
+        stats = graph_stats()
+        root = stats.get("indexed_root")
+        if root:
+            # std::fs::canonicalize emits Windows verbatim paths (\\?\C:\…);
+            # pathlib compares them as a different directory, so strip first.
+            root_str = str(root).removeprefix("\\\\?\\")
+            if Path(root_str).resolve() == Path(path).resolve():
+                return graph
     except RuntimeError:
         pass
 
     _activate(path)
-    console.print("[dim]No graph in this process — indexing first...[/dim]")
+    console.print("[dim]No graph for this directory — indexing...[/dim]")
     coderadar.analyze(path)
     return graph
 
 
 @click.group()
-@click.version_option(version="0.7.2", prog_name="coderadar",
+@click.version_option(version=__version__, prog_name="coderadar",
                       message="coderadar %(version)s (spec v3.6)")
 def main():
     """CodeRadar — live semantic graph of your codebase.

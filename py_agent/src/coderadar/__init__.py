@@ -14,6 +14,11 @@ v3.6 Architecture:
 
 from __future__ import annotations
 
+#: The single version constant. pyproject.toml, Cargo.toml and this value
+#: move together on a release; the CLI banner, the MCP handshake and the
+#: tests read from here so no string is hardcoded twice.
+__version__ = "0.7.2"
+
 import json
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Literal, Optional, Union

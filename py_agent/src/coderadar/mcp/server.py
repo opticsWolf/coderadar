@@ -145,9 +145,11 @@ def create_server(graph: Any) -> MCPServer:
     Every tool is a plain, type-hinted Python function; MCPServer derives
     JSON Schema and routing from the function signature.
     """
+    from coderadar import __version__
+
     mcp = MCPServer(
         "CodeRadar",
-        version="0.7.2",
+        version=__version__,
         instructions=SERVER_INSTRUCTIONS,
     )
 
