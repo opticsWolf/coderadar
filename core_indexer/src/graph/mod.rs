@@ -22,6 +22,7 @@ pub mod import_graph;
 pub use import_graph::{ImportGraph, ImportNode};
 
 pub mod call_graph;
+pub mod centrality;
 
 pub use call_graph::{CallEdge, CallGraph, CallNode};
 

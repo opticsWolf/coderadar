@@ -47,6 +47,7 @@ impl SmellRule for BrainMethod {
             let mut signals = HashMap::new();
             signals.insert("max_method_cyclomatic".to_string(), max_cyclo as f64);
             signals.insert("WMC".to_string(), wmc as f64);
+            ctx.attach_centrality(&mut signals);
 
             Some(Finding {
                 rule_id: self.id().to_string(),

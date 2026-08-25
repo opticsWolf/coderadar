@@ -48,6 +48,7 @@ impl SmellRule for GodClass {
             let mut signals = HashMap::new();
             signals.insert("WMC".to_string(), wmc as f64);
             signals.insert("CBO".to_string(), cbo as f64);
+            ctx.attach_centrality(&mut signals);
 
             Some(Finding {
                 rule_id: self.id().to_string(),

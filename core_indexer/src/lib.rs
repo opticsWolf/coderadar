@@ -59,6 +59,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(index_edge_stats, m)?)?;
     m.add_function(wrap_pyfunction!(get_smells, m)?)?;
     m.add_function(wrap_pyfunction!(find_dead_code, m)?)?;
+    m.add_function(wrap_pyfunction!(rank_by_centrality, m)?)?;
     m.add_function(wrap_pyfunction!(find_clones, m)?)?;
     m.add_function(wrap_pyfunction!(find_scaffolding, m)?)?;
     m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;
@@ -1786,6 +1787,35 @@ fn find_dead_code(
             results.push(dict.into());
         }
         Ok(results)
+    })
+}
+
+/// Rank entity ids by structural importance (Stage 5).
+///
+/// Harmonic centrality over transitive dependents (callers), normalized
+/// 0..=1, computed once per graph revision and cached. Returns
+/// `(entity_id, score)` pairs sorted descending; unknown ids score 0.0.
+#[pyfunction]
+fn rank_by_centrality(
+    py: Python<'_>,
+    entity_ids: Vec<String>,
+) -> PyResult<Vec<(String, f64)>> {
+    with_graph_snapshot(|snap| {
+        let snap_owned: Arc<ProjectedGraph> = snap.clone();
+        let map = py
+            .allow_threads(move || {
+                crate::graph::centrality::cached_harmonic_centrality(&snap_owned, 3)
+            });
+        let mut pairs: Vec<(String, f64)> = entity_ids
+            .into_iter()
+            .map(|id| {
+                let raw = map.get(&id).copied().unwrap_or(0.0);
+                (id, (raw * 1000.0).round() / 1000.0)
+            })
+            .collect();
+        pairs
+            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(pairs)
     })
 }
 

@@ -82,7 +82,7 @@ more for the same answer.
 
 - `codegraph_node` — full details for an entity identified via explore
 - `codegraph_search` — find symbols by keyword when you don't know the exact name
-- `codegraph_affected` — transitive impact: "what calls this, all the way up?"
+- `codegraph_affected` — transitive impact: "what calls this, all the way up?" (centrality-ranked)
 - `coderadar_resolve` — framework-aware reference resolution: "what handles /users/:id?", "where is UserService?", "what model is UserModel?"
 - `codegraph_query` — structured Pest graph queries ("functions where name contains 'test'")
 - `codegraph_search_similar` — semantic/embedding search across all entity types
@@ -262,7 +262,10 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Find all entities transitively affected by a given entity — the "
             "blast radius. Traverses upstream through callers to show the full "
-            "dependency tree. Use this before editing to understand the impact."
+            "dependency tree, ordered within each depth by harmonic centrality "
+            "(Stage 5 triage: the top entry per group is what actually matters; "
+            "the three most-depended-on ids carry a star marker). "
+            "Use this before editing to understand the impact."
         ),
         annotations={
             "read_only_hint": True,
@@ -1571,15 +1574,41 @@ def _affected(graph: Any, entity_id: str, max_depth: int) -> str:
         lines.append("No dependents found. Nothing calls this entity.")
         return "\n".join(lines)
 
+    # Stage 5 triage ranking (plan §10 consumer 2): within each depth,
+    # order by harmonic centrality so the top of each group is what actually
+    # matters. Best-effort — an extension predating rank_by_centrality just
+    # keeps BFS order.
+    centrality: dict[str, float] = {}
+    try:
+        from coderadar._core import rank_by_centrality  # noqa: PLC0415
+
+        all_ids = [e.get("id", "") for group in tree.values() for e in group]
+        if all_ids:
+            centrality = dict(rank_by_centrality(all_ids))
+    except ImportError:
+        pass
+    central_ids = {
+        eid
+        for eid, score in sorted(centrality.items(), key=lambda kv: kv[1], reverse=True)[:3]
+        if score > 0
+    }
+
     for depth in sorted(tree.keys()):
         entities = tree[depth]
+        if centrality:
+            entities = sorted(
+                entities,
+                key=lambda e: centrality.get(e.get("id", ""), 0.0),
+                reverse=True,
+            )
         indent = "  " * depth
         lines.append(f"**Depth {depth}** ({len(entities)}):")
         for e in entities[:20]:
             n = e.get("name", "?")
             k = e.get("kind", "?")
             ei = e.get("id", "?")
-            lines.append(f"{indent}- `{n}` ({k}) — `{ei}`")
+            mark = " ⭐" if ei in central_ids else ""
+            lines.append(f"{indent}- `{n}` ({k}) — `{ei}`{mark}")
         if len(entities) > 20:
             lines.append(f"{indent}  ... and {len(entities) - 20} more")
         lines.append("")

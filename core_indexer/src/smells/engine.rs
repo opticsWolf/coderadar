@@ -58,13 +58,14 @@ impl SmellEngine {
 
         // Whole-graph analyses, computed once per run and shared by every
         // rule (Stage 0.2). Reachability + entry points feed the dead-code
-        // rule (Stage 1); centrality arrives in Stage 5.
+        // rule (Stage 1); harmonic centrality feeds triage signals (Stage 5).
         let entries = crate::graph::deadcode::entry_points::detect_entry_points(graph);
         let reach = crate::graph::deadcode::reachability::compute_reachable(graph, &entries.production);
+        let centrality = crate::graph::centrality::harmonic_centrality(graph, 3);
         let analyses = GraphAnalyses {
             reachable: Some(&reach.reachable),
             entry_points: Some(&entries.production),
-            centrality: None,
+            centrality: Some(&centrality),
         };
 
         // Method scope.

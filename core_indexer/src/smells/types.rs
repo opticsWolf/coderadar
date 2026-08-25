@@ -65,6 +65,21 @@ pub struct EvalContext<'a> {
     pub analyses: GraphAnalyses<'a>,
 }
 
+impl<'a> EvalContext<'a> {
+    /// Stage 5 triage boost: attach normalized harmonic centrality (0..=1)
+    /// when it was computed this run, so consumers can rank findings by
+    /// severity × structural importance. Absent analysis = absent signal —
+    /// never a guessed 0.
+    pub fn attach_centrality(&self, signals: &mut HashMap<String, f64>) {
+        if let Some(map) = self.analyses.centrality {
+            if let Some(score) = map.get(self.entity_id) {
+                let rounded = (*score * 1000.0).round() / 1000.0;
+                signals.insert("central".to_string(), rounded);
+            }
+        }
+    }
+}
+
 /// Whole-graph analyses computed once per engine run and shared by all rules.
 /// Computing reachability or centrality inside a rule's `evaluate()` would be
 /// O(rules × V+E); these are shared by reference instead. Default is empty —

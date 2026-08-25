@@ -137,13 +137,13 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::types::{ByteSpan, EmbeddingVec, Function, FunctionKind, SourceType};
     use std::collections::{BTreeSet, HashMap};
     use std::path::PathBuf;
 
-    fn func(id: &str, name: &str, module: &str) -> Function {
+    pub(crate) fn func(id: &str, name: &str, module: &str) -> Function {
         Function {
             id: id.into(),
             name: name.into(),
