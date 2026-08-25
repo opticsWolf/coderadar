@@ -32,6 +32,10 @@ pub enum DeadKind {
     TransitivelyDead,
     /// Reachable only from test code; deleting it breaks tests.
     TestOnly,
+    /// Stage 6.3 (RTA-lite): live ONLY via virtual dispatch, on a class
+    /// that is never constructed anywhere in the indexed root. Weakest
+    /// evidence — instances could come from outside the root.
+    RtaDead,
 }
 
 impl DeadKind {
@@ -40,6 +44,7 @@ impl DeadKind {
             DeadKind::Unreachable => "unreachable",
             DeadKind::TransitivelyDead => "transitively-dead",
             DeadKind::TestOnly => "test-only",
+            DeadKind::RtaDead => "rta-dead",
         }
     }
 
@@ -50,6 +55,7 @@ impl DeadKind {
             DeadKind::Unreachable => 0.9,
             DeadKind::TransitivelyDead => 0.65,
             DeadKind::TestOnly => 0.5,
+            DeadKind::RtaDead => 0.45,
         }
     }
 }
@@ -127,6 +133,41 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
     }
 
     // Rank by confidence, then by impact — most safely-deletable first.
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.removable_lines.cmp(&a.removable_lines))
+    });
+
+    // Stage 6.3 (RTA-lite): functions live ONLY through virtual dispatch on
+    // classes that are never constructed anywhere in the root. The base pass
+    // skips them as live; RTA re-flags them with the weakest evidence tier.
+    let direct = crate::graph::rta_lite::direct_call_reachable(graph, &production);
+    for cand in crate::graph::rta_lite::uninstantiated_overrides(
+        graph,
+        &live_prod.reachable,
+        &direct,
+    ) {
+        let Some(f) = graph.functions.get(&cand.entity_id) else {
+            continue;
+        };
+        let size_boost = ((f.body_span.len() as f32 / 200.0).min(1.0)).max(0.3);
+        let quality = match f.parse_quality {
+            ParseQuality::Clean => 1.0,
+            ParseQuality::Partial | ParseQuality::Deferred => 0.8,
+            ParseQuality::Tainted => 0.5,
+        };
+        let score = combine(&[DeadKind::RtaDead.isolation(), size_boost, quality]);
+        out.push(DeadFinding {
+            entity_id: cand.entity_id.clone(),
+            kind: DeadKind::RtaDead,
+            tier: tier_of(score),
+            score,
+            removable_lines: f.exit_line.saturating_sub(f.line).saturating_add(1),
+        });
+    }
+
     out.sort_by(|a, b| {
         b.score
             .partial_cmp(&a.score)

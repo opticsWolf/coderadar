@@ -91,7 +91,7 @@ more for the same answer.
 - `codegraph_as_of` — query the graph at a past timestamp ("what did X look like at commit Y?")
 - `codegraph_traverse` — generic edge traversal with direction and depth control
 - `codegraph_get_smells` — detect architectural code smells (god-class, long-method, long-parameter-list, deep-nesting, data-class, high-cyclomatic-complexity, brain-method, excessive-returns, too-many-fields)
-- `codegraph_dead_code` — find functions unreachable from any entry point, ranked by deletability (kind, tier, confidence, removable lines)
+- `codegraph_dead_code` — find functions unreachable from any entry point, ranked by deletability (kind incl. rta-dead for uninstantiated-override dispatch liveness, tier, confidence, removable lines)
 - `codegraph_find_clones` — token-level clone detection (Types 1-3): identical bodies, renamed bodies, near-duplicates above a similarity floor
 - `codegraph_find_scaffolding` — AI-scaffolding debt: phase/step markers, TODO density, placeholder bodies, temp-file names; opt-in redacted secret detection
 
@@ -535,9 +535,13 @@ def create_server(graph: Any) -> MCPServer:
             "methods, public API of unimported modules, and test functions; "
             "virtual-dispatch overrides extend liveness so overridden methods "
             "are never falsely flagged. Each finding carries kind "
-            "(unreachable | transitively-dead | test-only), tier, confidence "
-            "score and removable line count, ranked most-safely-deletable first. "
-            "Always verify with affected() before removing anything."
+            "(unreachable | transitively-dead | test-only | rta-dead), tier, "
+            "confidence score and removable line count, ranked "
+            "most-safely-deletable first. rta-dead (Stage 6.3) marks overrides "
+            "whose ONLY liveness is virtual dispatch on a class never "
+            "constructed in the indexed root — weakest evidence, verify "
+            "external construction before removing. Always verify with "
+            "affected() before removing anything."
         ),
         annotations={
             "read_only_hint": True,
