@@ -10,6 +10,10 @@ pub struct GraphConfig {
     pub signature: SignatureConfig,
     pub mutation: MutationConfig,
     pub query: QueryConfig,
+    /// Stage 4 strangler flag: refine smell metrics with CFG math when the
+    /// body parses. Default OFF until validated (Milestone C); the AST
+    /// numbers remain the fallback.
+    pub analysis: AnalysisConfig,
 }
 
 impl Default for GraphConfig {
@@ -22,6 +26,7 @@ impl Default for GraphConfig {
             signature: SignatureConfig::default(),
             mutation: MutationConfig::default(),
             query: QueryConfig::default(),
+            analysis: AnalysisConfig::default(),
         }
     }
 }
@@ -148,3 +153,17 @@ impl Default for QueryConfig {
     }
 }
 
+
+/// Analysis-engine refinements (Stage 4).
+#[derive(Clone, Debug)]
+pub struct AnalysisConfig {
+    /// Refine cyclomatic complexity with CFG math and emit
+    /// `intra-dead-statements` findings when bodies parse.
+    pub use_cfg_metrics: bool,
+}
+
+impl Default for AnalysisConfig {
+    fn default() -> Self {
+        Self { use_cfg_metrics: false }
+    }
+}

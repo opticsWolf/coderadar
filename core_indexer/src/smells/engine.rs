@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::types::{Class, EntityId, Function, ProjectedGraph, ResolvedCall};
+use crate::types::{ByteSpan, Class, EntityId, Function, ProjectedGraph, ResolvedCall};
 
 use super::rule::SmellRule;
 use super::profile::Strictness;
@@ -30,6 +30,7 @@ impl SmellEngine {
                 Box::new(super::rules::excessive_returns::ExcessiveReturns::default()),
                 Box::new(super::rules::too_many_fields::TooManyFields::default()),
                 Box::new(super::rules::dead_code::DeadCode),
+                Box::new(super::rules::intra_dead_statements::IntraDeadStatements),
             ],
         }
     }
@@ -67,9 +68,24 @@ impl SmellEngine {
         };
 
         // Method scope.
+        // Stage 4 strangler: when `analysis.use_cfg_metrics` is enabled,
+        // refine cyclomatic with CFG math and expose unreachable_blocks for
+        // the intra-dead-statements rule. Cached per content_hash per run;
+        // bodies that don't parse degrade silently to the AST numbers.
+        let use_cfg = crate::active_config().analysis.use_cfg_metrics;
+        let mut cfg_cache: HashMap<u64, Option<(usize, usize)>> = HashMap::new();
         if let Some(rules) = rules_by_scope.get(&Scope::Method) {
             for (id, f) in &graph.functions {
-                let metrics = metrics_for_function(f);
+                let mut metrics = metrics_for_function(f);
+                if use_cfg {
+                    let refined = cfg_cache.entry(f.content_hash).or_insert_with(|| {
+                        refine_with_cfg(graph, f)
+                    });
+                    if let Some((cyclo, dead)) = refined {
+                        metrics.insert("cyclomatic".to_string(), *cyclo as f64);
+                        metrics.insert("unreachable_blocks".to_string(), *dead as f64);
+                    }
+                }
                 let ctx = EvalContext {
                     entity_id: id.as_str(),
                     entity_name: f.name.as_str(),
@@ -385,4 +401,45 @@ pub(crate) mod tests {
             finding_key(&mk("./src/b.py::f"))
         );
     }
+}
+
+/// Stage 4 helper: build a CFG for `f` and return (cyclomatic, unreachable
+/// blocks), or None when the body can't be located/parsed — the strangler's
+/// silent fallback to AST numbers.
+fn refine_with_cfg(
+    graph: &crate::types::ProjectedGraph,
+    f: &crate::types::Function,
+) -> Option<(usize, usize)> {
+    let module = graph.modules.get(&f.parent_module)?;
+    let src = std::fs::read_to_string(&module.path).ok()?;
+    let ts_lang = crate::graph::CodeGraph::ts_language(&module.language)?;
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&ts_lang).ok()?;
+
+    // Parse once per run per file is handled by the caller's content_hash
+    // cache; here we parse the file and locate the body node by span.
+    let tree = parser.parse(&src, None)?;
+    let target = find_node_at_span(tree.root_node(), f.body_span)?;
+    let cfg = crate::graph::cfg::ControlFlowGraph::build(&f.id, target, src.as_bytes());
+    Some((cfg.cyclomatic(), cfg.unreachable_blocks().len()))
+}
+
+/// Deepest node whose byte range equals `span` exactly.
+fn find_node_at_span<'a>(
+    node: tree_sitter::Node<'a>,
+    span: ByteSpan,
+) -> Option<tree_sitter::Node<'a>> {
+    if node.start_byte() == span.start && node.end_byte() == span.end {
+        return Some(node);
+    }
+    if node.end_byte() < span.end || node.start_byte() > span.start {
+        return None;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(hit) = find_node_at_span(child, span) {
+            return Some(hit);
+        }
+    }
+    None
 }

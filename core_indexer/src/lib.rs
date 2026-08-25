@@ -106,7 +106,7 @@ static INDEXED_ROOT: std::sync::LazyLock<RwLock<Option<std::path::PathBuf>>> =
 static ACTIVE_CONFIG: std::sync::LazyLock<RwLock<Arc<graph::GraphConfig>>> =
     std::sync::LazyLock::new(|| RwLock::new(Arc::new(graph::GraphConfig::default())));
 
-fn active_config() -> Arc<graph::GraphConfig> {
+pub(crate) fn active_config() -> Arc<graph::GraphConfig> {
     ACTIVE_CONFIG.read().clone()
 }
 
@@ -1137,6 +1137,11 @@ fn set_config(py: Python<'_>, cfg: &Bound<'_, PyDict>) -> PyResult<PyObject> {
         }
     }
 
+    if let Some(an) = cfg_section(cfg, "analysis")? {
+        take!(an, "use_cfg_metrics", "analysis.use_cfg_metrics",
+              c.analysis.use_cfg_metrics, bool);
+    }
+
     if let Some(m) = cfg_section(cfg, "mutation")? {
         take!(m, "enabled", "mutation.enabled", c.mutation.enabled, bool);
         take!(m, "default_dry_run", "mutation.default_dry_run",
@@ -1217,6 +1222,10 @@ fn get_config(py: Python<'_>) -> PyResult<PyObject> {
     mutation.set_item("allow", c.mutation.allow.clone())?;
     mutation.set_item("deny", c.mutation.deny.clone())?;
     out.set_item("mutation", mutation)?;
+
+    let analysis = PyDict::new(py);
+    analysis.set_item("use_cfg_metrics", c.analysis.use_cfg_metrics)?;
+    out.set_item("analysis", analysis)?;
 
     Ok(out.into())
 }

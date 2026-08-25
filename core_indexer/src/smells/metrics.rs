@@ -82,7 +82,7 @@ pub fn return_count(node: Node, source: &str) -> usize {
 }
 
 /// A decision point adds a linearly independent path (McCabe).
-fn is_decision_point(kind: &str) -> bool {
+pub(crate) fn is_decision_point(kind: &str) -> bool {
     matches!(
         kind,
         // if / else-if chains

@@ -11,6 +11,7 @@ use parking_lot::RwLock;
 use crate::resolve::cache::ResolutionCache;
 use crate::types::*;
 
+pub mod cfg;
 pub mod config;
 pub use config::*;
 
