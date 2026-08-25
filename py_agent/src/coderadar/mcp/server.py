@@ -93,6 +93,7 @@ more for the same answer.
 - `codegraph_get_smells` — detect architectural code smells (god-class, long-method, long-parameter-list, deep-nesting, data-class, high-cyclomatic-complexity, brain-method, excessive-returns, too-many-fields)
 - `codegraph_dead_code` — find functions unreachable from any entry point, ranked by deletability (kind, tier, confidence, removable lines)
 - `codegraph_find_clones` — token-level clone detection (Types 1-3): identical bodies, renamed bodies, near-duplicates above a similarity floor
+- `codegraph_find_scaffolding` — AI-scaffolding debt: phase/step markers, TODO density, placeholder bodies, temp-file names; opt-in redacted secret detection
 
 ## Mutation pipeline (LLM-writable code)
 
@@ -586,6 +587,35 @@ def create_server(graph: Any) -> MCPServer:
             return mismatch
 
         return _find_clones(graph, min_lines, min_similarity, max_groups)
+
+    # ── codegraph_find_scaffolding — AI-scaffolding & secrets scan ────
+
+    @mcp.tool(
+        description=(
+            "Detect AI-coding scaffolding debt: phase/step comment markers, "
+            "TODO/FIXME/HACK/WIP density, placeholder bodies (pass/todo!/NotImplementedError), "
+            "temp-file naming (temp_*/backup_*/old_*), and — opt-in — hardcoded secrets. "
+            "Secret findings are always redacted to their first 8 characters plus '***'; "
+            "full matches never leave this process. Gitignored files are skipped."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def codegraph_find_scaffolding(
+        project_path: Optional[str] = None,
+        include_secrets: bool = False,
+        max_findings: int = 100,
+    ) -> str:
+        """Scan for AI scaffolding markers, stubs, temp files and secrets."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _find_scaffolding(include_secrets, max_findings)
 
     # ── coderadar_replace_body ────────────────────────────────────
 
@@ -1846,6 +1876,50 @@ def _find_clones(
     lines.append(
         "Consider extracting shared logic; verify each pair with `explore` before refactoring."
     )
+    return "\n".join(lines)
+
+
+def _find_scaffolding(include_secrets: bool = False, max_findings: int = 100) -> str:
+    """Run the scaffold scanner and render grouped findings."""
+    try:
+        from coderadar._core import find_scaffolding as _find_scaffolding_rust, graph_stats
+        stats = graph_stats()
+        if stats.get("functions", 0) == 0:
+            return _no_index_message()
+    except ImportError:
+        return NO_EXTENSION_MESSAGE
+    except RuntimeError as e:
+        return f"Scaffold scan failed: {e}"
+
+    try:
+        findings = _find_scaffolding_rust(include_secrets, max_findings)
+    except Exception as e:
+        return f"Scaffold scan failed: {e}"
+
+    if not findings:
+        return (
+            "No AI scaffolding signals found"
+            + (" (secrets included)" if include_secrets else "")
+            + ". Clean result — not an indexing failure."
+        )
+
+    by_kind: dict[str, list] = {}
+    for f in findings:
+        by_kind.setdefault(f["kind"], []).append(f)
+
+    order = ["placeholder-body", "secret", "comment-marker", "temp-file"]
+    lines = [f"## Scaffolding Signals — {len(findings)} finding(s)", ""]
+    for kind in order:
+        items = by_kind.get(kind, [])
+        if not items:
+            continue
+        lines.append(f"### {kind.replace('-', ' ').title()} ({len(items)})")
+        for it in items[:25]:
+            loc = f"{it['file']}:{it['line']}" if it["line"] else str(it["file"])
+            lines.append(f"- `{loc}` — {it['label']}: {it['snippet']}")
+        if len(items) > 25:
+            lines.append(f"- … and {len(items) - 25} more")
+        lines.append("")
     return "\n".join(lines)
 
 

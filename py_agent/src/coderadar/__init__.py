@@ -17,7 +17,7 @@ from __future__ import annotations
 #: The single version constant. pyproject.toml, Cargo.toml and this value
 #: move together on a release; the CLI banner, the MCP handshake and the
 #: tests read from here so no string is hardcoded twice.
-__version__ = "0.7.12"
+__version__ = "0.7.13"
 
 import json
 from pathlib import Path

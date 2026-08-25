@@ -8,6 +8,7 @@ pub mod graph;
 pub mod mutation;
 pub mod query;
 pub mod resolve;
+pub mod scaffold;
 pub mod scoring;
 pub mod smells;
 pub mod storage;
@@ -19,6 +20,7 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use std::path::{Path, PathBuf};
 
 use crate::graph::CodeGraph;
 use crate::graph::ImportGraph;
@@ -58,6 +60,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(get_smells, m)?)?;
     m.add_function(wrap_pyfunction!(find_dead_code, m)?)?;
     m.add_function(wrap_pyfunction!(find_clones, m)?)?;
+    m.add_function(wrap_pyfunction!(find_scaffolding, m)?)?;
     m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
@@ -1822,6 +1825,54 @@ fn find_clones(
         }
         Ok(results)
     })
+}
+
+/// AI-scaffolding & secrets scan over the indexed project.
+///
+/// Stage 3 — parameter names mirror fossil's `fossil_detect_scaffolding`.
+/// Walks the indexed root (gitignore-compliant) for comment markers, temp-
+/// file names and (opt-in) redacted secrets; adds placeholder-body findings
+/// from the resolved projection when a graph is loaded. Secrets are ALWAYS
+/// redacted in output.
+#[pyfunction]
+#[pyo3(signature = (include_secrets=false, max_findings=100))]
+fn find_scaffolding(
+    py: Python<'_>,
+    include_secrets: bool,
+    max_findings: usize,
+) -> PyResult<Vec<PyObject>> {
+    let root: PathBuf = INDEXED_ROOT.read().clone().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
+    })?;
+    // Strip the Windows \?\ verbatim prefix for display consistency.
+    let root_str = root.to_string_lossy().trim_start_matches(r"\?\ ").to_string();
+
+    let cfg = crate::scaffold::ScaffoldConfig { include_secrets, ..Default::default() };
+    let mut findings =
+        py.allow_threads(|| crate::scaffold::scan_path(Path::new(&root_str), &cfg));
+
+    // Placeholder bodies ride the resolved projection when it is loaded;
+    // a cold/no graph degrades to file-walk signals only (honest subset).
+    if let Ok(placeholders) = with_graph_snapshot(|snap| -> PyResult<Vec<crate::scaffold::ScaffoldFinding>> {
+        let snap_owned: Arc<ProjectedGraph> = snap.clone();
+        let placeholders =
+            py.allow_threads(move || crate::scaffold::scan_placeholder_bodies(&snap_owned));
+        Ok(placeholders)
+    }) {
+        findings.extend(placeholders);
+    }
+
+    let mut results = Vec::new();
+    for f in findings.into_iter().take(max_findings) {
+        let dict = PyDict::new(py);
+        dict.set_item("kind", f.kind.as_str())?;
+        dict.set_item("file", f.file.to_string_lossy().as_ref())?;
+        dict.set_item("line", f.line as u32)?;
+        dict.set_item("label", &f.label)?;
+        dict.set_item("snippet", &f.snippet)?;
+        results.push(dict.into());
+    }
+    Ok(results)
 }
 
 /// Vector similarity search against entity embeddings.
