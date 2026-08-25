@@ -97,12 +97,19 @@ fn module_file_path(projection: &ProjectedGraph, module_id: &str) -> String {
         .to_string()
 }
 
-/// Confirm that `span` in `source` still holds the identifier the index recorded.
-///
+/// Confirm that `span` in `source` still holds the identifier the index recorded.///
 /// Spans are captured at index time. The stale-write hash carried on every edit
 /// is computed from the same read the span was resolved against, so it proves
 /// the file did not change between *plan* and *apply* — it says nothing about
 /// whether the graph still matches disk. This is the check that does.
+/// Heuristic: does this body text open with a Python docstring (a triple-
+/// quoted string as its first token)? Deliberately simple — it only decides
+/// whether to warn that documentation may be lost, never to rewrite code.
+fn has_leading_docstring(body: &str) -> bool {
+    let t = body.trim_start();
+    t.starts_with("\"\"\"") || t.starts_with("'''")
+}
+
 fn span_holds_name(source: &[u8], span: ByteSpan, name: &str) -> bool {
     source
         .get(span.start..span.end)
@@ -376,6 +383,28 @@ impl MutationEngine {
         // safety net is apply()'s post-write parse check + rollback.
         let normalized_body = normalize_indent(new_body, "", &indent, &[]);
 
+        let mut warnings = if fn_entity.parse_quality != ParseQuality::Clean {
+            vec!["Entity parse quality is not Clean — body_span may be approximate".into()]
+        } else {
+            Vec::new()
+        };
+
+        // BUGS_QUIRKS #4: "body" is everything under the signature line, so
+        // replacing it used to silently delete an existing docstring. Dropping
+        // documentation may be intended — but it must never be silent.
+        if !file_source.is_empty() {
+            if let Some(old_body) = file_source
+                .get(body_span.start..body_span.end.min(file_source.len()))
+            {
+                if has_leading_docstring(old_body) && !has_leading_docstring(&normalized_body) {
+                    warnings.push(
+                        "The existing docstring is NOT present in the replacement body — ".to_string()
+                            + "re-include it, or apply knowing the documentation will be removed.",
+                    );
+                }
+            }
+        }
+
         let plan_id = ulid::Ulid::new().to_string();
 
         let edits = vec![MutationEdit {
@@ -401,11 +430,7 @@ impl MutationEngine {
             diff_preview: preview,
             edits,
             unverified_sites: Vec::new(),
-            warnings: if fn_entity.parse_quality != ParseQuality::Clean {
-                vec!["Entity parse quality is not Clean — body_span may be approximate".into()]
-            } else {
-                Vec::new()
-            },
+            warnings,
         })
     }
 
@@ -1576,6 +1601,15 @@ mod tests {
         assert!(path_matches("uv.lock", "/*.lock"));
         assert!(path_matches("sub/poetry.lock", "/*.lock"));
         assert!(!path_matches("locked.py", "/*.lock"));
+    }
+
+    #[test]
+    fn test_has_leading_docstring_variants() {
+        assert!(super::has_leading_docstring("\"\"\"doc.\"\"\"\n    return 1"));
+        assert!(super::has_leading_docstring("  '''doc'''\n    return 1"));
+        assert!(!super::has_leading_docstring("    return 1"));
+        assert!(!super::has_leading_docstring("x = \"\"\"not a docstring\"\"\"\n"));
+        assert!(!super::has_leading_docstring(""));
     }
 
     #[test]
