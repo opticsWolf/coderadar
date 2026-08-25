@@ -1,6 +1,10 @@
 # CodeRadar Improvement Plan — Algorithms Ported from fossil-mcp
 
-**Status:** Proposal / working plan
+**Status:** IMPLEMENTED through Stage 6.3 (v0.7.3–v0.7.18, branch `dev`).
+Remaining items are gated on v0.8 infrastructure: Stage 6.4 (temporal analyses → v0.8 P2.2),
+Stage 0.3 (analysis cache → v0.8 P1 `load_snapshot`), and RTA-lite full-language scope
+(→ v0.8 P2.3 `IMPLEMENTS` edges). See [§14.1](#141-merged-master-roadmap) for the
+per-item ledger.
 **Source of findings:** In-depth analysis of `fossil-mcp` v0.1.8 (Rust, MIT OR Apache-2.0, ~56k LOC)
 **CodeRadar version targeted:** post-v0.8 (`core_indexer` Rust core + `py_agent` Python MCP layer)
 **Relationship to other plans:** This is the successor programme to
@@ -50,11 +54,11 @@ The porting opportunity is asymmetric:
 | | fossil-mcp has | CodeRadar has |
 |---|---|---|
 | Call graph traversal | ✅ both directions | ✅ both directions (adjacency maps) |
-| **Forward reachability / dead code** | ✅ full detector chain | ❌ only upstream `affected` |
-| **Clone detection** | ✅ Merkle/MinHash/LSH/SimHash/APTED | ❌ embedding dedup only |
-| **CFG-based metrics** | ✅ basic blocks + dominators | ⚠️ raw AST walks |
-| **Centrality** | ✅ | ❌ |
-| **Scaffolding/secrets scan** | ✅ | ❌ |
+| **Forward reachability / dead code** | ✅ full detector chain | ✅ **ported in Stage 1** (`graph/deadcode/`, `codegraph_dead_code`) + **Stage 6.3 RTA-lite** (`rta-dead` kind) |
+| **Clone detection** | ✅ Merkle/MinHash/LSH/SimHash/APTED | ✅ **ported in Stages 2+6.1** (`clones/`: normalized tokens, MinHash+banded LSH, Type-1/2/3 funnel; Zhang–Shasha TED verification instead of APTED decomposition) |
+| **CFG-based metrics** | ✅ basic blocks + dominators | ✅ **ported in Stages 4+6.2** (`graph/cfg.rs`, structured synthesis CFG, cyclomatic = E−N+2, unreachable blocks, tri-state dead-branch eval) |
+| **Centrality** | ✅ | ✅ **ported in Stage 5** (`graph/centrality.rs`, harmonic centrality, centrality-ranked `affected`) |
+| **Scaffolding/secrets scan** | ✅ | ✅ **ported in Stage 3** (`scaffold/` detector tables + secrets scanner) |
 | Embeddings / semantic search | ❌ | ✅ fastembed, cached on `Function.embedding` |
 | Bitemporal history | ❌ | ✅ unique |
 | Mutation tools | ❌ | ✅ unique |
@@ -101,21 +105,23 @@ Capability matrix, CodeRadar symbols verified against `core_indexer/src`:
 CallGraph            core_indexer/src/graph/call_graph.rs
   ├─ find_callers()          upstream BFS            ✅ exists
   ├─ find_call_chain()       BFS w/ parent map       ✅ exists
-  └─ forward reachability    downstream closure      ❌ MISSING  ← Stage 1
+  └─ forward reachability    downstream closure      ✅ Stage 1 (graph/deadcode/reachability.rs)
+                                                        + Stage 6.3 rta_lite.rs direct_call_reachable
 ProjectedGraph        core_indexer/src/types.rs:1179
   ├─ callers_by_callee / callees_by_caller            ✅ both directions present
-  ├─ subclasses / overridden_by / overrides_base      ✅ (RTA-lite substrate)
+  ├─ subclasses / overridden_by / overrides_base      ✅ (RTA substrate — consumed by rta_lite.rs)
   └─ importers / imports_by_importer                  ✅
 SmellEngine          core_indexer/src/smells/engine.rs
-  ├─ SmellRule trait {id, scope, signals_needed, evaluate}   ✅ extensible
-  ├─ EvalContext {entity_id, entity_name, metrics, graph}    ⚠️ no room for precomputed
-  │                                                          graph analyses  ← Stage 0
-  └─ 9 rules, metrics from AST walks (metrics.rs)            ⚠️ ← Stage 4
+  ├─ SmellRule trait {id, scope, signals_needed, evaluate}   ✅ extensible (12 rules now)
+  ├─ EvalContext.graph_analyses                       ✅ Stage 0.2 (entries/reachability/centrality precomputed)
+  └─ metrics: AST walks + Stage 4 CFG refinement      ✅ behind analysis.use_cfg_metrics flag
+Scoring              core_indexer/src/scoring/mod.rs             ✅ Stage 0.1 (tiers, strictness profiles §0.4)
 Function             core_indexer/src/types.rs:774
-  ├─ body_span / body_hash / content_hash / signature_hash   ✅ clone fingerprint keys
+  ├─ body_span / body_hash / content_hash / signature_hash   ✅ clone fingerprint keys (consumed by clones/)
   └─ embedding: EmbeddingVec                                 ✅ Type-4 fusion substrate
 py_agent             py_agent/src/coderadar/
-  └─ mcp tools: affected, explore, node, search …            ⚠️ add dead_code/clones/scaffold tools
+  └─ mcp tools: affected, explore, node, search,
+     dead_code, find_clones, find_scaffolding …          ✅ Stages 1–3
 ```
 
 ---
@@ -1271,51 +1277,55 @@ parity-before-trust) are preserved.
 
 ```
 ═══════════ TRACK H — integrity hotfixes (from CODERADAR_BUGS_QUIRKS.md) ══ ~4 days
-H1      replace_body: validate WRITTEN file parses; auto-rollback on failure (#1)
+H1 ✅ v0.7.3  replace_body: validate WRITTEN file parses; auto-rollback on failure (#1)
         ▸ GATE G0-A: mutation repro pinned as regression test
-H2      Single-sourced mutation status enum; explicit file_written/graph_updated (#2)
-H3      Preserve leading docstrings on replace_body, or flag removal in diff (#4)
-H4      Error-guidance string fix (#7) + mcpScript prefixing docs (#10)
+H2 ✅ v0.7.4  Single-sourced mutation status enum; explicit file_written/graph_updated (#2)
+H3 ✅ v0.7.5  Preserve leading docstrings on replace_body, or flag removal in diff (#4)
+H4 ✅ v0.7.6  Error-guidance string fix (#7) + mcpScript prefixing docs (#10)
         + default-exclude build dirs (target/, node_modules/, dist/)
-H5      Dedupe smell findings by current entity version only (#9)
+H5 ✅ v0.7.7  Dedupe smell findings by current entity version only (#9)
         ▸ GATE G0-B: golden fixture asserts one finding per entity per rule
 
-═══════════ v0.8 (docs/v0.8-improvement-plan.md) ═══════════════════════ ~10 days
-v0.8 P1     Cold start: load_snapshot + retire _ensure_graph + benchmark
-            ▸ GATE G1: round-trip parity green; cold start < 4.6 s
-v0.8 P2.1   explore() → Rust traverse (all four kinds)
-v0.8 P4.1/2 Tier-1 signature matrix + THREE-WAY ingest parity property test
-            ▸ GATE G2: parity test exists BEFORE this plan's consumers land
-v0.8 P3     Wire-or-cut lsp/, agent/, tool_router
-v0.8 P2.2   as_of upstream/bidirectional        ── enables Stage 6.4
-v0.8 P2.3   IMPLEMENTS edge kind                ── enables Stage 6.3 full scope
-v0.8 P4.3   Plausible-output audit sweep
-v0.8 P4.4   Lint backlog + blocking CI          ── mechanical diffs land here, last
-v0.8 P5     CHANGELOG + interim-state docs
+═══════════ THIS PLAN (fossil-mcp ports) — shipped ahead of v0.8 ═══════════
+Stage 0.1    ✅ v0.7.8   scoring module (tiers, combine(), strictness profiles §0.4 → v0.7.10)
+Stage 0.2    ✅ v0.7.9   EvalContext.graph_analyses (entries/reachability precomputed;
+                         centrality added Stage 5)
+Stage 0.3    ⏸          analysis cache — gated on v0.8 P1 load_snapshot
+Stage 1      ✅ v0.7.11  dead code (entry points → reachability → classifier → MCP tool)
+Stage 2      ✅ v0.7.12  clones (tokens, MinHash+banded LSH, Type-1/2/3 funnel, store)
+Stage 3      ✅ v0.7.13  scaffolding scanner + secrets scanner
+Stage 4      ✅ v0.7.14  structured CFG + metrics strangler (analysis.use_cfg_metrics)
+                         + intra-dead-statements rule
+Stage 5      ✅ v0.7.15  harmonic centrality + centrality-ranked affected()
+Stage 6.1    ✅ v0.7.16  TED verification — exact Zhang–Shasha (~150 LOC) instead of
+                         fossil's APTED decomposition; rename-blind trees refine scores
+Stage 6.2    ✅ v0.7.17  tri-state const evaluator + dead-branch rule (rides use_cfg_metrics)
+Stage 6.3    ✅ v0.7.18  RTA-lite (Python-exact scope): rta-dead kind; construction
+                         evidence from raw-call-name scan until real Constructor
+                         resolution lands
+Stage 6.4    ⏸          temporal analyses — gated on v0.8 P2.2 (as_of traversal)
+RTA full     ⏸          interface-language scope — gated on v0.8 P2.3 IMPLEMENTS edges
 
-═══════════ THIS PLAN (fossil-mcp ports) ════════════════════════════ ~12 weeks
-Week 1      Stage 0  Foundations (scoring, GraphAnalyses, revision-keyed caches)
-                     requires G1 + G2
-Week 2–3    Stage 1  Dead code (entry points → reachability → classifier → MCP tool)
-                     ▸ MILESTONE A: demo "what can I delete?" on a real repo,
-                       answered from a cold-started snapshot
-Week 4–5    Stage 2  Clones part 1 (tokens, MinHash, LSH, store, Type-1/2)
-Week 6      Stage 3  Scaffolding scanner (+ secrets) — parallelizable, pure Rust
-                     ▸ MILESTONE B: find_clones + find_scaffolding tools live
-Week 7–8    Stage 2  Clones part 2 (SimHash, Type-3, incremental store polish)
-Week 9–10   Stage 4  CFG build + metrics strangler + intra-dead-statements rule
-                     ▸ MILESTONE C: CFG-backed metrics behind feature flag
-Week 11     Stage 5  Centrality + triage integration
-Week 12+    Stage 6  APTED → dead branches → RTA-lite → temporal analyses
-            (RTA-lite after v0.8 P2.3; temporal after v0.8 P2.2)
-                     ▸ MILESTONE D: RTA-lite precision report on Python corpus
-                     ▸ MILESTONE E: dead_code_as_of + clone_evolution demos
+═══════════ v0.8 (docs/v0.8-improvement-plan.md) — unchanged ordering ═════
+v0.8 P1      Cold start: load_snapshot + retire _ensure_graph + benchmark
+             ▸ GATE G1: round-trip parity green; cold start < 4.6 s
+v0.8 P2.1    explore() → Rust traverse (all four kinds)
+v0.8 P4.1/2  Tier-1 signature matrix + THREE-WAY ingest parity property test
+             ▸ GATE G2: parity test exists BEFORE this plan's consumers land
+v0.8 P3      Wire-or-cut lsp/, agent/, tool_router
+v0.8 P2.2    as_of upstream/bidirectional        ── enables Stage 6.4
+v0.8 P2.3    IMPLEMENTS edge kind                ── enables RTA-lite full scope
+v0.8 P4.3    Plausible-output audit sweep
+v0.8 P4.4    Lint backlog + blocking CI          ── mechanical diffs land here, last
+v0.8 P5      CHANGELOG + interim-state docs
 ```
 
-Total: ~10 days of v0.8 + ~12 weeks for Stages 0–C with one engineer. If v0.8 must stay minimal,
-its own minimum-viable cut (**P1 → P2.1 → P5.1**) is sufficient for this plan to begin — G1 and G2
-are the only hard gates. **Track H runs first regardless**: it is 4 days, it fixes a critical
-corruption bug, and G0-B is a precondition for every golden test this plan relies on.
+Total: the port ran **ahead of schedule and out of dependency order** — Track H plus Stages
+0–6.3 shipped as v0.7.3–v0.7.18 without waiting for v0.8's gates (the strangler pattern made
+this safe: every new detector is additive, flag-gated where it changes existing numbers,
+and golden-tested day one). What remains open is exactly what the dependency graph always
+said it needed: Stage 6.4 waits for v0.8 P2.2, Stage 0.3 waits for v0.8 P1, and RTA-lite's
+full-language scope waits for v0.8 P2.3.
 
 ### 14.2 Cross-plan parallelization slots
 
@@ -1326,14 +1336,17 @@ test reconciliation — which v0.8 itself flags as the most likely overrun.
 
 ### 14.3 Dependency graph (merged)
 
+Shipped items marked ✅ with the version that carried them.
+
 ```
 v0.8 P1 ──► G1 ──► Stage 0 ──► Stage 1 ──────────────► Stage 6.4 (temporal) ◄── v0.8 P2.2
+              (0.1✅ 0.2✅)  (✅ v0.7.11)                    ⏸ gated
                         │
-                        ├──► Stage 2 ──► Stage 6.1 (APTED)
-                        ├──► Stage 3 (independent; v0.8-stall filler)
-                        └──► Stage 5
-Stage 4 ──► Stage 6.2 (dead branches)
-v0.8 P2.3 ──► Stage 6.3 (RTA-lite, full-language scope)
+                        ├──► Stage 2 ──► Stage 6.1 (APTED→ZS)   ✅ v0.7.12 / v0.7.16
+                        ├──► Stage 3                            ✅ v0.7.13
+                        └──► Stage 5                            ✅ v0.7.15
+Stage 4 ──► Stage 6.2 (dead branches)                  ✅ v0.7.14 / v0.7.17
+v0.8 P2.3 ──► Stage 6.3 RTA-full scope                 ⏸ (Python-exact core ✅ v0.7.18)
 ```
 
 ---

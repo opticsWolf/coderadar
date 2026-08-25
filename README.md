@@ -18,6 +18,7 @@ CodeGraph pioneered the semantic code graph for agents — CodeRadar builds on t
 | Capability | CodeGraph | CodeRadar |
 |-----------|-----------|-----------|
 | **Mutate code** | ❌ Read-only | ✅ AST-aware body replacement, indent preservation, WriteGuard safety |
+| **Static analysis suite** | ❌ | ✅ Dead-code detection with confidence tiers, Type-1–3 clone detection with TED verification, scaffolding/secrets scan, CFG metrics, harmonic centrality |
 | **Temporal queries** | ❌ | ✅ Macrame bitemporal DB — query the graph as it existed at any point in time |
 | **Rewrite safety** | ❌ | ✅ Dry-run mutation plans, stale-write rejection, automatic rollback on tainted updates |
 | **Semantic fallback resolution** | ❌ | ✅ L4 embedding-based resolution when structural resolution fails |
@@ -241,6 +242,44 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
 
+## v0.7.18 Feature Highlights — the fossil-mcp port
+
+v0.7.3 through v0.7.18 ported the best of fossil-mcp's detector suite onto CodeRadar's graph
+substrate — re-derived against CodeRadar types, not copied
+(see [`docs/fossil-mcp-improvement-plan.md`](docs/fossil-mcp-improvement-plan.md)). Every stage
+shipped as an independently demoable increment with golden tests written the same day:
+
+- **Integrity hotfixes (Track H, v0.7.3–7).** `replace_body` now validates the file it *wrote*,
+  auto-rolls-back on parse failure, and preserves leading docstrings; mutation status is one
+  truth-sourced enum; build directories (`target/`, `node_modules/`, `dist/`) are default-excluded;
+  smell findings dedupe per entity version.
+- **Confidence scoring + strictness profiles (Stage 0, v0.7.8–10).** A single scoring module
+  (tiers Certain→Speculative, `combine()`, tier bands) backs every detector; closed 3-level
+  strictness profiles multiply baselines inside the smell engine.
+- **Dead-code detection (Stage 1, v0.7.11).** Entry-point ladder (mains, framework decorators,
+  dunder protocol methods, public API of unimported modules) → forward reachability → classifier.
+  Findings carry kind (`unreachable` | `transitively-dead` | `test-only`), confidence tier,
+  and removable line counts via `codegraph_dead_code` / `find_dead_code()`.
+- **Token-level clone detection (Stages 2+6.1, v0.7.12/16).** Normalized token streams → MinHash
+  + banded LSH → Type-1/2/3 funnel with union-find; candidate pairs verified by exact
+  Zhang–Shasha tree-edit distance (~150 LOC where fossil's APTED path decomposition is 1,200).
+  Rename-blind trees mean TED refines scores rather than rejecting them.
+- **Scaffolding & secrets scanner (Stage 3, v0.7.13).** Declarative detector tables for AI-generated
+  boilerplate plus a secrets scanner — pure Rust, no graph dependency.
+- **Structured CFG metrics (Stages 4+6.2, v0.7.14/17).** Synthesis CFG with typed edges; cyclomatic
+  = E−N+2 over the reachable subgraph; unreachable-block collection; a tri-state literal evaluator
+  powers a `dead-branch` rule. All behind `analysis.use_cfg_metrics` (default off) with honest
+  degradation when signal is absent.
+- **Harmonic centrality (Stage 5, v0.7.15).** Revision-keyed cached centrality over upstream BFS;
+  god-class/brain-method findings gain a normalized centrality signal; `affected()` ranks each
+  depth group by centrality and star-marks the top three.
+- **RTA-lite dispatch sharpening (Stage 6.3, v0.7.18).** Overrides whose ONLY liveness is virtual
+  dispatch on a class never constructed in the indexed root are re-flagged as `rta-dead` — the
+  weakest evidence tier, never demoting anything the base detector calls live. Python-exact scope
+  until real constructor resolution lands.
+
+The smell engine grew from 9 to 12 rules; Rust lib tests from ~250 to 303; Python tests past 519.
+
 ## v0.7.2 Feature Highlights
 
 - **Runtime project switching** — the new `codegraph_set_project` MCP tool
@@ -449,8 +488,15 @@ core_indexer/              # Rust core
     mutation/              # AST-aware refactoring (rope, indent, unified diffs, WriteGuard)
     fs/                    # File watcher (notify) + git integration
     graph/                 # In-memory ProjectedGraph, parallel extraction, reverse indexes,
-                           #   call/import/inheritance resolution, traversal, persistence
-    smells/                # Native code-smell engine (metrics pass, 9 rules, engine, registry)
+                           #   call/import/inheritance resolution, traversal, persistence,
+                           #   dead-code reachability + RTA-lite (deadcode/, rta_lite.rs),
+                           #   structured CFG (cfg.rs), harmonic centrality (centrality.rs)
+    clones/                # Token-level clone detection: normalized tokens, MinHash + banded
+                           #   LSH, Type-1/2/3 funnel, Zhang–Shasha TED verification (apted.rs)
+    scaffold/              # AI-scaffolding detector tables + secrets scanner
+    smells/                # Native code-smell engine (metrics pass, 12 rules incl. dead-code /
+                           #   dead-branch / intra-dead-statements, engine, registry,
+                           #   strictness profiles, tri-state const evaluator)
     storage.rs             # Macrame concept/edge persistence
     lib.rs                 # PyO3 FFI bindings
 
@@ -461,7 +507,7 @@ py_agent/src/coderadar/    # Python layer
     lsp/                   # Persistent LSP warm pool
     mutation/              # Tool router for LLM
     mcp/                   # MCP server
-      server.py            #   19 tools + guidance
+      server.py            #   22 tools + guidance
       roots.py             #   project-root ladder and marker walk-up
       startup.py           #   background index, ensure_ready()
       lazy.py              #   roots/list retry on the first tool call
@@ -470,7 +516,8 @@ py_agent/src/coderadar/    # Python layer
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Specifications + code review + performance roadmap
-tests/                     # 633 Python tests (E2E, mutation E2E, MCP, smells,
+tests/                     # 650+ Python tests (E2E incl. dead-code/clones/scaffold/CFG/
+                           #   centrality/dead-branch/RTA goldens, mutation E2E, MCP,
                            #   framework resolvers, ingest parity, benchmarks)
   mcp/                     # Root resolution, background init, lifecycle, project_path
 ```
