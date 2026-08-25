@@ -14,6 +14,7 @@
 // bodies; the store is an in-memory CACHE (plan §4 principle 9), never a
 // second source of truth.
 
+pub mod apted;
 pub mod lsh_index;
 pub mod minhash;
 pub mod tokens;
@@ -58,7 +59,8 @@ pub struct CloneInstance {
 #[derive(Clone, Debug)]
 pub struct CloneGroup {
     pub clone_type: CloneType,
-    /// 1.0 for Types 1–2; true shingle Jaccard for Type-3.
+    /// 1.0 for Types 1–2; for Type-3: average pairwise similarity — TED
+    /// where both trees verified, shingle Jaccard otherwise.
     pub similarity: f64,
     pub instances: Vec<CloneInstance>,
     pub confidence_tier: Tier,
@@ -88,6 +90,11 @@ struct Fp {
     shingles: std::collections::HashSet<u64>,
 }
 
+/// Verification threshold (plan §11.1): candidate pairs at or above this
+/// shingle Jaccard get a second opinion from exact ordered tree-edit
+/// distance, which sees statement order that bag-of-shingles misses.
+const TED_VERIFY_FLOOR: f64 = 0.85;
+
 fn xxh_tokens(tokens: &[u32]) -> u64 {
     let mut buf = Vec::with_capacity(tokens.len() * 4);
     for t in tokens {
@@ -111,10 +118,20 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
         paths.insert(mid, m.path.to_string_lossy().to_string());
     }
 
-    // Fingerprint pass (memoized by content_hash within this run).
-    let mut memo: HashMap<u64, (u64, u64, Arc<MinHash>, Arc<std::collections::HashSet<u64>>)> =
-        HashMap::new();
+    // Fingerprint pass (memoized by content_hash within this run). The tree
+    // memo shares the key: `None` = unverifiable (parse failure or size cap).
+    let mut memo: HashMap<
+        u64,
+        (
+            u64,
+            u64,
+            Arc<MinHash>,
+            Arc<std::collections::HashSet<u64>>,
+            Arc<Option<apted::LabeledTree>>,
+        ),
+    > = HashMap::new();
     let mut fps: Vec<Fp> = Vec::new();
+    let mut trees: HashMap<EntityId, Arc<Option<apted::LabeledTree>>> = HashMap::new();
     let mut assigned: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
 
     for (id, f) in &graph.functions {
@@ -129,7 +146,8 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
         }
         let lang = languages.get(&f.parent_module).copied().unwrap_or(Language::Python);
 
-        let (raw_hash, norm_hash, sig, shingle_set) = match memo.get(&f.content_hash) {
+        let (raw_hash, norm_hash, sig, shingle_set, struct_tree) = match memo.get(&f.content_hash)
+        {
             Some(hit) => hit.clone(),
             None => {
                 let raw = tokenize_body(body, lang, Mode::Raw);
@@ -139,11 +157,14 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
                 let shingle_set: std::collections::HashSet<u64> =
                     tokens::shingles(&norm, SHINGLE_K).collect();
                 let sig = MinHash::of(shingle_set.iter().copied());
-                let hit = (rh, nh, Arc::new(sig), Arc::new(shingle_set));
+                let t = Arc::new(apted::structural_tree(src, lang, f.body_span));
+                let hit = (rh, nh, Arc::new(sig), Arc::new(shingle_set), t);
                 memo.insert(f.content_hash, hit.clone());
                 hit
             }
         };
+
+        trees.insert(id.clone(), Arc::clone(&struct_tree));
 
         fps.push(Fp {
             entity_id: id.clone(),
@@ -222,12 +243,32 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
     }
     for (a, b) in lsh.candidate_pairs() {
         // Union-find operates in SLOT space; fps indexes come after mapping.
-        let sim = jaccard(&fps[slot_index(a)].shingles, &fps[slot_index(b)].shingles);
+        let ia = slot_index(a);
+        let ib = slot_index(b);
+        let sim = jaccard(&fps[ia].shingles, &fps[ib].shingles);
         if sim >= options.min_similarity {
-            let ra = find(&mut uf, a as usize);
-            let rb = find(&mut uf, b as usize);
-            if ra != rb {
-                uf[ra] = rb;
+            // Stage 6.1 verification: strong shingle candidates must also
+            // survive ordered TED. Unverifiable trees (no parser / over cap)
+            // fall back to trusting the shingles — never guess.
+            let verified = if sim >= TED_VERIFY_FLOOR {
+                match (
+                    trees.get(&fps[ia].entity_id).and_then(|t| (**t).as_ref()),
+                    trees.get(&fps[ib].entity_id).and_then(|t| (**t).as_ref()),
+                ) {
+                    (Some(ta), Some(tb)) => {
+                        apted::apted_similarity(ta, tb) >= options.min_similarity
+                    }
+                    _ => true,
+                }
+            } else {
+                true
+            };
+            if verified {
+                let ra = find(&mut uf, a as usize);
+                let rb = find(&mut uf, b as usize);
+                if ra != rb {
+                    uf[ra] = rb;
+                }
             }
         }
     }
@@ -239,12 +280,26 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
         if members.len() < 2 {
             continue;
         }
-        // Group similarity: average of pairwise true Jaccard.
+        // Group similarity: average of pairwise scores. Where both trees
+        // verify (Stage 6.1), TED similarity is the more honest number;
+        // otherwise the shingle Jaccard stands.
         let mut sum = 0.0;
         let mut pairs = 0usize;
         for x in 0..members.len() {
             for y in x + 1..members.len() {
-                sum += jaccard(&fps[members[x]].shingles, &fps[members[y]].shingles);
+                let ja = jaccard(&fps[members[x]].shingles, &fps[members[y]].shingles);
+                let score = if ja >= TED_VERIFY_FLOOR {
+                    match (
+                        trees.get(&fps[members[x]].entity_id).and_then(|t| (**t).as_ref()),
+                        trees.get(&fps[members[y]].entity_id).and_then(|t| (**t).as_ref()),
+                    ) {
+                        (Some(ta), Some(tb)) => apted::apted_similarity(ta, tb),
+                        _ => ja,
+                    }
+                } else {
+                    ja
+                };
+                sum += score;
                 pairs += 1;
             }
         }
@@ -327,6 +382,91 @@ mod tests {
         idx.insert(1, sig.clone());
         let pairs = idx.candidate_pairs();
         assert!(pairs.contains(&(0, 1)), "identical signatures must collide");
+    }
+
+    #[test]
+    fn layer_c_ted_verification_upgrades_similarity() {
+        let dir = tempfile::tempdir().unwrap();
+        // extended appends ONE extra statement to a long pipeline: the
+        // normalized stream differs (so Types 1–2 cannot claim it), but the
+        // token multiset barely moves, so shingle Jaccard clears the 0.85
+        // verification floor and the pair rides into Layer C.
+        let stmts: Vec<String> = (0..12)
+            .map(|i| format!("    total = stage_{i}(total, x)"))
+            .collect();
+        let body_of = |extra: bool| {
+            let mut v = stmts.clone();
+            if extra {
+                v.insert(6, "    total = audit_extra(total)".into());
+            }
+            format!("    total = 0
+{}
+    return finish(total)
+", v.join("
+"))
+        };
+        let src = format!(
+            "def plain(x):
+{}
+def extended(x):
+{}",
+            body_of(false),
+            body_of(true)
+        );
+        let src_path = dir.path().join("pipes.py");
+        std::fs::write(&src_path, &src).unwrap();
+
+        let mut g = crate::smells::engine::tests::empty_graph();
+        let mut module = mk_module("pipes.py::module", &src_path);
+        module.language = Language::Python;
+        g.modules.insert("pipes.py::module".into(), Arc::new(module));
+
+        // body_span covers the BODY ONLY (after the signature line) —
+        // matching real extraction.
+        let span_of = |name: &str| {
+            let start = src.find(&format!("def {name}")).unwrap();
+            let colon = src[start..].find(":
+").map(|rel| start + rel + 2).unwrap();
+            let end = src[colon..]
+                .find("
+def ")
+                .map(|rel| colon + rel)
+                .unwrap_or(src.len());
+            ByteSpan { start: colon, end }
+        };
+        for name in ["plain", "extended"] {
+            let mut f = func_fp(name);
+            f.id = format!("pipes.py::{name}");
+            f.parent_module = "pipes.py::module".into();
+            f.body_span = span_of(name);
+            f.line = 1;
+            f.exit_line = 20; // long enough to clear min_lines
+            f.content_hash = xxhash_rust::xxh3::xxh3_64(name.as_bytes());
+            g.functions.insert(format!("pipes.py::{name}"), Arc::new(f));
+        }
+
+        let groups =
+            detect_clones(&g, CloneOptions { min_lines: 10, min_similarity: 0.8 });
+        let t3: Vec<_> = groups
+            .iter()
+            .filter(|grp| grp.clone_type == CloneType::Type3)
+            .collect();
+        assert_eq!(
+            t3.len(),
+            1,
+            "plain vs extended must form exactly one Type-3 group, got {groups:?}"
+        );
+
+        // Both trees parse here and shingle Jaccard clears the 0.85 floor,
+        // so the group similarity must be the TED value: below 1.0 (the
+        // extra statement is real structural divergence) but above the
+        // acceptance floor.
+        let sim = t3[0].similarity;
+        assert!(
+            (0.8..1.0).contains(&sim),
+            "TED must refine the estimate below exact equality, got {sim}"
+        );
+        assert_eq!(t3[0].instances.len(), 2);
     }
 
     #[test]
