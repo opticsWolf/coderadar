@@ -1174,6 +1174,37 @@ class TestMutationTools:
         assert "Mutation Applied" in result
         assert "test.py" in result
 
+    def test_format_mutation_rejected_does_not_claim_applied(self):
+        # Regression: CODERADAR_BUGS_QUIRKS.md #2 — a RejectedPolicy response
+        # used to carry the header "## Mutation Applied" plus "Graph has been
+        # updated" while the file was untouched. Header, state claims, and
+        # status must all derive from one source now.
+        from coderadar.mcp.server import _format_mutation_applied
+        from coderadar import MutationResult
+        rejected = MutationResult(
+            status="RejectedPolicy",
+            files_written=[],
+            syntax_errors=[{
+                "file": "t.py", "line": 0, "column": 0,
+                "message": "policy rejected the plan — deny-listed path",
+            }],
+        )
+        out = _format_mutation_applied(rejected)
+        assert "Rejected" in out
+        assert "## Mutation Applied" not in out
+        assert "Graph has been updated" not in out
+        assert "**File written:** no" in out
+        assert "**Graph updated:** no" in out
+
+    def test_format_mutation_stale_explains_recovery(self):
+        from coderadar.mcp.server import _format_mutation_applied
+        from coderadar import MutationResult
+        stale = MutationResult(status="RejectedStale", files_written=[], syntax_errors=[])
+        out = _format_mutation_applied(stale)
+        assert "Stale" in out
+        assert "plan tool again" in out
+        assert "Graph has been updated" not in out
+
 
 class TestReindexUpdateFile:
     """codegraph_reindex and codegraph_update_file backends."""

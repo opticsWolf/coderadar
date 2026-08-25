@@ -2061,17 +2061,53 @@ def _format_mutation_plan(plan: Any) -> str:
 
 
 def _format_mutation_applied(result: Any, unverified_sites: list | None = None) -> str:
-    """Format a MutationResult after application."""
-    lines = ["## Mutation Applied", ""]
-    lines.append(f"- **Status:** {result.status}")
-    if result.files_written:
-        lines.append(f"- **Files written:** {len(result.files_written)}")
-        for f in result.files_written:
+    """Format a MutationResult — truthfully, whatever the outcome.
+
+    BUGS_QUIRKS #2: this used to print "## Mutation Applied" and "Graph has
+    been updated" even for rejections, while a separate status line said
+    RejectedPolicy and the file was untouched. The header, the state claims,
+    and the status now derive from one source: result.status.
+    """
+    status = str(getattr(result, "status", ""))
+    files_written = list(getattr(result, "files_written", []) or [])
+    applied = status == "Applied"
+
+    header = {
+        "Applied": "## Mutation Applied",
+        "RolledBack": "## Mutation Rolled Back",
+        "RejectedStale": "## Mutation Rejected — Stale",
+        "RejectedPolicy": "## Mutation Rejected — Policy",
+    }.get(status, f"## Mutation Result — {status or 'Unknown'}")
+
+    lines = [header, ""]
+    lines.append(f"- **Status:** {status}")
+    lines.append(f"- **File written:** {'yes' if files_written else 'no'}")
+    lines.append(
+        f"- **Graph updated:** {'yes' if applied else 'no — nothing changed'}"
+    )
+    if files_written:
+        lines.append(f"- **Files written:** {len(files_written)}")
+        for f in files_written:
             lines.append(f"  - `{f}`")
     if result.syntax_errors:
         lines.append(f"- **Syntax errors:** {len(result.syntax_errors)}")
-    if result.backup_path:
+        for e in result.syntax_errors[:5]:
+            if isinstance(e, dict):
+                where = f"{e.get('file', '?')}:{e.get('line', 0)}:{e.get('column', 0)}"
+                lines.append(f"  - `{where}` — {e.get('message', '')}")
+            else:
+                lines.append(f"  - {e}")
+    if getattr(result, "backup_path", None):
         lines.append(f"- **Backup:** `{result.backup_path}`")
+    if not applied:
+        lines.append("")
+        if status == "RejectedStale":
+            lines.append(
+                "The file changed since planning — call the plan tool again to "
+                "re-read the current content, then apply the fresh plan."
+            )
+        else:
+            lines.append("No changes were kept. Address the reason above and re-plan.")
     if unverified_sites:
         lines.append("")
         lines.append(
@@ -2080,8 +2116,6 @@ def _format_mutation_applied(result: Any, unverified_sites: list | None = None) 
         )
         for site in unverified_sites[:10]:
             lines.append(f"- `{site}`")
-    lines.append("")
-    lines.append("Graph has been updated — subsequent queries will reflect the change.")
     return "\n".join(lines)
 
 
