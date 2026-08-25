@@ -1,6 +1,7 @@
 // CodeRadar v3.6 — Rust Core Library
 // PyO3 bindings for the Python layer (MCP server, CLI, resolvers).
 
+pub mod clones;
 pub mod extract;
 pub mod fs;
 pub mod graph;
@@ -17,7 +18,7 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyList};
 
 use crate::graph::CodeGraph;
 use crate::graph::ImportGraph;
@@ -56,6 +57,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(index_edge_stats, m)?)?;
     m.add_function(wrap_pyfunction!(get_smells, m)?)?;
     m.add_function(wrap_pyfunction!(find_dead_code, m)?)?;
+    m.add_function(wrap_pyfunction!(find_clones, m)?)?;
     m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
@@ -1769,6 +1771,53 @@ fn find_dead_code(
             if let Some(name) = entity_name_of(&f.entity_id, &snap) {
                 dict.set_item("entity_name", name)?;
             }
+            results.push(dict.into());
+        }
+        Ok(results)
+    })
+}
+
+/// Token-level clone groups (Types 1–3) across the indexed codebase.
+///
+/// Stage 2 — parameter names mirror fossil's `detect_clones` so agent prompts
+/// migrate trivially. Type-1 = identical bodies, Type-2 = renamed
+/// identifiers/literals, Type-3 = true shingle Jaccard ≥ `min_similarity`
+/// over LSH candidates only.
+#[pyfunction]
+#[pyo3(signature = (min_lines=10, min_similarity=0.8, max_groups=100))]
+fn find_clones(
+    py: Python<'_>,
+    min_lines: usize,
+    min_similarity: f64,
+    max_groups: usize,
+) -> PyResult<Vec<PyObject>> {
+    if !(0.0..=1.0).contains(&min_similarity) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "min_similarity must be in [0.0, 1.0]",
+        ));
+    }
+    with_graph_snapshot(|snap| {
+        let snap_owned: Arc<ProjectedGraph> = snap.clone();
+        let options = crate::clones::CloneOptions { min_lines, min_similarity };
+        let groups =
+            py.allow_threads(move || crate::clones::detect_clones(&snap_owned, options));
+
+        let mut results = Vec::new();
+        for g in groups.iter().take(max_groups) {
+            let dict = PyDict::new(py);
+            dict.set_item("clone_type", g.clone_type.as_str())?;
+            dict.set_item("similarity", g.similarity)?;
+            dict.set_item("confidence_tier", g.confidence_tier.as_str())?;
+
+            let instances: Vec<PyObject> = g.instances.iter().map(|inst| {
+                let d = PyDict::new(py);
+                let _ = d.set_item("entity_id", &inst.entity_id);
+                let _ = d.set_item("file", &inst.file);
+                let _ = d.set_item("span_start", inst.span.start);
+                let _ = d.set_item("span_end", inst.span.end);
+                d.into()
+            }).collect();
+            dict.set_item("instances", PyList::new(py, &instances)?)?;
             results.push(dict.into());
         }
         Ok(results)

@@ -92,6 +92,7 @@ more for the same answer.
 - `codegraph_traverse` — generic edge traversal with direction and depth control
 - `codegraph_get_smells` — detect architectural code smells (god-class, long-method, long-parameter-list, deep-nesting, data-class, high-cyclomatic-complexity, brain-method, excessive-returns, too-many-fields)
 - `codegraph_dead_code` — find functions unreachable from any entry point, ranked by deletability (kind, tier, confidence, removable lines)
+- `codegraph_find_clones` — token-level clone detection (Types 1-3): identical bodies, renamed bodies, near-duplicates above a similarity floor
 
 ## Mutation pipeline (LLM-writable code)
 
@@ -553,6 +554,38 @@ def create_server(graph: Any) -> MCPServer:
             return mismatch
 
         return _dead_code(graph, min_confidence, include_test_reachable, max_findings)
+
+    # ── codegraph_find_clones — token-level clone detection ───────────
+
+    @mcp.tool(
+        description=(
+            "Detect syntactic code clones (Types 1-3): identical bodies, "
+            "renamed bodies, and near-duplicates above a similarity floor. "
+            "Each group lists its instances (entity_id, file, byte span) with "
+            "a confidence tier; groups are ranked largest first. Type-4 "
+            "(semantic-only) similarity is covered by codegraph_search_similar. "
+            "min_lines filters trivially short bodies; min_similarity applies "
+            "to Type-3 candidates."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def codegraph_find_clones(
+        project_path: Optional[str] = None,
+        min_lines: int = 10,
+        min_similarity: float = 0.8,
+        max_groups: int = 100,
+    ) -> str:
+        """Find duplicated code across the indexed codebase."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _find_clones(graph, min_lines, min_similarity, max_groups)
 
     # ── coderadar_replace_body ────────────────────────────────────
 
@@ -1765,6 +1798,54 @@ def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
             lines.append(f"`{name}` — not found at {timestamp}")
         lines.append("")
 
+    return "\n".join(lines)
+
+
+def _find_clones(
+    graph: Any,
+    min_lines: int = 10,
+    min_similarity: float = 0.8,
+    max_groups: int = 100,
+) -> str:
+    """Run clone detection and render groups ranked by size."""
+    try:
+        from coderadar._core import find_clones as _find_clones_rust, graph_stats
+        stats = graph_stats()
+        if stats.get("functions", 0) == 0:
+            return _no_index_message()
+    except ImportError:
+        return NO_EXTENSION_MESSAGE
+    except RuntimeError:
+        return _no_index_message()
+
+    try:
+        groups = _find_clones_rust(min_lines, min_similarity, max_groups)
+    except (ValueError, TypeError) as e:
+        return f"Invalid request: {e}"
+    except Exception as e:
+        return f"Clone detection failed: {e}"
+
+    if not groups:
+        return (
+            f"No clone groups found at >= {min_similarity:.2f} similarity and "
+            f">= {min_lines} lines. Clean result — not an indexing failure."
+        )
+
+    lines = [f"## Clone Groups — {len(groups)} group(s)", ""]
+    for gi, g in enumerate(groups, 1):
+        lines.append(
+            f"### Group {gi} — {g['clone_type']}, similarity {g['similarity']:.2f}, "
+            f"{g['confidence_tier']}"
+        )
+        for inst in g["instances"]:
+            lines.append(
+                f"- `{inst['entity_id']}` ({inst['file']} @ bytes "
+                f"{inst['span_start']}..{inst['span_end']})"
+            )
+        lines.append("")
+    lines.append(
+        "Consider extracting shared logic; verify each pair with `explore` before refactoring."
+    )
     return "\n".join(lines)
 
 
