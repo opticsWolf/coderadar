@@ -31,6 +31,7 @@ impl SmellEngine {
                 Box::new(super::rules::too_many_fields::TooManyFields::default()),
                 Box::new(super::rules::dead_code::DeadCode),
                 Box::new(super::rules::intra_dead_statements::IntraDeadStatements),
+                Box::new(super::rules::dead_branch::DeadBranch),
             ],
         }
     }
@@ -74,7 +75,7 @@ impl SmellEngine {
         // the intra-dead-statements rule. Cached per content_hash per run;
         // bodies that don't parse degrade silently to the AST numbers.
         let use_cfg = crate::active_config().analysis.use_cfg_metrics;
-        let mut cfg_cache: HashMap<u64, Option<(usize, usize)>> = HashMap::new();
+        let mut cfg_cache: HashMap<u64, Option<CfgFacts>> = HashMap::new();
         if let Some(rules) = rules_by_scope.get(&Scope::Method) {
             for (id, f) in &graph.functions {
                 let mut metrics = metrics_for_function(f);
@@ -82,9 +83,17 @@ impl SmellEngine {
                     let refined = cfg_cache.entry(f.content_hash).or_insert_with(|| {
                         refine_with_cfg(graph, f)
                     });
-                    if let Some((cyclo, dead)) = refined {
-                        metrics.insert("cyclomatic".to_string(), *cyclo as f64);
-                        metrics.insert("unreachable_blocks".to_string(), *dead as f64);
+                    if let Some(facts) = refined {
+                        metrics.insert("cyclomatic".to_string(), facts.cyclomatic as f64);
+                        metrics.insert(
+                            "unreachable_blocks".to_string(),
+                            facts.unreachable_blocks as f64,
+                        );
+                        // Stage 6.2: statically-decided conditions ride the
+                        // same parse; absent = nothing decided (no signal).
+                        if let Some(n) = facts.dead_branches {
+                            metrics.insert("dead_branches".to_string(), n as f64);
+                        }
                     }
                 }
                 let ctx = EvalContext {
@@ -407,10 +416,18 @@ pub(crate) mod tests {
 /// Stage 4 helper: build a CFG for `f` and return (cyclomatic, unreachable
 /// blocks), or None when the body can't be located/parsed — the strangler's
 /// silent fallback to AST numbers.
+/// Stage 4/6.2 facts derived from one parsed function body.
+pub(crate) struct CfgFacts {
+    cyclomatic: usize,
+    unreachable_blocks: usize,
+    /// Count of statically-decided conditions; `None` = none found.
+    dead_branches: Option<usize>,
+}
+
 fn refine_with_cfg(
     graph: &crate::types::ProjectedGraph,
     f: &crate::types::Function,
-) -> Option<(usize, usize)> {
+) -> Option<CfgFacts> {
     let module = graph.modules.get(&f.parent_module)?;
     let src = std::fs::read_to_string(&module.path).ok()?;
     let ts_lang = crate::graph::CodeGraph::ts_language(&module.language)?;
@@ -422,7 +439,13 @@ fn refine_with_cfg(
     let tree = parser.parse(&src, None)?;
     let target = find_node_at_span(tree.root_node(), f.body_span)?;
     let cfg = crate::graph::cfg::ControlFlowGraph::build(&f.id, target, src.as_bytes());
-    Some((cfg.cyclomatic(), cfg.unreachable_blocks().len()))
+    let dead_branches =
+        crate::smells::const_eval::count_decided_conditions(target, &src);
+    Some(CfgFacts {
+        cyclomatic: cfg.cyclomatic(),
+        unreachable_blocks: cfg.unreachable_blocks().len(),
+        dead_branches,
+    })
 }
 
 /// Deepest node whose byte range equals `span` exactly.

@@ -4,6 +4,7 @@ pub mod dead_code;
 pub mod deep_nesting;
 pub mod excessive_returns;
 pub mod god_class;
+pub mod dead_branch;
 pub mod intra_dead_statements;
 pub mod high_cyclomatic_complexity;
 pub mod long_method;

@@ -18,6 +18,7 @@
 // signals (LOC, param_count, field_count) are computed on the fly in
 // `engine.rs` from the resolved graph — no re-parse of source is required.
 
+pub mod const_eval;
 pub mod engine;
 pub mod metrics;
 pub mod profile;

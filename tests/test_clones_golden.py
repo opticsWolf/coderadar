@@ -63,12 +63,13 @@ class TestClonesGolden:
 class TestTedVerification:
     """Stage 6.1: strong shingle candidates get exact ordered-TED verification.
 
-    Honest scope note: with kind-labeled rename-blind trees, reordering
-    same-kind assignments is structurally identical (TED sim 1.0) — the
-    verifier UPDATES the similarity upward instead of rejecting. Rejection
-    requires genuine structural divergence, which bag-of-shingles almost
-    never scores at 0.85+ in the first place; that path is pinned by the
-    Rust-level apted unit tests instead.
+    Honest scope note: kind-labeled rename-blind trees make same-kind
+    statement reordering cheap for TED, so strong candidates are usually
+    CONFIRMED with a refined score rather than rejected; outright rejection
+    requires structural divergence big enough that bag-of-shingles rarely
+    proposes the pair at all. Score REFINEMENT is the observable win: this
+    golden pins a pair whose shingle similarity is a misleading 1.0 being
+    corrected to the true structural value.
     """
 
     @pytest.fixture(autouse=True)
@@ -119,7 +120,11 @@ class TestTedVerification:
         assert len(hits) == 1, "LSH must surface the swapped pipe pair"
         g = hits[0]
         assert g["clone_type"] == "type-3"
-        # Swapping assignments changes nothing in the kind-labeled
-        # structural tree: TED correctly reports exact structural equality,
-        # upgrading the shingle estimate (< 1.0) to ground truth.
-        assert g["similarity"] == 1.0
+        # Bag-of-shingles scores this pair at exactly 1.0 (its shingle sets
+        # coincide under the swap) - the blind spot that motivated Stage
+        # 6.1. Kind-labeled TED sees the two argument-count changes and
+        # refines the score below exact equality while keeping the pair.
+        assert 0.8 <= g["similarity"] < 1.0, (
+            f"TED must refine the shingle estimate down, got {g['similarity']}"
+        )
+
