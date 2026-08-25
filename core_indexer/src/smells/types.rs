@@ -54,4 +54,22 @@ pub struct EvalContext<'a> {
     pub entity_name: &'a str,
     pub metrics: &'a HashMap<String, f64>,
     pub graph: &'a ProjectedGraph,
+    /// Precomputed whole-graph analyses, computed once per engine run
+    /// (Stage 0.2). `None` fields mean "not computed this run" — a rule that
+    /// needs one must degrade honestly (skip or downweight), never guess.
+    pub analyses: GraphAnalyses<'a>,
+}
+
+/// Whole-graph analyses computed once per engine run and shared by all rules.
+/// Computing reachability or centrality inside a rule's `evaluate()` would be
+/// O(rules × V+E); these are shared by reference instead. Default is empty —
+/// cheap runs skip expensive analyses.
+#[derive(Clone, Copy, Default)]
+pub struct GraphAnalyses<'a> {
+    /// EntityIds reachable from any production entry point (Stage 1).
+    pub reachable: Option<&'a std::collections::HashSet<crate::types::EntityId>>,
+    /// Entry points detected for the current run (Stage 1).
+    pub entry_points: Option<&'a std::collections::HashSet<crate::types::EntityId>>,
+    /// PageRank-style centrality scores, normalized 0..=1 (Stage 5).
+    pub centrality: Option<&'a std::collections::HashMap<crate::types::EntityId, f64>>,
 }

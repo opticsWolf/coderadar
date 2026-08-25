@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use crate::types::{Class, EntityId, Function, ProjectedGraph, ResolvedCall};
 
 use super::rule::SmellRule;
-use super::types::{EvalContext, Finding, Scope};
+use super::types::{EvalContext, Finding, GraphAnalyses, Scope};
 
 /// Orchestrates rule evaluation over the resolved `ProjectedGraph`.
 pub struct SmellEngine {
@@ -47,6 +47,11 @@ impl SmellEngine {
             rules_by_scope.entry(rule.scope()).or_default().push(rule);
         }
 
+        // Whole-graph analyses, computed once per run and shared by every
+        // rule (Stage 0.2). Stages 1 and 5 populate the fields; for now they
+        // stay empty so runs stay cheap.
+        let analyses = GraphAnalyses::default();
+
         // Method scope.
         if let Some(rules) = rules_by_scope.get(&Scope::Method) {
             for (id, f) in &graph.functions {
@@ -56,6 +61,7 @@ impl SmellEngine {
                     entity_name: f.name.as_str(),
                     metrics: &metrics,
                     graph,
+                    analyses,
                 };
                 for rule in rules {
                     if let Some(finding) = rule.evaluate(&ctx) {
@@ -77,6 +83,7 @@ impl SmellEngine {
                     entity_name: c.name.as_str(),
                     metrics: &metrics,
                     graph,
+                    analyses,
                 };
                 for rule in rules {
                     if let Some(finding) = rule.evaluate(&ctx) {
@@ -219,7 +226,7 @@ mod tests {
 
     use crate::smells::engine::SmellEngine;
     use crate::smells::rule::SmellRule;
-    use crate::smells::types::{EvalContext, Severity};
+    use crate::smells::types::{EvalContext, GraphAnalyses, Severity};
     use crate::types::ProjectedGraph;
 
     fn empty_graph() -> ProjectedGraph {
@@ -249,7 +256,7 @@ mod tests {
         name: &'a str,
         metrics: &'a HashMap<String, f64>,
     ) -> EvalContext<'a> {
-        EvalContext { entity_id: id, entity_name: name, metrics, graph }
+        EvalContext { entity_id: id, entity_name: name, metrics, graph, analyses: GraphAnalyses::default() }
     }
 
     #[test]
