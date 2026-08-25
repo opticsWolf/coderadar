@@ -60,3 +60,35 @@ class TestSmellEngine:
         assert findings  # sanity: indexed and smells exist
         by_entity = [f for f in findings if f["entity_name"] == "too_many_params"]
         assert by_entity, "expected a finding attributed to too_many_params"
+
+
+@pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+class TestFindingDedupe:
+    """G0-B (CODERADAR_BUGS_QUIRKS.md #9): one finding per entity per rule.
+
+    Stale + fresh entity versions used to coexist after incremental updates,
+    reporting the same violation two or three times.
+    """
+
+    def test_no_duplicate_findings_across_edit_cycle(self, tmp_path):
+        from coderadar._core import analyze, get_smells, update_file
+
+        body = "\n".join(f"    x{i} = {i}" for i in range(60))
+        src = tmp_path / "big.py"
+        src.write_text(f"def huge():\n{body}\n    return x0\n", encoding="utf-8")
+
+        analyze(str(tmp_path))
+        findings = [f for f in get_smells(None, "long-method") if "huge" in f["entity_id"]]
+        assert len(findings) >= 1, "fixture must trigger long-method"
+        assert len(findings) == 1, f"exactly one finding expected, got {len(findings)}"
+
+        # Edit cycle: rewrite the function body, re-index incrementally.
+        src.write_text(f"def huge():\n{body}\n    return x1\n", encoding="utf-8")
+        update_file(str(src), None, None)
+
+        findings_after = [
+            f for f in get_smells(None, "long-method") if "huge" in f["entity_id"]
+        ]
+        assert len(findings_after) == 1, (
+            f"edit cycle must not duplicate findings, got {len(findings_after)}"
+        )

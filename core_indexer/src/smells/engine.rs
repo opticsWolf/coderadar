@@ -34,6 +34,11 @@ impl SmellEngine {
 
     /// Run all rules over the graph. Rules are grouped by scope so the graph
     /// is iterated once per scope, not once per rule.
+    ///
+    /// Findings are deduplicated to one per (rule, entity) — stale + fresh
+    /// versions of an entity can coexist in a snapshot under ID variants
+    /// (different path prefixes or separators), which used to report the
+    /// same violation two or three times (CODERADAR_BUGS_QUIRKS.md #9).
     pub fn run(&self, graph: &ProjectedGraph) -> Vec<Finding> {
         let mut findings = Vec::new();
 
@@ -83,8 +88,30 @@ impl SmellEngine {
 
         // File scope — no rules target it yet, but the routing is in place.
 
+        // Dedupe: one finding per (rule, canonical entity identity), first
+        // wins. See the run() doc comment for why this guard exists.
+        let mut seen: HashSet<String> = HashSet::new();
+        findings.retain(|f| seen.insert(finding_key(f)));
+
         findings
     }
+}
+
+/// Canonical dedupe key: `<rule>|<normalized-file>|<symbol>`.
+///
+/// Compares identities, not raw IDs: `.\a\b.py::f`, `./a/b.py::f` and any
+/// absolute-prefix variant of the same entity collapse to one key.
+fn finding_key(f: &Finding) -> String {
+    let (file, sym) = match f.entity_id.rsplit_once("::") {
+        Some((path, sym)) => (path, sym),
+        None => (f.entity_id.as_str(), ""),
+    };
+    let file = file
+        .trim_start_matches("./")
+        .trim_start_matches(".\\")
+        .replace('\\', "/")
+        .to_lowercase();
+    format!("{}|{}|{}", f.rule_id, file, sym)
 }
 
 // ── Metric resolution (Phase 4.1 class-level roll-ups) ─────────────────────
@@ -269,5 +296,27 @@ mod tests {
         let g = empty_graph();
         let engine = SmellEngine::new();
         assert!(engine.run(&g).is_empty());
+    }
+
+    #[test]
+    fn finding_key_collapses_id_variants_of_one_entity() {
+        // BUGS_QUIRKS #9: stale + fresh versions of an entity coexist under
+        // ID variants; the dedupe key must treat them as one.
+        use super::finding_key;
+        use crate::smells::types::Finding;
+        let mk = |entity_id: &str| Finding {
+            rule_id: "long-method".into(),
+            entity_id: entity_id.into(),
+            severity: Severity::High,
+            message: "m".into(),
+            signals: HashMap::new(),
+        };
+        assert_eq!(finding_key(&mk(".\\src\\a.py::f")), finding_key(&mk("./src/a.py::f")));
+        assert_eq!(finding_key(&mk("./SRC/a.py::f")), finding_key(&mk("./src/a.py::f")));
+        assert_ne!(finding_key(&mk("./src/a.py::f")), finding_key(&mk("./src/a.py::g")));
+        assert_ne!(
+            finding_key(&mk("./src/a.py::f")),
+            finding_key(&mk("./src/b.py::f"))
+        );
     }
 }
