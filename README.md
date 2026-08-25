@@ -186,6 +186,16 @@ not assume the cwd is the project:
   connection.
 - **Not outliving the client.** Handshake timeout, parent-process watchdog, and
   teardown when stdin closes.
+- **Tool names are prefixed by the client.** When an MCP client exposes these
+  tools, it typically namespaces them as `<server>_<tool>` — e.g.
+  `coderadar_codegraph_query` or, under a gateway that merges several servers,
+  `codegraph_query`. Call tools by the name the client advertises in its tool
+  list, not the bare names used in this README; a batched script that calls
+  bare `codegraph_*` names will fail with `tool_not_found` even though the
+  server is healthy (CODERADAR_BUGS_QUIRKS.md #10).
+- **Default excludes.** The file walk always skips build output — `target/`,
+  `node_modules/`, `dist/` — on top of `.gitignore` and any `[project] exclude`
+  patterns, so generated artifacts never pollute counts or smells.
 
 ## Language Support
 

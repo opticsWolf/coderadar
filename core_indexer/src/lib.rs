@@ -442,6 +442,14 @@ fn store_path_for(root: &str, db: &graph::DatabaseConfig) -> std::path::PathBuf 
 ///
 /// Empty `roots` walks the whole project — the behaviour every caller had
 /// before the config was wired, and the one a project that does not set
+/// Build directories excluded from the walk by default.
+///
+/// BUGS_QUIRKS closing note: a project whose build output wasn't gitignored
+/// indexed 34 files where 13 were real, polluting counts and smells. These
+/// are always applied on top of `[project] exclude`; they are defaults, not
+/// configuration — pointing `roots` at `target/` explicitly still works.
+const DEFAULT_EXCLUDES: &[&str] = &["target/", "node_modules/", "dist/"];
+
 /// `roots` keeps. `exclude` patterns are gitignore-syntax globs applied on
 /// top of the `.gitignore` rules `ignore` already reads.
 fn project_walk(root: &str, project: &graph::ProjectConfig) -> ignore::Walk {
@@ -454,9 +462,17 @@ fn project_walk(root: &str, project: &graph::ProjectConfig) -> ignore::Walk {
         builder.add(root_path.join(extra));
     }
 
-    if !project.exclude.is_empty() {
+    // User patterns first, then the built-in build-dir defaults — always,
+    // regardless of whether the user configured any of their own.
+    let all_excludes: Vec<&str> = project
+        .exclude
+        .iter()
+        .map(String::as_str)
+        .chain(DEFAULT_EXCLUDES.iter().copied())
+        .collect();
+    if !all_excludes.is_empty() {
         let mut overrides = ignore::overrides::OverrideBuilder::new(root_path);
-        for pattern in &project.exclude {
+        for pattern in &all_excludes {
             // An override without "!" is a whitelist; negating it makes it a
             // skip, which is what `exclude` means.
             if let Err(e) = overrides.add(&format!("!{}", pattern)) {
@@ -2099,4 +2115,65 @@ fn set_module_star_exports_bulk(
     dict.set_item("ok", true)?;
     dict.set_item("applied", applied)?;
     Ok(dict.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::ProjectConfig;
+
+    #[test]
+    fn default_excludes_skip_build_dirs() {
+        // CODERADAR_BUGS_QUIRKS.md closing note: a project whose build output
+        // was not gitignored indexed 34 files where 13 were real. The walk
+        // must skip target/, node_modules/ and dist/ without being told.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("target/debug")).unwrap();
+        std::fs::create_dir_all(dir.path().join("node_modules/left-pad")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/a.py"), "def f():\n    pass\n").unwrap();
+        std::fs::write(dir.path().join("target/gen.rs"), "x = 1;\n").unwrap();
+        std::fs::write(dir.path().join("node_modules/p.js"), "module.exports = 1;\n").unwrap();
+
+        let proj = ProjectConfig::default();
+        let seen: Vec<String> = project_walk(dir.path().to_str().unwrap(), &proj)
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .map(|e| e.path().to_string_lossy().to_string())
+            .collect();
+
+        assert!(seen.iter().any(|p| p.ends_with("a.py")), "source must be walked: {:?}", seen);
+        assert!(
+            !seen.iter().any(|p| p.contains("gen.rs")),
+            "target/ must be excluded by default: {:?}",
+            seen
+        );
+        assert!(
+            !seen.iter().any(|p| p.contains("p.js")),
+            "node_modules/ must be excluded by default: {:?}",
+            seen
+        );
+    }
+
+    #[test]
+    fn user_exclude_patterns_still_apply_on_top() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("vendor")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/a.py"), "def f():\n    pass\n").unwrap();
+        std::fs::write(dir.path().join("vendor/v.py"), "x = 1\n").unwrap();
+
+        let proj = ProjectConfig {
+            exclude: vec!["vendor/".to_string()],
+            ..ProjectConfig::default()
+        };
+        let seen: Vec<String> = project_walk(dir.path().to_str().unwrap(), &proj)
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .map(|e| e.path().to_string_lossy().to_string())
+            .collect();
+
+        assert!(seen.iter().any(|p| p.ends_with("a.py")));
+        assert!(!seen.iter().any(|p| p.contains("v.py")), "{:?}", seen);
+    }
 }

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "coderadar-rs"
-version = "0.7.5"
+version = "0.7.6"
 description = "Live semantic graph of your codebase — incremental, queryable, LLM-writable"
 
 # The architecture is defined by spec v3.3 (see specs/CodeRadar v3.3 Consolidated.md).
