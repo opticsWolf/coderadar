@@ -30,8 +30,10 @@ impl SmellRule for HighCyclomaticComplexity {
     fn evaluate(&self, ctx: &EvalContext) -> Option<Finding> {
         let cyclo = ctx.metrics.get("cyclomatic").copied().unwrap_or(0.0) as usize;
 
-        if cyclo >= self.warning_threshold {
-            let severity = if cyclo >= self.critical_threshold {
+        let warning_limit = ctx.strictness.scale(self.warning_threshold);
+        let critical_limit = ctx.strictness.scale(self.critical_threshold);
+        if cyclo >= warning_limit {
+            let severity = if cyclo >= critical_limit {
                 Severity::Critical
             } else {
                 Severity::High

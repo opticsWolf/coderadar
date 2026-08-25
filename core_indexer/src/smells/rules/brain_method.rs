@@ -35,7 +35,9 @@ impl SmellRule for BrainMethod {
             .unwrap_or(0.0) as usize;
         let wmc = ctx.metrics.get("WMC").copied().unwrap_or(0.0) as usize;
 
-        if max_cyclo >= self.max_method_cyclo_threshold && wmc >= self.min_class_wmc {
+        if max_cyclo >= ctx.strictness.scale(self.max_method_cyclo_threshold)
+            && wmc >= ctx.strictness.scale(self.min_class_wmc)
+        {
             let severity = if max_cyclo >= 30 {
                 Severity::Critical
             } else {

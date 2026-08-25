@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 use crate::types::{Class, EntityId, Function, ProjectedGraph, ResolvedCall};
 
 use super::rule::SmellRule;
+use super::profile::Strictness;
 use super::types::{EvalContext, Finding, GraphAnalyses, Scope};
 
 /// Orchestrates rule evaluation over the resolved `ProjectedGraph`.
@@ -32,14 +33,20 @@ impl SmellEngine {
         }
     }
 
-    /// Run all rules over the graph. Rules are grouped by scope so the graph
-    /// is iterated once per scope, not once per rule.
+    /// Run all rules over the graph at Normal strictness.
+    pub fn run(&self, graph: &ProjectedGraph) -> Vec<Finding> {
+        self.run_with_strictness(graph, Strictness::Normal)
+    }
+
+    /// Run all rules over the graph at the given sensitivity. Rules are
+    /// grouped by scope so the graph is iterated once per scope, not once per
+    /// rule.
     ///
     /// Findings are deduplicated to one per (rule, entity) — stale + fresh
     /// versions of an entity can coexist in a snapshot under ID variants
     /// (different path prefixes or separators), which used to report the
     /// same violation two or three times (CODERADAR_BUGS_QUIRKS.md #9).
-    pub fn run(&self, graph: &ProjectedGraph) -> Vec<Finding> {
+    pub fn run_with_strictness(&self, graph: &ProjectedGraph, strictness: Strictness) -> Vec<Finding> {
         let mut findings = Vec::new();
 
         let mut rules_by_scope: HashMap<Scope, Vec<&Box<dyn SmellRule>>> = HashMap::new();
@@ -61,6 +68,7 @@ impl SmellEngine {
                     entity_name: f.name.as_str(),
                     metrics: &metrics,
                     graph,
+                    strictness,
                     analyses,
                 };
                 for rule in rules {
@@ -83,6 +91,7 @@ impl SmellEngine {
                     entity_name: c.name.as_str(),
                     metrics: &metrics,
                     graph,
+                    strictness,
                     analyses,
                 };
                 for rule in rules {
@@ -226,6 +235,7 @@ mod tests {
 
     use crate::smells::engine::SmellEngine;
     use crate::smells::rule::SmellRule;
+    use crate::smells::profile::Strictness;
     use crate::smells::types::{EvalContext, GraphAnalyses, Severity};
     use crate::types::ProjectedGraph;
 
@@ -256,7 +266,49 @@ mod tests {
         name: &'a str,
         metrics: &'a HashMap<String, f64>,
     ) -> EvalContext<'a> {
-        EvalContext { entity_id: id, entity_name: name, metrics, graph, analyses: GraphAnalyses::default() }
+        EvalContext {
+            entity_id: id,
+            entity_name: name,
+            metrics,
+            graph,
+            strictness: Strictness::Normal,
+            analyses: GraphAnalyses::default(),
+        }
+    }
+
+    #[test]
+    fn strictness_monotonicity_strict_implies_normal_implies_loose() {
+        // Stage 0.4 contract: findings(Strict) ⊇ findings(Normal) ⊇
+        // findings(Loose), pinned at the LongMethod LOC boundary (50).
+        let g = empty_graph();
+        let rule = crate::smells::rules::long_method::LongMethod::default();
+        let fires_at = |loc: usize, s: Strictness| {
+            let m = HashMap::from([
+                ("LOC".to_string(), loc as f64),
+                ("cyclomatic".to_string(), 1.0),
+            ]);
+            let mut c = ctx(&g, "a", "f", &m);
+            c.strictness = s;
+            rule.evaluate(&c).is_some()
+        };
+
+        for loc in [35usize, 60, 100] {
+            let (strict, normal, loose) = (
+                fires_at(loc, Strictness::Strict),
+                fires_at(loc, Strictness::Normal),
+                fires_at(loc, Strictness::Loose),
+            );
+            assert!(
+                strict >= normal && normal >= loose,
+                "monotonicity broken at LOC={loc}: strict={strict} normal={normal} loose={loose}"
+            );
+        }
+        // Spot-check the bands actually differ where they should.
+        assert!(fires_at(35, Strictness::Strict), "LOC 35 < strict limit 30? no — fires");
+        assert!(!fires_at(35, Strictness::Normal));
+        assert!(fires_at(60, Strictness::Normal), "LOC 60 ≥ normal limit 50");
+        assert!(!fires_at(60, Strictness::Loose));
+        assert!(fires_at(100, Strictness::Loose), "LOC 100 ≥ loose limit 90");
     }
 
     #[test]

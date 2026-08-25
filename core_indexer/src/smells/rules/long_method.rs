@@ -31,8 +31,12 @@ impl SmellRule for LongMethod {
         let loc = ctx.metrics.get("LOC").copied().unwrap_or(0.0) as usize;
         let cyclo = ctx.metrics.get("cyclomatic").copied().unwrap_or(0.0) as usize;
 
-        // Trigger if EITHER threshold is breached.
-        if loc >= self.loc_threshold || cyclo >= self.cyclomatic_threshold {
+        // Trigger if EITHER threshold is breached. Thresholds scale with the
+        // run's strictness (Stage 0.4); severity bands stay fixed —
+        // strictness decides WHAT is reported, severity HOW BAD it is.
+        let loc_limit = ctx.strictness.scale(self.loc_threshold);
+        let cyclo_limit = ctx.strictness.scale(self.cyclomatic_threshold);
+        if loc >= loc_limit || cyclo >= cyclo_limit {
             let severity = if loc >= 100 || cyclo >= 20 {
                 Severity::High
             } else {

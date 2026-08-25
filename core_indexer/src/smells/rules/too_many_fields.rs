@@ -29,7 +29,7 @@ impl SmellRule for TooManyFields {
     fn evaluate(&self, ctx: &EvalContext) -> Option<Finding> {
         let fields = ctx.metrics.get("field_count").copied().unwrap_or(0.0) as usize;
 
-        if fields >= self.field_threshold {
+        if fields >= ctx.strictness.scale(self.field_threshold) {
             let severity = if fields >= 20 {
                 Severity::High
             } else {

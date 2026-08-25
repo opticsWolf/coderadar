@@ -29,7 +29,7 @@ impl SmellRule for ExcessiveReturns {
     fn evaluate(&self, ctx: &EvalContext) -> Option<Finding> {
         let returns = ctx.metrics.get("return_count").copied().unwrap_or(0.0) as usize;
 
-        if returns > self.return_threshold {
+        if returns > ctx.strictness.scale(self.return_threshold) {
             let severity = if returns >= 8 {
                 Severity::High
             } else {

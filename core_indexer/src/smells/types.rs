@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use crate::smells::profile::Strictness;
 use crate::types::{EntityId, ProjectedGraph};
 
 /// The entity scope a rule applies to.
@@ -54,6 +55,10 @@ pub struct EvalContext<'a> {
     pub entity_name: &'a str,
     pub metrics: &'a HashMap<String, f64>,
     pub graph: &'a ProjectedGraph,
+    /// Sensitivity profile for this run (Stage 0.4). Rules scale their
+    /// baseline thresholds by `strictness.factor()`; Normal = 1.0 reproduces
+    /// the historical numbers exactly.
+    pub strictness: Strictness,
     /// Precomputed whole-graph analyses, computed once per engine run
     /// (Stage 0.2). `None` fields mean "not computed this run" — a rule that
     /// needs one must degrade honestly (skip or downweight), never guess.

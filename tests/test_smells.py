@@ -92,3 +92,31 @@ class TestFindingDedupe:
         assert len(findings_after) == 1, (
             f"edit cycle must not duplicate findings, got {len(findings_after)}"
         )
+
+
+@pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+class TestStrictnessProfiles:
+    """Stage 0.4: strict/normal/loose threshold profiles on get_smells."""
+
+    def _ids(self, findings):
+        return {(f["rule_id"], f["entity_id"]) for f in findings}
+
+    def test_normal_default_matches_explicit_normal(self):
+        from coderadar._core import get_smells
+        assert self._ids(get_smells(None, None)) == self._ids(get_smells(None, None, "normal"))
+
+    def test_monotonicity_strict_superset_of_loose(self):
+        # findings(Strict) ⊇ findings(Normal) ⊇ findings(Loose) — the whole
+        # correctness story of the profile feature.
+        from coderadar._core import get_smells
+        strict = self._ids(get_smells(None, None, "strict"))
+        normal = self._ids(get_smells(None, None, "normal"))
+        loose = self._ids(get_smells(None, None, "loose"))
+        assert loose <= normal <= strict, (
+            f"monotonicity broken: |strict|={len(strict)} |normal|={len(normal)} |loose|={len(loose)}"
+        )
+
+    def test_unknown_strictness_is_a_loud_error(self):
+        from coderadar._core import get_smells
+        with pytest.raises(ValueError, match="maximal"):
+            get_smells(None, None, "maximal")

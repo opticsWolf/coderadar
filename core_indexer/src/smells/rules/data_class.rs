@@ -32,7 +32,12 @@ impl SmellRule for DataClass {
         let wmc = ctx.metrics.get("WMC").copied().unwrap_or(0.0) as usize;
 
         // Trigger if it has a lot of fields but very little logic.
-        if fields >= self.field_threshold && wmc <= self.max_wmc_threshold {
+        // max_wmc is an upper bound: scaling it down under `strict` narrows
+        // the "little logic" escape hatch — same widening direction as every
+        // other limit under the shared factor().
+        if fields >= ctx.strictness.scale(self.field_threshold)
+            && wmc <= ctx.strictness.scale(self.max_wmc_threshold)
+        {
             let severity = if fields >= 10 && wmc <= 5 {
                 Severity::High
             } else {

@@ -20,6 +20,7 @@
 
 pub mod engine;
 pub mod metrics;
+pub mod profile;
 pub mod rule;
 pub mod rules;
 pub mod types;

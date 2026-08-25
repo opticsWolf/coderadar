@@ -495,7 +495,9 @@ def create_server(graph: Any) -> MCPServer:
             "too-many-fields). Each finding carries a severity, a human message, "
             "and the metric signals (WMC, CBO, LOC, cyclomatic, nesting_depth, "
             "param_count, field_count, return_count, max_method_cyclomatic) that "
-            "triggered it."
+            "triggered it. strictness selects the threshold profile: 'strict' "
+            "catches more (thresholds drop ~40%), 'loose' only egregious cases "
+            "(thresholds rise ~80%); default 'normal'."
         ),
         annotations={
             "read_only_hint": True,
@@ -508,13 +510,14 @@ def create_server(graph: Any) -> MCPServer:
         entity_id: Optional[str] = None,
         rule_id: Optional[str] = None,
         project_path: Optional[str] = None,
+        strictness: str = "normal",
     ) -> str:
         """Detect architectural code smells."""
         mismatch = _wrong_project(project_path)
         if mismatch:
             return mismatch
 
-        return _get_smells(graph, entity_id, rule_id)
+        return _get_smells(graph, entity_id, rule_id, strictness)
 
     # ── coderadar_replace_body ────────────────────────────────────
 
@@ -1730,7 +1733,9 @@ def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
     return "\n".join(lines)
 
 
-def _get_smells(graph: Any, entity_id: str | None, rule_id: str | None) -> str:
+def _get_smells(
+    graph: Any, entity_id: str | None, rule_id: str | None, strictness: str = "normal"
+) -> str:
     """Run the native smell engine and render findings as markdown."""
     try:
         from coderadar._core import get_smells as _get_smells_rust, graph_stats
@@ -1747,7 +1752,11 @@ def _get_smells(graph: Any, entity_id: str | None, rule_id: str | None) -> str:
         return _no_index_message()
 
     try:
-        findings = _get_smells_rust(entity_id, rule_id)
+        findings = _get_smells_rust(entity_id, rule_id, strictness)
+    except (ValueError, TypeError) as e:
+        # Unknown strictness values are rejected loudly by the core — surface
+        # them as-is rather than dressing them up as an engine failure.
+        return f"Invalid request: {e}"
     except Exception as e:
         return f"Smell detection failed: {e}"
 

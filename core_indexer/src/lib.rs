@@ -1663,16 +1663,21 @@ fn index_edge_stats(py: Python<'_>) -> PyResult<PyObject> {
 /// entity id + name, severity, message, and the metric signals that triggered
 /// it.
 #[pyfunction]
-#[pyo3(signature = (entity_id=None, rule_id=None))]
+#[pyo3(signature = (entity_id=None, rule_id=None, strictness="normal"))]
 fn get_smells(
     py: Python<'_>,
     entity_id: Option<String>,
     rule_id: Option<String>,
+    strictness: &str,
 ) -> PyResult<Vec<PyObject>> {
+    // Unknown values are a loud typed error, never silently coerced (Stage 0.4).
+    let strictness = crate::smells::profile::Strictness::parse(strictness)
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
     with_graph_snapshot(|snap| {
         let engine = crate::smells::engine::SmellEngine::new();
         let snap_owned: Arc<ProjectedGraph> = snap.clone();
-        let findings = py.allow_threads(move || engine.run(&snap_owned));
+        let findings =
+            py.allow_threads(move || engine.run_with_strictness(&snap_owned, strictness));
 
         let mut results = Vec::with_capacity(findings.len());
         for f in &findings {

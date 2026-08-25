@@ -29,7 +29,7 @@ impl SmellRule for DeepNesting {
     fn evaluate(&self, ctx: &EvalContext) -> Option<Finding> {
         let depth = ctx.metrics.get("nesting_depth").copied().unwrap_or(0.0) as usize;
 
-        if depth >= self.nesting_threshold {
+        if depth >= ctx.strictness.scale(self.nesting_threshold) {
             let severity = if depth >= 6 {
                 Severity::High
             } else {

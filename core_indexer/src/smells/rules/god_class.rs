@@ -32,7 +32,11 @@ impl SmellRule for GodClass {
         let wmc = ctx.metrics.get("WMC").copied().unwrap_or(0.0) as usize;
         let cbo = ctx.metrics.get("CBO").copied().unwrap_or(0.0) as usize;
 
-        if wmc >= self.wmc_threshold && cbo >= self.cbo_threshold {
+        // Both limits scale with strictness; for the CBO floor, lowering it
+        // under `strict` widens the net exactly like lowering WMC does.
+        let wmc_limit = ctx.strictness.scale(self.wmc_threshold);
+        let cbo_limit = ctx.strictness.scale(self.cbo_threshold);
+        if wmc >= wmc_limit && cbo >= cbo_limit {
             let severity = if wmc >= 100 {
                 Severity::Critical
             } else if wmc >= 70 {

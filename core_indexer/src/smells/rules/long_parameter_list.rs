@@ -29,7 +29,7 @@ impl SmellRule for LongParameterList {
     fn evaluate(&self, ctx: &EvalContext) -> Option<Finding> {
         let params = ctx.metrics.get("param_count").copied().unwrap_or(0.0) as usize;
 
-        if params > self.param_threshold {
+        if params > ctx.strictness.scale(self.param_threshold) {
             let severity = if params >= 7 {
                 Severity::High
             } else if params >= 6 {
