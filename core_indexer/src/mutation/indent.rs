@@ -60,6 +60,12 @@ pub fn detect_indent_style(source: &str) -> IndentStyle {
 /// Normalize new code's indentation to match the target level.
 ///
 /// Steps:
+/// 0. An EMPTY target means the caller supplies final formatting verbatim:
+///    the input is returned unchanged. Historically an empty target stripped
+///    every line to the incoming minimum, which silently dedented
+///    naturally-indented bodies by one level and corrupted the file
+///    (CODERADAR_BUGS_QUIRKS.md #1). Least-destruction wins: when there is
+///    no target level to normalize TO, do not touch the caller's text.
 /// 1. Find incoming_base = minimum leading whitespace across non-empty lines.
 /// 2. Per line: target + (line with incoming_base stripped), preserving relative depth.
 /// 3. Convert leading whitespace to match IndentStyle (tabs <-> spaces).
@@ -71,6 +77,11 @@ pub fn normalize_indent(
     style: &IndentStyle,
     verbatim_spans: &[ByteSpan],
 ) -> String {
+    // 0. Empty target = verbatim passthrough (see doc above).
+    if target_indent.is_empty() {
+        return new_code.to_string();
+    }
+
     // 1. Compute incoming base indent
     let incoming_base = new_code
         .lines()
@@ -167,5 +178,18 @@ mod tests {
         let result = normalize_indent(new_code, target, &style, &[span]);
         // The triple-quoted interior should be preserved
         assert!(result.contains("    verbatim"));
+    }
+
+    #[test]
+    fn test_empty_target_is_verbatim_no_dedent() {
+        // Regression: CODERADAR_BUGS_QUIRKS.md #1 — an empty target used to
+        // strip every line to the incoming minimum, dedenting a naturally-
+        // indented body by one level and producing `return` outside function.
+        let new_body = "    \"\"\"Merge HTML metadata.\"\"\"\n    merged = {**a, **b}\n    return merged\n";
+        assert_eq!(
+            normalize_indent(new_body, "", &IndentStyle::spaces(4), &[]),
+            new_body,
+            "empty target must be a verbatim passthrough"
+        );
     }
 }

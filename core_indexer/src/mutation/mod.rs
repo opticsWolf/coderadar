@@ -369,8 +369,11 @@ impl MutationEngine {
         let edit_expected_hash = expected_hash.unwrap_or(computed_hash);
 
         // Body spans start at the first body token (or inline `{`), so the
-        // leading indentation is NOT part of the span — use an empty target.
-        // normalize_indent preserves the replacement's relative indentation.
+        // leading indentation is NOT part of the span. The replacement's own
+        // indentation IS the final formatting — an empty target keeps it
+        // verbatim. Re-normalizing here used to dedent naturally-indented
+        // bodies by one level, corrupting the file (BUGS_QUIRKS #1); the
+        // safety net is apply()'s post-write parse check + rollback.
         let normalized_body = normalize_indent(new_body, "", &indent, &[]);
 
         let plan_id = ulid::Ulid::new().to_string();
@@ -1265,6 +1268,7 @@ pub enum MutationError {
 mod tests {
     use super::*;
     use crate::graph::MutationConfig;
+    use crate::mutation::indent::IndentStyle;
     use crate::types::ByteSpan;
     use std::path::Path;
 
@@ -1613,6 +1617,46 @@ mod tests {
         let result = eng.apply(&p);
         assert_eq!(result.status, MutationStatus::Applied);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "import os\ndef g():\n    pass\n");
+    }
+
+    #[test]
+    fn test_apply_body_replacement_keeps_indentation_and_parses() {
+        // Regression for CODERADAR_BUGS_QUIRKS.md #1: replacing a Python
+        // function body with naturally-indented code must not shift any
+        // line's indentation — the written file has to parse.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.py");
+        let src = "def f():\n    \"\"\"old doc.\"\"\"\n    return 1\n";
+        std::fs::write(&path, src).unwrap();
+        let file = path.to_string_lossy().to_string();
+
+        // Span covers the body from the first body token through the end:
+        // the docstring line minus its indent, plus the indented return line.
+        let body_start = src.find("\"").unwrap();
+        let span = ByteSpan { start: body_start, end: src.len() };
+        let replacement = "\"\"\"Merge HTML metadata.\"\"\"\n    merged = {**a, **b}\n    return merged\n";
+
+        let mut eng = engine();
+        let p = plan(vec![MutationEdit {
+            file: file.clone(),
+            span,
+            replacement: normalize_indent(replacement, "", &IndentStyle::spaces(4), &[]),
+            expected_hash: String::new(),
+        }]);
+        let result = eng.apply(&p);
+        assert_eq!(result.status, MutationStatus::Applied, "{:#?}", result.syntax_errors);
+
+        let written = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            written,
+            "def f():\n    \"\"\"Merge HTML metadata.\"\"\"\n    merged = {**a, **b}\n    return merged\n",
+            "every line must keep its indentation"
+        );
+        assert_eq!(
+            parse_has_error(crate::types::Language::from_extension("py"), written.as_bytes()),
+            Some(false),
+            "written file must parse — G0-A gate"
+        );
     }
 
     #[test]
