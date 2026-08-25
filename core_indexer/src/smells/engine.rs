@@ -29,6 +29,7 @@ impl SmellEngine {
                 Box::new(super::rules::brain_method::BrainMethod::default()),
                 Box::new(super::rules::excessive_returns::ExcessiveReturns::default()),
                 Box::new(super::rules::too_many_fields::TooManyFields::default()),
+                Box::new(super::rules::dead_code::DeadCode),
             ],
         }
     }
@@ -55,9 +56,15 @@ impl SmellEngine {
         }
 
         // Whole-graph analyses, computed once per run and shared by every
-        // rule (Stage 0.2). Stages 1 and 5 populate the fields; for now they
-        // stay empty so runs stay cheap.
-        let analyses = GraphAnalyses::default();
+        // rule (Stage 0.2). Reachability + entry points feed the dead-code
+        // rule (Stage 1); centrality arrives in Stage 5.
+        let entries = crate::graph::deadcode::entry_points::detect_entry_points(graph);
+        let reach = crate::graph::deadcode::reachability::compute_reachable(graph, &entries.production);
+        let analyses = GraphAnalyses {
+            reachable: Some(&reach.reachable),
+            entry_points: Some(&entries.production),
+            centrality: None,
+        };
 
         // Method scope.
         if let Some(rules) = rules_by_scope.get(&Scope::Method) {
@@ -230,7 +237,7 @@ fn target_class_of(call: &ResolvedCall, graph: &ProjectedGraph) -> Option<Entity
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::collections::HashMap;
 
     use crate::smells::engine::SmellEngine;
@@ -239,7 +246,7 @@ mod tests {
     use crate::smells::types::{EvalContext, GraphAnalyses, Severity};
     use crate::types::ProjectedGraph;
 
-    fn empty_graph() -> ProjectedGraph {
+    pub(crate) fn empty_graph() -> ProjectedGraph {
         ProjectedGraph {
             modules: HashMap::new(),
             classes: HashMap::new(),

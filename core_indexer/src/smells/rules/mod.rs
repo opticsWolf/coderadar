@@ -1,5 +1,6 @@
 pub mod brain_method;
 pub mod data_class;
+pub mod dead_code;
 pub mod deep_nesting;
 pub mod excessive_returns;
 pub mod god_class;

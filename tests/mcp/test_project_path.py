@@ -42,7 +42,8 @@ class TestTheSchema:
 
     def test_every_tool_offers_project_path(self):
         tools = server_mod.create_server(None)._tool_manager.list_tools()
-        assert len(tools) == 19
+        # 20 tools since codegraph_dead_code (Stage 1) joined the surface.
+        assert len(tools) == 20
 
         without = [
             t.name for t in tools

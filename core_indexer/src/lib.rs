@@ -55,6 +55,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
     m.add_function(wrap_pyfunction!(index_edge_stats, m)?)?;
     m.add_function(wrap_pyfunction!(get_smells, m)?)?;
+    m.add_function(wrap_pyfunction!(find_dead_code, m)?)?;
     m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
@@ -1724,6 +1725,54 @@ fn entity_name_of(entity_id: &str, snap: &ProjectedGraph) -> Option<String> {
     } else {
         None
     }
+}
+
+/// Ranked dead-code findings: functions unreachable from any entry point.
+///
+/// Stage 1 — the mirror image of `affected`. Parameters mirror fossil's
+/// `analyze_dead_code` schema so agent prompts migrate trivially. Findings
+/// below `min_confidence` are filtered; output is capped at `max_findings`,
+/// ranked by confidence then removable lines.
+#[pyfunction]
+#[pyo3(signature = (min_confidence=0.6, include_test_reachable=false, max_findings=100))]
+fn find_dead_code(
+    py: Python<'_>,
+    min_confidence: f32,
+    include_test_reachable: bool,
+    max_findings: usize,
+) -> PyResult<Vec<PyObject>> {
+    if !(0.0..=1.0).contains(&min_confidence) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "min_confidence must be in [0.0, 1.0]",
+        ));
+    }
+    with_graph_snapshot(|snap| {
+        let snap_owned: Arc<ProjectedGraph> = snap.clone();
+        let options = crate::graph::deadcode::DeadCodeOptions {
+            include_test_only: include_test_reachable,
+        };
+        let findings = py.allow_threads(move || {
+            crate::graph::deadcode::detect_dead(&snap_owned, options)
+        });
+
+        let mut results = Vec::new();
+        for f in findings.iter().filter(|f| f.score >= min_confidence) {
+            if results.len() >= max_findings {
+                break;
+            }
+            let dict = PyDict::new(py);
+            dict.set_item("entity_id", &f.entity_id)?;
+            dict.set_item("kind", f.kind.as_str())?;
+            dict.set_item("tier", f.tier.as_str())?;
+            dict.set_item("score", f.score)?;
+            dict.set_item("removable_lines", f.removable_lines)?;
+            if let Some(name) = entity_name_of(&f.entity_id, &snap) {
+                dict.set_item("entity_name", name)?;
+            }
+            results.push(dict.into());
+        }
+        Ok(results)
+    })
 }
 
 /// Vector similarity search against entity embeddings.

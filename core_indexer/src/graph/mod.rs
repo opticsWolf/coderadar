@@ -12,8 +12,9 @@ use crate::resolve::cache::ResolutionCache;
 use crate::types::*;
 
 pub mod config;
-
 pub use config::*;
+
+pub mod deadcode;
 
 pub mod import_graph;
 

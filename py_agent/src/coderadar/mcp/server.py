@@ -91,6 +91,7 @@ more for the same answer.
 - `codegraph_as_of` — query the graph at a past timestamp ("what did X look like at commit Y?")
 - `codegraph_traverse` — generic edge traversal with direction and depth control
 - `codegraph_get_smells` — detect architectural code smells (god-class, long-method, long-parameter-list, deep-nesting, data-class, high-cyclomatic-complexity, brain-method, excessive-returns, too-many-fields)
+- `codegraph_dead_code` — find functions unreachable from any entry point, ranked by deletability (kind, tier, confidence, removable lines)
 
 ## Mutation pipeline (LLM-writable code)
 
@@ -518,6 +519,40 @@ def create_server(graph: Any) -> MCPServer:
             return mismatch
 
         return _get_smells(graph, entity_id, rule_id, strictness)
+
+    # ── codegraph_dead_code — unreachable-code detection ───────────────
+
+    @mcp.tool(
+        description=(
+            "Find dead code: functions unreachable from any entry point "
+            "(the mirror image of affected/blast-radius). Entry points include "
+            "mains, framework-decorated handlers (routes/CLIs), dunder protocol "
+            "methods, public API of unimported modules, and test functions; "
+            "virtual-dispatch overrides extend liveness so overridden methods "
+            "are never falsely flagged. Each finding carries kind "
+            "(unreachable | transitively-dead | test-only), tier, confidence "
+            "score and removable line count, ranked most-safely-deletable first. "
+            "Always verify with affected() before removing anything."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def codegraph_dead_code(
+        project_path: Optional[str] = None,
+        min_confidence: float = 0.6,
+        include_test_reachable: bool = False,
+        max_findings: int = 100,
+    ) -> str:
+        """Find functions unreachable from any entry point."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _dead_code(graph, min_confidence, include_test_reachable, max_findings)
 
     # ── coderadar_replace_body ────────────────────────────────────
 
@@ -1730,6 +1765,52 @@ def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
             lines.append(f"`{name}` — not found at {timestamp}")
         lines.append("")
 
+    return "\n".join(lines)
+
+
+def _dead_code(
+    graph: Any,
+    min_confidence: float = 0.6,
+    include_test_reachable: bool = False,
+    max_findings: int = 100,
+) -> str:
+    """Run dead-code detection and render ranked, deletability-sorted findings."""
+    try:
+        from coderadar._core import find_dead_code as _find_dead_code_rust, graph_stats
+        stats = graph_stats()
+        if stats.get("functions", 0) == 0:
+            return _no_index_message()
+    except ImportError:
+        return NO_EXTENSION_MESSAGE
+    except RuntimeError:
+        return _no_index_message()
+
+    try:
+        findings = _find_dead_code_rust(min_confidence, include_test_reachable, max_findings)
+    except (ValueError, TypeError) as e:
+        return f"Invalid request: {e}"
+    except Exception as e:
+        return f"Dead-code detection failed: {e}"
+
+    if not findings:
+        return (
+            "No dead code found at or above confidence "
+            f"{min_confidence:.2f}. This is a clean result for the current "
+            "index — not an indexing failure."
+        )
+
+    lines = [
+        f"## Dead Code — {len(findings)} finding(s) at confidence >= {min_confidence:.2f}",
+        "",
+        "Ranked most-safely-deletable first. Verify each with `affected` before removal.",
+        "",
+    ]
+    for f in findings:
+        name = f.get("entity_name", "?")
+        lines.append(
+            f"- **{name}** (`{f['entity_id']}`) — {f['kind']}, "
+            f"{f['tier']} ({f['score']:.2f}), ~{f['removable_lines']} lines"
+        )
     return "\n".join(lines)
 
 
