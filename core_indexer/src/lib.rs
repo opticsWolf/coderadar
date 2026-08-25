@@ -7,6 +7,7 @@ pub mod graph;
 pub mod mutation;
 pub mod query;
 pub mod resolve;
+pub mod scoring;
 pub mod smells;
 pub mod storage;
 pub mod types;
