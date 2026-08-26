@@ -1303,6 +1303,12 @@ Stage 6.2    ✅ v0.7.17  tri-state const evaluator + dead-branch rule (rides us
 Stage 6.3    ✅ v0.7.18  RTA-lite (Python-exact scope): rta-dead kind; construction
                          evidence from raw-call-name scan until real Constructor
                          resolution lands
+             ✅ MILESTONE D — precision report run on flask/click/werkzeug:
+                         15 findings, 0 in-repo TPs (11 dynamic-dispatch FPs,
+                         3 external-construction caveats, 1 artifact); all
+                         below the default confidence floor. See
+                         docs/rta-lite-precision-report.md — re-measure after
+                         v0.8 P2.3.
 Stage 6.4    ⏸          temporal analyses — gated on v0.8 P2.2 (as_of traversal)
 RTA full     ⏸          interface-language scope — gated on v0.8 P2.3 IMPLEMENTS edges
 
