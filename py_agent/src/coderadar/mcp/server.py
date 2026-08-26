@@ -550,6 +550,7 @@ def create_server(graph: Any) -> MCPServer:
             "open_world_hint": False,
         },
     )
+    @requires_index
     def codegraph_dead_code(
         project_path: Optional[str] = None,
         min_confidence: float = 0.6,
@@ -582,6 +583,7 @@ def create_server(graph: Any) -> MCPServer:
             "open_world_hint": False,
         },
     )
+    @requires_index
     def codegraph_find_clones(
         project_path: Optional[str] = None,
         min_lines: int = 10,
@@ -612,6 +614,7 @@ def create_server(graph: Any) -> MCPServer:
             "open_world_hint": False,
         },
     )
+    @requires_index
     def codegraph_find_scaffolding(
         project_path: Optional[str] = None,
         include_secrets: bool = False,

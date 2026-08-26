@@ -168,3 +168,32 @@ class TestTheGuardConsultsIt:
         answer = tool()
         assert "index blew up" in answer
         assert "answered from the graph" not in answer
+
+    def test_stage_tools_report_progress_mid_index(self, monkeypatch):
+        """dead_code / find_clones / find_scaffolding carry requires_index too.
+
+        BUGS_QUIRKS #8 tail: the Stage 1-3 tools shipped without the guard
+        every other tool has, so a call arriving while the background index
+        was still walking answered from a partial graph (or said "no index")
+        instead of the typed progress refusal.
+        """
+        from coderadar.mcp import server as server_mod
+        from coderadar.mcp import startup
+
+        monkeypatch.setattr(startup, "DEFAULT_WAIT_SECONDS", 0.1)
+
+        release = threading.Event()
+        configure(BackgroundIndex(analyze=lambda root: release.wait(5)))
+        try:
+            server = server_mod.create_server(None)
+            tools = {t.name: t.fn for t in server._tool_manager.list_tools()}
+            for name in (
+                "codegraph_dead_code",
+                "codegraph_find_clones",
+                "codegraph_find_scaffolding",
+            ):
+                answer = tools[name]()
+                assert "still being indexed" in answer, name
+                assert "unreachable" not in answer, name
+        finally:
+            release.set()
