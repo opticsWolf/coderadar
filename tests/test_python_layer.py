@@ -674,6 +674,7 @@ class TestCodeRadarAPI:
 
     def test_compute_embeddings_writes_in_one_bulk_call(self, monkeypatch):
         """Looping set_embedding cloned the whole projection per entity."""
+        pytest.importorskip("fastembed")
         try:
             from coderadar._core import analyze
             import coderadar._core as core

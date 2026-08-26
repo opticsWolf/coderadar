@@ -633,7 +633,10 @@ def create_server(graph: Any) -> MCPServer:
             "With dry_run=False: writes the file AND updates the graph atomically. "
             "Best practice: call first with dry_run=True to review, then call "
             "again with dry_run=False to apply. Use expected_hash to verify the "
-            "current body matches before replacing (safety check)."
+            "current body matches before replacing (safety check). Indentation: "
+            "the replacement is re-based to the function's body column — pass it "
+            "either unindented or copied verbatim from the source; both produce "
+            "identical files. Do not include the def/signature line or decorators."
         ),
         annotations={
             "read_only_hint": False,

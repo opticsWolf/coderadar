@@ -347,6 +347,59 @@ impl MutationEngine {
         Ok(())
     }
 
+    /// Re-base a replacement body for splicing at a `body_span` that starts
+    /// at the first body token. See the call site in `plan_body_replacement`
+    /// for the full contract and rationale.
+    fn normalize_body_for_splice(
+        &self,
+        new_body: &str,
+        file_source: &str,
+        body_span: &ByteSpan,
+    ) -> String {
+        let len = file_source.len();
+        let start = body_span.start.min(len);
+
+        // Whitespace between the line start and the span start = the column
+        // the body lives at. If the span starts mid-line (inline body such as
+        // `def f(): return 1`) there is no column to inherit — passthrough is
+        // the only honest behavior there.
+        let line_start = file_source[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let prefix = &file_source[line_start..start];
+        if prefix.is_empty() || !prefix.chars().all(|c| c == ' ' || c == '\t') {
+            return new_body.to_string();
+        }
+        let body_column: &str = prefix;
+
+        // Incoming base = smallest leading whitespace over non-blank lines.
+        let incoming_base = new_body
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.chars().take_while(|c| *c == ' ' || *c == '\t').count())
+            .min()
+            .unwrap_or(0);
+
+        let mut out_lines: Vec<String> = Vec::new();
+        for (i, raw) in new_body.lines().enumerate() {
+            // Normalize CRLF replacements down to LF; the writer joins with
+            // \n and the file's own trailing newline stays untouched.
+            let raw = raw.strip_suffix('\r').unwrap_or(raw);
+            if raw.trim().is_empty() {
+                out_lines.push(String::new());
+                continue;
+            }
+            let stripped: String = raw.chars().skip(incoming_base).collect();
+            if i == 0 {
+                // First line inherits whatever the prefix already provides.
+                out_lines.push(stripped);
+            } else {
+                out_lines.push(format!("{}{}", body_column, stripped));
+            }
+        }
+        // `.lines()` already dropped one trailing newline; the span ends
+        // before the file's own, so nothing further to trim here.
+        out_lines.join("\n")
+    }
+
     /// Plan a body replacement — replaces the function/method body only.
     /// Signature, docstring, and decorators are untouched.
     pub fn plan_body_replacement(
@@ -368,7 +421,6 @@ impl MutationEngine {
         // Detect indent style from the file (spaces vs tabs, width).
         let file_path = module_file_path(projection, &fn_entity.parent_module);
         let file_source = std::fs::read_to_string(&file_path).unwrap_or_default();
-        let indent = detect_indent_style(&file_source);
 
         // Stale-write guard: hash the current body span content so apply() can
         // reject the edit if the file changed between planning and applying.
@@ -376,12 +428,24 @@ impl MutationEngine {
         let edit_expected_hash = expected_hash.unwrap_or(computed_hash);
 
         // Body spans start at the first body token (or inline `{`), so the
-        // leading indentation is NOT part of the span. The replacement's own
-        // indentation IS the final formatting — an empty target keeps it
-        // verbatim. Re-normalizing here used to dedent naturally-indented
-        // bodies by one level, corrupting the file (BUGS_QUIRKS #1); the
-        // safety net is apply()'s post-write parse check + rollback.
-        let normalized_body = normalize_indent(new_body, "", &indent, &[]);
+        // leading indentation is NOT part of the span: the file's own body
+        // indent stays in the prefix and the replacement's FIRST line is
+        // spliced in right after it. Continuation lines, however, arrive
+        // without any prefix — they must carry the body column themselves.
+        // The splice geometry is therefore asymmetric:
+        //
+        //   line 1        → stripped of its incoming base indent (inherits
+        //                    whatever the prefix already provides)
+        //   lines 2+      → stripped to their relative indent, then given
+        //                    the source's body column
+        //   trailing \n   → dropped (the span ends before the file's own
+        //                    newline; keeping it would add a blank line)
+        //
+        // Both natural spellings now produce identical files: an unindented
+        // body ("return a + 1") and a source-copied body ("    return a + 1")
+        // — CODERADAR_BUGS_QUIRKS #1 follow-up. Verbatim passthrough remains
+        // for inline bodies where the span starts mid-line.
+        let normalized_body = self.normalize_body_for_splice(new_body, &file_source, &body_span);
 
         let mut warnings = if fn_entity.parse_quality != ParseQuality::Clean {
             vec!["Entity parse quality is not Clean — body_span may be approximate".into()]
@@ -1292,6 +1356,7 @@ pub enum MutationError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use crate::graph::MutationConfig;
     use crate::mutation::indent::IndentStyle;
     use crate::types::ByteSpan;
@@ -1694,6 +1759,130 @@ mod tests {
     }
 
     #[test]
+    fn test_body_replacement_pre_indented_no_double_indent() {
+        // CODERADAR_BUGS_QUIRKS #1 follow-up (v0.7.19): the body span starts
+        // AFTER the file's own indent, so a source-copied (pre-indented)
+        // replacement must not be spliced on top of it — that doubled the
+        // indent and the replacement's trailing newline added a blank line.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.py");
+        let src = "def f(a):\n    return a\n";
+        std::fs::write(&path, src).unwrap();
+        let file = path.to_string_lossy().to_string();
+
+        let mut g = crate::smells::engine::tests::empty_graph();
+        let mut f = crate::graph::deadcode::tests::func("m.py::f", "f", "m.py::module");
+        let bstart = src.find("return a").unwrap();
+        f.body_span = ByteSpan { start: bstart, end: bstart + 8 }; // exactly "return a"
+        g.functions.insert("m.py::f".into(), Arc::new(f));
+        g.modules.insert(
+            "m.py::module".into(),
+            Arc::new(crate::types::Module {
+                id: "m.py::module".into(),
+                name: "m".into(),
+                path: path.clone(),
+                language: crate::types::Language::Python,
+                package: None,
+                exports: vec![],
+                star_exports: None,
+                classes: vec![],
+                functions: vec![],
+                imports: vec![],
+                constants: vec![],
+                type_aliases: vec![],
+                parse_quality: crate::types::ParseQuality::Clean,
+                content_hash: 0,
+                embedding: Default::default(),
+                file_version: 0,
+            }),
+        );
+
+        let mut eng = MutationEngine::new(MutationConfig::default());
+        for body in ["    return a + 1\n", "return a + 1\n"] {
+            std::fs::write(&path, src).unwrap();
+            let plan = eng
+                .plan_body_replacement("m.py::f", body, None, true, &g)
+                .unwrap();
+            assert!(
+                plan.diff_preview.contains("+    return a + 1\n"),
+                "preview must show single indent for body {:?}: {}",
+                body,
+                plan.diff_preview
+            );
+            assert!(
+                !plan.diff_preview.contains("+\n"),
+                "no stray blank line for body {:?}: {}",
+                body,
+                plan.diff_preview
+            );
+            let p2 = eng.apply(&plan);
+            assert_eq!(p2.status, MutationStatus::Applied);
+            assert_eq!(
+                std::fs::read_to_string(&file).unwrap(),
+                "def f(a):\n    return a + 1\n",
+                "body {:?} written incorrectly",
+                body
+            );
+        }
+    }
+
+    #[test]
+    fn test_body_replacement_multiline_continuations_get_body_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.py");
+        let src = "def f(a):\n    if a:\n        return 1\n    return 2\n";
+        std::fs::write(&path, src).unwrap();
+
+        // body span covers from 'if' through final '2'
+        let start = src.find("if a:").unwrap();
+        let end = src.find("return 2").unwrap() + 8;
+
+        let mut g = crate::smells::engine::tests::empty_graph();
+        let mut f = crate::graph::deadcode::tests::func("m.py::f", "f", "m.py::module");
+        f.body_span = ByteSpan { start, end };
+        g.functions.insert("m.py::f".into(), Arc::new(f));
+        g.modules.insert(
+            "m.py::module".into(),
+            Arc::new(crate::types::Module {
+                id: "m.py::module".into(),
+                name: "m".into(),
+                path: path.clone(),
+                language: crate::types::Language::Python,
+                package: None,
+                exports: vec![],
+                star_exports: None,
+                classes: vec![],
+                functions: vec![],
+                imports: vec![],
+                constants: vec![],
+                type_aliases: vec![],
+                parse_quality: crate::types::ParseQuality::Clean,
+                content_hash: 0,
+                embedding: Default::default(),
+                file_version: 0,
+            }),
+        );
+
+        let mut eng = MutationEngine::new(MutationConfig::default());
+        let plan = eng
+            .plan_body_replacement(
+                "m.py::f",
+                "    total = a or 0\n    if total:\n        return total\n    return -1\n",
+                None,
+                true,
+                &g,
+            )
+            .unwrap();
+        let p2 = eng.apply(&plan);
+        assert_eq!(p2.status, MutationStatus::Applied);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "def f(a):\n    total = a or 0\n    if total:\n        return total\n    return -1\n",
+            "continuation lines land at the body column; first line inherits the prefix"
+        );
+    }
+
+    #[test]
     fn test_apply_rejects_stale_edit() {
         let src = b"def foo():\n    return 1\n";
         let start = src.windows(8).position(|w| w == b"return 1").unwrap();
@@ -1766,3 +1955,4 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "def foo():\n    return 2\n");
     }
 }
+
