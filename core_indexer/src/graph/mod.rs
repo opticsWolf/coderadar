@@ -33,7 +33,7 @@ pub mod module_resolution;
 // code imports directly from `module_resolution`, so this is only used under
 // cfg(test).
 #[allow(unused_imports)]
-pub(crate) use module_resolution::find_module_by_dotted_name;
+pub(crate) use module_resolution::{find_module_by_dotted_name, rebuild_module_path_index};
 
 pub mod mro;
 
@@ -51,6 +51,8 @@ pub mod indexing;
 
 
 pub mod projection_ops;
+
+pub mod cold_start;
 
 // ── CodeGraph (§3.4, §9.1) — v3.6 Hybrid Architecture ──────────────────────
 
@@ -90,6 +92,7 @@ impl CodeGraph {
             type_aliases: HashMap::new(),
             file_to_modules: HashMap::new(),
             module_by_dotted_name: HashMap::new(),
+            module_path_index: HashMap::new(),
             importers: HashMap::new(),
             imports_by_importer: HashMap::new(),
             callers_by_callee: HashMap::new(),

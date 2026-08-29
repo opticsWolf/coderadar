@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -118,20 +119,92 @@ def _activate(project_root) -> None:
         )
 
 
+# Extensions the Rust indexer will parse (Language::from_extension minus
+# the languages without a tree-sitter grammar). The staleness check must
+# cover at least what analyze walks; a superset is safe, because an extra
+# file can only make the store look stale, never fresh.
+_INDEXABLE_EXTS = frozenset({
+    "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go", "rs", "java",
+    "c", "h", "cpp", "cc", "cxx", "hpp", "hxx", "rb", "php", "cs", "kt",
+    "kts", "swift", "scala", "sc", "lua", "ex", "exs", "zig", "zon", "r",
+    "sh", "bash", "zsh", "dart", "proto", "sql", "hcl", "tf", "cmake",
+    "graphql", "gql", "erl", "hrl", "hs", "lhs", "nix", "groovy", "gvy",
+})
+_STALENESS_SKIP_DIRS = frozenset(
+    {"__pycache__", "node_modules", "target", "dist", "build"})
+
+
+def _store_db_path(project_root: Path) -> Optional[Path]:
+    """Where the Macrame store file lives for this project.
+
+    Mirrors `store_path_for` (core_indexer/src/lib.rs): an absolute
+    `[database] path` is used as-is, a relative one is root-relative, and
+    the default is `.coderadar/store/coderadar.db`.
+    """
+    from .config import load_config
+    try:
+        configured = Path(load_config(project_root).database.path)
+    except Exception:
+        configured = Path(".coderadar/store/coderadar.db")
+    if configured.is_absolute():
+        return configured
+    return project_root / configured
+
+
+def _store_is_fresh(project_root: Path, db_path: Path,
+                    grace_s: float = 2.0) -> bool:
+    """Cheap staleness heuristic (no content hashing).
+
+    Fresh = the store file exists and no indexable source file under the
+    root has an mtime more than `grace_s` newer than the store's. The grace
+    absorbs the seconds between the last file the analyze walked and the
+    ledger commit that recorded it.
+    """
+    try:
+        db_mtime = db_path.stat().st_mtime
+    except OSError:
+        return False
+    for dirpath, dirnames, filenames in os.walk(project_root):
+        dirnames[:] = [
+            d for d in dirnames
+            if not d.startswith(".") and d not in _STALENESS_SKIP_DIRS
+        ]
+        for name in filenames:
+            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+            if ext not in _INDEXABLE_EXTS and name.lower() != "dockerfile":
+                continue
+            try:
+                if os.path.getmtime(os.path.join(dirpath, name)) > db_mtime + grace_s:
+                    return False
+            except OSError:
+                continue
+    return True
+
+
 def _ensure_graph(path: str = "."):
-    """Return a CodeGraph with an index behind it, building one if needed.
+    """Return a CodeGraph with an index behind it, restoring one if a
+    store exists.
 
     The graph lives in the process that built it. `coderadar init` indexes
     and exits, so every read-only command that followed it started with an
-    empty core and failed with "No graph loaded — run coderadar init first"
-    — advice the user had just taken. Cross-process cold start from the
-    Macrame ledger (`load_snapshot`) is Phase 3B; until then the honest
-    behaviour is to index here rather than to send the user in a circle.
+    empty core. v0.8 P1: before re-indexing, the command tries a cold
+    start from the Macrame ledger - `load_snapshot` rebuilds the in-memory
+    graph from concept JSON v2 in milliseconds, instead of the full
+    analyze the re-analysis did before.
+
+    Order: reuse a matching loaded graph; else `_activate(path)` (the
+    effective config for every command is the one in the project -
+    BUGS_QUIRKS #3); else, if the store exists and is fresh, cold-start
+    from it; else (or on any load error - this is also the v1 -> v2 store
+    upgrade path) fall back to a full analyze. For an initialized project
+    that analyze attaches the store automatically, so the re-index
+    persists and the next command cold-starts.
 
     A loaded graph is only reused when it belongs to *this* directory: the
-    core records the root each index walked, and a graph from somewhere else
-    answers every question about this tree wrongly while looking completely
-    healthy. Different root — or no graph — means index here.
+    core records the root each index walked, and a graph from somewhere
+    else answers every question about this tree wrongly while looking
+    completely healthy. Different root - or no graph - means restore or
+    index here.
     """
     import coderadar
     from coderadar._core import graph_stats
@@ -141,7 +214,7 @@ def _ensure_graph(path: str = "."):
         stats = graph_stats()
         root = stats.get("indexed_root")
         if root:
-            # std::fs::canonicalize emits Windows verbatim paths (\\?\C:\…);
+            # std::fs::canonicalize emits Windows verbatim paths (\?\C:\...);
             # pathlib compares them as a different directory, so strip first.
             root_str = str(root).removeprefix("\\\\?\\")
             if Path(root_str).resolve() == Path(path).resolve():
@@ -150,7 +223,22 @@ def _ensure_graph(path: str = "."):
         pass
 
     _activate(path)
-    console.print("[dim]No graph for this directory — indexing...[/dim]")
+
+    root_path = Path(path).resolve()
+    db_path = _store_db_path(root_path)
+    if db_path is not None and _store_is_fresh(root_path, db_path):
+        try:
+            coderadar.load(str(db_path), str(root_path))
+            console.print(
+                "[dim]Cold start: graph restored from the Macrame store.[/dim]")
+            return graph
+        except Exception as exc:
+            console.print(
+                f"[yellow]Store load failed ({exc}); falling back to a full "
+                f"analyze (this also upgrades a v1 store).[/yellow]"
+            )
+
+    console.print("[dim]No graph for this directory - indexing...[/dim]")
     coderadar.analyze(path)
     return graph
 
@@ -457,31 +545,18 @@ def shell():
 
 
 @main.command()
-@click.argument("path", type=click.Path())
-@click.option("--format", "fmt", default="bin", help="bin, json, yaml")
-def export(path: str, fmt: str):
-    """Export snapshot."""
-    import coderadar
-    graph = coderadar.CodeGraph()
-    try:
-        graph.export_snapshot(path)
-        console.print(f"[green]Snapshot exported to {path}[/green]")
-    except NotImplementedError as e:
-        console.print(f"[yellow]export_snapshot is not implemented:[/yellow] {e}")
-        raise SystemExit(1)
-
-
-@main.command()
 @click.argument("snapshot", type=click.Path(exists=True))
-def load_snapshot(snapshot: str):
-    """Load and verify snapshot integrity."""
+@click.option("--root", default=None,
+              help="Project root used with analyze (entity ids are path-keyed)")
+def load_snapshot(snapshot: str, root: Optional[str]):
+    """Cold-start the in-memory graph from a Macrame ledger file (v0.8 P1)."""
     import coderadar
     try:
-        graph = coderadar.load(snapshot)
+        graph = coderadar.load(snapshot, root)
         stats = graph.stats()
         console.print(f"[green]Snapshot loaded: {stats}[/green]")
-    except NotImplementedError as e:
-        console.print(f"[yellow]load_snapshot is not implemented:[/yellow] {e}")
+    except Exception as e:
+        console.print(f"[yellow]load_snapshot failed:[/yellow] {e}")
         raise SystemExit(1)
 
 

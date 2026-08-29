@@ -1,6 +1,7 @@
 // CodeRadar v3.6 — Core Types & Enums
 // §3 Data Models — EntityId-based identity, Macrame-backed persistence, ProjectedGraph.
 
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -77,7 +78,7 @@ pub enum SymbolId {
 
 // ── ByteSpan (§3.3) ─────────────────────────────────────────────────────────
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub struct ByteSpan {
     pub start: usize,
     pub end: usize, // exclusive
@@ -510,15 +511,36 @@ pub enum FileType {
     Stub,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SourceType {
     Impl,
     Stub,
 }
 
+impl SourceType {
+    /// JSON representation: lowercase variant name (serde `rename_all =
+    /// "lowercase"`), matching what the v2 concept writers emit.
+    pub fn to_json(&self) -> &'static str {
+        match self {
+            SourceType::Impl => "impl",
+            SourceType::Stub => "stub",
+        }
+    }
+
+    /// Inverse of [`SourceType::to_json`].
+    pub fn from_json(s: &str) -> Result<Self, String> {
+        match s {
+            "impl" => Ok(SourceType::Impl),
+            "stub" => Ok(SourceType::Stub),
+            other => Err(format!("unknown source '{other}' in concept JSON v2")),
+        }
+    }
+}
+
 // ── FunctionKind (§3.3) ─────────────────────────────────────────────────────
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub enum FunctionKind {
     Free,
     Method,
@@ -580,7 +602,7 @@ pub enum TargetKind {
 
 // ── Parameter & Field (§3.3) ────────────────────────────────────────────────
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub struct Parameter {
     pub name: String,
     pub annotation: Option<String>,
@@ -591,7 +613,7 @@ pub struct Parameter {
     pub is_keyword_only: bool,
 }
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub struct Field {
     pub name: String,
     pub annotation: Option<String>,
@@ -662,7 +684,7 @@ pub enum ImportResolution {
 
 // ── UnresolvedRef / ResolvedCall (§3.3, §6.1a) ─────────────────────────────
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub struct UnresolvedRef {
     pub name: String,
     pub path: Vec<String>,
@@ -670,7 +692,7 @@ pub struct UnresolvedRef {
     pub col: usize,
 }
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub enum ResolvedCall {
     Function(EntityId),
     Method {
@@ -686,7 +708,7 @@ pub enum ResolvedCall {
     },
 }
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub enum ReceiverShape {
     SelfRef,
     ClassRef(EntityId),
@@ -695,7 +717,7 @@ pub enum ReceiverShape {
     Unknown,
 }
 
-#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub enum UnresolvedReason {
     NameNotInScope,
     TypeInferenceRequired,
@@ -760,7 +782,7 @@ pub struct Class {
 /// AST-derived structural metrics computed during single-pass extraction.
 /// Cheap to compute (one walk over the function's tree-sitter node); carried
 /// on `Function` so the smell engine needs no re-parse of source.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionMetrics {
     /// Cyclomatic complexity: 1 + number of control-flow decision points.
     pub cyclomatic: usize,
@@ -1186,6 +1208,12 @@ pub struct ProjectedGraph {
 
     pub file_to_modules: HashMap<PathBuf, Vec<EntityId>>,
     pub module_by_dotted_name: HashMap<(Language, String), EntityId>,
+    /// Fast path for `find_module_by_dotted_name` (v0.8 P1): every
+    /// segment-boundary suffix of each module's extension-less path — both
+    /// keeping and dropping a trailing `__init__` segment — mapped to the
+    /// module id. Rebuilt by `rebuild_module_path_index` after full analyze
+    /// and cold load; lookups fall back to the full scan when it is empty.
+    pub module_path_index: HashMap<String, EntityId>,
 
     pub importers: HashMap<EntityId, BTreeSet<EntityId>>,
     /// Forward import index: importer module → set of modules it imports.
@@ -1402,5 +1430,231 @@ mod tests {
     fn test_known_decorator_unknown() {
         let effect = crate::extract::decorators::known_decorator_effects("@myapp.custom");
         assert!(effect.is_none());
+    }
+}
+
+// ── Concept JSON v2 round-trip helpers (v0.8 P1) ──────────────────────────
+//
+// `module_to_dict` / `entity_dict` serialise `language` and `parse_quality`
+// with Rust `Debug` formatting ("Python", "Clean"). The concept JSON v2
+// builders and the cold-start parser agree on those same strings, so a
+// loaded graph surfaces byte-identical Python-facing dicts to a fresh
+// analyze. Serde would not (its default for unit variants round-trips the
+// same, but the dict surface is Debug-based, so we pin it here explicitly).
+
+impl Language {
+    /// JSON representation: the Debug (PascalCase) variant name, matching
+    /// what `module_to_dict` hands to Python.
+    pub fn to_json(&self) -> String {
+        format!("{self:?}")
+    }
+
+    /// Inverse of [`Language::to_json`]. Table lookup over every variant's
+    /// Debug name (the exact representation `to_json` writes), so the two
+    /// stay in lockstep — an exhaustive `match` on string literals would not
+    /// be checked when the enum grows (which is how `Powershell` got missed).
+    pub fn from_json(s: &str) -> Result<Self, String> {
+        static ALL: &[Language] = &[
+            Language::Python, Language::TypeScript, Language::JavaScript,
+            Language::Go, Language::Rust, Language::Java, Language::C,
+            Language::Cpp, Language::Ruby, Language::Php, Language::CSharp,
+            Language::Kotlin, Language::Swift, Language::Scala, Language::Lua,
+            Language::Elixir, Language::Zig, Language::R, Language::Bash,
+            Language::Dart, Language::Protobuf, Language::Dockerfile,
+            Language::Sql, Language::Hcl, Language::Cmake, Language::Graphql,
+            Language::Erlang, Language::Haskell, Language::Nix, Language::Shell,
+            Language::Groovy, Language::Perl, Language::SystemVerilog,
+            Language::Ocaml, Language::Clojure, Language::Fsharp,
+            Language::Verilog, Language::Julia, Language::Powershell,
+            Language::EmacsLisp, Language::Objc, Language::OtherTen,
+        ];
+        ALL.iter().copied()
+            .find(|v| v.to_json() == s)
+            .ok_or_else(|| format!("unknown language '{s}' in concept JSON v2"))
+    }
+}
+
+impl ParseQuality {
+    /// JSON representation: the Debug variant name ("Clean", "Partial", …).
+    pub fn to_json(&self) -> String {
+        format!("{self:?}")
+    }
+
+    /// Inverse of [`ParseQuality::to_json`].
+    pub fn from_json(s: &str) -> Result<Self, String> {
+        Ok(match s {
+            "Clean" => ParseQuality::Clean,
+            "Partial" => ParseQuality::Partial,
+            "Tainted" => ParseQuality::Tainted,
+            "Deferred" => ParseQuality::Deferred,
+            other => return Err(format!("unknown parse_quality '{other}' in concept JSON v2")),
+        })
+    }
+}
+impl ImportKind {
+    /// Explicit tagged JSON object for concept JSON v2 (design §5). Serde's
+    /// default external tagging is deliberately NOT used: the contract is a
+    /// stable, self-describing object with a `variant` key.
+    pub fn to_json(&self) -> serde_json::Value {
+        use serde_json::json;
+        match self {
+            ImportKind::ModuleImport { module, alias } => json!({
+                "variant": "ModuleImport",
+                "module": module,
+                "alias": alias,
+            }),
+            ImportKind::FromImport { module, names } => json!({
+                "variant": "FromImport",
+                "module": module,
+                "names": names,
+            }),
+            ImportKind::RelativeImport { level, module, names } => json!({
+                "variant": "RelativeImport",
+                "level": level,
+                "module": module,
+                "names": names,
+            }),
+            ImportKind::StarImport { module } => json!({
+                "variant": "StarImport",
+                "module": module,
+            }),
+            ImportKind::Side { module } => json!({
+                "variant": "Side",
+                "module": module,
+            }),
+        }
+    }
+
+    /// Inverse of [`ImportKind::to_json`]. `names` entries are
+    /// `[name, alias | null]` pairs.
+    pub fn from_json(v: &serde_json::Value) -> Result<Self, String> {
+        let variant = v
+            .get("variant")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| "import_kind: missing 'variant'".to_string())?;
+        let module_of = |v: &serde_json::Value, variant: &str| -> Result<String, String> {
+            v.get("module")
+                .and_then(|m| m.as_str())
+                .map(str::to_string)
+                .ok_or_else(|| format!("import_kind: missing 'module' for variant {variant}"))
+        };
+        let names_of =
+            |v: &serde_json::Value, variant: &str| -> Result<Vec<(String, Option<String>)>, String> {
+                let names = v
+                    .get("names")
+                    .and_then(|n| n.as_array())
+                    .ok_or_else(|| format!("import_kind: missing 'names' for variant {variant}"))?;
+                names.iter().enumerate().map(|(i, item)| {
+                    let arr = item
+                        .as_array()
+                        .ok_or_else(|| format!("import_kind: names[{i}] is not a pair"))?;
+                    let name = arr
+                        .first()
+                        .and_then(|n| n.as_str())
+                        .ok_or_else(|| format!("import_kind: names[{i}] missing name"))?;
+                    let alias = arr.get(1).and_then(|a| a.as_str());
+                    Ok::<_, String>((name.to_string(), alias.map(str::to_string)))
+                }).collect()
+            };
+        match variant {
+            "ModuleImport" => Ok(ImportKind::ModuleImport {
+                module: module_of(v, variant)?,
+                alias: v.get("alias").and_then(|a| a.as_str()).map(str::to_string),
+            }),
+            "FromImport" => Ok(ImportKind::FromImport {
+                module: module_of(v, variant)?,
+                names: names_of(v, variant)?,
+            }),
+            "RelativeImport" => Ok(ImportKind::RelativeImport {
+                level: v
+                    .get("level")
+                    .and_then(|l| l.as_u64())
+                    .ok_or_else(|| "import_kind: RelativeImport missing 'level'".to_string())?
+                        as usize,
+                module: v.get("module").and_then(|m| m.as_str()).map(str::to_string),
+                names: names_of(v, variant)?,
+            }),
+            "StarImport" => Ok(ImportKind::StarImport {
+                module: module_of(v, variant)?,
+            }),
+            "Side" => Ok(ImportKind::Side {
+                module: module_of(v, variant)?,
+            }),
+            other => Err(format!("import_kind: unknown variant '{other}'")),
+        }
+    }
+}
+#[cfg(test)]
+mod concept_v2_helpers_tests {
+    use super::*;
+
+    #[test]
+    fn language_roundtrip_matches_debug() {
+        // ALL 41 variants — the Tier-2 / batch-3 additions (Cmake…OtherTen)
+        // were missing from both the parser and this test, which is how a
+        // `.ps1` module's `"Powershell"` language broke cold load.
+        for lang in [
+            Language::Python, Language::TypeScript, Language::JavaScript, Language::Go,
+            Language::Rust, Language::Java, Language::C, Language::Cpp, Language::Ruby,
+            Language::Php, Language::CSharp, Language::Kotlin, Language::Swift,
+            Language::Scala, Language::Lua, Language::Elixir, Language::Zig, Language::R,
+            Language::Bash, Language::Dart, Language::Protobuf, Language::Dockerfile,
+            Language::Sql, Language::Hcl, Language::Cmake, Language::Graphql,
+            Language::Erlang, Language::Haskell, Language::Nix, Language::Shell,
+            Language::Groovy, Language::Perl, Language::SystemVerilog,
+            Language::Ocaml, Language::Clojure, Language::Fsharp, Language::Verilog,
+            Language::Julia, Language::Powershell, Language::EmacsLisp, Language::Objc,
+            Language::OtherTen,
+        ] {
+            let s = lang.to_json();
+            assert_eq!(s, format!("{lang:?}"));
+            assert_eq!(Language::from_json(&s).unwrap(), lang);
+        }
+        assert!(Language::from_json("python").is_err());
+    }
+
+    #[test]
+    fn parse_quality_roundtrip_matches_debug() {
+        for q in [ParseQuality::Clean, ParseQuality::Partial, ParseQuality::Tainted, ParseQuality::Deferred] {
+            let s = q.to_json();
+            assert_eq!(s, format!("{q:?}"));
+            assert_eq!(ParseQuality::from_json(&s).unwrap(), q);
+        }
+    }
+
+    #[test]
+    fn import_kind_roundtrip() {
+        let cases = vec![
+            ImportKind::ModuleImport { module: "os".into(), alias: None },
+            ImportKind::ModuleImport { module: "os.path".into(), alias: Some("p".into()) },
+            ImportKind::FromImport {
+                module: "pkg.alpha".into(),
+                names: vec![("alpha".into(), None), ("beta".into(), Some("b".into()))],
+            },
+            ImportKind::RelativeImport {
+                level: 1,
+                module: None,
+                names: vec![("Base".into(), None)],
+            },
+            ImportKind::RelativeImport {
+                level: 2,
+                module: Some("sibling".into()),
+                names: vec![("x".into(), Some("y".into()))],
+            },
+            ImportKind::StarImport { module: "pkg".into() },
+            ImportKind::Side { module: "dotenv".into() },
+        ];
+        for k in &cases {
+            let v = k.to_json();
+            assert!(v.get("variant").is_some());
+            assert_eq!(ImportKind::from_json(&v).unwrap(), *k);
+        }
+    }
+
+    #[test]
+    fn import_kind_rejects_garbage() {
+        assert!(ImportKind::from_json(&serde_json::json!({})).is_err());
+        assert!(ImportKind::from_json(&serde_json::json!({"variant": "Bogus"})).is_err());
+        assert!(ImportKind::from_json(&serde_json::json!({"variant": "FromImport", "module": "m"})).is_err());
     }
 }

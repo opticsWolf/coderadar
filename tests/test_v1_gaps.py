@@ -8,6 +8,7 @@ gracefully when `codegraph-main` is not checked out (path overridable via the
 CODEGRAPH_MAIN env var).
 """
 
+import json
 import os
 import sys
 import threading
@@ -68,6 +69,110 @@ def test_real_repo_traversal_latency():
     assert traverse_ms < 60_000, f"traverse too slow: {traverse_ms:.0f}ms"
 
 
+_COLD_START_LOAD_SCRIPT = """
+import json, sys, time
+
+sys.path.insert(0, sys.argv[1])
+_t0 = time.perf_counter()
+import coderadar  # noqa: F401  (import time is part of the fresh-process cost)
+from coderadar._core import search_entities, traverse, graph_stats
+import_s = time.perf_counter() - _t0
+
+db_path, root = sys.argv[2], sys.argv[3]
+
+t_load0 = time.perf_counter()
+coderadar.load(db_path, root)
+t_loaded = time.perf_counter()
+
+funcs = search_entities("", 1, "function")
+t_search = time.perf_counter()
+start_id = funcs[0]["id"]
+nodes = traverse(start_id, 3, ["calls"], "both", None)
+t_done = time.perf_counter()
+
+stats = graph_stats()
+print(json.dumps({
+    "import_s": import_s,
+    "load_s": t_loaded - t_load0,
+    "search_s": t_search - t_loaded,
+    "traverse_s": t_done - t_search,
+    "first_query_s": t_search - t_load0,   # load -> first query result
+    "total_s": t_done - t_load0,           # load + search + traverse
+    "file_count": stats.get("file_count"),
+    "functions": stats.get("functions"),
+    "call_edges": stats.get("call_edges"),
+    "revision": stats.get("revision"),
+    "traverse_nodes": len(nodes),
+    "start_name": funcs[0]["name"],
+}))
+"""
+
+
+@pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
+@pytest.mark.slow
+def test_cold_start_load_latency():
+    """v0.8 P1 §16 — cold-start load(db) + one search + one depth-3 traverse.
+
+    Runs in a FRESH process (subprocess) so the process-global graph is empty
+    and the measurement is the real cold-start path. Gate: whole fresh process
+    (interpreter + import + load + queries) < 4.6s — one order of magnitude
+    better than the 46.2s full analyze of the same 605-file repo recorded in
+    docs/v0.8-p1-cold-start-design.md §16.
+    """
+    import shutil
+    import subprocess
+
+    if not os.path.isdir(_CODEGRAPH_MAIN):
+        pytest.skip(f"codegraph-main not found at {_CODEGRAPH_MAIN}")
+
+    root = Path(_CODEGRAPH_MAIN)
+    db = root / ".coderadar" / "store" / "coderadar.db"
+    if not db.exists():
+        # Build the ledger once; the build itself is not the measured leg.
+        analyze(_CODEGRAPH_MAIN, create_store=True)
+        assert db.exists(), "analyze(create_store=True) did not create the store"
+
+    def run_fresh():
+        t_wall0 = time.perf_counter()
+        proc = subprocess.run(
+            [sys.executable, "-c", _COLD_START_LOAD_SCRIPT,
+             str(Path(__file__).parent.parent / "py_agent" / "src"),
+             str(db), str(root)],
+            capture_output=True, text=True, timeout=300,
+        )
+        wall_s = time.perf_counter() - t_wall0
+        return proc, wall_s
+
+    proc, wall_s = run_fresh()
+    if proc.returncode != 0 and "meta_version" in (proc.stderr + proc.stdout):
+        # A v1 (pre-v2-concept) store is a hard error for load — rebuild it
+        # once, then re-measure.
+        shutil.rmtree(root / ".coderadar", ignore_errors=True)
+        analyze(_CODEGRAPH_MAIN, create_store=True)
+        proc, wall_s = run_fresh()
+
+    assert proc.returncode == 0, f"cold-start subprocess failed: {proc.stderr[-2000:]}"
+    rep = json.loads(proc.stdout.strip().splitlines()[-1])
+
+    print(
+        f"\n[P1 16] fresh-process cold start "
+        f"({rep['file_count']} files, {rep['functions']} functions, "
+        f"{rep['call_edges']} call edges, revision {rep['revision']}):"
+    )
+    print(f"  import:        {rep['import_s'] * 1000:.0f}ms")
+    print(f"  load(db):      {rep['load_s'] * 1000:.0f}ms")
+    print(f"  load->first query: {rep['first_query_s'] * 1000:.0f}ms")
+    print(
+        f"  first search:  {rep['search_s'] * 1000:.0f}ms; "
+        f"depth-3 traverse from {rep['start_name']!r}: "
+        f"{rep['traverse_nodes']} nodes in {rep['traverse_s'] * 1000:.0f}ms"
+    )
+    print(f"  wall total:    {wall_s * 1000:.0f}ms (in-script total {rep['total_s'] * 1000:.0f}ms)")
+
+    assert rep["traverse_nodes"] > 0, "traverse from a loaded graph returned nothing"
+    assert wall_s < 4.6, f"cold start too slow: {wall_s:.2f}s (gate 4.6s)"
+
+
 @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
 def test_traverse_unresolved_counts():
     """Plan 2.3 — traverse_unresolved reports targets the walk can't follow."""
@@ -124,7 +229,11 @@ def test_as_of_temporal_traversal():
     from datetime import datetime, timezone
 
     def now_ts():
-        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+        # Real microsecond precision (%f), not a hardcoded .000000: the
+        # ledger stores edge valid_from at microsecond resolution, and a
+        # second-truncated ts can land BEFORE the edge's valid_from when
+        # both fall in the same second, silently hiding the edge.
+        return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     d = tempfile.mkdtemp()
     with open(os.path.join(d, "a.py"), "w") as f:
@@ -160,7 +269,7 @@ def test_as_of_upstream_and_both_rejected():
         f.write("def a():\n    return b()\n\ndef b(): return 1\n")
     analyze(d)
     a_id = next(f["id"] for f in search_entities("a", 5, "function") if f["name"] == "a")
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000000Z")
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     for direction in ("in", "upstream", "both"):
         with pytest.raises(NotImplementedError):

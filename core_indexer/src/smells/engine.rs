@@ -282,6 +282,7 @@ pub(crate) mod tests {
             type_aliases: HashMap::new(),
             file_to_modules: HashMap::new(),
             module_by_dotted_name: HashMap::new(),
+            module_path_index: HashMap::new(),
             importers: HashMap::new(),
             imports_by_importer: HashMap::new(),
             callers_by_callee: HashMap::new(),

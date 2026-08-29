@@ -62,7 +62,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(rank_by_centrality, m)?)?;
     m.add_function(wrap_pyfunction!(find_clones, m)?)?;
     m.add_function(wrap_pyfunction!(find_scaffolding, m)?)?;
-    m.add_function(wrap_pyfunction!(export_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
@@ -106,6 +105,14 @@ static INDEXED_ROOT: std::sync::LazyLock<RwLock<Option<std::path::PathBuf>>> =
 /// behaviour change.
 static ACTIVE_CONFIG: std::sync::LazyLock<RwLock<Arc<graph::GraphConfig>>> =
     std::sync::LazyLock::new(|| RwLock::new(Arc::new(graph::GraphConfig::default())));
+
+/// Ledger revision the current graph was materialized from — the
+/// `MaterializedState.seq_anchor` from `load_snapshot` (v0.8 P1). This is
+/// the Stage 0.3 analysis-cache key: a cache entry is only valid for the
+/// revision it was computed on. `None` means the graph came from `analyze`
+/// (no revision was observed) or nothing is loaded.
+static LEDGER_REVISION: std::sync::LazyLock<RwLock<Option<i64>>> =
+    std::sync::LazyLock::new(|| RwLock::new(None));
 
 pub(crate) fn active_config() -> Arc<graph::GraphConfig> {
     ACTIVE_CONFIG.read().clone()
@@ -734,24 +741,38 @@ fn analyze_inner(root: &str, create_store: bool) -> AnalyzeOutcome {
         }  // if !tasks.is_empty()
     }
 
-    // v0.5: Flush all concepts in one `write_concepts` call (chunked internally
-    // at 70 concepts/chunk, one transaction per chunk — ~2.35ms/chunk).
-    // Concepts must commit before edges (FK REFERENCES constraints).
-    if let Some(ref store) = graph.store {
-        let _ = store.upsert_concepts_bulk(&all_concepts);
-    }
-
-    // Compute MRO and run resolution cascade on all calls
+    // Compute MRO and run resolution cascade on all calls.
+    //
+    // v0.8 P1: the concept flush moved INSIDE this block, after the
+    // cascade. v2 concept JSON (built from the FINAL projection) must
+    // commit before edges (FK REFERENCES constraints) yet carry
+    // post-resolution state — notably `Function.resolved_calls` — which
+    // cold start (`load_snapshot`) parses back. The pre-cascade v1 flush
+    // (`upsert_concepts_bulk(&all_concepts)`) is gone; v2 replaces it
+    // entirely (the v1 `all_concepts` collected during extraction are now
+    // discarded — a known, deliberate waste until extraction stops
+    // building them).
     {
         let mut projection = (*graph.snapshot()).clone();
+        // Dotted-name resolution (resolve_imports, resolve_all_calls) is O(1)
+        // per lookup once this suffix index is built; without it the cascade
+        // scans every module per import (v0.8 P1: 8.3s of the 46s benchmark).
+        crate::graph::rebuild_module_path_index(&mut projection);
         graph.resolve_imports(&mut projection);
         graph.populate_class_methods(&mut projection);
         graph.compute_all_mro(&mut projection);
         graph.resolve_class_hierarchy(&mut projection);
         graph.resolve_overrides(&mut projection);
         graph.resolve_all_calls(&mut projection);
+        // Concept JSON v2 flush — post-cascade, pre-edge (FK order).
+        if let Some(ref store) = graph.store {
+            let v2 = crate::storage::build_v2_concepts_all(&projection);
+            let _ = store.upsert_concepts_bulk(&v2);
+        }
         // Persist resolved edges to Macrame store
-        let _ = graph.persist_edges(&projection);
+        if let Err(e) = graph.persist_edges(&projection) {
+            eprintln!("[diag] persist_edges failed: {e:?}");
+        }
         graph.commit_projection(projection);
     }
 
@@ -1610,6 +1631,9 @@ fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
         // Total call edges
         let total_calls: usize = snap.callees_by_caller.values().map(|s| s.len()).sum();
         dict.set_item("call_edges", total_calls)?;
+        // Ledger revision this graph was materialized from (Stage 0.3 cache
+        // key); None for graphs produced by `analyze` (fresh, unrevisioned).
+        dict.set_item("revision", LEDGER_REVISION.read().clone())?;
         // Unix seconds of the last projection commit; 0.0 means never indexed.
         // The MCP staleness banner reads this.
         dict.set_item("indexed_at", graph.indexed_at())?;
@@ -1981,29 +2005,106 @@ pub(crate) fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
 
 // ── Snapshot I/O ───────────────────────────────────────────────────────────
 //
-// Honesty pass: these were silent `Ok(())` stubs — `export_snapshot` is
-// wired through cli.py (`coderadar export`) and would silently produce no
-// file; `load_snapshot` is not yet called from Python but the `load(db_path)`
-// entry exists. Both now raise loudly so callers see the truth rather than a
-// silent no-op. In-memory persistence (cold-start without re-analyze) is Phase
-// 3B work — see docs/traversal-matrix.md §3.
+// Cold start (v0.8 P1): rebuild the in-memory graph from the Macrame
+// ledger instead of re-analyzing. `export_snapshot` is gone — the ledger
+// itself is the snapshot; there is no separate export surface.
 
+/// Cold-start a project from the Macrame ledger (v0.8 P1).
+///
+/// Reads the ledger snapshot (`reconstruct(now)`), parses the concept
+/// JSON v2 into a `ProjectedGraph` (`graph::cold_start`), re-runs the
+/// cheap resolution cascade (imports → methods → MRO → hierarchy →
+/// overrides) on it, and commits the result into the process global.
+/// Call indices come from `Function.resolved_calls` plus the ledger's
+/// synthetic-kind edges — see `cold_start` module docs.
+///
+/// `root` should be the same project root passed to `analyze` (entity ids
+/// are keyed by file path); it becomes `INDEXED_ROOT` for mutation policy
+/// and staleness checks.
+///
+/// `indexed_at` is set from the store file's mtime (last ledger write),
+/// not from "now".
+///
+/// Returns a dict: `revision` (ledger seq anchor — the Stage 0.3 cache
+/// key, also surfaced in `graph_stats`), `indexed_at`, and
+/// reconstruction counts.
 #[pyfunction]
-fn export_snapshot(_path: &str) -> PyResult<()> {
-    Err(pyo3::exceptions::PyNotImplementedError::new_err(
-        "export_snapshot(path) is not implemented. The in-memory ProjectedGraph \
-         is rebuilt by analyze() on each run; serialising it to disk is Phase 3B \
-         work (see docs/traversal-matrix.md §3)."
-    ))
-}
+#[pyo3(signature = (db_path, root=None))]
+fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<PyObject> {
+    use crate::graph::cold_start::{ColdStartStats, projection_from_state};
+    use crate::storage::{now_iso8601, CodeGraphStore};
 
-#[pyfunction]
-fn load_snapshot(_path: &str) -> PyResult<()> {
-    Err(pyo3::exceptions::PyNotImplementedError::new_err(
-        "load_snapshot(path) is not implemented. Load a project by calling \
-         analyze(root); the Macrame-ledger-backed cold-start is Phase 3B work \
-         (see docs/traversal-matrix.md §3)."
-    ))
+    let db = db_path.to_string();
+    let root_owned = root.map(|r| r.to_string());
+    let (revision, stats, indexed_at): (i64, ColdStartStats, f64) = py.allow_threads(
+        || -> PyResult<(i64, ColdStartStats, f64)> {
+            // Canonical timestamp: macrame's `timestamp::normalize`
+            // rejects "now" — the same helper every persistence path uses.
+            let store = CodeGraphStore::open(&db)
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "failed to open Macrame store {db}: {e:?}"
+                    ))
+                })?;
+            let now = now_iso8601();
+            let state = store
+                .reconstruct(&now)
+                .map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "ledger reconstruct failed for {db}: {e:?}"
+                    ))
+                })?;
+            drop(store);
+
+            let (mut projection, stats) =
+                projection_from_state(&state)
+                    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+
+            // Same cascade as `analyze_inner`, minus `resolve_all_calls`
+            // (resolved_calls already restored from v2 concepts) and
+            // `persist_edges` (the ledger already is the truth).
+            let config = active_config();
+            let graph = CodeGraph::new((*config).clone());
+            graph.resolve_imports(&mut projection);
+            graph.populate_class_methods(&mut projection);
+            graph.compute_all_mro(&mut projection);
+            graph.resolve_class_hierarchy(&mut projection);
+            graph.resolve_overrides(&mut projection);
+            graph.commit_projection(projection);
+
+            // `commit_projection` stamped "now"; the honest value is the
+            // last write to the store.
+            let indexed_at = std::fs::metadata(&db)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            *graph.indexed_at.write() = indexed_at;
+
+            let revision = state.seq_anchor;
+            *LEDGER_REVISION.write() = Some(revision);
+            *GLOBAL_GRAPH.write() = Some(graph);
+            if let Some(r) = root_owned {
+                *INDEXED_ROOT.write() = Some(std::path::PathBuf::from(r));
+            }
+            Ok((revision, stats, indexed_at))
+        }
+    )?;
+
+    let dict = PyDict::new(py);
+    dict.set_item("revision", revision)?;
+    dict.set_item("indexed_at", indexed_at)?;
+    dict.set_item("modules", stats.modules)?;
+    dict.set_item("classes", stats.classes)?;
+    dict.set_item("functions", stats.functions)?;
+    dict.set_item("imports", stats.imports)?;
+    dict.set_item("constants", stats.constants)?;
+    dict.set_item("type_aliases", stats.type_aliases)?;
+    dict.set_item("resolved_call_pairs", stats.resolved_call_pairs)?;
+    dict.set_item("synthetic_edges", stats.synthetic_edges)?;
+    dict.set_item("skipped_field_concepts", stats.skipped_field_concepts)?;
+    Ok(dict.into())
 }
 
 // ── File Watcher Bindings ──────────────────────────────────────────────

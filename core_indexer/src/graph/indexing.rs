@@ -143,6 +143,7 @@ impl CodeGraph {
             type_aliases: HashMap::new(),
             file_to_modules: HashMap::new(),
             module_by_dotted_name: HashMap::new(),
+            module_path_index: HashMap::new(),
             importers: HashMap::new(),
             imports_by_importer: HashMap::new(),
             callers_by_callee: HashMap::new(),
@@ -280,6 +281,9 @@ impl CodeGraph {
         let count = units.len();
         let mut projection = (*self.snapshot()).clone();
         self.insert_extracted(&mut projection, &units, file_path, language);
+        // A new file adds a module — refresh the dotted-name index so
+        // imports resolving to it work without a full re-analyze.
+        super::module_resolution::rebuild_module_path_index(&mut projection);
         self.commit_projection(projection);
 
         Ok((count, units))

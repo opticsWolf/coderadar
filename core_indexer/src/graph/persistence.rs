@@ -2,6 +2,12 @@ use super::CodeGraph;
 use crate::types::*;
 use macrame::graph::EdgeAssertion;
 
+/// Ledger dedup key for an edge triple. `\u{0}` cannot appear in entity ids
+/// or edge kinds, so the join is collision-free.
+fn edge_key(source: &str, target: &str, kind: &str) -> String {
+    format!("{source}\u{0}{target}\u{0}{kind}")
+}
+
 impl CodeGraph {
     /// Persist extracted entities to Macrame (async via block_on).
     /// Returns the count of upserted entities.
@@ -40,6 +46,19 @@ impl CodeGraph {
     /// a call into an edited function changed as surely as a call out of one.
     /// This mirrors `resolve_calls_scoped`, which already made the same split
     /// for resolution.
+    ///
+    /// Idempotent on the ledger: an in-scope edge that already has an open
+    /// interval is not re-asserted. CodeRadar edges carry no properties and a
+    /// constant weight, so the open interval is the same fact — re-asserting
+    /// would only add a version `as_of` has to replay through, and with a
+    /// fresh per-run `valid_from` it would abort on macrame's
+    /// single-open-interval guard. Removal is not this path's job: deleted
+    /// entities retire their edges via `retire_entities`.
+    ///
+    /// Returns the number of in-scope, FK-safe (non-external, no symbolic
+    /// heuristic target) edges in the projection — whether newly asserted or
+    /// already open — so the count is a property of the projection, not of
+    /// the ledger's prior state.
     pub fn persist_edges_scoped(
         &self,
         projection: &ProjectedGraph,
@@ -68,14 +87,51 @@ impl CodeGraph {
         let mut batch: Vec<macrame::graph::EdgeAssertion> = Vec::new();
         let ts_now = crate::storage::now_iso8601();
 
+        // FK safety: the ledger enforces REFERENCES(concepts(id) ON DELETE
+        // CASCADE) on both endpoints, and the concept flush (which runs
+        // first) wrote exactly the entities in these maps. Edges whose
+        // endpoint is not one of them must never be asserted. That is the
+        // general case behind `external::…` / `builtins.…` callees — and it
+        // also covers the call resolver's symbolic heuristic targets (a
+        // capitalized receiver like `Date.now()` becomes the pseudo-target
+        // `Date::now`, which is never a concept id). Before this check such
+        // edges aborted the whole all-or-nothing batch with a FOREIGN KEY
+        // error and were silently lost (`let _ =` at the call site) — which
+        // is how stores with concepts but zero edges got built.
+        let valid: std::collections::HashSet<&str> = projection
+            .modules
+            .keys()
+            .chain(projection.functions.keys())
+            .chain(projection.classes.keys())
+            .chain(projection.imports.keys())
+            .chain(projection.constants.keys())
+            .chain(projection.type_aliases.keys())
+            .map(String::as_str)
+            .collect();
+        let is_persistable = |id: &str| valid.contains(id);
+
+        // Triples that already hold an open interval — skipped below so a
+        // re-persist is a no-op instead of a single-open abort.
+        let open: std::collections::HashSet<String> = store
+            .open_edge_triples(ts_now.as_str())?
+            .into_iter()
+            .map(|(s, t, k)| edge_key(&s, &t, &k))
+            .collect();
+
+        let dangling = |a: &str, b: &str| !is_persistable(a) || !is_persistable(b);
+
         for (caller, callees) in projection.callees_by_caller.iter() {
             for callee in callees.iter() {
-                // Skip edges where target is external/builtin (no concept entry)
-                // and edges where the target would violate FK constraints
-                if callee.starts_with("external::") || callee.starts_with("builtins.") {
+                if !in_scope(caller, callee) {
                     continue;
                 }
-                if !in_scope(caller, callee) {
+                // External/builtin callees and symbolic heuristic targets
+                // have no concept row — assert only FK-safe edges.
+                if dangling(caller, callee) {
+                    continue;
+                }
+                if open.contains(&edge_key(caller, callee, "CALLS")) {
+                    edge_count += 1;
                     continue;
                 }
                 batch.push(
@@ -98,12 +154,14 @@ impl CodeGraph {
         // so the FK target exists. External targets are still skipped.
         for (target_mod, importer_mods) in projection.importers.iter() {
             for importer in importer_mods.iter() {
-                if importer.starts_with("external::")
-                    || target_mod.starts_with("external::")
-                {
+                if !in_scope(importer, target_mod) {
                     continue;
                 }
-                if !in_scope(importer, target_mod) {
+                if dangling(importer, target_mod) {
+                    continue;
+                }
+                if open.contains(&edge_key(importer, target_mod, "IMPORTS")) {
+                    edge_count += 1;
                     continue;
                 }
                 batch.push(
@@ -119,14 +177,18 @@ impl CodeGraph {
         }
 
         // EXTENDS edges: subclass → base. `resolved_bases` holds only
-        // concrete class ids (resolve_class_hierarchy discards externals),
-        // so the FK guard is defensive.
+        // concrete class ids (resolve_class_hierarchy discards externals);
+        // the persistable check below is the FK guard.
         for (cid, class) in projection.classes.iter() {
             for base_id in class.resolved_bases.iter() {
-                if cid.starts_with("external::") || base_id.starts_with("external::") {
+                if !in_scope(cid, base_id) {
                     continue;
                 }
-                if !in_scope(cid, base_id) {
+                if dangling(cid, base_id) {
+                    continue;
+                }
+                if open.contains(&edge_key(cid, base_id, "EXTENDS")) {
+                    edge_count += 1;
                     continue;
                 }
                 batch.push(
@@ -143,10 +205,14 @@ impl CodeGraph {
 
         // OVERRIDES edges: override method → base method.
         for (override_fid, base_fid) in projection.overrides_base.iter() {
-            if override_fid.starts_with("external::") || base_fid.starts_with("external::") {
+            if !in_scope(override_fid, base_fid) {
                 continue;
             }
-            if !in_scope(override_fid, base_fid) {
+            if dangling(override_fid, base_fid) {
+                continue;
+            }
+            if open.contains(&edge_key(override_fid, base_fid, "OVERRIDES")) {
+                edge_count += 1;
                 continue;
             }
             batch.push(
@@ -212,11 +278,41 @@ impl CodeGraph {
         }
         self.commit_projection(projection);
 
-        // Persist to Macrame if store attached
+        // Persist to Macrame if store attached. Re-registering a synthetic
+        // edge that is already open is skipped (same fact), otherwise the
+        // re-run would abort on the single-open guard and the error would be
+        // silently dropped below. Two boundary guards, both enforced here so
+        // no caller can trip them:
+        //
+        //  * macrame's edge-type validator accepts only `[A-Z0-9]+`, so an
+        //    underscore kind (`DEPENDS_ON`) would fail the whole
+        //    all-or-nothing batch and lose every edge in it. The underscore
+        //    is stripped at this boundary; the in-memory indices are
+        //    kind-agnostic, so nothing else changes.
+        //  * `links` has FKs to `concepts` on both endpoints, so edges whose
+        //    endpoints are not persisted concepts (e.g. `django:route:...`
+        //    route nodes) cannot be asserted; the batch drops the failing
+        //    write rather than failing the registration (best-effort, as
+        //    before).
         if let Some(store) = self.store.as_ref() {
             let ts_now = crate::storage::now_iso8601();
+            // Unreadable ledger → assert everything (the pre-existing
+            // best-effort behaviour); the assert error is dropped below.
+            let open: std::collections::HashSet<String> = store
+                .open_edge_triples(ts_now.as_str())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(s, t, k)| edge_key(&s, &t, &k))
+                .collect();
             let batch: Vec<_> = edges
                 .iter()
+                .map(|(source_id, target_id, kind)| {
+                    let kind = kind.replace('_', "");
+                    (source_id.clone(), target_id.clone(), kind)
+                })
+                .filter(|(source_id, target_id, kind)| {
+                    !open.contains(&edge_key(source_id, target_id, kind))
+                })
                 .map(|(source_id, target_id, kind)| {
                     macrame::graph::EdgeAssertion::new(
                         source_id.as_str(), target_id.as_str(), kind.as_str())
@@ -224,7 +320,9 @@ impl CodeGraph {
                         .weight(1.0)
                 })
                 .collect();
-            let _ = store.assert_edges_bulk(batch);
+            if !batch.is_empty() {
+                let _ = store.assert_edges_bulk(batch);
+            }
         }
 
         Ok(edges.len())

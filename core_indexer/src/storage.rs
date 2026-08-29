@@ -55,21 +55,34 @@ static DIAGNOSTIC_OPEN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Key lifespan timestamp — the Macrame open sentinel for "still true".
 pub const TS_OPEN: &str = "9999-12-31T00:00:00.000000Z";
 
-/// Current UTC time as an RFC 3339 timestamp (no chrono dependency).
+/// Current UTC time as a canonical Macrame timestamp (no chrono dependency).
 /// Used as `valid_from` for concepts AND edges so the bitemporal ledger can
-/// distinguish *when* a fact was asserted (temporal traversal depends on it).
+/// distinguish *when* a fact was asserted (temporal traversal depends on it),
+/// and as the `ts` argument of `Connection::reconstruct` on cold start.
+///
+/// The microsecond digits are load-bearing, not decorative: Macrame's write
+/// actor stamps `transaction_log.recorded_at` through `SystemClock` at full
+/// microsecond precision, and `reconstruct(ts)` folds only rows with
+/// `recorded_at <= ts` (a `ts` below the log floor returns the empty
+/// `predates_recorded_history` state without error). A second-precision `now`
+/// truncates up to a millisecond into the past, so a cold start in the same
+/// second as the last write silently restores nothing.
 pub fn now_iso8601() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let secs = now.as_secs();
+    let micros = now.subsec_micros();
     let days_since_epoch = secs / 86400;
     let secs_of_day = secs % 86400;
     let hours = secs_of_day / 3600;
     let minutes = (secs_of_day % 3600) / 60;
     let seconds = secs_of_day % 60;
     let (y, m, d) = civil_from_days(days_since_epoch as i64);
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000000Z", y, m, d, hours, minutes, seconds)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:06}Z",
+        y, m, d, hours, minutes, seconds, micros
+    )
 }
 
 // ── CodeGraphStore — owns the Macrame Database + Runtime ────────────────────
@@ -305,6 +318,45 @@ impl CodeGraphStore {
         })
     }
 
+    /// Every `(source, target, edge_type)` triple that currently has an open
+    /// interval, read from `links_current`.
+    ///
+    /// `now` is the as-of instant; openness is `valid_to > now`, the same
+    /// test [`Self::retire_entities`] uses (the open sentinel and any future
+    /// close both compare greater than a real timestamp, a closed interval's
+    /// `valid_to` does not).
+    ///
+    /// The persist path uses this to stay idempotent: an edge that is already
+    /// open is the same fact (CodeRadar edges carry no properties and a
+    /// constant weight), so re-asserting it would only add a new version for
+    /// `as_of` to replay through — and with per-assertion `valid_from` it
+    /// would abort on macrame's single-open-interval guard anyway.
+    pub fn open_edge_triples(
+        &self,
+        now: &str,
+    ) -> macrame::Result<Vec<(String, String, String)>> {
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT source_id, target_id, edge_type \
+                     FROM links_current WHERE valid_to > ?1",
+                    libsql::params![now],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                ));
+            }
+            Ok(out)
+        })
+    }
+
     /// Assert a single edge.
     pub fn assert_edge(
         &self,
@@ -490,6 +542,823 @@ fn span_to_str(span: ByteSpan) -> String {
     format!("{}..{}", span.start, span.end)
 }
 
+// ── Concept JSON v2 (v0.8 P1) ──────────────────────────────────────────────
+//
+// v1 concept JSON (see `entity_meta`) consumed pre-resolution
+// `ExtractedUnit`s, so it cannot carry resolved state such as
+// `Function.resolved_calls`. v2 is built from the FINAL `ProjectedGraph`
+// entities — after the resolution cascade — and is what `load_snapshot`
+// parses back (see `graph::cold_start`).
+//
+// Version gate: every canonical concept carries `"meta_version": 2`. A store
+// whose canonical concepts lack it (v1 stores) is rejected on load with a
+// hard error, never silently upgraded.
+
+/// The meta_version value concept JSON v2 writes and requires.
+pub const V2_META_VERSION: u64 = 2;
+
+/// Canonical entity kinds a v2 concept may declare.
+pub const V2_CANONICAL_KINDS: &[&str] =
+    &["module", "class", "function", "import", "constant", "type_alias"];
+
+fn file_path_of(id: &str) -> &str {
+    // Entity ids are `{file_path}::{rest}`; file paths never contain "::".
+    match id.split_once("::") {
+        Some((file, _)) => file,
+        None => id,
+    }
+}
+
+fn v2_common(kind: &str, name: &str, file_path: &str, line: u64, exit_line: u64, docstring: &Option<String>, decorators: &[String]) -> serde_json::Value {
+    serde_json::json!({
+        "meta_version": V2_META_VERSION,
+        "kind": kind,
+        "name": name,
+        "file_path": file_path,
+        "line": line,
+        "exit_line": exit_line,
+        "docstring": docstring,
+        "decorators": decorators,
+    })
+}
+
+fn v2_upsert(id: &str, title: &str, content: serde_json::Value, now: &str) -> ConceptUpsert {
+    ConceptUpsert {
+        id: id.to_string(),
+        title: title.to_string(),
+        content: content.to_string(),
+        embedding_model: None,
+        valid_from: now.to_string(),
+        valid_to: TS_OPEN.to_string(),
+        retired: false,
+    }
+}
+
+fn module_content(m: &Module) -> serde_json::Value {
+    let file_path = m.id.strip_suffix("::module").unwrap_or(&m.id);
+    let mut v = v2_common("module", &m.name, file_path, 0, 0, &None, &[]);
+    v["language"] = serde_json::json!(m.language.to_json());
+    v["parse_quality"] = serde_json::json!(m.parse_quality.to_json());
+    v["file_version"] = serde_json::json!(m.file_version);
+    v["content_hash"] = serde_json::json!(format!("{:x}", m.content_hash));
+    v["classes"] = serde_json::json!(&m.classes);
+    v["functions"] = serde_json::json!(&m.functions);
+    v["imports"] = serde_json::json!(&m.imports);
+    v["constants"] = serde_json::json!(&m.constants);
+    v["type_aliases"] = serde_json::json!(&m.type_aliases);
+    v
+}
+
+fn class_content(c: &Class) -> serde_json::Value {
+    let file_path = file_path_of(&c.id);
+    let mut v = v2_common("class", &c.name, file_path, c.line as u64, c.exit_line as u64, &c.docstring, &c.decorators);
+    v["grammar_kind"] = serde_json::json!(&c.grammar_kind);
+    v["parent_class"] = serde_json::json!(&c.parent_class);
+    v["bases"] = serde_json::json!(&c.bases);
+    v["is_type_checking_only"] = serde_json::json!(&c.is_type_checking_only);
+    v["fields"] = serde_json::json!(&c.fields);
+    v["source"] = serde_json::json!(&c.source);
+    v["parse_quality"] = serde_json::json!(&c.parse_quality.to_json());
+    v["content_hash"] = serde_json::json!(format!("{:x}", c.content_hash));
+    v["span"] = serde_json::json!(&c.span);
+    v["name_span"] = serde_json::json!(&c.name_span);
+    v["body_span"] = serde_json::json!(&c.body_span);
+    v["decorators_span"] = serde_json::json!(&c.decorators_span);
+    v
+}
+
+fn function_content(f: &Function) -> serde_json::Value {
+    let file_path = file_path_of(&f.id);
+    let mut v = v2_common("function", &f.name, file_path, f.line as u64, f.exit_line as u64, &f.docstring, &f.decorators);
+    v["parent_class"] = serde_json::json!(&f.parent_class);
+    v["parameters"] = serde_json::json!(&f.parameters);
+    v["return_type"] = serde_json::json!(&f.return_type);
+    v["fn_kind"] = serde_json::json!(&f.kind);
+    v["is_async"] = serde_json::json!(&f.is_async);
+    v["is_generator"] = serde_json::json!(&f.is_generator);
+    v["source"] = serde_json::json!(&f.source);
+    v["signature_hash"] = serde_json::json!(format!("{:x}", f.signature_hash));
+    v["body_hash"] = serde_json::json!(format!("{:x}", f.body_hash));
+    v["metrics"] = serde_json::json!(&f.metrics);
+    v["is_type_checking_only"] = serde_json::json!(&f.is_type_checking_only);
+    v["parse_quality"] = serde_json::json!(&f.parse_quality.to_json());
+    v["content_hash"] = serde_json::json!(format!("{:x}", f.content_hash));
+    v["span"] = serde_json::json!(&f.span);
+    v["name_span"] = serde_json::json!(&f.name_span);
+    v["params_span"] = serde_json::json!(&f.params_span);
+    v["body_span"] = serde_json::json!(&f.body_span);
+    v["decorators_span"] = serde_json::json!(&f.decorators_span);
+    // Post-resolution state: the ONLY call data the ledger keeps. Cold
+    // start rebuilds the call indices from this (see cold_start).
+    v["resolved_calls"] = serde_json::json!(&f.resolved_calls);
+    v
+}
+
+fn import_content(i: &Import) -> serde_json::Value {
+    let file_path = file_path_of(&i.id);
+    // v2 rule: every entity carries an explicit `name`; imports use their
+    // raw source text (that is also what import_to_dict surfaces).
+    let mut v = v2_common("import", &i.raw, file_path, i.line as u64, 0, &None, &[]);
+    v["raw"] = serde_json::json!(&i.raw);
+    v["import_kind"] = serde_json::json!(i.kind.to_json());
+    v["is_type_only"] = serde_json::json!(&i.is_type_only);
+    v["name_span"] = serde_json::json!(&i.name_span);
+    v
+}
+
+fn constant_content(c: &Constant) -> serde_json::Value {
+    let file_path = file_path_of(&c.id);
+    let mut v = v2_common("constant", &c.name, file_path, 0, 0, &None, &[]);
+    v["annotation"] = serde_json::json!(&c.annotation);
+    v["source"] = serde_json::json!(&c.source);
+    v["default_value"] = serde_json::json!(&c.default_value);
+    v["span"] = serde_json::json!(&c.span);
+    v["name_span"] = serde_json::json!(&c.name_span);
+    v
+}
+
+fn type_alias_content(t: &TypeAlias) -> serde_json::Value {
+    let file_path = file_path_of(&t.id);
+    let mut v = v2_common("type_alias", &t.name, file_path, 0, 0, &None, &[]);
+    v["target"] = serde_json::json!(&t.target);
+    v["source"] = serde_json::json!(&t.source);
+    v["span"] = serde_json::json!(&t.span);
+    v["name_span"] = serde_json::json!(&t.name_span);
+    v
+}
+
+/// Build concept JSON v2 [`ConceptUpsert`]s for the WHOLE projection.
+///
+/// Call this on the FINAL projection (post-cascade), BEFORE
+/// `persist_edges`, because edges reference concept ids and the concept
+/// upsert must land first.
+pub fn build_v2_concepts_all(projection: &ProjectedGraph) -> Vec<ConceptUpsert> {
+    let now = now_iso8601();
+    let mut out: Vec<ConceptUpsert> = Vec::new();
+    for m in projection.modules.values() {
+        out.push(v2_upsert(&m.id, &m.name, module_content(m), &now));
+    }
+    for c in projection.classes.values() {
+        out.push(v2_upsert(&c.id, &c.name, class_content(c), &now));
+    }
+    for f in projection.functions.values() {
+        out.push(v2_upsert(&f.id, &f.name, function_content(f), &now));
+    }
+    for i in projection.imports.values() {
+        out.push(v2_upsert(&i.id, &i.raw, import_content(i), &now));
+    }
+    for k in projection.constants.values() {
+        out.push(v2_upsert(&k.id, &k.name, constant_content(k), &now));
+    }
+    for t in projection.type_aliases.values() {
+        out.push(v2_upsert(&t.id, &t.name, type_alias_content(t), &now));
+    }
+    out
+}
+
+/// Build concept JSON v2 upserts for the entities of ONE file (id prefix
+/// `{file_path}::`). Used by `update_file` after its scoped cascade.
+pub fn build_v2_concepts_for_file(projection: &ProjectedGraph, file_path: &str) -> Vec<ConceptUpsert> {
+    let prefix = format!("{file_path}::");
+    let now = now_iso8601();
+    let mut out: Vec<ConceptUpsert> = Vec::new();
+    for m in projection.modules.values() {
+        if m.id.starts_with(&prefix) {
+            out.push(v2_upsert(&m.id, &m.name, module_content(m), &now));
+        }
+    }
+    for c in projection.classes.values() {
+        if c.id.starts_with(&prefix) {
+            out.push(v2_upsert(&c.id, &c.name, class_content(c), &now));
+        }
+    }
+    for f in projection.functions.values() {
+        if f.id.starts_with(&prefix) {
+            out.push(v2_upsert(&f.id, &f.name, function_content(f), &now));
+        }
+    }
+    for i in projection.imports.values() {
+        if i.id.starts_with(&prefix) {
+            out.push(v2_upsert(&i.id, &i.raw, import_content(i), &now));
+        }
+    }
+    for k in projection.constants.values() {
+        if k.id.starts_with(&prefix) {
+            out.push(v2_upsert(&k.id, &k.name, constant_content(k), &now));
+        }
+    }
+    for t in projection.type_aliases.values() {
+        if t.id.starts_with(&prefix) {
+            out.push(v2_upsert(&t.id, &t.name, type_alias_content(t), &now));
+        }
+    }
+    out
+}
+/// A parsed v2 concept, typed by canonical kind.
+#[derive(Debug)]
+pub enum V2Entity {
+    Module(Module),
+    Class(Class),
+    Function(Function),
+    Import(Import),
+    Constant(Constant),
+    TypeAlias(TypeAlias),
+}
+
+/// How a cold-start pre-scan should treat one concept's content.
+#[derive(Debug)]
+pub enum V2ConceptClass {
+    /// Canonical v2 entity concept; `kind` is one of [`V2_CANONICAL_KINDS`].
+    Canonical(String),
+    /// Canonical kind but no `meta_version: 2` — a v1 leftover that must
+    /// hard-fail the load (the store needs a re-analyze to upgrade).
+    V1Leftover,
+    /// v1 standalone `field` concept. v2 never materializes standalone
+    /// Field entities (fields ride inside their Class), so these are
+    /// skipped with a warning.
+    StandaloneField,
+    /// Content that is not JSON or has no kind.
+    Unreadable,
+}
+
+/// Pre-scan classification for cold start (cheap: parses content once).
+pub fn classify_v2_concept(content: &str) -> V2ConceptClass {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(content) else {
+        return V2ConceptClass::Unreadable;
+    };
+    let Some(kind) = v.get("kind").and_then(|k| k.as_str()) else {
+        return V2ConceptClass::Unreadable;
+    };
+    if kind == "field" {
+        return V2ConceptClass::StandaloneField;
+    }
+    if V2_CANONICAL_KINDS.contains(&kind)
+        && v.get("meta_version").and_then(|m| m.as_u64()) == Some(V2_META_VERSION)
+    {
+        return V2ConceptClass::Canonical(kind.to_string());
+    }
+    V2ConceptClass::V1Leftover
+}
+
+fn v2_err(id: &str, msg: &str) -> String {
+    format!("concept {id}: {msg}")
+}
+
+fn req_str(v: &serde_json::Value, key: &str, id: &str) -> std::result::Result<String, String> {
+    v.get(key)
+        .and_then(|x| x.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| v2_err(id, &format!("missing '{key}'")))
+}
+
+fn opt_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v.get(key).and_then(|x| x.as_str()).map(str::to_string)
+}
+
+fn req_bool(v: &serde_json::Value, key: &str) -> bool {
+    v.get(key).and_then(|x| x.as_bool()).unwrap_or(false)
+}
+
+fn req_u64(v: &serde_json::Value, key: &str, id: &str) -> std::result::Result<u64, String> {
+    v.get(key)
+        .and_then(|x| x.as_u64())
+        .ok_or_else(|| v2_err(id, &format!("missing '{key}'")))
+}
+
+fn hex_u64(v: &serde_json::Value, key: &str, id: &str) -> std::result::Result<u64, String> {
+    let s = v
+        .get(key)
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| v2_err(id, &format!("missing '{key}'")))?;
+    u64::from_str_radix(s, 16)
+        .map_err(|e| v2_err(id, &format!("'{key}' is not hex: {e}")))
+}
+
+fn str_list(v: &serde_json::Value, key: &str) -> Vec<String> {
+    v.get(key)
+        .and_then(|x| x.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .unwrap_or_default()
+}
+
+fn span_of(v: &serde_json::Value, key: &str) -> ByteSpan {
+    match v.get(key) {
+        Some(obj) if obj.is_object() => ByteSpan {
+            start: obj.get("start").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+            end: obj.get("end").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+        },
+        _ => ByteSpan { start: 0, end: 0 },
+    }
+}
+
+fn span_opt_of(v: &serde_json::Value, key: &str) -> Option<ByteSpan> {
+    match v.get(key) {
+        Some(obj) if obj.is_object() => Some(span_of(v, key)),
+        _ => None,
+    }
+}
+
+fn deser<T: serde::de::DeserializeOwned>(v: &serde_json::Value, key: &str) -> Option<T> {
+    v.get(key).and_then(|x| serde_json::from_value::<T>(x.clone()).ok())
+}
+
+fn deser_or_default<T: serde::de::DeserializeOwned + Default>(v: &serde_json::Value, key: &str) -> T {
+    deser(v, key).unwrap_or_default()
+}
+
+fn source_of(v: &serde_json::Value, id: &str) -> std::result::Result<SourceType, String> {
+    Ok(v.get("source")
+        .and_then(|s| s.as_str())
+        .map(|s| SourceType::from_json(s).map_err(|e| v2_err(id, &e)))
+        .transpose()?
+        .unwrap_or(SourceType::Impl))
+}
+
+fn parse_v2_module(id: &str, v: &serde_json::Value) -> std::result::Result<Module, String> {
+    let file_path = req_str(v, "file_path", id)?;
+    let language = req_str(v, "language", id)?;
+    let parse_quality = req_str(v, "parse_quality", id)?;
+    Ok(Module {
+        id: id.to_string(),
+        name: req_str(v, "name", id)?,
+        path: std::path::PathBuf::from(&file_path),
+        language: Language::from_json(&language).map_err(|e| v2_err(id, &e))?,
+        package: None,
+        exports: vec![],
+        star_exports: None,
+        classes: str_list(v, "classes"),
+        functions: str_list(v, "functions"),
+        imports: str_list(v, "imports"),
+        constants: str_list(v, "constants"),
+        type_aliases: str_list(v, "type_aliases"),
+        parse_quality: ParseQuality::from_json(&parse_quality).map_err(|e| v2_err(id, &e))?,
+        file_version: v.get("file_version").and_then(|x| x.as_u64()).unwrap_or(1),
+        content_hash: hex_u64(v, "content_hash", id)?,
+        embedding: EmbeddingVec::default(),
+    })
+}
+
+fn parse_v2_class(id: &str, v: &serde_json::Value) -> std::result::Result<Class, String> {
+    let file_path = req_str(v, "file_path", id)?;
+    let parse_quality = req_str(v, "parse_quality", id)?;
+    Ok(Class {
+        id: id.to_string(),
+        name: req_str(v, "name", id)?,
+        grammar_kind: v.get("grammar_kind").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        parent_module: format!("{file_path}::module"),
+        parent_class: opt_str(v, "parent_class"),
+        bases: deser_or_default(v, "bases"),
+        // Cascade-rebuilt, never persisted:
+        resolved_bases: vec![],
+        mro: vec![],
+        mro_error: false,
+        methods: vec![],
+        fields: deser_or_default(v, "fields"),
+        source: source_of(v, id)?,
+        decorators: str_list(v, "decorators"),
+        // Cascade-recomputed (dataclass/protocol/enum detection):
+        effective: EffectiveClass::Plain,
+        is_type_checking_only: req_bool(v, "is_type_checking_only"),
+        line: req_u64(v, "line", id)? as usize,
+        exit_line: req_u64(v, "exit_line", id)? as usize,
+        docstring: opt_str(v, "docstring"),
+        parse_quality: ParseQuality::from_json(&parse_quality).map_err(|e| v2_err(id, &e))?,
+        content_hash: hex_u64(v, "content_hash", id)?,
+        span: span_of(v, "span"),
+        name_span: span_of(v, "name_span"),
+        body_span: span_of(v, "body_span"),
+        decorators_span: span_opt_of(v, "decorators_span"),
+        embedding: EmbeddingVec::default(),
+    })
+}
+
+fn parse_v2_function(id: &str, v: &serde_json::Value) -> std::result::Result<Function, String> {
+    let file_path = req_str(v, "file_path", id)?;
+    let parse_quality = req_str(v, "parse_quality", id)?;
+    let kind = deser::<FunctionKind>(v, "fn_kind")
+        .ok_or_else(|| v2_err(id, "missing 'fn_kind'"))?;
+    Ok(Function {
+        id: id.to_string(),
+        name: req_str(v, "name", id)?,
+        parent_module: format!("{file_path}::module"),
+        parent_class: opt_str(v, "parent_class"),
+        parameters: deser_or_default(v, "parameters"),
+        return_type: opt_str(v, "return_type"),
+        // Raw per-call-site refs are deliberately NOT persisted (design);
+        // cold start skips resolve_all_calls.
+        calls: vec![],
+        resolved_calls: deser_or_default(v, "resolved_calls"),
+        decorators: str_list(v, "decorators"),
+        setter_of: None,
+        line: req_u64(v, "line", id)? as usize,
+        exit_line: req_u64(v, "exit_line", id)? as usize,
+        docstring: opt_str(v, "docstring"),
+        kind,
+        is_async: req_bool(v, "is_async"),
+        is_generator: req_bool(v, "is_generator"),
+        source: source_of(v, id)?,
+        signature_hash: hex_u64(v, "signature_hash", id)?,
+        body_hash: hex_u64(v, "body_hash", id)?,
+        metrics: deser_or_default(v, "metrics"),
+        is_type_checking_only: req_bool(v, "is_type_checking_only"),
+        parse_quality: ParseQuality::from_json(&parse_quality).map_err(|e| v2_err(id, &e))?,
+        content_hash: hex_u64(v, "content_hash", id)?,
+        span: span_of(v, "span"),
+        name_span: span_of(v, "name_span"),
+        params_span: span_of(v, "params_span"),
+        body_span: span_of(v, "body_span"),
+        decorators_span: span_opt_of(v, "decorators_span"),
+        embedding: EmbeddingVec::default(),
+    })
+}
+
+fn parse_v2_import(id: &str, v: &serde_json::Value) -> std::result::Result<Import, String> {
+    let kind_v = v
+        .get("import_kind")
+        .ok_or_else(|| v2_err(id, "missing 'import_kind'"))?;
+    let kind = ImportKind::from_json(kind_v).map_err(|e| v2_err(id, &e))?;
+    Ok(Import {
+        id: id.to_string(),
+        raw: req_str(v, "raw", id)?,
+        kind,
+        // Re-resolved by the load cascade:
+        resolution: ImportResolution::Unresolved,
+        line: req_u64(v, "line", id)? as usize,
+        is_type_only: req_bool(v, "is_type_only"),
+        name_span: span_of(v, "name_span"),
+        embedding: EmbeddingVec::default(),
+    })
+}
+
+fn parse_v2_constant(id: &str, v: &serde_json::Value) -> std::result::Result<Constant, String> {
+    Ok(Constant {
+        id: id.to_string(),
+        name: req_str(v, "name", id)?,
+        annotation: opt_str(v, "annotation"),
+        source: source_of(v, id)?,
+        default_value: opt_str(v, "default_value"),
+        span: span_of(v, "span"),
+        name_span: span_of(v, "name_span"),
+        embedding: EmbeddingVec::default(),
+    })
+}
+
+fn parse_v2_type_alias(id: &str, v: &serde_json::Value) -> std::result::Result<TypeAlias, String> {
+    Ok(TypeAlias {
+        id: id.to_string(),
+        name: req_str(v, "name", id)?,
+        target: req_str(v, "target", id)?,
+        source: source_of(v, id)?,
+        span: span_of(v, "span"),
+        name_span: span_of(v, "name_span"),
+        embedding: EmbeddingVec::default(),
+    })
+}
+
+/// Parse one v2 concept's content into its typed entity.
+///
+/// Hard-fails (no silent v1 fallback) when a canonical concept lacks
+/// `meta_version: 2`.
+pub fn parse_v2_concept(id: &str, content: &str) -> std::result::Result<V2Entity, String> {
+    let v: serde_json::Value = serde_json::from_str(content)
+        .map_err(|e| v2_err(id, &format!("content is not JSON: {e}")))?;
+    if v.get("meta_version").and_then(|x| x.as_u64()) != Some(V2_META_VERSION) {
+        return Err(format!(
+            "concept {id} lacks meta_version: 2 — store predates concept-JSON v2; re-analyze to upgrade it"
+        ));
+    }
+    let kind = v
+        .get("kind")
+        .and_then(|x| x.as_str())
+        .ok_or_else(|| v2_err(id, "missing 'kind'"))?;
+    match kind {
+        "module" => Ok(V2Entity::Module(parse_v2_module(id, &v)?)),
+        "class" => Ok(V2Entity::Class(parse_v2_class(id, &v)?)),
+        "function" => Ok(V2Entity::Function(parse_v2_function(id, &v)?)),
+        "import" => Ok(V2Entity::Import(parse_v2_import(id, &v)?)),
+        "constant" => Ok(V2Entity::Constant(parse_v2_constant(id, &v)?)),
+        "type_alias" => Ok(V2Entity::TypeAlias(parse_v2_type_alias(id, &v)?)),
+        other => Err(v2_err(id, &format!("unknown kind '{other}'"))),
+    }
+}
+
+#[cfg(test)]
+mod concept_v2_tests {
+    use super::*;
+
+    fn sample_module() -> Module {
+        Module {
+            id: "pkg/alpha.py::module".to_string(),
+            name: "alpha".to_string(),
+            path: std::path::PathBuf::from("pkg/alpha.py"),
+            language: Language::Python,
+            package: None,
+            exports: vec![],
+            star_exports: None,
+            classes: vec!["pkg/alpha.py::Alpha".into()],
+            functions: vec!["pkg/alpha.py::helper".into()],
+            imports: vec!["pkg/alpha.py::import os".into()],
+            constants: vec![],
+            type_aliases: vec!["pkg/alpha.py::Alias".into()],
+            parse_quality: ParseQuality::Clean,
+            file_version: 1,
+            content_hash: 0xDEAD_BEEF,
+            embedding: EmbeddingVec::default(),
+        }
+    }
+
+    fn sample_class() -> Class {
+        Class {
+            id: "pkg/alpha.py::Alpha".to_string(),
+            name: "Alpha".to_string(),
+            grammar_kind: "class_definition".to_string(),
+            parent_module: "pkg/alpha.py::module".to_string(),
+            parent_class: None,
+            bases: vec![UnresolvedRef {
+                name: "Base".into(),
+                path: vec![],
+                line: 2,
+                col: 0,
+            }],
+            resolved_bases: vec![],
+            mro: vec![],
+            mro_error: false,
+            methods: vec![],
+            fields: vec![Field {
+                name: "x".into(),
+                annotation: Some("int".into()),
+                source: SourceType::Impl,
+                default_value: Some("0".into()),
+                is_class_var: false,
+                span: ByteSpan { start: 40, end: 48 },
+                name_span: ByteSpan { start: 40, end: 41 },
+            }],
+            source: SourceType::Impl,
+            decorators: vec!["dataclass".into()],
+            effective: EffectiveClass::Plain,
+            is_type_checking_only: false,
+            line: 2,
+            exit_line: 10,
+            docstring: Some("Doc.".into()),
+            parse_quality: ParseQuality::Clean,
+            content_hash: 0x1234,
+            span: ByteSpan { start: 30, end: 200 },
+            name_span: ByteSpan { start: 36, end: 41 },
+            body_span: ByteSpan { start: 42, end: 199 },
+            decorators_span: Some(ByteSpan { start: 20, end: 30 }),
+            embedding: EmbeddingVec::default(),
+        }
+    }
+
+    fn sample_function() -> Function {
+        Function {
+            id: "pkg/alpha.py::helper".to_string(),
+            name: "helper".to_string(),
+            parent_module: "pkg/alpha.py::module".to_string(),
+            parent_class: None,
+            parameters: vec![Parameter {
+                name: "a".into(),
+                annotation: Some("int".into()),
+                default_value: None,
+                is_varargs: false,
+                is_kwargs: false,
+                is_positional_only: false,
+                is_keyword_only: false,
+            }],
+            return_type: Some("str".into()),
+            calls: vec![],
+            resolved_calls: vec![
+                ResolvedCall::Function("pkg/alpha.py::other".into()),
+                ResolvedCall::Method {
+                    receiver: ReceiverShape::SelfRef,
+                    method: "pkg/alpha.py::Alpha.m".into(),
+                },
+                ResolvedCall::Builtin("len".into()),
+                ResolvedCall::External("requests.get".into()),
+                ResolvedCall::Unresolved {
+                    reason: UnresolvedReason::TypeInferenceRequired,
+                    raw: UnresolvedRef {
+                        name: "mystery".into(),
+                        path: vec![],
+                        line: 5,
+                        col: 8,
+                    },
+                },
+            ],
+            decorators: vec![],
+            setter_of: None,
+            line: 12,
+            exit_line: 20,
+            docstring: Some("H.".into()),
+            kind: FunctionKind::Free,
+            is_async: false,
+            is_generator: true,
+            source: SourceType::Impl,
+            signature_hash: 0xABCD,
+            body_hash: 0x99,
+            metrics: FunctionMetrics {
+                cyclomatic: 3,
+                nesting_depth: 2,
+                return_count: 1,
+            },
+            is_type_checking_only: false,
+            parse_quality: ParseQuality::Partial,
+            content_hash: 0x77,
+            span: ByteSpan { start: 100, end: 250 },
+            name_span: ByteSpan { start: 112, end: 118 },
+            params_span: ByteSpan { start: 119, end: 123 },
+            body_span: ByteSpan { start: 124, end: 249 },
+            decorators_span: None,
+            embedding: EmbeddingVec::default(),
+        }
+    }
+
+    fn sample_import() -> Import {
+        Import {
+            id: "pkg/alpha.py::from pkg.beta import Base as B, other".to_string(),
+            raw: "from pkg.beta import Base as B, other".to_string(),
+            kind: ImportKind::FromImport {
+                module: "pkg.beta".into(),
+                names: vec![("Base".into(), Some("B".into())), ("other".into(), None)],
+            },
+            resolution: ImportResolution::Unresolved,
+            line: 1,
+            is_type_only: false,
+            name_span: ByteSpan { start: 20, end: 50 },
+            embedding: EmbeddingVec::default(),
+        }
+    }
+
+    #[test]
+    fn module_roundtrip() {
+        let m = sample_module();
+        let json = module_content(&m).to_string();
+        match parse_v2_concept(&m.id, &json).unwrap() {
+            V2Entity::Module(got) => {
+                assert_eq!(got.id, m.id);
+                assert_eq!(got.name, m.name);
+                assert_eq!(got.path, m.path);
+                assert_eq!(got.language, m.language);
+                assert_eq!(got.parse_quality, m.parse_quality);
+                assert_eq!(got.file_version, m.file_version);
+                assert_eq!(got.content_hash, m.content_hash);
+                assert_eq!(got.classes, m.classes);
+                assert_eq!(got.functions, m.functions);
+                assert_eq!(got.imports, m.imports);
+                assert_eq!(got.constants, m.constants);
+                assert_eq!(got.type_aliases, m.type_aliases);
+            }
+            other => panic!("expected Module, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn class_roundtrip() {
+        let c = sample_class();
+        let json = class_content(&c).to_string();
+        match parse_v2_concept(&c.id, &json).unwrap() {
+            V2Entity::Class(got) => {
+                assert_eq!(got.name, c.name);
+                assert_eq!(got.grammar_kind, c.grammar_kind);
+                assert_eq!(got.parent_module, c.parent_module);
+                assert_eq!(got.bases, c.bases);
+                assert_eq!(got.fields, c.fields);
+                assert_eq!(got.source, c.source);
+                assert_eq!(got.decorators, c.decorators);
+                assert_eq!(got.is_type_checking_only, c.is_type_checking_only);
+                assert_eq!(got.line, c.line);
+                assert_eq!(got.exit_line, c.exit_line);
+                assert_eq!(got.docstring, c.docstring);
+                assert_eq!(got.parse_quality, c.parse_quality);
+                assert_eq!(got.content_hash, c.content_hash);
+                assert_eq!(got.span, c.span);
+                assert_eq!(got.name_span, c.name_span);
+                assert_eq!(got.body_span, c.body_span);
+                assert_eq!(got.decorators_span, c.decorators_span);
+                // cascade-rebuilt state stays empty on load:
+                assert!(got.resolved_bases.is_empty());
+                assert!(got.mro.is_empty());
+                assert!(got.methods.is_empty());
+                assert!(matches!(got.effective, EffectiveClass::Plain));
+            }
+            other => panic!("expected Class, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn function_roundtrip_preserves_resolved_calls() {
+        let f = sample_function();
+        let json = function_content(&f).to_string();
+        match parse_v2_concept(&f.id, &json).unwrap() {
+            V2Entity::Function(got) => {
+                assert_eq!(got.name, f.name);
+                assert_eq!(got.parent_module, f.parent_module);
+                assert_eq!(got.parameters, f.parameters);
+                assert_eq!(got.return_type, f.return_type);
+                assert_eq!(got.kind, f.kind);
+                assert_eq!(got.resolved_calls, f.resolved_calls);
+                assert!(got.calls.is_empty(), "raw call sites are not persisted");
+                assert_eq!(got.is_async, f.is_async);
+                assert_eq!(got.is_generator, f.is_generator);
+                assert_eq!(got.source, f.source);
+                assert_eq!(got.signature_hash, f.signature_hash);
+                assert_eq!(got.body_hash, f.body_hash);
+                assert_eq!(got.metrics, f.metrics);
+                assert_eq!(got.parse_quality, f.parse_quality);
+                assert_eq!(got.content_hash, f.content_hash);
+                assert_eq!(got.span, f.span);
+                assert_eq!(got.params_span, f.params_span);
+                assert_eq!(got.body_span, f.body_span);
+                assert_eq!(got.decorators_span, f.decorators_span);
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn import_roundtrip_keeps_kind_structure() {
+        let i = sample_import();
+        let json = import_content(&i).to_string();
+        match parse_v2_concept(&i.id, &json).unwrap() {
+            V2Entity::Import(got) => {
+                assert_eq!(got.raw, i.raw);
+                assert_eq!(got.kind, i.kind);
+                assert_eq!(got.line, i.line);
+                assert_eq!(got.is_type_only, i.is_type_only);
+                assert_eq!(got.name_span, i.name_span);
+            }
+            other => panic!("expected Import, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn constant_and_type_alias_roundtrip() {
+        let k = Constant {
+            id: "pkg/alpha.py::MAX".into(),
+            name: "MAX".into(),
+            annotation: Some("int".into()),
+            source: SourceType::Impl,
+            default_value: Some("100".into()),
+            span: ByteSpan { start: 5, end: 15 },
+            name_span: ByteSpan { start: 5, end: 8 },
+            embedding: EmbeddingVec::default(),
+        };
+        let json = constant_content(&k).to_string();
+        match parse_v2_concept(&k.id, &json).unwrap() {
+            V2Entity::Constant(got) => {
+                assert_eq!(got.name, k.name);
+                assert_eq!(got.annotation, k.annotation);
+                assert_eq!(got.source, k.source);
+                assert_eq!(got.default_value, k.default_value);
+                assert_eq!(got.span, k.span);
+            }
+            other => panic!("expected Constant, got {other:?}"),
+        }
+
+        let t = TypeAlias {
+            id: "pkg/alpha.py::Alias".into(),
+            name: "Alias".into(),
+            target: "dict[str, int]".into(),
+            source: SourceType::Stub,
+            span: ByteSpan { start: 20, end: 40 },
+            name_span: ByteSpan { start: 20, end: 25 },
+            embedding: EmbeddingVec::default(),
+        };
+        let json = type_alias_content(&t).to_string();
+        match parse_v2_concept(&t.id, &json).unwrap() {
+            V2Entity::TypeAlias(got) => {
+                assert_eq!(got.name, t.name);
+                assert_eq!(got.target, t.target);
+                assert_eq!(got.source, t.source);
+            }
+            other => panic!("expected TypeAlias, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn v1_concept_is_hard_rejected() {
+        // v1 module JSON: kind present, no meta_version.
+        let v1 = r#"{"kind": "module", "name": "alpha", "file_path": "pkg/alpha.py", "language": "python"}"#;
+        let err = parse_v2_concept("pkg/alpha.py::module", v1).unwrap_err();
+        assert!(err.contains("lacks meta_version: 2"), "err: {err}");
+    }
+
+    #[test]
+    fn classify_v2_concept_variants() {
+        let m = sample_module();
+        match classify_v2_concept(&module_content(&m).to_string()) {
+            V2ConceptClass::Canonical(k) => assert_eq!(k, "module"),
+            other => panic!("expected Canonical, got {other:?}"),
+        }
+        let v1 = r#"{"kind": "function", "name": "f", "file_path": "a.py"}"#;
+        assert!(matches!(classify_v2_concept(v1), V2ConceptClass::V1Leftover));
+        let field = r#"{"kind": "field", "name": "x", "file_path": "a.py"}"#;
+        assert!(matches!(classify_v2_concept(field), V2ConceptClass::StandaloneField));
+        assert!(matches!(classify_v2_concept("not json"), V2ConceptClass::Unreadable));
+    }
+}
+
+
 // ── Edge Properties Builder ─────────────────────────────────────────────────
 
 /// Build a JSON properties string for edge assertions.
@@ -507,6 +1376,94 @@ pub fn edge_properties_json(props: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression: the "now" pitfall. macrame-db 0.12's
+    // `timestamp::normalize` (src/util/timestamp.rs) accepts ONLY the
+    // canonical `YYYY-MM-DDTHH:MM:SS.ffffffZ` form (or the legacy
+    // second-precision form widened by appending `.000000`). It rejects
+    // `"now"`, offsets like `+01:00`, and millisecond precision. Every
+    // persistence path in this crate stamps `valid_from` with
+    // [`now_iso8601`], so this function must stay in the exact canonical
+    // form or `Connection::reconstruct` (which normalizes first) will abort
+    // the whole cold start. This test pins that contract against the real
+    // macrame normalizer rather than a local regex re-implementation.
+    #[test]
+    fn now_timestamp_is_macrame_canonical() {
+        let ts = now_iso8601();
+        // Shape: 10 (date) + 1 (T) + 8 (time) + 1 (.) + 6 (frac) + 1 (Z) = 27.
+        assert_eq!(ts.len(), 27, "unexpected length in {ts:?}");
+        // `is_canonical` checks the exact digit/separator layout; the
+        // fractional digits must be real microseconds (see the function
+        // docs — truncating them breaks same-second cold starts).
+        assert!(
+            macrame::util::timestamp::is_canonical(&ts),
+            "macrame does not consider {ts:?} canonical"
+        );
+        assert!(ts[20..26].chars().all(|c| c.is_ascii_digit()), "frac: {ts:?}");
+        // And the normalizer accepts it unchanged (the call load_snapshot
+        // must survive — `reconstruct(&now_iso8601())`).
+        assert_eq!(
+            macrame::util::timestamp::normalize(&ts).unwrap(),
+            ts
+        );
+    }
+
+    /// Regression: `now_iso8601()` once truncated to whole seconds (the
+    /// format literal ended in `.000000`), while Macrame stamps
+    /// `transaction_log.recorded_at` at microsecond precision. A
+    /// `reconstruct(now)` inside the same second as the last write then sat
+    /// *behind* every recorded_at it should see: `hot_log_reach` classified
+    /// the ts as predating the recorded history and returned the empty state
+    /// without error — a cold start that silently restored nothing. A
+    /// microsecond-precision `now` is always >= the newest stamp.
+    #[test]
+    fn reconstruct_at_now_sees_a_just_written_concept() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("regress.db");
+        let store = CodeGraphStore::open(&path).unwrap();
+        let concept = macrame::ConceptUpsert {
+            id: "a.py::module".into(),
+            title: "a".into(),
+            content: r#"{"meta_version": 2, "kind": "module"}"#.into(),
+            embedding_model: None,
+            valid_from: now_iso8601(),
+            valid_to: TS_OPEN.to_string(),
+            retired: false,
+        };
+        assert_eq!(store.upsert_concepts_bulk(&[concept]).unwrap(), 1);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let state = store.reconstruct(&now_iso8601()).unwrap();
+        assert!(
+            state.concepts.contains_key("a.py::module"),
+            "reconstruct at now must see the concept written microseconds ago (predates_recorded_history = {})",
+            state.predates_recorded_history
+        );
+        assert!(state.seq_anchor > 0, "empty fold: seq_anchor = {}", state.seq_anchor);
+    }
+
+    #[test]
+    fn now_timestamp_rejects_the_now_pitfall() {
+        // The value that would be *wrong*: the literal `"now"` (and a few
+        // other common-but-invalid shapes) must be rejected by macrame, so
+        // that a regression in [`now_iso8601`] toward any of them is a
+        // loud failure rather than a silent broken ledger.
+        for bad in ["now", "latest", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00.123Z"] {
+            // `2024-01-01T00:00:00Z` is the legacy second-precision form and
+            // IS accepted (widened); the others must not be. Keep the set to
+            // the genuinely-invalid ones.
+            if bad == "2024-01-01T00:00:00Z" {
+                assert!(
+                    macrame::util::timestamp::normalize(bad).is_ok(),
+                    "legacy second-precision should widen"
+                );
+            } else {
+                assert!(
+                    macrame::util::timestamp::normalize(bad).is_err(),
+                    "{bad:?} should be rejected"
+                );
+            }
+        }
+    }
 
     fn make_test_function() -> ExtractedUnit {
         ExtractedUnit::Function(ExtractedFunction {

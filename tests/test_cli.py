@@ -175,8 +175,10 @@ class TestExitCodes:
 
         assert result.exit_code != 0, result.output
 
-    def test_an_unimplemented_snapshot_export_is_not_a_success(self, run):
+    def test_the_removed_export_command_is_not_a_success(self, run):
+        # v0.8 P1 retired `coderadar export` along with the Python-side
+        # snapshot format; the store is the snapshot now.
         result = run("export", "snap.bin")
 
-        assert result.exit_code == 1
-        assert "not implemented" in result.output
+        assert result.exit_code == 2
+        assert "No such command" in result.output

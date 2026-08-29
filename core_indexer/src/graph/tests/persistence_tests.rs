@@ -311,3 +311,92 @@ use super::*;
             graph.persist_edges(&projection).unwrap()
         );
     }
+
+    /// Re-persisting an unchanged projection at a strictly later wall-clock
+    /// instant must be a no-op on the ledger, not a single-open abort.
+    ///
+    /// Regression: `now_iso8601` is microsecond-precision, so the second run
+    /// asserts with a `valid_from` distinct from the first — exactly the case
+    /// macrame's `trg_links_single_open` guard aborts. The persist path must
+    /// skip triples that already hold an open interval.
+    #[test]
+    fn test_repersist_unchanged_projection_is_ledger_noop() {
+        let (graph, _dir) = graph_with_temp_store();
+        let projection = projection_with_cross_file_edges(&graph);
+
+        let first = graph.persist_edges(&projection).unwrap();
+        assert!(first > 0);
+
+        // Guarantee a distinct `valid_from` on the second run.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let second = graph.persist_edges(&projection).unwrap();
+        assert_eq!(first, second, "the count is a property of the projection");
+
+        // No version churn: exactly the first run's triples are open, nothing
+        // more. (A re-assert would add a second open interval and trip the
+        // guard; a silent skip without bookkeeping would leave the count or
+        // the ledger wrong.)
+        let store = graph.store.as_ref().expect("store attached");
+        let open = store
+            .open_edge_triples(crate::storage::now_iso8601().as_str())
+            .unwrap();
+        assert_eq!(open.len(), first, "one open interval per triple, no churn");
+    }
+
+    /// Same guarantee for the scoped form: an `update_file`-style re-persist
+    /// of one file at a later instant must not abort on edges that the
+    /// initial `analyze` already left open.
+    #[test]
+    fn test_repersist_scoped_after_full_persist_is_ledger_noop() {
+        let (graph, _dir) = graph_with_temp_store();
+        let projection = projection_with_cross_file_edges(&graph);
+
+        let all = graph.persist_edges(&projection).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let scoped = graph
+            .persist_edges_scoped(&projection, Some("sub.py"))
+            .unwrap();
+
+        assert!(scoped > 0, "sub.py's edges are still the scoped set");
+        assert!(scoped < all);
+        let store = graph.store.as_ref().expect("store attached");
+        let open = store
+            .open_edge_triples(crate::storage::now_iso8601().as_str())
+            .unwrap();
+        assert_eq!(open.len(), all, "scoped re-persist adds no new intervals");
+    }
+
+    #[test]
+    fn probe_synthetic_persist_error() {
+        let (graph, _dir) = graph_with_temp_store();
+        index_source(&graph, "def run(): pass\n", "main.py");
+        index_source(&graph, "def combine(a, b): return a + b\n", "helpers.py");
+        let store = graph.store.as_ref().unwrap();
+        let ts = crate::storage::now_iso8601();
+        let res = store.assert_edges_bulk(vec![
+            macrame::graph::EdgeAssertion::new("main.py::run", "helpers.py::combine", "CALLBACK")
+                .valid_from(ts.as_str())
+                .weight(1.0),
+        ]);
+        eprintln!("DIRECT ASSERT real functions: {res:?}");
+        // direct assert of the reverse-direction edge
+        let ts2 = crate::storage::now_iso8601();
+        let res2 = store.assert_edges_bulk(vec![
+            macrame::graph::EdgeAssertion::new("helpers.py::combine", "main.py::run", "DEPENDS_ON")
+                .valid_from(ts2.as_str())
+                .weight(1.0),
+        ]);
+        eprintln!("DIRECT ASSERT DEPENDS_ON: {res2:?}");
+        // and through the register path (in-memory + persist)
+        let n = graph.register_synthetic_edges_bulk(vec![(
+            "main.py::run".to_string(),
+            "helpers.py::combine".to_string(),
+            "HANDLES".to_string(),
+        )]).unwrap();
+        eprintln!("REGISTER: {n}");
+        let open = store.open_edge_triples(&crate::storage::now_iso8601()).unwrap();
+        eprintln!("OPEN TRIPLES: {open:?}");
+    }
+

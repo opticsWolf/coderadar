@@ -621,16 +621,6 @@ class CodeGraph:
             backup_path=result.get("backup_path"),
         )
 
-    # ── Persistence ────────────────────────────────────────────────────
-
-    def export_snapshot(self, path: str) -> None:
-        """Export the current ProjectedGraph snapshot + Macrame state to a file."""
-        try:
-            from coderadar._core import export_snapshot as _es
-            _es(path)
-        except ImportError:
-            pass
-
     # ── Stats / Debug ──────────────────────────────────────────────────
 
     def stats(self) -> Dict[str, Any]:
@@ -734,21 +724,50 @@ def analyze(root: str, create_store: bool = False) -> CodeGraph:
 
     # v0.5: Extract __all__ star exports for wildcard import resolution.
     # Must run after Rust analysis populates modules, before MCP server reads.
+    _apply_star_exports(root)
+
+    return CodeGraph()
+
+
+def _apply_star_exports(root: str) -> None:
+    """Extract `__all__` star exports from source and apply them to the
+    in-memory graph.
+
+    Must run after the graph is populated — by `analyze` or by `load`
+    (v0.8 P1: cold start re-runs the same pass, because star exports are
+    derived, in-memory state and the ledger does not persist them).
+    """
     try:
         from coderadar.resolvers.exports import extract_all_exports
         from coderadar._core import set_module_star_exports_bulk
         import pathlib
         # Collected, then applied in one call: the per-module variant clones
         # the whole ProjectedGraph each time, i.e. once per file with __all__.
+        #
+        # The module id is the file path the analyze that wrote the store
+        # walked. A load may pass the root in a different form than that
+        # analyze did (relative vs absolute - `coderadar init` resolves, an
+        # explicit `coderadar analyze` does not), so each module is offered
+        # under every id form the path could take. `set_module_star_exports_bulk`
+        # skips ids that are not in the graph, so the extra candidates are
+        # harmless; they just make the pass root-form-agnostic.
+        root_path = pathlib.Path(root)
         star_exports = []
-        for py_file in pathlib.Path(root).rglob("*.py"):
+        for py_file in root_path.rglob("*.py"):
             try:
                 source = py_file.read_text(encoding="utf-8")
-                names = extract_all_exports(source)
-                if names:
-                    star_exports.append((f"{py_file}::module", names))
             except (OSError, UnicodeDecodeError):
+                continue
+            names = extract_all_exports(source)
+            if not names:
+                continue
+            candidates = {f"{py_file}::module"}
+            try:
+                candidates.add(f"{py_file.relative_to(root_path)}::module")
+            except ValueError:
                 pass
+            candidates.add(f"{py_file.resolve()}::module")
+            star_exports.extend((module_id, names) for module_id in candidates)
         if star_exports:
             try:
                 set_module_star_exports_bulk(star_exports)
@@ -757,24 +776,38 @@ def analyze(root: str, create_store: bool = False) -> CodeGraph:
     except ImportError:
         pass
 
-    return CodeGraph()
 
+def load(db_path: str, root: Optional[str] = None) -> CodeGraph:
+    """Cold-start a CodeGraph from a Macrame ledger (v0.8 P1).
 
-def load(db_path: str) -> CodeGraph:
-    """Load a CodeRadar database from a Macrame .db file.
+    Rebuilds the in-memory ProjectedGraph from the ledger instead of
+    re-parsing source: concept JSON v2 carries post-resolution state
+    (including `resolved_calls`), and the cheap resolution cascade is
+    re-run in memory. `indexed_at` comes from the store file's mtime.
 
     Args:
-        db_path: Path to a coderadar.db file.
+        db_path: Path to a coderadar.db file (the Macrame store).
+        root: The project root used with `analyze` - entity ids are keyed
+            by file path, so pass the same root. Stored as the indexed
+            root for mutation policy and staleness checks.
 
     Returns:
         A CodeGraph restored from the bitemporal ledger.
+
+    Raises:
+        ValueError: if the store holds concept-JSON v1 concepts (missing
+            `meta_version: 2`) - re-run `coderadar analyze` to upgrade it.
     """
-    raise NotImplementedError(
-        "load(db_path) is not implemented — the in-memory ProjectedGraph is not "
-        "yet restorable from the Macrame ledger without re-parsing source. "
-        "Call analyze(root) to rebuild the graph. Cold-start persistence is "
-        "Phase 3B work (see docs/traversal-matrix.md §3)."
-    )
+    try:
+        from coderadar._core import load_snapshot as _ls
+        _ls(db_path, root)
+    except ImportError:
+        pass
+
+    if root:
+        _apply_star_exports(root)
+
+    return CodeGraph()
 
 
 def watch(root: str) -> "Watcher":

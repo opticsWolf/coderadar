@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::types::*;
 
 /// Normalize a file path string: convert backslashes to forward slashes,
@@ -5,6 +7,56 @@ use crate::types::*;
 pub(super) fn normalize_path_str(p: &str) -> String {
     let s = p.trim_start_matches("./").trim_start_matches(".\\");
     s.replace('\\', "/")
+}
+
+/// Extensions we recognize; also handles /__init__.* patterns for
+/// Python-style packages (__init__.py), Elixir (__init__.ex), etc.
+/// Shared by the dotted-name scanner and the `module_path_index` builder so
+/// the two stay in exact lockstep (a module with an exotic extension must be
+/// resolvable by one of them iff it is by the other).
+pub(crate) const KNOWN_MODULE_EXTENSIONS: &[&str] = &[
+    "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs",
+    "go", "rs", "java", "c", "h", "cpp", "cc", "cxx", "hpp",
+    "rb", "php", "cs", "kt", "kts", "swift", "scala", "sc",
+    "lua", "ex", "exs", "zig", "zon", "r",
+];
+
+/// Rebuild [`ProjectedGraph::module_path_index`] from the current module set.
+///
+/// O(modules × path_depth). Call after any operation that changes the module
+/// set — full `analyze` and cold load (`projection_from_state`) — so
+/// [`find_module_by_dotted_name`] takes the O(1)-per-suffix fast path instead
+/// of scanning every module (on the 605-file benchmark repo the scan form
+/// cost 8.3s inside `resolve_imports` alone).
+pub(crate) fn rebuild_module_path_index(projection: &mut ProjectedGraph) {
+    let mut index: HashMap<String, EntityId> = HashMap::new();
+    for module in projection.modules.values() {
+        let path = normalize_path_str(&module.path.to_string_lossy());
+        // Extension-less path; the scanner only matches KNOWN_MODULE_EXTENSIONS,
+        // so exotic-extension modules must not enter the index.
+        let no_ext = match path.rsplit_once('.') {
+            Some((stem, ext)) if KNOWN_MODULE_EXTENSIONS.contains(&ext) => stem,
+            _ => continue,
+        };
+        // Segment-boundary suffixes of the extension-less path, both keeping
+        // and (for a trailing __init__ file) dropping the __init__ segment —
+        // exactly the strings the scanner's ends_with tests accept.
+        let mut stems = vec![no_ext.to_string()];
+        if let Some(stripped) = no_ext.strip_suffix("/__init__") {
+            stems.push(stripped.to_string());
+        }
+        for stem in &stems {
+            let mut tail = String::new();
+            for seg in stem.rsplit('/') {
+                if !tail.is_empty() {
+                    tail.insert(0, '/');
+                }
+                tail.insert_str(0, seg);
+                index.entry(tail.clone()).or_insert_with(|| module.id.clone());
+            }
+        }
+    }
+    projection.module_path_index = index;
 }
 
 /// Find a module by its dotted name (e.g., "coderadar.config" → config.py).
@@ -29,17 +81,30 @@ pub(crate) fn find_module_by_dotted_name(
         dotted_name
     };
 
-    /// Extensions we recognize; also handles /__init__.* patterns for
-    /// Python-style packages (__init__.py), Elixir (__init__.ex), etc.
-    const KNOWN_EXTENSIONS: &[&str] = &[
-        "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs",
-        "go", "rs", "java", "c", "h", "cpp", "cc", "cxx", "hpp",
-        "rb", "php", "cs", "kt", "kts", "swift", "scala", "sc",
-        "lua", "ex", "exs", "zig", "zon", "r",
-    ];
-
     let segments: Vec<&str> = dotted_name.split('.').collect();
 
+    // Fast path (v0.8 P1): the suffix index, when built, is COMPLETE — a key
+    // exists for every (module, suffix) pair the scan below could return, so
+    // a miss means "no module matches this name" and the scan is skipped
+    // entirely. That is what makes the common case cheap: relative imports
+    // ("../models/user") and package imports ("zod") can never match a
+    // project module, and each of them used to cost a full scan of every
+    // module (8.3s of the 605-file benchmark's resolve_imports).
+    //
+    // A graph with modules but an empty index is legacy or hand-built (unit
+    // tests) — it keeps the full-scan behaviour below, unchanged.
+    if projection.modules.is_empty() || !projection.module_path_index.is_empty() {
+        for start in 0..segments.len() {
+            let tail = segments[start..].join("/");
+            if let Some(id) = projection.module_path_index.get(&tail) {
+                return Some(id.clone());
+            }
+        }
+        return None;
+    }
+
+    // Legacy slow path: full scan over every module.
+    //
     // Build candidate path suffixes by matching the last N segments
     for n in (1..=segments.len()).rev() {
         let suffix_parts = &segments[segments.len() - n..];
@@ -49,7 +114,7 @@ pub(crate) fn find_module_by_dotted_name(
             let path_str = module.path.to_string_lossy().to_string();
             let path_normalized = path_str.replace('\\', "/");
             // Check each known extension
-            for ext in KNOWN_EXTENSIONS {
+            for ext in KNOWN_MODULE_EXTENSIONS {
                 let suffix = format!("{}.{}", suffix_slash, ext);
                 let init_suffix = format!("{}/__init__.{}", suffix_slash, ext);
                 if path_normalized.ends_with(&suffix) || path_normalized.ends_with(&init_suffix) {

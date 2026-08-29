@@ -192,6 +192,9 @@ impl CodeGraph {
         // recreated file would resolve to an id that is no longer there.
         projection.file_to_modules.remove(&PathBuf::from(&normalized));
         projection.file_to_modules.remove(&PathBuf::from(file_path));
+        // Keep the dotted-name index honest — a deleted module left in it
+        // would resolve imports to an id that no longer exists.
+        super::module_resolution::rebuild_module_path_index(&mut projection);
         self.commit_projection(projection);
         removed.into_iter().collect()
     }
@@ -254,22 +257,31 @@ impl CodeGraph {
             })
             .collect();
 
+        // Keyed by NORMALIZED id (like `old_hashes` above). The raw stored
+        // spelling (OS separators) never matches the normalized new id, so
+        // with raw keys every unchanged entity in the file looked "new" and
+        // was re-inserted on every update — module `imports` membership
+        // duplicated and `entities_added` inflated.
         let old_classes: std::collections::BTreeSet<EntityId> = projection
             .classes.keys()
             .filter(|id| normalize_path_str(id).starts_with(&normalized_file_path))
-            .cloned().collect();
+            .map(|id| normalize_path_str(id))
+            .collect();
         let old_imports: std::collections::BTreeSet<EntityId> = projection
             .imports.keys()
             .filter(|id| normalize_path_str(id).starts_with(&normalized_file_path))
-            .cloned().collect();
+            .map(|id| normalize_path_str(id))
+            .collect();
         let old_constants: std::collections::BTreeSet<EntityId> = projection
             .constants.keys()
             .filter(|id| normalize_path_str(id).starts_with(&normalized_file_path))
-            .cloned().collect();
+            .map(|id| normalize_path_str(id))
+            .collect();
         let old_aliases: std::collections::BTreeSet<EntityId> = projection
             .type_aliases.keys()
             .filter(|id| normalize_path_str(id).starts_with(&normalized_file_path))
-            .cloned().collect();
+            .map(|id| normalize_path_str(id))
+            .collect();
 
         // 2. Build new entity ID sets (normalized for cross-platform matching).
         let normalize_id = |id: &str| normalize_path_str(id);
@@ -319,17 +331,19 @@ impl CodeGraph {
         for (_, (stored_id, _, _)) in old_hashes.iter().filter(|(n, _)| !new_funcs.contains(*n)) {
             remove_entity(stored_id, projection, &mut removed, &mut removed_ids);
         }
-        for id in old_classes.iter().filter(|id| !new_classes.contains(&normalize_id(id))) {
-            remove_entity(id, projection, &mut removed, &mut removed_ids);
+        // `id` is normalized; map back to the stored spelling before removing
+        // (removing a spelling that is not there leaves a duplicate behind).
+        for id in old_classes.iter().filter(|id| !new_classes.contains(*id)) {
+            remove_entity(&canonical(id), projection, &mut removed, &mut removed_ids);
         }
-        for id in old_imports.iter().filter(|id| !new_imports.contains(&normalize_id(id))) {
-            remove_entity(id, projection, &mut removed, &mut removed_ids);
+        for id in old_imports.iter().filter(|id| !new_imports.contains(*id)) {
+            remove_entity(&canonical(id), projection, &mut removed, &mut removed_ids);
         }
-        for id in old_constants.iter().filter(|id| !new_constants.contains(&normalize_id(id))) {
-            remove_entity(id, projection, &mut removed, &mut removed_ids);
+        for id in old_constants.iter().filter(|id| !new_constants.contains(*id)) {
+            remove_entity(&canonical(id), projection, &mut removed, &mut removed_ids);
         }
-        for id in old_aliases.iter().filter(|id| !new_aliases.contains(&normalize_id(id))) {
-            remove_entity(id, projection, &mut removed, &mut removed_ids);
+        for id in old_aliases.iter().filter(|id| !new_aliases.contains(*id)) {
+            remove_entity(&canonical(id), projection, &mut removed, &mut removed_ids);
         }
 
         // 4. Insert new entities + re-insert changed ones (hash mismatch)
@@ -503,12 +517,10 @@ impl CodeGraph {
         let mut projection = (*self.snapshot()).clone();
         let (new_count, removed_count) = self.apply_diff_update(
             &mut projection, &units, file_path, &lang);
-
-        // Phase 3b: Persist concepts BEFORE edges — IMPORTS/EXTENDS/etc. edges
-        // assert FK references against concept ids, so the module (and other)
-        // concepts must already be committed.
-        let lang_str = format!("{:?}", lang).to_lowercase();
-        let _ = self.persist_entities(&units, file_path, &lang_str);
+        // Keep the dotted-name fast path in sync (cheap; module set is
+        // unchanged today, but a stale index would silently degrade the
+        // cascade below to full scans).
+        super::module_resolution::rebuild_module_path_index(&mut projection);
 
         // Phase 4: Compute MRO for all classes, then resolve calls (scoped to this file)
         self.resolve_imports(&mut projection);
@@ -517,6 +529,15 @@ impl CodeGraph {
         self.resolve_class_hierarchy(&mut projection);
         self.resolve_overrides(&mut projection);
         self.resolve_calls_scoped(&mut projection, Some(file_path));
+        // Phase 4b (v0.8 P1): flush concept JSON v2 for this file AFTER the
+        // scoped cascade and BEFORE scoped edges (FK REFERENCES order) — v2
+        // concepts carry post-resolution state (e.g. `resolved_calls`) that
+        // cold start parses back. Replaces the old pre-cascade v1
+        // `persist_entities` flush.
+        if let Some(ref store) = self.store {
+            let v2 = crate::storage::build_v2_concepts_for_file(&projection, file_path);
+            let _ = store.upsert_concepts_bulk(&v2);
+        }
         // Scoped: an edit to one file must not re-assert the project's whole
         // edge set (plan §1.2).
         let _ = self.persist_edges_scoped(&projection, Some(file_path));
@@ -540,7 +561,7 @@ impl CodeGraph {
             }
         }
 
-        // Phase 5: (concepts already persisted in Phase 3b, before edges)
+        // Phase 5: (concepts already persisted in Phase 4b, before edges)
 
         Ok(UpdateOutcome {
             entities_added: new_count,
