@@ -1480,7 +1480,7 @@ def _node_detail(graph: Any, entity_id: str, include_neighbors: bool) -> str:
     lines.extend([
         f"## {entity.get('name', '?')}",
         "",
-        f"- **ID:** `{entity.get('id', '?')}`",
+        f"- **ID:** `{_friendly_entity_id(entity.get('id', '?'))}`",
         f"- **Kind:** {entity.get('kind', '?')}",
         f"- **File:** `{entity.get('file_path', '?')}`",
     ])
@@ -1573,7 +1573,7 @@ def _search(graph: Any, query: str, kind: str | None, top_k: int) -> str:
     for i, entity in enumerate(results[:top_k], 1):
         name = entity.get("name", "?")
         ek = entity.get("kind", "?")
-        eid = entity.get("id", "?")
+        eid = _friendly_entity_id(entity.get("id", "?"))
         fp = entity.get("file_path", "?")
         sl = entity.get("start_line")
 
@@ -1676,7 +1676,7 @@ def _affected(graph: Any, entity_id: str, max_depth: int) -> str:
         for e in entities[:20]:
             n = e.get("name", "?")
             k = e.get("kind", "?")
-            ei = e.get("id", "?")
+            ei = _friendly_entity_id(e.get("id", "?"))
             mark = " ⭐" if ei in central_ids else ""
             lines.append(f"{indent}- `{n}` ({k}) — `{ei}`{mark}")
         if len(entities) > 20:
@@ -2642,18 +2642,32 @@ def _render_relationships(
     return lines
 
 
+def _friendly_entity_id(entity_id: str) -> str:
+    """Present a stored entity ID in a shell-friendly form.
+
+    Stored IDs are ``.<sep>path::{name}`` with OS-native separators, which are
+    awkward to copy into a shell (where a backslash is an escape character).
+    This converts backslashes to forward slashes and drops the redundant
+    ``./`` / ``.\\`` prefix, so a stored ``.\\path\\to\\file.rs::name`` becomes
+    ``path/to/file.rs::name``. It is idempotent and a no-op on POSIX, where
+    the stored form already uses forward slashes.
+    """
+    friendly = entity_id.replace('\\', '/')
+    if friendly.startswith('./'):
+        friendly = friendly[2:]
+    return friendly
+
+
 def _canonical_entity_id(entity_id: str) -> str:
     """Resolve an entity ID to its canonical in-graph form.
 
     The graph is always walked as `.` from the project root — the server
     chdir's onto the resolved root at startup — so in-graph ids always carry
     that same relative prefix. What varies is what the *agent* sends: an
-    absolute path it read off a tool result, or the other separator. Those
-    are normalised here.
-
-    This used to also probe relative to absolute, back when the graph prefix
-    could be either because cwd and the analyzed root could differ. That
-    candidate can no longer match anything, so it is gone.
+    absolute path it read off a tool result, a slash-vs-backslash variant, or
+    the shell-friendly form ``codegraph_search`` now displays. All of those
+    are normalised here to the stored ``.<sep>path::{name}`` key — no stored
+    key or FK reference is changed.
     """
     try:
         from coderadar._core import lookup_entity
@@ -2663,6 +2677,7 @@ def _canonical_entity_id(entity_id: str) -> str:
         return entity_id
 
     import os
+
     candidates: list[str] = []
 
     # Absolute → relative (with ./ prefix and bare)
@@ -2674,14 +2689,19 @@ def _canonical_entity_id(entity_id: str) -> str:
         except ValueError:
             pass
 
-    # Normalize separators both ways
-    normalized: list[str] = []
-    for c in candidates:
-        normalized.append(c.replace('/', '\\'))
-        normalized.append(c.replace('\\', '/'))
+    # Friendly / separator-variant forms. The stored key is
+    # "{optional .<sep> prefix}{path in <sep>}::{name}", so normalise to a
+    # slash base and try every {bare, prefixed} x {slash, backslash} combo.
+    base = entity_id.replace('\\', '/')
+    if base.startswith('./'):
+        base = base[2:]
+    for sep, prefix in (('/', './'), ('\\', '.\\')):
+        body = base.replace('/', sep)
+        candidates.append(body)
+        candidates.append(prefix + body)
 
-    for c in normalized:
-        if lookup_entity(c):
+    for c in candidates:
+        if c and lookup_entity(c):
             return c
     return entity_id
 
@@ -2759,7 +2779,7 @@ def _resolve_ref(graph: Any, name: str, limit: int) -> str:
             for i, r in enumerate(results, 1):
                 rname = r.get("name", "?")
                 rkind = r.get("kind", "?")
-                rid = r.get("id", "?")
+                rid = _friendly_entity_id(r.get("id", "?"))
                 rfile = r.get("file_path", "?")
                 conf = r.get("confidence", 0)
                 lines.append(f"### {i}. `{rname}` ({rkind}) — confidence {conf:.2f}")
@@ -2787,7 +2807,7 @@ def _resolve_ref(graph: Any, name: str, limit: int) -> str:
     for i, r in enumerate(results, 1):
         rname = r.get("name", "?")
         rkind = r.get("kind", "?")
-        rid = r.get("id", "?")
+        rid = _friendly_entity_id(r.get("id", "?"))
         rfile = r.get("file_path", "?")
         conf = r.get("confidence", 0)
         resolved_by = r.get("resolved_by", "unknown")
