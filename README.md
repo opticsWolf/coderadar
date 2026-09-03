@@ -1,4 +1,4 @@
-# CodeRadar v0.7.20
+# CodeRadar v0.8.0
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -55,7 +55,7 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 1071 (333 Rust + 738 Python) |
+| **Tests** | 1075 (335 Rust + 740 Python) |
 | **MCP Tools** | 19 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, get_smells, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file, set_project) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
@@ -242,7 +242,7 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
 
-## v0.8 Feature Highlights — ledger-backed cold start + agent UX (unreleased, `dev`)
+## v0.8 Feature Highlights — ledger-backed cold start + agent UX
 
 v0.8 makes the MCP server restart-proof and the mutation plans honest, driven by two field
 reports from live agent sessions (see [`docs/v0.8-p2-agent-ux-guide.md`](docs/v0.8-p2-agent-ux-guide.md);
@@ -275,6 +275,13 @@ cold-start design in [`docs/v0.8-p1-cold-start-design.md`](docs/v0.8-p1-cold-sta
 - **Shell-friendly entity IDs (E7).** Stored IDs keep OS-native separators (FK stability);
   display renders forward slashes with the redundant `./` dropped, and every pasted variant
   resolves back to the stored key.
+- **macrame-db 0.15 (schema v15).** Builders for the now-`#[non_exhaustive]`
+  `ConceptUpsert`, `Vec<EdgeBelief>` replay folds, distinct `BulkInterrupted`
+  reporting, and `Database::analyze()` planner statistics after the bulk flush.
+  Two perf fixes fell out: the ledger-revision stamp reads `MAX(seq_id)` instead
+  of a full `reconstruct` fold (1.7 s → 0.08 s per analyze on a large log), and
+  content-hash-gated upserts make no-op analyzes write zero rows (see
+  [`docs/macrame-0.15-upgrade-notes.md`](docs/macrame-0.15-upgrade-notes.md)).
 
 ## v0.7.18 Feature Highlights — the fossil-mcp port
 
