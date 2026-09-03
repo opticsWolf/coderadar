@@ -1263,52 +1263,147 @@ fn lookup_entity(py: Python<'_>, entity_id: &str) -> PyResult<Option<PyObject>> 
     })
 }
 
-/// Name-match score, or None when the name does not match at all.
+/// Search tokens from a free-text query: whitespace-split, surrounding
+/// punctuation stripped, lowercased, deduped (first occurrence wins).
 ///
-/// `weight` scales the three tiers (exact / prefix / contains) so that a kind
-/// can be ranked below another for the same name — a module named `parser`
-/// should not outrank the function `parser`.
-fn name_score(name: &str, query_lower: &str, weight: usize) -> Option<usize> {
-    let name_lower = name.to_lowercase();
-    if name_lower == query_lower {
-        Some(100 * weight)
-    } else if name_lower.starts_with(query_lower) {
-        Some(50 * weight)
-    } else if name_lower.contains(query_lower) {
-        Some(25 * weight)
-    } else {
-        None
+/// Multi-word queries used to be matched as one string — no identifier
+/// contains "syncnode exchange_with", so every ≥2-token query was
+/// structurally empty. Tokens are the unit of matching now; an entity's score
+/// is the sum of its per-token scores, so an entity matching several tokens
+/// outranks one matching a single one.
+fn search_tokens(query: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tok in query.split_whitespace() {
+        let t = tok
+            .trim_matches(|c: char| "({})[]<>,;:\"'.`".contains(c))
+            .to_lowercase();
+        if !t.is_empty() && !out.contains(&t) {
+            out.push(t);
+        }
     }
+    out
 }
 
-/// Search entities by name substring match (case-insensitive).
+/// Per-token score for one entity: the name tiers (exact 100 / prefix 50 /
+/// contains 25) plus low additive tiers for the signature (10) and
+/// docstring (5).
+///
+/// An *empty* token list scores every entity 1: the old whole-string scorer
+/// gave `""` a prefix hit on every name, and callers lean on that as an
+/// enumeration contract — `search_entities("", top_k, kind)` means "give me
+/// all the entities of this kind" (the visualizers' `_entities_of_kind`
+/// is built on it). Dropping it broke every DOT/mermaid diagram.
+///
+/// The signature/docstring tiers are gated on token length ≥ 3: a one- or
+/// two-character token would otherwise light up the whole project through
+/// docstring `contains`.
+fn token_entity_score(
+    name_lower: &str,
+    sig_lower: Option<&str>,
+    doc_lower: Option<&str>,
+    tokens: &[String],
+) -> usize {
+    if tokens.is_empty() {
+        return 1;
+    }
+    let mut s = 0usize;
+    for token in tokens {
+        s += if name_lower == token {
+            100
+        } else if name_lower.starts_with(token) {
+            50
+        } else if name_lower.contains(token) {
+            25
+        } else {
+            0
+        };
+        if token.len() >= 3 {
+            if let Some(sig) = sig_lower {
+                if sig.contains(token) {
+                    s += 10;
+                }
+            }
+            if let Some(doc) = doc_lower {
+                if doc.contains(token) {
+                    s += 5;
+                }
+            }
+        }
+    }
+    s
+}
+
+/// The searchable signature text of a function: parameter names and
+/// annotations plus the return type. None when the function carries no
+/// parameter or return information at all.
+fn function_signature_text(f: &Function) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    for p in &f.parameters {
+        match &p.annotation {
+            Some(a) => parts.push(format!("{}: {}", p.name, a)),
+            None => parts.push(p.name.clone()),
+        }
+    }
+    if let Some(r) = &f.return_type {
+        parts.push(r.clone());
+    }
+    if parts.is_empty() { None } else { Some(parts.join(", ")) }
+}
+
+/// Search entities by per-token name match with OR semantics
+/// (case-insensitive), ranked by summed per-token score.
 ///
 /// Covers every entity kind the projection holds. `compute_embeddings` asks
 /// for `import`, `constant` and `type_alias` as well as the big three, and
 /// `codegraph_search_similar` advertises them; they used to come back empty,
-/// so those three kinds were never embedded.
+/// so those three kinds were never embedded. A single-token query scores
+/// exactly as the old whole-string matcher (the name tiers are unchanged);
+/// the signature/docstring tiers are additive and can only promote matches
+/// the old matcher would have missed.
 #[pyfunction]
 // `kind` is a filter, not a required argument: without an explicit signature
 // PyO3 makes even an `Option` positional, so every caller had to pass None.
 #[pyo3(signature = (query, top_k, kind = None))]
 fn search_entities(py: Python<'_>, query: &str, top_k: usize, kind: Option<&str>) -> PyResult<Vec<PyObject>> {
     with_graph(|_graph, snap| {
-        let query_lower = query.to_lowercase();
+        let tokens = search_tokens(query);
         let mut results: Vec<(usize, PyObject)> = Vec::new(); // (score, dict)
         let kind_filter = kind.map(|k| k.to_lowercase());
         let wants = |k: &str| {
             kind_filter.is_none() || kind_filter.as_deref() == Some(k)
         };
 
+        // Per-kind signature/docstring accessors. Closures (not call-site
+        // expressions) because of macro hygiene: an expression captured at the
+        // call site cannot name the loop variable `e`, which is introduced in
+        // the macro body.
+        let sig_f = |f: &Function| function_signature_text(f);
+        let doc_f = |f: &Function| f.docstring.clone();
+        let doc_c = |c: &Class| c.docstring.clone();
+        let none_c = |_e: &Class| None;
+        let none_t = |_e: &TypeAlias| None;
+        let none_k = |_e: &Constant| None;
+        let none_m = |_e: &Module| None;
+        let none_i = |_e: &Import| None;
+
         // Weight 10 = full rank; the containers (module) and the leaf kinds
         // sit below the named definitions a search is usually after.
         macro_rules! scan {
-            ($kind:literal, $map:expr, $field:ident, $to_dict:path, $weight:expr) => {
+            ($kind:literal, $map:expr, $field:ident, $to_dict:path, $weight:expr, $sig:expr, $doc:expr) => {
                 if wants($kind) {
                     for (_id, e) in $map.iter() {
-                        if let Some(score) = name_score(&e.$field, &query_lower, $weight) {
+                        let name_lower = e.$field.to_lowercase();
+                        let sig_lower: Option<String> = $sig(e);
+                        let doc_lower: Option<String> = $doc(e);
+                        let score = token_entity_score(
+                            &name_lower,
+                            sig_lower.as_deref(),
+                            doc_lower.as_deref(),
+                            &tokens,
+                        );
+                        if score > 0 {
                             if let Ok(d) = $to_dict(py, e) {
-                                results.push((score, d));
+                                results.push((score * $weight, d));
                             }
                         }
                     }
@@ -1316,14 +1411,14 @@ fn search_entities(py: Python<'_>, query: &str, top_k: usize, kind: Option<&str>
             };
         }
 
-        scan!("function", snap.functions, name, function_to_dict, 10);
-        scan!("class", snap.classes, name, class_to_dict, 10);
-        scan!("type_alias", snap.type_aliases, name, type_alias_to_dict, 10);
-        scan!("constant", snap.constants, name, constant_to_dict, 9);
-        scan!("module", snap.modules, name, module_to_dict, 9);
+        scan!("function", snap.functions, name, function_to_dict, 10, sig_f, doc_f);
+        scan!("class", snap.classes, name, class_to_dict, 10, none_c, doc_c);
+        scan!("type_alias", snap.type_aliases, name, type_alias_to_dict, 10, none_t, none_t);
+        scan!("constant", snap.constants, name, constant_to_dict, 9, none_k, none_k);
+        scan!("module", snap.modules, name, module_to_dict, 9, none_m, none_m);
         // An import's "name" is its raw statement text, which is noisier than
         // a definition name, so it ranks last.
-        scan!("import", snap.imports, raw, import_to_dict, 8);
+        scan!("import", snap.imports, raw, import_to_dict, 8, none_i, none_i);
 
         // Sort by score descending, take top_k
         results.sort_by(|a, b| b.0.cmp(&a.0));
@@ -2416,6 +2511,7 @@ fn set_module_star_exports_bulk(
 mod tests {
     use super::*;
     use crate::graph::ProjectConfig;
+    use crate::types::{ByteSpan, FunctionKind, FunctionMetrics, Parameter, ParseQuality, SourceType};
 
     #[test]
     fn default_excludes_skip_build_dirs() {
@@ -2470,5 +2566,88 @@ mod tests {
 
         assert!(seen.iter().any(|p| p.ends_with("a.py")));
         assert!(!seen.iter().any(|p| p.contains("v.py")), "{:?}", seen);
+    }
+
+    // ── P2-1: multi-token search scoring ─────────────────────────────────
+
+    #[test]
+    fn search_tokens_splits_dedupes_and_strips_punctuation() {
+        assert_eq!(search_tokens(""), Vec::<String>::new());
+        assert_eq!(search_tokens("   "), Vec::<String>::new());
+        assert_eq!(search_tokens("SyncNode exchange_with"), vec!["syncnode".to_string(), "exchange_with".to_string()]);
+        // Punctuation is stripped from token edges; inner dots survive.
+        assert_eq!(search_tokens("(t), f()"), vec!["t".to_string(), "f".to_string()]);
+        assert_eq!(search_tokens("Date.now() Date.now"), vec!["date.now".to_string()]);
+        // Duplicates collapse, first order wins.
+        assert_eq!(search_tokens("a b a"), vec!["a".to_string(), "b".to_string()]);
+        // Case folds.
+        assert_eq!(search_tokens("ABC abc"), vec!["abc".to_string()]);
+    }
+
+    #[test]
+    fn token_entity_score_tiers_and_additive_low_tiers() {
+        let tok = |t: &str| vec![t.to_string()];
+        // Name tiers: exact > prefix > contains > miss.
+        assert_eq!(token_entity_score("parser", None, None, &tok("parser")), 100);
+        assert_eq!(token_entity_score("parser", None, None, &tok("pars")), 50);
+        assert_eq!(token_entity_score("my_parser_x", None, None, &tok("parser")), 25);
+        assert_eq!(token_entity_score("other", None, None, &tok("parser")), 0);
+
+        // Signature and docstring tiers are additive (3-char gate).
+        assert_eq!(token_entity_score("f", Some("store: &Store, x: i32"), None, &tok("store")), 10);
+        assert_eq!(token_entity_score("f", Some("a: b"), Some("writes to the ledger"), &tok("ledger")), 5);
+        assert_eq!(token_entity_score("f", Some("ledger: &Ledger"), Some("the ledger"), &tok("ledger")), 15);
+        // Short tokens skip the low tiers (a 1-char token would light up
+        // every docstring).
+        assert_eq!(token_entity_score("f", Some("ab"), Some("ab"), &tok("ab")), 0);
+
+        // A name hit is never demoted by the additive tiers.
+        assert!(token_entity_score("ledger", Some("ledger"), Some("ledger"), &tok("ledger")) > 100);
+
+        // The enumeration contract: an empty query scores every entity 1
+        // (see the doc comment — the visualizers enumerate on it).
+        assert_eq!(token_entity_score("anything", None, None, &[]), 1);
+    }
+
+    #[test]
+    fn function_signature_text_joins_params_and_return() {
+        let mut f = Function {
+            id: "f".into(),
+            name: "f".into(),
+            parent_module: "m".into(),
+            parent_class: None,
+            parameters: vec![
+                Parameter { name: "store".into(), annotation: Some("&Store".into()), default_value: None, is_varargs: false, is_kwargs: false, is_positional_only: false, is_keyword_only: false },
+                Parameter { name: "x".into(), annotation: None, default_value: None, is_varargs: false, is_kwargs: false, is_positional_only: false, is_keyword_only: false },
+            ],
+            return_type: Some("String".into()),
+            calls: vec![],
+            resolved_calls: vec![],
+            decorators: vec![],
+            setter_of: None,
+            line: 1,
+            exit_line: 2,
+            docstring: None,
+            kind: FunctionKind::Free,
+            is_async: false,
+            is_generator: false,
+            source: SourceType::Impl,
+            signature_hash: 0,
+            body_hash: 0,
+            metrics: FunctionMetrics::default(),
+            is_type_checking_only: false,
+            parse_quality: ParseQuality::Clean,
+            content_hash: 0,
+            span: ByteSpan { start: 0, end: 0 },
+            name_span: ByteSpan { start: 0, end: 0 },
+            params_span: ByteSpan { start: 0, end: 0 },
+            body_span: ByteSpan { start: 0, end: 0 },
+            decorators_span: None,
+            embedding: EmbeddingVec::default(),
+        };
+        assert_eq!(function_signature_text(&f).as_deref(), Some("store: &Store, x, String"));
+        f.parameters.clear();
+        f.return_type = None;
+        assert_eq!(function_signature_text(&f), None);
     }
 }

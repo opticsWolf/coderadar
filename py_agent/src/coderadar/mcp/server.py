@@ -139,6 +139,20 @@ falling back to grep.
 """
 
 
+# The directory the MCP client launched this process from, captured before
+# any chdir (cli.py's `mcp serve` sets it). It keys the last-project record
+# (P2-3): `set_project` records the switch against it, so the next launch
+# from the same directory can resume the chosen project. None in tests and
+# directly-constructed servers, where recording is skipped.
+_LAUNCH_CWD: Optional[Path] = None
+
+
+def set_launch_cwd(directory: Optional[Path]) -> None:
+    """Record the launch directory for the lifetime of this process."""
+    global _LAUNCH_CWD
+    _LAUNCH_CWD = directory
+
+
 # ── Server Factory ────────────────────────────────────────────────────────
 
 def create_server(graph: Any) -> MCPServer:
@@ -733,7 +747,11 @@ def create_server(graph: Any) -> MCPServer:
             "anchor='end' appends at file end, 'top' inserts at file top, "
             "or pass an entity ID to insert after that entity. "
             "The code is rendered from name/body/decorators using language-aware "
-            "syntax for common languages."
+            "syntax for common languages. For function-like kinds, pass `signature` "
+            "with the complete header to write verbatim, e.g. "
+            "`fn sync_status_text(store: &Store) -> String` or "
+            "`def save(self, name: str) -> None` — omit it only for parameter-less "
+            "helpers, whose header is rendered from `name` alone."
         ),
         annotations={
             "read_only_hint": False,
@@ -750,6 +768,7 @@ def create_server(graph: Any) -> MCPServer:
         body: str,
         decorators: Optional[list[str]] = None,
         anchor: str = "end",
+        signature: Optional[str] = None,
         dry_run: bool = True,
         project_path: Optional[str] = None,
     ) -> str:
@@ -758,7 +777,8 @@ def create_server(graph: Any) -> MCPServer:
         if mismatch:
             return mismatch
 
-        return _create_entity(graph, file_path, language, kind, name, body, decorators, anchor, dry_run)
+        return _create_entity(graph, file_path, language, kind, name, body,
+                              decorators, anchor, signature, dry_run)
 
     # ── codegraph_reindex — full graph refresh ───────────────────────
 
@@ -1310,6 +1330,14 @@ def _set_project(project_path: str, confirm: bool = False) -> str:
     if retry is not None:
         retry.mark_user_chosen(selected)
 
+    # 5. Remember this launch directory for the next session (P2-3). The
+    #    client starts us from a fixed place; the agent has now declared
+    #    which project it wants, so the next launch from the same place
+    #    resumes here. Best-effort: recording can never fail the switch.
+    if _LAUNCH_CWD is not None:
+        from coderadar.project_state import record_project
+        record_project(_LAUNCH_CWD, selected.path)
+
     structlog.get_logger(__name__).info(
         "mcp.project.switched", to=str(selected.path),
         confirmed=selected.confirmed)
@@ -1377,8 +1405,10 @@ def _explore(
     if not resolved:
         name_list = ", ".join(f"`{n}`" for n in names)
         return (
-            f"Couldn't find {name_list} in the index. "
-            "Try codegraph_search with broader terms."
+            f"Couldn't find {name_list} in the index. Each name was matched "
+            "exactly, then as search tokens, against names, signatures and "
+            "docstrings. Try a single well-known symbol, `codegraph_search` "
+            "with one token, or `codegraph_search_similar` for semantic search."
         )
 
     # Group by file
@@ -1491,6 +1521,40 @@ def _node_detail(graph: Any, entity_id: str, include_neighbors: bool) -> str:
     return "\n".join(lines)
 
 
+def _search_miss_message(query: str, kind: str | None) -> str:
+    """A miss that tells the agent what was actually tried.
+
+    The old message ("Try broader terms") made an empty result look like the
+    index was missing the thing, when the truth is "no indexed name,
+    signature or docstring contains any of these tokens" — the agent kept
+    retrying variations instead of switching tools (Süvea session: three
+    multi-word queries, all structurally empty).
+    """
+    tokens = [t for t in re.split(r"\s+", query.strip()) if t]
+    out = [
+        "No results found for '" + query + "'"
+        + (f" (kind: {kind})" if kind else "")
+        + "."
+    ]
+    if len(tokens) >= 2:
+        shown = ", ".join(f"`{t}`" for t in tokens[:8])
+        out.append(
+            f"Tokens are matched independently (OR) — none of {shown} occurs "
+            "in any indexed entity's name, signature or docstring."
+        )
+        out.append("Try a single token by itself, one that you expect as an identifier.")
+    else:
+        out.append(
+            "The token was matched against entity names, function signatures "
+            "and docstrings and hit nothing."
+        )
+    out.append(
+        "Escape hatches: `codegraph_search_similar` (semantic, embedding-based) "
+        "or `codegraph_explore` with explicit `symbols` for known names."
+    )
+    return "\n".join(out)
+
+
 @requires_index
 def _search(graph: Any, query: str, kind: str | None, top_k: int) -> str:
     """Keyword search for symbols."""
@@ -1503,11 +1567,7 @@ def _search(graph: Any, query: str, kind: str | None, top_k: int) -> str:
         results = [r for r in results if r.get("kind") == kind or r.get("entity_type") == kind]
 
     if not results:
-        return (
-            f"No results found for '{query}'"
-            + (f" (kind: {kind})" if kind else "")
-            + ". Try broader terms."
-        )
+        return _search_miss_message(query, kind)
 
     lines = [f"## Search: `{query}`", f"Found {len(results)} result(s)", ""]
     for i, entity in enumerate(results[:top_k], 1):
@@ -2202,19 +2262,38 @@ def _rename(graph: Any, entity_id: str, new_name: str, dry_run: bool) -> str:
 
 def _render_entity_code(
     language: str, kind: str, name: str, body: str, decorators: list[str] | None,
+    signature: str = "",
 ) -> str:
-    """Render a source snippet for a new entity using language-aware syntax."""
+    """Render a source snippet for a new entity using language-aware syntax.
+
+    `signature`, when given, is the complete function/method header to write
+    verbatim (`fn f(a: T) -> U`, `def f(self) -> None`, …). The renderer only
+    adds the language's body delimiter (the Python colon, the C-style braces,
+    Ruby's `end`) so the agent can express full Rust/typed signatures that the
+    name-only rendering never could (Süvea session: `create_entity` could not
+    express `fn sync_status_text(store: &Store) -> String`).
+    """
     lang = (language or "").lower()
     kind_norm = (kind or "function").lower()
     body = (body or "").rstrip("\n")
     dec = "\n".join(decorators or [])
     dec_block = (dec + "\n") if dec else ""
+    sig = (signature or "").strip()
 
     def indent(text: str, spaces: int = 4) -> str:
         pad = " " * spaces
         return "\n".join((pad + line) if line.strip() else line for line in text.split("\n"))
 
     if kind_norm in ("function", "method", "fn"):
+        if sig:
+            if lang in ("python", "py"):
+                header = sig if sig.endswith(":") else sig + ":"
+                inner = indent(body) or "    pass"
+                return f"{dec_block}{header}\n{inner}\n"
+            if lang in ("ruby", "rb"):
+                return f"{dec_block}{sig}\n{body}\nend\n"
+            # C-style block languages: rust, go, js/ts, java, csharp, php, …
+            return f"{dec_block}{sig} {{\n{body}\n}}\n"
         if lang in ("python", "py"):
             return f"{dec_block}def {name}():\n{indent(body)}\n"
         if lang in ("rust", "rs"):
@@ -2278,13 +2357,19 @@ def _canonical_file_path(file_path: str) -> str:
 def _create_entity(
     graph: Any, file_path: str, language: str, kind: str,
     name: str, body: str, decorators: list[str] | None,
-    anchor: str, dry_run: bool,
+    anchor: str, signature: str | None, dry_run: bool,
 ) -> str:
     """Create a new entity."""
     try:
-        code = _render_entity_code(language, kind, name, body, decorators)
+        code = _render_entity_code(language, kind, name, body, decorators, signature or "")
         if not code.strip():
             return "Cannot render entity: provide a non-empty body or kind."
+        note = ""
+        if (signature or "").strip() and kind.lower() not in ("function", "method", "fn"):
+            note = (
+                f"Note: `signature` is only used for function-like kinds; it was "
+                f"ignored for kind '{kind}'.\n\n"
+            )
         target = _canonical_file_path(file_path)
         # If the anchor is an entity ID (not 'top'/'end'), canonicalize it too
         anchor_norm = anchor or "end"
@@ -2294,9 +2379,10 @@ def _create_entity(
             target, anchor_norm, code, dry_run=True,
         )
         if dry_run:
-            return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
+            return (note + _format_mutation_plan(plan)
+                    + "\n**To apply:** call again with `dry_run=False`.")
         result = graph.apply(plan)
-        return _format_mutation_applied(result, plan.unverified_sites)
+        return note + _format_mutation_applied(result, plan.unverified_sites)
     except Exception as e:
         return f"Mutation failed: {e}"
 
@@ -2404,14 +2490,19 @@ def _format_mutation_applied(result: Any, unverified_sites: list | None = None) 
 
 
 def _reindex(graph: Any, with_embeddings: bool = False) -> str:
-    """Full reindex of the project."""
+    """Reindex the project: current, the cheap way (v0.8 P2-4).
+
+    A warm repo loads its ledger and updates only the files that changed;
+    a repo without a loadable store gets the full walk.
+    """
     try:
-        from coderadar._core import analyze as _analyze, graph_stats
+        from coderadar import coldstart
+        from coderadar._core import graph_stats
         # Use relative root ('.') to keep entity IDs consistent with startup
         # (analyze('.')) — absolute os.getcwd() would change ID prefixes.
         # The server chdir's onto the resolved project root before serving,
         # so '.' is the project root by construction rather than by luck.
-        _analyze('.')
+        coldstart.build_graph('.')
         stats = graph_stats()
         lines = [
             "## Reindex Complete",

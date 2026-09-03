@@ -12,7 +12,9 @@ So the ladder is:
 
 1. the client's declared roots (`roots/list`), when a caller has them;
 2. the `--path` flag, when the operator gave one;
-3. the process cwd.
+3. the project recorded for this launch directory (P2-3 — last session's
+   `set_project` answer, validated against the disk);
+4. the process cwd.
 
 Each candidate is canonicalised with `Path.resolve()` and then walked *up*
 looking for a project marker — `.coderadar/` or `.coderadar.toml`. A marker
@@ -41,6 +43,8 @@ MARKERS = (".coderadar", ".coderadar.toml")
 #: Ladder rung names, in the order they are tried.
 CLIENT_ROOT = "client root"
 PATH_FLAG = "--path"
+#: The project a previous session's `set_project` chose for this launch cwd.
+PREVIOUS_SESSION = "previous session"
 CWD = "cwd"
 #: Source name for a root named by a tool call's ``project_path`` argument.
 PROJECT_PATH = "project_path"
@@ -150,6 +154,7 @@ def resolve_project_root(
     client_roots: Optional[Iterable[str]] = None,
     path_flag: Optional[str] = None,
     cwd: Optional[str] = None,
+    launch_cwd: Optional[Path] = None,
 ) -> ResolvedRoot:
     """Pick a project root by walking the ladder described in this module.
 
@@ -159,6 +164,12 @@ def resolve_project_root(
     and a rung is only a preference. The second pass runs only if nothing was
     confirmed anywhere, and returns the highest-priority candidate that at
     least exists, with `marker=None` so the caller knows it is a guess.
+
+    `launch_cwd` is the directory the process was started in (before any
+    chdir). When given, the project a previous session chose for that
+    directory becomes a candidate between `--path` and cwd: `--path` still
+    wins on both passes, and the record is validated on read, so a stale
+    record simply contributes nothing.
 
     Never raises: the last fallback is cwd, unresolved if need be.
     """
@@ -171,6 +182,14 @@ def resolve_project_root(
             candidates.append((as_path, CLIENT_ROOT))
     if path_flag is not None:
         candidates.append((Path(path_flag), PATH_FLAG))
+    if launch_cwd is not None:
+        # Imported here: project_state is a leaf module, but keeping the
+        # import local means roots.py stays importable in the lightest
+        # contexts (tests that stub home) without a cycle.
+        from coderadar.project_state import last_project_for
+        recorded = last_project_for(launch_cwd)
+        if recorded is not None:
+            candidates.append((recorded, PREVIOUS_SESSION))
     candidates.append((raw_cwd, CWD))
 
     canonical: list[tuple[Path, str]] = []

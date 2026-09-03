@@ -192,7 +192,25 @@ impl<'a> CursorExtractor<'a> {
             }
             Tag::Impl => self.emit_impl(node),
             Tag::Docstring => {
-                self.pending_docstring = emit_docstring_node(node, self.source);
+                if let Some((line, text, end_line)) = emit_docstring_node(node, self.source) {
+                    self.pending_docstring = Some((line, text.clone(), end_line));
+                    // In-body docstrings (Python) fire *after* their unit was
+                    // emitted — the cursor is preorder, so the function node
+                    // is visited before the docstring statement in its body.
+                    // `preceding_docstring` only reaches text *before* the
+                    // declaration (Rust `///` comments), so without this
+                    // backfill a Python function's `Function.docstring` was
+                    // always None and the search scorer could never see it.
+                    // The line-range guard keeps a stray string statement
+                    // from leaking onto an unrelated function.
+                    if let Some(idx) = self.current_function_idx {
+                        if let Some(ExtractedUnit::Function(f)) = self.units.get_mut(idx) {
+                            if f.docstring.is_none() && f.line < line && end_line <= f.exit_line {
+                                f.docstring = Some(text);
+                            }
+                        }
+                    }
+                }
             }
             Tag::Field => self.emit_field(node),
             Tag::Decorator | Tag::ClassBase
@@ -515,12 +533,16 @@ fn emit_docstring_node(node: Node, source: &str) -> Option<(usize, String, usize
     if text.is_empty() {
         return None;
     }
-    // Clean comment markers
+    // Clean comment markers and Python string delimiters — the tagged node
+    // may be a `///` comment or a `"""…"""` literal; either way the
+    // projection wants the prose, not the syntax.
     let cleaned = text.trim_start_matches('#')
         .trim_start_matches("//")
         .trim_start_matches("///")
         .trim_start_matches("/*")
         .trim_end_matches("*/")
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'' )
         .trim();
     if cleaned.is_empty() {
         None

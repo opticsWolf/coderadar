@@ -175,7 +175,8 @@ class TestCreateEntity:
 
         out = _create_entity(
             coderadar.CodeGraph(), "app.py", "python", "function",
-            "farewell", 'return "bye " + name', None, "end", False)
+            "farewell", 'return "bye " + name', None, "end",
+            signature=None, dry_run=False)
 
         after = _app(project)
         assert "Mutation failed" not in out, out
@@ -193,6 +194,49 @@ class TestCreateEntity:
         before = _app(project)
         _create_entity(
             coderadar.CodeGraph(), "app.py", "python", "function",
-            "farewell", 'return "bye"', None, "end", True)
+            "farewell", 'return "bye"', None, "end",
+            signature=None, dry_run=True)
 
         assert _app(project) == before
+
+
+class TestTextualCallSiteBackstop:
+    """P2-5: a call the cascade cannot resolve (here: module-level, no
+    enclosing function) must surface as an unverified textual site, not
+    break silently after the rename."""
+
+    def _with_module_level_call(self, project: Path) -> None:
+        app = project / "app.py"
+        app.write_text(_app(project) + "\n\nshout(\"x\")\n", encoding="utf-8")
+        _analyze(".")
+
+    def test_dry_run_reports_the_unresolved_call(self, project):
+        from coderadar.mcp.server import _rename
+
+        self._with_module_level_call(project)
+        out = _rename(coderadar.CodeGraph(), _entity_id("shout"), "shout2", True)
+
+        # The module-level call is reported, with its textual reason.
+        assert 'shout("x")' in out, out
+        assert "Textual occurrence" in out, out
+        # The definition line (which also matches `shout(`) is covered and
+        # stays out of the unverified list.
+        assert "def shout" not in out.split("Textual occurrence")[1]
+        # Dry run changed nothing.
+        assert 'shout("x")' in _app(project)
+        assert "def shout(name):" in _app(project)
+
+    def test_apply_leaves_the_unresolved_call_for_the_agent(self, project):
+        from coderadar.mcp.server import _rename
+
+        self._with_module_level_call(project)
+        out = _rename(coderadar.CodeGraph(), _entity_id("shout"), "shout2", False)
+
+        after = _app(project)
+        assert "Mutation failed" not in out, out
+        assert "def shout2(name):" in after, "definition renamed"
+        assert 'shout("x")' in after, (
+            "the unresolvable call site is left for manual review, not "
+            "guessed at or deleted"
+        )
+        assert "Textual occurrence" in out, out

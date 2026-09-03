@@ -62,7 +62,7 @@ def _backends():
         ("rename", lambda: s._rename(None, "test.py::fn", "new_fn", True)),
         ("create_entity", lambda: s._create_entity(
             None, "test.py", "python", "function", "new_fn", "return 1",
-            None, "end", True)),
+            None, "end", None, True)),
     ]
 
 

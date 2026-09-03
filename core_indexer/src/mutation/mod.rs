@@ -138,6 +138,117 @@ fn line_col_to_byte(source: &[u8], line: usize, col: usize) -> Option<usize> {
     (pos <= source.len()).then_some(pos)
 }
 
+/// Textual call-site backstop (v0.8 P2-5).
+///
+/// The graph knows the call sites that were *resolved* at index time. What
+/// resolution cannot see — macro bodies, unsupported syntax, anything the
+/// cascade gave up on — is exactly where a rename or signature change breaks
+/// silently. This walks every indexed file for the textual shape of a call:
+/// a word-boundary `name` immediately followed by `(`. Deliberately dumb —
+/// no syntax, no expansion: a hit may be a comment, a string, or a same-name
+/// call to a different entity, and the report says so.
+fn textual_call_sites(projection: &ProjectedGraph, name: &str) -> Vec<(String, u32, String)> {
+    let needle = format!("{}(", name);
+    let mut out: Vec<(String, u32, String)> = Vec::new();
+    let mut visited: Vec<String> = Vec::new();
+    for module in projection.modules.values() {
+        let file = module.path.to_string_lossy().to_string();
+        if !visited.iter().any(|f| f == &file) {
+            visited.push(file.clone());
+        } else {
+            continue;
+        }
+        let source = std::fs::read_to_string(&file).unwrap_or_default();
+        for (idx, line) in source.lines().enumerate() {
+            // One report per line is enough — the snippet carries the context.
+            for (pos, _) in line.match_indices(&needle) {
+                // Word boundary before the name: the previous character must
+                // be non-identifier. A non-ASCII previous byte is treated as
+                // identifier material (conservative: Rust/Python identifiers
+                // may be unicode, so `éname(` is one token, not a call to
+                // `name`).
+                let boundary = match pos {
+                    0 => true,
+                    p => {
+                        let b = line.as_bytes()[p - 1];
+                        b < 0x80 && !b.is_ascii_alphanumeric() && b != b'_'
+                    }
+                };
+                if boundary {
+                    out.push((file.clone(), (idx + 1) as u32, line.trim().to_string()));
+                    break;
+                }
+            }
+            if out.len() >= 15 {
+                return out; // cap: a report is a triage list, not a census
+            }
+        }
+    }
+    out
+}
+
+/// (file, line) of every graph call site targeting one of `targets` — the
+/// "already covered" set for the textual backstop.
+fn structural_call_site_lines(
+    projection: &ProjectedGraph,
+    targets: &[String],
+) -> Vec<(String, u32)> {
+    let mut out: Vec<(String, u32)> = Vec::new();
+    for target in targets {
+        let Some(callers) = projection.callers_by_callee.get(target) else {
+            continue;
+        };
+        for caller_id in callers {
+            let Some(caller_fn) = projection.functions.get(caller_id) else {
+                continue;
+            };
+            let file = module_file_path(projection, &caller_fn.parent_module);
+            for (i, rc) in caller_fn.resolved_calls.iter().enumerate() {
+                let targets_entity = matches!(
+                    rc,
+                    ResolvedCall::Function(id)
+                    | ResolvedCall::Method { method: id, .. }
+                    | ResolvedCall::Constructor(id)
+                        if id == target
+                );
+                if !targets_entity {
+                    continue;
+                }
+                let Some(call) = caller_fn.calls.get(i) else {
+                    continue;
+                };
+                out.push((file.clone(), call.line as u32));
+            }
+        }
+    }
+    out
+}
+
+/// Append textual occurrences of `name(` that no structural site already
+/// covers (same file, line within ±1) as unverified sites. `covered` should
+/// include the entity's definition line plus every structural reference the
+/// planner already handled.
+fn push_textual_backstop(
+    projection: &ProjectedGraph,
+    name: &str,
+    covered: &[(String, u32)],
+    unverified: &mut Vec<UnverifiedSite>,
+) {
+    for (file, line, snippet) in textual_call_sites(projection, name) {
+        if covered.iter().any(|(f, l)| {
+            f == &file && line.saturating_sub(1) <= *l && *l <= line + 1
+        }) {
+            continue;
+        }
+        unverified.push(UnverifiedSite {
+            file,
+            line,
+            snippet,
+            reason: "Textual occurrence — may be inside a macro body, comment or string; check manually".into(),
+        });
+    }
+}
+
 /// xxh3_64 hex digest of a byte slice (used for stale-write rejection).
 fn span_hash(bytes: &[u8]) -> String {
     format!("{:016x}", xxhash_rust::xxh3::xxh3_64(bytes))
@@ -608,6 +719,23 @@ impl MutationEngine {
             }
         }
 
+        // 4. Textual backstop (v0.8 P2-5): a call site resolution did not
+        //    record (macro body, unsupported syntax) still reads `name(` —
+        //    report it unverified instead of leaving it to break silently.
+        {
+            let mut covered = structural_call_site_lines(
+                projection,
+                std::slice::from_ref(&entity_id.to_string()),
+            );
+            covered.push((
+                module_file_path(projection, &fn_entity.parent_module),
+                fn_entity.line as u32,
+            ));
+            push_textual_backstop(
+                projection, &fn_entity.name, &covered, &mut unverified,
+            );
+        }
+
         let plan_id = ulid::Ulid::new().to_string();
 
         // A real diff, not "replace 412 bytes at 1830..2242": the MCP
@@ -845,6 +973,22 @@ impl MutationEngine {
             });
         }
 
+        // 3b. Textual backstop (v0.8 P2-5): occurrences of `name(` the graph
+        //     did not resolve as a call to this entity.
+        {
+            let mut covered = structural_call_site_lines(
+                projection,
+                std::slice::from_ref(&entity_id.to_string()),
+            );
+            covered.push((
+                module_file_path(projection, &fn_entity.parent_module),
+                fn_entity.line as u32,
+            ));
+            push_textual_backstop(
+                projection, &fn_entity.name, &covered, &mut unverified,
+            );
+        }
+
         // A real diff, not "replace 412 bytes at 1830..2242": the MCP
         // tool promises a preview for review and renders it in a ```diff
         // fence, so the preview has to be one.
@@ -976,6 +1120,27 @@ impl MutationEngine {
                 snippet: format!("string-literal references to \"{}\"", cls.name),
                 reason: "String-literal rename requires manual review".into(),
             });
+        }
+
+        // 4b. Textual backstop (v0.8 P2-5): `Old(` occurrences the cascade
+        //     did not classify as construction sites (the known gap: `Old()`
+        //     resolves as External and produces no callers entry).
+        {
+            let mut covered: Vec<(String, u32)> = vec![(
+                module_file_path(projection, &cls.parent_module),
+                cls.line as u32,
+            )];
+            for sub_id in &subclasses {
+                let Some(sub) = projection.classes.get(sub_id.as_str()) else {
+                    continue;
+                };
+                let sub_file = module_file_path(projection, &sub.parent_module);
+                for base in sub.bases.iter().filter(|b| b.name == cls.name) {
+                    covered.push((sub_file.clone(), base.line as u32));
+                }
+            }
+            covered.extend(structural_call_site_lines(projection, &targets));
+            push_textual_backstop(projection, &cls.name, &covered, &mut unverified);
         }
 
         // A real diff, not "replace 412 bytes at 1830..2242": the MCP
@@ -1953,6 +2118,112 @@ mod tests {
         let result = eng.apply(&p);
         assert_eq!(result.status, MutationStatus::Applied, "{:#?}", result.syntax_errors);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "def foo():\n    return 2\n");
+    }
+
+    // ── Textual call-site backstop (v0.8 P2-5) ─────────────────────────
+
+    mod textual_backstop_tests {
+        use super::*;
+        use crate::graph::{CodeGraph, GraphConfig};
+        use crate::types::Language;
+
+        // line 6: resolved by the graph (call inside a function);
+        // line 8: module-level — no enclosing function, so the cascade
+        // records no call site; only the textual scan can see it.
+        const SOURCE: &str = concat!(
+            "def target_fn():\n    return 1\n\n\n",
+            "def direct_caller():\n    return target_fn()\n\n",
+            "target_fn()\n",
+        );
+
+        fn indexed_projection(dir: &std::path::Path) -> (ProjectedGraph, String) {
+            let file = dir.join("a.py");
+            std::fs::write(&file, SOURCE).unwrap();
+            let file_str = file.to_string_lossy().to_string();
+            let graph = CodeGraph::new(GraphConfig::default());
+            graph
+                .index_file(SOURCE, &file_str, &Language::Python)
+                .unwrap();
+            let mut projection = (*graph.snapshot()).clone();
+            graph.resolve_all_calls(&mut projection);
+            (projection, file_str)
+        }
+
+        fn textual_sites(plan: &MutationPlan) -> Vec<&UnverifiedSite> {
+            plan
+                .unverified_sites
+                .iter()
+                .filter(|s| s.reason.starts_with("Textual occurrence"))
+                .collect()
+        }
+
+        #[test]
+        fn rename_reports_only_the_unresolved_textual_call() {
+            let dir = tempfile::tempdir().unwrap();
+            let (projection, file) = indexed_projection(dir.path());
+            let entity_id = format!("{}::target_fn", file);
+
+            let plan = engine()
+                .plan_rename(&entity_id, "new_target", false, true, &projection)
+                .unwrap();
+
+            // The resolved call site (line 6) became an edit, not a report.
+            assert!(plan
+                .edits
+                .iter()
+                .any(|e| e.file == file && e.replacement == "new_target"));
+            // The module-level call (line 8) is the one textual report.
+            let sites = textual_sites(&plan);
+            assert_eq!(sites.len(), 1, "{:?}", plan.unverified_sites);
+            assert_eq!(sites[0].file, file);
+            assert_eq!(sites[0].line, 8);
+            assert!(sites[0].snippet.contains("target_fn()"));
+            // Definition (line 1) and the resolved site (line 6) stay quiet.
+            assert!(!sites.iter().any(|s| s.line == 1 || s.line == 6));
+        }
+
+        #[test]
+        fn signature_update_reports_only_the_unresolved_textual_call() {
+            let dir = tempfile::tempdir().unwrap();
+            let (projection, file) = indexed_projection(dir.path());
+            let entity_id = format!("{}::target_fn", file);
+
+            let plan = engine()
+                .plan_signature_update(
+                    &entity_id,
+                    "def target_fn(p: int):",
+                    &HashMap::new(),
+                    false,
+                    true,
+                    &projection,
+                )
+                .unwrap();
+
+            let sites = textual_sites(&plan);
+            assert_eq!(sites.len(), 1, "{:?}", plan.unverified_sites);
+            assert_eq!(sites[0].file, file);
+            assert_eq!(sites[0].line, 8);
+        }
+
+        #[test]
+        fn word_boundary_is_respected_and_strings_are_reported() {
+            // The scanner's contract on a throwaway file: word-boundary
+            // `name(` only — and it is deliberately blind to strings and
+            // syntax, so those are reported too (the reason string says so).
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("b.py");
+            let src = "mytarget_fn()\ntarget_fn()\n_ = target_fn(1)\n\"target_fn()\"\n";
+            std::fs::write(&file, src).unwrap();
+            let file_str = file.to_string_lossy().to_string();
+
+            let graph = CodeGraph::new(GraphConfig::default());
+            graph.index_file(src, &file_str, &Language::Python).unwrap();
+            let projection = (*graph.snapshot()).clone();
+
+            let sites = textual_call_sites(&projection, "target_fn");
+            let lines: Vec<u32> = sites.iter().map(|(_, l, _)| *l).collect();
+            assert_eq!(lines, vec![2, 3, 4], "{:?}", sites);
+        }
     }
 }
 

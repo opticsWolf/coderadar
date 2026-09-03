@@ -119,66 +119,15 @@ def _activate(project_root) -> None:
         )
 
 
-# Extensions the Rust indexer will parse (Language::from_extension minus
-# the languages without a tree-sitter grammar). The staleness check must
-# cover at least what analyze walks; a superset is safe, because an extra
-# file can only make the store look stale, never fresh.
-_INDEXABLE_EXTS = frozenset({
-    "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go", "rs", "java",
-    "c", "h", "cpp", "cc", "cxx", "hpp", "hxx", "rb", "php", "cs", "kt",
-    "kts", "swift", "scala", "sc", "lua", "ex", "exs", "zig", "zon", "r",
-    "sh", "bash", "zsh", "dart", "proto", "sql", "hcl", "tf", "cmake",
-    "graphql", "gql", "erl", "hrl", "hs", "lhs", "nix", "groovy", "gvy",
-})
-_STALENESS_SKIP_DIRS = frozenset(
-    {"__pycache__", "node_modules", "target", "dist", "build"})
-
-
-def _store_db_path(project_root: Path) -> Optional[Path]:
-    """Where the Macrame store file lives for this project.
-
-    Mirrors `store_path_for` (core_indexer/src/lib.rs): an absolute
-    `[database] path` is used as-is, a relative one is root-relative, and
-    the default is `.coderadar/store/coderadar.db`.
-    """
-    from .config import load_config
-    try:
-        configured = Path(load_config(project_root).database.path)
-    except Exception:
-        configured = Path(".coderadar/store/coderadar.db")
-    if configured.is_absolute():
-        return configured
-    return project_root / configured
-
-
-def _store_is_fresh(project_root: Path, db_path: Path,
-                    grace_s: float = 2.0) -> bool:
-    """Cheap staleness heuristic (no content hashing).
-
-    Fresh = the store file exists and no indexable source file under the
-    root has an mtime more than `grace_s` newer than the store's. The grace
-    absorbs the seconds between the last file the analyze walked and the
-    ledger commit that recorded it.
-    """
-    try:
-        db_mtime = db_path.stat().st_mtime
-    except OSError:
-        return False
-    for dirpath, dirnames, filenames in os.walk(project_root):
-        dirnames[:] = [
-            d for d in dirnames
-            if not d.startswith(".") and d not in _STALENESS_SKIP_DIRS
-        ]
-        for name in filenames:
-            ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
-            if ext not in _INDEXABLE_EXTS and name.lower() != "dockerfile":
-                continue
-            try:
-                if os.path.getmtime(os.path.join(dirpath, name)) > db_mtime + grace_s:
-                    return False
-            except OSError:
-                continue
-    return True
+# v0.8 P2-4: the staleness rules live in coderadar.coldstart — the single
+# implementation shared by the CLI's load/analyze ordering and the MCP
+# background index's incremental cold start.
+from .coldstart import (
+    INDEXABLE_EXTS as _INDEXABLE_EXTS,
+    STALENESS_SKIP_DIRS as _STALENESS_SKIP_DIRS,
+    store_db_path as _store_db_path,
+    store_is_fresh as _store_is_fresh,
+)
 
 
 def _ensure_graph(path: str = "."):
@@ -784,12 +733,17 @@ def serve(project_path: str | None):
     from .mcp.startup import BackgroundIndex, configure
     from .mcp.lazy import LazyRootRetry, configure as lazy_configure
 
+    # Capture where the client launched us BEFORE anything chdirs: this is
+    # the launch directory, and it keys the last-project record (P2-3) —
+    # the previous-session rung below, and the set_project rewrite later.
+    launch_cwd = Path(os.getcwd())
+
     # MCP clients launch servers from wherever they happen to be, so the cwd
     # is a poor guess and `--path` is optional. Climb the ladder, then move
     # the process onto the answer: every read helper in the server resolves
     # graph paths against the cwd, and entity ids carry the prefix analyze()
     # walked, so cwd and root have to be the same directory or lookups miss.
-    resolved = resolve_project_root(path_flag=project_path)
+    resolved = resolve_project_root(path_flag=project_path, launch_cwd=launch_cwd)
     adopt_project_root(resolved)
     print(describe(resolved), file=sys.stderr)
 
@@ -823,6 +777,10 @@ def serve(project_path: str | None):
     lazy_configure(LazyRootRetry(resolved, index, path_flag=project_path))
     print(f"Indexing {resolved.path} in the background...", file=sys.stderr)
 
+    # set_project rewrites the launch-directory record (P2-3); it needs the
+    # same pre-chdir directory captured above.
+    from .mcp.server import set_launch_cwd
+    set_launch_cwd(launch_cwd)
     mcp_serve(coderadar.CodeGraph())
 
 

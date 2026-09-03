@@ -95,11 +95,16 @@ class BackgroundIndex:
     def _run(self, generation: int, root: str, done: threading.Event) -> None:
         status, error = IndexStatus.READY, None
         try:
-            analyze = self._analyze
-            if analyze is None:
-                import coderadar
-                analyze = coderadar.analyze
-            analyze(root)
+            build = self._analyze
+            if build is None:
+                # v0.8 P2-4: incremental cold start — a warm repo loads its
+                # ledger and updates only the files that changed, instead of
+                # re-parsing everything. The exception contract is unchanged:
+                # whatever build raises is recorded and surfaced by
+                # ensure_ready.
+                from coderadar import coldstart
+                build = coldstart.build_graph
+            build(root)
         except BaseException as exc:  # noqa: BLE001 — the thread must not die silently
             status = IndexStatus.FAILED
             error = f"{type(exc).__name__}: {exc}"
