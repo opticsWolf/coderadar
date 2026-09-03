@@ -1527,7 +1527,7 @@ def _search_miss_message(query: str, kind: str | None) -> str:
     The old message ("Try broader terms") made an empty result look like the
     index was missing the thing, when the truth is "no indexed name,
     signature or docstring contains any of these tokens" — the agent kept
-    retrying variations instead of switching tools (Süvea session: three
+    retrying variations instead of switching tools (field session: three
     multi-word queries, all structurally empty).
     """
     tokens = [t for t in re.split(r"\s+", query.strip()) if t]
@@ -2270,7 +2270,7 @@ def _render_entity_code(
     verbatim (`fn f(a: T) -> U`, `def f(self) -> None`, …). The renderer only
     adds the language's body delimiter (the Python colon, the C-style braces,
     Ruby's `end`) so the agent can express full Rust/typed signatures that the
-    name-only rendering never could (Süvea session: `create_entity` could not
+    name-only rendering never could (field session: `create_entity` could not
     express `fn sync_status_text(store: &Store) -> String`).
     """
     lang = (language or "").lower()
