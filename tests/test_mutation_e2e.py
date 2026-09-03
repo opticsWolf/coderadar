@@ -205,9 +205,11 @@ class TestTextualCallSiteBackstop:
     enclosing function) must surface as an unverified textual site, not
     break silently after the rename."""
 
-    def _with_module_level_call(self, project: Path) -> None:
+    def _with_module_level_call(
+        self, project: Path, call: str = 'shout("x")',
+    ) -> None:
         app = project / "app.py"
-        app.write_text(_app(project) + "\n\nshout(\"x\")\n", encoding="utf-8")
+        app.write_text(_app(project) + f"\n\n{call}\n", encoding="utf-8")
         _analyze(".")
 
     def test_dry_run_reports_the_unresolved_call(self, project):
@@ -240,3 +242,27 @@ class TestTextualCallSiteBackstop:
             "guessed at or deleted"
         )
         assert "Textual occurrence" in out, out
+
+    def test_signature_update_lists_both_sides(self, project):
+        # The spec's Python integration, literally: plan_signature_update on
+        # a fixture with direct callers and an unresolvable-context call
+        # lists both — the structural edits and the flagged textual site.
+        from coderadar.mcp.server import _update_signature
+
+        self._with_module_level_call(project, 'greet("x")')
+        out = _update_signature(
+            coderadar.CodeGraph(), _entity_id("greet"),
+            "def greet(name, punctuation):", False, True)
+
+        assert "Mutation failed" not in out, out
+        # Structural side: the plan carries the rewritten definition and
+        # the resolved callers as a diff.
+        assert "### Diff Preview" in out, out
+        assert "def greet(name, punctuation):" in out, out
+        # Unresolvable side: the module-level call (line 14) is flagged,
+        # not silently dropped.
+        assert 'greet("x")' in out, out
+        assert "Textual occurrence" in out, out
+        assert ":14`" in out, out
+        # Dry run changed nothing.
+        assert "def greet(name):" in _app(project)

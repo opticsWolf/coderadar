@@ -2224,6 +2224,54 @@ mod tests {
             let lines: Vec<u32> = sites.iter().map(|(_, l, _)| *l).collect();
             assert_eq!(lines, vec![2, 3, 4], "{:?}", sites);
         }
+
+        // The spec's fixture, literally: a direct call (a graph site) plus
+        // a call inside a macro token body. tree-sitter never visits the
+        // macro body, so only the textual scan can see line 10.
+        const SOURCE_RS: &str = concat!(
+            "fn target_fn() -> i32 {\n    1\n}\n\n",
+            "fn direct_caller() -> i32 {\n    target_fn()\n}\n\n",
+            "macro_rules! m {\n    () => { target_fn() };\n}\n",
+        );
+
+        fn indexed_rs_projection(dir: &std::path::Path) -> (ProjectedGraph, String) {
+            let file = dir.join("mac.rs");
+            std::fs::write(&file, SOURCE_RS).unwrap();
+            let file_str = file.to_string_lossy().to_string();
+            let graph = CodeGraph::new(GraphConfig::default());
+            graph
+                .index_file(SOURCE_RS, &file_str, &Language::Rust)
+                .unwrap();
+            let mut projection = (*graph.snapshot()).clone();
+            graph.resolve_all_calls(&mut projection);
+            (projection, file_str)
+        }
+
+        #[test]
+        fn rename_reports_the_call_inside_a_macro_body() {
+            let dir = tempfile::tempdir().unwrap();
+            let (projection, file) = indexed_rs_projection(dir.path());
+            let entity_id = format!("{}::target_fn", file);
+
+            let plan = engine()
+                .plan_rename(&entity_id, "new_target", false, true, &projection)
+                .unwrap();
+
+            // The direct call (line 6) is a graph site: rewritten, not reported.
+            assert!(plan
+                .edits
+                .iter()
+                .any(|e| e.file == file && e.replacement == "new_target"));
+            // The macro-body call (line 10) is textually visible but
+            // structurally unresolvable: the one textual report.
+            let sites = textual_sites(&plan);
+            assert_eq!(sites.len(), 1, "{:?}", plan.unverified_sites);
+            assert_eq!(sites[0].file, file);
+            assert_eq!(sites[0].line, 10);
+            assert!(sites[0].snippet.contains("target_fn()"));
+            // Definition (line 1) and the resolved site (line 6) stay quiet.
+            assert!(!sites.iter().any(|s| s.line == 1 || s.line == 6));
+        }
     }
 }
 
