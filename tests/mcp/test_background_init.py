@@ -75,6 +75,31 @@ class TestBackgroundIndex:
         index.wait(timeout=5)
         assert len(runs) == 1
 
+    def test_a_newer_restart_supersedes_a_queued_build(self):
+        """A build that is still queued when a newer index is requested
+        never runs: building a stale tree only to let it win the
+        last-writer race on the process-global graph is how a project
+        switch used to answer from the old project."""
+        built = []
+        gate = threading.Event()
+
+        def build(root):
+            if root == "a":
+                assert gate.wait(10), "gated build never released"
+            built.append(root)
+
+        index = BackgroundIndex(root="a", analyze=build)
+        index.start()   # A holds the build lock inside the gate.
+        index.restart("b")  # B queues behind A.
+        index.restart("c")  # C queues behind B.
+        gate.set()
+        # A was latest when it checked, so it builds; B finds C is newer
+        # when it acquires the lock and skips without building; C builds.
+        # Acquisition order between B and C cannot change this: whoever
+        # acquires first either builds (C) or skips (B).
+        assert index.wait(timeout=10).ready
+        assert built == ["a", "c"], built
+
     def test_a_failing_index_is_reported_not_swallowed(self):
         def boom(root):
             raise ValueError("no such directory")

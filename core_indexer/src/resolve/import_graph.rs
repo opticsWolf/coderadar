@@ -79,6 +79,41 @@ pub fn rank_candidates(matches: &mut [ImportMatch], _query_file: &str) {
         let b_depth = b.module_path.split('/').count();
         let depth_cmp = a_depth.cmp(&b_depth);
 
-        pkg_cmp.then(depth_cmp)
+        pkg_cmp
+            .then(depth_cmp)
+            // Total order below this line. BFS/petgraph neighbor order is
+            // scheduling-dependent (parallel import-graph build) and sort_by
+            // is stable, so without a total tie-break tied candidates
+            // (same package, same depth — e.g. Base.describe vs
+            // Derived.describe) resolve to a random winner per process.
+            .then_with(|| a.module_id.cmp(&b.module_id))
+            .then_with(|| a.export_name.cmp(&b.export_name))
+            .then_with(|| a.module_path.cmp(&b.module_path))
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cand(path: &str, id: &str) -> ImportMatch {
+        ImportMatch {
+            module_path: path.to_string(),
+            module_id: Some(id.to_string()),
+            export_name: "describe".to_string(),
+            source: ExportSource::Local,
+        }
+    }
+
+    #[test]
+    fn rank_breaks_ties_deterministically() {
+        // Same package + same depth: the winner must not depend on the
+        // order the candidates arrived in.
+        let mut fwd = vec![cand("app/models.py", "m1"), cand("app/other.py", "m2")];
+        let mut rev = vec![cand("app/other.py", "m2"), cand("app/models.py", "m1")];
+        rank_candidates(&mut fwd, "app/main.py");
+        rank_candidates(&mut rev, "app/main.py");
+        assert_eq!(fwd[0].module_id, rev[0].module_id);
+        assert_eq!(fwd[0].module_id.as_deref(), Some("m1"));
+    }
 }

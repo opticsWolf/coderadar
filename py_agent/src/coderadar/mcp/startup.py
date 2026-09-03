@@ -19,6 +19,7 @@ worse than the honest slow start it replaced.
 
 from __future__ import annotations
 
+import itertools
 import os
 import threading
 import time
@@ -30,6 +31,21 @@ from typing import Any, Callable, Optional
 #: progress instead. Long enough that a small project simply works, short
 #: enough that the agent is never left wondering.
 DEFAULT_WAIT_SECONDS = float(os.environ.get("CODERADAR_INDEX_WAIT", "25"))
+
+#: Spawn order for background builds (see BackgroundIndex._run). A newer
+#: spawn supersedes older queued builds: building a stale tree only to let
+#: it win the last-writer race on the process-global graph is how a project
+#: switch used to answer from the old project.
+_BUILD_SEQ = itertools.count(1)
+_BUILD_LATEST = [0]
+
+#: Serializes every graph build in this process. Held across the whole
+#: build (custom analyze stubs included, not just build_graph): concurrent
+#: builds interleave os.chdir calls and global-graph writes otherwise.
+#: RLock: build_graph re-acquires it on the default path on the same
+#: thread. coldstart imports this lazily (it cannot import this module at
+#: top level without risking a cycle through coderadar.mcp.server).
+_BUILD_LOCK = threading.RLock()
 
 
 class IndexStatus(str, Enum):
@@ -87,24 +103,38 @@ class BackgroundIndex:
             self._status = IndexStatus.INDEXING
             self._started_at = time.monotonic()
             generation, root, done = self._generation, self._root, self._done
+            seq = next(_BUILD_SEQ)
+            _BUILD_LATEST[0] = seq
             self._thread = threading.Thread(
-                target=self._run, args=(generation, root, done),
+                target=self._run, args=(generation, root, done, seq),
                 name="coderadar-index", daemon=True)
             self._thread.start()
 
-    def _run(self, generation: int, root: str, done: threading.Event) -> None:
+    def _run(
+        self, generation: int, root: str, done: threading.Event, seq: int,
+    ) -> None:
         status, error = IndexStatus.READY, None
         try:
-            build = self._analyze
-            if build is None:
-                # v0.8 P2-4: incremental cold start — a warm repo loads its
-                # ledger and updates only the files that changed, instead of
-                # re-parsing everything. The exception contract is unchanged:
-                # whatever build raises is recorded and surfaced by
-                # ensure_ready.
-                from coderadar import coldstart
-                build = coldstart.build_graph
-            build(root)
+            with _BUILD_LOCK:
+                if seq != _BUILD_LATEST[0]:
+                    # Superseded while queued: a newer index was requested
+                    # after this thread was spawned (a rapid project switch,
+                    # usually). Skip the build entirely — the newer thread
+                    # rebuilds and commits after us. (The per-handle
+                    # generation guard below already ignores stale
+                    # generations, so the status write is skipped too;
+                    # waiters observe the newer build's outcome.)
+                    return
+                build = self._analyze
+                if build is None:
+                    # v0.8 P2-4: incremental cold start — a warm repo loads
+                    # its ledger and updates only the files that changed,
+                    # instead of re-parsing everything. The exception
+                    # contract is unchanged: whatever build raises is
+                    # recorded and surfaced by ensure_ready.
+                    from coderadar import coldstart
+                    build = coldstart.build_graph
+                build(root)
         except BaseException as exc:  # noqa: BLE001 — the thread must not die silently
             status = IndexStatus.FAILED
             error = f"{type(exc).__name__}: {exc}"

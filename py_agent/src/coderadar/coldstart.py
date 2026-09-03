@@ -134,47 +134,67 @@ def build_graph(root: "str | Path" = ".", create_store: bool = False):
     runs from the resolved root: entity ids are prefixed with the path the
     walk takes, and `update_file` reads from disk relative to the cwd, so
     `root` is walked as the directory it names whatever the caller's cwd is.
-    The caller's cwd is restored before returning, including on failure.
+    The caller's cwd is restored before returning (when it was moved at all),
+    including on failure.
 
     Raises whatever `analyze` raises when the analyze path is taken; a
     store that will not load falls through to analyze rather than failing.
     """
     import coderadar
 
+    # The process-wide build lock lives in coderadar.mcp.startup (imported
+    # lazily: this module must stay importable without the MCP package, and
+    # startup already depends on coldstart the other way for the default
+    # build). RLock: BackgroundIndex holds it across _run and calls through
+    # here on the same thread.
+    from coderadar.mcp.startup import _BUILD_LOCK
+
     # `update_file` is a CodeGraph method that acts on the process's global
     # graph (the core keeps one), so any instance is a handle, not a state.
     graph = coderadar.CodeGraph()
 
     root_str = str(root)
-    resolved = Path(root).expanduser().resolve()
-    previous = Path(os.getcwd())
-    os.chdir(resolved)
-    try:
-        db = store_db_path(resolved)
-        if db is not None and db.is_file():
-            try:
-                coderadar.load(str(db), root_str)
-            except Exception:
-                # Corrupt, foreign, or v1 store. The full analyze also
-                # performs the v1 -> v2 upgrade; do not report the load
-                # error — analyze succeeding is the answer.
-                coderadar.analyze(root_str, create_store=create_store)
+    with _BUILD_LOCK:
+        resolved = Path(root).expanduser().resolve()
+        previous = Path(os.getcwd())
+        # A build that leaves the cwd where it found it cannot yank it out
+        # from under a concurrent project switch (and back): only chdir when
+        # the root is actually elsewhere, and only then restore. The common
+        # server path (root=".", cwd already the served root) resolves to
+        # the same directory, so background rebuilds no longer touch the cwd
+        # at all — and entity ids are unchanged (the walk still sees ".").
+        moved = os.path.normcase(os.fspath(resolved)) != os.path.normcase(
+            os.fspath(previous)
+        )
+        if moved:
+            os.chdir(resolved)
+        try:
+            db = store_db_path(resolved)
+            if db is not None and db.is_file():
+                try:
+                    coderadar.load(str(db), root_str)
+                except Exception:
+                    # Corrupt, foreign, or v1 store. The full analyze also
+                    # performs the v1 -> v2 upgrade; do not report the load
+                    # error — analyze succeeding is the answer.
+                    coderadar.analyze(root_str, create_store=create_store)
+                    return graph
+                if not store_is_fresh(resolved, db):
+                    for stale in stale_source_files(resolved, db):
+                        try:
+                            rel = stale.relative_to(resolved).as_posix()
+                        except ValueError:
+                            continue
+                        try:
+                            graph.update_file(rel)
+                        except Exception:
+                            # One unreadable or unparseable file must not sink
+                            # the whole cold start: everything else is current
+                            # and the next update_file can retry this one.
+                            continue
                 return graph
-            if not store_is_fresh(resolved, db):
-                for stale in stale_source_files(resolved, db):
-                    try:
-                        rel = stale.relative_to(resolved).as_posix()
-                    except ValueError:
-                        continue
-                    try:
-                        graph.update_file(rel)
-                    except Exception:
-                        # One unreadable or unparseable file must not sink
-                        # the whole cold start: everything else is current
-                        # and the next update_file can retry this one.
-                        continue
+            coderadar.analyze(root_str, create_store=create_store)
             return graph
-        coderadar.analyze(root_str, create_store=create_store)
-        return graph
-    finally:
-        os.chdir(previous)
+        finally:
+            if moved:
+                os.chdir(previous)

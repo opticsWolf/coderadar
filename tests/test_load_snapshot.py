@@ -95,7 +95,7 @@ sys.path.insert(0, src)
 import coderadar
 from coderadar._core import (
     graph_stats, search_entities, index_edge_stats, traverse,
-    register_synthetic_edges_bulk, update_file)
+    register_synthetic_edges_bulk, update_file, callees_of, callers_of)
 
 KINDS = ["module", "class", "function", "import", "constant", "type_alias"]
 
@@ -121,7 +121,31 @@ def dump():
     d["traverse"] = traverse(hub[0], 3,
                              ["CALLS", "IMPORTS", "EXTENDS", "OVERRIDES"],
                              "both", None)
+    d["pairs"] = pairs()
     return d
+
+def pairs():
+    # Every (caller, callee) pair the index holds, in display form:
+    # resolvable callees by name, plus the unresolvable spellings the raw
+    # index still counts (external:: pseudo-targets, Class::method shapes).
+    # Comparing these across legs is what pinpoints an ingest-parity drift.
+    out = set()
+    funcs = list(search_entities("", 1000, "function"))
+    for e in funcs:
+        for c in callees_of(e["id"]):
+            out.add(f"{e['name']} -> {c.get('name', c.get('id'))}")
+    names = {e["name"] for e in funcs}
+    names |= {e["name"] for e in search_entities("", 1000, "class")}
+    names |= {"len", "print", "str", "int", "isinstance", "super", "range"}
+    for n in sorted(names):
+        for c in callers_of(f"external::{n}"):
+            out.add(f"{c.get('name', c.get('id'))} -> external::{n}")
+    for e in funcs:
+        if "::" in e["id"]:
+            parent = e["id"].rsplit("::", 1)[0].rsplit("::", 1)[-1]
+            for c in callers_of(f"{parent}::{e['name']}"):
+                out.add(f"{c.get('name', c.get('id'))} -> {parent}::{e['name']}")
+    return sorted(out)
 
 if mode == "A":
     coderadar.analyze(str(proj), create_store=True)
@@ -185,7 +209,11 @@ def test_three_way_ingest_parity(tmp_path):
     leg_b = _run_leg("B", proj, tmp_path / "b.json")
 
     a, b, c = _norm(leg_a), _norm(leg_b), _norm(leg_c)
-    assert a == b, "analyze != analyze + no-op update_file"
+    pa, pb = set(a.get("pairs", [])), set(b.get("pairs", []))
+    assert a == b, (
+        "analyze != analyze + no-op update_file\n"
+        f"pairs only in B (update added): {sorted(pb - pa)}\n"
+        f"pairs only in A (update lost): {sorted(pa - pb)}")
     assert a == c, "analyze != fresh-process load_snapshot"
 
     # The fixture actually exercises what it claims to.
