@@ -203,10 +203,32 @@ impl<'a> CursorExtractor<'a> {
                     // always None and the search scorer could never see it.
                     // The line-range guard keeps a stray string statement
                     // from leaking onto an unrelated function.
+                    // The function block runs first and consumes `text` (a
+                    // method docstring belongs to the method). The class block
+                    // gets its own copy so the two backfills do not fight.
+                    let class_text = text.clone();
                     if let Some(idx) = self.current_function_idx {
                         if let Some(ExtractedUnit::Function(f)) = self.units.get_mut(idx) {
                             if f.docstring.is_none() && f.line < line && end_line <= f.exit_line {
                                 f.docstring = Some(text);
+                            }
+                        }
+                    }
+                    // Class docstrings use the same in-body backfill as
+                    // functions: a Python class body fires the string
+                    // *after* `emit_class` set `current_class_idx`, so the
+                    // class docstring was otherwise always None. The
+                    // `current_function_idx.is_none()` guard keeps a method
+                    // docstring from leaking onto its enclosing class, and the
+                    // line guard keeps a stray string outside the class body
+                    // from landing on it (`is_none()` stops a later stray
+                    // string from overwriting a real docstring).
+                    if let Some(idx) = self.current_class_idx {
+                        if self.current_function_idx.is_none() {
+                            if let Some(ExtractedUnit::Class(c)) = self.units.get_mut(idx) {
+                                if c.docstring.is_none() && c.line < line && end_line <= c.exit_line {
+                                    c.docstring = Some(class_text);
+                                }
                             }
                         }
                     }

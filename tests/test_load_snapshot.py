@@ -9,10 +9,12 @@ Parity means the Python-facing entity dicts exposed by
 not full in-memory ``ProjectedGraph`` equality. ``indexed_at`` and
 ``revision`` are excluded from the comparison: ``indexed_at`` is the wall
 clock at analyze time vs. the store mtime at load time, and ``revision``
-exists only on ledger-restored graphs (it is the Stage 0.3 cache key and is
-asserted separately). ``indexed_root`` is excluded because ``analyze``
-canonicalizes (Windows verbatim prefix) while ``load`` records the passed
-path.
+is the Stage 0.3 cache key (asserted separately). It is now stamped by
+*both* paths — a freshly-analyzed store records its seq anchor just as a
+loaded one does — so a cache keyed on ``revision`` stays valid whether the
+graph came from ``analyze`` or ``load``. ``indexed_root`` is excluded
+because ``analyze`` canonicalizes (Windows verbatim prefix) while ``load``
+records the passed path.
 
 Each leg runs in a fresh subprocess because the graph is a process global.
 """
@@ -201,8 +203,11 @@ def test_revision_is_the_stage_0_3_cache_key(tmp_path):
     leg_a = _run_leg("A", proj_a, tmp_path / "a.json")
     leg_c = _run_leg("C", proj_a, tmp_path / "c.json",
                      db=_default_db(proj_a))
-    # analyze: no ledger revision was observed.
-    assert leg_a["stats"].get("revision") is None
+    # analyze: the ledger revision is now stamped by analyze too (it
+    # records the store's seq anchor), so a freshly-analyzed graph reports
+    # the same Stage 0.3 cache key a load would.
+    assert isinstance(leg_a["stats"].get("revision"), int)
+    assert leg_a["stats"]["revision"] > 0
     # load: the seq anchor, usable as the analysis-cache key.
     assert isinstance(leg_c["stats"]["revision"], int)
     assert leg_c["stats"]["revision"] > 0

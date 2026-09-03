@@ -88,8 +88,7 @@ def test_incremental_updates_only_the_stale_file(repo, monkeypatch):
                if h.get("name") == "alpha_fn")
     assert "STORE_ONLY_TOKEN" in (hit.get("docstring") or "")
 
-    # The ledger revision is live on the loaded graph (load is the only
-    # path that stamps LEDGER_REVISION — analyze does not, yet).
+    # The ledger revision is live on the loaded graph.
     assert graph_stats().get("revision") is not None
 
 

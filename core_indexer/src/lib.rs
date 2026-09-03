@@ -776,6 +776,18 @@ fn analyze_inner(root: &str, create_store: bool) -> AnalyzeOutcome {
         graph.commit_projection(projection);
     }
 
+    // v0.8 P2: stamp the ledger revision for a freshly-analyzed store. A
+    // cold `analyze` used to leave `LEDGER_REVISION` at whatever the
+    // process's last `load_snapshot` set (or None), so `graph_stats()
+    // ["revision"]` reported a stale or absent revision after a fresh
+    // analyze. Read the store's current seq_anchor the same way the load
+    // path does — the concept + edge flushes above already advanced it.
+    if let Some(ref store) = graph.store {
+        if let Ok(state) = store.reconstruct(&crate::storage::now_iso8601()) {
+            *LEDGER_REVISION.write() = Some(state.seq_anchor);
+        }
+    }
+
     let mut guard = GLOBAL_GRAPH.write();
     *guard = Some(graph);
     *INDEXED_ROOT.write() = std::fs::canonicalize(root)
