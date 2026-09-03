@@ -55,7 +55,7 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 883 (250 Rust + 633 Python) |
+| **Tests** | 1071 (333 Rust + 738 Python) |
 | **MCP Tools** | 19 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, get_smells, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file, set_project) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
@@ -241,6 +241,40 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 | **React Router** | JSX/TSX | `package.json` | JSX `<Route>` declarations, v6 data router objects, `<Link>`/`<NavLink>` navigation tracking |
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
+
+## v0.8 Feature Highlights — ledger-backed cold start + agent UX (unreleased, `dev`)
+
+v0.8 makes the MCP server restart-proof and the mutation plans honest, driven by two field
+reports from live agent sessions (see [`docs/v0.8-p2-agent-ux-guide.md`](docs/v0.8-p2-agent-ux-guide.md);
+cold-start design in [`docs/v0.8-p1-cold-start-design.md`](docs/v0.8-p1-cold-start-design.md)):
+
+- **Ledger-backed cold start (P1).** `load_snapshot` replays the Macrame ledger instead of
+  re-indexing from scratch (`_ensure_graph` retired) — sub-second store load vs 10–15 s full
+  analyze on the benchmark repo. `LEDGER_REVISION` is stamped on both the load and analyze
+  paths, so `graph_stats()["revision"]` is a valid Stage 0.3 cache key either way.
+- **Incremental startup + reindex (P2-4).** `coderadar.coldstart.build_graph` loads the
+  store when present and `update_file`s only stale sources, falling back to full analyze
+  when there is no (or an unloadable) store. The MCP background index and `codegraph_reindex`
+  both use it — project switches stop paying full re-indexes.
+- **Project persistence across sessions (P2-3).** The last project per launch directory is
+  recorded in `~/.coderadar/mcp/last_projects.json`; a restarted `mcp serve` resumes it
+  without `--path` (explicit `--path` still wins).
+- **Multi-token search (P2-1).** `search_entities` scores per whitespace-split token with OR
+  semantics (name exact/prefix/contains tiers plus signature and docstring signals). Empty-query
+  kind enumeration (the visualizers' contract) is preserved; Python function *and* class
+  docstrings backfill onto their owners during extraction.
+- **Empty-result wording (P2-6).** Misses state which tokens were tried with OR semantics
+  and point at `codegraph_search_similar` / `codegraph_explore` instead of "try broader terms".
+- **`create_entity` signatures (P2-2).** Optional complete header
+  (`fn sync_status_text(store: &Store) -> String`) rendered verbatim with language-appropriate
+  body delimiters.
+- **Textual call-site backstop (P2-5).** Rename / signature-update / class-rename plans append
+  word-boundary `name(` occurrences the call graph couldn't resolve (module-level calls, macro
+  bodies, comments, strings) as unverified sites instead of silently missing them — the Dioxus
+  `rsx!` gap from the field reports is reported, not parsed (explicit non-goal).
+- **Shell-friendly entity IDs (E7).** Stored IDs keep OS-native separators (FK stability);
+  display renders forward slashes with the redundant `./` dropped, and every pasted variant
+  resolves back to the stored key.
 
 ## v0.7.18 Feature Highlights — the fossil-mcp port
 
