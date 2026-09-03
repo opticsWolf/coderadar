@@ -5,6 +5,7 @@
 use macrame::prelude::*;
 use macrame::graph::{Subgraph, EdgeAssertion, TraversalBuilder};
 use macrame::temporal::{MaterializedState, SnapshotCadence};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tokio::runtime::Runtime;
 
@@ -133,6 +134,9 @@ impl CodeGraphStore {
     /// Synchronous wrapper around Macrame's async upsert.
     pub fn upsert_entity(&self, unit: &ExtractedUnit, file_path: &str, language: &str) -> macrame::Result<()> {
         let concept = build_concept(unit, file_path, language);
+        if self.filter_unchanged(std::slice::from_ref(&concept)).is_empty() {
+            return Ok(());
+        }
         runtime().block_on(self.db.upsert_concept(concept))
     }
 
@@ -154,22 +158,116 @@ impl CodeGraphStore {
             .iter()
             .map(|unit| build_concept(unit, file_path, language))
             .collect();
-        runtime().block_on(self.db.write_concepts(concepts))?;
+        let changed = self.filter_unchanged(&concepts);
+        if changed.is_empty() {
+            return Ok(());
+        }
+        runtime().block_on(self.db.write_concepts(changed))?;
         Ok(())
     }
 
     /// Bulk-persist pre-built concepts via Macrame's `write_concepts`.
     /// Chunked internally at 70/chunk, one transaction per chunk.
     /// For batch index: 2,191 concepts ≈ 32 chunks ≈ 75ms.
+    ///
+    /// Only changed concepts reach the ledger ([`Self::filter_unchanged`]);
+    /// the count returned is concepts actually written.
     pub fn upsert_concepts_bulk(&self, concepts: &[ConceptUpsert]) -> macrame::Result<usize> {
         if concepts.is_empty() {
+            return Ok(0);
+        }
+        let changed = self.filter_unchanged(concepts);
+        if changed.is_empty() {
             return Ok(0);
         }
         // macrame 0.14+: bulk writes report interruption distinctly. `?`
         // converts via From (the committed prefix stays committed; upserts
         // are idempotent so the next run heals it). CodeRadar never passes
         // a cancel token, so interruption here is a real chunk failure.
-        Ok(runtime().block_on(self.db.write_concepts(concepts.to_vec()))?)
+        Ok(runtime().block_on(self.db.write_concepts(changed))?)
+    }
+
+    /// Ids with no row in the store's current-state projection.
+    ///
+    /// Fail-open: on any read error every id counts as absent, i.e. today's
+    /// write-everything behavior. A failed comparison must never lose a fact.
+    pub fn absent_concept_ids(&self, ids: &[String]) -> HashSet<String> {
+        if ids.is_empty() {
+            return HashSet::new();
+        }
+        match self.fetch_current_states(ids) {
+            Ok(present) => ids
+                .iter()
+                .filter(|id| !present.contains_key(*id))
+                .cloned()
+                .collect(),
+            Err(e) => {
+                eprintln!("[diag] absent_concept_ids failed, writing all: {e:?}");
+                ids.iter().cloned().collect()
+            }
+        }
+    }
+
+    /// Drop concepts the ledger already holds byte-identically.
+    ///
+    /// A concept is unchanged when the open row agrees on title,
+    /// `content_hash` annotation, and retired flag; `valid_from`/`valid_to`
+    /// are write mechanics, not facts, and are deliberately not compared
+    /// (every run stamps a fresh `valid_from`, which is what used to mint a
+    /// new version per analyze — +26 rows per no-op analyze on the 7-file
+    /// fixture). Unhashable content (missing/unparseable hash) always
+    /// rewrites: the safe direction. Fail-open like [`Self::absent_concept_ids`].
+    pub fn filter_unchanged(&self, concepts: &[ConceptUpsert]) -> Vec<ConceptUpsert> {
+        if concepts.is_empty() {
+            return Vec::new();
+        }
+        let ids: Vec<String> = concepts.iter().map(|c| c.id.clone()).collect();
+        let current = match self.fetch_current_states(&ids) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("[diag] filter_unchanged failed, writing all: {e:?}");
+                return concepts.to_vec();
+            }
+        };
+        concepts
+            .iter()
+            .filter(|c| concept_changed(c, current.get(&c.id)))
+            .cloned()
+            .collect()
+    }
+
+    /// Current `(title, content, retired)` per id, one chunked PK lookup.
+    fn fetch_current_states(
+        &self,
+        ids: &[String],
+    ) -> macrame::Result<HashMap<String, (String, String, bool)>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        let mut out = HashMap::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT id, title, content, retired FROM concepts WHERE id IN ({placeholders})"
+            );
+            let params: Vec<libsql::Value> =
+                chunk.iter().map(|s| libsql::Value::Text(s.clone())).collect();
+            let mut rows = runtime()
+                .block_on(conn.query(&sql, params))
+                .map_err(macrame::DbError::Engine)?;
+            while let Some(row) = runtime()
+                .block_on(rows.next())
+                .map_err(macrame::DbError::Engine)?
+            {
+                out.insert(
+                    row.get::<String>(0).unwrap_or_default(),
+                    (
+                        row.get::<String>(1).unwrap_or_default(),
+                        row.get::<String>(2).unwrap_or_default(),
+                        row.get::<i64>(3).unwrap_or(0) != 0,
+                    ),
+                );
+            }
+        }
+        Ok(out)
     }
 
     /// Refresh the query planner statistics after a bulk load (macrame
@@ -613,6 +711,43 @@ fn v2_common(kind: &str, name: &str, file_path: &str, line: u64, exit_line: u64,
     })
 }
 
+/// True when `concept` must be written: new id, title/hash/retired drift,
+/// or a stale envelope version (a v1 row can agree on all three yet still
+/// need the v2 upgrade rewrite — and any future meta_version bump must
+/// rewrite every row exactly once).
+fn concept_changed(concept: &ConceptUpsert, current: Option<&(String, String, bool)>) -> bool {
+    let Some((title, content, retired)) = current else {
+        return true;
+    };
+    if title != &concept.title || retired != &concept.retired {
+        return true;
+    }
+    let cur: serde_json::Value = match serde_json::from_str(content) {
+        Ok(v) => v,
+        Err(_) => return true,
+    };
+    if cur.get("meta_version").and_then(|m| m.as_u64()) != Some(V2_META_VERSION) {
+        return true;
+    }
+    match (
+        content_hash_of(&concept.content),
+        cur.get(annotation::CONTENT_HASH).and_then(|h| h.as_str()),
+    ) {
+        (Some(a), Some(b)) => a != b,
+        // Unhashable on either side rewrites (safe direction).
+        _ => true,
+    }
+}
+
+/// The `content_hash` annotation, if present and a string.
+fn content_hash_of(content: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()?
+        .get(annotation::CONTENT_HASH)?
+        .as_str()
+        .map(str::to_string)
+}
+
 fn v2_upsert(id: &str, title: &str, content: serde_json::Value, now: &str) -> ConceptUpsert {
     ConceptUpsert::new(id.to_string(), title.to_string())
         .content(content.to_string())
@@ -681,6 +816,15 @@ fn function_content(f: &Function) -> serde_json::Value {
     v
 }
 
+/// Stable content hash for v2 writers whose entity carries no source-derived
+/// hash (imports, constants, type aliases). xxh3 over the canonical JSON —
+/// deterministic across runs (unlike SipHash with process-random keys), so
+/// the write gate in `filter_unchanged` can skip them when nothing changed.
+/// Computed before the key is inserted (no circularity).
+fn json_content_hash(v: &serde_json::Value) -> String {
+    format!("{:x}", xxhash_rust::xxh3::xxh3_64(v.to_string().as_bytes()))
+}
+
 fn import_content(i: &Import) -> serde_json::Value {
     let file_path = file_path_of(&i.id);
     // v2 rule: every entity carries an explicit `name`; imports use their
@@ -690,6 +834,7 @@ fn import_content(i: &Import) -> serde_json::Value {
     v["import_kind"] = serde_json::json!(i.kind.to_json());
     v["is_type_only"] = serde_json::json!(&i.is_type_only);
     v["name_span"] = serde_json::json!(&i.name_span);
+    v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
     v
 }
 
@@ -701,6 +846,7 @@ fn constant_content(c: &Constant) -> serde_json::Value {
     v["default_value"] = serde_json::json!(&c.default_value);
     v["span"] = serde_json::json!(&c.span);
     v["name_span"] = serde_json::json!(&c.name_span);
+    v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
     v
 }
 
@@ -711,6 +857,7 @@ fn type_alias_content(t: &TypeAlias) -> serde_json::Value {
     v["source"] = serde_json::json!(&t.source);
     v["span"] = serde_json::json!(&t.span);
     v["name_span"] = serde_json::json!(&t.name_span);
+    v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
     v
 }
 
@@ -1611,6 +1758,81 @@ mod tests {
                 .unwrap();
             rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap()
         })
+    }
+
+    #[test]
+    fn bulk_upsert_skips_byte_identical_concepts() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gate.db");
+        let store = CodeGraphStore::open(&path).unwrap();
+        let now = now_iso8601();
+        let mk = |hash: &str| {
+            v2_upsert(
+                "f.py::foo",
+                "foo",
+                serde_json::json!({"meta_version": 2, "content_hash": hash}),
+                &now,
+            )
+        };
+        // Fresh id writes once, identical re-upsert writes nothing.
+        assert_eq!(store.upsert_concepts_bulk(&[mk("abc")]).unwrap(), 1);
+        assert_eq!(store.upsert_concepts_bulk(&[mk("abc")]).unwrap(), 0);
+        // Changed content writes once, then skips again.
+        assert_eq!(store.upsert_concepts_bulk(&[mk("def")]).unwrap(), 1);
+        assert_eq!(store.upsert_concepts_bulk(&[mk("def")]).unwrap(), 0);
+        // Title drift writes even with identical content.
+        let renamed = v2_upsert(
+            "f.py::foo",
+            "foo_renamed",
+            serde_json::json!({"meta_version": 2, "content_hash": "def"}),
+            &now,
+        );
+        assert_eq!(store.upsert_concepts_bulk(&[renamed]).unwrap(), 1);
+        // Retired-flag flip writes even with identical content (separate id
+        // so the live-state assertion below stays meaningful).
+        let mk_qux = || {
+            v2_upsert(
+                "f.py::qux",
+                "qux",
+                serde_json::json!({"meta_version": 2, "content_hash": "def"}),
+                &now,
+            )
+        };
+        assert_eq!(store.upsert_concepts_bulk(&[mk_qux()]).unwrap(), 1);
+        let tombstone = mk_qux().retired(true);
+        assert_eq!(store.upsert_concepts_bulk(&[tombstone.clone()]).unwrap(), 1);
+        assert_eq!(store.upsert_concepts_bulk(&[tombstone]).unwrap(), 0);
+        // Unhashable content always rewrites (safe direction).
+        let bare = v2_upsert(
+            "f.py::bar",
+            "bar",
+            serde_json::json!({"meta_version": 2}),
+            &now,
+        );
+        assert_eq!(store.upsert_concepts_bulk(&[bare.clone()]).unwrap(), 1);
+        assert_eq!(store.upsert_concepts_bulk(&[bare]).unwrap(), 1);
+        // A meta_version-less row with matching hash still upgrades (the
+        // v1-store upgrade path); afterwards it skips like any v2 row.
+        let legacy = ConceptUpsert::new("f.py::v1", "v1")
+            .content(r#"{"kind":"function","content_hash":"abc"}"#)
+            .valid_from(now.clone())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[legacy]).unwrap(), 1);
+        let modern = v2_upsert(
+            "f.py::v1",
+            "v1",
+            serde_json::json!({"meta_version": 2, "content_hash": "abc"}),
+            &now,
+        );
+        assert_eq!(store.upsert_concepts_bulk(&[modern.clone()]).unwrap(), 1);
+        assert_eq!(store.upsert_concepts_bulk(&[modern]).unwrap(), 0);
+        // Latest state still correct after all the skips: live concepts
+        // present, the retired one folded out.
+        let state = store.reconstruct(&now_iso8601()).unwrap();
+        assert!(state.concepts.contains_key("f.py::foo"));
+        assert!(state.concepts.contains_key("f.py::bar"));
+        assert!(!state.concepts.contains_key("f.py::qux"));
     }
 
     fn seed(store: &CodeGraphStore) {

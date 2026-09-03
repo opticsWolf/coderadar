@@ -18,7 +18,27 @@ impl CodeGraph {
         language: &str,
     ) -> Result<usize, macrame::DbError> {
         if let Some(ref store) = self.store {
-            store.upsert_entities(units, file_path, language)?;
+            // Insert-if-absent: the post-cascade v2 flush owns every id it
+            // knows, so pre-cascade v1 rows exist only so a crashed run
+            // leaves partial progress. Re-writing v1 for known ids would
+            // alternate with v2 forever (different JSON shapes, notably
+            // `resolved_calls`), minting two versions per analyze. New ids
+            // still flush immediately; the v2 flush heals them to v2 shape
+            // in the same run, or the next one after a crash.
+            let fresh: Vec<crate::types::ExtractedUnit> = if units.is_empty() {
+                Vec::new()
+            } else {
+                let ids: Vec<String> = units.iter().map(|u| u.entity_id()).collect();
+                let absent = store.absent_concept_ids(&ids);
+                units
+                    .iter()
+                    .filter(|u| absent.contains(u.entity_id().as_str()))
+                    .cloned()
+                    .collect()
+            };
+            if !fresh.is_empty() {
+                store.upsert_entities(&fresh, file_path, language)?;
+            }
             Ok(units.len())
         } else {
             Ok(0)

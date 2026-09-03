@@ -43,10 +43,19 @@ Recommendation, in order:
    reappears under `tests/fixtures`). Nothing in the suite needs warm
    fixture stores — verified green without them, and nothing re-plants
    them.
-2. **Content-hash-gated concept upsert** (follow-up, the real fix): skip
-   concepts whose `annotation::CONTENT_HASH` is unchanged since the open
-   interval — same idempotence edges already have. Kills per-run growth
-   in production too.
-3. If growth ever matters before (2) lands, macrame has `archive()` /
+2. **Content-hash-gated concept upsert** (done): `filter_unchanged`
+   drops concepts the open row already holds byte-identically (title +
+   `content_hash` + retired flag; `valid_from`/`valid_to` are write
+   mechanics and not compared). Per-file v1 flush is now insert-if-
+   absent (the v2 flush owns known ids; v1 rows exist only as
+   crash-partial progress). Imports/constants/aliases had no stable
+   hash, so their v2 writers now stamp xxh3-over-canonical-JSON.
+   Measured: +26 rows per no-op analyze → **+0**; edits still version
+   normally (+6 for a new function) and the revision anchor advances.
+   Subtlety found by the v1-fallback test: the gate must also require
+   `meta_version == 2`, or downgraded rows that agree on hash/title/
+   retired never upgrade (a future meta_version bump rewrites every row
+   exactly once for free).
+3. If growth ever matters beyond this, macrame has `archive()` /
    retention for moving closed intervals out of the hot log — a stopgap,
    not a fix.
