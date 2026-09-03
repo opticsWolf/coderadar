@@ -787,11 +787,13 @@ fn analyze_inner(root: &str, create_store: bool) -> AnalyzeOutcome {
     // cold `analyze` used to leave `LEDGER_REVISION` at whatever the
     // process's last `load_snapshot` set (or None), so `graph_stats()
     // ["revision"]` reported a stale or absent revision after a fresh
-    // analyze. Read the store's current seq_anchor the same way the load
-    // path does — the concept + edge flushes above already advanced it.
+    // analyze. Read the store's high-water mark directly — a full
+    // `reconstruct(now)` fold just for one integer costs seconds on a
+    // large log (macrame 0.15: 1.7s on a 300MB fixture db). The concept +
+    // edge flushes above already advanced the anchor.
     if let Some(ref store) = graph.store {
-        if let Ok(state) = store.reconstruct(&crate::storage::now_iso8601()) {
-            *LEDGER_REVISION.write() = Some(state.seq_anchor);
+        if let Ok(anchor) = store.current_seq_anchor() {
+            *LEDGER_REVISION.write() = Some(anchor);
         }
     }
 

@@ -424,6 +424,27 @@ impl CodeGraphStore {
     pub fn reconstruct(&self, ts: &str) -> macrame::Result<MaterializedState> {
         runtime().block_on(self.db.reconstruct(ts))
     }
+
+    /// The ledger's high-water mark without folding it.
+    ///
+    /// `analyze` stamps LEDGER_REVISION after every flush; a full
+    /// `reconstruct(now)` fold just to read one integer costs seconds on a
+    /// large log (measured 1.7s on a 300MB fixture db under macrame 0.15).
+    /// MAX(seq_id) is a single btree probe and exactly the change-token the
+    /// stamp needs: it moves on every committed write. Empty log maps to 0,
+    /// matching the empty fold's anchor.
+    pub fn current_seq_anchor(&self) -> macrame::Result<i64> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        let mut rows = runtime()
+            .block_on(conn.query("SELECT MAX(seq_id) FROM transaction_log", ()))
+            .map_err(macrame::DbError::Engine)?;
+        let anchor = runtime()
+            .block_on(rows.next())
+            .map_err(macrame::DbError::Engine)?
+            .map(|row| row.get::<i64>(0).unwrap_or(0))
+            .unwrap_or(0);
+        Ok(anchor)
+    }
 }
 
 // ── Concept Builder ─────────────────────────────────────────────────────────
