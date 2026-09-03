@@ -203,7 +203,7 @@ fn restore_synthetic_edges(
     state: &MaterializedState,
     stats: &mut ColdStartStats,
 ) {
-    // Defensive (source, target, kind) triple dedup. macrame 0.12 enforces
+    // Defensive (source, target, kind) triple dedup. macrame 0.15 enforces
     // a single open interval per triple, so duplicates are impossible in
     // practice; the guard stays cheap in case legacy rows ever appear.
     let mut seen: HashSet<(String, String, String)> = HashSet::new();
@@ -213,24 +213,28 @@ fn restore_synthetic_edges(
     // retirement row carries the closed `valid_to`). Canonical ISO-8601
     // strings compare chronologically, so the check is lexicographic.
     let ts = state.timestamp.as_str();
-    for (source_id, target_id, edge_type, valid_from, valid_to) in &state.edges {
-        if STRUCTURAL_EDGE_KINDS.contains(&edge_type.as_str()) {
+    for e in &state.edges {
+        if STRUCTURAL_EDGE_KINDS.contains(&e.edge_type.as_str()) {
             continue;
         }
-        if !(valid_from.as_str() <= ts && valid_to.as_str() > ts) {
+        if !(e.valid_from.as_str() <= ts && e.valid_to.as_str() > ts) {
             continue;
         }
-        if !seen.insert((source_id.clone(), target_id.clone(), edge_type.clone())) {
+        if !seen.insert((
+            e.source_id.clone(),
+            e.target_id.clone(),
+            e.edge_type.clone(),
+        )) {
             continue;
         }
         g.callees_by_caller
-            .entry(source_id.clone())
+            .entry(e.source_id.clone())
             .or_default()
-            .insert(target_id.clone());
+            .insert(e.target_id.clone());
         g.callers_by_callee
-            .entry(target_id.clone())
+            .entry(e.target_id.clone())
             .or_default()
-            .insert(source_id.clone());
+            .insert(e.source_id.clone());
         stats.synthetic_edges += 1;
     }
 }
@@ -245,7 +249,7 @@ mod tests {
         ByteSpan, Class, EffectiveClass, EmbeddingVec, Function, FunctionKind, Language, Module,
         ParseQuality, ReceiverShape, ResolvedCall, SourceType,
     };
-    use macrame::temporal::NodeAttributes;
+    use macrame::temporal::{EdgeBelief, NodeAttributes};
     use std::path::PathBuf;
 
     fn span(s: usize, e: usize) -> ByteSpan {
@@ -433,7 +437,7 @@ mod tests {
             edges: edges
                 .into_iter()
                 .map(|(s, t, k)| {
-                    (
+                    EdgeBelief::new(
                         s,
                         t,
                         k,

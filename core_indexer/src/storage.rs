@@ -165,7 +165,20 @@ impl CodeGraphStore {
         if concepts.is_empty() {
             return Ok(0);
         }
-        runtime().block_on(self.db.write_concepts(concepts.to_vec()))
+        // macrame 0.14+: bulk writes report interruption distinctly. `?`
+        // converts via From (the committed prefix stays committed; upserts
+        // are idempotent so the next run heals it). CodeRadar never passes
+        // a cancel token, so interruption here is a real chunk failure.
+        Ok(runtime().block_on(self.db.write_concepts(concepts.to_vec()))?)
+    }
+
+    /// Refresh the query planner statistics after a bulk load (macrame
+    /// 0.13+, W2/D-149). Without ANALYZE, SQLite costs every plan against
+    /// built-in defaults (~1M rows) and this schema's covering indexes
+    /// capture queries without discriminating. Bounded internally
+    /// (`PRAGMA analysis_limit`), ~19ms at 40k edges upstream.
+    pub fn analyze(&self) -> macrame::Result<()> {
+        runtime().block_on(self.db.analyze())
     }
 
     /// Open a read-only diagnostic connection, one at a time process-wide.
@@ -234,15 +247,16 @@ impl CodeGraphStore {
                     .await
                     .map_err(macrame::DbError::Engine)?;
                 if let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
-                    concepts.push(ConceptUpsert {
-                        id: id.clone(),
-                        title: row.get::<String>(0).unwrap_or_default(),
-                        content: row.get::<String>(1).unwrap_or_default(),
-                        embedding_model: None,
-                        valid_from: row.get::<String>(2).unwrap_or_else(|_| ts.clone()),
-                        valid_to: ts.clone(),
-                        retired: true,
-                    });
+                    concepts.push(
+                        ConceptUpsert::new(
+                            id.clone(),
+                            row.get::<String>(0).unwrap_or_default(),
+                        )
+                        .content(row.get::<String>(1).unwrap_or_default())
+                        .valid_from(row.get::<String>(2).unwrap_or_else(|_| ts.clone()))
+                        .valid_to(ts.clone())
+                        .retired(true),
+                    );
                 }
             }
 
@@ -424,15 +438,11 @@ pub fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> C
 
     let valid_from = now_iso8601();
 
-    ConceptUpsert {
-        id: entity_id,
-        title: title.to_string(),
-        content,
-        embedding_model: None,
-        valid_from,
-        valid_to: TS_OPEN.to_string(),
-        retired: false,
-    }
+    ConceptUpsert::new(entity_id, title.to_string())
+        .content(content)
+        .valid_from(valid_from)
+        .valid_to(TS_OPEN.to_string())
+        .retired(false)
 }
 
 /// Convert days since 0000-03-01 to (year, month, day) using the civil calendar algorithm.
@@ -583,15 +593,11 @@ fn v2_common(kind: &str, name: &str, file_path: &str, line: u64, exit_line: u64,
 }
 
 fn v2_upsert(id: &str, title: &str, content: serde_json::Value, now: &str) -> ConceptUpsert {
-    ConceptUpsert {
-        id: id.to_string(),
-        title: title.to_string(),
-        content: content.to_string(),
-        embedding_model: None,
-        valid_from: now.to_string(),
-        valid_to: TS_OPEN.to_string(),
-        retired: false,
-    }
+    ConceptUpsert::new(id.to_string(), title.to_string())
+        .content(content.to_string())
+        .valid_from(now.to_string())
+        .valid_to(TS_OPEN.to_string())
+        .retired(false)
 }
 
 fn module_content(m: &Module) -> serde_json::Value {
@@ -1421,15 +1427,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("regress.db");
         let store = CodeGraphStore::open(&path).unwrap();
-        let concept = macrame::ConceptUpsert {
-            id: "a.py::module".into(),
-            title: "a".into(),
-            content: r#"{"meta_version": 2, "kind": "module"}"#.into(),
-            embedding_model: None,
-            valid_from: now_iso8601(),
-            valid_to: TS_OPEN.to_string(),
-            retired: false,
-        };
+        let concept = macrame::ConceptUpsert::new("a.py::module", "a")
+            .content(r#"{"meta_version": 2, "kind": "module"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
         assert_eq!(store.upsert_concepts_bulk(&[concept]).unwrap(), 1);
         std::thread::sleep(std::time::Duration::from_millis(1));
         let state = store.reconstruct(&now_iso8601()).unwrap();
@@ -1592,14 +1594,15 @@ mod tests {
 
     fn seed(store: &CodeGraphStore) {
         let ts = now_iso8601();
-        let concept = |id: &str| ConceptUpsert {
-            id: id.to_string(),
-            title: id.rsplit("::").next().unwrap().to_string(),
-            content: "{}".to_string(),
-            embedding_model: None,
-            valid_from: ts.clone(),
-            valid_to: TS_OPEN.to_string(),
-            retired: false,
+        let concept = |id: &str| {
+            ConceptUpsert::new(
+                id.to_string(),
+                id.rsplit("::").next().unwrap().to_string(),
+            )
+            .content("{}")
+            .valid_from(ts.clone())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
         };
         store
             .upsert_concepts_bulk(&[

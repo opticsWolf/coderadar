@@ -23,7 +23,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 git2 = { version = "0.21" }
 zstd = "0.13"
 # slotmap and arc-swap removed in v3.5 — replaced by HashMap<String, Arc<T>> + RwLock
-macrame-db = "0.12"
+macrame-db = "0.15"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 pest = "2.7"
 pest_derive = "2.7"

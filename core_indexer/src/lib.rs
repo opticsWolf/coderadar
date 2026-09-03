@@ -773,6 +773,13 @@ fn analyze_inner(root: &str, create_store: bool) -> AnalyzeOutcome {
         if let Err(e) = graph.persist_edges(&projection) {
             eprintln!("[diag] persist_edges failed: {e:?}");
         }
+        // Planner statistics for the rows just flushed (macrame 0.13+):
+        // best-effort, never fails the index.
+        if let Some(ref store) = graph.store {
+            if let Err(e) = store.analyze() {
+                eprintln!("[diag] macrame analyze failed: {e:?}");
+            }
+        }
         graph.commit_projection(projection);
     }
 
