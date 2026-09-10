@@ -1,0 +1,416 @@
+======================================================================
+LOADING GRAPH (cold start)
+loaded in 16.70s
+demo_py_id='.\\tests\\cr_edit_tests\\demo_billing.py::Invoice.calculate_total'
+demo_ts_id=''
+demo_rs_id='.\\tests\\cr_edit_tests\\demo_ledger.rs::Ledger.total_cents'
+core_id='.\\py_agent\\src\\coderadar\\cli.py::_ensure_graph'
+
+======================================================================
+[OK] codegraph_explore (6ms)
+**.\core_indexer\src\graph\cold_start.rs** — ColdStartStats(class), cold_start(module)
+
+40	pub struct ColdStartStats {
+41	    pub modules: usize,
+42	    pub classes: usize,
+43	    pub functions: usize,
+44	    pub imports: usize,
+45	    pub constants: usize,
+46	    pub type_aliases: usize,
+47	    /// Pairs restored into the call indices from `resolved_calls`.
+48	    pub resolved_call_pairs: usize,
+49	    /// Non-structural (synthetic-kind) ledger edges restored into the
+50	    /// call indices.
+51	    pub synthetic_edges: usize,
+52	    /// Standalone `field` concepts skipped — v1 leftovers; v2 embeds
+53	    /// fields in the owning class.
+54	    pub skipped_field_concepts: usize,
+55	}
+
+
+1	//! Cold-start reconstruction (v0.8 P1).
+
+
+**.\py_agent\src\coderadar\coldstart.py** — coldstart(module), store_is_fresh(function), store_db_path(function)
+
+1	"""Incremental cold start: load the store, update what changed.
+
+
+70	def store_is_fresh(project_root: Path, db_path: Path,
+71	                  
+
+======================================================================
+[OK] codegraph_node (0ms)
+## _ensure_graph
+
+- **ID:** `py_agent/src/coderadar/cli.py::_ensure_graph`
+- **Kind:** function
+- **File:** `.\py_agent\src\coderadar\cli.py`
+- **Lines:** 133–192 (60 lines)
+
+```
+Return a CodeGraph with an index behind it, restoring one if a
+    store exists.
+
+    The graph lives in the process that built it. `coderadar init` indexes
+    and exits, so every read-only command that followed it started with an
+    empty core. v0.8 P1: before re-indexing, the command tries a cold
+    start from the Macrame ledger - `load_snapshot` rebuilds the in-memory
+    graph from concept JSON v2 in milliseconds, instead of the full
+    analyze the re-analysis did before.
+
+    Order: reuse a matching loaded graph; else `_activate(path)` (the
+    effective config for every command is the one in the project -
+    BUGS_QUIRKS #3); else, if the store exists and is fresh, cold-start
+    from it; else (or on any load error - this is also the v1 -> v2 store
+    upgrade path) fall back to a full analyze. For a
+
+======================================================================
+[OK] codegraph_search (1ms)
+## Search: `mutation plan`
+Found 5 result(s)
+
+### 1. `plan` (function)
+- **ID:** `core_indexer/src/mutation/mod.rs::plan`
+- **File:** `.\core_indexer\src\mutation\mod.rs`
+- **Line:** 1615
+- **Signature:** `fn plan(edits: Vec<MutationEdit>) -> MutationPlan`
+
+### 2. `MutationPlan` (class)
+- **ID:** `py_agent/src/coderadar/__init__.py::MutationPlan`
+- **File:** `.\py_agent\src\coderadar\__init__.py`
+- **Line:** 62
+- **Docstring:** A planned mutation — produced by the planner, applied by apply().
+
+### 3. `MutationPlan` (class)
+- **ID:** `core_indexer/src/mutation/mod.rs::MutationPlan`
+- **File:** `.\core_indexer\src\mutation\mod.rs`
+- **Line:** 23
+
+### 4. `plan_to_dict` (function)
+- **ID:** `core_indexer/src/lib.rs::plan_to_dict`
+- **File:** `.\core_indexer\src\lib.rs`
+- **Line:** 1044
+- **Docstring:** Convert a MutationPlan to a Python dict.
+- **Signature:** `fn plan_to_dict(py: Python<'_>, plan: &mutation::MutationPlan) -> PyResult<PyObject>`
+
+### 5. `_format_mutation_plan` (function)
+- 
+
+======================================================================
+[OK] codegraph_affected (1ms)
+## Affected by `_ensure_graph`
+
+Transitive impact for `.\py_agent\src\coderadar\cli.py::_ensure_graph` (max depth: 3)
+**Total dependents:** 10
+
+**Depth 1** (10):
+  - `callees` (function) — `py_agent/src/coderadar/cli.py::callees`
+  - `callers` (function) — `py_agent/src/coderadar/cli.py::callers`
+  - `diagnose` (function) — `py_agent/src/coderadar/cli.py::diagnose`
+  - `query` (function) — `py_agent/src/coderadar/cli.py::query`
+  - `shell` (function) — `py_agent/src/coderadar/cli.py::shell`
+  - `stats` (function) — `py_agent/src/coderadar/cli.py::stats`
+  - `traverse` (function) — `py_agent/src/coderadar/cli.py::traverse`
+  - `update` (function) — `py_agent/src/coderadar/cli.py::update`
+  - `visualize` (function) — `py_agent/src/coderadar/cli.py::visualize`
+  - `watch` (function) — `py_agent/src/coderadar/cli.py::watch`
+
+
+======================================================================
+[OK] coderadar_resolve (1ms)
+No handler found for route `/users/:id`. Try codegraph_search.
+
+======================================================================
+[OK] codegraph_query (1ms)
+## Query: `functions where name contains 'parse'`
+Found 73 result(s)
+
+1. `test_parse_with_and_chain` (?) — `?`
+   Line: 463
+2. `parse_group_by` (?) — `?`
+   Line: 323
+3. `test_update_file_reports_a_clean_parse` (?) — `?`
+   Line: 84
+4. `test_parse_class_query` (?) — `?`
+   Line: 371
+5. `test_parse_invalid_query_returns_err` (?) — `?`
+   Line: 553
+6. `test_parse_derived_call` (?) — `?`
+   Line: 523
+7. `test_name_parser_filters_short_tokens` (?) — `?`
+   Line: 100
+8. `parse` (?) — `?`
+   Line: 53
+9. `parse_v2_module` (?) — `?`
+   Line: 1051
+10. `parse_py` (?) — `?`
+   Line: 248
+11. `test_name_parser_splits_query` (?) — `?`
+   Line: 86
+12. `parse_where_clause` (?) — `?`
+   Line: 211
+13. `test_query_parses` (?) — `?`
+   Line: 809
+14. `parse_import_from_statement` (?) — `?`
+   Line: 178
+15. `test_integrated_into_parse_names` (?) — `?`
+   Line: 476
+16. `parse_query` (?) — `?`
+   Line: 103
+17. `parse_operand` (?) — `?`
+   Line: 262
+18. `helper_parse` (?) — `?`
+   Line: 6
+19. `_parse_names` (?
+
+======================================================================
+[OK] codegraph_search_similar (548ms)
+No semantically similar results found for 'incremental file update'.
+
+======================================================================
+[OK] codegraph_module_children (0ms)
+Module `.\py_agent\src\coderadar::module` not found or error: 'Module not found: .\\py_agent\\src\\coderadar::module'
+
+======================================================================
+[OK] codegraph_as_of (0ms)
+## Snapshot at `2025-01-15T10:00:00Z`
+
+Pass `symbols` to look entities up as they were at this timestamp — for example codegraph_as_of(timestamp="2025-01-15T10:00:00Z", symbols=["User"]).
+
+Only symbol lookup is reconstructed from the ledger. `codegraph_query` and `codegraph_search` always run against the current index.
+
+======================================================================
+[OK] codegraph_traverse (4ms)
+## Traverse from `_ensure_graph`
+Direction: both, max depth: 2, edge kinds: ['calls']
+Found 243 reachable entities
+
+⚠️ Traversal incomplete: 1241 outgoing target(s) could not be resolved and were excluded from the walk.
+### Depth 0 (1)
+- `_ensure_graph` (function) — `.\py_agent\src\coderadar\cli.py`
+
+### Depth 1 (11)
+- `callees` (function) — `.\py_agent\src\coderadar\cli.py`
+- `callers` (function) — `.\py_agent\src\coderadar\cli.py`
+- `diagnose` (function) — `.\py_agent\src\coderadar\cli.py`
+- `query` (function) — `.\py_agent\src\coderadar\cli.py`
+- `shell` (function) — `.\py_agent\src\coderadar\cli.py`
+- `stats` (function) — `.\py_agent\src\coderadar\cli.py`
+- `traverse` (function) — `.\py_agent\src\coderadar\cli.py`
+- `update` (function) — `.\py_agent\src\coderadar\cli.py`
+- `visualize` (function) — `.\py_agent\src\coderadar\cli.py`
+- `watch` (function) — `.\py_agent\src\coderadar\cli.py`
+- `_activate` (function) — `.\py_agent\src\coderadar\cli.py`
+
+### Depth 2 (231)
+- `_render` (fun
+
+======================================================================
+[OK] codegraph_get_smells (14ms)
+## Code smells
+Found 2169 finding(s)
+
+- **[Medium]** `deep-nesting` — extract: Method 'extract' is nested 4 levels deep - consider using guard clauses or extracting methods
+  - signals: nesting_depth=4
+- **[High]** `dead-code` — extract: 'extract' is unreachable from any entry point — verify with `affected` before removing
+  - signals: reachable=0
+- **[Medium]** `long-method` — round_trip_restores_entities_and_indices: Method 'round_trip_restores_entities_and_indices' is too long (LOC=55, Cyclomatic=1) - consider extracting
+  - signals: cyclomatic=1, LOC=55
+- **[High]** `dead-code` — invalidate: 'invalidate' is unreachable from any entry point — verify with `affected` before removing
+  - signals: reachable=0
+- **[High]** `dead-code` — test_remove_file_is_a_no_op_for_an_unknown_file: 'test_remove_file_is_a_no_op_for_an_unknown_file' is unreachable from any entry point — verify with `affected` before removing
+  - signals: reachable=0
+- **[High]** `dead-code` — name: 'name' is unreachable
+
+======================================================================
+[OK] codegraph_dead_code (2ms)
+## Dead Code — 100 finding(s) at confidence >= 0.60
+
+Ranked most-safely-deletable first. Verify each with `affected` before removal.
+
+- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~202 lines
+- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~163 lines
+- **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~156 lines
+- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~128 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\actix.py::RustActixResolver.extract`) — unreachable, High (0.90), ~118 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\reactrouter.py::ReactRouterResolver.extract`) — unreachable, High (0.90), ~110 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\express.py::ExpressResolver.ext
+
+======================================================================
+[ERROR] codegraph_find_clones (5941ms)
+EXCEPTION: Traceback (most recent call last):
+  File "D:\User\Documents\Python\CodeRadar\tests\cr_edit_tests\battery_readonly.py", line 35, in run
+    out = fn(*args, **kwargs)
+  File "D:\User\Documents\Python\CodeRadar\py_agent\src\coderadar\mcp\server.py", line 1951, in _find_clones
+    groups = _find_clones_rust(min_lines, min_similarity, max_groups)
+pyo3_runtime.PanicException: index out of bounds: the len is 1057 but the index is 1057
+
+
+======================================================================
+[OK] codegraph_find_scaffolding (491ms)
+## Scaffolding Signals — 100 finding(s)
+
+### Comment Marker (100)
+- `.\core_indexer\src\extract\single_pass.rs:77` — Phase 1: // Phase 1: Emit file-level module frame
+- `.\core_indexer\src\extract\single_pass.rs:84` — Phase 2: // Phase 2: Direct cursor-driven dispatch.
+- `.\core_indexer\src\extract\single_pass.rs:117` — Phase 3: // Phase 3: Resolve fn_ref candidates (inline scan happened during emit_function)
+- `.\core_indexer\src\extract\walker.rs:259` — Step 1: // ── Step 1: Extracted emit_* functions for single-pass migration ──────────
+- `.\core_indexer\src\graph\deadcode\entry_points.rs:78` — in production: /// split by whether they make things live *in production* or *only in tests*.
+- `.\core_indexer\src\graph\deadcode\mod.rs:102` — in production: continue; // live in production — not a candidate
+- `.\core_indexer\src\graph\indexing.rs:122` — Phase 2: ///   `ImportGraph::build_import_edges` during Phase 2)
+- `.\core_indexer\src\graph\indexing.rs:267` — Phase 1: // Phase 1: Parse
+
+======================================================================
+[OK] codegraph_update_file (14ms)
+## File Updated
+
+- **File:** `.\tests\cr_edit_tests\demo_billing.py`
+- Graph refreshed from disk.
+
+
+======================================================================
+[OK] coderadar_replace_body[core,dry] (0ms)
+## Mutation Plan: `replace_entity_body` (DRY RUN)
+
+- **Plan ID:** `01M268N60W4ACHXBDPXHY57SSH`
+- **Affected files:** 1
+
+### Diff Preview
+```diff
+--- a/.\py_agent\src\coderadar\cli.py
++++ b/.\py_agent\src\coderadar\cli.py
+@@ -131,65 +131,7 @@
+ 
+ 
+ def _ensure_graph(path: str = "."):
+-    """Return a CodeGraph with an index behind it, restoring one if a
+-    store exists.
+-
+-    The graph lives in the process that built it. `coderadar init` indexes
+-    and exits, so every read-only command that followed it started with an
+-    empty core. v0.8 P1: before re-indexing, the command tries a cold
+-    start from the Macrame ledger - `load_snapshot` rebuilds the in-memory
+-    graph from concept JSON v2 in milliseconds, instead of the full
+-    analyze the re-analysis did before.
+-
+-    Order: reuse a matching loaded graph; else `_activate(path)` (the
+-    effective config for every command is the one in the project -
+-    BUGS_QUIRKS #3); else, if the store exists and is fresh, cold-start
+- 
+
+======================================================================
+[OK] coderadar_update_signature[core,dry] (10ms)
+## Mutation Plan: `update_signature` (DRY RUN)
+
+- **Plan ID:** `01M268N617SA4RRQTXTZTK5W1A`
+- **Affected files:** 1
+
+### Diff Preview
+```diff
+--- a/.\py_agent\src\coderadar\cli.py
++++ b/.\py_agent\src\coderadar\cli.py
+@@ -130,7 +130,7 @@
+ )
+ 
+ 
+-def _ensure_graph(path: str = "."):
++def _ensure_graph(path: str):
+     """Return a CodeGraph with an index behind it, restoring one if a
+     store exists.
+ 
+
+```
+
+⚠️ **WARNING: 22 call site(s) could not be verified/rewritten. Manual review required.**
+- `.\py_agent\src\coderadar\cli.py:0` — Call site needs manual update — no values provided (`call to .\py_agent\src\coderadar\cli.py::_ensure_graph in .\py_agent\src\coderadar\cli.py::callees`)
+- `.\py_agent\src\coderadar\cli.py:0` — Call site needs manual update — no values provided (`call to .\py_agent\src\coderadar\cli.py::_ensure_graph in .\py_agent\src\coderadar\cli.py::callers`)
+- `.\py_agent\src\coderadar\cli.py:0` — Call site needs manual update — no values provided (`call to .\py_agent\
+
+======================================================================
+[OK] coderadar_rename[core,dry] (10ms)
+## Mutation Plan: `rename_symbol` (DRY RUN)
+
+- **Plan ID:** `01M268N61HE14VVTG5N6GTF1Y2`
+- **Affected files:** 1
+
+### Diff Preview
+```diff
+--- a/.\py_agent\src\coderadar\cli.py
++++ b/.\py_agent\src\coderadar\cli.py
+@@ -130,7 +130,7 @@
+ )
+ 
+ 
+-def _ensure_graph(path: str = "."):
++def _ensure_graph_renamed(path: str = "."):
+     """Return a CodeGraph with an index behind it, restoring one if a
+     store exists.
+ 
+
+```
+
+⚠️ **WARNING: 12 call site(s) could not be verified/rewritten. Manual review required.**
+- `.\py_agent\src\coderadar\cli.py:360` — Textual occurrence — may be inside a macro body, comment or string; check manually (`graph = _ensure_graph()`)
+- `.\py_agent\src\coderadar\cli.py:376` — Textual occurrence — may be inside a macro body, comment or string; check manually (`graph = _ensure_graph()`)
+- `.\py_agent\src\coderadar\cli.py:403` — Textual occurrence — may be inside a macro body, comment or string; check manually (`graph = _ensure_graph()`)
+- `.\py_agent\src\coderadar\cl
+
+======================================================================
+[OK] coderadar_create_entity[demo,dry] (0ms)
+## Mutation Plan: `create_entity` (DRY RUN)
+
+- **Plan ID:** `01M268N61JFJ4DX28AGR6WZY9J`
+- **Affected files:** 1
+
+### Diff Preview
+```diff
+--- a/.\tests\cr_edit_tests\demo_billing.py
++++ b/.\tests\cr_edit_tests\demo_billing.py
+@@ -61,3 +61,6 @@
+     inv = build_demo_invoice(customer)
+     rate = load_rates(currency)
+     return f"[{currency} x{rate}] {inv.summary()}"
++
++def demo_review_helper():
++    return 42
+
+```
+
+### Warnings
+- ⚠ Preflight parse-check deferred to Python layer
+**To apply:** call again with `dry_run=False`.
+
+======================================================================
+[OK] codegraph_compute_embeddings (13939ms)
+## Embeddings Complete
+
+- **Generated:** 4322
+- **Cached (unchanged):** 0
+- **Total entities:** 4322
+- **Errors:** 0
+
+Semantic search (codegraph_search_similar) is now available.
+
+======================================================================
+SUMMARY
+  OK          6ms  codegraph_explore
+  OK          0ms  codegraph_node
+  OK          1ms  codegraph_search
+  OK          1ms  codegraph_affected
+  OK          1ms  coderadar_resolve
+  OK          1ms  codegraph_query
+  OK        548ms  codegraph_search_similar
+  OK          0ms  codegraph_module_children
+  OK          0ms  codegraph_as_of
+  OK          4ms  codegraph_traverse
+  OK         14ms  codegraph_get_smells
+  OK          2ms  codegraph_dead_code
+  ERROR    5941ms  codegraph_find_clones
+  OK        491ms  codegraph_find_scaffolding
+  OK         14ms  codegraph_update_file
+  OK          0ms  coderadar_replace_body[core,dry]
+  OK         10ms  coderadar_update_signature[core,dry]
+  OK         10ms  coderadar_rename[core,dry]
+  OK          0ms  coderadar_create_entity[demo,dry]
+  OK      13939ms  codegraph_compute_embeddings
