@@ -19,7 +19,7 @@ from __future__ import annotations
 #: installed wheel/sdist reports its own version) and falls back to the
 #: release constant below, which MUST be kept in sync with pyproject.toml
 #: and Cargo.toml [workspace.package] on every bump.
-_FALLBACK_VERSION = "0.8.1"
+_FALLBACK_VERSION = "0.8.2"
 
 
 def _resolve_version() -> str:
@@ -759,6 +759,18 @@ def analyze(root: str, create_store: bool = False) -> CodeGraph:
     return CodeGraph()
 
 
+#: Built-in skip dirs for the star-export pass (F5 fix): the Rust walker
+#: already skips these, but `_apply_star_exports` used a bare rglob and
+#: re-parsed 8,638 `.venv` files on every analyze AND every cold load
+#: (17.6 s vs 0.36 s). One shared baseline; user `[project] exclude`
+#: globs from `.coderadar.toml` are honored on top.
+_STAR_EXPORT_SKIP_DIRS = frozenset({
+    ".venv", "venv", "node_modules", "target", "dist", "build",
+    "__pycache__", ".git", ".coderadar", ".pytest_cache",
+    ".mypy_cache", ".tox", "site-packages", ".hg", ".svn",
+})
+
+
 def _apply_star_exports(root: str) -> None:
     """Extract `__all__` star exports from source and apply them to the
     in-memory graph.
@@ -782,8 +794,48 @@ def _apply_star_exports(root: str) -> None:
         # skips ids that are not in the graph, so the extra candidates are
         # harmless; they just make the pass root-form-agnostic.
         root_path = pathlib.Path(root)
+        # F5: honor [project] exclude on top of the built-in skip dirs.
+        # Config load is best-effort — a missing/unparsable toml means
+        # baseline skips only, never a crash.
+        user_excludes: list = []
+        try:
+            from coderadar.config import load_config as _load_cfg
+            user_excludes = list(_load_cfg(root_path).project.exclude or [])
+        except Exception:
+            user_excludes = []
+
+        def _excluded(py_file: "pathlib.Path") -> bool:
+            parts = set(py_file.parts)
+            if parts & set(_STAR_EXPORT_SKIP_DIRS):
+                return True
+            try:
+                rel = py_file.relative_to(root_path)
+            except ValueError:
+                return False
+            rel_posix = rel.as_posix()
+            for pat in user_excludes:
+                try:
+                    if rel.match(pat) or pathlib.PurePath(rel_posix).match(pat):
+                        return True
+                except Exception:
+                    continue
+            return False
+
         star_exports = []
-        for py_file in root_path.rglob("*.py"):
+        scanned = 0
+        import os as _os
+        skip = set(_STAR_EXPORT_SKIP_DIRS)
+        for _dirpath, _dirnames, _filenames in _os.walk(root_path):
+            # Prune excluded dirs in place so os.walk never descends
+            # into .venv / node_modules / target / etc.
+            _dirnames[:] = [d for d in _dirnames if d not in skip]
+            for _fn in _filenames:
+                if not _fn.endswith(".py"):
+                    continue
+                py_file = pathlib.Path(_dirpath) / _fn
+                if _excluded(py_file):
+                    continue
+                scanned += 1
             try:
                 source = py_file.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
