@@ -140,7 +140,8 @@ pub fn projection_from_state(
         return Err(format!(
             "the Macrame store contains {v1_leftovers} concept(s) without meta_version: 2 \
              (concept-JSON v1). Re-run `coderadar analyze` on the project to upgrade the \
-             store; the snapshot will not load."
+             store (v0.8.9+ retires v1 rows automatically), or run `coderadar store-repair` \
+             for an instant fix without reindexing; the snapshot will not load."
         ));
     }
     if unreadable > 0 {

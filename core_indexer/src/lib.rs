@@ -63,6 +63,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(find_clones, m)?)?;
     m.add_function(wrap_pyfunction!(find_scaffolding, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
+    m.add_function(wrap_pyfunction!(store_repair, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edges_bulk, m)?)?;
@@ -772,6 +773,20 @@ fn analyze_inner(root: &str, create_store: bool) -> AnalyzeOutcome {
         // Persist resolved edges to Macrame store
         if let Err(e) = graph.persist_edges(&projection) {
             eprintln!("[diag] persist_edges failed: {e:?}");
+        }
+        // F6: a re-analyze must actually upgrade a v1 store. v1 ids are
+        // absolute paths while v2 ids are relative, so the v2 flush above
+        // writes *alongside* the v1 rows; without this the loader keeps
+        // hard-failing on the orphans. Retired rows stay in the log for
+        // `as_of` but leave the current state, so cold load succeeds.
+        if let Some(ref store) = graph.store {
+            match store.retire_v1_leftovers() {
+                Ok((n, _)) if n > 0 => eprintln!(
+                    "[coderadar] retired {n} v1 concept(s) left over from a pre-v2 store; cold start will now load"
+                ),
+                Ok(_) => {}
+                Err(e) => eprintln!("[diag] v1-leftover retirement failed: {e:?}"),
+            }
         }
         // Planner statistics for the rows just flushed (macrame 0.13+):
         // best-effort, never fails the index.
@@ -2230,6 +2245,48 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
     dict.set_item("resolved_call_pairs", stats.resolved_call_pairs)?;
     dict.set_item("synthetic_edges", stats.synthetic_edges)?;
     dict.set_item("skipped_field_concepts", stats.skipped_field_concepts)?;
+    Ok(dict.into())
+}
+
+/// Inspect a Macrame store for load-blocking rows and retire what's safely
+/// retireable (F6: backs `coderadar store-repair`).
+///
+/// Reports live v1 leftovers (retired by this call), live unreadable rows
+/// (reported only — the content is corrupt, not merely old), and edges
+/// closed by the retirement. Never deletes: `--delete` on the CLI drops a
+/// store that repair cannot save.
+#[pyfunction]
+fn store_repair(py: Python<'_>, db_path: &str) -> PyResult<PyObject> {
+    use crate::storage::{classify_v2_concept, CodeGraphStore, V2ConceptClass};
+    let db = db_path.to_string();
+    let outcome = py.allow_threads(
+        move || -> std::result::Result<(usize, usize, usize, usize), String> {
+            let store = CodeGraphStore::open(&db).map_err(|e| format!("{e:?}"))?;
+            let live = store.live_concept_contents().map_err(|e| format!("{e:?}"))?;
+            let mut v1 = 0usize;
+            let mut unreadable = 0usize;
+            for (_, content) in &live {
+                match classify_v2_concept(content) {
+                    V2ConceptClass::V1Leftover => v1 += 1,
+                    V2ConceptClass::Unreadable => unreadable += 1,
+                    _ => {}
+                }
+            }
+            let (retired, edges) =
+                store.retire_v1_leftovers().map_err(|e| format!("{e:?}"))?;
+            Ok((v1, unreadable, retired, edges))
+        },
+    );
+    let (v1_live, unreadable_live, v1_retired, edges_retired) = outcome.map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "store repair failed for {db_path}: {e}"
+        ))
+    })?;
+    let dict = PyDict::new(py);
+    dict.set_item("v1_found", v1_live)?;
+    dict.set_item("v1_retired", v1_retired)?;
+    dict.set_item("edges_retired", edges_retired)?;
+    dict.set_item("unreadable_live", unreadable_live)?;
     Ok(dict.into())
 }
 

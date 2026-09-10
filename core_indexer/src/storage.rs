@@ -410,6 +410,52 @@ impl CodeGraphStore {
         })
     }
 
+    /// `(id, content)` of every concept the ledger still holds to be true.
+    ///
+    /// The content-carrying counterpart to [`Self::live_concept_ids`], for
+    /// health checks that must classify rows (v1-upgrade repair).
+    pub fn live_concept_contents(&self) -> macrame::Result<Vec<(String, String)>> {
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query("SELECT id, content FROM concepts WHERE retired = 0", ())
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                ));
+            }
+            Ok(out)
+        })
+    }
+
+    /// Retire every live concept that cold start would hard-reject as a v1
+    /// leftover (F6 fix).
+    ///
+    /// v1 stores keyed entities by ABSOLUTE path while v2 uses
+    /// project-relative ids, so a re-analyze writes v2 rows *alongside*
+    /// the v1 ones and the loader kept failing on the orphans — the
+    /// documented "re-run analyze to upgrade" path was a no-op (3857
+    /// leftovers surviving every analyze in the dogfood review). A full
+    /// analyze now calls this after the v2 flush, which makes the upgrade
+    /// path real. Retired rows stay in the log for `as_of` but leave the
+    /// current state, so the next cold load succeeds.
+    /// Returns `(v1_retired, edges_retired)`.
+    pub fn retire_v1_leftovers(&self) -> macrame::Result<(usize, usize)> {
+        let v1_ids: Vec<String> = self
+            .live_concept_contents()?
+            .into_iter()
+            .filter(|(_, content)| {
+                matches!(classify_v2_concept(content), V2ConceptClass::V1Leftover)
+            })
+            .map(|(id, _)| id)
+            .collect();
+        self.retire_entities(&v1_ids)
+    }
+
     /// Ids of every concept the ledger still holds to be true.
     ///
     /// The counterpart to [`Self::retire_entities`]: retirement is only
@@ -1515,6 +1561,41 @@ mod concept_v2_tests {
         let v1 = r#"{"kind": "module", "name": "alpha", "file_path": "pkg/alpha.py", "language": "python"}"#;
         let err = parse_v2_concept("pkg/alpha.py::module", v1).unwrap_err();
         assert!(err.contains("lacks meta_version: 2"), "err: {err}");
+    }
+
+    #[test]
+    fn retire_v1_leftovers_clears_load_blockers_f6() {
+        // A poisoned store: one v1 row (absolute-path id, no meta_version)
+        // beside its v2 successor. Retirement must remove exactly the v1
+        // row from the live state while keeping the v2 row loadable.
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("v1.db")).unwrap();
+        let now = now_iso8601();
+        let mk = |id: &str, content: &str| {
+            ConceptUpsert::new(id, id)
+                .content(content)
+                .valid_from(now.clone())
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)
+        };
+        store
+            .upsert_concepts_bulk(&[
+                mk(
+                    r"D:\proj\a.py::module",
+                    r#"{"kind": "module", "name": "a", "file_path": "D:\\proj\\a.py"}"#,
+                ),
+                mk(
+                    "a.py::module",
+                    r#"{"meta_version": 2, "kind": "module", "name": "a", "file_path": "a.py"}"#,
+                ),
+            ])
+            .unwrap();
+        let (retired, _) = store.retire_v1_leftovers().unwrap();
+        assert_eq!(retired, 1);
+        let live = store.live_concept_ids().unwrap();
+        assert_eq!(live, vec!["a.py::module".to_string()]);
+        // Second call is a no-op (idempotent).
+        assert_eq!(store.retire_v1_leftovers().unwrap().0, 0);
     }
 
     #[test]
