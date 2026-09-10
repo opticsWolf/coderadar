@@ -293,6 +293,13 @@ message ("content changed since planning (expected deadbeef, found c87e420f)")
 - **Windows mojibake**: CLI does not reconfigure stdout to UTF-8 (the repo's
   own `run_mcp_suite.py` does, with a comment explaining why) — em-dashes and
   checkmarks render as `�` in several tables (`traverse`, mutation output).
+- **`diagnose` truncation collides entity identities**: long entity IDs are
+  cut at column width mid-UTF-8-sequence (`…projection_ops.rs::Code�`), and
+  two *different* entities truncate to the identical visible string in the
+  same table (two `CodeGraph` methods, distinct unresolved-target counts,
+  indistinguishable rows). Truncation must preserve whole code points, use a
+  real ellipsis, and keep the disambiguating tail (`…::CodeGraph.insert`),
+  not the head.
 - **`git-diff`**: docstring says "Show files changed between two commits" but
   the positional arg is `[REPO]`; passing `HEAD~3` errors with "Path
   'HEAD~3' does not exist". OIDs go in `--old/--new` flags.
