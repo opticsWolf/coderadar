@@ -1953,6 +1953,17 @@ def _find_clones(
         return f"Invalid request: {e}"
     except Exception as e:
         return f"Clone detection failed: {e}"
+    except BaseException as e:
+        # PyO3 PanicException derives from BaseException, not Exception —
+        # without this the F1 LSH off-by-one panic escapes every handler
+        # and wedges the stdio session with no reply. Surface it as an
+        # error until the Rust-side catch_unwind lands (plan item 1).
+        return (
+            "Clone detection failed: engine panic "
+            f"({type(e).__name__}: {e}). This is a known defect (F1); "
+            "the session is still alive — retry with different parameters "
+            "or skip clone detection for now."
+        )
 
     if not groups:
         return (
@@ -2210,6 +2221,47 @@ def _traverse(
     return "\n".join(lines)
 
 
+def _format_mutation_error(e: BaseException) -> str:
+    """Translate raw engine errors into LLM-actionable prose (F10 fix)."""
+    raw = str(e)
+    if "StaleIndex" in raw or "stale" in raw.lower():
+        return (
+            "## Mutation Rejected — Stale Index\n\n"
+            "The file changed on disk after it was indexed, so the planned "
+            "span no longer lines up. Nothing was written.\n\n"
+            "**Next step:** run `codegraph_update_file` on the file (or "
+            "re-analyze), then retry the mutation.\n\n"
+            f"<details>Raw error: `{raw[:300]}`</details>"
+        )
+    if "RejectedPolicy" in raw or "policy" in raw.lower():
+        return (
+            "## Mutation Rejected — Policy\n\n"
+            "The target path is outside the `[mutation] allow` list. "
+            "Nothing was written.\n\n"
+            "**Next step:** pick a target under an allowed root, or ask the "
+            "user to extend the allow list.\n\n"
+            f"<details>Raw error: `{raw[:300]}`</details>"
+        )
+    if "SpanOutOfBounds" in raw or "out of bounds" in raw.lower():
+        return (
+            "## Mutation Failed — Span Mismatch\n\n"
+            "The computed edit span fell outside the file — likely a stale "
+            "concept or an off-by-one in the planner. Nothing was written "
+            "(rollback confirmed).\n\n"
+            "**Next step:** update the file in the graph and retry; if it "
+            "persists, report it with the entity id.\n\n"
+            f"<details>Raw error: `{raw[:300]}`</details>"
+        )
+    if "ParseError" in raw or "syntax" in raw.lower():
+        return (
+            "## Mutation Failed — Syntax\n\n"
+            "The edited file did not re-parse, so the change was rolled "
+            "back. Nothing was written.\n\n"
+            f"<details>Raw error: `{raw[:300]}`</details>"
+        )
+    return f"Mutation failed: {raw}"
+
+
 @requires_index
 def _replace_body(
     graph: Any, entity_id: str, new_body: str,
@@ -2224,7 +2276,7 @@ def _replace_body(
         result = graph.apply(plan)
         return _format_mutation_applied(result, plan.unverified_sites)
     except Exception as e:
-        return f"Mutation failed: {e}"
+        return _format_mutation_error(e)
 
 
 @requires_index
@@ -2243,7 +2295,7 @@ def _update_signature(
         result = graph.apply(plan)
         return _format_mutation_applied(result, plan.unverified_sites)
     except Exception as e:
-        return f"Mutation failed: {e}"
+        return _format_mutation_error(e)
 
 
 @requires_index
@@ -2257,7 +2309,7 @@ def _rename(graph: Any, entity_id: str, new_name: str, dry_run: bool) -> str:
         result = graph.apply(plan)
         return _format_mutation_applied(result, plan.unverified_sites)
     except Exception as e:
-        return f"Mutation failed: {e}"
+        return _format_mutation_error(e)
 
 
 def _render_entity_code(
@@ -2384,7 +2436,7 @@ def _create_entity(
         result = graph.apply(plan)
         return note + _format_mutation_applied(result, plan.unverified_sites)
     except Exception as e:
-        return f"Mutation failed: {e}"
+        return _format_mutation_error(e)
 
 
 def _format_mutation_plan(plan: Any) -> str:
