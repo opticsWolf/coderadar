@@ -34,6 +34,9 @@ performance claims (554 ms analyze, millisecond cold start).
 | F10 | P1 UX | Mutation | Raw Rust debug structs leak into LLM-facing errors (`Mutation failed: StaleIndex { … }`) |
 | F11 | P2 | Packaging | `--version` lies: hardcoded `0.7.20` vs pyproject `0.8.0`; `_core.pyd` older than Rust source, no freshness guard |
 | F12 | P2 | CLI | Bare-name lookups fail silently (prior BUGS_QUIRKS #5 still unresolved); `traverse` table unreadable; `git-diff` docstring mismatch; shell quirks |
+| F13 | **P1 correctness** | Slop scan | `PlaceholderBody` detector silently returns **zero findings** on fresh-analyze and update_file graphs; works only after cold-load — provenance-dependent detector (§8) |
+| F14 | **P1 correctness** | ID forms | `codegraph_update_file` mints a **third** id form for new files (`tests/x.py::f`, forward slashes, no `.`\) — query-time canonicalization hides it from most tools, breaks store-keyed consistency |
+| F15 | P1 quality | Slop scan | `max_findings` truncates the **raw** list before grouping: a comment-marker flood (97% of default output is routine "Phase 1/Step 1" comments) can push every secret/stub finding past the cap, silently |
 
 ---
 
@@ -452,19 +455,33 @@ message ("content changed since planning (expected deadbeef, found c87e420f)")
 
 ### P2 — hygiene (target: next release)
 
-12. **Single version source**: `__version__` reads `importlib.metadata` with
+12. **Slop-scan reliability** (F13–F15): (a) canonicalize ids/`parent_module`
+    **at write time** in both the fresh-extraction and update_file paths —
+    the same fix F14 needs — so `scan_placeholder_bodies`' module lookup hits
+    on every graph provenance; (b) make the scan loud: report how many
+    functions were skipped due to unresolvable parent_module instead of
+    silent `continue`s; (c) fix the persisted `body_span` off-by-one (first
+    body byte cut); (d) apply `max_findings` **after** grouping by kind (or
+    per-kind caps) so marker floods cannot push secrets/stubs out of the
+    report; (e) tighten the comment-marker defaults (drop `phase \d+`/
+    `step \d+`/`in production`/`for now` or require slop-adjacent context)
+    — on this repo they are 97% noise; (f) acceptance: `battery_slop.py`
+    reports placeholder hits for all five stub shapes under **all three**
+    graph provenances, and secrets remain visible with marker volume ≥ 100.
+13. **Single version source**: `__version__` reads `importlib.metadata` with
     a pyproject-derived fallback; CI asserts the three agree. Add a build
     freshness check (fail tests if `lib.rs` newer than `_core.pyd`).
-13. **CLI polish**: bare-name fallback via `search_entities` with
+14. **CLI polish**: bare-name fallback via `search_entities` with
     disambiguation; `traverse` limited columns + `--format json`;
     UTF-8 stdout reconfigure in `cli.py` entry; `git-diff` docstring fix;
     shell `status` implemented + cold-load reuse.
-14. **Schema enums** for `strictness` and `kind`; document the entity-ID
+15. **Schema enums** for `strictness` and `kind`; document the entity-ID
     grammar (`.<relative-path>::<Qualified.name>`) in the MCP tool
     descriptions and README (BUGS_QUIRKS #5 closure).
-15. **Path-form normalization**: one canonical form (project-relative, `.\`
-    prefix on Windows) across IDs, files, and diff previews.
-16. **Document the backup/undo story**: `.coderadar-bak` files, `git checkout`
+16. **Path-form normalization**: one canonical form (project-relative, `.\`
+    prefix on Windows) across IDs, files, and diff previews — per F14 this
+    must be enforced at write time, not only at the query boundary.
+17. **Document the backup/undo story**: `.coderadar-bak` files, `git checkout`
     caveat for untracked files, `post_verify`/rollback behavior.
 
 ---
@@ -479,3 +496,84 @@ message ("content changed since planning (expected deadbeef, found c87e420f)")
 | F4 | `graph.plan_signature_update(demo_billing.py::Invoice.apply_loyalty_discount, "def apply_loyalty_discount(self, pct: float, tier: str = 'none') -> float")` |
 | F5 | cProfile of `coderadar.load()`; timings table in §3/F5 |
 | F6/F8–F10, §4 | `battery_output.txt`, `battery_mutation_output.txt`, stdio probe output |
+| F13–F15 | `battery_slop.py` (see `battery_slop_output.txt`) — full option matrix; F13 additionally via the three-state probe in §8.1 |
+
+---
+
+## 8. Addendum — AI-slop / scaffold option sweep (second pass)
+
+The first pass ran `codegraph_find_scaffolding` once with defaults. This
+addendum covers the full option surface, driven by
+`tests/cr_edit_tests/battery_slop.py`, which plants slop demo files at
+runtime (comment markers, all five placeholder-body shapes, temp-file names,
+runtime-generated fake secrets of four shapes) and deletes them after.
+
+### 8.1 F13 — the PlaceholderBody detector is provenance-dependent
+
+A demo file made entirely of stub bodies (`pass`, `...`, `…`,
+`raise NotImplementedError`) produced **zero** placeholder findings while the
+graph came from either of the two write paths an agent actually uses:
+
+| Graph provenance | Placeholder scan |
+|---|---|
+| fresh `analyze()` in memory (what an MCP server serves right after indexing) | **MISS** (0 findings) |
+| entity added via `codegraph_update_file` (the documented post-edit path) | **MISS** |
+| cold-load from the Macrame store (`coderadar.load`) | **HIT** (`probe_stub is a stub: pass`) |
+
+Mechanism (code-confirmed): `scan_placeholder_bodies` (scaffold/mod.rs:198)
+keys a source map by `graph.modules` ids and looks functions up via
+`f.parent_module`; on a miss it silently `continue`s. The fresh-extraction
+and update_file paths mint `parent_module`/module ids in a different form
+than the modules map keys (the same id-form chaos as F14/F6); query-time
+canonicalization (`canonical()`) masks this from every Python-facing tool —
+only the raw Rust lookup exposes it, by failing silently. The store path
+(`parse_v2_function`, storage.rs:1124) rebuilds `parent_module` from the
+concept's `file_path`, which matches, so the cold-load works.
+
+Related: the persisted concept `body_span` is **off by one** for the stub
+(store JSON: `{start: 23, end: 27}` for `pass` starting at byte 22 — the
+first body character is cut). The cold-start scan hit anyway (it evidently
+doesn't trust the persisted span for this check), but any consumer slicing a
+persisted `body_span` loses the first body byte — `todo!()` would read as
+`odo!()` and miss.
+
+### 8.2 F15 — the findings cap truncates before grouping
+
+`find_scaffolding` slices `findings.into_iter().take(max_findings)` over the
+**raw** finding list before the Python renderer groups by kind. File-walk
+signals (comment markers) come first, so on this repo the default output is
+`Secret (3) + Comment Marker (97)` — routine engineering comments ("Phase 1:",
+"Step 1:", "in production") crowd the cap; at higher marker volume the secret
+and stub sections would be silently cut from the report entirely. The
+comment-marker regexes (`(?i)phase \d+`, `step \d+`, `in production`, `for
+now`) also flag routine engineering comments — on this repo they are ~97%
+noise, which trains users to ignore the scan.
+
+### 8.3 What the sweep validated (credit)
+
+- **Secrets**: all 8 pattern shapes exercised — `openai_key`, `github_token`,
+  `aws_access_key`, `slack_token`, and generic `hardcoded_credential` caught;
+  redaction verified (`sk-xxxxx***`).
+- **Temp-file names**: `temp_slop_notes.py`, `old_slop_backup.py` flagged.
+- **`get_smells`** option surface: `strictness` strict/normal/loose all run;
+  `rule_id` filter works (158 long-method findings repo-wide); entity scoping
+  accepts and answers.
+- **`dead_code`**: confidence sweep 0.0→0.9 behaves as documented;
+  `include_test_reachable=True` flips the result set. (FFI false positives
+  persist at every confidence — F7.)
+- **`find_clones` crashes at every parameter combination** (5/0.6 and 30/0.95
+  both panic) — F1 is not parameter-dependent; the off-by-one hits the whole
+  repo pool.
+
+### 8.4 F14 — update_file mints a third id form
+
+After `update_file` on a **new** file, the entity id is
+`tests/cr_edit_tests/demo_newfile_probe.py::probe_stub` — forward slashes, no
+`.\` prefix — while the same file analyzed produces
+`.\tests\cr_edit_tests\demo_newfile_probe.py::probe_stub`. Query-time
+canonicalization displays both as if uniform, but store keys, cross-entity
+lookups (callees/callers between analyze-form and update-form entities), and
+the Rust-internal lookups (F13's scan) see the difference. Three canonical
+forms now coexist in one store; F6's orphan-accumulation mechanism and this
+share a root cause: **id canonicalization is applied at the query boundary,
+not at write time**.

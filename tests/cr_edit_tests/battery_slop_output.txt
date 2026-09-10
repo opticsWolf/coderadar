@@ -1,0 +1,238 @@
+slop files indexed
+
+======================================================================
+[OK] scaffolding (defaults) (77ms)
+## Scaffolding Signals — 100 finding(s)
+
+### Comment Marker (100)
+- `.\core_indexer\src\extract\single_pass.rs:77` — Phase 1: // Phase 1: Emit file-level module frame
+- `.\core_indexer\src\extract\single_pass.rs:84` — Phase 2: // Phase 2: Direct cursor-driven dispatch.
+- `.\core_indexer\src\extract\single_pass.rs:117` — Phase 3: // Phase 3: Resolve fn_ref candidates (inline scan happened during emit_function)
+- `.\core_indexer\src\extract\walker.rs:259` — Step 1: // ── Step 1: Extracted emit_* functions for single-pass migration ──────────
+- `.\core_indexer\src\graph\deadcode\entry_points.rs:78` — in production: /// split by whether they make things live *in production* or *only in tests*.
+- `.\core_indexer\src\graph\deadcode\mod.rs:102` — in production: continue; // live in production — not a candidate
+- `.\core_indexer\src\graph\indexing.rs:122` — Phase 2: ///   `ImportGraph::build_import_edges` during Phase 2)
+- `.\core_indexer\src\graph\indexing.rs:267` — Phase 1: // Phase 1: Parse with tree-sitter
+- `.\core_indexer\src\graph\indexing.rs:275` — Phase 2: // Phase 2+3: Single-pass cursor-driven extraction
+- `.\core_indexer\src\graph\indexing.rs:280` — Phase 3: // Phase 3: Insert into ProjectedGraph
+- `.\core_indexer\src\graph\projection_ops.rs:248` — step 4: // Keyed by normalized id so the lookup in step 4 can find it — it was
+- `.\core_indexer\src\graph\projection_ops.rs:504` — Phase 1: // Phase 1-2: Parse and extract
+- `.\core_indexer\src\graph\projection_ops.rs:516` — Phase 3: // Phase 3: Diff old vs new entities, only update what changed
+- `.\core_indexer\src\graph\projection_ops.rs:525` — Phase 4: // Phase 4: Compute MRO for all classes, then resolve calls (scoped to this file)
+- `.\core_indexer\src\graph\projection_ops.rs:532` — Phase 4: // Phase 4b (v0.8 P1): 
+
+======================================================================
+[OK] scaffolding include_secrets=True (83ms)
+## Scaffolding Signals — 100 finding(s)
+
+### Secret (3)
+- `.\core_indexer\src\scaffold\mod.rs:256` — openai_key: sk-abcde***
+- `.\core_indexer\src\scaffold\mod.rs:269` — aws_access_key: AKIAABCD***
+- `.\core_indexer\src\scaffold\mod.rs:286` — aws_access_key: AKIAABCD***
+
+### Comment Marker (97)
+- `.\core_indexer\src\extract\single_pass.rs:77` — Phase 1: // Phase 1: Emit file-level module frame
+- `.\core_indexer\src\extract\single_pass.rs:84` — Phase 2: // Phase 2: Direct cursor-driven dispatch.
+- `.\core_indexer\src\extract\single_pass.rs:117` — Phase 3: // Phase 3: Resolve fn_ref candidates (inline scan happened during emit_function)
+- `.\core_indexer\src\extract\walker.rs:259` — Step 1: // ── Step 1: Extracted emit_* functions for single-pass migration ──────────
+- `.\core_indexer\src\graph\deadcode\entry_points.rs:78` — in production: /// split by whether they make things live *in production* or *only in tests*.
+- `.\core_indexer\src\graph\deadcode\mod.rs:102` — in production: continue; // live in production — not a candidate
+- `.\core_indexer\src\graph\indexing.rs:122` — Phase 2: ///   `ImportGraph::build_import_edges` during Phase 2)
+- `.\core_indexer\src\graph\indexing.rs:267` — Phase 1: // Phase 1: Parse with tree-sitter
+- `.\core_indexer\src\graph\indexing.rs:275` — Phase 2: // Phase 2+3: Single-pass cursor-driven extraction
+- `.\core_indexer\src\graph\indexing.rs:280` — Phase 3: // Phase 3: Insert into ProjectedGraph
+- `.\core_indexer\src\graph\projection_ops.rs:248` — step 4: // Keyed by normalized id so the lookup in step 4 can find it — it was
+- `.\core_indexer\src\graph\projection_ops.rs:504` — Phase 1: // Phase 1-2: Parse and extract
+- `.\core_indexer\src\graph\projection_ops.rs:516` — Phase 3: // Phase 3: Diff old vs new entities, only update what changed
+
+======================================================================
+[OK] scaffolding max_findings=3 (62ms)
+## Scaffolding Signals — 3 finding(s)
+
+### Comment Marker (3)
+- `.\core_indexer\src\extract\single_pass.rs:77` — Phase 1: // Phase 1: Emit file-level module frame
+- `.\core_indexer\src\extract\single_pass.rs:84` — Phase 2: // Phase 2: Direct cursor-driven dispatch.
+- `.\core_indexer\src\extract\single_pass.rs:117` — Phase 3: // Phase 3: Resolve fn_ref candidates (inline scan happened during emit_function)
+
+
+scaffolding(secrets) findings targeting cr_edit_tests/: 7
+- `.\tests\cr_edit_tests\battery_slop.py:67` — hardcoded_credential: api_key ***
+- `.\tests\cr_edit_tests\demo_slop.py:27` — openai_key: sk-xxxxx***
+- `.\tests\cr_edit_tests\demo_slop.py:28` — github_token: ghp_yyyy***
+- `.\tests\cr_edit_tests\demo_slop.py:29` — aws_access_key: AKIAZZZZ***
+- `.\tests\cr_edit_tests\demo_slop.py:30` — slack_token: xoxb-zzz***
+- `.\tests\cr_edit_tests\old_slop_backup.py` — suspicious file name: old_slop_backup.py
+- `.\tests\cr_edit_tests\temp_slop_notes.py` — suspicious file name: temp_slop_notes.py
+
+======================================================================
+[OK] get_smells strictness=strict (slop file) (9ms)
+## Code smells
+
+No findings for entity `.\tests\cr_edit_tests\demo_slop.py::slop_with_secret`.
+
+======================================================================
+[OK] get_smells strictness=normal (slop file) (10ms)
+## Code smells
+
+No findings for entity `.\tests\cr_edit_tests\demo_slop.py::slop_with_secret`.
+
+======================================================================
+[OK] get_smells strictness=loose (slop file) (6ms)
+## Code smells
+
+No findings for entity `.\tests\cr_edit_tests\demo_slop.py::slop_with_secret`.
+
+======================================================================
+[OK] get_smells rule_id=long-method (whole repo) (6ms)
+## Code smells
+Found 158 finding(s)
+
+- **[Medium]** `long-method` — parse_import_statement: Method 'parse_import_statement' is too long (LOC=53, Cyclomatic=9) - consider extracting
+  - signals: LOC=53, cyclomatic=9
+- **[High]** `long-method` — resolve_one_function: Method 'resolve_one_function' is too long (LOC=100, Cyclomatic=21) - consider extracting
+  - signals: LOC=100, cyclomatic=21
+- **[Medium]** `long-method` — extract: Method 'extract' is too long (LOC=66, Cyclomatic=7) - consider extracting
+  - signals: cyclomatic=7, LOC=66
+- **[Medium]** `long-method` — extract_base_classes: Method 'extract_base_classes' is too long (LOC=74, Cyclomatic=12) - consider extracting
+  - signals: LOC=74, cyclomatic=12
+- **[Medium]** `long-method` — signature_match: Method 'signature_match' is too long (LOC=52, Cyclomatic=3) - consider extracting
+  - signals: cyclomatic=3, LOC=52
+- **[Medium]** `long-method` — test_cold_start_load_latency: Method 'test_cold_start_load_latency' is too long (LOC=61, Cyclomatic=4) - consider extracting
+  - signals: cyclomatic=4, LOC=61
+- **[Medium]** `long-method` — parse_operand: Method 'parse_operand' is too long (LOC=45, Cyclomatic=12) - consider extracting
+  - signals: cyclomatic=12, LOC=45
+- **[Medium]** `long-method` — _explore: Method '_explore' is too long (LOC=65, Cyclomatic=11) - consider extracting
+  - signals: cyclomatic=11, LOC=65
+- **[Medium]** `long-method` — import_aware_base: Method 'import_aware_base' is too long (LOC=34, Cyclomatic=12) - consider extracting
+  - signals: LOC=34, cyclomatic=12
+- **[Medium]** `long-method` — detect_entry_points: Method 'detect_entry_points' is too long (LOC=74, Cyclomatic=11) - consider extracting
+  - signals: cyclomatic=11, LOC=74
+- **[Medium]** `long-method` — extract_class_name: Method 'extract_class_
+
+======================================================================
+[OK] get_smells rule_id=deep-nesting entity scope (6ms)
+## Code smells
+
+No findings for entity `.\tests\cr_edit_tests\demo_slop.py::slop_with_secret` and rule=deep-nesting.
+
+======================================================================
+[OK] dead_code min_confidence=0.0 (2ms)
+## Dead Code — 15 finding(s) at confidence >= 0.00
+
+Ranked most-safely-deletable first. Verify each with `affected` before removal.
+
+- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~202 lines
+- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~163 lines
+- **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~156 lines
+- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~128 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\actix.py::RustActixResolver.extract`) — unreachable, High (0.90), ~118 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\reactrouter.py::ReactRouterResolver.extract`) — unreachable, High (0.90), ~110 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\express.py::ExpressResolver.extract`) — unreachable, High (0.90), ~109 lines
+- **init** (`.\py_agent\src\coderadar\cli.py::init`) — unreachable, High (0.90), ~106 lines
+- **resolve_one_function** (`.\core_indexer\src\graph\resolve_calls.rs::CodeGraph.resolve_one_function`) — unreachable, High (0.90), ~100 lines
+- **update_file** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.update_file`) — unreachable, High (0.90), ~100 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\laravel.py::LaravelResolver.extract`) — unreachable, High (0.90), ~97 lines
+- **plan_body_replacement** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_body_replacement`) — unreachable, High (0.90), ~95 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\rails.py::RailsResolver.extract`) — unreachable, High (0.90), ~94 lines
+
+======================================================================
+[OK] dead_code min_confidence=0.3 (2ms)
+## Dead Code — 15 finding(s) at confidence >= 0.30
+
+Ranked most-safely-deletable first. Verify each with `affected` before removal.
+
+- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~202 lines
+- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~163 lines
+- **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~156 lines
+- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~128 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\actix.py::RustActixResolver.extract`) — unreachable, High (0.90), ~118 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\reactrouter.py::ReactRouterResolver.extract`) — unreachable, High (0.90), ~110 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\express.py::ExpressResolver.extract`) — unreachable, High (0.90), ~109 lines
+- **init** (`.\py_agent\src\coderadar\cli.py::init`) — unreachable, High (0.90), ~106 lines
+- **resolve_one_function** (`.\core_indexer\src\graph\resolve_calls.rs::CodeGraph.resolve_one_function`) — unreachable, High (0.90), ~100 lines
+- **update_file** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.update_file`) — unreachable, High (0.90), ~100 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\laravel.py::LaravelResolver.extract`) — unreachable, High (0.90), ~97 lines
+- **plan_body_replacement** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_body_replacement`) — unreachable, High (0.90), ~95 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\rails.py::RailsResolver.extract`) — unreachable, High (0.90), ~94 lines
+
+======================================================================
+[OK] dead_code min_confidence=0.6 (2ms)
+## Dead Code — 15 finding(s) at confidence >= 0.60
+
+Ranked most-safely-deletable first. Verify each with `affected` before removal.
+
+- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~202 lines
+- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~163 lines
+- **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~156 lines
+- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~128 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\actix.py::RustActixResolver.extract`) — unreachable, High (0.90), ~118 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\reactrouter.py::ReactRouterResolver.extract`) — unreachable, High (0.90), ~110 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\express.py::ExpressResolver.extract`) — unreachable, High (0.90), ~109 lines
+- **init** (`.\py_agent\src\coderadar\cli.py::init`) — unreachable, High (0.90), ~106 lines
+- **resolve_one_function** (`.\core_indexer\src\graph\resolve_calls.rs::CodeGraph.resolve_one_function`) — unreachable, High (0.90), ~100 lines
+- **update_file** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.update_file`) — unreachable, High (0.90), ~100 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\laravel.py::LaravelResolver.extract`) — unreachable, High (0.90), ~97 lines
+- **plan_body_replacement** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_body_replacement`) — unreachable, High (0.90), ~95 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\rails.py::RailsResolver.extract`) — unreachable, High (0.90), ~94 lines
+
+======================================================================
+[OK] dead_code min_confidence=0.9 (2ms)
+## Dead Code — 15 finding(s) at confidence >= 0.90
+
+Ranked most-safely-deletable first. Verify each with `affected` before removal.
+
+- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~202 lines
+- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~163 lines
+- **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~156 lines
+- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~128 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\actix.py::RustActixResolver.extract`) — unreachable, High (0.90), ~118 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\reactrouter.py::ReactRouterResolver.extract`) — unreachable, High (0.90), ~110 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\express.py::ExpressResolver.extract`) — unreachable, High (0.90), ~109 lines
+- **init** (`.\py_agent\src\coderadar\cli.py::init`) — unreachable, High (0.90), ~106 lines
+- **resolve_one_function** (`.\core_indexer\src\graph\resolve_calls.rs::CodeGraph.resolve_one_function`) — unreachable, High (0.90), ~100 lines
+- **update_file** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.update_file`) — unreachable, High (0.90), ~100 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\laravel.py::LaravelResolver.extract`) — unreachable, High (0.90), ~97 lines
+- **plan_body_replacement** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_body_replacement`) — unreachable, High (0.90), ~95 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\rails.py::RailsResolver.extract`) — unreachable, High (0.90), ~94 lines
+
+======================================================================
+[OK] dead_code include_test_reachable=True (0.6) (2ms)
+## Dead Code — 15 finding(s) at confidence >= 0.60
+
+Ranked most-safely-deletable first. Verify each with `affected` before removal.
+
+- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~202 lines
+- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~163 lines
+- **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~156 lines
+- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~128 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\actix.py::RustActixResolver.extract`) — unreachable, High (0.90), ~118 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\reactrouter.py::ReactRouterResolver.extract`) — unreachable, High (0.90), ~110 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\express.py::ExpressResolver.extract`) — unreachable, High (0.90), ~109 lines
+- **init** (`.\py_agent\src\coderadar\cli.py::init`) — unreachable, High (0.90), ~106 lines
+- **resolve_one_function** (`.\core_indexer\src\graph\resolve_calls.rs::CodeGraph.resolve_one_function`) — unreachable, High (0.90), ~100 lines
+- **update_file** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.update_file`) — unreachable, High (0.90), ~100 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\laravel.py::LaravelResolver.extract`) — unreachable, High (0.90), ~97 lines
+- **plan_body_replacement** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_body_replacement`) — unreachable, High (0.90), ~95 lines
+- **extract** (`.\py_agent\src\coderadar\resolvers\rails.py::RailsResolver.extract`) — unreachable, High (0.90), ~94 lines
+
+======================================================================
+[ERROR] find_clones min_lines=5 sim=0.6 (11041ms)
+EXCEPTION: Traceback (most recent call last):
+  File "D:\User\Documents\Python\CodeRadar\tests\cr_edit_tests\battery_slop.py", line 87, in run
+    out = fn(*args, **kwargs)
+  File "D:\User\Documents\Python\CodeRadar\py_agent\src\coderadar\mcp\server.py", line 1951, in _find_clones
+    groups = _find_clones_rust(min_lines, min_similarity, max_groups)
+pyo3_runtime.PanicException: index out of bounds: the len is 1571 but the index is 1571
+
+
+======================================================================
+[ERROR] find_clones min_lines=30 sim=0.95 (1963ms)
+EXCEPTION: Traceback (most recent call last):
+  File "D:\User\Documents\Python\CodeRadar\tests\cr_edit_tests\battery_slop.py", line 87, in run
+    out = fn(*args, **kwargs)
+  File "D:\User\Documents\Python\CodeRadar\py_agent\src\coderadar\mcp\server.py", line 1951, in _find_clones
+    groups = _find_clones_rust(min_lines, min_similarity, max_groups)
+pyo3_runtime.PanicException: index out of bounds: the len is 293 but the index is 293
+
+
+cleanup: slop demo files removed, graph re-synced
