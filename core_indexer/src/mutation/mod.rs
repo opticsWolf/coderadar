@@ -487,6 +487,80 @@ impl MutationEngine {
         Ok(plan)
     }
 
+    /// Rebase a recorded params span against current file content (F4 fix).
+    ///
+    /// Concept spans go stale whenever disk moves under the graph; the old
+    /// code trusted `params_span` blindly and spliced the new signature
+    /// wherever it pointed — into method bodies, over the next def line.
+    /// The fast path validates in place; otherwise the span is re-resolved
+    /// from the def line (nearest `name (` in a small window) with a
+    /// warning. When even that fails, refuse with `StaleIndex` — reindex
+    /// and re-plan — instead of writing garbage.
+    fn rebased_params_span(
+        &self,
+        source: &str,
+        entity_name: &str,
+        def_line: usize,
+        file: &str,
+        recorded: ByteSpan,
+        warnings: &mut Vec<String>,
+    ) -> Result<ByteSpan, MutationError> {
+        if params_span_valid(source, entity_name, recorded) {
+            return Ok(recorded);
+        }
+        // Byte-exact line starts (CRLF-safe: never assume 1-byte terminators).
+        let mut line_starts = vec![0usize];
+        for (i, b) in source.bytes().enumerate() {
+            if b == b'\n' {
+                line_starts.push(i + 1);
+            }
+        }
+        let n_lines = line_starts.len();
+        let line_text = |idx: usize| -> &str {
+            let s = line_starts[idx];
+            let e = line_starts.get(idx + 1).copied().unwrap_or(source.len());
+            source[s..e].trim_end_matches(|c| c == '\r' || c == '\n')
+        };
+        let def_idx = def_line.saturating_sub(1).min(n_lines - 1);
+        let lo = def_idx.saturating_sub(3);
+        let hi = (def_idx + 8).min(n_lines);
+        // Search outward from the def line: 0, -1, +1, -2, +2, …
+        let mut order = vec![def_idx];
+        let mut d = 1usize;
+        while (def_idx >= d && def_idx - d >= lo) || def_idx + d < hi {
+            if def_idx >= d && def_idx - d >= lo {
+                order.push(def_idx - d);
+            }
+            if def_idx + d < hi {
+                order.push(def_idx + d);
+            }
+            d += 1;
+        }
+        for idx in order {
+            let line = line_text(idx);
+            let Some(rel) = find_name_paren(line, entity_name) else {
+                continue;
+            };
+            let open = line_starts[idx] + rel;
+            let Some(close) = match_paren_end(source, open) else {
+                continue;
+            };
+            let candidate = ByteSpan { start: open, end: close };
+            if params_span_valid(source, entity_name, candidate) {
+                warnings.push(format!(
+                    "Recorded params span for `{}` was stale (pointed at byte {}); re-resolved from the def line — consider `codegraph_update_file` before relying on call-site edits.",
+                    entity_name, recorded.start
+                ));
+                return Ok(candidate);
+            }
+        }
+        Err(MutationError::StaleIndex {
+            file: file.to_string(),
+            expected: format!("def-line params for {}", entity_name),
+            span: recorded,
+        })
+    }
+
     /// Re-base a replacement body for splicing at a `body_span` that starts
     /// at the first body token. See the call site in `plan_body_replacement`
     /// for the full contract and rationale.
@@ -755,6 +829,21 @@ impl MutationEngine {
         let def_file = module_file_path(projection, &fn_entity.parent_module);
         let def_source = std::fs::read_to_string(&def_file).unwrap_or_default();
 
+        // Warnings live for the whole plan: the rebase below may add one.
+        let mut warnings = Vec::new();
+
+        // F4: never trust the recorded span against live disk. A graph that
+        // lags the file spliced new signatures into method bodies and over
+        // the next def line. Validate, re-resolve, or refuse — in that order.
+        let params_span = self.rebased_params_span(
+            &def_source,
+            &fn_entity.name,
+            fn_entity.line,
+            &def_file,
+            params_span,
+            &mut warnings,
+        )?;
+
         // The MCP tool asks the agent for a whole `def f(a, b) -> str:` line,
         // but `params_span` is exactly the parenthesised parameter list. The
         // whole line used to be written into that span, producing
@@ -767,7 +856,6 @@ impl MutationEngine {
         let def_expected_hash = hash_span(def_source.as_bytes(), header_span);
 
         let mut edits = Vec::new();
-        let mut warnings = Vec::new();
         let mut unverified = Vec::new();
 
         // A different name in the new signature is a rename, and renames have
@@ -1578,6 +1666,210 @@ fn rollback_all(backups: &[(String, String)]) {
 /// replacement owns runs from the opening paren to just before the header's
 /// colon. Anything the caller did not include — a return type they dropped —
 /// is dropped on purpose: they passed a complete signature.
+/// Byte offset just past the `)` matching the `(` at `open` (F4 helper).
+///
+/// Bracket-aware (`(`, `[`, `{` nest jointly) and quote-aware, so defaults
+/// like `x=(1, 2)`, annotations like `x: dict[str, int]` and string
+/// defaults like `x=")"` don't end the scan early. Returns `None` when
+/// the parens never balance.
+fn match_paren_end(source: &str, open: usize) -> Option<usize> {
+    let bytes = source.as_bytes();
+    if bytes.get(open) != Some(&b'(') {
+        return None;
+    }
+    let mut depth: i32 = 0;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' | b'"' => {
+                // Skip string literals (triple-quoted included).
+                let q = bytes[i];
+                let triple = i + 2 < bytes.len() && bytes[i + 1] == q && bytes[i + 2] == q;
+                i += if triple { 3 } else { 1 };
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if triple
+                        && i + 2 < bytes.len()
+                        && bytes[i] == q
+                        && bytes[i + 1] == q
+                        && bytes[i + 2] == q
+                    {
+                        i += 3;
+                        break;
+                    }
+                    if !triple && bytes[i] == q {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+                if depth < 0 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Byte offset of the `(` in a `name<…>? (` occurrence on `line`.
+///
+/// Allows optional generic arguments between the name and the paren
+/// (`fn foo<T>(x: T)`), with word boundaries on the name. Returns the
+/// offset of the paren itself.
+fn find_name_paren(line: &str, name: &str) -> Option<usize> {
+    if name.is_empty() {
+        return None;
+    }
+    let bytes = line.as_bytes();
+    let mut from = 0;
+    while let Some(pos) = line[from..].find(name) {
+        let s = from + pos;
+        let mut e = s + name.len();
+        if s > 0 && is_ident_byte(bytes[s - 1]) {
+            from = e;
+            continue;
+        }
+        while e < line.len() && (bytes[e] == b' ' || bytes[e] == b'\t') {
+            e += 1;
+        }
+        // Optional `<…>` generic arguments (`fn foo<T>(x: T)`).
+        if bytes.get(e) == Some(&b'<') {
+            let mut depth = 0i32;
+            let mut j = e;
+            let mut closed = None;
+            while j < line.len() {
+                match bytes[j] {
+                    b'<' => depth += 1,
+                    b'>' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            closed = Some(j + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                j += 1;
+            }
+            let Some(after) = closed else {
+                from = s + name.len();
+                continue;
+            };
+            e = after;
+            while e < line.len() && (bytes[e] == b' ' || bytes[e] == b'\t') {
+                e += 1;
+            }
+        }
+        if bytes.get(e) == Some(&b'(') {
+            return Some(e);
+        }
+        from = s + name.len();
+    }
+    None
+}
+
+/// Whether a recorded params span is trustworthy against current disk (F4).
+///
+/// Demands: the span opens with `(`, the parens balance, the trailer looks
+/// like a header end (`:`, `->`, `{`, `;`, newline/EOF, `where`-style word),
+/// and the entity's own name precedes the paren on the same line (rules out
+/// spans that drifted into unrelated code — the F4 mangler).
+fn params_span_valid(source: &str, name: &str, span: ByteSpan) -> bool {
+    let end = span.end.min(source.len());
+    if span.start >= end {
+        return false;
+    }
+    if source.as_bytes().get(span.start) != Some(&b'(') {
+        return false;
+    }
+    let paren_end = match match_paren_end(source, span.start) {
+        Some(e) => e,
+        None => return false,
+    };
+    // Trailer sanity.
+    let after: String = source[paren_end..].chars().take(32).collect();
+    let t = after.trim_start();
+    let trailer_ok = t.is_empty()
+        || t.starts_with(':')
+        || t.starts_with('-')
+        || t.starts_with('{')
+        || t.starts_with(';')
+        || t.starts_with('\n')
+        || t.starts_with('\r')
+        || t.chars().next().is_some_and(|c| c.is_alphabetic());
+    if !trailer_ok {
+        return false;
+    }
+    // Same-line anchor: the def line names its own function. The prefix
+    // ends right AT the paren, so check it ends with `name` (or
+    // `name<…>` generics) on a word boundary — a span that drifted into
+    // unrelated code (the F4 mangler) fails here.
+    let line_start = source[..span.start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let prefix = &source[line_start..span.start];
+    if !prefix_ends_with_name_call(prefix, name) {
+        return false;
+    }
+    true
+}
+
+/// Whether `prefix` (line text up to, but excluding, the paren) ends with
+/// `name` or `name<…>` on a word boundary.
+fn prefix_ends_with_name_call(prefix: &str, name: &str) -> bool {
+    if name.is_empty() {
+        return false;
+    }
+    let mut core = prefix.trim_end();
+    if core.ends_with('>') {
+        // Strip one balanced `<…>` generic group from the right.
+        let bytes = core.as_bytes();
+        let mut depth = 0i32;
+        let mut i = bytes.len();
+        let mut ok = false;
+        while i > 0 {
+            i -= 1;
+            match bytes[i] {
+                b'>' => depth += 1,
+                b'<' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        core = core[..i].trim_end();
+                        ok = true;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !ok {
+            return false;
+        }
+    }
+    core.len() >= name.len()
+        && core.ends_with(name)
+        && {
+            let s = core.len() - name.len();
+            s == 0 || !is_ident_byte(core.as_bytes()[s - 1])
+        }
+}
+
 fn signature_header(
     source: &str,
     params_span: ByteSpan,
@@ -2305,6 +2597,82 @@ mod tests {
         use super::*;
         use crate::graph::{CodeGraph, GraphConfig};
         use crate::types::Language;
+
+        #[test]
+        fn stale_graph_signature_update_rebases_instead_of_mangling_f4() {
+            // F4: with disk 3 lines ahead of the graph, the old code
+            // spliced the new signature into another method's body (and
+            // could eat the next def line). Two consecutive methods, like
+            // the demo_billing.py fixture.
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("c.py");
+            let src = concat!(
+                "class Invoice:\n",
+                "    def first(self, x):\n",
+                "        return x * 2\n\n",
+                "    def second(self, y):\n",
+                "        return y + 1\n",
+            );
+            std::fs::write(&file, src).unwrap();
+            let file_str = file.to_string_lossy().to_string();
+            let graph = CodeGraph::new(GraphConfig::default());
+            graph.index_file(src, &file_str, &Language::Python).unwrap();
+            let projection = (*graph.snapshot()).clone();
+            // Disk moves under the graph: 3 comment lines on top.
+            let shifted = format!("# a\n# b\n# c\n{}", src);
+            std::fs::write(&file, &shifted).unwrap();
+
+            let entity_id = format!("{}::Invoice.second", file_str);
+            let plan = engine()
+                .plan_signature_update(
+                    &entity_id,
+                    "def second(self, y, z=0):",
+                    &HashMap::new(),
+                    false,
+                    true,
+                    &projection,
+                )
+                .expect("stale span must rebase, not refuse");
+            // Exactly one definition edit, on the real def line…
+            assert_eq!(plan.edits.len(), 1);
+            let edit = &plan.edits[0];
+            assert_eq!(&shifted[edit.span.start..edit.span.end], "(self, y)");
+            assert_eq!(edit.replacement, "(self, y, z=0)");
+            // …and the plan says so via a stale-span warning.
+            assert!(
+                plan.warnings.iter().any(|w| w.contains("stale")),
+                "{:?}",
+                plan.warnings
+            );
+            // The spliced file keeps both methods intact.
+            let applied = crate::mutation::edit::apply_edits_to_file(
+                &shifted,
+                &plan.edits,
+            )
+            .unwrap();
+            assert!(applied.contains("def first(self, x):"));
+            assert!(applied.contains("def second(self, y, z=0):"));
+            assert!(applied.contains("return x * 2"));
+            assert!(applied.contains("return y + 1"));
+        }
+
+        #[test]
+        fn unresolvable_stale_span_refuses_with_stale_index() {
+            // Span points at garbage with no `name (` nearby: refuse.
+            let eng = engine();
+            let source = "x = 1\nfoo(2)\n";
+            let err = eng
+                .rebased_params_span(
+                    source,
+                    "target_fn",
+                    1,
+                    "a.py",
+                    ByteSpan { start: 9, end: 12 },
+                    &mut Vec::new(),
+                )
+                .expect_err("must refuse");
+            assert!(matches!(err, MutationError::StaleIndex { .. }));
+        }
 
         // line 6: resolved by the graph (call inside a function);
         // line 8: module-level — no enclosing function, so the cascade
