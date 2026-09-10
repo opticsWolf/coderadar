@@ -14,10 +14,40 @@ v3.6 Architecture:
 
 from __future__ import annotations
 
-#: The single version constant. pyproject.toml, Cargo.toml and this value
-#: move together on a release; the CLI banner, the MCP handshake and the
-#: tests read from here so no string is hardcoded twice.
-__version__ = "0.7.20"
+#: Single version source (F11 fix): pyproject.toml is authoritative.
+#: `__version__` resolves from installed package metadata first (so an
+#: installed wheel/sdist reports its own version) and falls back to the
+#: release constant below, which MUST be kept in sync with pyproject.toml
+#: and Cargo.toml [workspace.package] on every bump.
+_FALLBACK_VERSION = "0.8.1"
+
+
+def _resolve_version() -> str:
+    # Source-tree constant is authoritative in a checkout: an editable
+    # install freezes metadata at install time (stale 0.7.20 proved this),
+    # so when metadata and source disagree the NEWER wins. In a proper
+    # release flow both agree after reinstall.
+    def _tup(v: str) -> tuple:
+        try:
+            return tuple(int(p) for p in v.split("."))
+        except Exception:
+            return ()
+    best = _FALLBACK_VERSION
+    try:
+        from importlib.metadata import version as _pkg_version
+        for _dist in ("coderadar-rs", "coderadar"):
+            try:
+                _meta = _pkg_version(_dist)
+                if _tup(_meta) > _tup(best):
+                    best = _meta
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return best
+
+
+__version__ = _resolve_version()
 
 import json
 from pathlib import Path
