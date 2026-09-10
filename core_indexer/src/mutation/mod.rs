@@ -319,11 +319,27 @@ fn path_matches(rel: &str, pattern: &str) -> bool {
     if let Some(ext) = pattern.strip_prefix("/*") {
         return !ext.is_empty() && rel.ends_with(ext);
     }
-    let fragment = pattern.strip_prefix('/').unwrap_or(pattern);
-    if fragment.is_empty() {
+    // Interior-fragment patterns (`/migrations/`) match at any depth —
+    // that is their documented purpose, so both forms stay.
+    if let Some(fragment) = pattern.strip_prefix('/') {
+        if fragment.is_empty() {
+            return false;
+        }
+        return rel.starts_with(fragment) || rel.contains(&format!("/{}", fragment));
+    }
+    // Leading-directory patterns (`src/`) are ROOT-ANCHORED (F2 fix): the
+    // old `contains("/src/")` fallback admitted `py_agent/src/x.py`
+    // through an allow list of `src/` and applied a live mutation to a
+    // production file. A trailing slash already bounds the match
+    // (`src/` can't prefix `srcfoo/`); a bare name (`src`) matches the
+    // dir itself or anything under it, on a `/` boundary.
+    if pattern.is_empty() {
         return false;
     }
-    rel.starts_with(fragment) || rel.contains(&format!("/{}", fragment))
+    if pattern.ends_with('/') {
+        return rel.starts_with(pattern);
+    }
+    rel == pattern || rel.starts_with(&format!("{}/", pattern))
 }
 
 /// Resolve `path` to an absolute, symlink-free form.
@@ -456,6 +472,19 @@ impl MutationEngine {
         }
 
         Ok(())
+    }
+
+    /// Gate a freshly built plan against `MutationConfig` (F2 follow-up).
+    ///
+    /// `apply()` has always refused forbidden targets, but the plan
+    /// (dry-run) phase previewed them as if allowed. Refusing here means
+    /// the agent sees `PolicyViolation` before any diff preview.
+    fn gate_plan_policy(&self, plan: MutationPlan) -> Result<MutationPlan, MutationError> {
+        if let Err(reason) = self.check_policy(&plan) {
+            let path = plan.edits.first().map(|e| e.file.clone()).unwrap_or_default();
+            return Err(MutationError::PolicyViolation { path, reason });
+        }
+        Ok(plan)
     }
 
     /// Re-base a replacement body for splicing at a `body_span` that starts
@@ -598,7 +627,7 @@ impl MutationEngine {
             String::new()
         };
 
-        Ok(MutationPlan {
+        self.gate_plan_policy(MutationPlan {
             id: plan_id,
             tool: "replace_entity_body".to_string(),
             affected_files: vec![module_file_path(projection, &fn_entity.parent_module)],
@@ -747,7 +776,7 @@ impl MutationEngine {
             String::new()
         };
 
-        Ok(MutationPlan {
+        self.gate_plan_policy(MutationPlan {
             id: plan_id,
             tool: "update_signature".to_string(),
             edits,
@@ -998,7 +1027,7 @@ impl MutationEngine {
             String::new()
         };
 
-        Ok(MutationPlan {
+        self.gate_plan_policy(MutationPlan {
             id: ulid::Ulid::new().to_string(),
             tool: "rename_symbol".to_string(),
             edits,
@@ -1152,7 +1181,7 @@ impl MutationEngine {
             String::new()
         };
 
-        Ok(MutationPlan {
+        self.gate_plan_policy(MutationPlan {
             id: ulid::Ulid::new().to_string(),
             tool: "rename_symbol".to_string(),
             edits,
@@ -1219,7 +1248,7 @@ impl MutationEngine {
             String::new()
         };
 
-        Ok(MutationPlan {
+        self.gate_plan_policy(MutationPlan {
             id: plan_id,
             tool: "create_entity".to_string(),
             affected_files: vec![target_file.to_string()],
@@ -1706,6 +1735,31 @@ mod tests {
     }
 
     #[test]
+    fn leading_dir_patterns_are_root_anchored_f2() {
+        // F2: allow=`src/` admitted `py_agent/src/x.py` via the
+        // `contains("/src/")` fallback and mutated a production file.
+        assert!(path_matches("src/x.py", "src/"));
+        assert!(path_matches("src/a/b.py", "src/"));
+        assert!(!path_matches("py_agent/src/x.py", "src/"));
+        assert!(!path_matches(".venv/Lib/site-packages/foo/src/x.py", "src/"));
+        assert!(!path_matches("srcfoo/x.py", "src/"));
+        // Bare names match on a `/` boundary.
+        assert!(path_matches("src/x.py", "src"));
+        assert!(!path_matches("srcfoo/x.py", "src"));
+    }
+
+    #[test]
+    fn interior_fragments_still_match_at_depth() {
+        // `/migrations/` keeps the anywhere-match — that is its purpose.
+        assert!(path_matches("migrations/001.py", "/migrations/"));
+        assert!(path_matches("app/migrations/001.py", "/migrations/"));
+        assert!(!path_matches("app/migration/001.py", "/migrations/"));
+        // Extension globs unchanged.
+        assert!(path_matches("a/b.lock", "/*.lock"));
+        assert!(!path_matches("a/b.locked", "/*.lock"));
+    }
+
+    #[test]
     fn test_policy_rejects_edits_with_no_stale_guard() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mod.py");
@@ -1822,7 +1876,9 @@ mod tests {
     #[test]
     fn test_path_matches_pattern_shapes() {
         assert!(path_matches("src/a.py", "src/"));
-        assert!(path_matches("pkg/src/a.py", "src/"));
+        // F2: leading-dir patterns are root-anchored — `pkg/src/a.py`
+        // must NOT match `src/` (it used to, and mutated prod files).
+        assert!(!path_matches("pkg/src/a.py", "src/"));
         assert!(!path_matches("mysrc/a.py", "src/"));
 
         assert!(path_matches("app/migrations/0001.py", "/migrations/"));
