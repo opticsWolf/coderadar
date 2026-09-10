@@ -1720,9 +1720,12 @@ def _query_graph(graph: Any, query: str) -> str:
         for i, row in enumerate(rows[:30], 1):
             name = row.get("name", row.get("id", "?"))
             kind = row.get("kind", row.get("entity_type", "?"))
-            fp = row.get("file_path", "?")
+            fp = _display_file(row)
+            rid = row.get("id", row.get("entity_id", ""))
             sl = row.get("start_line", row.get("line", ""))
             lines.append(f"{i}. `{name}` ({kind}) — `{fp}`")
+            if rid:
+                lines.append(f"   ID: `{rid}`")
             if sl:
                 lines.append(f"   Line: {sl}")
             sig = row.get("signature")
@@ -1815,7 +1818,7 @@ def _search_similar(graph: Any, query: str, top_k: int) -> str:
     for i, r in enumerate(results, 1):
         name = r.get("name", "?")
         kind = r.get("kind", "?")
-        fp = r.get("file_path", "?")
+        fp = _display_file(r)
         sim = r.get("similarity", 0.0)
         lines.append(f"{i}. `{name}` ({kind}) — similarity {sim:.3f}")
         lines.append(f"   File: `{fp}`")
@@ -2211,9 +2214,10 @@ def _traverse(
             name = item.get("name", item.get("id", item.get("entity_id", "?")))
             ek = item.get("kind", item.get("edge_type", "?"))
             eid = item.get("id", item.get("entity_id", ""))
-            fp = item.get("file_path", "")
-            fp_str = f" — `{fp}`" if fp else ""
-            lines.append(f"- `{name}` ({ek}){fp_str}")
+            fp = _display_file(item)
+            fp_str = f" — `{fp}`" if fp and fp != "?" else ""
+            id_str = f" — `{eid}`" if eid and eid != name else ""
+            lines.append(f"- `{name}` ({ek}){fp_str}{id_str}")
         if len(items) > 15:
             lines.append(f"  ... and {len(items) - 15} more")
         lines.append("")
@@ -2756,6 +2760,23 @@ def _canonical_entity_id(entity_id: str) -> str:
         if c and lookup_entity(c):
             return c
     return entity_id
+
+
+def _display_file(d: dict) -> str:
+    """Best-effort file for an entity dict — never '?' when derivable (F8 fix).
+
+    Rust bindings disagree on the key (`file_path` vs `file` vs `path`),
+    and Pest query rows may carry neither; the entity id always embeds the
+    path as `<path>::<name>`, so derive from there as a last resort.
+    """
+    for _k in ("file_path", "file", "path"):
+        _v = d.get(_k)
+        if _v:
+            return str(_v)
+    _eid = str(d.get("id", d.get("entity_id", "")))
+    if "::" in _eid:
+        return _eid.split("::")[0]
+    return "?"
 
 
 def _find_entity(graph: Any, entity_id: str) -> dict | None:
