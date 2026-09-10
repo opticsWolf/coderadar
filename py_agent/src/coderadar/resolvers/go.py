@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
+from coderadar.excludes import iter_project_files as _iter_files
 
 if TYPE_CHECKING:
     pass
@@ -59,7 +60,7 @@ class GoResolver(FrameworkResolver):
         """Detect Go project by go.mod or .go files."""
         if (project_root / "go.mod").exists():
             return True
-        return any(project_root.rglob("*.go"))
+        return next(_iter_files(project_root, suffixes=(".go",)), None) is not None
 
     def claims_reference(self, name: str) -> bool:
         """Claim Go-idiomatic reference patterns."""

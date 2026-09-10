@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
+from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -80,7 +81,7 @@ class NestJSResolver(FrameworkResolver):
                     return True
             except (OSError, json.JSONDecodeError, UnicodeDecodeError):
                 pass
-        for path in list(project_root.rglob('*.ts'))[:200]:
+        for path in list(_iter_files(project_root, suffixes=(".ts",)))[:200]:
             try:
                 if '@Module' in path.read_text(encoding="utf-8"):
                     return True

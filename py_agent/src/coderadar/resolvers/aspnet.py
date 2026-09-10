@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
+from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -83,15 +84,10 @@ class AspNetResolver(FrameworkResolver):
         return "aspnet"
 
     def detect(self, project_root: Path) -> bool:
-        for marker in ('*.csproj', '*.sln'):
-            for path in project_root.rglob(marker):
-                break
-            else:
-                continue
-            break
-        else:
+        markers = list(_iter_files(project_root, suffixes=(".csproj", ".sln")))
+        if not markers:
             # Fallback: grep for ASP.NET attributes in .cs files
-            for path in list(project_root.rglob('*.cs'))[:200]:
+            for path in list(_iter_files(project_root, suffixes=(".cs",)))[:200]:
                 try:
                     content = path.read_text(encoding="utf-8")
                     if '[ApiController]' in content or '[HttpGet' in content:
@@ -100,15 +96,13 @@ class AspNetResolver(FrameworkResolver):
                     pass
             return False
 
-        for marker in ('*.csproj', '*.sln'):
-            for path in project_root.rglob(marker):
+        for path in markers:
                 try:
                     content = path.read_text(encoding="utf-8")
                     if 'Microsoft.NET.Sdk.Web' in content or 'Microsoft.AspNetCore' in content:
                         return True
                 except (OSError, UnicodeDecodeError):
                     pass
-            break
         return False
 
     def claims_reference(self, name: str) -> bool:

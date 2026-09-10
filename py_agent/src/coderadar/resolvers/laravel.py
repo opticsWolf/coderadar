@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
+from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -109,7 +110,7 @@ class LaravelResolver(FrameworkResolver):
                     return True
             except (OSError, json.JSONDecodeError, UnicodeDecodeError):
                 pass
-        for path in list(project_root.rglob('*.php'))[:200]:
+        for path in list(_iter_files(project_root, suffixes=(".php",)))[:200]:
             try:
                 if 'Route::' in path.read_text(encoding="utf-8"):
                     return True

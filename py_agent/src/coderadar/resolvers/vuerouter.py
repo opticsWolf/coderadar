@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
+from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -73,7 +74,7 @@ class VueRouterResolver(FrameworkResolver):
                 pass
         # Fallback: grep for createRouter or routes array
         for ext in ('.js', '.ts', '.vue'):
-            for path in list(project_root.rglob(f'*{ext}'))[:200]:
+            for path in list(_iter_files(project_root, suffixes=(ext,)))[:200]:
                 try:
                     content = path.read_text(encoding="utf-8")
                     if 'createRouter' in content or 'routes:' in content:

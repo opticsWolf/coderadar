@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
+from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -86,7 +87,7 @@ class SpringBootResolver(FrameworkResolver):
                         return True
                 except (OSError, UnicodeDecodeError):
                     pass
-        for path in list(project_root.rglob('*.java'))[:200]:
+        for path in list(_iter_files(project_root, suffixes=(".java",)))[:200]:
             try:
                 content = path.read_text(encoding="utf-8")
                 if '@SpringBootApplication' in content or '@RestController' in content:

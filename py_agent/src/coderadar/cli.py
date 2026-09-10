@@ -330,12 +330,15 @@ include_same_package = true
 
 @main.command()
 @click.argument("path", type=click.Path(exists=True), default=".")
-def analyze(path: str):
+@click.option("--exclude", "excludes", multiple=True,
+              help="One-shot exclusion pattern (gitignore syntax), repeatable. "
+              "Merged with [project] exclude + baseline for this run only.")
+def analyze(path: str, excludes: tuple):
     """One-shot analysis without persistence."""
     _activate(path)
     console.print(f"[bold]Analyzing[/bold] {path}...")
     import coderadar
-    graph = coderadar.analyze(path)
+    graph = coderadar.analyze(path, exclude=list(excludes) or None)
     stats = graph.stats()
     table = Table(title="Analysis Results")
     table.add_column("Kind", style="cyan")
@@ -533,7 +536,9 @@ def load_snapshot(snapshot: str, root: Optional[str]):
 @click.argument("path", type=click.Path(exists=True), default=".")
 @click.option("--full", is_flag=True, help="Accepted for compatibility; "
               "a rebuild is always a full re-index")
-def rebuild(path: str, full: bool):
+@click.option("--exclude", "excludes", multiple=True,
+              help="One-shot exclusion pattern (gitignore syntax), repeatable.")
+def rebuild(path: str, full: bool, excludes: tuple):
     """Re-index the project from scratch.
 
     This printed "Rebuilding..." and returned — a command that reported
@@ -543,7 +548,7 @@ def rebuild(path: str, full: bool):
 
     _activate(path)
     console.print(f"[bold]Rebuilding[/bold] {path}...")
-    graph = coderadar.analyze(path)
+    graph = coderadar.analyze(path, exclude=list(excludes) or None)
     stats = graph.stats()
     console.print(
         f"[green]OK[/green]  {stats.get('file_count', 0)} file(s), "
@@ -606,6 +611,117 @@ def stats():
     for k, v in s.items():
         table.add_row(k, str(v))
     console.print(table)
+    # Item 7: the effective exclude list is visible, not implicit.
+    _print_effective_excludes()
+
+
+def _print_effective_excludes() -> None:
+    """Show the effective exclusion stack (item 7: visible, not implicit)."""
+    try:
+        from coderadar._core import default_excludes as _baseline
+        baseline = list(_baseline())
+    except ImportError:
+        from .excludes import FALLBACK_BASELINE
+        baseline = list(FALLBACK_BASELINE)
+    user: list = []
+    try:
+        from .config import load_config
+        user = list(load_config(Path(".")).project.exclude or [])
+    except Exception:
+        pass
+    console.print("[bold]Effective excludes[/bold] (baseline + [project] exclude):")
+    for pat in baseline:
+        console.print(f"  [dim]baseline[/dim]  {pat}")
+    for pat in user:
+        console.print(f"  [cyan]config[/cyan]    {pat}")
+    if not baseline and not user:
+        console.print("  [dim](none)[/dim]")
+
+
+@main.group()
+def exclude():
+    """Manage `[project] exclude` patterns in `.coderadar.toml`."""
+
+
+@exclude.command(name="list")
+def exclude_list():
+    """Show user-configured excludes plus the built-in baseline."""
+    _activate(".")
+    _print_effective_excludes()
+
+
+def _rewrite_excludes(path: Path, patterns: list) -> None:
+    """Persist `patterns` as `[project] exclude` via text-level TOML edit.
+
+    No TOML writer dependency: the existing file keeps every byte except
+    the `exclude = [...]` line under `[project]` (added if absent). JSON
+    string arrays are valid TOML string arrays, so `json.dumps` renders
+    the value. The result is re-loaded to prove it still parses.
+    """
+    import json
+    from .config import load_config
+    value = json.dumps(sorted(set(patterns)))
+    if path.exists():
+        text = path.read_text(encoding="utf-8")
+    else:
+        text = ""
+    lines = text.splitlines()
+    in_project = False
+    done = False
+    out: list = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("["):
+            if in_project and not done:
+                out.append(f"exclude = {value}")
+                done = True
+            in_project = stripped == "[project]"
+            out.append(line)
+            continue
+        if in_project and stripped.startswith("exclude") and "=" in stripped:
+            out.append(f"exclude = {value}")
+            done = True
+            continue
+        out.append(line)
+    if not done:
+        if not in_project:
+            if out and out[-1].strip():
+                out.append("")
+            out.append("[project]")
+        out.append(f"exclude = {value}")
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    load_config(path.parent)  # proves the edit still parses
+
+
+@exclude.command(name="add")
+@click.argument("pattern")
+def exclude_add(pattern: str):
+    """Add PATTERN to `[project] exclude` (takes effect on next analyze,
+    which also retires the newly-excluded concepts from the store)."""
+    from .config import load_config
+    root = Path(".")
+    current = list(load_config(root).project.exclude or [])
+    if pattern in current:
+        console.print(f"[dim]Already excluded:[/dim] {pattern}")
+        return
+    _rewrite_excludes(root / ".coderadar.toml", current + [pattern])
+    console.print(f"[green]OK[/green]  Excluded {pattern} — re-analyze to apply.")
+
+
+@exclude.command(name="remove")
+@click.argument("pattern")
+def exclude_remove(pattern: str):
+    """Remove PATTERN from `[project] exclude`."""
+    from .config import load_config
+    root = Path(".")
+    current = list(load_config(root).project.exclude or [])
+    if pattern not in current:
+        console.print(f"[yellow]Not excluded:[/yellow] {pattern}")
+        return
+    _rewrite_excludes(
+        root / ".coderadar.toml", [p for p in current if p != pattern]
+    )
+    console.print(f"[green]OK[/green]  No longer excluded: {pattern}.")
 
 
 @main.command()

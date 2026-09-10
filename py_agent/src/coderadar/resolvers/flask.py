@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from coderadar.excludes import iter_project_files as _iter_files
 from typing import Any, Dict, List, Optional
 
 from .base import (
@@ -38,7 +39,7 @@ class FlaskResolver(FrameworkResolver):
 
     def detect(self, project_root: Path) -> bool:
         # Check for flask import in any Python file
-        for py_file in project_root.rglob("*.py"):
+        for py_file in _iter_files(project_root, suffixes=(".py",)):
             if py_file.name.startswith("__"):
                 continue
             try:

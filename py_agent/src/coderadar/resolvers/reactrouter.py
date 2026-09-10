@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
+from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -80,7 +81,7 @@ class ReactRouterResolver(FrameworkResolver):
             except (OSError, json.JSONDecodeError, UnicodeDecodeError):
                 pass
         for ext in ('.jsx', '.tsx', '.js', '.ts'):
-            for path in list(project_root.rglob(f'*{ext}'))[:200]:
+            for path in list(_iter_files(project_root, suffixes=(ext,)))[:200]:
                 try:
                     content = path.read_text(encoding="utf-8")
                     if '<Route ' in content or 'createBrowserRouter' in content:

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
+from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -84,7 +85,7 @@ class ExpressResolver(FrameworkResolver):
                 pass
         # Fallback: grep for express require/import in JS/TS files
         for ext in ('.js', '.ts', '.mjs', '.cjs', '.mts', '.cts'):
-            for path in list(project_root.rglob(f'*{ext}'))[:200]:
+            for path in list(_iter_files(project_root, suffixes=(ext,)))[:200]:
                 try:
                     content = path.read_text(encoding="utf-8")
                     if "express" in content and ('require(' in content or 'from ' in content):

@@ -64,6 +64,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(find_scaffolding, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(store_repair, m)?)?;
+    m.add_function(wrap_pyfunction!(default_excludes, m)?)?;
+    m.add_function(wrap_pyfunction!(is_path_excluded, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edges_bulk, m)?)?;
@@ -464,44 +466,209 @@ fn store_path_for(root: &str, db: &graph::DatabaseConfig) -> std::path::PathBuf 
 /// indexed 34 files where 13 were real, polluting counts and smells. These
 /// are always applied on top of `[project] exclude`; they are defaults, not
 /// configuration — pointing `roots` at `target/` explicitly still works.
-const DEFAULT_EXCLUDES: &[&str] = &["target/", "node_modules/", "dist/"];
+///
+/// F7 follow-up: the dotted/hidden entries (`.venv/`, `.git/`, …) duplicate
+/// what the `ignore` crate's hidden-file filter already skips, deliberately:
+/// explicit defaults are visible (`stats` prints them, `default_excludes()`
+/// exposes them to the Python passes) instead of implicit walker behavior.
+/// Keep this list in sync with the fallback copy in
+/// `py_agent/src/coderadar/excludes.py`.
+pub(crate) const DEFAULT_EXCLUDES: &[&str] = &[
+    ".venv/",
+    "venv/",
+    "node_modules/",
+    "site-packages/",
+    "target/",
+    "dist/",
+    "build/",
+    "__pycache__/",
+    ".mypy_cache/",
+    ".tox/",
+    ".git/",
+    ".hg/",
+    ".svn/",
+    ".coderadar/",
+    ".pytest_cache/",
+];
+
+/// The built-in walk-exclusion baseline (F7: one shared list). Python
+/// passes (star exports, framework resolvers) read this instead of keeping
+/// private skip-dir copies.
+#[pyfunction]
+fn default_excludes() -> Vec<String> {
+    DEFAULT_EXCLUDES.iter().map(|s| s.to_string()).collect()
+}
+
+/// One shared exclusion predicate for the Python passes (item 7): star
+/// exports, framework resolvers and any library caller ask THIS whether a
+/// path is excluded instead of keeping private skip lists. `path` is
+/// project-root-relative (as `os.path.relpath` yields); absolute paths
+/// only match unanchored (`name/`) patterns. `exclude` adds one-shot
+/// patterns on top of config + baseline.
+#[pyfunction]
+#[pyo3(signature = (path, exclude = None))]
+fn is_path_excluded(path: &str, exclude: Option<Vec<String>>) -> bool {
+    let matcher = match exclusion_gitignore(&exclude.unwrap_or_default()) {
+        Some(m) => m,
+        None => return false,
+    };
+    let p = std::path::Path::new(path);
+    // No filesystem access here (the path may be gone); assume files.
+    // Directory callers pass the trailing-slash form implicitly via
+    // ancestor matching of the files beneath — file-level is enough.
+    path_excluded(&matcher, p, false)
+}
 
 /// `roots` keeps. `exclude` patterns are gitignore-syntax globs applied on
-/// top of the `.gitignore` rules `ignore` already reads.
-fn project_walk(root: &str, project: &graph::ProjectConfig) -> ignore::Walk {
+/// top of the `.gitignore` rules `ignore` already reads. `extra` is the
+/// one-shot `--exclude` / `analyze(exclude=[…])` layer for the run.
+fn project_walk(root: &str, project: &graph::ProjectConfig, extra: &[String]) -> ignore::Walk {
     let root_path = std::path::Path::new(root);
     let mut builder = match project.roots.first() {
         Some(first) => ignore::WalkBuilder::new(root_path.join(first)),
         None => ignore::WalkBuilder::new(root_path),
     };
-    for extra in project.roots.iter().skip(1) {
-        builder.add(root_path.join(extra));
+    for extra_root in project.roots.iter().skip(1) {
+        builder.add(root_path.join(extra_root));
     }
 
-    // User patterns first, then the built-in build-dir defaults — always,
-    // regardless of whether the user configured any of their own.
+    // User patterns, then one-shot extras, then the built-in build-dir
+    // defaults — always, regardless of whether the user configured any.
+    let owned: Vec<String> = extra.to_vec();
     let all_excludes: Vec<&str> = project
         .exclude
         .iter()
         .map(String::as_str)
+        .chain(owned.iter().map(String::as_str))
         .chain(DEFAULT_EXCLUDES.iter().copied())
         .collect();
-    if !all_excludes.is_empty() {
-        let mut overrides = ignore::overrides::OverrideBuilder::new(root_path);
-        for pattern in &all_excludes {
-            // An override without "!" is a whitelist; negating it makes it a
-            // skip, which is what `exclude` means.
-            if let Err(e) = overrides.add(&format!("!{}", pattern)) {
-                eprintln!("Warning: ignoring bad exclude pattern {:?}: {}", pattern, e);
-            }
-        }
-        match overrides.build() {
-            Ok(o) => { builder.overrides(o); }
-            Err(e) => eprintln!("Warning: exclude patterns not applied: {}", e),
-        }
+    if let Some(o) = build_exclude_overrides(root_path, &all_excludes) {
+        builder.overrides(o);
     }
 
     builder.build()
+}
+
+/// Shared exclusion matcher (item 7): config `exclude` + one-shot extras +
+/// built-in defaults, in gitignore grammar. The walk consumes the patterns
+/// through `build_exclude_overrides` (WalkBuilder needs `Override`);
+/// retraction and the watcher consume them through `path_excluded` — one
+/// pattern source, one grammar, every pass.
+///
+/// An override without "!" is a whitelist; negating it makes it a skip,
+/// which is what `exclude` means.
+fn build_exclude_overrides(
+    root_path: &std::path::Path,
+    patterns: &[&str],
+) -> Option<ignore::overrides::Override> {
+    if patterns.is_empty() {
+        return None;
+    }
+    let mut overrides = ignore::overrides::OverrideBuilder::new(root_path);
+    for pattern in patterns {
+        if let Err(e) = overrides.add(&format!("!{}", pattern)) {
+            eprintln!("Warning: ignoring bad exclude pattern {:?}: {}", pattern, e);
+        }
+    }
+    match overrides.build() {
+        Ok(o) => Some(o),
+        Err(e) => {
+            eprintln!("Warning: exclude patterns not applied: {}", e);
+            None
+        }
+    }
+}
+
+pub(crate) fn exclusion_gitignore(
+    extra: &[String],
+) -> Option<ignore::gitignore::Gitignore> {
+    let config = active_config();
+    let owned: Vec<String> = extra.to_vec();
+    let patterns: Vec<&str> = config
+        .project
+        .exclude
+        .iter()
+        .map(String::as_str)
+        .chain(owned.iter().map(String::as_str))
+        .chain(DEFAULT_EXCLUDES.iter().copied())
+        .collect();
+    if patterns.is_empty() {
+        return None;
+    }
+    let mut builder = ignore::gitignore::GitignoreBuilder::new(".");
+    for pattern in &patterns {
+        if let Err(e) = builder.add_line(None, pattern) {
+            eprintln!("Warning: ignoring bad exclude pattern {:?}: {}", pattern, e);
+        }
+    }
+    match builder.build() {
+        Ok(g) => Some(g),
+        Err(e) => {
+            eprintln!("Warning: exclude matcher not built: {}", e);
+            None
+        }
+    }
+}
+
+/// One shared `path_excluded(rel)` (item 7): the path itself (with caller-
+/// supplied `is_dir` — dir-only patterns like `.venv/` need it), then each
+/// ancestor dir — files inherit their directories' exclusion. `rel` is
+/// project-root-relative; absolute paths only match unanchored (`name/`)
+/// patterns.
+pub(crate) fn path_excluded(
+    matcher: &ignore::gitignore::Gitignore,
+    rel: &std::path::Path,
+    is_dir: bool,
+) -> bool {
+    use ignore::Match;
+    if matches!(matcher.matched(rel, is_dir), Match::Ignore(_)) {
+        return true;
+    }
+    let mut anc = rel.parent();
+    while let Some(a) = anc {
+        if a.as_os_str().is_empty() {
+            break;
+        }
+        if matches!(matcher.matched(a, true), Match::Ignore(_)) {
+            return true;
+        }
+        anc = a.parent();
+    }
+    false
+}
+
+/// Retire live concepts whose file the current exclusion set skips
+/// (item 7: store retraction). Concept ids are `relpath::Qualified.name`
+/// (v1 absolute ids never match the relative matcher and are F6's job).
+/// Files inherit their directories' exclusion, so every ancestor dir is
+/// checked too — patterns like `.venv/` only match directories.
+fn retire_excluded_concepts(
+    store: &crate::storage::CodeGraphStore,
+    extra: &[String],
+) -> macrame::Result<usize> {
+    // Pattern supply comes from `exclusion_gitignore`, which reads the same
+    // active config the walk just used — the caller's config/project would
+    // be a second source of truth.
+    let matcher = match exclusion_gitignore(extra) {
+        Some(m) => m,
+        None => return Ok(0),
+    };
+    let mut doomed = Vec::new();
+    for id in store.live_concept_ids()? {
+        // The file part never contains `::`; the qualified name may.
+        let file = id.split("::").next().unwrap_or("");
+        if file.is_empty() {
+            continue;
+        }
+        if path_excluded(&matcher, std::path::Path::new(file), false) {
+            doomed.push(id);
+        }
+    }
+    if doomed.is_empty() {
+        return Ok(0);
+    }
+    let (n, _) = store.retire_entities(&doomed)?;
+    Ok(n)
 }
 
 // ── analyze() ──────────────────────────────────────────────────────────────
@@ -515,14 +682,22 @@ struct AnalyzeOutcome {
 }
 
 #[pyfunction]
-#[pyo3(signature = (root, create_store = false))]
-fn analyze(py: Python<'_>, root: &str, create_store: bool) -> PyResult<PyObject> {
+#[pyo3(signature = (root, create_store = false, exclude = None))]
+fn analyze(
+    py: Python<'_>,
+    root: &str,
+    create_store: bool,
+    exclude: Option<Vec<String>>,
+) -> PyResult<PyObject> {
     // The walk, the parse, the resolution cascade and the persist all run
     // with the GIL released. `analyze` used to hold it end to end — 3.3 s on
     // this project, minutes on a large repo — so any asyncio caller
     // (`asyncio.to_thread(analyze, ...)`, the MCP server's background init)
     // froze for the whole index instead of merely waiting on it.
-    let outcome = py.allow_threads(|| analyze_inner(root, create_store));
+    // `exclude` is the one-shot layer (CLI `--exclude`, library
+    // `analyze(exclude=[…])`): merged with config + defaults for the run.
+    let extra = exclude.unwrap_or_default();
+    let outcome = py.allow_threads(|| analyze_inner(root, create_store, &extra));
 
     let dict = PyDict::new(py);
     dict.set_item("files_indexed", outcome.files_indexed)?;
@@ -533,7 +708,7 @@ fn analyze(py: Python<'_>, root: &str, create_store: bool) -> PyResult<PyObject>
     Ok(dict.into())
 }
 
-fn analyze_inner(root: &str, create_store: bool) -> AnalyzeOutcome {
+fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> AnalyzeOutcome {
     use std::fs;
     use crate::types::Language;
 
@@ -587,7 +762,7 @@ fn analyze_inner(root: &str, create_store: bool) -> AnalyzeOutcome {
             language: Language,
         }
         let mut tasks: Vec<FileTask> = Vec::new();
-        for entry in project_walk(root, &config.project) {
+        for entry in project_walk(root, &config.project, extra_excludes) {
             match entry {
                 Ok(entry) => {
                     if !entry.file_type().map_or(false, |ft| ft.is_file()) {
@@ -786,6 +961,23 @@ fn analyze_inner(root: &str, create_store: bool) -> AnalyzeOutcome {
                 ),
                 Ok(_) => {}
                 Err(e) => eprintln!("[diag] v1-leftover retirement failed: {e:?}"),
+            }
+        }
+        // Item 7: store retraction. The flush above is upsert-only, so
+        // concepts indexed before a path became excluded would keep
+        // answering queries forever. Retire every live concept whose file
+        // the CURRENT exclusion set skips — same matcher as the walk, so
+        // no pass disagrees about what "excluded" means. Skipped while
+        // workers panicked: a partial walk must never mass-retire.
+        if panicked_workers == 0 {
+            if let Some(ref store) = graph.store {
+                match retire_excluded_concepts(store, extra_excludes) {
+                    Ok(n) if n > 0 => eprintln!(
+                        "[coderadar] retired {n} concept(s) under newly-excluded paths"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("[diag] excluded-path retraction failed: {e:?}"),
+                }
             }
         }
         // Planner statistics for the rows just flushed (macrame 0.13+):
@@ -2388,8 +2580,13 @@ fn start_watcher(
 ) -> PyResult<()> {
     use crate::fs::watcher::{FileWatcher, WatcherConfig};
     let defaults = WatcherConfig::default();
+    // Item 7: the watcher filters with the same baseline + the user's own
+    // `[project] exclude`, so an excluded folder never triggers updates.
+    let mut exclude_patterns = defaults.exclude_patterns.clone();
+    exclude_patterns.extend(active_config().project.exclude.iter().cloned());
     let config = WatcherConfig {
         watch_paths: paths,
+        exclude_patterns,
         debounce_ms: debounce_ms.unwrap_or(defaults.debounce_ms),
         max_file_size_bytes: max_file_size_bytes.unwrap_or(defaults.max_file_size_bytes),
         ..defaults
@@ -2692,7 +2889,7 @@ mod tests {
         std::fs::write(dir.path().join("node_modules/p.js"), "module.exports = 1;\n").unwrap();
 
         let proj = ProjectConfig::default();
-        let seen: Vec<String> = project_walk(dir.path().to_str().unwrap(), &proj)
+        let seen: Vec<String> = project_walk(dir.path().to_str().unwrap(), &proj, &[])
             .filter_map(Result::ok)
             .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
             .map(|e| e.path().to_string_lossy().to_string())
@@ -2723,7 +2920,7 @@ mod tests {
             exclude: vec!["vendor/".to_string()],
             ..ProjectConfig::default()
         };
-        let seen: Vec<String> = project_walk(dir.path().to_str().unwrap(), &proj)
+        let seen: Vec<String> = project_walk(dir.path().to_str().unwrap(), &proj, &[])
             .filter_map(Result::ok)
             .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
             .map(|e| e.path().to_string_lossy().to_string())
@@ -2731,6 +2928,52 @@ mod tests {
 
         assert!(seen.iter().any(|p| p.ends_with("a.py")));
         assert!(!seen.iter().any(|p| p.contains("v.py")), "{:?}", seen);
+    }
+
+    #[test]
+    fn oneshot_extra_excludes_narrow_the_walk_item7() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::create_dir_all(dir.path().join("scratch")).unwrap();
+        std::fs::write(dir.path().join("src/a.py"), "def f():\n    pass\n").unwrap();
+        std::fs::write(dir.path().join("scratch/b.py"), "x = 1\n").unwrap();
+
+        let proj = ProjectConfig::default();
+        let extra = vec!["scratch/".to_string()];
+        let seen: Vec<String> = project_walk(dir.path().to_str().unwrap(), &proj, &extra)
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+            .map(|e| e.path().to_string_lossy().to_string())
+            .collect();
+        assert!(seen.iter().any(|p| p.ends_with("a.py")), "{:?}", seen);
+        assert!(!seen.iter().any(|p| p.contains("b.py")), "{:?}", seen);
+    }
+
+    #[test]
+    fn path_excluded_matches_files_and_dir_ancestors_item7() {
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(".");
+        builder.add_line(None, ".venv/").unwrap();
+        builder.add_line(None, "*.lock").unwrap();
+        builder.add_line(None, "src/").unwrap();
+        let matcher = builder.build().unwrap();
+        // Files inherit their directory's exclusion.
+        assert!(path_excluded(&matcher, std::path::Path::new(".venv/lib/x.py"), false));
+        assert!(path_excluded(&matcher, std::path::Path::new(".venv"), true));
+        // …but a FILE that merely shares the name is not a directory.
+        assert!(!path_excluded(&matcher, std::path::Path::new(".venv"), false));
+        assert!(path_excluded(&matcher, std::path::Path::new("poetry.lock"), false));
+        // Bare `name/` floats to any depth — the same semantics the walk's
+        // Override matcher has (deliberately NOT the F2 allow-side
+        // anchoring: allows fail closed, excludes fail toward exclusion).
+        assert!(path_excluded(&matcher, std::path::Path::new("src/a.py"), false));
+        assert!(path_excluded(&matcher, std::path::Path::new("lib/src/a.py"), false));
+        assert!(!path_excluded(&matcher, std::path::Path::new("py_agent/b.py"), false));
+        // Interior-slash patterns anchor to the root.
+        let mut b2 = ignore::gitignore::GitignoreBuilder::new(".");
+        b2.add_line(None, "tests/cr_edit_tests/").unwrap();
+        let m2 = b2.build().unwrap();
+        assert!(path_excluded(&m2, std::path::Path::new("tests/cr_edit_tests/d.py"), false));
+        assert!(!path_excluded(&m2, std::path::Path::new("lib/tests/cr_edit_tests/d.py"), false));
     }
 
     // ── P2-1: multi-token search scoring ─────────────────────────────────

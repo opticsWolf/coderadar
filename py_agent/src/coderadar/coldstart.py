@@ -48,6 +48,8 @@ INDEXABLE_EXTS = frozenset({
 })
 STALENESS_SKIP_DIRS = frozenset(
     {"__pycache__", "node_modules", "target", "dist", "build"})
+#: Deprecated (item 7): the staleness walk now prunes with the shared
+#: `coderadar.excludes` matcher. Kept for backward-compatible import.
 
 
 def store_db_path(project_root: Path) -> Optional[Path]:
@@ -80,10 +82,13 @@ def store_is_fresh(project_root: Path, db_path: Path,
         db_mtime = db_path.stat().st_mtime
     except OSError:
         return False
+    # Item 7: prune with the shared matcher (baseline + user excludes),
+    # not a private skip list.
+    from .excludes import is_excluded as _is_excluded
     for dirpath, dirnames, filenames in os.walk(project_root):
+        here = Path(dirpath)
         dirnames[:] = [
-            d for d in dirnames
-            if not d.startswith(".") and d not in STALENESS_SKIP_DIRS
+            d for d in dirnames if not _is_excluded(here / d, project_root)
         ]
         for name in filenames:
             ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
@@ -109,10 +114,11 @@ def stale_source_files(project_root: Path, db_path: Path,
     except OSError:
         return []
     stale: list[Path] = []
+    from .excludes import is_excluded as _is_excluded
     for dirpath, dirnames, filenames in os.walk(project_root):
+        here = Path(dirpath)
         dirnames[:] = [
-            d for d in dirnames
-            if not d.startswith(".") and d not in STALENESS_SKIP_DIRS
+            d for d in dirnames if not _is_excluded(here / d, project_root)
         ]
         for name in filenames:
             ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""

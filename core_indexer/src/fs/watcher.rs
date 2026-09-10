@@ -2,7 +2,6 @@
 // Uses notify + notify-debouncer-mini for cross-platform file events.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
@@ -46,14 +45,18 @@ impl Default for WatcherConfig {
     fn default() -> Self {
         Self {
             watch_paths: vec!["src/".into(), "tests/".into()],
-            exclude_patterns: vec![
-                "__pycache__".into(),
-                ".git".into(),
-                "node_modules".into(),
-                ".generated".into(),
-                ".pb.go".into(),
-                ".g.dart".into(),
-            ],
+            // Item 7: the SAME baseline the walk uses — one pattern
+            // source, not a private skip list — plus the watcher's own
+            // generated-file markers (events are cheaper than indexes,
+            // so generated code stays filtered here even though the
+            // walk indexes it). User `[project] exclude` patterns are
+            // merged in by `start_watcher` (lib.rs), which can see the
+            // active config.
+            exclude_patterns: crate::DEFAULT_EXCLUDES
+                .iter()
+                .map(|s| s.to_string())
+                .chain([".generated/".into(), "*.pb.go".into(), "*.g.dart".into()])
+                .collect(),
             debounce_ms: 100,
             max_file_size_bytes: 1_048_576,
         }
@@ -85,7 +88,9 @@ fn classify(path: &std::path::Path, kind: DebouncedEventKind) -> FileChangeKind 
 /// Bridge: converts debouncer events into channel messages.
 struct EventBridge {
     tx: Sender<BatchEvent>,
-    exclude_patterns: Arc<Vec<String>>,
+    /// Compiled from `WatcherConfig::exclude_patterns` with the same
+    /// gitignore grammar the walk uses (item 7) — no substring matching.
+    excludes: Option<ignore::gitignore::Gitignore>,
     max_file_size_bytes: u64,
     write_guard: std::sync::Arc<crate::mutation::write_guard::WriteGuard>,
     batch_counter: u64,
@@ -97,14 +102,21 @@ impl DebounceEventHandler for EventBridge {
             let changes: Vec<FileChange> = events
                 .iter()
                 .filter_map(|e| {
-                    let path = e.path.to_string_lossy().to_string();
-
-                    // Skip excluded paths
-                    for pattern in self.exclude_patterns.iter() {
-                        if path.contains(pattern.as_str()) {
+                    // Item 7: excluded paths never become events. The event
+                    // path is relativized against the CWD when possible so
+                    // root-anchored patterns (`src/`) behave as they do in
+                    // the walk; absolute paths outside the CWD only match
+                    // unanchored (`name/`) patterns.
+                    if let Some(ref matcher) = self.excludes {
+                        let rel: std::path::PathBuf = std::env::current_dir()
+                            .ok()
+                            .and_then(|cwd| e.path.strip_prefix(&cwd).ok().map(|p| p.to_path_buf()))
+                            .unwrap_or_else(|| e.path.clone());
+                        if crate::path_excluded(matcher, &rel, e.path.is_dir()) {
                             return None;
                         }
                     }
+                    let path = e.path.to_string_lossy().to_string();
 
                     // Skip non-source files
                     let ext = std::path::Path::new(&path)
@@ -167,12 +179,19 @@ impl FileWatcher {
     /// Start watching paths. Returns immediately; use `next_batch()` for events.
     pub fn start(config: WatcherConfig) -> Result<Self, WatcherError> {
         let (tx, rx) = crossbeam_channel::unbounded();
-        let exclude_patterns = Arc::new(config.exclude_patterns.clone());
+        // Item 7: compile the exclusion patterns once with walk grammar.
+        let excludes = {
+            let mut builder = ignore::gitignore::GitignoreBuilder::new(".");
+            for pat in &config.exclude_patterns {
+                let _ = builder.add_line(None, pat);
+            }
+            builder.build().ok()
+        };
         let debounce_ms = config.debounce_ms;
 
         let bridge = EventBridge {
             tx,
-            exclude_patterns,
+            excludes,
             max_file_size_bytes: config.max_file_size_bytes,
             write_guard: crate::mutation::shared_write_guard(),
             batch_counter: 0,
