@@ -130,6 +130,34 @@ class TestBackgroundIndex:
         time.sleep(0.05)
         assert index.elapsed == first
 
+    def test_wait_emits_heartbeat_on_stderr_while_blocked(self, monkeypatch, capsys):
+        import coderadar.mcp.startup as startup
+
+        monkeypatch.setattr(startup, "HEARTBEAT_SECONDS", 0.05)
+        release = threading.Event()
+        index = BackgroundIndex(analyze=lambda root: release.wait(10))
+        try:
+            outcome = index.wait(timeout=0.4)
+            assert outcome.status is IndexStatus.INDEXING
+            err = capsys.readouterr().err
+            assert "[coderadar] indexing" in err
+            assert "elapsed" in err
+        finally:
+            release.set()
+
+    def test_short_budget_stays_silent(self, monkeypatch, capsys):
+        import coderadar.mcp.startup as startup
+
+        monkeypatch.setattr(startup, "HEARTBEAT_SECONDS", 60)
+        release = threading.Event()
+        index = BackgroundIndex(analyze=lambda root: release.wait(10))
+        try:
+            outcome = index.wait(timeout=0.1)
+            assert outcome.status is IndexStatus.INDEXING
+            assert capsys.readouterr().err == ""
+        finally:
+            release.set()
+
 
 class TestEnsureReady:
     def test_no_handle_means_get_out_of_the_way(self):

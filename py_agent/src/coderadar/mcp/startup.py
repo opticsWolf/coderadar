@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import itertools
 import os
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -31,6 +32,13 @@ from typing import Any, Callable, Optional
 #: progress instead. Long enough that a small project simply works, short
 #: enough that the agent is never left wondering.
 DEFAULT_WAIT_SECONDS = float(os.environ.get("CODERADAR_INDEX_WAIT", "25"))
+
+#: Seconds between "still indexing" heartbeats on stderr while a handler
+#: waits. The wait used to be completely silent (F9): the client sees
+#: nothing until the budget expires either way, but an operator watching
+#: server logs — and any client forwarding stderr — can now tell warming
+#: from hung. Read at wait time so tests can shrink it.
+HEARTBEAT_SECONDS = float(os.environ.get("CODERADAR_INDEX_HEARTBEAT", "5"))
 
 #: Spawn order for background builds (see BackgroundIndex._run). A newer
 #: spawn supersedes older queued builds: building a stale tree only to let
@@ -188,12 +196,32 @@ class BackgroundIndex:
         return end - self._started_at
 
     def wait(self, timeout: Optional[float] = None) -> IndexOutcome:
-        """Start if needed, wait up to `timeout`, and report where we got to."""
+        """Start if needed, wait up to `timeout`, and report where we got to.
+
+        Long waits are sliced so each `HEARTBEAT_SECONDS` of blocking emits
+        one stderr line (plan item 10 — the wait was silent, F9). No
+        per-file counts: the walker reports none cheaply, and elapsed time
+        is the honest progress signal actually available.
+        """
         self.start()
         budget = DEFAULT_WAIT_SECONDS if timeout is None else timeout
+        root = self._root
         with self._lock:
             done = self._done
-        done.wait(timeout=budget)
+        heartbeat = HEARTBEAT_SECONDS
+        deadline = time.monotonic() + budget
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if done.wait(timeout=min(remaining, heartbeat)):
+                break
+            if self.elapsed >= heartbeat:
+                print(
+                    f"[coderadar] indexing {root}... {self.elapsed:.0f}s elapsed",
+                    file=sys.stderr,
+                    flush=True,
+                )
         with self._lock:
             status, error = self._status, self._error
         return IndexOutcome(status=status, elapsed=self.elapsed, error=error)
