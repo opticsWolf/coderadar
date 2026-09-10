@@ -230,10 +230,10 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
     for (slot, i) in pool.iter().enumerate() {
         lsh.insert(slot as u32, fps[*i].sig.clone());
     }
-    let slot_index = |slot: u32| pool[slot as usize];
 
     let mut uf: Vec<usize> = (0..pool.len()).collect();
     fn find(uf: &mut Vec<usize>, x: usize) -> usize {
+        debug_assert!(x < uf.len(), "find: slot {} out of bounds (len {})", x, uf.len());
         let mut x = x;
         while uf[x] != x {
             uf[x] = uf[uf[x]];
@@ -243,8 +243,12 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
     }
     for (a, b) in lsh.candidate_pairs() {
         // Union-find operates in SLOT space; fps indexes come after mapping.
-        let ia = slot_index(a);
-        let ib = slot_index(b);
+        // F1 fix: bounds-checked mapping — a stale slot skips the pair
+        // instead of panicking the worker thread and wedging the session.
+        let (Some(&ia), Some(&ib)) = (pool.get(a as usize), pool.get(b as usize))
+        else {
+            continue;
+        };
         let sim = jaccard(&fps[ia].shingles, &fps[ib].shingles);
         if sim >= options.min_similarity {
             // Stage 6.1 verification: strong shingle candidates must also
@@ -264,6 +268,11 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
                 true
             };
             if verified {
+                // Slots come from candidate_pairs (always < pool.len()),
+                // but guard anyway: a panic here wedges the MCP session.
+                if (a as usize) >= uf.len() || (b as usize) >= uf.len() {
+                    continue;
+                }
                 let ra = find(&mut uf, a as usize);
                 let rb = find(&mut uf, b as usize);
                 if ra != rb {
@@ -273,8 +282,12 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
         }
     }
     let mut clusters: HashMap<usize, Vec<usize>> = HashMap::new();
-    for &i in &pool {
-        clusters.entry(find(&mut uf, i)).or_default().push(i);
+    // F1 fix: `uf` is indexed in SLOT space (0..pool.len()); `pool` holds
+    // FPS indexes, which can exceed uf.len() once Type-1/Type-2 layers
+    // filter the pool. The old `find(&mut uf, i)` used an fps index as a
+    // uf index — panic (index == len) plus silent mis-clustering.
+    for (slot, &i) in pool.iter().enumerate() {
+        clusters.entry(find(&mut uf, slot)).or_default().push(i);
     }
     for (_, members) in clusters {
         if members.len() < 2 {

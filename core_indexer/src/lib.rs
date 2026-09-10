@@ -1981,8 +1981,18 @@ fn find_clones(
     with_graph_snapshot(|snap| {
         let snap_owned: Arc<ProjectedGraph> = snap.clone();
         let options = crate::clones::CloneOptions { min_lines, min_similarity };
-        let groups =
-            py.allow_threads(move || crate::clones::detect_clones(&snap_owned, options));
+        // F1 defense-in-depth: a panic inside detection must become a tool
+        // error, never a dead Tokio worker / hung stdio session.
+        let groups = py.allow_threads(move || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                crate::clones::detect_clones(&snap_owned, options)
+            }))
+        });
+        let groups = groups.map_err(|_| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "clone detection panicked internally (please report with min_lines/min_similarity); no results — not a clean scan",
+            )
+        })?;
 
         let mut results = Vec::new();
         for g in groups.iter().take(max_groups) {
