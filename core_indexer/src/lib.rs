@@ -1939,6 +1939,26 @@ fn find_dead_code(
             if let Some(name) = entity_name_of(&f.entity_id, &snap) {
                 dict.set_item("entity_name", name)?;
             }
+            // F7: every finding carries its location — an id without a
+            // file cannot be acted on. Fall back to the id-embedded path
+            // when the function record itself is gone.
+            if let Some(func) = snap.functions.get(&f.entity_id) {
+                let file = snap
+                    .modules
+                    .get(&func.parent_module)
+                    .map(|m| m.path.to_string_lossy().to_string())
+                    .unwrap_or_else(|| {
+                        func.id.split("::").next().unwrap_or("").to_string()
+                    });
+                dict.set_item("file", file)?;
+                dict.set_item("line", func.line as u32)?;
+            } else {
+                dict.set_item(
+                    "file",
+                    f.entity_id.split("::").next().unwrap_or(""),
+                )?;
+                dict.set_item("line", 0u32)?;
+            }
             results.push(dict.into());
         }
         Ok(results)

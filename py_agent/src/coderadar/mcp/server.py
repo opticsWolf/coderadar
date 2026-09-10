@@ -2082,9 +2082,12 @@ def _dead_code(
     ]
     for f in findings:
         name = f.get("entity_name", "?")
+        loc = f.get("file", "?")
+        line = f.get("line", 0)
+        loc_str = f" — `{loc}:{line}`" if line else (f" — `{loc}`" if loc != "?" else "")
         lines.append(
             f"- **{name}** (`{f['entity_id']}`) — {f['kind']}, "
-            f"{f['tier']} ({f['score']:.2f}), ~{f['removable_lines']} lines"
+            f"{f['tier']} ({f['score']:.2f}), ~{f['removable_lines']} lines{loc_str}"
         )
     return "\n".join(lines)
 

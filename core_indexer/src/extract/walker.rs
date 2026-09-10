@@ -694,7 +694,10 @@ pub fn extract_decorators(node: Node, source: &str) -> Vec<String> {
     fn collect(parent: Node, source: &str, out: &mut Vec<String>) {
         let mut cursor = parent.walk();
         for child in parent.children(&mut cursor) {
-            if child.kind() == "decorator" {
+            // `decorator` (Python) and `attribute_item` (Rust `#[...]`,
+            // e.g. `#[pyfunction]` — the FFI bridge dead-code analysis
+            // must see it).
+            if child.kind() == "decorator" || child.kind() == "attribute_item" {
                 if let Ok(text) = child.utf8_text(source.as_bytes()) {
                     out.push(text.trim().to_string());
                 }

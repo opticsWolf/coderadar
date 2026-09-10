@@ -26,6 +26,9 @@ pub const ENTRY_DECORATORS: &[&str] = &[
     "route", "websocket",
     // CLIs (Click/Typer/argparse)
     "click.command", "click.group", "typer.command", "app.command", "cli.command",
+    // Click subcommand decorators on a local group object (`@main.command()`,
+    // `@cli.group()`): the group variable is rarely named app/cli/click (F7).
+    "main.command", "main.group", ".command(", ".group(",
     // Spring / Java-ish annotations
     "RequestMapping", "GetMapping", "PostMapping", "PutMapping", "DeleteMapping",
     "EventListener", "Scheduled", "Async",
@@ -36,6 +39,12 @@ pub const ENTRY_DECORATORS: &[&str] = &[
 /// Decorators that mark a function as a TEST entry point: reachable, but only
 /// from test code, which classifies differently (`DeadKind::TestOnly`).
 pub const TEST_DECORATORS: &[&str] = &["pytest.fixture", "fixture", "given", "parametrize"];
+
+/// Cross-language bridge attributes (F7): invoked from outside the indexed
+/// call graph — Python via PyO3 — so no in-repo caller does NOT mean dead.
+/// `#[pyfunction]` annotates the function itself; `#[pymethods]` annotates
+/// the impl block (its methods are covered by the Rust-`pub` rule below).
+pub const BRIDGE_DECORATORS: &[&str] = &["pyfunction", "pymethods"];
 
 /// Conventional program-entry names per language family (free functions).
 const MAIN_NAMES: &[&str] = &["main", "__main__", "_start"];
@@ -89,6 +98,10 @@ pub struct EntryPoints {
 pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
     let mut production = HashSet::new();
     let mut test_only = HashSet::new();
+    // Module source cache for the Rust-`pub` rule (step 5): each .rs
+    // module reads once per detection run.
+    let mut rust_lines: std::collections::HashMap<EntityId, Vec<String>> =
+        std::collections::HashMap::new();
 
     // Module-level context computed once.
     let test_modules: HashSet<&EntityId> = graph
@@ -119,6 +132,12 @@ pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
 
         // 2. Framework decorators — production table wins, then test table.
         if decorator_matches(&f.decorators, ENTRY_DECORATORS) {
+            production.insert(id.clone());
+            continue;
+        }
+        // 2a. Cross-language bridge (F7): PyO3 entry points are called
+        // from Python, invisible to the Rust call graph.
+        if decorator_matches(&f.decorators, BRIDGE_DECORATORS) {
             production.insert(id.clone());
             continue;
         }
@@ -155,8 +174,78 @@ pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
             && is_public(&f.name)
         {
             production.insert(id.clone());
+            continue;
+        }
+
+        // 5. Rust `pub` surface (F7): `pub fn` is callable from outside the
+        // crate — including the PyO3 bridge — so absence of in-repo callers
+        // proves nothing. `pub(...)` (crate/super/self) stays crate-internal
+        // and falls through. Source-backed: visibility never entered the
+        // graph schema, so the def line is checked directly (cached per
+        // module). Until export analysis lands, `pub` suppresses the
+        // finding rather than merely capping it.
+        if is_rust_pub_export(graph, &mut rust_lines, &f.parent_module, f.line) {
+            production.insert(id.clone());
         }
     }
 
     EntryPoints { production, test_only }
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Whether a Rust def line exports unrestrictedly: a `pub` word NOT
+/// followed by `(` (which would make it `pub(crate)`/`pub(super)`/…).
+fn rust_line_is_pub_export(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i + 3 <= bytes.len() {
+        if bytes[i..i + 3] == *b"pub"
+            && (i == 0 || !is_ident_byte(bytes[i - 1]))
+            && (i + 3 >= bytes.len() || !is_ident_byte(bytes[i + 3]))
+        {
+            let mut j = i + 3;
+            while j < bytes.len() && (bytes[j] == b' ' || bytes[j] == b'\t') {
+                j += 1;
+            }
+            if bytes.get(j) != Some(&b'(') {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Source-backed unrestricted-`pub` check for one Rust function (F7).
+/// `cache` maps module id → file lines so each module reads once per run.
+fn is_rust_pub_export(
+    graph: &ProjectedGraph,
+    cache: &mut std::collections::HashMap<EntityId, Vec<String>>,
+    parent_module: &EntityId,
+    def_line: usize,
+) -> bool {
+    let m = match graph.modules.get(parent_module) {
+        Some(m) => m,
+        None => return false,
+    };
+    if !matches!(m.language, crate::types::Language::Rust) {
+        return false;
+    }
+    if !cache.contains_key(parent_module) {
+        let text = std::fs::read_to_string(&m.path).unwrap_or_default();
+        cache.insert(
+            parent_module.clone(),
+            text.lines().map(|l| l.to_string()).collect(),
+        );
+    }
+    let Some(lines) = cache.get(parent_module) else {
+        return false; // just inserted above; unreachable in practice
+    };
+    def_line
+        .checked_sub(1)
+        .and_then(|idx| lines.get(idx))
+        .is_some_and(|line| rust_line_is_pub_export(line))
 }

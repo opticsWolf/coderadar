@@ -321,6 +321,66 @@ pub(crate) mod tests {
         assert!(!eps.production.contains("app.py::d"));
     }
 
+    #[test]
+    fn pyfunction_bridge_and_rust_pub_are_production_roots_f7() {
+        use super::entry_points::detect_entry_points;
+        let mut g = fixture();
+        // #[pyfunction]-decorated free fn: bridge entry with no callers.
+        let mut bridged = func("lib.rs::find_things", "find_things", "lib.rs::module");
+        bridged.decorators = vec!["#[pyfunction]".into()];
+        g.functions
+            .insert("lib.rs::find_things".into(), std::sync::Arc::new(bridged));
+        // Rust module backed by a real temp file: pub exports root,
+        // pub(crate) and private fall through.
+        let dir = tempfile::tempdir().unwrap();
+        let rs = dir.path().join("bridge.rs");
+        std::fs::write(
+            &rs,
+            "#[pymethods]\nimpl Engine {\n    pub fn apply(&self) {}\n    pub(crate) fn internal(&self) {}\n    fn private(&self) {}\n}\n",
+        )
+        .unwrap();
+        let mut m = mk_module("bridge.rs::module");
+        m.language = crate::types::Language::Rust;
+        m.path = rs;
+        g.modules.insert("bridge.rs::module".into(), std::sync::Arc::new(m));
+        for (id, name, line) in [
+            ("bridge.rs::Engine.apply", "apply", 3),
+            ("bridge.rs::Engine.internal", "internal", 4),
+            ("bridge.rs::Engine.private", "private", 5),
+        ] {
+            let mut f = func(id, name, "bridge.rs::module");
+            f.line = line;
+            f.exit_line = line;
+            f.parent_class = Some("bridge.rs::Engine".into());
+            g.functions.insert(id.into(), std::sync::Arc::new(f));
+        }
+        let eps = detect_entry_points(&g);
+        assert!(eps.production.contains("lib.rs::find_things"));
+        assert!(eps.production.contains("bridge.rs::Engine.apply"));
+        assert!(!eps.production.contains("bridge.rs::Engine.internal"));
+        assert!(!eps.production.contains("bridge.rs::Engine.private"));
+        // …and the dead detector no longer reports the bridge surface.
+        let out = detect_dead(&g, DeadCodeOptions::default());
+        assert!(!out.iter().any(|f| f.entity_id == "lib.rs::find_things"));
+        assert!(!out.iter().any(|f| f.entity_id == "bridge.rs::Engine.apply"));
+    }
+
+    #[test]
+    fn click_subcommand_decorators_are_production_roots() {
+        use super::entry_points::detect_entry_points;
+        let mut g = fixture();
+        let mut cmd = func("cli.py::serve", "serve", "cli.py::module");
+        cmd.decorators = vec!["main.command()".into()];
+        g.functions.insert("cli.py::serve".into(), std::sync::Arc::new(cmd));
+        g.modules
+            .insert("cli.py::module".into(), std::sync::Arc::new(mk_module("cli.py::module")));
+        // Imported module: step-4 (public API of never-imported modules)
+        // cannot root it — only the decorator rule can.
+        g.importers.entry("cli.py::module".into()).or_default().insert("y".into());
+        let eps = detect_entry_points(&g);
+        assert!(eps.production.contains("cli.py::serve"));
+    }
+
     fn mk_module(id: &str) -> crate::types::Module {
         crate::types::Module {
             id: id.into(),
