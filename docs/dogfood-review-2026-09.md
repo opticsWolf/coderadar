@@ -397,39 +397,73 @@ message ("content changed since planning (expected deadbeef, found c87e420f)")
    rebuild the store from scratch instead of reusing the ledger; add
    `coderadar store repair` that reports counts and offers deletion. The
    error message must stop recommending a path that doesn't work.
-7. **Dead-code cross-language awareness**: treat PyO3-exposed functions
+7. **First-class path / folder / subfolder exclusion** (synthesizes F5, the
+   §4 fixture-routes noise, and F6): today `exclude` in `[project]` is
+   honored by the Rust walker only — the star-export pass, framework
+   extraction, the watcher, and the staleness check each keep private skip
+   rules, so a folder can be excluded from one pass and indexed by another
+   (this review: 795 framework routes from `tests/fixtures/**`; 8,638
+   `.venv` files re-parsed by star exports). Make exclusion one shared
+   matcher, one config surface, enforced by every pass:
+   - **Matcher semantics** — gitignore-syntax globs *anchored* per the F2
+     lesson: leading-directory patterns (`src/`) match root-relative
+     prefixes only; `name/` excludes that folder at any depth; `**/name/**`
+     recurses; `/*.<ext>` matches by extension. One shared
+     `fn path_excluded(rel) -> bool` used by walker, star exports,
+     framework extraction, watcher events, and staleness — not five
+     private skip lists.
+   - **Config** — `[project] exclude` stays the source of truth;
+     `[project] roots` interplay documented (roots narrow the walk, exclude
+     subtracts from what roots allowed).
+   - **CLI** — `coderadar exclude list|add <pattern>|remove <pattern>`
+     edits `.coderadar.toml`; `--exclude <pattern>` one-shot flag on
+     `analyze`/`rebuild` for ad-hoc narrowing without touching config.
+   - **Store retraction** — when a path becomes excluded, the next analyze
+     retires its concepts (same retire mechanism the v1 repair in item 6
+     needs); until retracted, excluded-but-indexed entities keep answering
+     queries with a staleness-style banner, never silently.
+   - **Watch** — event filter shares the matcher so edits inside excluded
+     folders never trigger updates.
+   - **Defaults shipped and visible** — `.venv/`, `node_modules/`,
+     `target/`, `dist/`, `build/`, `__pycache__/`, `.git/`, `.coderadar/`,
+     `.pytest_cache/` as built-in baseline on top of user config, and
+     `coderadar stats` prints the effective exclude list instead of
+     leaving the skips implicit.
+   - Acceptance: add `tests/cr_edit_tests/` via `coderadar exclude add`,
+     re-analyze — its entities vanish from search/query/stats on the next
+     cold load; the star-export pass and framework extraction never touch
+     an excluded folder (verify with the cProfile method from F5).
+8. **Dead-code cross-language awareness**: treat PyO3-exposed functions
    (everything reachable from the `#[pyfunction]`/`#[pymethods]` bridge and
    the `__init__.py` facade) as entry points; cap confidence at Medium for
    any entity whose reachability depends on cross-language calls; suppress
    dead-code for Rust `pub fn` outside `#[allow(dead_code)]` context until
    export analysis lands. Add file path + `codegraph_node` id to every
    smell finding; group by file; cap output or add top_k.
-8. **Query/callers/callees output completeness**: include `id` and
+9. **Query/callers/callees output completeness**: include `id` and
    `file_path` in `_query_graph`, CLI `callers`/`callees`, and `traverse`
    rows (the data is in the Rust dicts already). Acceptance: zero `?` fields.
-9. **MCP first-call UX**: while the background index runs, tool calls should
+10. **MCP first-call UX**: while the background index runs, tool calls should
    return immediately with a "warming up, N files remaining, retry" message
    (matching the stale-banner pattern), or block with progress lines on
    stderr. Never silent.
-10. **Mutation error translation**: map `StaleIndex`/`RejectedPolicy`/etc.
+11. **Mutation error translation**: map `StaleIndex`/`RejectedPolicy`/etc.
     to the same friendly prose the stale-body path already has.
 
 ### P2 — hygiene (target: next release)
 
-11. **Single version source**: `__version__` reads `importlib.metadata` with
+12. **Single version source**: `__version__` reads `importlib.metadata` with
     a pyproject-derived fallback; CI asserts the three agree. Add a build
     freshness check (fail tests if `lib.rs` newer than `_core.pyd`).
-12. **CLI polish**: bare-name fallback via `search_entities` with
+13. **CLI polish**: bare-name fallback via `search_entities` with
     disambiguation; `traverse` limited columns + `--format json`;
     UTF-8 stdout reconfigure in `cli.py` entry; `git-diff` docstring fix;
     shell `status` implemented + cold-load reuse.
-13. **Schema enums** for `strictness` and `kind`; document the entity-ID
+14. **Schema enums** for `strictness` and `kind`; document the entity-ID
     grammar (`.<relative-path>::<Qualified.name>`) in the MCP tool
     descriptions and README (BUGS_QUIRKS #5 closure).
-14. **Path-form normalization**: one canonical form (project-relative, `.\`
+15. **Path-form normalization**: one canonical form (project-relative, `.\`
     prefix on Windows) across IDs, files, and diff previews.
-15. **Exclude `tests/fixtures/**` from framework-extraction stats** (or
-    report them separately).
 16. **Document the backup/undo story**: `.coderadar-bak` files, `git checkout`
     caveat for untracked files, `post_verify`/rollback behavior.
 
