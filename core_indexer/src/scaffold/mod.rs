@@ -59,15 +59,15 @@ impl Default for ScaffoldConfig {
     fn default() -> Self {
         Self {
             comment_patterns: vec![
-                r"(?i)\bphase\s*\d+".into(),
-                r"(?i)\bstep\s*\d+\b".into(),
+                // F15: `phase N` / `step N` / `in production` / `for now`
+                // matched routine engineering comments (~97% noise on the
+                // dogfood repo) and trained users to ignore the scan.
+                // Kept: actionable debt markers only.
                 r"\bTODO\b".into(),
                 r"\bFIXME\b".into(),
                 r"\bHACK\b".into(),
                 r"\bWIP\b".into(),
                 r"(?i)implement (this|later|me)".into(),
-                r"(?i)in (a )?(real|production)".into(),
-                r"(?i)for now[,.]".into(),
             ],
             include_secrets: false,
             max_file_bytes: 1_000_000,
@@ -195,7 +195,23 @@ pub fn scan_path(root: &Path, cfg: &ScaffoldConfig) -> Vec<ScaffoldFinding> {
 
 /// Placeholder bodies over the resolved projection: a map over functions whose
 /// body_span trims to a stub. Reads each file once per module.
-pub fn scan_placeholder_bodies(graph: &ProjectedGraph) -> Vec<ScaffoldFinding> {
+///
+/// Coverage counters: the old signature silently skipped every function it
+/// could not resolve (F13 — zero findings on fresh graphs with no signal
+/// at all). Callers must surface `skipped_*` so a degraded scan reads as
+/// degraded, never as clean.
+#[derive(Clone, Debug, Default)]
+pub struct PlaceholderStats {
+    pub functions: usize,
+    pub stubs: usize,
+    pub skipped_no_module: usize,
+    pub skipped_unreadable: usize,
+    pub skipped_span: usize,
+    pub resolved_via_id_fallback: usize,
+}
+
+pub fn scan_placeholder_bodies(graph: &ProjectedGraph) -> (Vec<ScaffoldFinding>, PlaceholderStats) {
+    let mut stats = PlaceholderStats::default();
     let mut sources: HashMap<&EntityId, String> = HashMap::new();
     let mut paths: HashMap<&EntityId, PathBuf> = HashMap::new();
     for (mid, m) in &graph.modules {
@@ -206,20 +222,64 @@ pub fn scan_placeholder_bodies(graph: &ProjectedGraph) -> Vec<ScaffoldFinding> {
     }
 
     let mut out = Vec::new();
+    // Null-prototype fallback: module ids are `{file_path}::module`, so a
+    // function whose parent_module misses the modules map (id-form skew
+    // between writers, F14) can still resolve its file from its own id.
+    // Counts separately so the underlying inconsistency stays visible.
+    let mut fallback_sources: HashMap<EntityId, String> = HashMap::new();
+    let mut fallback_misses: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
     for f in graph.functions.values() {
-        let Some(src) = sources.get(&f.parent_module) else { continue };
-        let Some(body) = src.get(f.body_span.start..f.body_span.end) else { continue };
+        stats.functions += 1;
+        // Resolve (source text, display path) via the modules map first,
+        // then via the id-derived path.
+        let resolved: Option<(&str, PathBuf)> =
+            if let Some(src) = sources.get(&f.parent_module) {
+                Some((src, paths.get(&f.parent_module).cloned().unwrap_or_default()))
+            } else if fallback_misses.contains(&f.parent_module) {
+                stats.skipped_unreadable += 1;
+                None
+            } else if let Some(src) = fallback_sources.get(&f.parent_module) {
+                Some((src, PathBuf::from(
+                    f.parent_module.strip_suffix("::module").unwrap_or(&f.parent_module),
+                )))
+            } else {
+                let rel = f.parent_module.strip_suffix("::module").unwrap_or("");
+                if rel.is_empty() {
+                    stats.skipped_no_module += 1;
+                    None
+                } else {
+                    match std::fs::read_to_string(rel) {
+                        Ok(text) => {
+                            stats.resolved_via_id_fallback += 1;
+                            fallback_sources.insert(f.parent_module.clone(), text);
+                            let s = fallback_sources.get(&f.parent_module).map(|s| s as &str).unwrap_or("");
+                            Some((s, PathBuf::from(rel)))
+                        }
+                        Err(_) => {
+                            stats.skipped_unreadable += 1;
+                            fallback_misses.insert(f.parent_module.clone());
+                            None
+                        }
+                    }
+                }
+            };
+        let Some((src, path)) = resolved else { continue };
+        let Some(body) = src.get(f.body_span.start..f.body_span.end.min(src.len())) else {
+            stats.skipped_span += 1;
+            continue;
+        };
         if is_placeholder_body(body) {
+            stats.stubs += 1;
             out.push(ScaffoldFinding {
                 kind: ScaffoldKind::PlaceholderBody,
-                file: paths.get(&f.parent_module).cloned().unwrap_or_default(),
+                file: path,
                 line: f.line,
                 label: format!("{} is a stub", f.name),
                 snippet: body.trim().chars().take(60).collect(),
             });
         }
     }
-    out
+    (out, stats)
 }
 
 #[cfg(test)]
@@ -300,7 +360,9 @@ mod tests {
             .iter()
             .filter(|f| f.kind == ScaffoldKind::CommentMarker)
             .collect();
-        assert_eq!(app_markers.len(), 2, "Phase 1 + TODO on separate lines");
+        // F15: `Phase 1` is routine-engineering noise, no longer a marker —
+        // only the TODO remains.
+        assert_eq!(app_markers.len(), 1, "TODO only; Phase N is not a marker");
         assert!(findings.iter().any(|f| f.kind == ScaffoldKind::TempFile));
         assert!(
             !findings.iter().any(|f| f.file.to_string_lossy().contains("ignored_dir")),

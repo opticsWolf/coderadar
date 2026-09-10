@@ -2057,23 +2057,80 @@ fn find_scaffolding(
 
     // Placeholder bodies ride the resolved projection when it is loaded;
     // a cold/no graph degrades to file-walk signals only (honest subset).
-    if let Ok(placeholders) = with_graph_snapshot(|snap| -> PyResult<Vec<crate::scaffold::ScaffoldFinding>> {
-        let snap_owned: Arc<ProjectedGraph> = snap.clone();
-        let placeholders =
-            py.allow_threads(move || crate::scaffold::scan_placeholder_bodies(&snap_owned));
-        Ok(placeholders)
-    }) {
+    // The stats travel as a trailing `scan-stats` dict so agents can tell
+    // a clean scan from a degraded one (F13: skips were silent).
+    let mut stats = crate::scaffold::PlaceholderStats::default();
+    let mut placeholder_degraded = false;
+    if let Ok((placeholders, ph_stats)) =
+        with_graph_snapshot(|snap| -> PyResult<(
+            Vec<crate::scaffold::ScaffoldFinding>,
+            crate::scaffold::PlaceholderStats,
+        )> {
+            let snap_owned: Arc<ProjectedGraph> = snap.clone();
+            let (placeholders, ph_stats) =
+                py.allow_threads(move || crate::scaffold::scan_placeholder_bodies(&snap_owned));
+            Ok((placeholders, ph_stats))
+        })
+    {
+        stats = ph_stats;
         findings.extend(placeholders);
+    } else {
+        placeholder_degraded = true;
+    }
+    if stats.skipped_no_module + stats.skipped_unreadable + stats.skipped_span > 0 {
+        eprintln!(
+            "[coderadar] placeholder scan: {} functions, {} stubs, {} skipped (no-module: {}, unreadable: {}, span: {}; {} via id fallback)",
+            stats.functions, stats.stubs,
+            stats.skipped_no_module + stats.skipped_unreadable + stats.skipped_span,
+            stats.skipped_no_module, stats.skipped_unreadable, stats.skipped_span,
+            stats.resolved_via_id_fallback
+        );
     }
 
+    // F15: cap PER KIND, not over the raw list. File-walk signals (comment
+    // markers) used to crowd secrets and stubs past a single global cap so
+    // they vanished silently; each kind now keeps up to max_findings.
     let mut results = Vec::new();
-    for f in findings.into_iter().take(max_findings) {
+    for kind_order in ["placeholder-body", "secret", "comment-marker", "temp-file"] {
+        for f in findings
+            .iter()
+            .filter(|f| f.kind.as_str() == kind_order)
+            .take(max_findings)
+        {
+            let dict = PyDict::new(py);
+            dict.set_item("kind", f.kind.as_str())?;
+            dict.set_item("file", f.file.to_string_lossy().as_ref())?;
+            dict.set_item("line", f.line as u32)?;
+            dict.set_item("label", &f.label)?;
+            dict.set_item("snippet", &f.snippet)?;
+            results.push(dict.into());
+        }
+    }
+    // Trailing stats row for the renderer footer (F13 visibility).
+    {
         let dict = PyDict::new(py);
-        dict.set_item("kind", f.kind.as_str())?;
-        dict.set_item("file", f.file.to_string_lossy().as_ref())?;
-        dict.set_item("line", f.line as u32)?;
-        dict.set_item("label", &f.label)?;
-        dict.set_item("snippet", &f.snippet)?;
+        dict.set_item("kind", "scan-stats")?;
+        dict.set_item("file", "")?;
+        dict.set_item("line", 0u32)?;
+        dict.set_item(
+            "label",
+            format!(
+                "placeholder scan: {} functions, {} stubs, {} skipped (no-module {}, unreadable {}, span {}; {} via id fallback){}",
+                stats.functions,
+                stats.stubs,
+                stats.skipped_no_module + stats.skipped_unreadable + stats.skipped_span,
+                stats.skipped_no_module,
+                stats.skipped_unreadable,
+                stats.skipped_span,
+                stats.resolved_via_id_fallback,
+                if placeholder_degraded {
+                    "; placeholder scan DEGRADED (no graph — file-walk signals only)"
+                } else {
+                    ""
+                }
+            ),
+        )?;
+        dict.set_item("snippet", "")?;
         results.push(dict.into());
     }
     Ok(results)

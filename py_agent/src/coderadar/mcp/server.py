@@ -615,11 +615,13 @@ def create_server(graph: Any) -> MCPServer:
 
     @mcp.tool(
         description=(
-            "Detect AI-coding scaffolding debt: phase/step comment markers, "
-            "TODO/FIXME/HACK/WIP density, placeholder bodies (pass/todo!/NotImplementedError), "
+            "Detect AI-coding scaffolding debt: TODO/FIXME/HACK/WIP/implement-me "
+            "comment markers, placeholder bodies (pass/todo!/NotImplementedError), "
             "temp-file naming (temp_*/backup_*/old_*), and — opt-in — hardcoded secrets. "
             "Secret findings are always redacted to their first 8 characters plus '***'; "
-            "full matches never leave this process. Gitignored files are skipped."
+            "full matches never leave this process. Gitignored files are skipped. "
+            "max_findings applies PER finding kind so one noisy kind cannot crowd out "
+            "the others; the result ends with a scan-coverage footer."
         ),
         annotations={
             "read_only_hint": True,
@@ -2021,7 +2023,10 @@ def _find_scaffolding(include_secrets: bool = False, max_findings: int = 100) ->
         by_kind.setdefault(f["kind"], []).append(f)
 
     order = ["placeholder-body", "secret", "comment-marker", "temp-file"]
-    lines = [f"## Scaffolding Signals — {len(findings)} finding(s)", ""]
+    # F13: the trailing scan-stats row is a footer, not a finding.
+    stats_rows = by_kind.pop("scan-stats", [])
+    n_findings = sum(len(by_kind.get(k, [])) for k in order)
+    lines = [f"## Scaffolding Signals — {n_findings} finding(s)", ""]
     for kind in order:
         items = by_kind.get(kind, [])
         if not items:
@@ -2033,6 +2038,8 @@ def _find_scaffolding(include_secrets: bool = False, max_findings: int = 100) ->
         if len(items) > 25:
             lines.append(f"- … and {len(items) - 25} more")
         lines.append("")
+    for s in stats_rows:
+        lines.append(f"_{s['label']}_")
     return "\n".join(lines)
 
 
