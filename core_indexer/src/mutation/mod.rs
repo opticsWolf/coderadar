@@ -540,6 +540,84 @@ impl MutationEngine {
         out_lines.join("\n")
     }
 
+    /// Brace-language body splice (F3 fix).
+    ///
+    /// For `{ … }`-delimited languages tree-sitter's `body` node spans the
+    /// braces themselves, so the indent-language splice overwrote them with
+    /// bare body text — every brace-language apply died on syntax error and
+    /// rolled back. Reconstruct the full block instead: strip the incoming
+    /// base indent, re-indent to the original body column (or the closing
+    /// column plus one unit when the old body is empty), and re-emit the
+    /// braces around it. Returns `None` when the span isn't brace-delimited
+    /// after all, so the caller falls back to the indent-language path.
+    fn brace_splice_body(
+        &self,
+        new_body: &str,
+        file_source: &str,
+        body_span: &ByteSpan,
+    ) -> Option<String> {
+        let src = file_source.get(body_span.start..body_span.end.min(file_source.len()))?;
+        let open = src.find('{')?;
+        let close = src.rfind('}')?;
+        if close <= open {
+            return None;
+        }
+        // The braces must delimit the span (a block body), not merely occur
+        // inside it.
+        if !src[..open].trim().is_empty() || !src[close + 1..].trim().is_empty() {
+            return None;
+        }
+        let inner = &src[open + 1..close];
+
+        // Closing column = indent of the line holding `}` (in span coords).
+        let close_line_start = src[..close].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let close_prefix = &src[close_line_start..close];
+        let closing_indent = if close_prefix.chars().all(|c| c == ' ' || c == '\t') {
+            close_prefix
+        } else {
+            ""
+        };
+        // Body column = indent of the first content line; when the old body
+        // is empty (`{}`), one unit deeper than the closing column.
+        let body_indent = inner
+            .lines()
+            .map(|l| l.strip_suffix('\r').unwrap_or(l))
+            .find(|l| !l.trim().is_empty())
+            .map(|l| l[..l.len() - l.trim_start().len()].to_string())
+            .unwrap_or_else(|| {
+                let style = detect_indent_style(file_source);
+                if style.unit == '\t' {
+                    format!("{}\t", closing_indent)
+                } else {
+                    format!("{}{}", closing_indent, " ".repeat(style.width))
+                }
+            });
+
+        // Strip the incoming base indent (same rule as the indent path).
+        let incoming_base = new_body
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.chars().take_while(|c| *c == ' ' || *c == '\t').count())
+            .min()
+            .unwrap_or(0);
+
+        let mut out = String::from("{\n");
+        for raw in new_body.lines() {
+            let raw = raw.strip_suffix('\r').unwrap_or(raw);
+            if raw.trim().is_empty() {
+                out.push('\n');
+                continue;
+            }
+            let stripped: String = raw.chars().skip(incoming_base).collect();
+            out.push_str(&body_indent);
+            out.push_str(&stripped);
+            out.push('\n');
+        }
+        out.push_str(closing_indent);
+        out.push('}');
+        Some(out)
+    }
+
     /// Plan a body replacement — replaces the function/method body only.
     /// Signature, docstring, and decorators are untouched.
     pub fn plan_body_replacement(
@@ -585,7 +663,26 @@ impl MutationEngine {
         // body ("return a + 1") and a source-copied body ("    return a + 1")
         // — CODERADAR_BUGS_QUIRKS #1 follow-up. Verbatim passthrough remains
         // for inline bodies where the span starts mid-line.
-        let normalized_body = self.normalize_body_for_splice(new_body, &file_source, &body_span);
+        //
+        // Brace-delimited languages (F3) take a different road: their body
+        // span INCLUDES the `{ … }`, so the path above ate the braces and
+        // every apply rolled back. `brace_splice_body` reconstructs the
+        // whole block; it returns None when the span isn't brace-delimited
+        // after all, and then the indent path below still applies.
+        let lang = crate::types::Language::from_extension(
+            std::path::Path::new(&file_path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("py"),
+        );
+        let normalized_body = if lang.uses_braces() {
+            self.brace_splice_body(new_body, &file_source, &body_span)
+                .unwrap_or_else(|| {
+                    self.normalize_body_for_splice(new_body, &file_source, &body_span)
+                })
+        } else {
+            self.normalize_body_for_splice(new_body, &file_source, &body_span)
+        };
 
         let mut warnings = if fn_entity.parse_quality != ParseQuality::Clean {
             vec!["Entity parse quality is not Clean — body_span may be approximate".into()]
@@ -1757,6 +1854,32 @@ mod tests {
         // Extension globs unchanged.
         assert!(path_matches("a/b.lock", "/*.lock"));
         assert!(!path_matches("a/b.locked", "/*.lock"));
+    }
+
+    #[test]
+    fn brace_splice_reconstructs_block_f3() {
+        // F3: the old splice ate `{ … }` and every brace-language apply
+        // rolled back. The reconstruction must keep braces + indents.
+        let eng = engine();
+        let src = "    pub fn total_cents(&self) -> i64 {\n        self.entries.iter().sum()\n    }\n";
+        let span = ByteSpan { start: src.find('{').unwrap(), end: src.rfind('}').unwrap() + 1 };
+        let out = eng
+            .brace_splice_body("self.entries.iter().map(|e| e.cents).sum()", src, &span)
+            .expect("brace span must splice");
+        assert_eq!(
+            out,
+            "{\n        self.entries.iter().map(|e| e.cents).sum()\n    }"
+        );
+        // Multi-line input keeps relative indent under the body column.
+        let out2 = eng
+            .brace_splice_body("let a = 1;\nlet b = 2;", src, &span)
+            .expect("brace span must splice");
+        assert_eq!(out2, "{\n        let a = 1;\n        let b = 2;\n    }");
+        // Non-brace spans fall back to the indent path.
+        let py = "def f():\n    return 1\n";
+        assert!(eng
+            .brace_splice_body("return 2", py, &ByteSpan { start: 9, end: 21 })
+            .is_none());
     }
 
     #[test]

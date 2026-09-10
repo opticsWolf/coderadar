@@ -238,6 +238,31 @@ impl Language {
         }
     }
 
+    /// Whether function bodies are `{ … }`-delimited (F3). For these
+    /// languages tree-sitter's `body` node spans the braces themselves,
+    /// so the mutation splice must re-emit them around the new body.
+    /// Indent/`end`-delimited languages (Python, Ruby, Lua, …) return false.
+    pub fn uses_braces(&self) -> bool {
+        matches!(
+            self,
+            Language::TypeScript
+                | Language::JavaScript
+                | Language::Go
+                | Language::Rust
+                | Language::Java
+                | Language::C
+                | Language::Cpp
+                | Language::Php
+                | Language::CSharp
+                | Language::Kotlin
+                | Language::Swift
+                | Language::Scala
+                | Language::Zig
+                | Language::Dart
+                | Language::Objc
+        )
+    }
+
     /// Name used by tree-sitter-language-pack for grammar lookup.
     pub fn pack_name(&self) -> &'static str {
         match self {
