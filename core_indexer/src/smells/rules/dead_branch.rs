@@ -7,7 +7,7 @@
 // no finding (same honest-degradation contract as intra-dead-statements).
 
 use crate::smells::rule::SmellRule;
-use crate::smells::types::{EvalContext, Finding, Severity, Scope};
+use crate::smells::types::{EvalContext, Finding, Scope, Severity};
 use std::collections::HashMap;
 
 pub struct DeadBranch;

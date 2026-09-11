@@ -66,40 +66,55 @@ impl ResolutionCache {
     }
 
     pub fn get_name_in_module(&self, module_id: &str, name: &str) -> Option<&Resolution> {
-        self.name_in_module.get(&(module_id.to_string(), name.to_string()))
+        self.name_in_module
+            .get(&(module_id.to_string(), name.to_string()))
     }
 
     pub fn set_name_in_module(&mut self, module_id: &str, name: &str, resolution: Resolution) {
-        self.name_in_module.insert((module_id.to_string(), name.to_string()), resolution);
+        self.name_in_module
+            .insert((module_id.to_string(), name.to_string()), resolution);
     }
 
     pub fn get_method_in_class(&self, class_id: &str, method: &str) -> Option<&EntityId> {
-        self.method_in_class.get(&(class_id.to_string(), method.to_string()))
+        self.method_in_class
+            .get(&(class_id.to_string(), method.to_string()))
     }
 
     pub fn set_method_in_class(&mut self, class_id: &str, method: &str, function_id: &str) {
-        self.method_in_class
-            .insert((class_id.to_string(), method.to_string()), function_id.to_string());
+        self.method_in_class.insert(
+            (class_id.to_string(), method.to_string()),
+            function_id.to_string(),
+        );
     }
 
     pub fn get_import_target(&self, module_id: &str, target: &str) -> Option<&ImportResolution> {
-        self.import_target.get(&(module_id.to_string(), target.to_string()))
+        self.import_target
+            .get(&(module_id.to_string(), target.to_string()))
     }
 
-    pub fn set_import_target(&mut self, module_id: &str, target: &str, resolution: ImportResolution) {
-        self.import_target.insert((module_id.to_string(), target.to_string()), resolution);
+    pub fn set_import_target(
+        &mut self,
+        module_id: &str,
+        target: &str,
+        resolution: ImportResolution,
+    ) {
+        self.import_target
+            .insert((module_id.to_string(), target.to_string()), resolution);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     #[test]
     fn test_cache_insert_and_get() {
         let mut cache = ResolutionCache::new();
-        cache.set_name_in_module("mod1", "my_func", Resolution::Symbol(SymbolId::Function("f1".into())));
+        cache.set_name_in_module(
+            "mod1",
+            "my_func",
+            Resolution::Symbol(SymbolId::Function("f1".into())),
+        );
         let result = cache.get_name_in_module("mod1", "my_func");
         assert!(result.is_some());
     }

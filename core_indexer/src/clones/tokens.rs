@@ -92,7 +92,9 @@ fn walk(node: tree_sitter::Node, src: &[u8], mode: Mode, out: &mut Vec<u32>) {
 fn pack_window(w: &[u32]) -> u64 {
     let mut h = 0xcbf29ce484222325u64;
     for (i, t) in w.iter().enumerate() {
-        h ^= (*t as u64).wrapping_mul(0x100000001b3).rotate_left(i as u32 * 7);
+        h ^= (*t as u64)
+            .wrapping_mul(0x100000001b3)
+            .rotate_left(i as u32 * 7);
     }
     h
 }

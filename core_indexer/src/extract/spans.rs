@@ -50,7 +50,9 @@ pub fn extract_byte_spans(node: Node) -> ExtractedSpans {
             end: node.end_byte(),
         },
         name_span: ByteSpan {
-            start: name_node.map(|n| n.start_byte()).unwrap_or(node.start_byte()),
+            start: name_node
+                .map(|n| n.start_byte())
+                .unwrap_or(node.start_byte()),
             end: name_node.map(|n| n.end_byte()).unwrap_or(node.start_byte()),
         },
         body_span: ByteSpan {
@@ -58,8 +60,12 @@ pub fn extract_byte_spans(node: Node) -> ExtractedSpans {
             end: body_node.map(|n| n.end_byte()).unwrap_or(node.end_byte()),
         },
         params_span: ByteSpan {
-            start: params_node.map(|n| n.start_byte()).unwrap_or(node.start_byte()),
-            end: params_node.map(|n| n.end_byte()).unwrap_or(node.start_byte()),
+            start: params_node
+                .map(|n| n.start_byte())
+                .unwrap_or(node.start_byte()),
+            end: params_node
+                .map(|n| n.end_byte())
+                .unwrap_or(node.start_byte()),
         },
         decorators_span: None,
     }

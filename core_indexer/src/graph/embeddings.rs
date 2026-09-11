@@ -47,7 +47,10 @@ impl CodeGraph {
         let mut missing = Vec::new();
 
         for (entity_id, embedding, content_hash) in entries {
-            let emb = EmbeddingVec { vec: embedding, hash: content_hash };
+            let emb = EmbeddingVec {
+                vec: embedding,
+                hash: content_hash,
+            };
             if let Some(e) = projection.functions.get_mut(&entity_id) {
                 Arc::make_mut(e).embedding = emb;
             } else if let Some(e) = projection.classes.get_mut(&entity_id) {
@@ -74,17 +77,26 @@ impl CodeGraph {
     /// Clear embedding vectors for all entities in a file.
     /// Called after mutation to invalidate stale embeddings.
     pub fn clear_embeddings_for_file(&self, file_path: &str) {
-        let normalized = file_path.replace('/', std::path::MAIN_SEPARATOR_STR)
-                                     .replace('\\', std::path::MAIN_SEPARATOR_STR);
+        let normalized = file_path
+            .replace('/', std::path::MAIN_SEPARATOR_STR)
+            .replace('\\', std::path::MAIN_SEPARATOR_STR);
         // Try both with and without ./ prefix (cross-platform path variance)
         let module_id_a = format!("{}::module", normalized);
-        let module_id_b = format!(".{}{}::module", std::path::MAIN_SEPARATOR_STR, normalized.trim_start_matches('.').trim_start_matches(std::path::MAIN_SEPARATOR));
+        let module_id_b = format!(
+            ".{}{}::module",
+            std::path::MAIN_SEPARATOR_STR,
+            normalized
+                .trim_start_matches('.')
+                .trim_start_matches(std::path::MAIN_SEPARATOR)
+        );
         let module_id_c = format!("./{}::module", normalized.replace("\\", "/"));
         let candidates = [&module_id_a, &module_id_b, &module_id_c];
         let mut projection = (*self.snapshot()).clone();
         for candidate in &candidates {
             if let Some(module) = projection.modules.get(*candidate) {
-                let ids: Vec<String> = module.functions.iter()
+                let ids: Vec<String> = module
+                    .functions
+                    .iter()
                     .chain(module.classes.iter())
                     .chain(module.imports.iter())
                     .chain(module.constants.iter())
@@ -117,11 +129,7 @@ impl CodeGraph {
     /// v0.5: Set a module's `__all__` star-export names list.
     /// Called from Python after static `__all__` analysis (exports.py).
     /// Enables resolution of `from X import *` wildcard imports.
-    pub fn set_module_star_exports(
-        &self,
-        module_id: &str,
-        names: Vec<String>,
-    ) {
+    pub fn set_module_star_exports(&self, module_id: &str, names: Vec<String>) {
         self.set_module_star_exports_bulk(vec![(module_id.to_string(), names)]);
     }
 

@@ -11,7 +11,9 @@ pub struct DeepNesting {
 
 impl Default for DeepNesting {
     fn default() -> Self {
-        Self { nesting_threshold: 4 }
+        Self {
+            nesting_threshold: 4,
+        }
     }
 }
 

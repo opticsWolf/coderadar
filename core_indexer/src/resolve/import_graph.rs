@@ -57,11 +57,7 @@ pub fn resolve_in_imports(
         return None;
     }
 
-    let confidence = if matches.len() == 1 {
-        0.89
-    } else {
-        0.80
-    };
+    let confidence = if matches.len() == 1 { 0.89 } else { 0.80 };
 
     Some((matches, confidence))
 }

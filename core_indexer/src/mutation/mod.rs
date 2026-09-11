@@ -12,7 +12,6 @@ pub mod write_guard;
 
 use std::collections::HashMap;
 
-
 use crate::mutation::edit::apply_edits_to_file;
 use crate::mutation::indent::{detect_indent_style, normalize_indent};
 use crate::mutation::write_guard::WriteGuard;
@@ -92,9 +91,7 @@ fn module_file_path(projection: &ProjectedGraph, module_id: &str) -> String {
         return module.path.to_string_lossy().to_string();
     }
     // Fallback: strip the `::module` suffix
-    module_id
-        .trim_end_matches("::module")
-        .to_string()
+    module_id.trim_end_matches("::module").to_string()
 }
 
 /// Read a project file by module-derived path / resolve a canonical
@@ -240,16 +237,19 @@ fn push_textual_backstop(
     unverified: &mut Vec<UnverifiedSite>,
 ) {
     for (file, line, snippet) in textual_call_sites(projection, name) {
-        if covered.iter().any(|(f, l)| {
-            f == &file && line.saturating_sub(1) <= *l && *l <= line + 1
-        }) {
+        if covered
+            .iter()
+            .any(|(f, l)| f == &file && line.saturating_sub(1) <= *l && *l <= line + 1)
+        {
             continue;
         }
         unverified.push(UnverifiedSite {
             file,
             line,
             snippet,
-            reason: "Textual occurrence — may be inside a macro body, comment or string; check manually".into(),
+            reason:
+                "Textual occurrence — may be inside a macro body, comment or string; check manually"
+                    .into(),
         });
     }
 }
@@ -279,14 +279,12 @@ fn parse_has_error(lang: crate::types::Language, source: &[u8]) -> Option<bool> 
 
 /// Post-write parse verification: report a diagnostic only if the mutation
 /// *introduced* a syntax error (after has_error && !before has_error).
-fn verify_parse_introduced_error(
-    file_path: &str, original: &[u8],
-) -> Option<SyntaxDiagnostic> {
+fn verify_parse_introduced_error(file_path: &str, original: &[u8]) -> Option<SyntaxDiagnostic> {
     let lang = crate::types::Language::from_extension(
         std::path::Path::new(file_path)
             .extension()
             .and_then(|e| e.to_str())
-            .unwrap_or("py")
+            .unwrap_or("py"),
     );
     let before = parse_has_error(lang, original);
     let after_bytes = std::fs::read(disk_path_for(file_path)).ok()?;
@@ -295,7 +293,8 @@ fn verify_parse_introduced_error(
     match (before, after) {
         (Some(_), Some(true)) if before == Some(false) => Some(SyntaxDiagnostic {
             file: file_path.to_string(),
-            line: 0, column: 0,
+            line: 0,
+            column: 0,
             message: "post-write parse check failed — mutation introduced a syntax error".into(),
             offending_span: ByteSpan { start: 0, end: 0 },
         }),
@@ -306,7 +305,8 @@ fn verify_parse_introduced_error(
 /// Shared process-wide WriteGuard — suppresses watcher events for files the
 /// mutation engine wrote. The watcher consults the same instance so mutation
 /// writes don't trigger double-indexing.
-pub static WRITE_GUARD: std::sync::OnceLock<std::sync::Arc<WriteGuard>> = std::sync::OnceLock::new();
+pub static WRITE_GUARD: std::sync::OnceLock<std::sync::Arc<WriteGuard>> =
+    std::sync::OnceLock::new();
 
 /// Get (or lazily create) the shared WriteGuard instance.
 pub fn shared_write_guard() -> std::sync::Arc<WriteGuard> {
@@ -494,7 +494,11 @@ impl MutationEngine {
     /// the agent sees `PolicyViolation` before any diff preview.
     fn gate_plan_policy(&self, plan: MutationPlan) -> Result<MutationPlan, MutationError> {
         if let Err(reason) = self.check_policy(&plan) {
-            let path = plan.edits.first().map(|e| e.file.clone()).unwrap_or_default();
+            let path = plan
+                .edits
+                .first()
+                .map(|e| e.file.clone())
+                .unwrap_or_default();
             return Err(MutationError::PolicyViolation { path, reason });
         }
         Ok(plan)
@@ -558,7 +562,10 @@ impl MutationEngine {
             let Some(close) = match_paren_end(source, open) else {
                 continue;
             };
-            let candidate = ByteSpan { start: open, end: close };
+            let candidate = ByteSpan {
+                start: open,
+                end: close,
+            };
             if params_span_valid(source, entity_name, candidate) {
                 warnings.push(format!(
                     "Recorded params span for `{}` was stale (pointed at byte {}); re-resolved from the def line — consider `codegraph_update_file` before relying on call-site edits.",
@@ -781,12 +788,13 @@ impl MutationEngine {
         // replacing it used to silently delete an existing docstring. Dropping
         // documentation may be intended — but it must never be silent.
         if !file_source.is_empty() {
-            if let Some(old_body) = file_source
-                .get(body_span.start..body_span.end.min(file_source.len()))
+            if let Some(old_body) =
+                file_source.get(body_span.start..body_span.end.min(file_source.len()))
             {
                 if has_leading_docstring(old_body) && !has_leading_docstring(&normalized_body) {
                     warnings.push(
-                        "The existing docstring is NOT present in the replacement body — ".to_string()
+                        "The existing docstring is NOT present in the replacement body — "
+                            .to_string()
                             + "re-include it, or apply knowing the documentation will be removed.",
                     );
                 }
@@ -862,8 +870,7 @@ impl MutationEngine {
         // whole line used to be written into that span, producing
         // `def greetdef greet(name, punctuation)::` — a syntax error that
         // `apply` caught and rolled back, so the tool reliably did nothing.
-        let (header_span, replacement) =
-            signature_header(&def_source, params_span, new_signature)?;
+        let (header_span, replacement) = signature_header(&def_source, params_span, new_signature)?;
 
         // Stale-write guard: hash what is there now.
         let def_expected_hash = hash_span(def_source.as_bytes(), header_span);
@@ -908,9 +915,9 @@ impl MutationEngine {
                 for (i, call) in caller_fn.resolved_calls.iter().enumerate() {
                     // Check if this call targets the entity being modified
                     let target_matches = match call {
-                        ResolvedCall::Function(id) | ResolvedCall::Method { method: id, .. } | ResolvedCall::Constructor(id) => {
-                            id == entity_id
-                        }
+                        ResolvedCall::Function(id)
+                        | ResolvedCall::Method { method: id, .. }
+                        | ResolvedCall::Constructor(id) => id == entity_id,
                         _ => false,
                     };
 
@@ -927,7 +934,8 @@ impl MutationEngine {
                             file: caller_file.clone(),
                             line,
                             snippet: format!("call to {} — new args: {}", entity_id, kv_value),
-                            reason: "Call-site arg span unavailable; apply arg change manually".into(),
+                            reason: "Call-site arg span unavailable; apply arg change manually"
+                                .into(),
                         });
                     } else if inject_defaults {
                         warnings.push(format!(
@@ -958,9 +966,7 @@ impl MutationEngine {
                 module_file_path(projection, &fn_entity.parent_module),
                 fn_entity.line as u32,
             ));
-            push_textual_backstop(
-                projection, &fn_entity.name, &covered, &mut unverified,
-            );
+            push_textual_backstop(projection, &fn_entity.name, &covered, &mut unverified);
         }
 
         let plan_id = ulid::Ulid::new().to_string();
@@ -979,7 +985,8 @@ impl MutationEngine {
             tool: "update_signature".to_string(),
             edits,
             affected_files: {
-                let mut files: Vec<String> = callers.iter()
+                let mut files: Vec<String> = callers
+                    .iter()
                     .filter_map(|id| projection.functions.get(id))
                     .map(|f| module_file_path(projection, &f.parent_module))
                     .collect();
@@ -1211,9 +1218,7 @@ impl MutationEngine {
                 module_file_path(projection, &fn_entity.parent_module),
                 fn_entity.line as u32,
             ));
-            push_textual_backstop(
-                projection, &fn_entity.name, &covered, &mut unverified,
-            );
+            push_textual_backstop(projection, &fn_entity.name, &covered, &mut unverified);
         }
 
         // A real diff, not "replace 412 bytes at 1830..2242": the MCP
@@ -1407,8 +1412,15 @@ impl MutationEngine {
 
         let (insert_span, replacement) = if anchor == "top" || anchor.is_empty() {
             // Insert at file top (after a UTF-8 BOM if present)
-            let start = if file_bytes.starts_with(&[0xEF, 0xBB, 0xBF]) { 3 } else { 0 };
-            (ByteSpan { start, end: start }, format!("{}\n", code_trimmed))
+            let start = if file_bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+                3
+            } else {
+                0
+            };
+            (
+                ByteSpan { start, end: start },
+                format!("{}\n", code_trimmed),
+            )
         } else if anchor == "end" {
             // Insert at file end, blank-line separated from existing content
             let repl = if file_len == 0 {
@@ -1416,13 +1428,25 @@ impl MutationEngine {
             } else {
                 format!("\n{}\n", code_trimmed)
             };
-            (ByteSpan { start: file_len, end: file_len }, repl)
+            (
+                ByteSpan {
+                    start: file_len,
+                    end: file_len,
+                },
+                repl,
+            )
         } else {
             // Anchor after a specific entity
             let span = if let Some(fn_ent) = projection.functions.get(anchor) {
-                ByteSpan { start: fn_ent.span.end, end: fn_ent.span.end }
+                ByteSpan {
+                    start: fn_ent.span.end,
+                    end: fn_ent.span.end,
+                }
             } else if let Some(cls_ent) = projection.classes.get(anchor) {
-                ByteSpan { start: cls_ent.span.end, end: cls_ent.span.end }
+                ByteSpan {
+                    start: cls_ent.span.end,
+                    end: cls_ent.span.end,
+                }
             } else {
                 return Err(MutationError::EntityNotFound(anchor.to_string()));
             };
@@ -1454,9 +1478,7 @@ impl MutationEngine {
             diff_preview: preview,
             edits,
             unverified_sites: Vec::new(),
-            warnings: vec![
-                "Preflight parse-check deferred to Python layer".into(),
-            ],
+            warnings: vec!["Preflight parse-check deferred to Python layer".into()],
         })
     }
 
@@ -1495,7 +1517,8 @@ impl MutationEngine {
         // Group edits by file path (all edits carry real byte spans)
         let mut by_file: HashMap<String, Vec<MutationEdit>> = HashMap::new();
         for edit in &plan.edits {
-            by_file.entry(edit.file.clone())
+            by_file
+                .entry(edit.file.clone())
                 .or_default()
                 .push(edit.clone());
         }
@@ -1514,18 +1537,27 @@ impl MutationEngine {
                 crate::indexed_root().join(file_path)
             };
             let original = match std::fs::read_to_string(&disk_path)
-                .or_else(|_| std::fs::read_to_string(file_path)) {
+                .or_else(|_| std::fs::read_to_string(file_path))
+            {
                 Ok(s) => s,
                 Err(e) => {
                     syntax_errors.push(SyntaxDiagnostic {
-                        file: file_path.clone(), line: 0, column: 0,
+                        file: file_path.clone(),
+                        line: 0,
+                        column: 0,
                         message: format!("read failed: {}", e),
                         offending_span: ByteSpan { start: 0, end: 0 },
                     });
                     return MutationResult {
                         status: MutationStatus::RolledBack,
-                        files_written: vec![], syntax_errors,
-                        reindex: ReindexSummary { files: 0, entities_updated: 0, edges_updated: 0, duration_ms: 0 },
+                        files_written: vec![],
+                        syntax_errors,
+                        reindex: ReindexSummary {
+                            files: 0,
+                            entities_updated: 0,
+                            edges_updated: 0,
+                            duration_ms: 0,
+                        },
                         backup_path: None,
                     };
                 }
@@ -1546,8 +1578,14 @@ impl MutationEngine {
                     });
                     return MutationResult {
                         status: MutationStatus::RejectedStale,
-                        files_written: vec![], syntax_errors,
-                        reindex: ReindexSummary { files: 0, entities_updated: 0, edges_updated: 0, duration_ms: 0 },
+                        files_written: vec![],
+                        syntax_errors,
+                        reindex: ReindexSummary {
+                            files: 0,
+                            entities_updated: 0,
+                            edges_updated: 0,
+                            duration_ms: 0,
+                        },
                         backup_path: None,
                     };
                 }
@@ -1560,16 +1598,26 @@ impl MutationEngine {
         for file_path in by_file.keys() {
             let backup_path = format!("{}.coderadar-bak", file_path);
             if let Err(e) = std::fs::copy(disk_path_for(file_path), disk_path_for(&backup_path)) {
-                for (_, bp) in &backups { let _ = std::fs::remove_file(disk_path_for(bp)); }
+                for (_, bp) in &backups {
+                    let _ = std::fs::remove_file(disk_path_for(bp));
+                }
                 syntax_errors.push(SyntaxDiagnostic {
-                    file: file_path.clone(), line: 0, column: 0,
+                    file: file_path.clone(),
+                    line: 0,
+                    column: 0,
                     message: format!("backup failed: {}", e),
                     offending_span: ByteSpan { start: 0, end: 0 },
                 });
                 return MutationResult {
                     status: MutationStatus::RolledBack,
-                    files_written: vec![], syntax_errors,
-                    reindex: ReindexSummary { files: 0, entities_updated: 0, edges_updated: 0, duration_ms: 0 },
+                    files_written: vec![],
+                    syntax_errors,
+                    reindex: ReindexSummary {
+                        files: 0,
+                        entities_updated: 0,
+                        edges_updated: 0,
+                        duration_ms: 0,
+                    },
                     backup_path: None,
                 };
             }
@@ -1585,14 +1633,22 @@ impl MutationEngine {
                 Err(e) => {
                     rollback_all(&backups);
                     syntax_errors.push(SyntaxDiagnostic {
-                        file: file_path.clone(), line: 0, column: 0,
+                        file: file_path.clone(),
+                        line: 0,
+                        column: 0,
                         message: format!("apply failed: {:?}", e),
                         offending_span: ByteSpan { start: 0, end: 0 },
                     });
                     return MutationResult {
                         status: MutationStatus::RolledBack,
-                        files_written: vec![], syntax_errors,
-                        reindex: ReindexSummary { files: 0, entities_updated: 0, edges_updated: 0, duration_ms: 0 },
+                        files_written: vec![],
+                        syntax_errors,
+                        reindex: ReindexSummary {
+                            files: 0,
+                            entities_updated: 0,
+                            edges_updated: 0,
+                            duration_ms: 0,
+                        },
                         backup_path: None,
                     };
                 }
@@ -1617,14 +1673,22 @@ impl MutationEngine {
                 let _ = std::fs::remove_file(disk_path_for(&tmp_path));
                 rollback_all(&backups);
                 syntax_errors.push(SyntaxDiagnostic {
-                    file: file_path.clone(), line: 0, column: 0,
+                    file: file_path.clone(),
+                    line: 0,
+                    column: 0,
                     message: "atomic write failed".into(),
                     offending_span: ByteSpan { start: 0, end: 0 },
                 });
                 return MutationResult {
                     status: MutationStatus::RolledBack,
-                    files_written: vec![], syntax_errors,
-                    reindex: ReindexSummary { files: 0, entities_updated: 0, edges_updated: 0, duration_ms: 0 },
+                    files_written: vec![],
+                    syntax_errors,
+                    reindex: ReindexSummary {
+                        files: 0,
+                        entities_updated: 0,
+                        edges_updated: 0,
+                        duration_ms: 0,
+                    },
                     backup_path: None,
                 };
             }
@@ -1633,7 +1697,10 @@ impl MutationEngine {
         // ── Phase 4: Post-write parse verification ───────────────────────
         let mut tainted: Vec<SyntaxDiagnostic> = Vec::new();
         for file_path in &files_written {
-            let original_bytes = originals.get(file_path).map(|s| s.as_bytes()).unwrap_or(&[]);
+            let original_bytes = originals
+                .get(file_path)
+                .map(|s| s.as_bytes())
+                .unwrap_or(&[]);
             if let Some(diag) = verify_parse_introduced_error(file_path, original_bytes) {
                 tainted.push(diag);
             }
@@ -1647,7 +1714,12 @@ impl MutationEngine {
                 status: MutationStatus::RolledBack,
                 files_written: vec![],
                 syntax_errors,
-                reindex: ReindexSummary { files: 0, entities_updated: 0, edges_updated: 0, duration_ms: 0 },
+                reindex: ReindexSummary {
+                    files: 0,
+                    entities_updated: 0,
+                    edges_updated: 0,
+                    duration_ms: 0,
+                },
                 backup_path: backups.first().map(|(_, bp)| bp.clone()),
             };
         }
@@ -1883,12 +1955,10 @@ fn prefix_ends_with_name_call(prefix: &str, name: &str) -> bool {
             return false;
         }
     }
-    core.len() >= name.len()
-        && core.ends_with(name)
-        && {
-            let s = core.len() - name.len();
-            s == 0 || !is_ident_byte(core.as_bytes()[s - 1])
-        }
+    core.len() >= name.len() && core.ends_with(name) && {
+        let s = core.len() - name.len();
+        s == 0 || !is_ident_byte(core.as_bytes()[s - 1])
+    }
 }
 
 fn signature_header(
@@ -1898,7 +1968,8 @@ fn signature_header(
 ) -> Result<(ByteSpan, String), MutationError> {
     let open = new_signature.find('(').ok_or_else(|| {
         MutationError::ParseFailed(format!(
-            "New signature has no parameter list: {:?}", new_signature
+            "New signature has no parameter list: {:?}",
+            new_signature
         ))
     })?;
     let mut replacement = new_signature[open..].trim_end().to_string();
@@ -1908,7 +1979,13 @@ fn signature_header(
     }
 
     let end = header_colon(source, params_span.end).unwrap_or(params_span.end);
-    Ok((ByteSpan { start: params_span.start, end }, replacement))
+    Ok((
+        ByteSpan {
+            start: params_span.start,
+            end,
+        },
+        replacement,
+    ))
 }
 
 /// Byte offset of the colon that ends a `def` header, searching from `from`.
@@ -1935,9 +2012,12 @@ fn signature_name(new_signature: &str) -> Option<&str> {
     let open = new_signature.find('(')?;
     let head = new_signature[..open].trim_end();
     let name = head.rsplit(|c: char| c.is_whitespace()).next()?.trim();
-    if name.is_empty() { None } else { Some(name) }
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
 }
-
 
 #[derive(Debug)]
 pub enum MutationError {
@@ -1950,8 +2030,15 @@ pub enum MutationError {
         span: ByteSpan,
     },
     ParseFailed(String),
-    PolicyViolation { path: String, reason: String },
-    HashMismatch { file: String, expected: String, actual: String },
+    PolicyViolation {
+        path: String,
+        reason: String,
+    },
+    HashMismatch {
+        file: String,
+        expected: String,
+        actual: String,
+    },
     TooManyFiles(usize),
     TooManyEdits(usize),
     SyntaxDiagnostic(Vec<SyntaxDiagnostic>),
@@ -1960,11 +2047,11 @@ pub enum MutationError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::graph::MutationConfig;
     use crate::mutation::indent::IndentStyle;
     use crate::types::ByteSpan;
     use std::path::Path;
+    use std::sync::Arc;
 
     /// `params_span` covers `(a, b)`, but the MCP tool asks the agent for a
     /// whole `def f(a, b) -> str:` line. Writing one into the other produced
@@ -1976,7 +2063,10 @@ mod tests {
 
         fn span_of(source: &str, params: &str) -> ByteSpan {
             let start = source.find(params).expect("params not in source");
-            ByteSpan { start, end: start + params.len() }
+            ByteSpan {
+                start,
+                end: start + params.len(),
+            }
         }
 
         #[test]
@@ -2120,7 +2210,9 @@ mod tests {
 
         let result = eng.apply(&plan);
         assert_eq!(result.status, MutationStatus::RejectedPolicy);
-        assert!(result.syntax_errors[0].message.contains("outside the project root"));
+        assert!(result.syntax_errors[0]
+            .message
+            .contains("outside the project root"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret = 1\n");
     }
 
@@ -2151,7 +2243,10 @@ mod tests {
         assert!(path_matches("src/x.py", "src/"));
         assert!(path_matches("src/a/b.py", "src/"));
         assert!(!path_matches("py_agent/src/x.py", "src/"));
-        assert!(!path_matches(".venv/Lib/site-packages/foo/src/x.py", "src/"));
+        assert!(!path_matches(
+            ".venv/Lib/site-packages/foo/src/x.py",
+            "src/"
+        ));
         assert!(!path_matches("srcfoo/x.py", "src/"));
         // Bare names match on a `/` boundary.
         assert!(path_matches("src/x.py", "src"));
@@ -2174,8 +2269,12 @@ mod tests {
         // F3: the old splice ate `{ … }` and every brace-language apply
         // rolled back. The reconstruction must keep braces + indents.
         let eng = engine();
-        let src = "    pub fn total_cents(&self) -> i64 {\n        self.entries.iter().sum()\n    }\n";
-        let span = ByteSpan { start: src.find('{').unwrap(), end: src.rfind('}').unwrap() + 1 };
+        let src =
+            "    pub fn total_cents(&self) -> i64 {\n        self.entries.iter().sum()\n    }\n";
+        let span = ByteSpan {
+            start: src.find('{').unwrap(),
+            end: src.rfind('}').unwrap() + 1,
+        };
         let out = eng
             .brace_splice_body("self.entries.iter().map(|e| e.cents).sum()", src, &span)
             .expect("brace span must splice");
@@ -2251,7 +2350,9 @@ mod tests {
 
         let result = eng.apply(&over);
         assert_eq!(result.status, MutationStatus::RejectedPolicy);
-        assert!(result.syntax_errors[0].message.contains("over the configured limit"));
+        assert!(result.syntax_errors[0]
+            .message
+            .contains("over the configured limit"));
     }
 
     #[test]
@@ -2262,7 +2363,11 @@ mod tests {
 
         let escaping = project.path().join("..").join("escape.py");
         let mut eng = engine().with_project_root(project.path());
-        let plan = hashed_plan(&escaping.to_string_lossy(), ByteSpan { start: 0, end: 1 }, "x = 1\n");
+        let plan = hashed_plan(
+            &escaping.to_string_lossy(),
+            ByteSpan { start: 0, end: 1 },
+            "x = 1\n",
+        );
 
         assert_eq!(eng.apply(&plan).status, MutationStatus::RejectedPolicy);
         let _ = std::fs::remove_file(&outside);
@@ -2298,12 +2403,20 @@ mod tests {
 
         let inside = dir.path().join("src").join("ok.py");
         let mut eng = MutationEngine::new(config.clone()).with_project_root(dir.path());
-        let ok = hashed_plan(&inside.to_string_lossy(), ByteSpan { start: 0, end: 1 }, "a = 1\n");
+        let ok = hashed_plan(
+            &inside.to_string_lossy(),
+            ByteSpan { start: 0, end: 1 },
+            "a = 1\n",
+        );
         assert_eq!(eng.apply(&ok).status, MutationStatus::Applied);
 
         let outside = dir.path().join("other.py");
         let mut eng = MutationEngine::new(config).with_project_root(dir.path());
-        let refused = hashed_plan(&outside.to_string_lossy(), ByteSpan { start: 0, end: 1 }, "a = 1\n");
+        let refused = hashed_plan(
+            &outside.to_string_lossy(),
+            ByteSpan { start: 0, end: 1 },
+            "a = 1\n",
+        );
         let result = eng.apply(&refused);
         assert_eq!(result.status, MutationStatus::RejectedPolicy);
         assert!(result.syntax_errors[0].message.contains("allow list"));
@@ -2327,10 +2440,14 @@ mod tests {
 
     #[test]
     fn test_has_leading_docstring_variants() {
-        assert!(super::has_leading_docstring("\"\"\"doc.\"\"\"\n    return 1"));
+        assert!(super::has_leading_docstring(
+            "\"\"\"doc.\"\"\"\n    return 1"
+        ));
         assert!(super::has_leading_docstring("  '''doc'''\n    return 1"));
         assert!(!super::has_leading_docstring("    return 1"));
-        assert!(!super::has_leading_docstring("x = \"\"\"not a docstring\"\"\"\n"));
+        assert!(!super::has_leading_docstring(
+            "x = \"\"\"not a docstring\"\"\"\n"
+        ));
         assert!(!super::has_leading_docstring(""));
     }
 
@@ -2350,8 +2467,16 @@ mod tests {
             expected_hash: String::new(),
         }]);
         let result = eng.apply(&p);
-        assert_eq!(result.status, MutationStatus::Applied, "{:#?}", result.syntax_errors);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "def f():\n    pass\nimport os\n");
+        assert_eq!(
+            result.status,
+            MutationStatus::Applied,
+            "{:#?}",
+            result.syntax_errors
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "def f():\n    pass\nimport os\n"
+        );
     }
 
     #[test]
@@ -2366,13 +2491,19 @@ mod tests {
         let mut eng = engine();
         let p = plan(vec![MutationEdit {
             file: file.clone(),
-            span: ByteSpan { start: len, end: len },
+            span: ByteSpan {
+                start: len,
+                end: len,
+            },
             replacement: "\ndef g():\n    pass\n".into(),
             expected_hash: String::new(),
         }]);
         let result = eng.apply(&p);
         assert_eq!(result.status, MutationStatus::Applied);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "import os\ndef g():\n    pass\n");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "import os\ndef g():\n    pass\n"
+        );
     }
 
     #[test]
@@ -2389,8 +2520,12 @@ mod tests {
         // Span covers the body from the first body token through the end:
         // the docstring line minus its indent, plus the indented return line.
         let body_start = src.find("\"").unwrap();
-        let span = ByteSpan { start: body_start, end: src.len() };
-        let replacement = "\"\"\"Merge HTML metadata.\"\"\"\n    merged = {**a, **b}\n    return merged\n";
+        let span = ByteSpan {
+            start: body_start,
+            end: src.len(),
+        };
+        let replacement =
+            "\"\"\"Merge HTML metadata.\"\"\"\n    merged = {**a, **b}\n    return merged\n";
 
         let mut eng = engine();
         let p = plan(vec![MutationEdit {
@@ -2400,7 +2535,12 @@ mod tests {
             expected_hash: String::new(),
         }]);
         let result = eng.apply(&p);
-        assert_eq!(result.status, MutationStatus::Applied, "{:#?}", result.syntax_errors);
+        assert_eq!(
+            result.status,
+            MutationStatus::Applied,
+            "{:#?}",
+            result.syntax_errors
+        );
 
         let written = std::fs::read_to_string(&file).unwrap();
         assert_eq!(
@@ -2409,7 +2549,10 @@ mod tests {
             "every line must keep its indentation"
         );
         assert_eq!(
-            parse_has_error(crate::types::Language::from_extension("py"), written.as_bytes()),
+            parse_has_error(
+                crate::types::Language::from_extension("py"),
+                written.as_bytes()
+            ),
             Some(false),
             "written file must parse — G0-A gate"
         );
@@ -2430,7 +2573,10 @@ mod tests {
         let mut g = crate::smells::engine::tests::empty_graph();
         let mut f = crate::graph::deadcode::tests::func("m.py::f", "f", "m.py::module");
         let bstart = src.find("return a").unwrap();
-        f.body_span = ByteSpan { start: bstart, end: bstart + 8 }; // exactly "return a"
+        f.body_span = ByteSpan {
+            start: bstart,
+            end: bstart + 8,
+        }; // exactly "return a"
         g.functions.insert("m.py::f".into(), Arc::new(f));
         g.modules.insert(
             "m.py::module".into(),
@@ -2543,7 +2689,10 @@ mod tests {
     fn test_apply_rejects_stale_edit() {
         let src = b"def foo():\n    return 1\n";
         let start = src.windows(8).position(|w| w == b"return 1").unwrap();
-        let span = ByteSpan { start, end: start + 8 };
+        let span = ByteSpan {
+            start,
+            end: start + 8,
+        };
         let hash = hash_span(src, span);
 
         let dir = tempfile::tempdir().unwrap();
@@ -2556,19 +2705,28 @@ mod tests {
 
         let mut eng = engine();
         let p = plan(vec![MutationEdit {
-            file: file.clone(), span, replacement: "return 2".into(), expected_hash: hash,
+            file: file.clone(),
+            span,
+            replacement: "return 2".into(),
+            expected_hash: hash,
         }]);
         let result = eng.apply(&p);
         assert_eq!(result.status, MutationStatus::RejectedStale);
         assert!(!result.syntax_errors.is_empty());
         // File must be untouched
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "def foo():\n    return 999\n");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "def foo():\n    return 999\n"
+        );
     }
 
     #[test]
     fn test_apply_rolls_back_tainted_update() {
         let src = b"def foo():\n    return 1\n";
-        let span = ByteSpan { start: 0, end: src.len() };
+        let span = ByteSpan {
+            start: 0,
+            end: src.len(),
+        };
         let hash = hash_span(src, span);
 
         let dir = tempfile::tempdir().unwrap();
@@ -2579,14 +2737,23 @@ mod tests {
         let mut eng = engine();
         // Replacement is syntactically broken → post-verify must roll back
         let p = plan(vec![MutationEdit {
-            file: file.clone(), span,
+            file: file.clone(),
+            span,
             replacement: "def foo(:\n  broken".into(),
             expected_hash: hash,
         }]);
         let result = eng.apply(&p);
-        assert_eq!(result.status, MutationStatus::RolledBack, "{:#?}", result.syntax_errors);
+        assert_eq!(
+            result.status,
+            MutationStatus::RolledBack,
+            "{:#?}",
+            result.syntax_errors
+        );
         // File restored to original
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "def foo():\n    return 1\n");
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "def foo():\n    return 1\n"
+        );
         // No leftover backup file
         assert!(!Path::new(&format!("{}.coderadar-bak", file)).exists());
     }
@@ -2595,7 +2762,10 @@ mod tests {
     fn test_apply_succeeds_when_hash_matches() {
         let src = b"def foo():\n    return 1\n";
         let start = src.windows(8).position(|w| w == b"return 1").unwrap();
-        let span = ByteSpan { start, end: start + 8 };
+        let span = ByteSpan {
+            start,
+            end: start + 8,
+        };
         let hash = hash_span(src, span);
 
         let dir = tempfile::tempdir().unwrap();
@@ -2605,11 +2775,22 @@ mod tests {
 
         let mut eng = engine();
         let p = plan(vec![MutationEdit {
-            file: file.clone(), span, replacement: "return 2".into(), expected_hash: hash,
+            file: file.clone(),
+            span,
+            replacement: "return 2".into(),
+            expected_hash: hash,
         }]);
         let result = eng.apply(&p);
-        assert_eq!(result.status, MutationStatus::Applied, "{:#?}", result.syntax_errors);
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "def foo():\n    return 2\n");
+        assert_eq!(
+            result.status,
+            MutationStatus::Applied,
+            "{:#?}",
+            result.syntax_errors
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "def foo():\n    return 2\n"
+        );
     }
 
     // ── Textual call-site backstop (v0.8 P2-5) ─────────────────────────
@@ -2666,11 +2847,8 @@ mod tests {
                 plan.warnings
             );
             // The spliced file keeps both methods intact.
-            let applied = crate::mutation::edit::apply_edits_to_file(
-                &shifted,
-                &plan.edits,
-            )
-            .unwrap();
+            let applied =
+                crate::mutation::edit::apply_edits_to_file(&shifted, &plan.edits).unwrap();
             assert!(applied.contains("def first(self, x):"));
             assert!(applied.contains("def second(self, y, z=0):"));
             assert!(applied.contains("return x * 2"));
@@ -2718,8 +2896,7 @@ mod tests {
         }
 
         fn textual_sites(plan: &MutationPlan) -> Vec<&UnverifiedSite> {
-            plan
-                .unverified_sites
+            plan.unverified_sites
                 .iter()
                 .filter(|s| s.reason.starts_with("Textual occurrence"))
                 .collect()
@@ -2842,4 +3019,3 @@ mod tests {
         }
     }
 }
-

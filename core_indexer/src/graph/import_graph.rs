@@ -115,11 +115,14 @@ impl ImportGraph {
                     // The full find_module_by_dotted_name requires the projection
                     // which isn't available in parallel. The import graph edges
                     // will be refined during the sequential insert phase.
-                    let target_path = format!("{}/{}.py",
-                        std::path::Path::new(file_path).parent()
+                    let target_path = format!(
+                        "{}/{}.py",
+                        std::path::Path::new(file_path)
+                            .parent()
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_default(),
-                        src_mod.replace('.', "/"));
+                        src_mod.replace('.', "/")
+                    );
                     ig.add_file(&target_path, None, language);
                     ig.add_import_edge(file_path, &target_path);
                 }

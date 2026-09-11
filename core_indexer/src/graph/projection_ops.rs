@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::CodeGraph;
 use super::module_resolution::{find_module_by_dotted_name, normalize_path_str};
+use super::CodeGraph;
 use crate::types::*;
 
 impl CodeGraph {
@@ -28,7 +28,11 @@ impl CodeGraph {
             return;
         }
         if let Err(e) = store.retire_entities(&ids) {
-            eprintln!("Warning: could not retire {} removed entities: {:?}", ids.len(), e);
+            eprintln!(
+                "Warning: could not retire {} removed entities: {:?}",
+                ids.len(),
+                e
+            );
         }
     }
 
@@ -190,7 +194,9 @@ impl CodeGraph {
         let removed = self.remove_file_entities(&mut projection, &normalized);
         // The file→module mapping outlives the module otherwise, and a
         // recreated file would resolve to an id that is no longer there.
-        projection.file_to_modules.remove(&PathBuf::from(&normalized));
+        projection
+            .file_to_modules
+            .remove(&PathBuf::from(&normalized));
         projection.file_to_modules.remove(&PathBuf::from(file_path));
         // Keep the dotted-name index honest — a deleted module left in it
         // would resolve imports to an id that no longer exists.
@@ -246,12 +252,24 @@ impl CodeGraph {
                     }
                 }
             };
-            for id in projection.functions.keys() { note(id); }
-            for id in projection.classes.keys() { note(id); }
-            for id in projection.imports.keys() { note(id); }
-            for id in projection.constants.keys() { note(id); }
-            for id in projection.type_aliases.keys() { note(id); }
-            for id in projection.modules.keys() { note(id); }
+            for id in projection.functions.keys() {
+                note(id);
+            }
+            for id in projection.classes.keys() {
+                note(id);
+            }
+            for id in projection.imports.keys() {
+                note(id);
+            }
+            for id in projection.constants.keys() {
+                note(id);
+            }
+            for id in projection.type_aliases.keys() {
+                note(id);
+            }
+            for id in projection.modules.keys() {
+                note(id);
+            }
             for id in respelled {
                 projection.functions.remove(&id);
                 projection.classes.remove(&id);
@@ -284,12 +302,24 @@ impl CodeGraph {
                     existing_ids.entry(normalized).or_insert_with(|| id.clone());
                 }
             };
-            for id in projection.functions.keys() { note(id); }
-            for id in projection.classes.keys() { note(id); }
-            for id in projection.imports.keys() { note(id); }
-            for id in projection.constants.keys() { note(id); }
-            for id in projection.type_aliases.keys() { note(id); }
-            for id in projection.modules.keys() { note(id); }
+            for id in projection.functions.keys() {
+                note(id);
+            }
+            for id in projection.classes.keys() {
+                note(id);
+            }
+            for id in projection.imports.keys() {
+                note(id);
+            }
+            for id in projection.constants.keys() {
+                note(id);
+            }
+            for id in projection.type_aliases.keys() {
+                note(id);
+            }
+            for id in projection.modules.keys() {
+                note(id);
+            }
         }
         let canonical = |id: &str| -> EntityId {
             existing_ids
@@ -306,7 +336,10 @@ impl CodeGraph {
             .iter()
             .filter(|(id, _)| normalize_path_str(id).starts_with(&normalized_file_path))
             .map(|(id, f)| {
-                (normalize_path_str(id), (id.clone(), f.signature_hash, f.body_hash))
+                (
+                    normalize_path_str(id),
+                    (id.clone(), f.signature_hash, f.body_hash),
+                )
             })
             .collect();
 
@@ -316,42 +349,66 @@ impl CodeGraph {
         // was re-inserted on every update — module `imports` membership
         // duplicated and `entities_added` inflated.
         let old_classes: std::collections::BTreeSet<EntityId> = projection
-            .classes.keys()
+            .classes
+            .keys()
             .filter(|id| normalize_path_str(id).starts_with(&normalized_file_path))
             .map(|id| normalize_path_str(id))
             .collect();
         let old_imports: std::collections::BTreeSet<EntityId> = projection
-            .imports.keys()
+            .imports
+            .keys()
             .filter(|id| normalize_path_str(id).starts_with(&normalized_file_path))
             .map(|id| normalize_path_str(id))
             .collect();
         let old_constants: std::collections::BTreeSet<EntityId> = projection
-            .constants.keys()
+            .constants
+            .keys()
             .filter(|id| normalize_path_str(id).starts_with(&normalized_file_path))
             .map(|id| normalize_path_str(id))
             .collect();
         let old_aliases: std::collections::BTreeSet<EntityId> = projection
-            .type_aliases.keys()
+            .type_aliases
+            .keys()
             .filter(|id| normalize_path_str(id).starts_with(&normalized_file_path))
             .map(|id| normalize_path_str(id))
             .collect();
 
         // 2. Build new entity ID sets (normalized for cross-platform matching).
         let normalize_id = |id: &str| normalize_path_str(id);
-        let new_funcs: std::collections::BTreeSet<EntityId> = units.iter()
-            .filter_map(|u| match u { ExtractedUnit::Function(f) => Some(normalize_id(&f.id)), _ => None })
+        let new_funcs: std::collections::BTreeSet<EntityId> = units
+            .iter()
+            .filter_map(|u| match u {
+                ExtractedUnit::Function(f) => Some(normalize_id(&f.id)),
+                _ => None,
+            })
             .collect();
-        let new_classes: std::collections::BTreeSet<EntityId> = units.iter()
-            .filter_map(|u| match u { ExtractedUnit::Class(c) => Some(normalize_id(&c.id)), _ => None })
+        let new_classes: std::collections::BTreeSet<EntityId> = units
+            .iter()
+            .filter_map(|u| match u {
+                ExtractedUnit::Class(c) => Some(normalize_id(&c.id)),
+                _ => None,
+            })
             .collect();
-        let new_imports: std::collections::BTreeSet<EntityId> = units.iter()
-            .filter_map(|u| match u { ExtractedUnit::Import(i) => Some(normalize_id(&i.id)), _ => None })
+        let new_imports: std::collections::BTreeSet<EntityId> = units
+            .iter()
+            .filter_map(|u| match u {
+                ExtractedUnit::Import(i) => Some(normalize_id(&i.id)),
+                _ => None,
+            })
             .collect();
-        let new_constants: std::collections::BTreeSet<EntityId> = units.iter()
-            .filter_map(|u| match u { ExtractedUnit::Constant(c) => Some(normalize_id(&c.id)), _ => None })
+        let new_constants: std::collections::BTreeSet<EntityId> = units
+            .iter()
+            .filter_map(|u| match u {
+                ExtractedUnit::Constant(c) => Some(normalize_id(&c.id)),
+                _ => None,
+            })
             .collect();
-        let new_aliases: std::collections::BTreeSet<EntityId> = units.iter()
-            .filter_map(|u| match u { ExtractedUnit::TypeAlias(t) => Some(normalize_id(&t.id)), _ => None })
+        let new_aliases: std::collections::BTreeSet<EntityId> = units
+            .iter()
+            .filter_map(|u| match u {
+                ExtractedUnit::TypeAlias(t) => Some(normalize_id(&t.id)),
+                _ => None,
+            })
             .collect();
 
         // (`inserted`/`removed`/`removed_ids` are declared up top — the F14
@@ -389,7 +446,10 @@ impl CodeGraph {
         for id in old_imports.iter().filter(|id| !new_imports.contains(*id)) {
             remove_entity(&canonical(id), projection, &mut removed, &mut removed_ids);
         }
-        for id in old_constants.iter().filter(|id| !new_constants.contains(*id)) {
+        for id in old_constants
+            .iter()
+            .filter(|id| !new_constants.contains(*id))
+        {
             remove_entity(&canonical(id), projection, &mut removed, &mut removed_ids);
         }
         for id in old_aliases.iter().filter(|id| !new_aliases.contains(*id)) {
@@ -418,11 +478,11 @@ impl CodeGraph {
         for unit in units {
             let id = unit.entity_id();
             let needs_insert = match unit {
-                ExtractedUnit::Function(f) => {
-                    old_hashes.get(&normalize_id(&f.id)).map_or(true, |(_, sig, body)| {
+                ExtractedUnit::Function(f) => old_hashes
+                    .get(&normalize_id(&f.id))
+                    .map_or(true, |(_, sig, body)| {
                         f.signature_hash != *sig || f.body_hash != *body
-                    })
-                }
+                    }),
                 ExtractedUnit::Class(_) => !old_classes.contains(&normalize_id(&id)),
                 ExtractedUnit::Import(_) => !old_imports.contains(&normalize_id(&id)),
                 ExtractedUnit::Constant(_) => !old_constants.contains(&normalize_id(&id)),
@@ -464,29 +524,40 @@ impl CodeGraph {
                 ExtractedUnit::Function(f) => {
                     let entity_id = canonical(&f.id);
                     let func = Function::from_extracted(
-                        f, entity_id.clone(), module_id.clone(),
-                        f.parent_class.as_deref().map(canonical));
+                        f,
+                        entity_id.clone(),
+                        module_id.clone(),
+                        f.parent_class.as_deref().map(canonical),
+                    );
                     projection.functions.insert(entity_id, Arc::new(func));
                     inserted += 1;
                 }
                 ExtractedUnit::Class(c) => {
                     let entity_id = canonical(&c.id);
                     let class = Class::from_extracted(
-                        c, entity_id.clone(), module_id.clone(),
-                        c.parent_class.as_deref().map(canonical));
+                        c,
+                        entity_id.clone(),
+                        module_id.clone(),
+                        c.parent_class.as_deref().map(canonical),
+                    );
                     projection.classes.insert(entity_id, Arc::new(class));
                     inserted += 1;
                 }
                 ExtractedUnit::Import(i) => {
                     let entity_id = canonical(&i.id);
                     let import = Import {
-                        id: entity_id.clone(), raw: i.raw.clone(),
+                        id: entity_id.clone(),
+                        raw: i.raw.clone(),
                         kind: i.kind.clone(),
                         resolution: ImportResolution::Unresolved,
-                        line: i.line, is_type_only: i.is_type_only,
+                        line: i.line,
+                        is_type_only: i.is_type_only,
                         name_span: i.name_span,
-                        embedding: EmbeddingVec::default(),                    };
-                    projection.imports.insert(entity_id.clone(), Arc::new(import));
+                        embedding: EmbeddingVec::default(),
+                    };
+                    projection
+                        .imports
+                        .insert(entity_id.clone(), Arc::new(import));
                     if let Some(mod_arc) = projection.modules.get(&module_id) {
                         let mut m = (**mod_arc).clone();
                         m.imports.push(entity_id);
@@ -518,21 +589,29 @@ impl CodeGraph {
                 ExtractedUnit::Constant(k) => {
                     let entity_id = canonical(&k.id);
                     let constant = Constant {
-                        id: entity_id.clone(), name: k.name.clone(),
-                        annotation: k.annotation.clone(), source: k.source,
+                        id: entity_id.clone(),
+                        name: k.name.clone(),
+                        annotation: k.annotation.clone(),
+                        source: k.source,
                         default_value: k.default_value.clone(),
-                        span: k.span, name_span: k.name_span,
-                        embedding: EmbeddingVec::default(),                    };
+                        span: k.span,
+                        name_span: k.name_span,
+                        embedding: EmbeddingVec::default(),
+                    };
                     projection.constants.insert(entity_id, Arc::new(constant));
                     inserted += 1;
                 }
                 ExtractedUnit::TypeAlias(ta) => {
                     let entity_id = canonical(&ta.id);
                     let alias = TypeAlias {
-                        id: entity_id.clone(), name: ta.name.clone(),
-                        target: ta.target.clone(), source: ta.source,
-                        span: ta.span, name_span: ta.name_span,
-                        embedding: EmbeddingVec::default(),                    };
+                        id: entity_id.clone(),
+                        name: ta.name.clone(),
+                        target: ta.target.clone(),
+                        source: ta.source,
+                        span: ta.span,
+                        name_span: ta.name_span,
+                        embedding: EmbeddingVec::default(),
+                    };
                     projection.type_aliases.insert(entity_id, Arc::new(alias));
                     inserted += 1;
                 }
@@ -559,7 +638,9 @@ impl CodeGraph {
                         content_hash: m.content_hash,
                         embedding: EmbeddingVec::default(),
                     };
-                    projection.modules.insert(module_id.clone(), Arc::new(module));
+                    projection
+                        .modules
+                        .insert(module_id.clone(), Arc::new(module));
                     // Normalized join key (see build_fragment) — closes the
                     // gap where update-added files were never mapped.
                     let key = std::path::PathBuf::from(normalize_path_str(file_path));
@@ -578,11 +659,10 @@ impl CodeGraph {
         // Issue 8: prune synthetic pairs touching removed entities so the
         // tracking set cannot outlive its endpoints (deletions, respells).
         if !removed_ids.is_empty() {
-            let gone: std::collections::HashSet<&EntityId> =
-                removed_ids.iter().collect();
-            projection.synthetic_edges.retain(|(s, t)| {
-                !gone.contains(s) && !gone.contains(t)
-            });
+            let gone: std::collections::HashSet<&EntityId> = removed_ids.iter().collect();
+            projection
+                .synthetic_edges
+                .retain(|(s, t)| !gone.contains(s) && !gone.contains(t));
         }
 
         self.retire_in_store(removed_ids.iter());
@@ -620,9 +700,7 @@ impl CodeGraph {
                 if cand.exists() {
                     cand
                 } else {
-                    std::env::current_dir()
-                        .unwrap_or(root)
-                        .join(p)
+                    std::env::current_dir().unwrap_or(root).join(p)
                 }
             }
         };
@@ -632,7 +710,7 @@ impl CodeGraph {
             std::path::Path::new(file_path)
                 .extension()
                 .and_then(|e| e.to_str())
-                .unwrap_or("py")
+                .unwrap_or("py"),
         );
 
         let ts_lang = Self::ts_language(&lang)
@@ -649,20 +727,29 @@ impl CodeGraph {
 
         // Phase 1-2: Parse and extract
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&ts_lang)
+        parser
+            .set_language(&ts_lang)
             .map_err(|e| format!("Failed to set language: {}", e))?;
-        let tree = parser.parse(&source, None)
+        let tree = parser
+            .parse(&source, None)
             .ok_or_else(|| "Failed to parse source".to_string())?;
         let root_node = tree.root_node();
 
         let mut units = crate::extract::single_pass::extract_single_pass(
-            &source, root_node, &compiled_query, file_path);
-        units.insert(0, Self::synthesize_module_unit(file_path, &lang, &source, root_node));
+            &source,
+            root_node,
+            &compiled_query,
+            file_path,
+        );
+        units.insert(
+            0,
+            Self::synthesize_module_unit(file_path, &lang, &source, root_node),
+        );
 
         // Phase 3: Diff old vs new entities, only update what changed
         let mut projection = (*self.snapshot()).clone();
-        let (new_count, removed_count) = self.apply_diff_update(
-            &mut projection, &units, file_path, &lang);
+        let (new_count, removed_count) =
+            self.apply_diff_update(&mut projection, &units, file_path, &lang);
         // Keep the dotted-name fast path in sync (cheap; module set is
         // unchanged today, but a stale index would silently degrade the
         // cascade below to full scans).
@@ -752,13 +839,21 @@ impl CodeGraph {
                 }
                 ExtractedUnit::Class(c) => {
                     let class = Class::from_extracted(
-                        c, c.id.clone(), module_id.clone(), c.parent_class.clone());
+                        c,
+                        c.id.clone(),
+                        module_id.clone(),
+                        c.parent_class.clone(),
+                    );
                     projection.classes.insert(class.id.clone(), Arc::new(class));
                     module_classes.push(c.id.clone());
                 }
                 ExtractedUnit::Function(f) => {
                     let func = Function::from_extracted(
-                        f, f.id.clone(), module_id.clone(), f.parent_class.clone());
+                        f,
+                        f.id.clone(),
+                        module_id.clone(),
+                        f.parent_class.clone(),
+                    );
                     projection.functions.insert(func.id.clone(), Arc::new(func));
                     module_functions.push(f.id.clone());
                 }
@@ -771,8 +866,11 @@ impl CodeGraph {
                         line: i.line,
                         is_type_only: i.is_type_only,
                         name_span: i.name_span,
-                        embedding: EmbeddingVec::default(),                    };
-                    projection.imports.insert(import.id.clone(), Arc::new(import));
+                        embedding: EmbeddingVec::default(),
+                    };
+                    projection
+                        .imports
+                        .insert(import.id.clone(), Arc::new(import));
                     module_imports.push(i.id.clone());
 
                     // v0.5: Build import graph edges for multi-hop resolution.
@@ -789,8 +887,7 @@ impl CodeGraph {
                             find_module_by_dotted_name(projection, &src_mod, &module_id)
                         {
                             if let Some(target_mod) = projection.modules.get(&target_module_id) {
-                                let target_path =
-                                    target_mod.path.to_string_lossy().to_string();
+                                let target_path = target_mod.path.to_string_lossy().to_string();
                                 let mut ig = self.import_graph.write();
                                 // Ensure both files are nodes in the graph
                                 ig.add_file(file_path, Some(module_id.clone()), *language);
@@ -811,7 +908,9 @@ impl CodeGraph {
                         name_span: k.name_span,
                         embedding: EmbeddingVec::default(),
                     };
-                    projection.constants.insert(constant.id.clone(), Arc::new(constant));
+                    projection
+                        .constants
+                        .insert(constant.id.clone(), Arc::new(constant));
                     module_constants.push(k.id.clone());
                 }
                 ExtractedUnit::TypeAlias(ta) => {
@@ -824,7 +923,9 @@ impl CodeGraph {
                         name_span: ta.name_span,
                         embedding: EmbeddingVec::default(),
                     };
-                    projection.type_aliases.insert(alias.id.clone(), Arc::new(alias));
+                    projection
+                        .type_aliases
+                        .insert(alias.id.clone(), Arc::new(alias));
                     module_type_aliases.push(ta.id.clone());
                 }
                 _ => {}
@@ -876,12 +977,16 @@ impl CodeGraph {
             parse_quality: module_quality,
             file_version: 1,
             content_hash: module_content_hash,
-                        embedding: EmbeddingVec::default(),        };
-        projection.modules.insert(module_id.clone(), Arc::new(module));
+            embedding: EmbeddingVec::default(),
+        };
+        projection
+            .modules
+            .insert(module_id.clone(), Arc::new(module));
         // F14: normalized join key (see build_fragment) — and the update
         // path previously never recorded the mapping at all, so a file
         // added via update_file could not be removed by path.
-        projection.file_to_modules
+        projection
+            .file_to_modules
             .entry(PathBuf::from(normalize_path_str(file_path)))
             .or_default()
             .push(module_id);

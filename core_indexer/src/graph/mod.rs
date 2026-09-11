@@ -49,7 +49,6 @@ pub mod embeddings;
 
 pub mod indexing;
 
-
 pub mod projection_ops;
 
 pub mod cold_start;
@@ -185,7 +184,6 @@ impl CodeGraph {
     pub fn has_store(&self) -> bool {
         self.store.is_some()
     }
-
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────

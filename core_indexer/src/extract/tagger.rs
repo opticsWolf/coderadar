@@ -21,7 +21,10 @@ impl CompiledQuery {
         let query = match Query::new(ts_lang, query_source) {
             Ok(q) => q,
             Err(e) => {
-                eprintln!("Tree-sitter query compile error for {:?}: {} — using fallback", language, e);
+                eprintln!(
+                    "Tree-sitter query compile error for {:?}: {} — using fallback",
+                    language, e
+                );
                 let fallback = "(comment) @docstring\n";
                 Query::new(ts_lang, fallback)
                     .unwrap_or_else(|_| Query::new(ts_lang, "(ERROR) @_none").unwrap())
@@ -33,7 +36,10 @@ impl CompiledQuery {
             let name = query.capture_names()[i];
             capture_tags.push(capture_name_to_tag(name));
         }
-        Some(CompiledQuery { query, capture_tags })
+        Some(CompiledQuery {
+            query,
+            capture_tags,
+        })
     }
 }
 
@@ -54,10 +60,7 @@ pub fn tag_tree<'a>(
             let idx = capture.index as usize;
             if idx < compiled.capture_tags.len() {
                 if let Some(ref tag) = compiled.capture_tags[idx] {
-                    tags.insert(
-                        capture.node.id() as usize,
-                        TagInfo { tag: *tag },
-                    );
+                    tags.insert(capture.node.id() as usize, TagInfo { tag: *tag });
                 }
             }
         }

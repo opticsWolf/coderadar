@@ -39,7 +39,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(update_file, m)?)?;
     m.add_function(wrap_pyfunction!(remove_file, m)?)?;
     {
-        use git_bindings::{git_worktree_clean, git_blame, git_changed_files};
+        use git_bindings::{git_blame, git_changed_files, git_worktree_clean};
         m.add_function(wrap_pyfunction!(git_worktree_clean, m)?)?;
         m.add_function(wrap_pyfunction!(git_blame, m)?)?;
         m.add_function(wrap_pyfunction!(git_changed_files, m)?)?;
@@ -207,14 +207,16 @@ impl PyCodeGraph {
         // a comment about seeding the global graph. It seeded nothing and
         // blocked every other writer for the length of the constructor.
         // PyCodeGraph holds its own instance; the global graph is separate.
-        Self { inner: Arc::new(RwLock::new(CodeGraph::new(config))) }
+        Self {
+            inner: Arc::new(RwLock::new(CodeGraph::new(config))),
+        }
     }
 
     fn query(&self, query_str: &str) -> PyResult<QueryIterator> {
         let graph = self.inner.read();
         let snapshot = graph.snapshot();
-        let parsed = parse_query(query_str)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        let parsed =
+            parse_query(query_str).map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
         let rows = execute_query(&snapshot, &parsed);
         Ok(QueryIterator::new(rows))
     }
@@ -277,18 +279,22 @@ fn function_to_dict(py: Python<'_>, f: &Function) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
     dict.set_item("id", &f.id)?;
     dict.set_item("name", &f.name)?;
-    dict.set_item("kind", match f.kind {
-        crate::types::FunctionKind::Free => "function",
-        crate::types::FunctionKind::Method
-        | crate::types::FunctionKind::AbstractMethod
-        | crate::types::FunctionKind::DataclassSynthesized { .. } => "method",
-        crate::types::FunctionKind::StaticMethod
-        | crate::types::FunctionKind::ClassMethod => "function",
-        crate::types::FunctionKind::Property
-        | crate::types::FunctionKind::PropertySetter
-        | crate::types::FunctionKind::PropertyDeleter
-        | crate::types::FunctionKind::CachedProperty => "method",
-    })?;
+    dict.set_item(
+        "kind",
+        match f.kind {
+            crate::types::FunctionKind::Free => "function",
+            crate::types::FunctionKind::Method
+            | crate::types::FunctionKind::AbstractMethod
+            | crate::types::FunctionKind::DataclassSynthesized { .. } => "method",
+            crate::types::FunctionKind::StaticMethod | crate::types::FunctionKind::ClassMethod => {
+                "function"
+            }
+            crate::types::FunctionKind::Property
+            | crate::types::FunctionKind::PropertySetter
+            | crate::types::FunctionKind::PropertyDeleter
+            | crate::types::FunctionKind::CachedProperty => "method",
+        },
+    )?;
     dict.set_item("parent_module", &f.parent_module)?;
     // Extract file_path from entity ID (format: "file_path::qualified.name")
     if let Some(idx) = f.id.rfind("::") {
@@ -320,7 +326,9 @@ fn function_to_dict(py: Python<'_>, f: &Function) -> PyResult<PyObject> {
     dict.set_item("has_embedding", !f.embedding.vec.is_empty())?;
     dict.set_item("embedding_hash", f.embedding.hash.clone())?;
     // Build signature string from parameters
-    let params: Vec<String> = f.parameters.iter()
+    let params: Vec<String> = f
+        .parameters
+        .iter()
         .map(|p| {
             let mut s = p.name.clone();
             if let Some(ref ann) = p.annotation {
@@ -432,9 +440,7 @@ fn entity_exists(snap: &ProjectedGraph, entity_id: &str) -> bool {
         || snap.type_aliases.contains_key(entity_id)
 }
 
-fn entity_ref_to_dict(
-    py: Python<'_>, entity_id: &str, snap: &ProjectedGraph,
-) -> Option<PyObject> {
+fn entity_ref_to_dict(py: Python<'_>, entity_id: &str, snap: &ProjectedGraph) -> Option<PyObject> {
     // Try each entity type and also resolve file_path from parent module
     if let Some(f) = snap.functions.get(entity_id) {
         let dict = function_to_dict(py, f).ok()?;
@@ -611,9 +617,7 @@ fn build_exclude_overrides(
     }
 }
 
-pub(crate) fn exclusion_gitignore(
-    extra: &[String],
-) -> Option<ignore::gitignore::Gitignore> {
+pub(crate) fn exclusion_gitignore(extra: &[String]) -> Option<ignore::gitignore::Gitignore> {
     let config = active_config();
     let owned: Vec<String> = extra.to_vec();
     let patterns: Vec<&str> = config
@@ -674,9 +678,7 @@ pub(crate) fn path_excluded(
 /// names and absolute paths from absolute-root analyzes. Fresh writes are
 /// canonical since the fix, so anything else is an orphan no write path
 /// will ever touch again — the same reasoning as F6's v1 retirement.
-fn retire_noncanonical_concepts(
-    store: &crate::storage::CodeGraphStore,
-) -> macrame::Result<usize> {
+fn retire_noncanonical_concepts(store: &crate::storage::CodeGraphStore) -> macrame::Result<usize> {
     use crate::graph::module_resolution::is_canonical_file_head;
     let doomed: Vec<String> = store
         .live_concept_ids()?
@@ -763,8 +765,8 @@ fn analyze(
 }
 
 fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> AnalyzeOutcome {
-    use std::fs;
     use crate::types::Language;
+    use std::fs;
 
     let config = active_config();
     let mut graph = CodeGraph::new((*config).clone());
@@ -792,14 +794,21 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
     if create_store && !parent_exists {
         if let Some(parent) = store_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("Warning: Could not create store directory {:?}: {}", parent, e);
+                eprintln!(
+                    "Warning: Could not create store directory {:?}: {}",
+                    parent, e
+                );
             }
         }
     }
     if create_store || parent_exists {
         match crate::storage::CodeGraphStore::open(&store_path) {
-            Ok(store) => { graph = graph.with_store(store); }
-            Err(e) => { eprintln!("Warning: Macrame store not attached: {:?}", e); }
+            Ok(store) => {
+                graph = graph.with_store(store);
+            }
+            Err(e) => {
+                eprintln!("Warning: Macrame store not attached: {:?}", e);
+            }
         }
     }
 
@@ -834,8 +843,7 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                         let mut language = Language::from_extension(ext);
                         // Fallback: filename-based detection (Dockerfile, CMake)
                         if language == Language::OtherTen {
-                            language = Language::from_filename(
-                                &path.to_string_lossy());
+                            language = Language::from_filename(&path.to_string_lossy());
                         }
                         if language == Language::OtherTen {
                             continue;
@@ -858,8 +866,7 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                         }
                     } else {
                         // Files without extension (Dockerfile, CMakeLists.txt)
-                        let language = Language::from_filename(
-                            &path.to_string_lossy());
+                        let language = Language::from_filename(&path.to_string_lossy());
                         if language != Language::OtherTen
                             && CodeGraph::ts_language(&language).is_some()
                         {
@@ -894,97 +901,116 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         if tasks.is_empty() {
             // No files to index — skip parallel phase entirely
         } else {
-        // Sort by source size descending, then round-robin across threads
-        // so large files (e.g. 300KB+ TypeScript) don't all land on one thread.
-        tasks.sort_by(|a, b| b.source.len().cmp(&a.source.len()));
-        let import_graph_ref = &graph.import_graph;
+            // Sort by source size descending, then round-robin across threads
+            // so large files (e.g. 300KB+ TypeScript) don't all land on one thread.
+            tasks.sort_by(|a, b| b.source.len().cmp(&a.source.len()));
+            let import_graph_ref = &graph.import_graph;
 
-        type ChunkResult = Vec<(
-            ProjectedGraph,                    // local fragment
-            Vec<macrame::ConceptUpsert>,        // concepts
-        )>;
+            type ChunkResult = Vec<(
+                ProjectedGraph,              // local fragment
+                Vec<macrame::ConceptUpsert>, // concepts
+            )>;
 
-        let mut all_results: Vec<ChunkResult> = Vec::new();
+            let mut all_results: Vec<ChunkResult> = Vec::new();
 
-        // Bucket assignment: thread i gets tasks[i], tasks[i+N], tasks[i+2N], ...
-        let mut buckets: Vec<Vec<&FileTask>> = (0..num_threads).map(|_| Vec::new()).collect();
-        for (i, task) in tasks.iter().enumerate() {
-            buckets[i % num_threads].push(task);
-        }
+            // Bucket assignment: thread i gets tasks[i], tasks[i+N], tasks[i+2N], ...
+            let mut buckets: Vec<Vec<&FileTask>> = (0..num_threads).map(|_| Vec::new()).collect();
+            for (i, task) in tasks.iter().enumerate() {
+                buckets[i % num_threads].push(task);
+            }
 
-        std::thread::scope(|s| {
-            let mut handles = Vec::new();
-            for bucket in buckets {
-                if bucket.is_empty() { continue; }
-                handles.push(s.spawn(move || {
-                    let mut results = Vec::new();
-                    let mut errors: Vec<String> = Vec::new();
-                    for task in &bucket {
-                        match CodeGraph::extract_only(
-                            &task.source, &task.path, &task.language)
-                        {
-                            Ok((units, concepts)) => {
-                                let module_id = format!("{}::module", task.path);
-                                ImportGraph::build_import_edges(
-                                    import_graph_ref, &units, &task.path,
-                                    task.language, &module_id);
-                                let fragment = CodeGraph::build_fragment(
-                                    &units, &task.path, &task.language);
-                                results.push((fragment, concepts));
+            std::thread::scope(|s| {
+                let mut handles = Vec::new();
+                for bucket in buckets {
+                    if bucket.is_empty() {
+                        continue;
+                    }
+                    handles.push(s.spawn(move || {
+                        let mut results = Vec::new();
+                        let mut errors: Vec<String> = Vec::new();
+                        for task in &bucket {
+                            match CodeGraph::extract_only(&task.source, &task.path, &task.language)
+                            {
+                                Ok((units, concepts)) => {
+                                    let module_id = format!("{}::module", task.path);
+                                    ImportGraph::build_import_edges(
+                                        import_graph_ref,
+                                        &units,
+                                        &task.path,
+                                        task.language,
+                                        &module_id,
+                                    );
+                                    let fragment = CodeGraph::build_fragment(
+                                        &units,
+                                        &task.path,
+                                        &task.language,
+                                    );
+                                    results.push((fragment, concepts));
+                                }
+                                Err(e) => errors.push(format!("{}: {:?}", task.path, e)),
                             }
-                            Err(e) => errors.push(format!("{}: {:?}", task.path, e)),
                         }
-                    }
-                    (results, errors)
-                }));
-            }
-            for h in handles {
-                match h.join() {
-                    Ok((chunk_results, chunk_errors)) => {
-                        all_results.push(chunk_results);
-                        failures.extend(chunk_errors);
-                    }
-                    Err(_) => panicked_workers += 1,
+                        (results, errors)
+                    }));
                 }
-            }
-        });
+                for h in handles {
+                    match h.join() {
+                        Ok((chunk_results, chunk_errors)) => {
+                            all_results.push(chunk_results);
+                            failures.extend(chunk_errors);
+                        }
+                        Err(_) => panicked_workers += 1,
+                    }
+                }
+            });
 
-        // Phase 3: Merge all local fragments into the main projection.
-        // Fragment keys are unique per file, so HashMap::extend is safe.
-        // This replaces the old sequential projection-clone + insert_extracted
-        // pattern, which was O(n²) in files (cloning the growing projection n times).
-        {
-            let mut proj = (*graph.snapshot()).clone();
-            for chunk_results in all_results {
-                for (fragment, concepts) in chunk_results {
-                    let entity_count = fragment.functions.len()
-                        + fragment.classes.len()
-                        + fragment.imports.len()
-                        + fragment.constants.len()
-                        + fragment.type_aliases.len();
-                    proj.modules.extend(fragment.modules);
-                    proj.classes.extend(fragment.classes);
-                    proj.functions.extend(fragment.functions);
-                    proj.imports.extend(fragment.imports);
-                    proj.constants.extend(fragment.constants);
-                    proj.type_aliases.extend(fragment.type_aliases);
-                    for (k, v) in fragment.file_to_modules {
-                        proj.file_to_modules.entry(k).or_default().extend(v);
+            // Phase 3: Merge all local fragments into the main projection.
+            // Fragment keys are unique per file, so HashMap::extend is safe.
+            // This replaces the old sequential projection-clone + insert_extracted
+            // pattern, which was O(n²) in files (cloning the growing projection n times).
+            {
+                let mut proj = (*graph.snapshot()).clone();
+                for chunk_results in all_results {
+                    for (fragment, concepts) in chunk_results {
+                        let entity_count = fragment.functions.len()
+                            + fragment.classes.len()
+                            + fragment.imports.len()
+                            + fragment.constants.len()
+                            + fragment.type_aliases.len();
+                        proj.modules.extend(fragment.modules);
+                        proj.classes.extend(fragment.classes);
+                        proj.functions.extend(fragment.functions);
+                        proj.imports.extend(fragment.imports);
+                        proj.constants.extend(fragment.constants);
+                        proj.type_aliases.extend(fragment.type_aliases);
+                        for (k, v) in fragment.file_to_modules {
+                            proj.file_to_modules.entry(k).or_default().extend(v);
+                        }
+                        proj.module_by_dotted_name
+                            .extend(fragment.module_by_dotted_name);
+                        for (k, v) in fragment.importers {
+                            proj.importers.entry(k).or_default().extend(v);
+                        }
+                        for (k, v) in fragment.callers_by_callee {
+                            proj.callers_by_callee.entry(k).or_default().extend(v);
+                        }
+                        for (k, v) in fragment.callees_by_caller {
+                            proj.callees_by_caller.entry(k).or_default().extend(v);
+                        }
+                        for (k, v) in fragment.subclasses {
+                            proj.subclasses.entry(k).or_default().extend(v);
+                        }
+                        for (k, v) in fragment.overridden_by {
+                            proj.overridden_by.entry(k).or_default().extend(v);
+                        }
+                        total_entities += entity_count;
+                        files_indexed += 1;
+                        all_concepts.extend(concepts);
                     }
-                    proj.module_by_dotted_name.extend(fragment.module_by_dotted_name);
-                    for (k, v) in fragment.importers { proj.importers.entry(k).or_default().extend(v); }
-                    for (k, v) in fragment.callers_by_callee { proj.callers_by_callee.entry(k).or_default().extend(v); }
-                    for (k, v) in fragment.callees_by_caller { proj.callees_by_caller.entry(k).or_default().extend(v); }
-                    for (k, v) in fragment.subclasses { proj.subclasses.entry(k).or_default().extend(v); }
-                    for (k, v) in fragment.overridden_by { proj.overridden_by.entry(k).or_default().extend(v); }
-                    total_entities += entity_count;
-                    files_indexed += 1;
-                    all_concepts.extend(concepts);
                 }
+                graph.commit_projection(proj);
             }
-            graph.commit_projection(proj);
-        }
-        }  // if !tasks.is_empty()
+        } // if !tasks.is_empty()
     }
 
     // Compute MRO and run resolution cascade on all calls.
@@ -1045,9 +1071,9 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         if panicked_workers == 0 {
             if let Some(ref store) = graph.store {
                 match retire_excluded_concepts(store, extra_excludes) {
-                    Ok(n) if n > 0 => eprintln!(
-                        "[coderadar] retired {n} concept(s) under newly-excluded paths"
-                    ),
+                    Ok(n) if n > 0 => {
+                        eprintln!("[coderadar] retired {n} concept(s) under newly-excluded paths")
+                    }
                     Ok(_) => {}
                     Err(e) => eprintln!("[diag] excluded-path retraction failed: {e:?}"),
                 }
@@ -1087,7 +1113,12 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
     let mut guard = GLOBAL_GRAPH.write();
     *guard = Some(graph);
 
-    AnalyzeOutcome { files_indexed, total_entities, failures, panicked_workers }
+    AnalyzeOutcome {
+        files_indexed,
+        total_entities,
+        failures,
+        panicked_workers,
+    }
 }
 
 // ── query_graph() ──────────────────────────────────────────────────────────
@@ -1095,13 +1126,10 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
 #[pyfunction]
 fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {
     with_graph(|_graph, snap| {
-        let parsed = parse_query(query_str)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        let parsed =
+            parse_query(query_str).map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
         let rows = execute_query(snap, &parsed);
-        let results: Vec<PyObject> = rows
-            .into_iter()
-            .map(|r| r.to_pyobject(py))
-            .collect();
+        let results: Vec<PyObject> = rows.into_iter().map(|r| r.to_pyobject(py)).collect();
         Ok(results.into_pyobject(py).unwrap().into_any().unbind())
     })
 }
@@ -1124,30 +1152,41 @@ mod git_bindings {
     pub fn git_blame(py: Python<'_>, repo_path: &str, file_path: &str) -> PyResult<Vec<PyObject>> {
         match crate::fs::git::blame_file(repo_path, file_path) {
             Ok(lines) => {
-                let rows: Vec<PyObject> = lines.iter().map(|l| {
-                    let d = PyDict::new(py);
-                    let _ = d.set_item("line", l.line_number);
-                    let _ = d.set_item("count", l.line_count);
-                    let _ = d.set_item("author", &l.author);
-                    let _ = d.set_item("commit", &l.commit);
-                    d.into()
-                }).collect();
+                let rows: Vec<PyObject> = lines
+                    .iter()
+                    .map(|l| {
+                        let d = PyDict::new(py);
+                        let _ = d.set_item("line", l.line_number);
+                        let _ = d.set_item("count", l.line_count);
+                        let _ = d.set_item("author", &l.author);
+                        let _ = d.set_item("commit", &l.commit);
+                        d.into()
+                    })
+                    .collect();
                 Ok(rows)
             }
-            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(
-                format!("git blame failed: {:?}", e))),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "git blame failed: {:?}",
+                e
+            ))),
         }
     }
 
     #[pyfunction]
-    pub fn git_changed_files(_py: Python<'_>, repo_path: &str,
-                             old_oid: Option<&str>, new_oid: Option<&str>) -> PyResult<Vec<String>> {
+    pub fn git_changed_files(
+        _py: Python<'_>,
+        repo_path: &str,
+        old_oid: Option<&str>,
+        new_oid: Option<&str>,
+    ) -> PyResult<Vec<String>> {
         let old = old_oid.and_then(|s| git2::Oid::from_str(s).ok());
         let new = new_oid.and_then(|s| git2::Oid::from_str(s).ok());
         match crate::fs::git::changed_files_between(repo_path, old, new) {
             Ok(files) => Ok(files),
-            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(
-                format!("git diff failed: {:?}", e))),
+            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "git diff failed: {:?}",
+                e
+            ))),
         }
     }
 }
@@ -1156,18 +1195,23 @@ mod git_bindings {
 
 #[pyfunction]
 fn update_file(
-    py: Python<'_>, file_path: &str, content: Option<&str>, force: Option<bool>,
+    py: Python<'_>,
+    file_path: &str,
+    content: Option<&str>,
+    force: Option<bool>,
 ) -> PyResult<PyObject> {
     // Re-parse, re-resolve and persist without the GIL, like `analyze`. The
     // lock on the global graph is taken inside, so it is held for the work
     // and released before the dict is built.
-    let outcome = py.allow_threads(|| {
-        let guard = GLOBAL_GRAPH.read();
-        match guard.as_ref() {
-            Some(graph) => graph.update_file(file_path, content, force),
-            None => Err("No graph loaded — run coderadar init first".to_string()),
-        }
-    }).map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    let outcome = py
+        .allow_threads(|| {
+            let guard = GLOBAL_GRAPH.read();
+            match guard.as_ref() {
+                Some(graph) => graph.update_file(file_path, content, force),
+                None => Err("No graph loaded — run coderadar init first".to_string()),
+            }
+        })
+        .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
 
     let quality = match outcome.parse_quality {
         crate::types::ParseQuality::Clean => "clean",
@@ -1226,67 +1270,91 @@ fn canonical_entity_id(entity_id: &str) -> String {
 
 #[pyfunction]
 fn plan_body_replacement(
-    entity_id: &str, new_body: &str,
-    expected_hash: Option<String>, dry_run: Option<bool>,
+    entity_id: &str,
+    new_body: &str,
+    expected_hash: Option<String>,
+    dry_run: Option<bool>,
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|_graph, snap| {
         let engine = mutation_engine();
         let entity_id = canonical_entity_id(entity_id);
-        let plan = engine.plan_body_replacement(
-            &entity_id, new_body, expected_hash, dry_run.unwrap_or(false), snap,
-        ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
+        let plan = engine
+            .plan_body_replacement(
+                &entity_id,
+                new_body,
+                expected_hash,
+                dry_run.unwrap_or(false),
+                snap,
+            )
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
         plan_to_dict(py, &plan)
     })
 }
 
 #[pyfunction]
 fn plan_signature_update(
-    entity_id: &str, new_signature: &str,
+    entity_id: &str,
+    new_signature: &str,
     call_site_values: Option<HashMap<String, String>>,
-    inject_defaults: Option<bool>, dry_run: Option<bool>,
+    inject_defaults: Option<bool>,
+    dry_run: Option<bool>,
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|_graph, snap| {
         let engine = mutation_engine();
         let entity_id = canonical_entity_id(entity_id);
-        let plan = engine.plan_signature_update(
-            &entity_id, new_signature,
-            &call_site_values.unwrap_or_default(),
-            inject_defaults.unwrap_or(true), dry_run.unwrap_or(false), snap,
-        ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
+        let plan = engine
+            .plan_signature_update(
+                &entity_id,
+                new_signature,
+                &call_site_values.unwrap_or_default(),
+                inject_defaults.unwrap_or(true),
+                dry_run.unwrap_or(false),
+                snap,
+            )
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
         plan_to_dict(py, &plan)
     })
 }
 
 #[pyfunction]
 fn plan_rename(
-    entity_id: &str, new_name: &str,
-    include_strings: Option<bool>, dry_run: Option<bool>,
+    entity_id: &str,
+    new_name: &str,
+    include_strings: Option<bool>,
+    dry_run: Option<bool>,
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|_graph, snap| {
         let engine = mutation_engine();
         let entity_id = canonical_entity_id(entity_id);
-        let plan = engine.plan_rename(
-            &entity_id, new_name,
-            include_strings.unwrap_or(false), dry_run.unwrap_or(false), snap,
-        ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
+        let plan = engine
+            .plan_rename(
+                &entity_id,
+                new_name,
+                include_strings.unwrap_or(false),
+                dry_run.unwrap_or(false),
+                snap,
+            )
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
         plan_to_dict(py, &plan)
     })
 }
 
 #[pyfunction]
 fn plan_create_entity(
-    target_file: &str, anchor: &str, code: &str, dry_run: Option<bool>,
+    target_file: &str,
+    anchor: &str,
+    code: &str,
+    dry_run: Option<bool>,
 ) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|_graph, snap| {
         let engine = mutation_engine();
-        let plan = engine.plan_create_entity(
-            target_file, anchor, code,
-            dry_run.unwrap_or(false), snap,
-        ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
+        let plan = engine
+            .plan_create_entity(target_file, anchor, code, dry_run.unwrap_or(false), snap)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
         plan_to_dict(py, &plan)
     })
 }
@@ -1314,19 +1382,27 @@ fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
         expected_hash: String,
     }
 
-    let req: ApplyRequest = serde_json::from_str(plan_json)
-        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Invalid plan JSON: {}", e)))?;
+    let req: ApplyRequest = serde_json::from_str(plan_json).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("Invalid plan JSON: {}", e))
+    })?;
 
     // Build a MutationPlan from the request
     let plan = mutation::MutationPlan {
         id: req.id,
         tool: req.tool,
-        edits: req.edits.iter().map(|e| mutation::MutationEdit {
-            file: e.file.clone(),
-            span: crate::types::ByteSpan { start: e.span_start, end: e.span_end },
-            replacement: e.replacement.clone(),
-            expected_hash: e.expected_hash.clone(),
-        }).collect(),
+        edits: req
+            .edits
+            .iter()
+            .map(|e| mutation::MutationEdit {
+                file: e.file.clone(),
+                span: crate::types::ByteSpan {
+                    start: e.span_start,
+                    end: e.span_end,
+                },
+                replacement: e.replacement.clone(),
+                expected_hash: e.expected_hash.clone(),
+            })
+            .collect(),
         affected_files: req.affected_files,
         diff_preview: String::new(),
         unverified_sites: Vec::new(),
@@ -1337,11 +1413,24 @@ fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
         let mut engine = mutation_engine();
         let result = engine.apply(&plan);
         let dict = PyDict::new(py);
-        dict.set_item("applied", matches!(result.status, mutation::MutationStatus::Applied))?;
+        dict.set_item(
+            "applied",
+            matches!(result.status, mutation::MutationStatus::Applied),
+        )?;
         dict.set_item("status", format!("{:?}", result.status))?;
         dict.set_item("files_written", result.files_written)?;
-        dict.set_item("errors", result.syntax_errors.iter().map(|e| format!("{}:{} — {}", e.file, e.line, e.message)).collect::<Vec<_>>())?;
-        dict.set_item("backup_path", result.backup_path.clone().unwrap_or_default())?;
+        dict.set_item(
+            "errors",
+            result
+                .syntax_errors
+                .iter()
+                .map(|e| format!("{}:{} — {}", e.file, e.line, e.message))
+                .collect::<Vec<_>>(),
+        )?;
+        dict.set_item(
+            "backup_path",
+            result.backup_path.clone().unwrap_or_default(),
+        )?;
         Ok(dict.into())
     })
 }
@@ -1356,25 +1445,33 @@ fn plan_to_dict(py: Python<'_>, plan: &mutation::MutationPlan) -> PyResult<PyObj
     dict.set_item("warnings", &plan.warnings)?;
     // Missing here, so the MCP layer's "N call sites could not be verified"
     // warning was always empty however many sites the planner had flagged.
-    let unverified: Vec<PyObject> = plan.unverified_sites.iter().map(|u| {
-        let d = PyDict::new(py);
-        let _ = d.set_item("file", &u.file);
-        let _ = d.set_item("line", u.line);
-        let _ = d.set_item("snippet", &u.snippet);
-        let _ = d.set_item("reason", &u.reason);
-        d.into()
-    }).collect();
+    let unverified: Vec<PyObject> = plan
+        .unverified_sites
+        .iter()
+        .map(|u| {
+            let d = PyDict::new(py);
+            let _ = d.set_item("file", &u.file);
+            let _ = d.set_item("line", u.line);
+            let _ = d.set_item("snippet", &u.snippet);
+            let _ = d.set_item("reason", &u.reason);
+            d.into()
+        })
+        .collect();
     dict.set_item("unverified_sites", unverified)?;
     // Serialize edits as list of {file, span_start, span_end, replacement, expected_hash}
-    let edits: Vec<PyObject> = plan.edits.iter().map(|e| {
-        let ed = PyDict::new(py);
-        let _ = ed.set_item("file", &e.file);
-        let _ = ed.set_item("span_start", e.span.start);
-        let _ = ed.set_item("span_end", e.span.end);
-        let _ = ed.set_item("replacement", &e.replacement);
-        let _ = ed.set_item("expected_hash", &e.expected_hash);
-        ed.into()
-    }).collect();
+    let edits: Vec<PyObject> = plan
+        .edits
+        .iter()
+        .map(|e| {
+            let ed = PyDict::new(py);
+            let _ = ed.set_item("file", &e.file);
+            let _ = ed.set_item("span_start", e.span.start);
+            let _ = ed.set_item("span_end", e.span.end);
+            let _ = ed.set_item("replacement", &e.replacement);
+            let _ = ed.set_item("expected_hash", &e.expected_hash);
+            ed.into()
+        })
+        .collect();
     dict.set_item("edits", edits)?;
     Ok(dict.into())
 }
@@ -1415,7 +1512,11 @@ fn cfg_value<'py, T: FromPyObject<'py>>(
 fn cfg_leaf_paths(d: &Bound<'_, PyDict>, prefix: &str, out: &mut Vec<String>) {
     for (k, v) in d.iter() {
         let key = k.extract::<String>().unwrap_or_default();
-        let path = if prefix.is_empty() { key } else { format!("{}.{}", prefix, key) };
+        let path = if prefix.is_empty() {
+            key
+        } else {
+            format!("{}.{}", prefix, key)
+        };
         match v.downcast_into::<PyDict>() {
             Ok(sub) => cfg_leaf_paths(&sub, &path, out),
             Err(_) => out.push(path),
@@ -1453,7 +1554,13 @@ fn set_config(py: Python<'_>, cfg: &Bound<'_, PyDict>) -> PyResult<PyObject> {
 
     if let Some(proj) = cfg_section(cfg, "project")? {
         take!(proj, "roots", "project.roots", c.project.roots, Vec<String>);
-        take!(proj, "exclude", "project.exclude", c.project.exclude, Vec<String>);
+        take!(
+            proj,
+            "exclude",
+            "project.exclude",
+            c.project.exclude,
+            Vec<String>
+        );
     }
 
     if let Some(db) = cfg_section(cfg, "database")? {
@@ -1461,65 +1568,178 @@ fn set_config(py: Python<'_>, cfg: &Bound<'_, PyDict>) -> PyResult<PyObject> {
     }
 
     if let Some(res) = cfg_section(cfg, "resolution")? {
-        take!(res, "min_confidence", "resolution.min_confidence",
-              c.resolution.min_confidence, f32);
+        take!(
+            res,
+            "min_confidence",
+            "resolution.min_confidence",
+            c.resolution.min_confidence,
+            f32
+        );
 
         if let Some(ig) = cfg_section(&res, "import_graph")? {
-            take!(ig, "max_import_depth", "resolution.import_graph.max_import_depth",
-                  c.import_graph.max_import_depth, usize);
-            take!(ig, "include_same_package", "resolution.import_graph.include_same_package",
-                  c.import_graph.include_same_package, bool);
-            take!(ig, "max_wildcard_hops", "resolution.import_graph.max_wildcard_hops",
-                  c.import_graph.max_wildcard_hops, u8);
+            take!(
+                ig,
+                "max_import_depth",
+                "resolution.import_graph.max_import_depth",
+                c.import_graph.max_import_depth,
+                usize
+            );
+            take!(
+                ig,
+                "include_same_package",
+                "resolution.import_graph.include_same_package",
+                c.import_graph.include_same_package,
+                bool
+            );
+            take!(
+                ig,
+                "max_wildcard_hops",
+                "resolution.import_graph.max_wildcard_hops",
+                c.import_graph.max_wildcard_hops,
+                u8
+            );
         }
         if let Some(sig) = cfg_section(&res, "signature")? {
-            take!(sig, "min_score", "resolution.signature.min_score",
-                  c.signature.min_score, f32);
-            take!(sig, "name_weight", "resolution.signature.name_weight",
-                  c.signature.name_weight, f32);
-            take!(sig, "arity_weight", "resolution.signature.arity_weight",
-                  c.signature.arity_weight, f32);
-            take!(sig, "proximity_weight", "resolution.signature.proximity_weight",
-                  c.signature.proximity_weight, f32);
-            take!(sig, "ambiguous_name_ceiling", "resolution.signature.ambiguous_name_ceiling",
-                  c.signature.ambiguous_name_ceiling, usize);
+            take!(
+                sig,
+                "min_score",
+                "resolution.signature.min_score",
+                c.signature.min_score,
+                f32
+            );
+            take!(
+                sig,
+                "name_weight",
+                "resolution.signature.name_weight",
+                c.signature.name_weight,
+                f32
+            );
+            take!(
+                sig,
+                "arity_weight",
+                "resolution.signature.arity_weight",
+                c.signature.arity_weight,
+                f32
+            );
+            take!(
+                sig,
+                "proximity_weight",
+                "resolution.signature.proximity_weight",
+                c.signature.proximity_weight,
+                f32
+            );
+            take!(
+                sig,
+                "ambiguous_name_ceiling",
+                "resolution.signature.ambiguous_name_ceiling",
+                c.signature.ambiguous_name_ceiling,
+                usize
+            );
         }
     }
 
     if let Some(an) = cfg_section(cfg, "analysis")? {
-        take!(an, "use_cfg_metrics", "analysis.use_cfg_metrics",
-              c.analysis.use_cfg_metrics, bool);
+        take!(
+            an,
+            "use_cfg_metrics",
+            "analysis.use_cfg_metrics",
+            c.analysis.use_cfg_metrics,
+            bool
+        );
     }
 
     if let Some(m) = cfg_section(cfg, "mutation")? {
         take!(m, "enabled", "mutation.enabled", c.mutation.enabled, bool);
-        take!(m, "default_dry_run", "mutation.default_dry_run",
-              c.mutation.default_dry_run, bool);
-        take!(m, "max_files_per_plan", "mutation.max_files_per_plan",
-              c.mutation.max_files_per_plan, usize);
-        take!(m, "max_edits_per_plan", "mutation.max_edits_per_plan",
-              c.mutation.max_edits_per_plan, usize);
-        take!(m, "max_body_tokens", "mutation.max_body_tokens",
-              c.mutation.max_body_tokens, usize);
-        take!(m, "backup_retention_hours", "mutation.backup_retention_hours",
-              c.mutation.backup_retention_hours, u64);
-        take!(m, "post_verify", "mutation.post_verify", c.mutation.post_verify, bool);
-        take!(m, "max_repair_attempts", "mutation.max_repair_attempts",
-              c.mutation.max_repair_attempts, u32);
-        take!(m, "require_clean_git", "mutation.require_clean_git",
-              c.mutation.require_clean_git, bool);
+        take!(
+            m,
+            "default_dry_run",
+            "mutation.default_dry_run",
+            c.mutation.default_dry_run,
+            bool
+        );
+        take!(
+            m,
+            "max_files_per_plan",
+            "mutation.max_files_per_plan",
+            c.mutation.max_files_per_plan,
+            usize
+        );
+        take!(
+            m,
+            "max_edits_per_plan",
+            "mutation.max_edits_per_plan",
+            c.mutation.max_edits_per_plan,
+            usize
+        );
+        take!(
+            m,
+            "max_body_tokens",
+            "mutation.max_body_tokens",
+            c.mutation.max_body_tokens,
+            usize
+        );
+        take!(
+            m,
+            "backup_retention_hours",
+            "mutation.backup_retention_hours",
+            c.mutation.backup_retention_hours,
+            u64
+        );
+        take!(
+            m,
+            "post_verify",
+            "mutation.post_verify",
+            c.mutation.post_verify,
+            bool
+        );
+        take!(
+            m,
+            "max_repair_attempts",
+            "mutation.max_repair_attempts",
+            c.mutation.max_repair_attempts,
+            u32
+        );
+        take!(
+            m,
+            "require_clean_git",
+            "mutation.require_clean_git",
+            c.mutation.require_clean_git,
+            bool
+        );
         take!(m, "allow", "mutation.allow", c.mutation.allow, Vec<String>);
         take!(m, "deny", "mutation.deny", c.mutation.deny, Vec<String>);
     }
 
     if let Some(q) = cfg_section(cfg, "query")? {
         take!(q, "max_depth", "query.max_depth", c.query.max_depth, usize);
-        take!(q, "default_top_k", "query.default_top_k", c.query.default_top_k, usize);
-        take!(q, "cache_ttl_seconds", "query.cache_ttl_seconds",
-              c.query.cache_ttl_seconds, u64);
-        take!(q, "cache_max_size", "query.cache_max_size", c.query.cache_max_size, usize);
-        take!(q, "use_rust_graph_for_traversal", "query.use_rust_graph_for_traversal",
-              c.query.use_rust_graph_for_traversal, bool);
+        take!(
+            q,
+            "default_top_k",
+            "query.default_top_k",
+            c.query.default_top_k,
+            usize
+        );
+        take!(
+            q,
+            "cache_ttl_seconds",
+            "query.cache_ttl_seconds",
+            c.query.cache_ttl_seconds,
+            u64
+        );
+        take!(
+            q,
+            "cache_max_size",
+            "query.cache_max_size",
+            c.query.cache_max_size,
+            usize
+        );
+        take!(
+            q,
+            "use_rust_graph_for_traversal",
+            "query.use_rust_graph_for_traversal",
+            c.query.use_rust_graph_for_traversal,
+            bool
+        );
     }
 
     let mut leaves = Vec::new();
@@ -1579,15 +1799,12 @@ fn get_config(py: Python<'_>) -> PyResult<PyObject> {
     Ok(out.into())
 }
 
-
 // ── Read Path ──────────────────────────────────────────────────────────────
 
 /// Look up a single entity by ID. Returns a dict or None.
 #[pyfunction]
 fn lookup_entity(py: Python<'_>, entity_id: &str) -> PyResult<Option<PyObject>> {
-    with_graph(|_graph, snap| {
-        Ok(entity_ref_to_dict(py, entity_id, snap))
-    })
+    with_graph(|_graph, snap| Ok(entity_ref_to_dict(py, entity_id, snap)))
 }
 
 /// Search tokens from a free-text query: whitespace-split, surrounding
@@ -1674,7 +1891,11 @@ fn function_signature_text(f: &Function) -> Option<String> {
     if let Some(r) = &f.return_type {
         parts.push(r.clone());
     }
-    if parts.is_empty() { None } else { Some(parts.join(", ")) }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(", "))
+    }
 }
 
 /// Search entities by per-token name match with OR semantics
@@ -1691,14 +1912,17 @@ fn function_signature_text(f: &Function) -> Option<String> {
 // `kind` is a filter, not a required argument: without an explicit signature
 // PyO3 makes even an `Option` positional, so every caller had to pass None.
 #[pyo3(signature = (query, top_k, kind = None))]
-fn search_entities(py: Python<'_>, query: &str, top_k: usize, kind: Option<&str>) -> PyResult<Vec<PyObject>> {
+fn search_entities(
+    py: Python<'_>,
+    query: &str,
+    top_k: usize,
+    kind: Option<&str>,
+) -> PyResult<Vec<PyObject>> {
     with_graph(|_graph, snap| {
         let tokens = search_tokens(query);
         let mut results: Vec<(usize, PyObject)> = Vec::new(); // (score, dict)
         let kind_filter = kind.map(|k| k.to_lowercase());
-        let wants = |k: &str| {
-            kind_filter.is_none() || kind_filter.as_deref() == Some(k)
-        };
+        let wants = |k: &str| kind_filter.is_none() || kind_filter.as_deref() == Some(k);
 
         // Per-kind signature/docstring accessors. Closures (not call-site
         // expressions) because of macro hygiene: an expression captured at the
@@ -1738,14 +1962,62 @@ fn search_entities(py: Python<'_>, query: &str, top_k: usize, kind: Option<&str>
             };
         }
 
-        scan!("function", snap.functions, name, function_to_dict, 10, sig_f, doc_f);
-        scan!("class", snap.classes, name, class_to_dict, 10, none_c, doc_c);
-        scan!("type_alias", snap.type_aliases, name, type_alias_to_dict, 10, none_t, none_t);
-        scan!("constant", snap.constants, name, constant_to_dict, 9, none_k, none_k);
-        scan!("module", snap.modules, name, module_to_dict, 9, none_m, none_m);
+        scan!(
+            "function",
+            snap.functions,
+            name,
+            function_to_dict,
+            10,
+            sig_f,
+            doc_f
+        );
+        scan!(
+            "class",
+            snap.classes,
+            name,
+            class_to_dict,
+            10,
+            none_c,
+            doc_c
+        );
+        scan!(
+            "type_alias",
+            snap.type_aliases,
+            name,
+            type_alias_to_dict,
+            10,
+            none_t,
+            none_t
+        );
+        scan!(
+            "constant",
+            snap.constants,
+            name,
+            constant_to_dict,
+            9,
+            none_k,
+            none_k
+        );
+        scan!(
+            "module",
+            snap.modules,
+            name,
+            module_to_dict,
+            9,
+            none_m,
+            none_m
+        );
         // An import's "name" is its raw statement text, which is noisier than
         // a definition name, so it ranks last.
-        scan!("import", snap.imports, raw, import_to_dict, 8, none_i, none_i);
+        scan!(
+            "import",
+            snap.imports,
+            raw,
+            import_to_dict,
+            8,
+            none_i,
+            none_i
+        );
 
         // Sort by score descending, take top_k
         results.sort_by(|a, b| b.0.cmp(&a.0));
@@ -1830,7 +2102,11 @@ fn normalize_edge_kinds(edge_kinds: &[String]) -> Vec<String> {
         .iter()
         .map(|k| {
             let k = k.trim().to_ascii_lowercase();
-            if k == "inherits" { "extends".to_string() } else { k }
+            if k == "inherits" {
+                "extends".to_string()
+            } else {
+                k
+            }
         })
         .filter(|k| !k.is_empty())
         .collect();
@@ -1916,7 +2192,9 @@ fn traverse(
                 let t = ts_owned.clone();
                 move || store.traverse_at(&s, max_depth, &e, &t)
             })
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("as_of traversal failed: {e:?}")))?;
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("as_of traversal failed: {e:?}"))
+            })?;
         let reached = subgraph_bfs(&sub, &start_owned, max_depth);
         let mut results = Vec::with_capacity(reached.len());
         for (id, depth, ek) in reached {
@@ -1941,7 +2219,14 @@ fn traverse(
         let start = start_id.to_string();
         let kinds_for_bfs = kinds.clone();
         let reached: Vec<(String, usize, String)> = py.allow_threads(move || {
-            crate::graph::CodeGraph::traverse_bfs(&snap_for_bfs, &start, max_depth, &kinds_for_bfs, up, down)
+            crate::graph::CodeGraph::traverse_bfs(
+                &snap_for_bfs,
+                &start,
+                max_depth,
+                &kinds_for_bfs,
+                up,
+                down,
+            )
         });
         let mut results = Vec::with_capacity(reached.len());
         for (id, depth, ek) in reached {
@@ -2026,7 +2311,14 @@ fn traverse_unresolved(
         let snap_for_bfs = snap_owned.clone();
         let kinds_for_bfs = kinds.clone();
         let reached: Vec<(String, usize, String)> = py.allow_threads(move || {
-            crate::graph::CodeGraph::traverse_bfs(&snap_for_bfs, &start, max_depth, &kinds_for_bfs, up, down)
+            crate::graph::CodeGraph::traverse_bfs(
+                &snap_for_bfs,
+                &start,
+                max_depth,
+                &kinds_for_bfs,
+                up,
+                down,
+            )
         });
         let total: usize = reached
             .iter()
@@ -2081,8 +2373,9 @@ fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
 fn index_edge_stats(py: Python<'_>) -> PyResult<PyObject> {
     with_graph(|_graph, snap| {
         let dict = PyDict::new(py);
-        let count = |m: &std::collections::HashMap<String, std::collections::BTreeSet<String>>|
-            m.values().map(|s| s.len()).sum::<usize>();
+        let count = |m: &std::collections::HashMap<String, std::collections::BTreeSet<String>>| {
+            m.values().map(|s| s.len()).sum::<usize>()
+        };
         dict.set_item("callers_by_callee", count(&snap.callers_by_callee))?;
         dict.set_item("callees_by_caller", count(&snap.callees_by_caller))?;
         dict.set_item("importers", count(&snap.importers))?;
@@ -2090,8 +2383,11 @@ fn index_edge_stats(py: Python<'_>) -> PyResult<PyObject> {
         dict.set_item("overridden_by", count(&snap.overridden_by))?;
         dict.set_item("overrides_base", snap.overrides_base.len())?;
         // How many Import entities actually resolved (resolution != Unresolved).
-        let resolved_imports = snap.imports.values()
-            .filter(|i| !matches!(i.resolution, crate::types::ImportResolution::Unresolved)).count();
+        let resolved_imports = snap
+            .imports
+            .values()
+            .filter(|i| !matches!(i.resolution, crate::types::ImportResolution::Unresolved))
+            .count();
         dict.set_item("resolved_imports", resolved_imports)?;
         // Keys-with-entries — useful even when edge count is 0 (shows the
         // index is non-empty but targets may have 0 inbound).
@@ -2212,9 +2508,8 @@ fn find_dead_code(
         let options = crate::graph::deadcode::DeadCodeOptions {
             include_test_only: include_test_reachable,
         };
-        let findings = py.allow_threads(move || {
-            crate::graph::deadcode::detect_dead(&snap_owned, options)
-        });
+        let findings =
+            py.allow_threads(move || crate::graph::deadcode::detect_dead(&snap_owned, options));
 
         let mut results = Vec::new();
         for f in findings.iter().filter(|f| f.score >= min_confidence) {
@@ -2238,16 +2533,11 @@ fn find_dead_code(
                     .modules
                     .get(&func.parent_module)
                     .map(|m| m.path.to_string_lossy().to_string())
-                    .unwrap_or_else(|| {
-                        func.id.split("::").next().unwrap_or("").to_string()
-                    });
+                    .unwrap_or_else(|| func.id.split("::").next().unwrap_or("").to_string());
                 dict.set_item("file", file)?;
                 dict.set_item("line", func.line as u32)?;
             } else {
-                dict.set_item(
-                    "file",
-                    f.entity_id.split("::").next().unwrap_or(""),
-                )?;
+                dict.set_item("file", f.entity_id.split("::").next().unwrap_or(""))?;
                 dict.set_item("line", 0u32)?;
             }
             results.push(dict.into());
@@ -2262,16 +2552,12 @@ fn find_dead_code(
 /// 0..=1, computed once per graph revision and cached. Returns
 /// `(entity_id, score)` pairs sorted descending; unknown ids score 0.0.
 #[pyfunction]
-fn rank_by_centrality(
-    py: Python<'_>,
-    entity_ids: Vec<String>,
-) -> PyResult<Vec<(String, f64)>> {
+fn rank_by_centrality(py: Python<'_>, entity_ids: Vec<String>) -> PyResult<Vec<(String, f64)>> {
     with_graph_snapshot(|snap| {
         let snap_owned: Arc<ProjectedGraph> = snap.clone();
-        let map = py
-            .allow_threads(move || {
-                crate::graph::centrality::cached_harmonic_centrality(&snap_owned, 3)
-            });
+        let map = py.allow_threads(move || {
+            crate::graph::centrality::cached_harmonic_centrality(&snap_owned, 3)
+        });
         let mut pairs: Vec<(String, f64)> = entity_ids
             .into_iter()
             .map(|id| {
@@ -2279,8 +2565,7 @@ fn rank_by_centrality(
                 (id, (raw * 1000.0).round() / 1000.0)
             })
             .collect();
-        pairs
-            .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         Ok(pairs)
     })
 }
@@ -2306,7 +2591,10 @@ fn find_clones(
     }
     with_graph_snapshot(|snap| {
         let snap_owned: Arc<ProjectedGraph> = snap.clone();
-        let options = crate::clones::CloneOptions { min_lines, min_similarity };
+        let options = crate::clones::CloneOptions {
+            min_lines,
+            min_similarity,
+        };
         // F1 defense-in-depth: a panic inside detection must become a tool
         // error, never a dead Tokio worker / hung stdio session.
         let groups = py.allow_threads(move || {
@@ -2327,14 +2615,18 @@ fn find_clones(
             dict.set_item("similarity", g.similarity)?;
             dict.set_item("confidence_tier", g.confidence_tier.as_str())?;
 
-            let instances: Vec<PyObject> = g.instances.iter().map(|inst| {
-                let d = PyDict::new(py);
-                let _ = d.set_item("entity_id", &inst.entity_id);
-                let _ = d.set_item("file", &inst.file);
-                let _ = d.set_item("span_start", inst.span.start);
-                let _ = d.set_item("span_end", inst.span.end);
-                d.into()
-            }).collect();
+            let instances: Vec<PyObject> = g
+                .instances
+                .iter()
+                .map(|inst| {
+                    let d = PyDict::new(py);
+                    let _ = d.set_item("entity_id", &inst.entity_id);
+                    let _ = d.set_item("file", &inst.file);
+                    let _ = d.set_item("span_start", inst.span.start);
+                    let _ = d.set_item("span_end", inst.span.end);
+                    d.into()
+                })
+                .collect();
             dict.set_item("instances", PyList::new(py, &instances)?)?;
             results.push(dict.into());
         }
@@ -2360,11 +2652,16 @@ fn find_scaffolding(
         pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
     })?;
     // Strip the Windows \?\ verbatim prefix for display consistency.
-    let root_str = root.to_string_lossy().trim_start_matches(r"\?\ ").to_string();
+    let root_str = root
+        .to_string_lossy()
+        .trim_start_matches(r"\?\ ")
+        .to_string();
 
-    let cfg = crate::scaffold::ScaffoldConfig { include_secrets, ..Default::default() };
-    let mut findings =
-        py.allow_threads(|| crate::scaffold::scan_path(Path::new(&root_str), &cfg));
+    let cfg = crate::scaffold::ScaffoldConfig {
+        include_secrets,
+        ..Default::default()
+    };
+    let mut findings = py.allow_threads(|| crate::scaffold::scan_path(Path::new(&root_str), &cfg));
 
     // Placeholder bodies ride the resolved projection when it is loaded;
     // a cold/no graph degrades to file-walk signals only (honest subset).
@@ -2372,8 +2669,8 @@ fn find_scaffolding(
     // a clean scan from a degraded one (F13: skips were silent).
     let mut stats = crate::scaffold::PlaceholderStats::default();
     let mut placeholder_degraded = false;
-    if let Ok((placeholders, ph_stats)) =
-        with_graph_snapshot(|snap| -> PyResult<(
+    if let Ok((placeholders, ph_stats)) = with_graph_snapshot(
+        |snap| -> PyResult<(
             Vec<crate::scaffold::ScaffoldFinding>,
             crate::scaffold::PlaceholderStats,
         )> {
@@ -2381,8 +2678,8 @@ fn find_scaffolding(
             let (placeholders, ph_stats) =
                 py.allow_threads(move || crate::scaffold::scan_placeholder_bodies(&snap_owned));
             Ok((placeholders, ph_stats))
-        })
-    {
+        },
+    ) {
         stats = ph_stats;
         findings.extend(placeholders);
     } else {
@@ -2451,9 +2748,7 @@ fn find_scaffolding(
 /// Uses cosine similarity against stored embedding vectors.
 /// Scans ALL entity types (functions, classes, modules, imports, constants, type aliases).
 #[pyfunction]
-fn search_similar(
-    py: Python<'_>, query_vec: Vec<f64>, top_k: usize,
-) -> PyResult<Vec<PyObject>> {
+fn search_similar(py: Python<'_>, query_vec: Vec<f64>, top_k: usize) -> PyResult<Vec<PyObject>> {
     with_graph(|_graph, snap| {
         let mut scored: Vec<(f64, String)> = Vec::new();
 
@@ -2465,12 +2760,24 @@ fn search_similar(
             }
         };
 
-        for (id, f) in &snap.functions { collect(&mut scored, id, &f.embedding); }
-        for (id, c) in &snap.classes { collect(&mut scored, id, &c.embedding); }
-        for (id, m) in &snap.modules { collect(&mut scored, id, &m.embedding); }
-        for (id, i) in &snap.imports { collect(&mut scored, id, &i.embedding); }
-        for (id, c) in &snap.constants { collect(&mut scored, id, &c.embedding); }
-        for (id, ta) in &snap.type_aliases { collect(&mut scored, id, &ta.embedding); }
+        for (id, f) in &snap.functions {
+            collect(&mut scored, id, &f.embedding);
+        }
+        for (id, c) in &snap.classes {
+            collect(&mut scored, id, &c.embedding);
+        }
+        for (id, m) in &snap.modules {
+            collect(&mut scored, id, &m.embedding);
+        }
+        for (id, i) in &snap.imports {
+            collect(&mut scored, id, &i.embedding);
+        }
+        for (id, c) in &snap.constants {
+            collect(&mut scored, id, &c.embedding);
+        }
+        for (id, ta) in &snap.type_aliases {
+            collect(&mut scored, id, &ta.embedding);
+        }
 
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(top_k);
@@ -2478,13 +2785,35 @@ fn search_similar(
         let results: Vec<PyObject> = scored
             .into_iter()
             .filter_map(|(sim, id)| {
-                let dict: Option<PyObject> =
-                    snap.functions.get(&id).and_then(|f| function_to_dict(py, f).ok())
-                    .or_else(|| snap.classes.get(&id).and_then(|c| class_to_dict(py, c).ok()))
-                    .or_else(|| snap.modules.get(&id).and_then(|m| module_to_dict(py, m).ok()))
-                    .or_else(|| snap.imports.get(&id).and_then(|i| import_to_dict(py, i).ok()))
-                    .or_else(|| snap.constants.get(&id).and_then(|c| constant_to_dict(py, c).ok()))
-                    .or_else(|| snap.type_aliases.get(&id).and_then(|ta| type_alias_to_dict(py, ta).ok()));
+                let dict: Option<PyObject> = snap
+                    .functions
+                    .get(&id)
+                    .and_then(|f| function_to_dict(py, f).ok())
+                    .or_else(|| {
+                        snap.classes
+                            .get(&id)
+                            .and_then(|c| class_to_dict(py, c).ok())
+                    })
+                    .or_else(|| {
+                        snap.modules
+                            .get(&id)
+                            .and_then(|m| module_to_dict(py, m).ok())
+                    })
+                    .or_else(|| {
+                        snap.imports
+                            .get(&id)
+                            .and_then(|i| import_to_dict(py, i).ok())
+                    })
+                    .or_else(|| {
+                        snap.constants
+                            .get(&id)
+                            .and_then(|c| constant_to_dict(py, c).ok())
+                    })
+                    .or_else(|| {
+                        snap.type_aliases
+                            .get(&id)
+                            .and_then(|ta| type_alias_to_dict(py, ta).ok())
+                    });
                 dict.map(|d| {
                     if let Ok(dict) = d.downcast_bound::<PyDict>(py) {
                         let _ = dict.set_item("similarity", sim);
@@ -2540,34 +2869,30 @@ pub(crate) fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
 #[pyfunction]
 #[pyo3(signature = (db_path, root=None))]
 fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<PyObject> {
-    use crate::graph::cold_start::{ColdStartStats, projection_from_state};
+    use crate::graph::cold_start::{projection_from_state, ColdStartStats};
     use crate::storage::{now_iso8601, CodeGraphStore};
 
     let db = db_path.to_string();
     let root_owned = root.map(|r| r.to_string());
-    let (revision, stats, indexed_at): (i64, ColdStartStats, f64) = py.allow_threads(
-        || -> PyResult<(i64, ColdStartStats, f64)> {
+    let (revision, stats, indexed_at): (i64, ColdStartStats, f64) =
+        py.allow_threads(|| -> PyResult<(i64, ColdStartStats, f64)> {
             // Canonical timestamp: macrame's `timestamp::normalize`
             // rejects "now" — the same helper every persistence path uses.
-            let store = CodeGraphStore::open(&db)
-                .map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!(
-                        "failed to open Macrame store {db}: {e:?}"
-                    ))
-                })?;
+            let store = CodeGraphStore::open(&db).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to open Macrame store {db}: {e:?}"
+                ))
+            })?;
             let now = now_iso8601();
-            let state = store
-                .reconstruct(&now)
-                .map_err(|e| {
-                    pyo3::exceptions::PyRuntimeError::new_err(format!(
-                        "ledger reconstruct failed for {db}: {e:?}"
-                    ))
-                })?;
+            let state = store.reconstruct(&now).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "ledger reconstruct failed for {db}: {e:?}"
+                ))
+            })?;
             drop(store);
 
             let (mut projection, stats) =
-                projection_from_state(&state)
-                    .map_err(pyo3::exceptions::PyValueError::new_err)?;
+                projection_from_state(&state).map_err(pyo3::exceptions::PyValueError::new_err)?;
 
             // Same cascade as `analyze_inner`, minus `resolve_all_calls`
             // (resolved_calls already restored from v2 concepts) and
@@ -2598,13 +2923,11 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             // relative root here made every later strip_prefix fail and
             // every update fall back to unrooted spelling.
             if let Some(r) = root_owned {
-                *INDEXED_ROOT.write() = Some(
-                    std::fs::canonicalize(&r).unwrap_or_else(|_| std::path::PathBuf::from(r)),
-                );
+                *INDEXED_ROOT.write() =
+                    Some(std::fs::canonicalize(&r).unwrap_or_else(|_| std::path::PathBuf::from(r)));
             }
             Ok((revision, stats, indexed_at))
-        }
-    )?;
+        })?;
 
     let dict = PyDict::new(py);
     dict.set_item("revision", revision)?;
@@ -2635,7 +2958,9 @@ fn store_repair(py: Python<'_>, db_path: &str) -> PyResult<PyObject> {
     let outcome = py.allow_threads(
         move || -> std::result::Result<(usize, usize, usize, usize), String> {
             let store = CodeGraphStore::open(&db).map_err(|e| format!("{e:?}"))?;
-            let live = store.live_concept_contents().map_err(|e| format!("{e:?}"))?;
+            let live = store
+                .live_concept_contents()
+                .map_err(|e| format!("{e:?}"))?;
             let mut v1 = 0usize;
             let mut unreadable = 0usize;
             for (_, content) in &live {
@@ -2645,15 +2970,12 @@ fn store_repair(py: Python<'_>, db_path: &str) -> PyResult<PyObject> {
                     _ => {}
                 }
             }
-            let (retired, edges) =
-                store.retire_v1_leftovers().map_err(|e| format!("{e:?}"))?;
+            let (retired, edges) = store.retire_v1_leftovers().map_err(|e| format!("{e:?}"))?;
             Ok((v1, unreadable, retired, edges))
         },
     );
     let (v1_live, unreadable_live, v1_retired, edges_retired) = outcome.map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!(
-            "store repair failed for {db_path}: {e}"
-        ))
+        pyo3::exceptions::PyRuntimeError::new_err(format!("store repair failed for {db_path}: {e}"))
     })?;
     let dict = PyDict::new(py);
     dict.set_item("v1_found", v1_live)?;
@@ -2665,8 +2987,9 @@ fn store_repair(py: Python<'_>, db_path: &str) -> PyResult<PyObject> {
 
 // ── File Watcher Bindings ──────────────────────────────────────────────
 
-static GLOBAL_WATCHER: std::sync::LazyLock<std::sync::Mutex<Option<crate::fs::watcher::FileWatcher>>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+static GLOBAL_WATCHER: std::sync::LazyLock<
+    std::sync::Mutex<Option<crate::fs::watcher::FileWatcher>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
 
 /// Start the file watcher on the given paths. Must have run analyze() first.
 ///
@@ -2722,9 +3045,10 @@ fn next_watcher_batch() -> PyResult<Option<Vec<(String, String)>>> {
     *guard = Some(watcher);
 
     Ok(batch.map(|b| {
-        b.changes.into_iter().map(|c| {
-            (c.path, format!("{:?}", c.kind))
-        }).collect()
+        b.changes
+            .into_iter()
+            .map(|c| (c.path, format!("{:?}", c.kind)))
+            .collect()
     }))
 }
 
@@ -2754,9 +3078,10 @@ fn next_watcher_batch_timeout(timeout_ms: u64) -> PyResult<Option<Vec<(String, S
     *guard = Some(watcher);
 
     Ok(batch.map(|b| {
-        b.changes.into_iter().map(|c| {
-            (c.path, format!("{:?}", c.kind))
-        }).collect()
+        b.changes
+            .into_iter()
+            .map(|c| (c.path, format!("{:?}", c.kind)))
+            .collect()
     }))
 }
 
@@ -2768,15 +3093,13 @@ fn next_watcher_batch_timeout(timeout_ms: u64) -> PyResult<Option<Vec<(String, S
 /// tree-sitter-extracted. This function merges them into the live graph
 /// so agents can trace them via callers_of / callees_of / explore.
 #[pyfunction]
-fn register_synthetic_edge(
-    source_id: &str, target_id: &str, kind: &str,
-) -> PyResult<PyObject> {
+fn register_synthetic_edge(source_id: &str, target_id: &str, kind: &str) -> PyResult<PyObject> {
     let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut()
-        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-            "No graph loaded — run coderadar analyze first"
-        ))?;
-    graph.register_synthetic_edge(source_id, target_id, kind)
+    let graph = guard.as_mut().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
+    })?;
+    graph
+        .register_synthetic_edge(source_id, target_id, kind)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
@@ -2790,15 +3113,13 @@ fn register_synthetic_edge(
 /// resolvers emit one edge per route/handler pair; the single-edge call clones
 /// the whole projection each time.
 #[pyfunction]
-fn register_synthetic_edges_bulk(
-    edges: Vec<(String, String, String)>,
-) -> PyResult<PyObject> {
+fn register_synthetic_edges_bulk(edges: Vec<(String, String, String)>) -> PyResult<PyObject> {
     let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut()
-        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-            "No graph loaded — run coderadar analyze first"
-        ))?;
-    let registered = graph.register_synthetic_edges_bulk(edges)
+    let graph = guard.as_mut().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
+    })?;
+    let registered = graph
+        .register_synthetic_edges_bulk(edges)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
@@ -2814,15 +3135,13 @@ fn register_synthetic_edges_bulk(
 /// immediately available for search_similar() queries.
 /// content_hash: xxHash64 hex of the entity body — used for incremental dedup.
 #[pyfunction]
-fn set_embedding(
-    entity_id: &str, embedding: Vec<f64>, content_hash: &str,
-) -> PyResult<PyObject> {
+fn set_embedding(entity_id: &str, embedding: Vec<f64>, content_hash: &str) -> PyResult<PyObject> {
     let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut()
-        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-            "No graph loaded — run coderadar analyze first"
-        ))?;
-    graph.set_embedding(entity_id, &embedding, content_hash)
+    let graph = guard.as_mut().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
+    })?;
+    graph
+        .set_embedding(entity_id, &embedding, content_hash)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
@@ -2837,14 +3156,11 @@ fn set_embedding(
 /// one at a time is O(N²); this clones once. Returns `applied` and the ids
 /// that matched no entity.
 #[pyfunction]
-fn set_embeddings_bulk(
-    entries: Vec<(String, Vec<f64>, String)>,
-) -> PyResult<PyObject> {
+fn set_embeddings_bulk(entries: Vec<(String, Vec<f64>, String)>) -> PyResult<PyObject> {
     let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut()
-        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-            "No graph loaded — run coderadar analyze first"
-        ))?;
+    let graph = guard.as_mut().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
+    })?;
     let (applied, missing) = graph.set_embeddings_bulk(entries);
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
@@ -2859,36 +3175,43 @@ fn set_embeddings_bulk(
 /// Module dicts carry EntityId lists for `classes`, `functions`, etc.
 /// This function resolves those IDs to the full entity representation.
 #[pyfunction]
-fn module_children(
-    py: Python<'_>, module_id: &str,
-) -> PyResult<PyObject> {
+fn module_children(py: Python<'_>, module_id: &str) -> PyResult<PyObject> {
     with_graph(|_graph, snap| {
-        let module = snap.modules.get(module_id)
-            .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(
-                format!("Module not found: {}", module_id)
-            ))?;
+        let module = snap.modules.get(module_id).ok_or_else(|| {
+            pyo3::exceptions::PyKeyError::new_err(format!("Module not found: {}", module_id))
+        })?;
 
         let dict = PyDict::new(py);
         dict.set_item("module_id", module_id)?;
 
         // Resolve classes
-        let classes: Vec<PyObject> = module.classes.iter()
+        let classes: Vec<PyObject> = module
+            .classes
+            .iter()
             .filter_map(|cid| {
-                snap.classes.get(cid).and_then(|c| class_to_dict(py, c).ok())
+                snap.classes
+                    .get(cid)
+                    .and_then(|c| class_to_dict(py, c).ok())
             })
             .collect();
         dict.set_item("classes", classes)?;
 
         // Resolve functions
-        let functions: Vec<PyObject> = module.functions.iter()
+        let functions: Vec<PyObject> = module
+            .functions
+            .iter()
             .filter_map(|fid| {
-                snap.functions.get(fid).and_then(|f| function_to_dict(py, f).ok())
+                snap.functions
+                    .get(fid)
+                    .and_then(|f| function_to_dict(py, f).ok())
             })
             .collect();
         dict.set_item("functions", functions)?;
 
         // Resolve imports
-        let imports: Vec<PyObject> = module.imports.iter()
+        let imports: Vec<PyObject> = module
+            .imports
+            .iter()
             .filter_map(|iid| {
                 snap.imports.get(iid).map(|i| {
                     let d = PyDict::new(py);
@@ -2903,7 +3226,9 @@ fn module_children(
         dict.set_item("imports", imports)?;
 
         // Resolve constants
-        let constants: Vec<PyObject> = module.constants.iter()
+        let constants: Vec<PyObject> = module
+            .constants
+            .iter()
             .filter_map(|cid| {
                 snap.constants.get(cid).map(|c| {
                     let d = PyDict::new(py);
@@ -2923,10 +3248,9 @@ fn module_children(
 #[pyfunction]
 fn clear_embeddings_for_file(file_path: &str) -> PyResult<PyObject> {
     let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut()
-        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-            "No graph loaded"
-        ))?;
+    let graph = guard
+        .as_mut()
+        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("No graph loaded"))?;
     graph.clear_embeddings_for_file(file_path);
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
@@ -2940,10 +3264,9 @@ fn clear_embeddings_for_file(file_path: &str) -> PyResult<PyObject> {
 #[pyfunction]
 fn set_module_star_exports(module_id: &str, names: Vec<String>) -> PyResult<PyObject> {
     let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut()
-        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-            "No graph loaded — run coderadar analyze first"
-        ))?;
+    let graph = guard.as_mut().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
+    })?;
     graph.set_module_star_exports(module_id, names);
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
@@ -2957,14 +3280,11 @@ fn set_module_star_exports(module_id: &str, names: Vec<String>) -> PyResult<PyOb
 /// whole projection each time; analyze() has one module with `__all__` per
 /// file, so that is a clone per file.
 #[pyfunction]
-fn set_module_star_exports_bulk(
-    entries: Vec<(String, Vec<String>)>,
-) -> PyResult<PyObject> {
+fn set_module_star_exports_bulk(entries: Vec<(String, Vec<String>)>) -> PyResult<PyObject> {
     let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut()
-        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err(
-            "No graph loaded — run coderadar analyze first"
-        ))?;
+    let graph = guard.as_mut().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
+    })?;
     let applied = graph.set_module_star_exports_bulk(entries);
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
@@ -2977,7 +3297,9 @@ fn set_module_star_exports_bulk(
 mod tests {
     use super::*;
     use crate::graph::ProjectConfig;
-    use crate::types::{ByteSpan, FunctionKind, FunctionMetrics, Parameter, ParseQuality, SourceType};
+    use crate::types::{
+        ByteSpan, FunctionKind, FunctionMetrics, Parameter, ParseQuality, SourceType,
+    };
 
     #[test]
     fn default_excludes_skip_build_dirs() {
@@ -2990,7 +3312,11 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/a.py"), "def f():\n    pass\n").unwrap();
         std::fs::write(dir.path().join("target/gen.rs"), "x = 1;\n").unwrap();
-        std::fs::write(dir.path().join("node_modules/p.js"), "module.exports = 1;\n").unwrap();
+        std::fs::write(
+            dir.path().join("node_modules/p.js"),
+            "module.exports = 1;\n",
+        )
+        .unwrap();
 
         let proj = ProjectConfig::default();
         let seen: Vec<String> = project_walk(dir.path().to_str().unwrap(), &proj, &[])
@@ -2999,7 +3325,11 @@ mod tests {
             .map(|e| e.path().to_string_lossy().to_string())
             .collect();
 
-        assert!(seen.iter().any(|p| p.ends_with("a.py")), "source must be walked: {:?}", seen);
+        assert!(
+            seen.iter().any(|p| p.ends_with("a.py")),
+            "source must be walked: {:?}",
+            seen
+        );
         assert!(
             !seen.iter().any(|p| p.contains("gen.rs")),
             "target/ must be excluded by default: {:?}",
@@ -3061,23 +3391,55 @@ mod tests {
         builder.add_line(None, "src/").unwrap();
         let matcher = builder.build().unwrap();
         // Files inherit their directory's exclusion.
-        assert!(path_excluded(&matcher, std::path::Path::new(".venv/lib/x.py"), false));
+        assert!(path_excluded(
+            &matcher,
+            std::path::Path::new(".venv/lib/x.py"),
+            false
+        ));
         assert!(path_excluded(&matcher, std::path::Path::new(".venv"), true));
         // …but a FILE that merely shares the name is not a directory.
-        assert!(!path_excluded(&matcher, std::path::Path::new(".venv"), false));
-        assert!(path_excluded(&matcher, std::path::Path::new("poetry.lock"), false));
+        assert!(!path_excluded(
+            &matcher,
+            std::path::Path::new(".venv"),
+            false
+        ));
+        assert!(path_excluded(
+            &matcher,
+            std::path::Path::new("poetry.lock"),
+            false
+        ));
         // Bare `name/` floats to any depth — the same semantics the walk's
         // Override matcher has (deliberately NOT the F2 allow-side
         // anchoring: allows fail closed, excludes fail toward exclusion).
-        assert!(path_excluded(&matcher, std::path::Path::new("src/a.py"), false));
-        assert!(path_excluded(&matcher, std::path::Path::new("lib/src/a.py"), false));
-        assert!(!path_excluded(&matcher, std::path::Path::new("py_agent/b.py"), false));
+        assert!(path_excluded(
+            &matcher,
+            std::path::Path::new("src/a.py"),
+            false
+        ));
+        assert!(path_excluded(
+            &matcher,
+            std::path::Path::new("lib/src/a.py"),
+            false
+        ));
+        assert!(!path_excluded(
+            &matcher,
+            std::path::Path::new("py_agent/b.py"),
+            false
+        ));
         // Interior-slash patterns anchor to the root.
         let mut b2 = ignore::gitignore::GitignoreBuilder::new(".");
         b2.add_line(None, "tests/cr_edit_tests/").unwrap();
         let m2 = b2.build().unwrap();
-        assert!(path_excluded(&m2, std::path::Path::new("tests/cr_edit_tests/d.py"), false));
-        assert!(!path_excluded(&m2, std::path::Path::new("lib/tests/cr_edit_tests/d.py"), false));
+        assert!(path_excluded(
+            &m2,
+            std::path::Path::new("tests/cr_edit_tests/d.py"),
+            false
+        ));
+        assert!(!path_excluded(
+            &m2,
+            std::path::Path::new("lib/tests/cr_edit_tests/d.py"),
+            false
+        ));
     }
 
     // ── P2-1: multi-token search scoring ─────────────────────────────────
@@ -3086,12 +3448,24 @@ mod tests {
     fn search_tokens_splits_dedupes_and_strips_punctuation() {
         assert_eq!(search_tokens(""), Vec::<String>::new());
         assert_eq!(search_tokens("   "), Vec::<String>::new());
-        assert_eq!(search_tokens("SyncNode exchange_with"), vec!["syncnode".to_string(), "exchange_with".to_string()]);
+        assert_eq!(
+            search_tokens("SyncNode exchange_with"),
+            vec!["syncnode".to_string(), "exchange_with".to_string()]
+        );
         // Punctuation is stripped from token edges; inner dots survive.
-        assert_eq!(search_tokens("(t), f()"), vec!["t".to_string(), "f".to_string()]);
-        assert_eq!(search_tokens("Date.now() Date.now"), vec!["date.now".to_string()]);
+        assert_eq!(
+            search_tokens("(t), f()"),
+            vec!["t".to_string(), "f".to_string()]
+        );
+        assert_eq!(
+            search_tokens("Date.now() Date.now"),
+            vec!["date.now".to_string()]
+        );
         // Duplicates collapse, first order wins.
-        assert_eq!(search_tokens("a b a"), vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            search_tokens("a b a"),
+            vec!["a".to_string(), "b".to_string()]
+        );
         // Case folds.
         assert_eq!(search_tokens("ABC abc"), vec!["abc".to_string()]);
     }
@@ -3100,18 +3474,46 @@ mod tests {
     fn token_entity_score_tiers_and_additive_low_tiers() {
         let tok = |t: &str| vec![t.to_string()];
         // Name tiers: exact > prefix > contains > miss.
-        assert_eq!(token_entity_score("parser", None, None, &tok("parser")), 100);
+        assert_eq!(
+            token_entity_score("parser", None, None, &tok("parser")),
+            100
+        );
         assert_eq!(token_entity_score("parser", None, None, &tok("pars")), 50);
-        assert_eq!(token_entity_score("my_parser_x", None, None, &tok("parser")), 25);
+        assert_eq!(
+            token_entity_score("my_parser_x", None, None, &tok("parser")),
+            25
+        );
         assert_eq!(token_entity_score("other", None, None, &tok("parser")), 0);
 
         // Signature and docstring tiers are additive (3-char gate).
-        assert_eq!(token_entity_score("f", Some("store: &Store, x: i32"), None, &tok("store")), 10);
-        assert_eq!(token_entity_score("f", Some("a: b"), Some("writes to the ledger"), &tok("ledger")), 5);
-        assert_eq!(token_entity_score("f", Some("ledger: &Ledger"), Some("the ledger"), &tok("ledger")), 15);
+        assert_eq!(
+            token_entity_score("f", Some("store: &Store, x: i32"), None, &tok("store")),
+            10
+        );
+        assert_eq!(
+            token_entity_score(
+                "f",
+                Some("a: b"),
+                Some("writes to the ledger"),
+                &tok("ledger")
+            ),
+            5
+        );
+        assert_eq!(
+            token_entity_score(
+                "f",
+                Some("ledger: &Ledger"),
+                Some("the ledger"),
+                &tok("ledger")
+            ),
+            15
+        );
         // Short tokens skip the low tiers (a 1-char token would light up
         // every docstring).
-        assert_eq!(token_entity_score("f", Some("ab"), Some("ab"), &tok("ab")), 0);
+        assert_eq!(
+            token_entity_score("f", Some("ab"), Some("ab"), &tok("ab")),
+            0
+        );
 
         // A name hit is never demoted by the additive tiers.
         assert!(token_entity_score("ledger", Some("ledger"), Some("ledger"), &tok("ledger")) > 100);
@@ -3129,8 +3531,24 @@ mod tests {
             parent_module: "m".into(),
             parent_class: None,
             parameters: vec![
-                Parameter { name: "store".into(), annotation: Some("&Store".into()), default_value: None, is_varargs: false, is_kwargs: false, is_positional_only: false, is_keyword_only: false },
-                Parameter { name: "x".into(), annotation: None, default_value: None, is_varargs: false, is_kwargs: false, is_positional_only: false, is_keyword_only: false },
+                Parameter {
+                    name: "store".into(),
+                    annotation: Some("&Store".into()),
+                    default_value: None,
+                    is_varargs: false,
+                    is_kwargs: false,
+                    is_positional_only: false,
+                    is_keyword_only: false,
+                },
+                Parameter {
+                    name: "x".into(),
+                    annotation: None,
+                    default_value: None,
+                    is_varargs: false,
+                    is_kwargs: false,
+                    is_positional_only: false,
+                    is_keyword_only: false,
+                },
             ],
             return_type: Some("String".into()),
             calls: vec![],
@@ -3157,7 +3575,10 @@ mod tests {
             decorators_span: None,
             embedding: EmbeddingVec::default(),
         };
-        assert_eq!(function_signature_text(&f).as_deref(), Some("store: &Store, x, String"));
+        assert_eq!(
+            function_signature_text(&f).as_deref(),
+            Some("store: &Store, x, String")
+        );
         f.parameters.clear();
         f.return_type = None;
         assert_eq!(function_signature_text(&f), None);

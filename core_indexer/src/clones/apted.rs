@@ -380,14 +380,8 @@ mod tests {
         assert_eq!(apted_distance(&a, &b), brute(&a, &b));
 
         // Wide tree, two renames.
-        let a = LabeledTree::with_children(
-            "root",
-            vec![n("a"), n("b"), n("c"), n("d"), n("e")],
-        );
-        let b = LabeledTree::with_children(
-            "root",
-            vec![n("a"), n("x"), n("c"), n("y"), n("e")],
-        );
+        let a = LabeledTree::with_children("root", vec![n("a"), n("b"), n("c"), n("d"), n("e")]);
+        let b = LabeledTree::with_children("root", vec![n("a"), n("x"), n("c"), n("y"), n("e")]);
         assert_eq!(apted_distance(&a, &b), brute(&a, &b));
 
         // Asymmetric reshuffle.
@@ -400,7 +394,10 @@ mod tests {
         );
         let b = LabeledTree::with_children(
             "root",
-            vec![n("left"), LabeledTree::with_children("right", vec![n("x"), n("y")])],
+            vec![
+                n("left"),
+                LabeledTree::with_children("right", vec![n("x"), n("y")]),
+            ],
         );
         assert_eq!(apted_distance(&a, &b), brute(&a, &b));
     }
@@ -412,8 +409,10 @@ mod tests {
         // extraction does — block nodes start at their first token, so
         // hand-computed line starts would miss by the indent width.
         let mk = |body: &str| -> (String, ByteSpan) {
-            let src = format!("def f(a, b):
-{body}");
+            let src = format!(
+                "def f(a, b):
+{body}"
+            );
             let ts_lang = crate::graph::CodeGraph::ts_language(&Language::Python).unwrap();
             let mut parser = tree_sitter::Parser::new();
             parser.set_language(&ts_lang).unwrap();
@@ -429,7 +428,13 @@ mod tests {
                 .children(&mut fcursor)
                 .find(|n| n.kind() == "block")
                 .unwrap();
-            (src.clone(), ByteSpan { start: blk.start_byte(), end: blk.end_byte() })
+            (
+                src.clone(),
+                ByteSpan {
+                    start: blk.start_byte(),
+                    end: blk.end_byte(),
+                },
+            )
         };
 
         let (src1, sp1) = mk("    if a:
@@ -459,14 +464,8 @@ mod tests {
     fn statement_reordering_is_visible_to_ted() {
         // The whole point of Stage 6.1: bag-of-shingles sees these two as
         // near-identical; ordered TED must not.
-        let a = LabeledTree::with_children(
-            "block",
-            vec![n("assign"), n("call"), n("return")],
-        );
-        let b = LabeledTree::with_children(
-            "block",
-            vec![n("return"), n("call"), n("assign")],
-        );
+        let a = LabeledTree::with_children("block", vec![n("assign"), n("call"), n("return")]);
+        let b = LabeledTree::with_children("block", vec![n("return"), n("call"), n("assign")]);
         let sim = apted_similarity(&a, &b);
         assert!(sim < 0.85, "reordered statements: sim={sim}");
     }

@@ -157,7 +157,10 @@ pub fn projection_from_state(
     // cascade's `resolve_imports` would scan every module per import (the
     // 8.3s benchmark regression).
     for m in g.modules.values() {
-        g.file_to_modules.entry(m.path.clone()).or_default().push(m.id.clone());
+        g.file_to_modules
+            .entry(m.path.clone())
+            .or_default()
+            .push(m.id.clone());
     }
     super::module_resolution::rebuild_module_path_index(&mut g);
 
@@ -238,8 +241,8 @@ fn restore_synthetic_edges(
             .or_default()
             .insert(e.source_id.clone());
         // Issue 8: same tracking as the live registration path.
-        g.synthetic_edges.insert(
-            (e.source_id.clone(), e.target_id.clone()));
+        g.synthetic_edges
+            .insert((e.source_id.clone(), e.target_id.clone()));
         stats.synthetic_edges += 1;
     }
 }
@@ -419,10 +422,7 @@ mod tests {
         g
     }
 
-    fn state_from(
-        g: &ProjectedGraph,
-        edges: Vec<(String, String, String)>,
-    ) -> MaterializedState {
+    fn state_from(g: &ProjectedGraph, edges: Vec<(String, String, String)>) -> MaterializedState {
         let concepts = build_v2_concepts_all(g);
         let mut map = HashMap::new();
         for c in &concepts {
@@ -463,10 +463,22 @@ mod tests {
             &src,
             vec![
                 // structural CALLS edge — must be skipped at load
-                ("a.py::foo".to_string(), "a.py::bar".to_string(), "CALLS".to_string()),
+                (
+                    "a.py::foo".to_string(),
+                    "a.py::bar".to_string(),
+                    "CALLS".to_string(),
+                ),
                 // synthetic-kind edges — must be restored
-                ("a.py::foo".to_string(), "b.py::hook".to_string(), "CALLBACK".to_string()),
-                ("a.py::module".to_string(), "a.py::foo".to_string(), "DEPENDS_ON".to_string()),
+                (
+                    "a.py::foo".to_string(),
+                    "b.py::hook".to_string(),
+                    "CALLBACK".to_string(),
+                ),
+                (
+                    "a.py::module".to_string(),
+                    "a.py::foo".to_string(),
+                    "DEPENDS_ON".to_string(),
+                ),
             ],
         );
         let (g, stats) = projection_from_state(&state).expect("load");
@@ -480,20 +492,38 @@ mod tests {
         assert_eq!(stats.skipped_field_concepts, 0);
 
         // Call indices: resolved pairs + synthetic pairs, BTreeSet-deduped.
-        let callers = g.callers_by_callee.get("a.py::bar").cloned().unwrap_or_default();
+        let callers = g
+            .callers_by_callee
+            .get("a.py::bar")
+            .cloned()
+            .unwrap_or_default();
         assert!(callers.contains("a.py::foo"));
-        let callees = g.callees_by_caller.get("a.py::foo").cloned().unwrap_or_default();
+        let callees = g
+            .callees_by_caller
+            .get("a.py::foo")
+            .cloned()
+            .unwrap_or_default();
         assert!(callees.contains("a.py::bar"));
         assert!(callees.contains("external::len"));
         assert!(callees.contains("b.py::hook")); // synthetic
-        let mod_callers = g.callers_by_callee.get("a.py::foo").cloned().unwrap_or_default();
+        let mod_callers = g
+            .callers_by_callee
+            .get("a.py::foo")
+            .cloned()
+            .unwrap_or_default();
         assert!(mod_callers.contains("a.py::module")); // synthetic DEPENDS_ON
-        let run_callers = g.callers_by_callee.get("a.py::C.run").cloned().unwrap_or_default();
+        let run_callers = g
+            .callers_by_callee
+            .get("a.py::C.run")
+            .cloned()
+            .unwrap_or_default();
         assert!(run_callers.contains("a.py::bar")); // Method pair
 
         // file_to_modules rebuilt from module paths.
         assert_eq!(
-            g.file_to_modules.get(&PathBuf::from("a.py")).map(|v| v.len()),
+            g.file_to_modules
+                .get(&PathBuf::from("a.py"))
+                .map(|v| v.len()),
             Some(1)
         );
 
@@ -561,8 +591,16 @@ mod tests {
         let state = state_from(
             &sample_projection(),
             vec![
-                ("a.py::foo".to_string(), "b.py::hook".to_string(), "CALLBACK".to_string()),
-                ("a.py::foo".to_string(), "b.py::hook".to_string(), "CALLBACK".to_string()),
+                (
+                    "a.py::foo".to_string(),
+                    "b.py::hook".to_string(),
+                    "CALLBACK".to_string(),
+                ),
+                (
+                    "a.py::foo".to_string(),
+                    "b.py::hook".to_string(),
+                    "CALLBACK".to_string(),
+                ),
             ],
         );
         let (_g, stats) = projection_from_state(&state).expect("load");

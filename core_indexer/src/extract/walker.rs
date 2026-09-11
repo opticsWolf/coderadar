@@ -11,7 +11,6 @@ use tree_sitter::Node;
 
 use crate::types::*;
 
-
 /// For grammars that use a single node kind for multiple class-like
 /// For grammars that use a single node kind for multiple class-like
 /// declarations (Swift), scan keyword children to classify.
@@ -42,10 +41,8 @@ pub fn parse_import_statement(node: Node, source: &str) -> ImportKind {
     // TS/JS from-import: the module source is a `string` child.
     let mut find_cur = node.walk();
     if let Some(string_node) = node.children(&mut find_cur).find(|c| c.kind() == "string") {
-        let module = strip_import_quotes(
-            string_node.utf8_text(source.as_bytes()).unwrap_or(""),
-        )
-        .to_string();
+        let module =
+            strip_import_quotes(string_node.utf8_text(source.as_bytes()).unwrap_or("")).to_string();
         let names = collect_ts_import_names(node, source);
         let level = count_leading_dots(&module);
         if level > 0 {
@@ -54,7 +51,11 @@ pub fn parse_import_statement(node: Node, source: &str) -> ImportKind {
             } else {
                 String::new()
             };
-            return ImportKind::RelativeImport { level, module: Some(module_after), names };
+            return ImportKind::RelativeImport {
+                level,
+                module: Some(module_after),
+                names,
+            };
         }
         if names.is_empty() {
             // `import 'x'` — side-effect import, no symbols.
@@ -84,12 +85,18 @@ pub fn parse_import_statement(node: Node, source: &str) -> ImportKind {
                     .child_by_field_name("alias")
                     .and_then(|n| n.utf8_text(source.as_bytes()).ok())
                     .map(|s| s.to_string());
-                return ImportKind::ModuleImport { module: name, alias };
+                return ImportKind::ModuleImport {
+                    module: name,
+                    alias,
+                };
             }
             _ => {}
         }
     }
-    ImportKind::ModuleImport { module: String::new(), alias: None }
+    ImportKind::ModuleImport {
+        module: String::new(),
+        alias: None,
+    }
 }
 
 /// Strip surrounding quotes from a `string` node's text (`'x'` → `x`).
@@ -112,9 +119,7 @@ fn collect_ts_import_names(node: Node, source: &str) -> Vec<(String, Option<Stri
     names
 }
 
-fn collect_ts_import_names_rec(
-    node: Node, source: &str, out: &mut Vec<(String, Option<String>)>,
-) {
+fn collect_ts_import_names_rec(node: Node, source: &str, out: &mut Vec<(String, Option<String>)>) {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         match child.kind() {
@@ -143,9 +148,13 @@ fn collect_ts_import_names_rec(
 fn is_identifier_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "identifier" | "IDENTIFIER" | "simple_identifier"
-        | "type_identifier" | "property_identifier"
-        | "field_identifier" | "shorthand_property_identifier"
+        "identifier"
+            | "IDENTIFIER"
+            | "simple_identifier"
+            | "type_identifier"
+            | "property_identifier"
+            | "field_identifier"
+            | "shorthand_property_identifier"
     )
 }
 
@@ -177,12 +186,10 @@ fn import_specifier_name_alias(node: Node, source: &str) -> (String, Option<Stri
 /// Parse an `import_from_statement` node: `from foo import bar`, `from . import x`
 pub fn parse_import_from_statement(node: Node, source: &str) -> ImportKind {
     // Extract the module_name (dotted_name or relative_import)
-    let module_name = node
-        .child_by_field_name("module_name")
-        .map(|mn| {
-            let text = mn.utf8_text(source.as_bytes()).unwrap_or("");
-            (mn.kind().to_string(), text.to_string())
-        });
+    let module_name = node.child_by_field_name("module_name").map(|mn| {
+        let text = mn.utf8_text(source.as_bytes()).unwrap_or("");
+        (mn.kind().to_string(), text.to_string())
+    });
 
     // Check for wildcard import
     let has_star = node
@@ -194,12 +201,18 @@ pub fn parse_import_from_statement(node: Node, source: &str) -> ImportKind {
             if kind == "relative_import" {
                 let level = count_leading_dots(&text);
                 return ImportKind::StarImport {
-                    module: if level > text.len() { String::new() } else { text[level..].to_string() },
+                    module: if level > text.len() {
+                        String::new()
+                    } else {
+                        text[level..].to_string()
+                    },
                 };
             }
             return ImportKind::StarImport { module: text };
         }
-        return ImportKind::StarImport { module: String::new() };
+        return ImportKind::StarImport {
+            module: String::new(),
+        };
     }
 
     // Collect imported names (skip the module_name child)
@@ -243,12 +256,22 @@ pub fn parse_import_from_statement(node: Node, source: &str) -> ImportKind {
             } else {
                 None
             };
-            return ImportKind::RelativeImport { level, module, names };
+            return ImportKind::RelativeImport {
+                level,
+                module,
+                names,
+            };
         }
-        return ImportKind::FromImport { module: text, names };
+        return ImportKind::FromImport {
+            module: text,
+            names,
+        };
     }
 
-    ImportKind::FromImport { module: String::new(), names }
+    ImportKind::FromImport {
+        module: String::new(),
+        names,
+    }
 }
 
 /// Count leading dots in a relative import string like "..." or "...utils"
@@ -271,7 +294,8 @@ pub fn extract_class_name(node: Node, source: &str) -> String {
             .to_string();
     }
     if node.kind() == "type_declaration" {
-        return node.child_by_field_name("type")
+        return node
+            .child_by_field_name("type")
             .and_then(|ts| ts.child_by_field_name("name"))
             .or_else(|| {
                 let mut cursor = node.walk();
@@ -287,12 +311,15 @@ pub fn extract_class_name(node: Node, source: &str) -> String {
             .to_string();
     }
     // Elixir defmodule
-    if node.kind() == "call" && node.child_by_field_name("target")
-        .and_then(|t| t.utf8_text(source.as_bytes()).ok())
-        .map(|s| s == "defmodule")
-        .unwrap_or(false)
+    if node.kind() == "call"
+        && node
+            .child_by_field_name("target")
+            .and_then(|t| t.utf8_text(source.as_bytes()).ok())
+            .map(|s| s == "defmodule")
+            .unwrap_or(false)
     {
-        return node.children(&mut node.walk())
+        return node
+            .children(&mut node.walk())
             .find(|c| c.kind() == "arguments")
             .and_then(|args| {
                 args.children(&mut args.walk())
@@ -303,7 +330,8 @@ pub fn extract_class_name(node: Node, source: &str) -> String {
             .unwrap_or_default();
     }
     if node.kind() == "VarDecl" {
-        if let Some(name) = node.child_by_field_name("variable_type_function")
+        if let Some(name) = node
+            .child_by_field_name("variable_type_function")
             .and_then(|n| n.utf8_text(source.as_bytes()).ok())
         {
             return name.to_string();
@@ -312,13 +340,16 @@ pub fn extract_class_name(node: Node, source: &str) -> String {
     // General: find identifier child
     let mut cursor = node.walk();
     let children: Vec<_> = node.children(&mut cursor).collect();
-    children.iter().find(|ch|
-        ch.kind() == "type_identifier" || ch.kind() == "simple_identifier"
-        || ch.kind() == "identifier"
-    )
-    .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-    .unwrap_or("")
-    .to_string()
+    children
+        .iter()
+        .find(|ch| {
+            ch.kind() == "type_identifier"
+                || ch.kind() == "simple_identifier"
+                || ch.kind() == "identifier"
+        })
+        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// Extract the name from a function-like AST node.
@@ -345,7 +376,8 @@ pub fn extract_function_name(node: Node, source: &str) -> String {
                 .to_string();
         }
         // C++/C: walk declarator chain
-        return node.child_by_field_name("declarator")
+        return node
+            .child_by_field_name("declarator")
             .and_then(|d| d.child_by_field_name("declarator"))
             .and_then(|id| id.utf8_text(source.as_bytes()).ok())
             .unwrap_or("")
@@ -360,22 +392,24 @@ pub fn extract_function_name(node: Node, source: &str) -> String {
     if node.kind() == "function_declaration" {
         let mut cursor = node.walk();
         let children: Vec<_> = node.children(&mut cursor).collect();
-        return children.iter().find(|ch|
-            ch.kind() == "simple_identifier" || ch.kind() == "identifier"
-        )
-        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-        .unwrap_or("")
-        .to_string();
+        return children
+            .iter()
+            .find(|ch| ch.kind() == "simple_identifier" || ch.kind() == "identifier")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            .unwrap_or("")
+            .to_string();
     }
     if node.kind() == "FnProto" {
-        return node.child_by_field_name("function")
+        return node
+            .child_by_field_name("function")
             .and_then(|n| n.utf8_text(source.as_bytes()).ok())
             .unwrap_or("")
             .to_string();
     }
     // Elixir: (call target: (identifier "def"/"defp") ...)
     if node.is_named() && node.kind() == "call" {
-        return node.child_by_field_name("target")
+        return node
+            .child_by_field_name("target")
             .and_then(|t| t.utf8_text(source.as_bytes()).ok())
             .and_then(|s| {
                 if matches!(s, "def" | "defp") {
@@ -400,12 +434,15 @@ pub fn extract_function_name(node: Node, source: &str) -> String {
 /// Extract base classes from a class node's superclass/heritage fields.
 pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
     fn is_base_node_kind(k: &str) -> bool {
-        matches!(k, "identifier" | "type_identifier" | "constant" | "name"
+        matches!(
+            k,
+            "identifier" | "type_identifier" | "constant" | "name"
             // Qualified bases (`extends React.Component`, `implements Models.Base`).
             // Previously dropped — capped extends coverage at the base-name
             // heuristic (matrix §0). Captured here as a dotted name.
             | "member_expression" | "qualified_type" | "scoped_type_id"
-            | "qualified_identifier" | "nested_type_identifier" | "generic_type")
+            | "qualified_identifier" | "nested_type_identifier" | "generic_type"
+        )
     }
 
     // Grammars expose base classes very differently:
@@ -426,8 +463,11 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
         for f in fields.into_iter().flatten() {
             let mut c = f.walk();
             let kids: Vec<Node> = f.children(&mut c).collect();
-            let base_kids: Vec<Node> = kids.iter().copied()
-                .filter(|k| is_base_node_kind(k.kind())).collect();
+            let base_kids: Vec<Node> = kids
+                .iter()
+                .copied()
+                .filter(|k| is_base_node_kind(k.kind()))
+                .collect();
             if !base_kids.is_empty() {
                 base_nodes.extend(base_kids);
             } else if is_base_node_kind(f.kind()) {
@@ -450,7 +490,9 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
         // Descend.
         let mut c = n.walk();
         let kids: Vec<Node> = n.children(&mut c).collect();
-        for k in kids.into_iter().rev() { dfs.push(k); }
+        for k in kids.into_iter().rev() {
+            dfs.push(k);
+        }
     }
 
     // De-duplicate by source byte range (a base may be seen via overlapping
@@ -459,10 +501,14 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
     base_nodes
         .into_iter()
         .filter_map(|id| {
-            if !seen.insert(id.id()) { return None; }
+            if !seen.insert(id.id()) {
+                return None;
+            }
             let dotted = dotted_name_of(&id, source.as_bytes());
             let leaf = dotted.rsplit('.').next().unwrap_or(&dotted);
-            if dotted.is_empty() || is_builtin_type(leaf) { return None; }
+            if dotted.is_empty() || is_builtin_type(leaf) {
+                return None;
+            }
             Some(UnresolvedRef {
                 name: dotted,
                 path: vec![],
@@ -482,7 +528,10 @@ fn dotted_name_of(node: &Node, source_bytes: &[u8]) -> String {
     // Pre-order DFS collecting identifier-like leaves.
     let mut stack: Vec<Node> = vec![*node];
     while let Some(n) = stack.pop() {
-        if matches!(n.kind(), "identifier" | "type_identifier" | "name" | "property_identifier") {
+        if matches!(
+            n.kind(),
+            "identifier" | "type_identifier" | "name" | "property_identifier"
+        ) {
             if let Ok(t) = n.utf8_text(source_bytes) {
                 leaves.push(t.to_string());
             }
@@ -490,10 +539,14 @@ fn dotted_name_of(node: &Node, source_bytes: &[u8]) -> String {
         let mut c = n.walk();
         let children: Vec<Node> = n.children(&mut c).collect();
         // push in reverse so left-to-right order is preserved on pop
-        for ch in children.into_iter().rev() { stack.push(ch); }
+        for ch in children.into_iter().rev() {
+            stack.push(ch);
+        }
     }
     if leaves.is_empty() {
-        node.utf8_text(source_bytes).map(|s| s.split_whitespace().collect::<Vec<_>>().join("")).unwrap_or_default()
+        node.utf8_text(source_bytes)
+            .map(|s| s.split_whitespace().collect::<Vec<_>>().join(""))
+            .unwrap_or_default()
     } else {
         leaves.join(".")
     }
@@ -504,29 +557,33 @@ pub fn extract_go_receiver_type(node: Node, source: &str) -> Option<String> {
     if node.kind() != "method_declaration" {
         return None;
     }
-    node.child_by_field_name("receiver")
-        .and_then(|recv| {
-            let mut cursor = recv.walk();
-            for child in recv.children(&mut cursor) {
-                if child.kind() == "parameter_declaration" {
-                    if let Some(typ) = child.child_by_field_name("type") {
-                        if typ.kind() == "pointer_type" {
-                            return typ.child_by_field_name("name")
-                                .or_else(|| typ.child(0))
-                                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-                                .map(|s| s.to_string());
-                        }
-                        return typ.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+    node.child_by_field_name("receiver").and_then(|recv| {
+        let mut cursor = recv.walk();
+        for child in recv.children(&mut cursor) {
+            if child.kind() == "parameter_declaration" {
+                if let Some(typ) = child.child_by_field_name("type") {
+                    if typ.kind() == "pointer_type" {
+                        return typ
+                            .child_by_field_name("name")
+                            .or_else(|| typ.child(0))
+                            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                            .map(|s| s.to_string());
                     }
+                    return typ.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
                 }
             }
-            None
-        })
+        }
+        None
+    })
 }
 
 /// Emit a captured call node, recording it in the current function's call list.
-pub fn emit_call_for_node(node: Node, source: &str, units: &mut [ExtractedUnit],
-                          current_function_idx: Option<usize>) {
+pub fn emit_call_for_node(
+    node: Node,
+    source: &str,
+    units: &mut [ExtractedUnit],
+    current_function_idx: Option<usize>,
+) {
     let idx = match current_function_idx {
         Some(i) => i,
         None => return,
@@ -539,20 +596,32 @@ pub fn emit_call_for_node(node: Node, source: &str, units: &mut [ExtractedUnit],
     let col = node.start_position().column as u32;
 
     if node.kind() == "method_invocation" {
-        let method_name = node.child_by_field_name("name")
+        let method_name = node
+            .child_by_field_name("name")
             .and_then(|n| n.utf8_text(source.as_bytes()).ok())
             .unwrap_or("")
             .to_string();
-        let object_name = node.child_by_field_name("object")
+        let object_name = node
+            .child_by_field_name("object")
             .and_then(|n| n.utf8_text(source.as_bytes()).ok())
             .unwrap_or("")
             .to_string();
-        let path = if object_name.is_empty() { vec![] } else { vec![object_name] };
-        func.calls.push(UnresolvedRef { name: method_name, path, line, col: col as usize });
+        let path = if object_name.is_empty() {
+            vec![]
+        } else {
+            vec![object_name]
+        };
+        func.calls.push(UnresolvedRef {
+            name: method_name,
+            path,
+            line,
+            col: col as usize,
+        });
         return;
     }
 
-    let name_node = node.child_by_field_name("function")
+    let name_node = node
+        .child_by_field_name("function")
         .or_else(|| node.child_by_field_name("method"))
         .or_else(|| node.child_by_field_name("name"))
         .or_else(|| node.child_by_field_name("callee"));
@@ -561,44 +630,80 @@ pub fn emit_call_for_node(node: Node, source: &str, units: &mut [ExtractedUnit],
         Some(n) if n.kind() == "identifier" => {
             let name = n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
             if !is_stoplisted(&name) {
-                func.calls.push(UnresolvedRef { name, path: vec![], line, col: col as usize });
+                func.calls.push(UnresolvedRef {
+                    name,
+                    path: vec![],
+                    line,
+                    col: col as usize,
+                });
             }
         }
-        Some(n) if n.kind() == "attribute"
-            || n.kind() == "field_expression"
-            || n.kind() == "member_expression"
-            || n.kind() == "selector_expression"
-            || n.kind() == "member_access_expression"
-            || n.kind() == "chained_method_call"
-            || n.kind() == "call" => {
-            let method_field = if n.kind() == "attribute" { "attribute" }
-                else if n.kind() == "field_expression" { "field" }
-                else if n.kind() == "member_expression" { "property" }
-                else if n.kind() == "call" { "method" }
-                else if n.kind() == "chained_method_call" { "method" }
-                else if n.kind() == "member_access_expression" { "name" }
-                else { "field" };
-            let object_field = if n.kind() == "attribute" { "object" }
-                else if n.kind() == "field_expression" { "value" }
-                else if n.kind() == "member_expression" { "object" }
-                else if n.kind() == "call" { "receiver" }
-                else if n.kind() == "chained_method_call" { "receiver" }
-                else if n.kind() == "member_access_expression" { "expression" }
-                else { "operand" };
-            let method = n.child_by_field_name(method_field)
+        Some(n)
+            if n.kind() == "attribute"
+                || n.kind() == "field_expression"
+                || n.kind() == "member_expression"
+                || n.kind() == "selector_expression"
+                || n.kind() == "member_access_expression"
+                || n.kind() == "chained_method_call"
+                || n.kind() == "call" =>
+        {
+            let method_field = if n.kind() == "attribute" {
+                "attribute"
+            } else if n.kind() == "field_expression" {
+                "field"
+            } else if n.kind() == "member_expression" {
+                "property"
+            } else if n.kind() == "call" {
+                "method"
+            } else if n.kind() == "chained_method_call" {
+                "method"
+            } else if n.kind() == "member_access_expression" {
+                "name"
+            } else {
+                "field"
+            };
+            let object_field = if n.kind() == "attribute" {
+                "object"
+            } else if n.kind() == "field_expression" {
+                "value"
+            } else if n.kind() == "member_expression" {
+                "object"
+            } else if n.kind() == "call" {
+                "receiver"
+            } else if n.kind() == "chained_method_call" {
+                "receiver"
+            } else if n.kind() == "member_access_expression" {
+                "expression"
+            } else {
+                "operand"
+            };
+            let method = n
+                .child_by_field_name(method_field)
                 .and_then(|c| c.utf8_text(source.as_bytes()).ok())
                 .unwrap_or("")
                 .to_string();
-            let object = n.child_by_field_name(object_field)
+            let object = n
+                .child_by_field_name(object_field)
                 .and_then(|c| {
-                    if is_literal_receiver(c.kind()) { return None; }
+                    if is_literal_receiver(c.kind()) {
+                        return None;
+                    }
                     c.utf8_text(source.as_bytes()).ok()
                 })
                 .unwrap_or("")
                 .to_string();
             if !is_stoplisted(&method) {
-                let path = if object.is_empty() { vec![] } else { vec![object] };
-                func.calls.push(UnresolvedRef { name: method, path, line, col: col as usize });
+                let path = if object.is_empty() {
+                    vec![]
+                } else {
+                    vec![object]
+                };
+                func.calls.push(UnresolvedRef {
+                    name: method,
+                    path,
+                    line,
+                    col: col as usize,
+                });
             }
         }
         _ => {
@@ -611,7 +716,12 @@ pub fn emit_call_for_node(node: Node, source: &str, units: &mut [ExtractedUnit],
                             .unwrap_or("")
                             .to_string();
                         if !zig_name.is_empty() && !is_stoplisted(&zig_name) {
-                            func.calls.push(UnresolvedRef { name: zig_name, path: vec![], line, col: col as usize });
+                            func.calls.push(UnresolvedRef {
+                                name: zig_name,
+                                path: vec![],
+                                line,
+                                col: col as usize,
+                            });
                         }
                     }
                 }
@@ -756,8 +866,11 @@ pub fn make_entity_id(file_path: &str, qualified_name: &str) -> String {
 /// calls the field something else — so the container is also looked up by
 /// kind.
 const PARAM_CONTAINERS: [&str; 5] = [
-    "parameters", "parameter_list", "formal_parameters",
-    "function_value_parameters", "method_parameters",
+    "parameters",
+    "parameter_list",
+    "formal_parameters",
+    "function_value_parameters",
+    "method_parameters",
 ];
 
 /// Node kinds that represent one parameter, across grammars.
@@ -767,25 +880,29 @@ const PARAM_CONTAINERS: [&str; 5] = [
 /// signatures all rendered as `name()`.
 const PARAM_NODES: [&str; 12] = [
     // Python
-    "identifier", "typed_parameter", "default_parameter",
-    "typed_default_parameter", "keyword_argument",
+    "identifier",
+    "typed_parameter",
+    "default_parameter",
+    "typed_default_parameter",
+    "keyword_argument",
     // Everything else
-    "simple_parameter",       // PHP
-    "parameter",              // Kotlin, Rust
-    "parameter_declaration",  // C, C++, Go
-    "formal_parameter",       // Java, C#
-    "optional_parameter",     // Ruby, TypeScript
-    "required_parameter",     // TypeScript
-    "variadic_parameter",     // PHP, TypeScript rest args
+    "simple_parameter",      // PHP
+    "parameter",             // Kotlin, Rust
+    "parameter_declaration", // C, C++, Go
+    "formal_parameter",      // Java, C#
+    "optional_parameter",    // Ruby, TypeScript
+    "required_parameter",    // TypeScript
+    "variadic_parameter",    // PHP, TypeScript rest args
 ];
 
 /// First identifier anywhere beneath `node`, depth first.
 fn first_identifier(node: Node, source: &str) -> Option<String> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if matches!(child.kind(),
-                    "identifier" | "variable_name" | "simple_identifier"
-                    | "field_identifier") {
+        if matches!(
+            child.kind(),
+            "identifier" | "variable_name" | "simple_identifier" | "field_identifier"
+        ) {
             if let Ok(text) = child.utf8_text(source.as_bytes()) {
                 if !text.is_empty() {
                     return Some(text.to_string());
@@ -832,8 +949,10 @@ fn parameter_name(node: Node, source: &str) -> String {
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        if matches!(child.kind(),
-                    "identifier" | "variable_name" | "simple_identifier") {
+        if matches!(
+            child.kind(),
+            "identifier" | "variable_name" | "simple_identifier"
+        ) {
             if let Ok(text) = child.utf8_text(source.as_bytes()) {
                 if !text.is_empty() {
                     return text.to_string();
@@ -891,16 +1010,14 @@ pub fn extract_parameters(node: Node, source: &str) -> Vec<Parameter> {
                 let name = parameter_name(child, source);
 
                 // Extract type annotation from the "type" field
-                let annotation = child
-                    .child_by_field_name("type")
-                    .and_then(|t| {
-                        let type_text = t.utf8_text(source.as_bytes()).unwrap_or("");
-                        if !type_text.is_empty() && !is_builtin_type(type_text) {
-                            Some(type_text.to_string())
-                        } else {
-                            None
-                        }
-                    });
+                let annotation = child.child_by_field_name("type").and_then(|t| {
+                    let type_text = t.utf8_text(source.as_bytes()).unwrap_or("");
+                    if !type_text.is_empty() && !is_builtin_type(type_text) {
+                        Some(type_text.to_string())
+                    } else {
+                        None
+                    }
+                });
 
                 // Extract default value
                 let default_value = child

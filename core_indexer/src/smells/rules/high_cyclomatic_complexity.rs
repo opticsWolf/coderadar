@@ -12,7 +12,10 @@ pub struct HighCyclomaticComplexity {
 
 impl Default for HighCyclomaticComplexity {
     fn default() -> Self {
-        Self { warning_threshold: 10, critical_threshold: 20 }
+        Self {
+            warning_threshold: 10,
+            critical_threshold: 20,
+        }
     }
 }
 

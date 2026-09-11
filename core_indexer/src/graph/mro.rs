@@ -16,9 +16,10 @@ fn c3_merge(mut lists: Vec<Vec<MroNode>>) -> Vec<MroNode> {
         let mut found = false;
         for i in 0..lists.len() {
             let candidate = &lists[i][0];
-            let in_tail = lists.iter().enumerate().any(|(j, l)| {
-                i != j && l[1..].contains(candidate)
-            });
+            let in_tail = lists
+                .iter()
+                .enumerate()
+                .any(|(j, l)| i != j && l[1..].contains(candidate));
             if !in_tail {
                 // Good head found — remove it from the front of ALL lists
                 let good = candidate.clone();
@@ -51,14 +52,19 @@ fn c3_merge(mut lists: Vec<Vec<MroNode>>) -> Vec<MroNode> {
 impl CodeGraph {
     /// Compute C3 linearization MRO for all classes in the projection.
     pub fn compute_all_mro(&self, projection: &mut ProjectedGraph) {
-        let class_ids: Vec<String> = projection.classes.iter()
-            .map(|(id, _)| id.clone()).collect();
+        let class_ids: Vec<String> = projection
+            .classes
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect();
         for class_id in &class_ids {
             let mro = self.compute_c3_mro(projection, class_id);
             if let Some(class) = projection.classes.get(class_id) {
                 let mut c = (**class).clone();
                 c.mro = mro;
-                projection.classes.insert(class_id.clone(), std::sync::Arc::new(c));
+                projection
+                    .classes
+                    .insert(class_id.clone(), std::sync::Arc::new(c));
             }
         }
     }
@@ -79,18 +85,30 @@ impl CodeGraph {
         // `inherits` traversal meaningful on real codebases. Same-module
         // cases resolve identically to the old inline match.
         let parent_module = class.parent_module.clone();
-        let base_mros: Vec<Vec<MroNode>> = class.bases.iter().map(|base| {
-            let resolved = Self::resolve_base_by_name(projection, &base.name, &parent_module);
-            match resolved {
-                Some(id) => self.compute_c3_mro(projection, &id),
-                None => vec![MroNode::External { name: base.name.clone() }],
-            }
-        }).collect();
-        let base_nodes: Vec<MroNode> = class.bases.iter().map(|b| {
-            Self::resolve_base_by_name(projection, &b.name, &parent_module)
-                .map(|id| MroNode::Class(id.clone()))
-                .unwrap_or_else(|| MroNode::External { name: b.name.clone() })
-        }).collect();
+        let base_mros: Vec<Vec<MroNode>> = class
+            .bases
+            .iter()
+            .map(|base| {
+                let resolved = Self::resolve_base_by_name(projection, &base.name, &parent_module);
+                match resolved {
+                    Some(id) => self.compute_c3_mro(projection, &id),
+                    None => vec![MroNode::External {
+                        name: base.name.clone(),
+                    }],
+                }
+            })
+            .collect();
+        let base_nodes: Vec<MroNode> = class
+            .bases
+            .iter()
+            .map(|b| {
+                Self::resolve_base_by_name(projection, &b.name, &parent_module)
+                    .map(|id| MroNode::Class(id.clone()))
+                    .unwrap_or_else(|| MroNode::External {
+                        name: b.name.clone(),
+                    })
+            })
+            .collect();
         let mut merge_lists: Vec<Vec<MroNode>> = base_mros.clone();
         merge_lists.push(base_nodes);
         let merged = c3_merge(merge_lists);
@@ -121,7 +139,9 @@ impl CodeGraph {
     ///      language family (2.1a).
     /// Returns `None` when ambiguous (multiple candidates) or not found.
     fn resolve_base_by_name(
-        projection: &ProjectedGraph, base_name: &str, current_module: &str,
+        projection: &ProjectedGraph,
+        base_name: &str,
+        current_module: &str,
     ) -> Option<String> {
         let candidates = Self::base_candidates(projection, base_name, current_module);
         if candidates.len() == 1 {
@@ -135,7 +155,9 @@ impl CodeGraph {
     /// `resolve_base_by_name` and the ambiguity findings (2.1b) both read
     /// this; the latter needs the full candidate set, not just the winner.
     pub(super) fn base_candidates(
-        projection: &ProjectedGraph, base_name: &str, current_module: &str,
+        projection: &ProjectedGraph,
+        base_name: &str,
+        current_module: &str,
     ) -> Vec<String> {
         // (1) same-module exact match
         let same_mod: Vec<String> = projection
@@ -175,7 +197,9 @@ impl CodeGraph {
     /// with that name, resolve to it. Reads `Import.resolution`, which is
     /// populated by `resolve_imports` — so `resolve_imports` must run first.
     fn import_aware_base(
-        projection: &ProjectedGraph, base_name: &str, current_module: &str,
+        projection: &ProjectedGraph,
+        base_name: &str,
+        current_module: &str,
     ) -> Option<String> {
         let module = projection.modules.get(current_module)?;
         for imp_id in &module.imports {
@@ -199,11 +223,15 @@ impl CodeGraph {
                 let mut found: Option<String> = None;
                 for (id, c) in &projection.classes {
                     if c.name == base_name && &c.parent_module == target {
-                        if found.is_some() { return None; } // 2+ in target → ambiguous
+                        if found.is_some() {
+                            return None;
+                        } // 2+ in target → ambiguous
                         found = Some(id.clone());
                     }
                 }
-                if found.is_some() { return found; }
+                if found.is_some() {
+                    return found;
+                }
             }
         }
         None

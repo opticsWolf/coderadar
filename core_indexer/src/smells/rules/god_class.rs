@@ -13,7 +13,10 @@ pub struct GodClass {
 
 impl Default for GodClass {
     fn default() -> Self {
-        Self { wmc_threshold: 47, cbo_threshold: 5 }
+        Self {
+            wmc_threshold: 47,
+            cbo_threshold: 5,
+        }
     }
 }
 

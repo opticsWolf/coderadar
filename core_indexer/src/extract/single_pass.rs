@@ -13,11 +13,10 @@ use crate::extract::docstring::preceding_docstring;
 use crate::extract::spans::extract_byte_spans;
 use crate::extract::tagger::CompiledQuery;
 use crate::extract::walker::{
-    classify_class_like, derive_function_kind, detect_async, detect_generator,
-    emit_call_for_node, extract_base_classes, extract_class_name,
-    extract_decorators,
-    extract_function_name, extract_go_receiver_type, extract_parameters,
-    make_entity_id, parse_import_from_statement, parse_import_statement,
+    classify_class_like, derive_function_kind, detect_async, detect_generator, emit_call_for_node,
+    extract_base_classes, extract_class_name, extract_decorators, extract_function_name,
+    extract_go_receiver_type, extract_parameters, make_entity_id, parse_import_from_statement,
+    parse_import_statement,
 };
 use crate::types::*;
 
@@ -188,7 +187,12 @@ impl<'a> CursorExtractor<'a> {
             Tag::Function => self.emit_function(node),
             Tag::Import => self.emit_import(node),
             Tag::Call => {
-                emit_call_for_node(node, self.source, &mut self.units, self.current_function_idx);
+                emit_call_for_node(
+                    node,
+                    self.source,
+                    &mut self.units,
+                    self.current_function_idx,
+                );
             }
             Tag::Impl => self.emit_impl(node),
             Tag::Docstring => {
@@ -226,7 +230,8 @@ impl<'a> CursorExtractor<'a> {
                     if let Some(idx) = self.current_class_idx {
                         if self.current_function_idx.is_none() {
                             if let Some(ExtractedUnit::Class(c)) = self.units.get_mut(idx) {
-                                if c.docstring.is_none() && c.line < line && end_line <= c.exit_line {
+                                if c.docstring.is_none() && c.line < line && end_line <= c.exit_line
+                                {
                                     c.docstring = Some(class_text);
                                 }
                             }
@@ -235,10 +240,14 @@ impl<'a> CursorExtractor<'a> {
                 }
             }
             Tag::Field => self.emit_field(node),
-            Tag::Decorator | Tag::ClassBase
-            | Tag::FunctionParam | Tag::FunctionReturn
-            | Tag::CallReceiver | Tag::ImportFromClause
-            | Tag::ImportSpecifier | Tag::Export => {
+            Tag::Decorator
+            | Tag::ClassBase
+            | Tag::FunctionParam
+            | Tag::FunctionReturn
+            | Tag::CallReceiver
+            | Tag::ImportFromClause
+            | Tag::ImportSpecifier
+            | Tag::Export => {
                 // Silent tags — no entity emitted directly
             }
         }
@@ -310,7 +319,10 @@ impl<'a> CursorExtractor<'a> {
         else {
             return;
         };
-        let name = name_node.utf8_text(self.source.as_bytes()).unwrap_or("").to_string();
+        let name = name_node
+            .utf8_text(self.source.as_bytes())
+            .unwrap_or("")
+            .to_string();
         if name.is_empty() {
             return;
         }
@@ -318,8 +330,14 @@ impl<'a> CursorExtractor<'a> {
             .child_by_field_name("type")
             .and_then(|t| t.utf8_text(self.source.as_bytes()).ok())
             .map(|s| s.to_string());
-        let span = ByteSpan { start: node.start_byte(), end: node.end_byte() };
-        let name_span = ByteSpan { start: name_node.start_byte(), end: name_node.end_byte() };
+        let span = ByteSpan {
+            start: node.start_byte(),
+            end: node.end_byte(),
+        };
+        let name_span = ByteSpan {
+            start: name_node.start_byte(),
+            end: name_node.end_byte(),
+        };
 
         let idx = self.current_class_idx.unwrap();
         if let Some(ExtractedUnit::Class(ref mut class)) = self.units.get_mut(idx) {
@@ -350,7 +368,11 @@ impl<'a> CursorExtractor<'a> {
         }
         let go_receiver_type = extract_go_receiver_type(node, self.source);
         let (parent_qname, parent_class_from_frame) = self.resolve_context();
-        let is_method = self.frames.iter().rev().any(|f| f.kind == EmittedKind::Class);
+        let is_method = self
+            .frames
+            .iter()
+            .rev()
+            .any(|f| f.kind == EmittedKind::Class);
         let parent_class = if is_method {
             parent_class_from_frame.or_else(|| go_receiver_type.clone())
         } else if let Some(ref recv) = go_receiver_type {
@@ -369,7 +391,8 @@ impl<'a> CursorExtractor<'a> {
         let entity_id = make_entity_id(self.file_path, &qualified_name);
 
         let return_type = {
-            let rt_node = node.child_by_field_name("return_type")
+            let rt_node = node
+                .child_by_field_name("return_type")
                 .or_else(|| node.child_by_field_name("returns"));
             rt_node.and_then(|rt| {
                 // TypeScript's return node is a `type_annotation`, whose text
@@ -438,7 +461,10 @@ impl<'a> CursorExtractor<'a> {
     }
 
     fn emit_import(&mut self, node: Node) {
-        let text = node.utf8_text(self.source.as_bytes()).unwrap_or("").to_string();
+        let text = node
+            .utf8_text(self.source.as_bytes())
+            .unwrap_or("")
+            .to_string();
         let line = node.start_position().row + 1;
         let name_span = ByteSpan {
             start: node.start_byte(),
@@ -513,9 +539,10 @@ impl<'a> CursorExtractor<'a> {
         for (func_idx, name, line, col) in &self.fn_ref_candidates {
             if self.fn_names.contains(name) {
                 if let Some(ExtractedUnit::Function(ref mut func)) = self.units.get_mut(*func_idx) {
-                    let already_present = func.calls.iter().any(|c| {
-                        c.name == *name && c.line == *line && c.col == *col
-                    });
+                    let already_present = func
+                        .calls
+                        .iter()
+                        .any(|c| c.name == *name && c.line == *line && c.col == *col);
                     if !already_present {
                         func.calls.push(UnresolvedRef {
                             name: name.clone(),
@@ -531,7 +558,12 @@ impl<'a> CursorExtractor<'a> {
 }
 
 /// Convenience function — single-pass extraction.
-pub fn extract_single_pass(source: &str, root_node: Node, compiled: &CompiledQuery, file_path: &str) -> Vec<ExtractedUnit> {
+pub fn extract_single_pass(
+    source: &str,
+    root_node: Node,
+    compiled: &CompiledQuery,
+    file_path: &str,
+) -> Vec<ExtractedUnit> {
     CursorExtractor::new(source, file_path).extract(root_node, compiled)
 }
 
@@ -558,13 +590,14 @@ fn emit_docstring_node(node: Node, source: &str) -> Option<(usize, String, usize
     // Clean comment markers and Python string delimiters — the tagged node
     // may be a `///` comment or a `"""…"""` literal; either way the
     // projection wants the prose, not the syntax.
-    let cleaned = text.trim_start_matches('#')
+    let cleaned = text
+        .trim_start_matches('#')
         .trim_start_matches("//")
         .trim_start_matches("///")
         .trim_start_matches("/*")
         .trim_end_matches("*/")
         .trim()
-        .trim_matches(|c| c == '"' || c == '\'' )
+        .trim_matches(|c| c == '"' || c == '\'')
         .trim();
     if cleaned.is_empty() {
         None
@@ -575,13 +608,21 @@ fn emit_docstring_node(node: Node, source: &str) -> Option<(usize, String, usize
 }
 
 /// Scan a function's subtree for fn-ref patterns.
-fn scan_subtree_for_fn_ref(node: Node, source: &str, func_idx: usize,
-                           candidates: &mut Vec<(usize, String, usize, usize)>) {
+fn scan_subtree_for_fn_ref(
+    node: Node,
+    source: &str,
+    func_idx: usize,
+    candidates: &mut Vec<(usize, String, usize, usize)>,
+) {
     let kind = node.kind();
 
     // Assignment RHS: `x = handler`
-    if matches!(kind, "assignment" | "assignment_expression" | "variable_declarator" | "let_declaration") {
-        let rhs = node.child_by_field_name("right")
+    if matches!(
+        kind,
+        "assignment" | "assignment_expression" | "variable_declarator" | "let_declaration"
+    ) {
+        let rhs = node
+            .child_by_field_name("right")
             .or_else(|| node.child_by_field_name("value"))
             .or_else(|| node.child_by_field_name("init"));
         if let Some(rhs_node) = rhs {
@@ -596,7 +637,10 @@ fn scan_subtree_for_fn_ref(node: Node, source: &str, func_idx: usize,
     }
 
     // Return value: `return handler`
-    if matches!(kind, "return_statement" | "return" | "return_expression" | "control_transfer_statement") {
+    if matches!(
+        kind,
+        "return_statement" | "return" | "return_expression" | "control_transfer_statement"
+    ) {
         for i in 0..node.child_count() {
             if let Some(child) = node.child(i as u32) {
                 if is_identifier_kind(child.kind()) {
@@ -685,7 +729,9 @@ fn scan_subtree_for_fn_ref(node: Node, source: &str, func_idx: usize,
 fn extract_ref_name(node: Node, source: &str) -> Option<String> {
     let kind = node.kind();
     if is_identifier_kind(kind) {
-        node.utf8_text(source.as_bytes()).ok().map(|s| s.to_string())
+        node.utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.to_string())
     } else if kind == "attribute" {
         node.child_by_field_name("attribute")
             .and_then(|n| n.utf8_text(source.as_bytes()).ok())
@@ -707,8 +753,12 @@ fn extract_ref_name(node: Node, source: &str) -> Option<String> {
 fn is_identifier_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "identifier" | "IDENTIFIER" | "simple_identifier"
-        | "type_identifier" | "property_identifier"
-        | "field_identifier" | "shorthand_property_identifier"
+        "identifier"
+            | "IDENTIFIER"
+            | "simple_identifier"
+            | "type_identifier"
+            | "property_identifier"
+            | "field_identifier"
+            | "shorthand_property_identifier"
     )
 }

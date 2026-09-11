@@ -123,11 +123,8 @@ pub fn diff_preview_for_edits(edits: &[MutationEdit]) -> String {
 
     let mut out = String::new();
     for file in files {
-        let for_file: Vec<MutationEdit> = edits
-            .iter()
-            .filter(|e| e.file == file)
-            .cloned()
-            .collect();
+        let for_file: Vec<MutationEdit> =
+            edits.iter().filter(|e| e.file == file).cloned().collect();
         // F14: edit files are canonical root-relative ids — resolve for disk.
         match std::fs::read_to_string(crate::graph::module_resolution::disk_path_for(file)) {
             Ok(original) => match apply_edits_to_file(&original, &for_file) {
@@ -163,7 +160,7 @@ mod tests {
         let source = "def foo():\n    pass\n";
         let edit = MutationEdit {
             file: "test.py".into(),
-            span: ByteSpan { start: 0, end: 10 },  // just "def foo():", no newline
+            span: ByteSpan { start: 0, end: 10 }, // just "def foo():", no newline
             replacement: "def bar():".into(),
             expected_hash: "".into(),
         };
@@ -185,7 +182,7 @@ mod tests {
         };
         let edit2 = MutationEdit {
             file: "test.py".into(),
-            span: ByteSpan { start: 0, end: 10 },  // "first line"
+            span: ByteSpan { start: 0, end: 10 }, // "first line"
             replacement: "FIRST".into(),
             expected_hash: "".into(),
         };
@@ -229,8 +226,7 @@ mod tests {
 
     #[test]
     fn diff_preview_reads_the_file_and_applies_the_edits() {
-        let dir = std::env::temp_dir()
-            .join(format!("coderadar_diff_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("coderadar_diff_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("m.py");
         std::fs::write(&file, "def f():\n    return 1\n").unwrap();
@@ -239,7 +235,10 @@ mod tests {
         let start = "def f():\n    ".len();
         let edit = MutationEdit {
             file: path.clone(),
-            span: ByteSpan { start, end: start + "return 1".len() },
+            span: ByteSpan {
+                start,
+                end: start + "return 1".len(),
+            },
             replacement: "return 2".into(),
             expected_hash: "".into(),
         };
@@ -271,11 +270,16 @@ mod tests {
         let source = "# é → café\ndef target():\n    pass\n";
         // Compute the byte offset of "target" by searching bytes
         let target_byte = source.find("target").unwrap();
-        assert!(target_byte > source[..target_byte].chars().count(),
-            "byte offset should exceed char count with multibyte chars");
+        assert!(
+            target_byte > source[..target_byte].chars().count(),
+            "byte offset should exceed char count with multibyte chars"
+        );
         let edit = MutationEdit {
             file: "test.py".into(),
-            span: ByteSpan { start: target_byte, end: target_byte + "target".len() },
+            span: ByteSpan {
+                start: target_byte,
+                end: target_byte + "target".len(),
+            },
             replacement: "renamed".into(),
             expected_hash: "".into(),
         };

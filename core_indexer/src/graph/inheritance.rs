@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::CodeGraph;
 use super::module_resolution::find_module_by_dotted_name;
+use super::CodeGraph;
 use crate::types::*;
 
 impl CodeGraph {
@@ -12,8 +12,7 @@ impl CodeGraph {
     pub fn resolve_class_hierarchy(&self, projection: &mut ProjectedGraph) {
         projection.subclasses.clear();
         projection.ambiguous_bases.clear();
-        let class_ids: Vec<String> =
-            projection.classes.keys().cloned().collect();
+        let class_ids: Vec<String> = projection.classes.keys().cloned().collect();
 
         for cid in &class_ids {
             let (bases, parent_module, is_tco, class_name) = match projection.classes.get(cid) {
@@ -25,29 +24,39 @@ impl CodeGraph {
                 ),
                 None => continue,
             };
-            if is_tco { continue; }
+            if is_tco {
+                continue;
+            }
 
             let mut resolved: Vec<String> = Vec::with_capacity(bases.len());
             for b in &bases {
                 let candidates = Self::base_candidates(projection, &b.name, &parent_module);
                 match candidates.len() {
                     1 => resolved.push(candidates[0].clone()),
-                    n if n > 1 => projection.ambiguous_bases.push(crate::types::AmbiguousBase {
-                        class_name: class_name.clone(),
-                        base_name: b.name.clone(),
-                        candidates,
-                    }),
+                    n if n > 1 => projection
+                        .ambiguous_bases
+                        .push(crate::types::AmbiguousBase {
+                            class_name: class_name.clone(),
+                            base_name: b.name.clone(),
+                            candidates,
+                        }),
                     _ => {} // 0 candidates: external/builtin — correctly unresolved
                 }
             }
 
             // Write back resolved_bases (only if changed — avoid needless clones)
-            let existing = projection.classes.get(cid).map(|c| c.resolved_bases.clone()).unwrap_or_default();
+            let existing = projection
+                .classes
+                .get(cid)
+                .map(|c| c.resolved_bases.clone())
+                .unwrap_or_default();
             if existing != resolved {
                 if let Some(class) = projection.classes.get(cid) {
                     let mut c = (**class).clone();
                     c.resolved_bases = resolved.clone();
-                    projection.classes.insert(cid.clone(), std::sync::Arc::new(c));
+                    projection
+                        .classes
+                        .insert(cid.clone(), std::sync::Arc::new(c));
                 }
             }
             // Invert: base → subclasses
@@ -69,8 +78,7 @@ impl CodeGraph {
     /// Clears `importers` first (idempotent rebuild).
     pub fn resolve_imports(&self, projection: &mut ProjectedGraph) {
         projection.importers.clear();
-        let module_ids: Vec<String> =
-            projection.modules.keys().cloned().collect();
+        let module_ids: Vec<String> = projection.modules.keys().cloned().collect();
 
         for mid in &module_ids {
             let imports_list = match projection.modules.get(mid) {
@@ -91,8 +99,8 @@ impl CodeGraph {
                     crate::types::ImportKind::RelativeImport { module, .. } => module.clone(),
                 };
 
-                let target_mod_id = src_dotted
-                    .and_then(|s| find_module_by_dotted_name(projection, &s, mid));
+                let target_mod_id =
+                    src_dotted.and_then(|s| find_module_by_dotted_name(projection, &s, mid));
 
                 let new_resolution = match &target_mod_id {
                     Some(t) => crate::types::ImportResolution::Module(t.clone()),
@@ -102,7 +110,9 @@ impl CodeGraph {
                 if new_resolution != imp.resolution {
                     let mut ni = (*imp).clone();
                     ni.resolution = new_resolution;
-                    projection.imports.insert(imp_id.clone(), std::sync::Arc::new(ni));
+                    projection
+                        .imports
+                        .insert(imp_id.clone(), std::sync::Arc::new(ni));
                 }
                 if let Some(t) = target_mod_id {
                     projection
@@ -166,8 +176,7 @@ impl CodeGraph {
         // class.methods IS now populated (populate_class_methods, 2.7), but we
         // still scan functions here for parity with resolve_one_function's MRO
         // method lookup (which also scans, not reads class.methods).
-        let class_ids: Vec<String> =
-            projection.classes.keys().cloned().collect();
+        let class_ids: Vec<String> = projection.classes.keys().cloned().collect();
 
         for cid in &class_ids {
             let mro = match projection.classes.get(cid) {
@@ -176,14 +185,15 @@ impl CodeGraph {
             };
 
             // Methods declared directly on THIS class.
-            let own_methods: std::collections::HashMap<String, String> =
-                projection
-                    .functions
-                    .iter()
-                    .filter(|(_, f)| f.parent_class.as_ref() == Some(cid) && !f.name.is_empty())
-                    .map(|(fid, f)| (f.name.clone(), fid.clone()))
-                    .collect();
-            if own_methods.is_empty() { continue; }
+            let own_methods: std::collections::HashMap<String, String> = projection
+                .functions
+                .iter()
+                .filter(|(_, f)| f.parent_class.as_ref() == Some(cid) && !f.name.is_empty())
+                .map(|(fid, f)| (f.name.clone(), fid.clone()))
+                .collect();
+            if own_methods.is_empty() {
+                continue;
+            }
 
             // Walk MRO past self. For each method, the first base class in
             // MRO order declaring a same-named method is the overridden base.
@@ -191,15 +201,16 @@ impl CodeGraph {
                 let mut base_fid: Option<String> = None;
                 let mut skipped_self = false;
                 for node in &mro {
-                    if !skipped_self { skipped_self = true; continue; }
+                    if !skipped_self {
+                        skipped_self = true;
+                        continue;
+                    }
                     match node {
                         crate::types::MroNode::Class(bid) => {
                             // base method = a function with parent_class == bid, same name
-                            if let Some((bf, _)) = projection
-                                .functions
-                                .iter()
-                                .find(|(_, f)| f.parent_class.as_ref() == Some(bid) && f.name == *name)
-                            {
+                            if let Some((bf, _)) = projection.functions.iter().find(|(_, f)| {
+                                f.parent_class.as_ref() == Some(bid) && f.name == *name
+                            }) {
                                 base_fid = Some(bf.clone());
                                 break;
                             }

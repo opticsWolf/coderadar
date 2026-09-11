@@ -68,10 +68,7 @@ pub enum Operand {
     NumberValue(f64),
     BoolValue(bool),
     ListValue(Vec<Operand>),
-    DerivedCall {
-        name: String,
-        args: Vec<Operand>,
-    },
+    DerivedCall { name: String, args: Vec<Operand> },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -101,8 +98,8 @@ pub enum OrderDir {
 
 /// Parse a query string using the Pest grammar.
 pub fn parse_query(query_str: &str) -> Result<ParsedQuery, String> {
-    let mut pairs = QueryParser::parse(Rule::query, query_str)
-        .map_err(|e| format!("Parse error: {:?}", e))?;
+    let mut pairs =
+        QueryParser::parse(Rule::query, query_str).map_err(|e| format!("Parse error: {:?}", e))?;
 
     // The first (and only) top-level pair is the full query
     let query_pair = pairs.next().ok_or("Empty parse result")?;
@@ -196,7 +193,11 @@ fn parse_select_clause(pair: Pair<Rule>) -> Vec<SelectItem> {
                     if n >= 2 {
                         let arg = parts[n - 2].as_str().to_string();
                         let alias = parts[n - 1].as_str().to_string();
-                        SelectItem::Aggregate { func: agg_func, path: arg, alias }
+                        SelectItem::Aggregate {
+                            func: agg_func,
+                            path: arg,
+                            alias,
+                        }
                     } else {
                         SelectItem::Path(String::new())
                     }
@@ -272,16 +273,17 @@ fn parse_operand(pair: Pair<Rule>) -> Operand {
             let s = pair.as_str();
             Operand::StringValue(s[1..s.len() - 1].to_string())
         }
-        Rule::number => {
-            Operand::NumberValue(pair.as_str().parse().unwrap_or(0.0))
-        }
-        Rule::bool => {
-            Operand::BoolValue(pair.as_str() == "true")
-        }
+        Rule::number => Operand::NumberValue(pair.as_str().parse().unwrap_or(0.0)),
+        Rule::bool => Operand::BoolValue(pair.as_str() == "true"),
         Rule::null => Operand::StringValue("null".to_string()),
         Rule::list => Operand::ListValue(
             pair.into_inner()
-                .filter(|p| p.as_rule() == Rule::value || p.as_rule() == Rule::string || p.as_rule() == Rule::number || p.as_rule() == Rule::bool)
+                .filter(|p| {
+                    p.as_rule() == Rule::value
+                        || p.as_rule() == Rule::string
+                        || p.as_rule() == Rule::number
+                        || p.as_rule() == Rule::bool
+                })
                 .map(parse_operand)
                 .collect(),
         ),
@@ -398,11 +400,21 @@ mod tests {
     fn test_order_by_direction_is_not_swallowed() {
         // `desc` used to be an inline literal in the grammar, so Pest matched
         // it and emitted no pair for it — every ORDER BY came back ascending.
-        let asc = parse_query("classes order by name asc").unwrap().order_by.unwrap();
+        let asc = parse_query("classes order by name asc")
+            .unwrap()
+            .order_by
+            .unwrap();
         assert_eq!(asc.direction, OrderDir::Asc);
 
-        let bare = parse_query("classes order by name").unwrap().order_by.unwrap();
-        assert_eq!(bare.direction, OrderDir::Asc, "no direction means ascending");
+        let bare = parse_query("classes order by name")
+            .unwrap()
+            .order_by
+            .unwrap();
+        assert_eq!(
+            bare.direction,
+            OrderDir::Asc,
+            "no direction means ascending"
+        );
 
         let dotted = parse_query("functions order by module.name desc")
             .unwrap()
@@ -414,9 +426,7 @@ mod tests {
 
     #[test]
     fn test_parse_with_select() {
-        let q = parse_query(
-            "functions select name, count(*) as cnt group by module.name"
-        ).unwrap();
+        let q = parse_query("functions select name, count(*) as cnt group by module.name").unwrap();
         assert!(!q.select.is_empty());
         assert!(!q.group_by.is_empty());
         assert_eq!(q.group_by[0], "module.name");
@@ -424,9 +434,8 @@ mod tests {
 
     #[test]
     fn test_parse_combined_clauses() {
-        let q = parse_query(
-            "classes where method_count > 5 order by method_count desc limit 25"
-        ).unwrap();
+        let q = parse_query("classes where method_count > 5 order by method_count desc limit 25")
+            .unwrap();
         assert!(q.where_clause.is_some());
         assert!(q.order_by.is_some());
         assert_eq!(q.limit, Some(25));
@@ -434,9 +443,7 @@ mod tests {
 
     #[test]
     fn test_parse_with_contains() {
-        let q = parse_query(
-            "functions where decorators contains \"deprecated\""
-        ).unwrap();
+        let q = parse_query("functions where decorators contains \"deprecated\"").unwrap();
         assert!(q.where_clause.is_some());
     }
 
@@ -445,7 +452,11 @@ mod tests {
         // Regression: atomic `path` must yield Path(["name"]), not Path([]).
         let q = parse_query("functions where name == \"parse\"").unwrap();
         match q.where_clause.expect("where clause") {
-            Predicate::Comparison { left, op: CompOp::Eq, right } => {
+            Predicate::Comparison {
+                left,
+                op: CompOp::Eq,
+                right,
+            } => {
                 match left {
                     Operand::Path(parts) => assert_eq!(parts, vec!["name".to_string()]),
                     other => panic!("expected Path, got {:?}", other),
@@ -471,7 +482,11 @@ mod tests {
         // Regression: single-quoted strings must parse like double-quoted.
         let q = parse_query("functions where name contains 'parse'").unwrap();
         match q.where_clause.expect("where clause") {
-            Predicate::Comparison { left, op: CompOp::Contains, right } => {
+            Predicate::Comparison {
+                left,
+                op: CompOp::Contains,
+                right,
+            } => {
                 assert!(matches!(left, Operand::Path(_)));
                 match right {
                     Operand::StringValue(s) => assert_eq!(s, "parse"),
@@ -484,7 +499,8 @@ mod tests {
 
     #[test]
     fn test_parse_with_or_chain() {
-        let q = parse_query("functions where name == \"a\" or name == \"b\" or name == \"c\"").unwrap();
+        let q =
+            parse_query("functions where name == \"a\" or name == \"b\" or name == \"c\"").unwrap();
         // left-assoc: Or(Or(a, b), c)
         match q.where_clause.expect("where clause") {
             Predicate::Or(outer, inner_c) => {
@@ -497,15 +513,20 @@ mod tests {
 
     #[test]
     fn test_parse_with_not() {
-        let q = parse_query(
-            "functions where not is_async == true"
-        ).unwrap();
+        let q = parse_query("functions where not is_async == true").unwrap();
         assert!(q.where_clause.is_some());
     }
 
     #[test]
     fn test_parse_all_entities() {
-        for entity in &["modules", "classes", "functions", "imports", "calls", "fields"] {
+        for entity in &[
+            "modules",
+            "classes",
+            "functions",
+            "imports",
+            "calls",
+            "fields",
+        ] {
             let q = parse_query(entity).unwrap_or_else(|_| panic!("Failed: {}", entity));
             assert!(matches!(
                 q.entity,
@@ -521,9 +542,7 @@ mod tests {
 
     #[test]
     fn test_parse_derived_call() {
-        let q = parse_query(
-            "functions where has_method(\"__init__\") == true"
-        ).unwrap();
+        let q = parse_query("functions where has_method(\"__init__\") == true").unwrap();
         assert!(q.where_clause.is_some());
     }
 

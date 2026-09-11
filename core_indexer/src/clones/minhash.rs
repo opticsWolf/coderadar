@@ -40,11 +40,18 @@ impl MinHash {
 
     /// Estimated Jaccard similarity against another signature.
     pub fn estimate_jaccard(&self, other: &MinHash) -> f64 {
-        let matching = self.rows.iter().zip(other.rows.iter()).filter(|(a, b)| a == b).count();
+        let matching = self
+            .rows
+            .iter()
+            .zip(other.rows.iter())
+            .filter(|(a, b)| a == b)
+            .count();
         matching as f64 / N_ROWS as f64
     }
 
     pub fn empty() -> Self {
-        Self { rows: [u64::MAX; N_ROWS] }
+        Self {
+            rows: [u64::MAX; N_ROWS],
+        }
     }
 }

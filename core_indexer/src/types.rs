@@ -19,7 +19,10 @@ pub struct EmbeddingVec {
 
 impl Default for EmbeddingVec {
     fn default() -> Self {
-        EmbeddingVec { vec: vec![], hash: String::new() }
+        EmbeddingVec {
+            vec: vec![],
+            hash: String::new(),
+        }
     }
 }
 // Stable dotted-path identity, e.g. "src/auth.py::UserService.create".
@@ -54,19 +57,67 @@ pub struct ConstantKey(pub EntityId);
 pub struct TypeAliasKey(pub EntityId);
 
 // Convenience conversions
-impl From<EntityId> for ModuleKey     { fn from(id: EntityId) -> Self { ModuleKey(id) } }
-impl From<EntityId> for ClassKey      { fn from(id: EntityId) -> Self { ClassKey(id) } }
-impl From<EntityId> for FunctionKey   { fn from(id: EntityId) -> Self { FunctionKey(id) } }
-impl From<EntityId> for ImportKey     { fn from(id: EntityId) -> Self { ImportKey(id) } }
-impl From<EntityId> for ConstantKey   { fn from(id: EntityId) -> Self { ConstantKey(id) } }
-impl From<EntityId> for TypeAliasKey  { fn from(id: EntityId) -> Self { TypeAliasKey(id) } }
+impl From<EntityId> for ModuleKey {
+    fn from(id: EntityId) -> Self {
+        ModuleKey(id)
+    }
+}
+impl From<EntityId> for ClassKey {
+    fn from(id: EntityId) -> Self {
+        ClassKey(id)
+    }
+}
+impl From<EntityId> for FunctionKey {
+    fn from(id: EntityId) -> Self {
+        FunctionKey(id)
+    }
+}
+impl From<EntityId> for ImportKey {
+    fn from(id: EntityId) -> Self {
+        ImportKey(id)
+    }
+}
+impl From<EntityId> for ConstantKey {
+    fn from(id: EntityId) -> Self {
+        ConstantKey(id)
+    }
+}
+impl From<EntityId> for TypeAliasKey {
+    fn from(id: EntityId) -> Self {
+        TypeAliasKey(id)
+    }
+}
 
-impl ModuleKey    { pub fn as_str(&self) -> &str { &self.0 } }
-impl ClassKey     { pub fn as_str(&self) -> &str { &self.0 } }
-impl FunctionKey  { pub fn as_str(&self) -> &str { &self.0 } }
-impl ImportKey    { pub fn as_str(&self) -> &str { &self.0 } }
-impl ConstantKey  { pub fn as_str(&self) -> &str { &self.0 } }
-impl TypeAliasKey { pub fn as_str(&self) -> &str { &self.0 } }
+impl ModuleKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl ClassKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl FunctionKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl ImportKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl ConstantKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl TypeAliasKey {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum SymbolId {
@@ -494,8 +545,18 @@ pub fn is_builtin_type(name: &str) -> bool {
 pub fn is_stoplisted(name: &str) -> bool {
     matches!(
         name,
-        "this" | "self" | "super" | "null" | "nil" | "true" | "false"
-        | "undefined" | "new" | "NULL" | "nullptr" | "None"
+        "this"
+            | "self"
+            | "super"
+            | "null"
+            | "nil"
+            | "true"
+            | "false"
+            | "undefined"
+            | "new"
+            | "NULL"
+            | "nullptr"
+            | "None"
     )
 }
 
@@ -507,16 +568,38 @@ pub fn is_stoplisted(name: &str) -> bool {
 pub fn is_literal_receiver(kind: &str) -> bool {
     matches!(
         kind,
-        "string" | "string_literal" | "line_string_literal"
-        | "integer" | "integer_literal" | "INTEGER" | "INT"
-        | "float" | "float_literal" | "FLOAT"
-        | "true" | "false" | "boolean" | "none" | "nil"
-        | "list" | "dictionary" | "dict" | "tuple" | "array"
-        | "set" | "set_literal" | "call_expression" | "call"
-        | "binary_expression" | "unary_expression"
-        | "parenthesized_expression"
-        | "await" | "await_expression"
-        | "CHAR_LITERAL" | "STRINGLITERAL" | "STRINGLITERALSINGLE"
+        "string"
+            | "string_literal"
+            | "line_string_literal"
+            | "integer"
+            | "integer_literal"
+            | "INTEGER"
+            | "INT"
+            | "float"
+            | "float_literal"
+            | "FLOAT"
+            | "true"
+            | "false"
+            | "boolean"
+            | "none"
+            | "nil"
+            | "list"
+            | "dictionary"
+            | "dict"
+            | "tuple"
+            | "array"
+            | "set"
+            | "set_literal"
+            | "call_expression"
+            | "call"
+            | "binary_expression"
+            | "unary_expression"
+            | "parenthesized_expression"
+            | "await"
+            | "await_expression"
+            | "CHAR_LITERAL"
+            | "STRINGLITERAL"
+            | "STRINGLITERALSINGLE"
     )
 }
 
@@ -527,7 +610,7 @@ pub enum ParseQuality {
     Clean,
     Partial,
     Tainted,
-    Deferred,   // v3.6 §4.5a: routed to recovery extractor
+    Deferred, // v3.6 §4.5a: routed to recovery extractor
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
@@ -584,19 +667,11 @@ pub enum FunctionKind {
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum EffectiveClass {
     Plain,
-    Dataclass {
-        frozen: bool,
-        eq: bool,
-        order: bool,
-    },
+    Dataclass { frozen: bool, eq: bool, order: bool },
     NamedTuple,
-    TypedDict {
-        total: bool,
-    },
+    TypedDict { total: bool },
     Protocol,
-    Enum {
-        variant: EnumVariant,
-    },
+    Enum { variant: EnumVariant },
     Abstract,
 }
 
@@ -622,7 +697,7 @@ pub enum MroNode {
 #[derive(Clone, Eq, PartialEq, Hash, Debug)]
 pub enum TargetKind {
     Internal,
-    External(String),   // standard library, third-party; always emitted
+    External(String), // standard library, third-party; always emitted
 }
 
 // ── Parameter & Field (§3.3) ────────────────────────────────────────────────
@@ -726,7 +801,7 @@ pub enum ResolvedCall {
     },
     Constructor(EntityId),
     Builtin(String),
-    External(String),          // v3.6 §6.1a: library / third-party call
+    External(String), // v3.6 §6.1a: library / third-party call
     Unresolved {
         reason: UnresolvedReason,
         raw: UnresolvedRef,
@@ -749,8 +824,8 @@ pub enum UnresolvedReason {
     DynamicImport,
     WildcardImportShadow,
     ParseError,
-    IncompleteFlow,            // v3.6 §6.1a: internal dead-end suppressed
-    Stoplisted,                // v3.6: filtered by is_stoplisted()
+    IncompleteFlow, // v3.6 §6.1a: internal dead-end suppressed
+    Stoplisted,     // v3.6: filtered by is_stoplisted()
 }
 
 // ── Core Entities (§3.2) — EntityId-based identity ──────────────────────────
@@ -779,7 +854,7 @@ pub struct Module {
 pub struct Class {
     pub id: EntityId,
     pub name: String,
-    pub grammar_kind: String,  // v3.6: raw tree-sitter node kind
+    pub grammar_kind: String, // v3.6: raw tree-sitter node kind
     pub parent_module: EntityId,
     pub parent_class: Option<EntityId>,
     pub bases: Vec<UnresolvedRef>,
@@ -847,7 +922,7 @@ pub struct Function {
     pub params_span: ByteSpan,
     pub body_span: ByteSpan,
     pub decorators_span: Option<ByteSpan>,
-    pub embedding: EmbeddingVec,   // cached embedding vector (empty if not computed)
+    pub embedding: EmbeddingVec, // cached embedding vector (empty if not computed)
 }
 
 #[derive(Clone, Debug)]
@@ -934,7 +1009,7 @@ pub struct ExtractedClass {
     pub id: EntityId,
     pub name: String,
     pub qualified_name: String,
-    pub grammar_kind: String,  // v3.6: raw tree-sitter node kind
+    pub grammar_kind: String, // v3.6: raw tree-sitter node kind
     pub parent_module: EntityId,
     pub parent_class: Option<EntityId>,
     pub bases: Vec<UnresolvedRef>,
@@ -1161,8 +1236,8 @@ pub enum Tag {
     Decorator,
     Docstring,
     Field,
-    Impl,           // Rust: impl_item — container, not an entity
-    Export,         // TS/JS: export statement
+    Impl,   // Rust: impl_item — container, not an entity
+    Export, // TS/JS: export statement
 }
 
 pub struct TaggedTree<'a> {
@@ -1446,8 +1521,7 @@ mod tests {
 
     #[test]
     fn test_derive_function_kind_static() {
-        let kind = crate::extract::walker::derive_function_kind(
-            &["@staticmethod".into()], true);
+        let kind = crate::extract::walker::derive_function_kind(&["@staticmethod".into()], true);
         assert_eq!(kind, FunctionKind::StaticMethod);
     }
 
@@ -1486,20 +1560,51 @@ impl Language {
     /// be checked when the enum grows (which is how `Powershell` got missed).
     pub fn from_json(s: &str) -> Result<Self, String> {
         static ALL: &[Language] = &[
-            Language::Python, Language::TypeScript, Language::JavaScript,
-            Language::Go, Language::Rust, Language::Java, Language::C,
-            Language::Cpp, Language::Ruby, Language::Php, Language::CSharp,
-            Language::Kotlin, Language::Swift, Language::Scala, Language::Lua,
-            Language::Elixir, Language::Zig, Language::R, Language::Bash,
-            Language::Dart, Language::Protobuf, Language::Dockerfile,
-            Language::Sql, Language::Hcl, Language::Cmake, Language::Graphql,
-            Language::Erlang, Language::Haskell, Language::Nix, Language::Shell,
-            Language::Groovy, Language::Perl, Language::SystemVerilog,
-            Language::Ocaml, Language::Clojure, Language::Fsharp,
-            Language::Verilog, Language::Julia, Language::Powershell,
-            Language::EmacsLisp, Language::Objc, Language::OtherTen,
+            Language::Python,
+            Language::TypeScript,
+            Language::JavaScript,
+            Language::Go,
+            Language::Rust,
+            Language::Java,
+            Language::C,
+            Language::Cpp,
+            Language::Ruby,
+            Language::Php,
+            Language::CSharp,
+            Language::Kotlin,
+            Language::Swift,
+            Language::Scala,
+            Language::Lua,
+            Language::Elixir,
+            Language::Zig,
+            Language::R,
+            Language::Bash,
+            Language::Dart,
+            Language::Protobuf,
+            Language::Dockerfile,
+            Language::Sql,
+            Language::Hcl,
+            Language::Cmake,
+            Language::Graphql,
+            Language::Erlang,
+            Language::Haskell,
+            Language::Nix,
+            Language::Shell,
+            Language::Groovy,
+            Language::Perl,
+            Language::SystemVerilog,
+            Language::Ocaml,
+            Language::Clojure,
+            Language::Fsharp,
+            Language::Verilog,
+            Language::Julia,
+            Language::Powershell,
+            Language::EmacsLisp,
+            Language::Objc,
+            Language::OtherTen,
         ];
-        ALL.iter().copied()
+        ALL.iter()
+            .copied()
             .find(|v| v.to_json() == s)
             .ok_or_else(|| format!("unknown language '{s}' in concept JSON v2"))
     }
@@ -1518,7 +1623,11 @@ impl ParseQuality {
             "Partial" => ParseQuality::Partial,
             "Tainted" => ParseQuality::Tainted,
             "Deferred" => ParseQuality::Deferred,
-            other => return Err(format!("unknown parse_quality '{other}' in concept JSON v2")),
+            other => {
+                return Err(format!(
+                    "unknown parse_quality '{other}' in concept JSON v2"
+                ))
+            }
         })
     }
 }
@@ -1539,7 +1648,11 @@ impl ImportKind {
                 "module": module,
                 "names": names,
             }),
-            ImportKind::RelativeImport { level, module, names } => json!({
+            ImportKind::RelativeImport {
+                level,
+                module,
+                names,
+            } => json!({
                 "variant": "RelativeImport",
                 "level": level,
                 "module": module,
@@ -1569,13 +1682,17 @@ impl ImportKind {
                 .map(str::to_string)
                 .ok_or_else(|| format!("import_kind: missing 'module' for variant {variant}"))
         };
-        let names_of =
-            |v: &serde_json::Value, variant: &str| -> Result<Vec<(String, Option<String>)>, String> {
-                let names = v
-                    .get("names")
-                    .and_then(|n| n.as_array())
-                    .ok_or_else(|| format!("import_kind: missing 'names' for variant {variant}"))?;
-                names.iter().enumerate().map(|(i, item)| {
+        let names_of = |v: &serde_json::Value,
+                        variant: &str|
+         -> Result<Vec<(String, Option<String>)>, String> {
+            let names = v
+                .get("names")
+                .and_then(|n| n.as_array())
+                .ok_or_else(|| format!("import_kind: missing 'names' for variant {variant}"))?;
+            names
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
                     let arr = item
                         .as_array()
                         .ok_or_else(|| format!("import_kind: names[{i}] is not a pair"))?;
@@ -1585,8 +1702,9 @@ impl ImportKind {
                         .ok_or_else(|| format!("import_kind: names[{i}] missing name"))?;
                     let alias = arr.get(1).and_then(|a| a.as_str());
                     Ok::<_, String>((name.to_string(), alias.map(str::to_string)))
-                }).collect()
-            };
+                })
+                .collect()
+        };
         match variant {
             "ModuleImport" => Ok(ImportKind::ModuleImport {
                 module: module_of(v, variant)?,
@@ -1601,7 +1719,7 @@ impl ImportKind {
                     .get("level")
                     .and_then(|l| l.as_u64())
                     .ok_or_else(|| "import_kind: RelativeImport missing 'level'".to_string())?
-                        as usize,
+                    as usize,
                 module: v.get("module").and_then(|m| m.as_str()).map(str::to_string),
                 names: names_of(v, variant)?,
             }),
@@ -1625,16 +1743,47 @@ mod concept_v2_helpers_tests {
         // were missing from both the parser and this test, which is how a
         // `.ps1` module's `"Powershell"` language broke cold load.
         for lang in [
-            Language::Python, Language::TypeScript, Language::JavaScript, Language::Go,
-            Language::Rust, Language::Java, Language::C, Language::Cpp, Language::Ruby,
-            Language::Php, Language::CSharp, Language::Kotlin, Language::Swift,
-            Language::Scala, Language::Lua, Language::Elixir, Language::Zig, Language::R,
-            Language::Bash, Language::Dart, Language::Protobuf, Language::Dockerfile,
-            Language::Sql, Language::Hcl, Language::Cmake, Language::Graphql,
-            Language::Erlang, Language::Haskell, Language::Nix, Language::Shell,
-            Language::Groovy, Language::Perl, Language::SystemVerilog,
-            Language::Ocaml, Language::Clojure, Language::Fsharp, Language::Verilog,
-            Language::Julia, Language::Powershell, Language::EmacsLisp, Language::Objc,
+            Language::Python,
+            Language::TypeScript,
+            Language::JavaScript,
+            Language::Go,
+            Language::Rust,
+            Language::Java,
+            Language::C,
+            Language::Cpp,
+            Language::Ruby,
+            Language::Php,
+            Language::CSharp,
+            Language::Kotlin,
+            Language::Swift,
+            Language::Scala,
+            Language::Lua,
+            Language::Elixir,
+            Language::Zig,
+            Language::R,
+            Language::Bash,
+            Language::Dart,
+            Language::Protobuf,
+            Language::Dockerfile,
+            Language::Sql,
+            Language::Hcl,
+            Language::Cmake,
+            Language::Graphql,
+            Language::Erlang,
+            Language::Haskell,
+            Language::Nix,
+            Language::Shell,
+            Language::Groovy,
+            Language::Perl,
+            Language::SystemVerilog,
+            Language::Ocaml,
+            Language::Clojure,
+            Language::Fsharp,
+            Language::Verilog,
+            Language::Julia,
+            Language::Powershell,
+            Language::EmacsLisp,
+            Language::Objc,
             Language::OtherTen,
         ] {
             let s = lang.to_json();
@@ -1646,7 +1795,12 @@ mod concept_v2_helpers_tests {
 
     #[test]
     fn parse_quality_roundtrip_matches_debug() {
-        for q in [ParseQuality::Clean, ParseQuality::Partial, ParseQuality::Tainted, ParseQuality::Deferred] {
+        for q in [
+            ParseQuality::Clean,
+            ParseQuality::Partial,
+            ParseQuality::Tainted,
+            ParseQuality::Deferred,
+        ] {
             let s = q.to_json();
             assert_eq!(s, format!("{q:?}"));
             assert_eq!(ParseQuality::from_json(&s).unwrap(), q);
@@ -1656,8 +1810,14 @@ mod concept_v2_helpers_tests {
     #[test]
     fn import_kind_roundtrip() {
         let cases = vec![
-            ImportKind::ModuleImport { module: "os".into(), alias: None },
-            ImportKind::ModuleImport { module: "os.path".into(), alias: Some("p".into()) },
+            ImportKind::ModuleImport {
+                module: "os".into(),
+                alias: None,
+            },
+            ImportKind::ModuleImport {
+                module: "os.path".into(),
+                alias: Some("p".into()),
+            },
             ImportKind::FromImport {
                 module: "pkg.alpha".into(),
                 names: vec![("alpha".into(), None), ("beta".into(), Some("b".into()))],
@@ -1672,8 +1832,12 @@ mod concept_v2_helpers_tests {
                 module: Some("sibling".into()),
                 names: vec![("x".into(), Some("y".into()))],
             },
-            ImportKind::StarImport { module: "pkg".into() },
-            ImportKind::Side { module: "dotenv".into() },
+            ImportKind::StarImport {
+                module: "pkg".into(),
+            },
+            ImportKind::Side {
+                module: "dotenv".into(),
+            },
         ];
         for k in &cases {
             let v = k.to_json();
@@ -1686,6 +1850,9 @@ mod concept_v2_helpers_tests {
     fn import_kind_rejects_garbage() {
         assert!(ImportKind::from_json(&serde_json::json!({})).is_err());
         assert!(ImportKind::from_json(&serde_json::json!({"variant": "Bogus"})).is_err());
-        assert!(ImportKind::from_json(&serde_json::json!({"variant": "FromImport", "module": "m"})).is_err());
+        assert!(ImportKind::from_json(
+            &serde_json::json!({"variant": "FromImport", "module": "m"})
+        )
+        .is_err());
     }
 }

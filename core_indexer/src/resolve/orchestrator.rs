@@ -14,12 +14,12 @@
 
 use std::collections::HashMap;
 
-use crate::resolve::cache::ResolutionCache;
-use crate::types::SymbolId;
-use crate::resolve::import_graph::{rank_candidates, resolve_in_imports};
 use crate::graph::ImportNode;
+use crate::resolve::cache::ResolutionCache;
+use crate::resolve::import_graph::{rank_candidates, resolve_in_imports};
 use crate::resolve::signature::{signature_match, ScoredDef};
 use crate::resolve::ParsedReference;
+use crate::types::SymbolId;
 use crate::types::*;
 
 /// Orchestrates the five-layer resolution cascade.
@@ -152,13 +152,9 @@ impl ResolutionOrchestrator {
         let mut unresolved: Vec<&ParsedReference> = Vec::new();
 
         for reference in references {
-            if let Some(edge) = self.resolve_reference(
-                file_path,
-                reference,
-                import_graph,
-                definitions_pool,
-                config,
-            ) {
+            if let Some(edge) =
+                self.resolve_reference(file_path, reference, import_graph, definitions_pool, config)
+            {
                 edges.push(edge);
             } else {
                 unresolved.push(reference);
@@ -199,7 +195,9 @@ impl ResolutionOrchestrator {
         // First pass: index all internal targets
         for edge in edges.iter() {
             if matches!(edge.target_kind, TargetKind::Internal) {
-                covered_sources.entry(edge.target_id.clone()).or_insert(false);
+                covered_sources
+                    .entry(edge.target_id.clone())
+                    .or_insert(false);
             }
         }
 
@@ -247,14 +245,15 @@ impl ResolutionOrchestrator {
             // Check cache first
             if let Some(resolution) = self.cache.get_import_target(function_id, &call.name) {
                 match &resolution {
-                    ImportResolution::Symbol(sym_id) => {
-                        match sym_id {
-                            SymbolId::Function(ent_id) | SymbolId::Module(ent_id) | SymbolId::Class(ent_id) | SymbolId::Import(ent_id) => {
-                                results.push(ResolvedCall::Function(ent_id.clone()));
-                                continue;
-                            }
+                    ImportResolution::Symbol(sym_id) => match sym_id {
+                        SymbolId::Function(ent_id)
+                        | SymbolId::Module(ent_id)
+                        | SymbolId::Class(ent_id)
+                        | SymbolId::Import(ent_id) => {
+                            results.push(ResolvedCall::Function(ent_id.clone()));
+                            continue;
                         }
-                    }
+                    },
                     ImportResolution::Module(ent_id) => {
                         results.push(ResolvedCall::External(ent_id.clone()));
                         continue;
@@ -262,7 +261,9 @@ impl ResolutionOrchestrator {
                     ImportResolution::Unresolved => {
                         // Fall through to resolution
                     }
-                    ImportResolution::Wildcard { .. } | ImportResolution::Dynamic | ImportResolution::External { .. } => {
+                    ImportResolution::Wildcard { .. }
+                    | ImportResolution::Dynamic
+                    | ImportResolution::External { .. } => {
                         // Too ambiguous or external — fall through to resolution
                     }
                 }
@@ -369,7 +370,12 @@ impl ResolutionOrchestrator {
     ///
     /// Returns the linearized list and a boolean indicating whether the
     /// linearization is complete (false = external base encountered).
-    pub fn c3_linearize(&self, class_id: &str, bases: &[EntityId], mro_cache: &HashMap<EntityId, Vec<MroNode>>) -> (Vec<MroNode>, bool) {
+    pub fn c3_linearize(
+        &self,
+        class_id: &str,
+        bases: &[EntityId],
+        mro_cache: &HashMap<EntityId, Vec<MroNode>>,
+    ) -> (Vec<MroNode>, bool) {
         let mut result: Vec<MroNode> = vec![MroNode::Class(class_id.to_string())];
 
         if bases.is_empty() {
@@ -389,12 +395,7 @@ impl ResolutionOrchestrator {
         }
 
         // Add the base-class list itself (for merge ordering)
-        base_lists.push(
-            bases
-                .iter()
-                .map(|b| MroNode::Class(b.clone()))
-                .collect(),
-        );
+        base_lists.push(bases.iter().map(|b| MroNode::Class(b.clone())).collect());
 
         // C3 merge
         let mut complete = true;
@@ -440,7 +441,9 @@ impl ResolutionOrchestrator {
                             complete = false;
                         } else {
                             // Unresolvable internal dead-end
-                            result.push(MroNode::External { name: "<unresolvable>".into() });
+                            result.push(MroNode::External {
+                                name: "<unresolvable>".into(),
+                            });
                         }
                     }
                 }
@@ -457,8 +460,14 @@ impl ResolutionOrchestrator {
     }
 
     /// Invalidate MRO caches for a class hierarchy.
-    pub fn invalidate_class_hierarchy(&mut self, class_id: &str, subclasses: &[EntityId], max_depth: usize) {
-        self.cache.invalidate_class_hierarchy(class_id, subclasses, max_depth);
+    pub fn invalidate_class_hierarchy(
+        &mut self,
+        class_id: &str,
+        subclasses: &[EntityId],
+        max_depth: usize,
+    ) {
+        self.cache
+            .invalidate_class_hierarchy(class_id, subclasses, max_depth);
     }
 }
 
@@ -466,18 +475,84 @@ impl ResolutionOrchestrator {
 
 /// Standard Python builtins that resolve trivially.
 static BUILTINS: &[&str] = &[
-    "print", "len", "range", "int", "str", "float", "bool", "list", "dict",
-    "set", "tuple", "type", "isinstance", "issubclass", "hasattr", "getattr",
-    "setattr", "delattr", "super", "object", "property", "staticmethod",
-    "classmethod", "abs", "all", "any", "bin", "chr", "dir", "divmod",
-    "enumerate", "eval", "exec", "filter", "format", "frozenset", "globals",
-    "hex", "id", "input", "iter", "locals", "map", "max", "min", "next",
-    "oct", "open", "ord", "pow", "repr", "reversed", "round", "slice",
-    "sorted", "sum", "vars", "zip", "Exception", "ValueError", "TypeError",
-    "KeyError", "IndexError", "AttributeError", "RuntimeError", "ImportError",
-    "OSError", "FileNotFoundError", "StopIteration", "NotImplementedError",
-    "__import__", "__name__", "__file__", "__doc__", "__builtins__",
-    "True", "False", "None",
+    "print",
+    "len",
+    "range",
+    "int",
+    "str",
+    "float",
+    "bool",
+    "list",
+    "dict",
+    "set",
+    "tuple",
+    "type",
+    "isinstance",
+    "issubclass",
+    "hasattr",
+    "getattr",
+    "setattr",
+    "delattr",
+    "super",
+    "object",
+    "property",
+    "staticmethod",
+    "classmethod",
+    "abs",
+    "all",
+    "any",
+    "bin",
+    "chr",
+    "dir",
+    "divmod",
+    "enumerate",
+    "eval",
+    "exec",
+    "filter",
+    "format",
+    "frozenset",
+    "globals",
+    "hex",
+    "id",
+    "input",
+    "iter",
+    "locals",
+    "map",
+    "max",
+    "min",
+    "next",
+    "oct",
+    "open",
+    "ord",
+    "pow",
+    "repr",
+    "reversed",
+    "round",
+    "slice",
+    "sorted",
+    "sum",
+    "vars",
+    "zip",
+    "Exception",
+    "ValueError",
+    "TypeError",
+    "KeyError",
+    "IndexError",
+    "AttributeError",
+    "RuntimeError",
+    "ImportError",
+    "OSError",
+    "FileNotFoundError",
+    "StopIteration",
+    "NotImplementedError",
+    "__import__",
+    "__name__",
+    "__file__",
+    "__doc__",
+    "__builtins__",
+    "True",
+    "False",
+    "None",
 ];
 
 // ── Tests ──────────────────────────────────────────────────────────────────
@@ -521,7 +596,10 @@ mod tests {
     #[test]
     fn test_c3_linearization_single_base() {
         let mut cache = HashMap::new();
-        cache.insert("B".to_string(), vec![MroNode::Class("B".into()), MroNode::Class("C".into())]);
+        cache.insert(
+            "B".to_string(),
+            vec![MroNode::Class("B".into()), MroNode::Class("C".into())],
+        );
 
         let orchestrator = ResolutionOrchestrator::new();
         let (mro, complete) = orchestrator.c3_linearize("A", &["B".into()], &cache);
@@ -539,9 +617,15 @@ mod tests {
         //  D
         let mut cache = HashMap::new();
         // B's MRO: B → A
-        cache.insert("B".into(), vec![MroNode::Class("B".into()), MroNode::Class("A".into())]);
+        cache.insert(
+            "B".into(),
+            vec![MroNode::Class("B".into()), MroNode::Class("A".into())],
+        );
         // C's MRO: C → A
-        cache.insert("C".into(), vec![MroNode::Class("C".into()), MroNode::Class("A".into())]);
+        cache.insert(
+            "C".into(),
+            vec![MroNode::Class("C".into()), MroNode::Class("A".into())],
+        );
 
         let orchestrator = ResolutionOrchestrator::new();
         let (mro, complete) = orchestrator.c3_linearize("D", &["B".into(), "C".into()], &cache);
@@ -587,20 +671,18 @@ mod tests {
     fn test_keep_external_edges() {
         // External edges are always kept regardless of coverage.
         let orchestrator = ResolutionOrchestrator::new();
-        let mut edges = vec![
-            ResolvedEdge {
-                source_id: "mod.py::foo".into(),
-                target_id: "os::path::join".into(),
-                confidence: 0.89,
-                method: ResolutionMethod::ImportConstrained,
-                provenance: EdgeProvenance::ImportGraph,
-                kind: ReferenceKind::Call,
-                line: 42,
-                call_site_span: ByteSpan { start: 0, end: 0 },
-                args_span: None,
-                target_kind: TargetKind::External("os::path::join".into()),
-            },
-        ];
+        let mut edges = vec![ResolvedEdge {
+            source_id: "mod.py::foo".into(),
+            target_id: "os::path::join".into(),
+            confidence: 0.89,
+            method: ResolutionMethod::ImportConstrained,
+            provenance: EdgeProvenance::ImportGraph,
+            kind: ReferenceKind::Call,
+            line: 42,
+            call_site_span: ByteSpan { start: 0, end: 0 },
+            args_span: None,
+            target_kind: TargetKind::External("os::path::join".into()),
+        }];
         let unresolved: Vec<&ParsedReference> = vec![];
         orchestrator.validate_partial_coverage(&mut edges, &unresolved, "mod.py");
         assert_eq!(edges.len(), 1, "External edges must be kept");
@@ -611,20 +693,18 @@ mod tests {
         // An internal edge to a target with no outbound edges is suppressed.
         // foo calls bar, but bar calls nobody — the internal chain ends.
         let orchestrator = ResolutionOrchestrator::new();
-        let mut edges = vec![
-            ResolvedEdge {
-                source_id: "mod.py::foo".into(),
-                target_id: "mod.py::bar".into(),
-                confidence: 0.90,
-                method: ResolutionMethod::StackGraph,
-                provenance: EdgeProvenance::StackGraph,
-                kind: ReferenceKind::Call,
-                line: 10,
-                call_site_span: ByteSpan { start: 0, end: 0 },
-                args_span: None,
-                target_kind: TargetKind::Internal,
-            },
-        ];
+        let mut edges = vec![ResolvedEdge {
+            source_id: "mod.py::foo".into(),
+            target_id: "mod.py::bar".into(),
+            confidence: 0.90,
+            method: ResolutionMethod::StackGraph,
+            provenance: EdgeProvenance::StackGraph,
+            kind: ReferenceKind::Call,
+            line: 10,
+            call_site_span: ByteSpan { start: 0, end: 0 },
+            args_span: None,
+            target_kind: TargetKind::Internal,
+        }];
         let unresolved: Vec<&ParsedReference> = vec![];
         orchestrator.validate_partial_coverage(&mut edges, &unresolved, "mod.py");
         // bar has no outbound edges → foo→bar edge is suppressed.
@@ -667,8 +747,10 @@ mod tests {
         // foo→bar is covered (bar has outbound to baz).
         // But baz has no outbound → bar→baz might get suppressed.
         // The point is: the chain with a covered intermediate survives.
-        assert!(edges.iter().any(|e| e.target_id == "mod.py::bar"),
-                "foo→bar must be kept (bar is covered by its own edge)");
+        assert!(
+            edges.iter().any(|e| e.target_id == "mod.py::bar"),
+            "foo→bar must be kept (bar is covered by its own edge)"
+        );
     }
 
     #[test]
@@ -706,10 +788,16 @@ mod tests {
         orchestrator.validate_partial_coverage(&mut edges, &unresolved, "mod.py");
 
         // The internal foo→bar edge stays because bar is covered.
-        assert!(edges.iter().any(|e| e.target_id == "mod.py::bar"),
-                "Covered internal edge must survive");
+        assert!(
+            edges.iter().any(|e| e.target_id == "mod.py::bar"),
+            "Covered internal edge must survive"
+        );
         // The external edge always stays.
-        assert!(edges.iter().any(|e| matches!(e.target_kind, TargetKind::External(_))),
-                "External edges must always survive");
+        assert!(
+            edges
+                .iter()
+                .any(|e| matches!(e.target_kind, TargetKind::External(_))),
+            "External edges must always survive"
+        );
     }
 }

@@ -11,7 +11,9 @@ pub struct TooManyFields {
 
 impl Default for TooManyFields {
     fn default() -> Self {
-        Self { field_threshold: 10 }
+        Self {
+            field_threshold: 10,
+        }
     }
 }
 

@@ -48,5 +48,8 @@ pub fn compute_reachable(graph: &ProjectedGraph, roots: &HashSet<EntityId>) -> R
         }
     }
 
-    Reachability { reachable: seen, roots: roots.clone() }
+    Reachability {
+        reachable: seen,
+        roots: roots.clone(),
+    }
 }

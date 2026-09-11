@@ -19,7 +19,10 @@ impl IndentStyle {
     }
 
     pub fn tabs() -> Self {
-        Self { unit: '\t', width: 1 }
+        Self {
+            unit: '\t',
+            width: 1,
+        }
     }
 }
 
@@ -35,7 +38,10 @@ pub fn detect_indent_style(source: &str) -> IndentStyle {
         if line.is_empty() {
             continue;
         }
-        let leading = line.chars().take_while(|c| c.is_whitespace()).collect::<Vec<_>>();
+        let leading = line
+            .chars()
+            .take_while(|c| c.is_whitespace())
+            .collect::<Vec<_>>();
         if leading.iter().any(|c| *c == '\t') {
             tab_count += 1;
         } else if !leading.is_empty() && leading.iter().all(|c| *c == ' ') {
@@ -116,10 +122,7 @@ pub fn normalize_indent(
         }
 
         // 2. Strip incoming base, apply target indent
-        let leading_count = line
-            .chars()
-            .take_while(|c| c.is_whitespace())
-            .count();
+        let leading_count = line.chars().take_while(|c| c.is_whitespace()).count();
         let relative = leading_count.saturating_sub(incoming_base);
         let trimmed = line.trim_start();
 
@@ -185,7 +188,8 @@ mod tests {
         // Regression: CODERADAR_BUGS_QUIRKS.md #1 — an empty target used to
         // strip every line to the incoming minimum, dedenting a naturally-
         // indented body by one level and producing `return` outside function.
-        let new_body = "    \"\"\"Merge HTML metadata.\"\"\"\n    merged = {**a, **b}\n    return merged\n";
+        let new_body =
+            "    \"\"\"Merge HTML metadata.\"\"\"\n    merged = {**a, **b}\n    return merged\n";
         assert_eq!(
             normalize_indent(new_body, "", &IndentStyle::spaces(4), &[]),
             new_body,

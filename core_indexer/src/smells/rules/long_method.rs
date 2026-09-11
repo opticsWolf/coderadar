@@ -12,7 +12,10 @@ pub struct LongMethod {
 
 impl Default for LongMethod {
     fn default() -> Self {
-        Self { loc_threshold: 50, cyclomatic_threshold: 10 }
+        Self {
+            loc_threshold: 50,
+            cyclomatic_threshold: 10,
+        }
     }
 }
 

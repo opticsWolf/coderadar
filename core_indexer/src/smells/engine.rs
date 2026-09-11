@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::types::{ByteSpan, Class, EntityId, Function, ProjectedGraph, ResolvedCall};
 
-use super::rule::SmellRule;
 use super::profile::Strictness;
+use super::rule::SmellRule;
 use super::types::{EvalContext, Finding, GraphAnalyses, Scope};
 
 /// Orchestrates rule evaluation over the resolved `ProjectedGraph`.
@@ -25,7 +25,9 @@ impl SmellEngine {
                 Box::new(super::rules::long_parameter_list::LongParameterList::default()),
                 Box::new(super::rules::deep_nesting::DeepNesting::default()),
                 Box::new(super::rules::data_class::DataClass::default()),
-                Box::new(super::rules::high_cyclomatic_complexity::HighCyclomaticComplexity::default()),
+                Box::new(
+                    super::rules::high_cyclomatic_complexity::HighCyclomaticComplexity::default(),
+                ),
                 Box::new(super::rules::brain_method::BrainMethod::default()),
                 Box::new(super::rules::excessive_returns::ExcessiveReturns::default()),
                 Box::new(super::rules::too_many_fields::TooManyFields::default()),
@@ -49,7 +51,11 @@ impl SmellEngine {
     /// versions of an entity can coexist in a snapshot under ID variants
     /// (different path prefixes or separators), which used to report the
     /// same violation two or three times (CODERADAR_BUGS_QUIRKS.md #9).
-    pub fn run_with_strictness(&self, graph: &ProjectedGraph, strictness: Strictness) -> Vec<Finding> {
+    pub fn run_with_strictness(
+        &self,
+        graph: &ProjectedGraph,
+        strictness: Strictness,
+    ) -> Vec<Finding> {
         let mut findings = Vec::new();
 
         let mut rules_by_scope: HashMap<Scope, Vec<&Box<dyn SmellRule>>> = HashMap::new();
@@ -61,7 +67,8 @@ impl SmellEngine {
         // rule (Stage 0.2). Reachability + entry points feed the dead-code
         // rule (Stage 1); harmonic centrality feeds triage signals (Stage 5).
         let entries = crate::graph::deadcode::entry_points::detect_entry_points(graph);
-        let reach = crate::graph::deadcode::reachability::compute_reachable(graph, &entries.production);
+        let reach =
+            crate::graph::deadcode::reachability::compute_reachable(graph, &entries.production);
         let centrality = crate::graph::centrality::harmonic_centrality(graph, 3);
         let analyses = GraphAnalyses {
             reachable: Some(&reach.reachable),
@@ -80,9 +87,9 @@ impl SmellEngine {
             for (id, f) in &graph.functions {
                 let mut metrics = metrics_for_function(f);
                 if use_cfg {
-                    let refined = cfg_cache.entry(f.content_hash).or_insert_with(|| {
-                        refine_with_cfg(graph, f)
-                    });
+                    let refined = cfg_cache
+                        .entry(f.content_hash)
+                        .or_insert_with(|| refine_with_cfg(graph, f));
                     if let Some(facts) = refined {
                         metrics.insert("cyclomatic".to_string(), facts.cyclomatic as f64);
                         metrics.insert(
@@ -171,7 +178,10 @@ fn finding_key(f: &Finding) -> String {
 pub fn metrics_for_function(f: &Function) -> HashMap<String, f64> {
     let mut m = HashMap::new();
     // Inclusive line count: (exit_line - line) + 1.
-    m.insert("LOC".to_string(), (f.exit_line.saturating_sub(f.line) + 1) as f64);
+    m.insert(
+        "LOC".to_string(),
+        (f.exit_line.saturating_sub(f.line) + 1) as f64,
+    );
     m.insert("param_count".to_string(), f.parameters.len() as f64);
     m.insert("cyclomatic".to_string(), f.metrics.cyclomatic as f64);
     m.insert("nesting_depth".to_string(), f.metrics.nesting_depth as f64);
@@ -218,7 +228,10 @@ pub fn metrics_for_class(
     }
     m.insert("WMC".to_string(), wmc as f64);
     m.insert("max_method_cyclomatic".to_string(), max_cyclo as f64);
-    m.insert("CBO".to_string(), coupling_between_objects(c, graph, methods) as f64);
+    m.insert(
+        "CBO".to_string(),
+        coupling_between_objects(c, graph, methods) as f64,
+    );
 
     m
 }
@@ -254,11 +267,14 @@ fn coupling_between_objects(
 fn target_class_of(call: &ResolvedCall, graph: &ProjectedGraph) -> Option<EntityId> {
     match call {
         ResolvedCall::Function(id) => graph.functions.get(id).and_then(|f| f.parent_class.clone()),
-        ResolvedCall::Method { method, .. } => {
-            graph.functions.get(method).and_then(|f| f.parent_class.clone())
-        }
+        ResolvedCall::Method { method, .. } => graph
+            .functions
+            .get(method)
+            .and_then(|f| f.parent_class.clone()),
         ResolvedCall::Constructor(id) => Some(id.clone()),
-        ResolvedCall::Builtin(_) | ResolvedCall::External(_) | ResolvedCall::Unresolved { .. } => None,
+        ResolvedCall::Builtin(_) | ResolvedCall::External(_) | ResolvedCall::Unresolved { .. } => {
+            None
+        }
     }
 }
 
@@ -267,8 +283,8 @@ pub(crate) mod tests {
     use std::collections::HashMap;
 
     use crate::smells::engine::SmellEngine;
-    use crate::smells::rule::SmellRule;
     use crate::smells::profile::Strictness;
+    use crate::smells::rule::SmellRule;
     use crate::smells::types::{EvalContext, GraphAnalyses, Severity};
     use crate::types::ProjectedGraph;
 
@@ -339,7 +355,10 @@ pub(crate) mod tests {
             );
         }
         // Spot-check the bands actually differ where they should.
-        assert!(fires_at(35, Strictness::Strict), "LOC 35 < strict limit 30? no — fires");
+        assert!(
+            fires_at(35, Strictness::Strict),
+            "LOC 35 < strict limit 30? no — fires"
+        );
         assert!(!fires_at(35, Strictness::Normal));
         assert!(fires_at(60, Strictness::Normal), "LOC 60 ≥ normal limit 50");
         assert!(!fires_at(60, Strictness::Loose));
@@ -352,10 +371,15 @@ pub(crate) mod tests {
         let rule = crate::smells::rules::long_parameter_list::LongParameterList::default();
 
         let m4 = HashMap::from([("param_count".to_string(), 4.0)]);
-        assert!(rule.evaluate(&ctx(&g, "a", "f", &m4)).is_none(), "4 params is the threshold, not above it");
+        assert!(
+            rule.evaluate(&ctx(&g, "a", "f", &m4)).is_none(),
+            "4 params is the threshold, not above it"
+        );
 
         let m5 = HashMap::from([("param_count".to_string(), 5.0)]);
-        let f = rule.evaluate(&ctx(&g, "a", "f", &m5)).expect("5 params triggers");
+        let f = rule
+            .evaluate(&ctx(&g, "a", "f", &m5))
+            .expect("5 params triggers");
         assert_eq!(f.rule_id, "long-parameter-list");
         assert_eq!(f.severity, Severity::Info);
     }
@@ -381,7 +405,9 @@ pub(crate) mod tests {
         assert!(rule.evaluate(&ctx(&g, "c", "C", &low_cbo)).is_none());
 
         let hit = HashMap::from([("WMC".to_string(), 50.0), ("CBO".to_string(), 6.0)]);
-        let f = rule.evaluate(&ctx(&g, "c", "C", &hit)).expect("both thresholds met");
+        let f = rule
+            .evaluate(&ctx(&g, "c", "C", &hit))
+            .expect("both thresholds met");
         assert_eq!(f.severity, Severity::Medium);
     }
 
@@ -405,9 +431,18 @@ pub(crate) mod tests {
             message: "m".into(),
             signals: HashMap::new(),
         };
-        assert_eq!(finding_key(&mk(".\\src\\a.py::f")), finding_key(&mk("./src/a.py::f")));
-        assert_eq!(finding_key(&mk("./SRC/a.py::f")), finding_key(&mk("./src/a.py::f")));
-        assert_ne!(finding_key(&mk("./src/a.py::f")), finding_key(&mk("./src/a.py::g")));
+        assert_eq!(
+            finding_key(&mk(".\\src\\a.py::f")),
+            finding_key(&mk("./src/a.py::f"))
+        );
+        assert_eq!(
+            finding_key(&mk("./SRC/a.py::f")),
+            finding_key(&mk("./src/a.py::f"))
+        );
+        assert_ne!(
+            finding_key(&mk("./src/a.py::f")),
+            finding_key(&mk("./src/a.py::g"))
+        );
         assert_ne!(
             finding_key(&mk("./src/a.py::f")),
             finding_key(&mk("./src/b.py::f"))
@@ -445,8 +480,7 @@ fn refine_with_cfg(
     let tree = parser.parse(&src, None)?;
     let target = find_node_at_span(tree.root_node(), f.body_span)?;
     let cfg = crate::graph::cfg::ControlFlowGraph::build(&f.id, target, src.as_bytes());
-    let dead_branches =
-        crate::smells::const_eval::count_decided_conditions(target, &src);
+    let dead_branches = crate::smells::const_eval::count_decided_conditions(target, &src);
     Some(CfgFacts {
         cyclomatic: cfg.cyclomatic(),
         unreachable_blocks: cfg.unreachable_blocks().len(),

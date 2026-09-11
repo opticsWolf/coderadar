@@ -107,10 +107,7 @@ pub fn uninstantiated_overrides(
 
 /// BFS over DIRECT call edges only — same as `compute_reachable` minus the
 /// virtual-dispatch extension.
-pub fn direct_call_reachable(
-    graph: &ProjectedGraph,
-    roots: &HashSet<String>,
-) -> HashSet<String> {
+pub fn direct_call_reachable(graph: &ProjectedGraph, roots: &HashSet<String>) -> HashSet<String> {
     let mut seen = roots.clone();
     let mut queue = std::collections::VecDeque::from_iter(roots.iter().cloned());
     while let Some(current) = queue.pop_front() {
@@ -182,8 +179,7 @@ mod tests {
         assert!(direct.contains("m.py::Base.b"));
         assert!(!direct.contains("m.py::Derived.b"));
 
-        let live =
-            crate::graph::deadcode::reachability::compute_reachable(&g, &roots());
+        let live = crate::graph::deadcode::reachability::compute_reachable(&g, &roots());
         assert!(live.reachable.contains("m.py::Derived.b")); // base detector's view
 
         let cands = uninstantiated_overrides(&g, &live.reachable, &direct);
@@ -196,8 +192,7 @@ mod tests {
     fn constructed_class_keeps_override_live() {
         let g = fixture(true); // main() constructs Derived somewhere
         let direct = direct_call_reachable(&g, &roots());
-        let live =
-            crate::graph::deadcode::reachability::compute_reachable(&g, &roots());
+        let live = crate::graph::deadcode::reachability::compute_reachable(&g, &roots());
         let instantiated = instantiated_classes(&g);
         assert!(instantiated.contains("m.py::Derived"));
         let cands = uninstantiated_overrides(&g, &live.reachable, &direct);
@@ -210,8 +205,7 @@ mod tests {
     #[test]
     fn detect_dead_emits_rta_dead_kind() {
         let g = fixture(false);
-        let findings =
-            crate::graph::deadcode::detect_dead(&g, Default::default());
+        let findings = crate::graph::deadcode::detect_dead(&g, Default::default());
         let hit = findings
             .iter()
             .find(|f| f.entity_id == "m.py::Derived.b")
@@ -222,11 +216,9 @@ mod tests {
 
         // With construction evidence the finding disappears entirely.
         let g2 = fixture(true);
-        let findings2 =
-            crate::graph::deadcode::detect_dead(&g2, Default::default());
-        assert!(!findings2
-            .iter()
-            .any(|f| f.entity_id == "m.py::Derived.b" && f.kind == crate::graph::deadcode::DeadKind::RtaDead));
+        let findings2 = crate::graph::deadcode::detect_dead(&g2, Default::default());
+        assert!(!findings2.iter().any(|f| f.entity_id == "m.py::Derived.b"
+            && f.kind == crate::graph::deadcode::DeadKind::RtaDead));
     }
 
     #[test]
@@ -245,8 +237,7 @@ mod tests {
         };
         edge(&mut g, "m.py::main", "m.py::Derived.b");
         let direct = direct_call_reachable(&g, &roots());
-        let live =
-            crate::graph::deadcode::reachability::compute_reachable(&g, &roots());
+        let live = crate::graph::deadcode::reachability::compute_reachable(&g, &roots());
         let cands = uninstantiated_overrides(&g, &live.reachable, &direct);
         assert!(cands.is_empty(), "direct calls are stronger evidence");
     }

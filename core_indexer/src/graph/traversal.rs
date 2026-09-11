@@ -12,28 +12,54 @@ impl CodeGraph {
     /// single place where each edge kind's reverse/forward index mapping is
     /// spelled out. `up`/`down` are pre-computed booleans (Send-friendly).
     pub(crate) fn neighbors_of(
-        snap: &ProjectedGraph, id: &str, kind: &str, up: bool, down: bool,
+        snap: &ProjectedGraph,
+        id: &str,
+        kind: &str,
+        up: bool,
+        down: bool,
     ) -> Vec<EntityId> {
         let mut out: Vec<EntityId> = Vec::new();
         let mut push_set = |s: Option<&std::collections::BTreeSet<String>>| {
-            if let Some(s) = s { out.extend(s.iter().cloned()); }
+            if let Some(s) = s {
+                out.extend(s.iter().cloned());
+            }
         };
         match kind {
             "calls" => {
-                if up { push_set(snap.callers_by_callee.get(id)); }
-                if down { push_set(snap.callees_by_caller.get(id)); }
+                if up {
+                    push_set(snap.callers_by_callee.get(id));
+                }
+                if down {
+                    push_set(snap.callees_by_caller.get(id));
+                }
             }
             "imports" => {
-                if up { push_set(snap.importers.get(id)); }
-                if down { push_set(snap.imports_by_importer.get(id)); }
+                if up {
+                    push_set(snap.importers.get(id));
+                }
+                if down {
+                    push_set(snap.imports_by_importer.get(id));
+                }
             }
             "extends" => {
-                if up { push_set(snap.subclasses.get(id)); }
-                if down { if let Some(c) = snap.classes.get(id) { out.extend(c.resolved_bases.iter().cloned()); } }
+                if up {
+                    push_set(snap.subclasses.get(id));
+                }
+                if down {
+                    if let Some(c) = snap.classes.get(id) {
+                        out.extend(c.resolved_bases.iter().cloned());
+                    }
+                }
             }
             "overrides" => {
-                if up { push_set(snap.overridden_by.get(id)); }
-                if down { if let Some(b) = snap.overrides_base.get(id) { out.push(b.clone()); } }
+                if up {
+                    push_set(snap.overridden_by.get(id));
+                }
+                if down {
+                    if let Some(b) = snap.overrides_base.get(id) {
+                        out.push(b.clone());
+                    }
+                }
             }
             _ => {}
         }
@@ -66,7 +92,9 @@ impl CodeGraph {
         out.push((start_id.to_string(), 0, String::new()));
 
         while let Some((cur, depth)) = queue.pop_front() {
-            if depth >= max_depth { continue; }
+            if depth >= max_depth {
+                continue;
+            }
             for kind in kinds {
                 for nb in Self::neighbors_of(snap, &cur, kind, up, down) {
                     if visited.insert(nb.clone()) {
@@ -86,7 +114,10 @@ impl CodeGraph {
     /// Used by the `traverse_unresolved` pyfunction to surface silent
     /// traversal truncation (plan 2.3).
     pub(crate) fn count_unresolved_targets(
-        snap: &ProjectedGraph, id: &str, kinds: &[String], down: bool,
+        snap: &ProjectedGraph,
+        id: &str,
+        kinds: &[String],
+        down: bool,
     ) -> usize {
         if !down {
             return 0;
@@ -96,19 +127,32 @@ impl CodeGraph {
             match kind.as_str() {
                 "calls" => {
                     if let Some(f) = snap.functions.get(id) {
-                        total += f.resolved_calls.iter()
-                            .filter(|rc| matches!(rc,
-                                crate::types::ResolvedCall::External(_)
-                                | crate::types::ResolvedCall::Unresolved { .. }))
+                        total += f
+                            .resolved_calls
+                            .iter()
+                            .filter(|rc| {
+                                matches!(
+                                    rc,
+                                    crate::types::ResolvedCall::External(_)
+                                        | crate::types::ResolvedCall::Unresolved { .. }
+                                )
+                            })
                             .count();
                     }
                 }
                 "imports" => {
                     if let Some(m) = snap.modules.get(id) {
-                        total += m.imports.iter()
-                            .filter(|imp_id| snap.imports.get(*imp_id).map_or(false, |i| {
-                                matches!(i.resolution, crate::types::ImportResolution::Unresolved)
-                            }))
+                        total += m
+                            .imports
+                            .iter()
+                            .filter(|imp_id| {
+                                snap.imports.get(*imp_id).map_or(false, |i| {
+                                    matches!(
+                                        i.resolution,
+                                        crate::types::ImportResolution::Unresolved
+                                    )
+                                })
+                            })
                             .count();
                     }
                 }

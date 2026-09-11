@@ -24,10 +24,7 @@ pub fn signature_match(
     definitions: &[ScoredDef],
     config: &SignatureConfig,
 ) -> Option<Vec<ScoredDef>> {
-    let candidates: Vec<&ScoredDef> = definitions
-        .iter()
-        .filter(|d| d.name == name)
-        .collect();
+    let candidates: Vec<&ScoredDef> = definitions.iter().filter(|d| d.name == name).collect();
 
     // Pattern from CodeGraph's name-matcher.ts — AMBIGUOUS_NAME_CEILING:
     // When a name is defined more than the ceiling times, fuzzy resolution
@@ -63,7 +60,11 @@ pub fn signature_match(
     }
 
     // Sort by score descending
-    scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    scored.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     // Clamp final confidence: (0.40 + score * 0.39).clamp(0.40, 0.79)
     // but raw scores are returned; the orchestrator clamps.

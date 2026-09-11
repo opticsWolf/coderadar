@@ -136,7 +136,10 @@ mod tests {
     fn combine_is_multiplicative_and_clamped() {
         let eps = 1e-6;
         assert!((combine(&[0.9, 0.9]) - 0.81).abs() < eps);
-        assert!((combine(&[]) - 1.0).abs() < eps, "empty product is identity");
+        assert!(
+            (combine(&[]) - 1.0).abs() < eps,
+            "empty product is identity"
+        );
         assert!(combine(&[1.5, 1.5]) <= 1.0, "clamped to 1.0");
         assert!(combine(&[0.0, 0.9]) == 0.0);
     }
@@ -161,7 +164,10 @@ mod tests {
         assert_eq!(tier_of(band_edge), Tier::Medium);
 
         let tiny_exact = clone_confidence(0.99, 3); // 1.0 × 0.7
-        assert!((tiny_exact - 0.7).abs() < 1e-6, "tiny clones never look Certain");
+        assert!(
+            (tiny_exact - 0.7).abs() < 1e-6,
+            "tiny clones never look Certain"
+        );
     }
 
     #[test]

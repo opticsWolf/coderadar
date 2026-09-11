@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(Strictness::Normal.scale(50), 50);
         assert_eq!(Strictness::Strict.scale(50), 30); // 0.6
         assert_eq!(Strictness::Loose.scale(50), 90); // 1.8
-        // Small thresholds never collapse to 0.
+                                                     // Small thresholds never collapse to 0.
         assert_eq!(Strictness::Strict.scale(1), 1);
         assert_eq!(Strictness::Normal.scale(2), 2);
     }
@@ -97,9 +97,7 @@ mod tests {
         assert_eq!(Strictness::Strict.confidence_floor(), 0.40);
         assert_eq!(Strictness::Normal.confidence_floor(), 0.60);
         assert_eq!(Strictness::Loose.confidence_floor(), 0.80);
-        assert!(
-            Strictness::Strict.confidence_floor() < Strictness::Normal.confidence_floor(),
-        );
+        assert!(Strictness::Strict.confidence_floor() < Strictness::Normal.confidence_floor(),);
     }
 
     #[test]
@@ -108,7 +106,10 @@ mod tests {
         assert_eq!(Strictness::parse("normal").unwrap(), Strictness::Normal);
         assert_eq!(Strictness::parse("").unwrap(), Strictness::Normal);
         assert_eq!(Strictness::parse("loose").unwrap(), Strictness::Loose);
-        assert!(Strictness::parse("STRICT").is_err(), "case-sensitive: no silent coercion");
+        assert!(
+            Strictness::parse("STRICT").is_err(),
+            "case-sensitive: no silent coercion"
+        );
         assert!(Strictness::parse("very-strict").is_err());
         let err = Strictness::parse("maximal").unwrap_err();
         assert!(err.contains("maximal") && err.contains("strict | normal | loose"));

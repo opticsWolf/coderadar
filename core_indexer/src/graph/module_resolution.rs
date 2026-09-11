@@ -86,10 +86,9 @@ pub(crate) fn is_canonical_file_head(head: &str) -> bool {
 /// the two stay in exact lockstep (a module with an exotic extension must be
 /// resolvable by one of them iff it is by the other).
 pub(crate) const KNOWN_MODULE_EXTENSIONS: &[&str] = &[
-    "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs",
-    "go", "rs", "java", "c", "h", "cpp", "cc", "cxx", "hpp",
-    "rb", "php", "cs", "kt", "kts", "swift", "scala", "sc",
-    "lua", "ex", "exs", "zig", "zon", "r",
+    "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go", "rs", "java", "c", "h", "cpp", "cc",
+    "cxx", "hpp", "rb", "php", "cs", "kt", "kts", "swift", "scala", "sc", "lua", "ex", "exs",
+    "zig", "zon", "r",
 ];
 
 /// Rebuild [`ProjectedGraph::module_path_index`] from the current module set.
@@ -123,7 +122,9 @@ pub(crate) fn rebuild_module_path_index(projection: &mut ProjectedGraph) {
                     tail.insert(0, '/');
                 }
                 tail.insert_str(0, seg);
-                index.entry(tail.clone()).or_insert_with(|| module.id.clone());
+                index
+                    .entry(tail.clone())
+                    .or_insert_with(|| module.id.clone());
             }
         }
     }
@@ -260,11 +261,11 @@ mod canonical_form_tests {
     fn canonical_form_has_dot_prefix_and_native_separators() {
         let c = canonical_file_form("some/dir/x.py");
         let sep = std::path::MAIN_SEPARATOR;
+        assert!(c.starts_with(&format!(".{sep}")), "dot-prefixed, got {c:?}");
         assert!(
-            c.starts_with(&format!(".{sep}")),
-            "dot-prefixed, got {c:?}"
+            !c.contains(if sep == '/' { '\\' } else { '/' }),
+            "native separators, got {c:?}"
         );
-        assert!(!c.contains(if sep == '/' { '\\' } else { '/' }), "native separators, got {c:?}");
         // Idempotent: canonicalizing twice is a fixed point.
         assert_eq!(canonical_file_form(&c), c);
         // Forward-slash update-form input converges to the same id.

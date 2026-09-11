@@ -1,4 +1,3 @@
-
 // ── Graph Config (§15) ──────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -45,7 +44,10 @@ pub struct ProjectConfig {
 }
 impl Default for ProjectConfig {
     fn default() -> Self {
-        Self { roots: Vec::new(), exclude: Vec::new() }
+        Self {
+            roots: Vec::new(),
+            exclude: Vec::new(),
+        }
     }
 }
 
@@ -58,7 +60,9 @@ pub struct DatabaseConfig {
 }
 impl Default for DatabaseConfig {
     fn default() -> Self {
-        Self { path: ".coderadar/store/coderadar.db".to_string() }
+        Self {
+            path: ".coderadar/store/coderadar.db".to_string(),
+        }
     }
 }
 
@@ -68,7 +72,9 @@ pub struct ResolutionConfig {
 }
 impl Default for ResolutionConfig {
     fn default() -> Self {
-        Self { min_confidence: 0.3 }
+        Self {
+            min_confidence: 0.3,
+        }
     }
 }
 
@@ -80,7 +86,11 @@ pub struct ImportGraphConfig {
 }
 impl Default for ImportGraphConfig {
     fn default() -> Self {
-        Self { max_import_depth: 3, include_same_package: true, max_wildcard_hops: 3 }
+        Self {
+            max_import_depth: 3,
+            include_same_package: true,
+            max_wildcard_hops: 3,
+        }
     }
 }
 
@@ -98,7 +108,13 @@ pub struct SignatureConfig {
 }
 impl Default for SignatureConfig {
     fn default() -> Self {
-        Self { min_score: 0.5, name_weight: 0.4, arity_weight: 0.3, proximity_weight: 0.3, ambiguous_name_ceiling: 500 }
+        Self {
+            min_score: 0.5,
+            name_weight: 0.4,
+            arity_weight: 0.3,
+            proximity_weight: 0.3,
+            ambiguous_name_ceiling: 500,
+        }
     }
 }
 
@@ -119,9 +135,14 @@ pub struct MutationConfig {
 impl Default for MutationConfig {
     fn default() -> Self {
         Self {
-            enabled: true, default_dry_run: true, max_files_per_plan: 100,
-            max_edits_per_plan: 500, max_body_tokens: 4000,
-            backup_retention_hours: 24, post_verify: true, max_repair_attempts: 3,
+            enabled: true,
+            default_dry_run: true,
+            max_files_per_plan: 100,
+            max_edits_per_plan: 500,
+            max_body_tokens: 4000,
+            backup_retention_hours: 24,
+            post_verify: true,
+            max_repair_attempts: 3,
             require_clean_git: false,
             // An empty allow list means "anywhere inside the project root".
             // A populated one is a strict whitelist, so the default must not
@@ -132,8 +153,13 @@ impl Default for MutationConfig {
             allow: vec![],
             // `.harness/` and `.codegraph/` were earlier names for the store
             // directory and are gone; `.coderadar/` is the one in use.
-            deny: vec![".git/".into(), ".coderadar/".into(),
-                       "/migrations/".into(), "/*.lock".into(), "/generated/".into()],
+            deny: vec![
+                ".git/".into(),
+                ".coderadar/".into(),
+                "/migrations/".into(),
+                "/*.lock".into(),
+                "/generated/".into(),
+            ],
         }
     }
 }
@@ -148,11 +174,15 @@ pub struct QueryConfig {
 }
 impl Default for QueryConfig {
     fn default() -> Self {
-        Self { max_depth: 5, default_top_k: 10, cache_ttl_seconds: 300,
-               cache_max_size: 256, use_rust_graph_for_traversal: true }
+        Self {
+            max_depth: 5,
+            default_top_k: 10,
+            cache_ttl_seconds: 300,
+            cache_max_size: 256,
+            use_rust_graph_for_traversal: true,
+        }
     }
 }
-
 
 /// Analysis-engine refinements (Stage 4).
 #[derive(Clone, Debug)]
@@ -164,6 +194,8 @@ pub struct AnalysisConfig {
 
 impl Default for AnalysisConfig {
     fn default() -> Self {
-        Self { use_cfg_metrics: false }
+        Self {
+            use_cfg_metrics: false,
+        }
     }
 }

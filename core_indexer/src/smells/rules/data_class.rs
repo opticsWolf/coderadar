@@ -12,7 +12,10 @@ pub struct DataClass {
 
 impl Default for DataClass {
     fn default() -> Self {
-        Self { field_threshold: 5, max_wmc_threshold: 10 }
+        Self {
+            field_threshold: 5,
+            max_wmc_threshold: 10,
+        }
     }
 }
 

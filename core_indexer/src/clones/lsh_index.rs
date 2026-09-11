@@ -17,7 +17,11 @@ pub struct LshIndex {
 impl LshIndex {
     /// `bands × rows_per_band` must equal the signature width (128 default).
     pub fn new(bands: usize, rows_per_band: usize) -> Self {
-        assert_eq!(bands * rows_per_band, 128, "band layout must cover the signature");
+        assert_eq!(
+            bands * rows_per_band,
+            128,
+            "band layout must cover the signature"
+        );
         Self {
             bands: vec![HashMap::new(); bands],
             sigs: Vec::new(),

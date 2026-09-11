@@ -78,10 +78,8 @@ impl Default for ScaffoldConfig {
 /// Is this body text just a stub?
 pub fn is_placeholder_body(body: &str) -> bool {
     let t = body.trim();
-    matches!(
-        t,
-        "pass" | "..." | "…" | "todo!()" | "unimplemented!()"
-    ) || t.starts_with("raise NotImplementedError")
+    matches!(t, "pass" | "..." | "…" | "todo!()" | "unimplemented!()")
+        || t.starts_with("raise NotImplementedError")
         || t.starts_with("panic!(")
 }
 
@@ -131,8 +129,11 @@ pub fn scan_path(root: &Path, cfg: &ScaffoldConfig) -> Vec<ScaffoldFinding> {
     // require_git(false): honor .gitignore even outside a git repo — for a
     // secrets scanner, over-scanning vendored/ignored trees is worse than
     // under-scanning them.
-    let walker =
-        ignore::WalkBuilder::new(root).git_ignore(true).hidden(true).require_git(false).build();
+    let walker = ignore::WalkBuilder::new(root)
+        .git_ignore(true)
+        .hidden(true)
+        .require_git(false)
+        .build();
     for entry in walker.flatten() {
         if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
             continue;
@@ -158,7 +159,9 @@ pub fn scan_path(root: &Path, cfg: &ScaffoldConfig) -> Vec<ScaffoldFinding> {
         if meta.len() > cfg.max_file_bytes {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(path) else { continue }; // binary → skip
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        }; // binary → skip
 
         for (line_no, line) in content.lines().enumerate() {
             for re in &marker_res {
@@ -216,7 +219,9 @@ pub fn scan_placeholder_bodies(graph: &ProjectedGraph) -> (Vec<ScaffoldFinding>,
     let mut paths: HashMap<&EntityId, PathBuf> = HashMap::new();
     for (mid, m) in &graph.modules {
         // F14 follow-up: canonical module paths resolve via the indexed root.
-        if let Ok(src) = std::fs::read_to_string(crate::graph::module_resolution::disk_path_for(&m.path.to_string_lossy())) {
+        if let Ok(src) = std::fs::read_to_string(crate::graph::module_resolution::disk_path_for(
+            &m.path.to_string_lossy(),
+        )) {
             sources.insert(mid, src);
         }
         paths.insert(mid, m.path.clone());
@@ -233,40 +238,52 @@ pub fn scan_placeholder_bodies(graph: &ProjectedGraph) -> (Vec<ScaffoldFinding>,
         stats.functions += 1;
         // Resolve (source text, display path) via the modules map first,
         // then via the id-derived path.
-        let resolved: Option<(&str, PathBuf)> =
-            if let Some(src) = sources.get(&f.parent_module) {
-                Some((src, paths.get(&f.parent_module).cloned().unwrap_or_default()))
-            } else if fallback_misses.contains(&f.parent_module) {
-                stats.skipped_unreadable += 1;
+        let resolved: Option<(&str, PathBuf)> = if let Some(src) = sources.get(&f.parent_module) {
+            Some((
+                src,
+                paths.get(&f.parent_module).cloned().unwrap_or_default(),
+            ))
+        } else if fallback_misses.contains(&f.parent_module) {
+            stats.skipped_unreadable += 1;
+            None
+        } else if let Some(src) = fallback_sources.get(&f.parent_module) {
+            Some((
+                src,
+                PathBuf::from(
+                    f.parent_module
+                        .strip_suffix("::module")
+                        .unwrap_or(&f.parent_module),
+                ),
+            ))
+        } else {
+            let rel = f.parent_module.strip_suffix("::module").unwrap_or("");
+            if rel.is_empty() {
+                stats.skipped_no_module += 1;
                 None
-            } else if let Some(src) = fallback_sources.get(&f.parent_module) {
-                Some((src, PathBuf::from(
-                    f.parent_module.strip_suffix("::module").unwrap_or(&f.parent_module),
-                )))
             } else {
-                let rel = f.parent_module.strip_suffix("::module").unwrap_or("");
-                if rel.is_empty() {
-                    stats.skipped_no_module += 1;
-                    None
-                } else {
-                    // F14 follow-up: the id-fallback head is canonical
-                    // root-relative — resolve via the indexed root.
-                    match std::fs::read_to_string(crate::graph::module_resolution::disk_path_for(rel)) {
-                        Ok(text) => {
-                            stats.resolved_via_id_fallback += 1;
-                            fallback_sources.insert(f.parent_module.clone(), text);
-                            let s = fallback_sources.get(&f.parent_module).map(|s| s as &str).unwrap_or("");
-                            Some((s, PathBuf::from(rel)))
-                        }
-                        Err(_) => {
-                            stats.skipped_unreadable += 1;
-                            fallback_misses.insert(f.parent_module.clone());
-                            None
-                        }
+                // F14 follow-up: the id-fallback head is canonical
+                // root-relative — resolve via the indexed root.
+                match std::fs::read_to_string(crate::graph::module_resolution::disk_path_for(rel)) {
+                    Ok(text) => {
+                        stats.resolved_via_id_fallback += 1;
+                        fallback_sources.insert(f.parent_module.clone(), text);
+                        let s = fallback_sources
+                            .get(&f.parent_module)
+                            .map(|s| s as &str)
+                            .unwrap_or("");
+                        Some((s, PathBuf::from(rel)))
+                    }
+                    Err(_) => {
+                        stats.skipped_unreadable += 1;
+                        fallback_misses.insert(f.parent_module.clone());
+                        None
                     }
                 }
-            };
-        let Some((src, path)) = resolved else { continue };
+            }
+        };
+        let Some((src, path)) = resolved else {
+            continue;
+        };
         let Some(body) = src.get(f.body_span.start..f.body_span.end.min(src.len())) else {
             stats.skipped_span += 1;
             continue;
@@ -292,16 +309,24 @@ mod tests {
 
     #[test]
     fn glob_shapes_match_expected_names() {
-        for pat in ["temp_*", "tmp_*", "backup_*", "old_*", "phase_*", "*.bak", "*_old.*"] {
+        for pat in [
+            "temp_*", "tmp_*", "backup_*", "old_*", "phase_*", "*.bak", "*_old.*",
+        ] {
             // sanity: the pattern table's own shapes must match themselves
         }
         assert!(glob_match("temp_*", "temp_utils.py"));
         assert!(glob_match("*.bak", "main.py.bak"));
         assert!(glob_match("*_old.*", "parser_old.rs"));
         assert!(glob_match("phase_*", "PHASE_backup.md"), "case-insensitive");
-        assert!(!glob_match("temp_*", "template.py"), "'template' is not a temp_ file");
+        assert!(
+            !glob_match("temp_*", "template.py"),
+            "'template' is not a temp_ file"
+        );
         assert!(!glob_match("old_*", "golden.py"));
-        assert!(!glob_match("phase_*", "PHASE2_notes.md"), "literal '_' must match literally");
+        assert!(
+            !glob_match("phase_*", "PHASE2_notes.md"),
+            "literal '_' must match literally"
+        );
     }
 
     #[test]
@@ -320,7 +345,10 @@ mod tests {
         let r = redact(secret);
         assert!(r.ends_with("***"));
         assert_eq!(r.chars().count(), 11);
-        assert!(!r.contains(&secret[8..]), "redacted output must not leak the tail");
+        assert!(
+            !r.contains(&secret[8..]),
+            "redacted output must not leak the tail"
+        );
     }
 
     #[test]
@@ -329,14 +357,16 @@ mod tests {
         let f = dir.path().join("config.py");
         std::fs::write(
             &f,
-            "AWS_KEY = \"AKIAABCDEFGHIJKLMNOP\"\n"
-                .to_string()
+            "AWS_KEY = \"AKIAABCDEFGHIJKLMNOP\"\n".to_string()
                 + "token = \"ghp_' + 'X'.repeat(36) + '\"\n"
                 + "# harmless line\n",
         )
         .unwrap();
 
-        let cfg = ScaffoldConfig { include_secrets: true, ..Default::default() };
+        let cfg = ScaffoldConfig {
+            include_secrets: true,
+            ..Default::default()
+        };
         let findings = scan_path(dir.path(), &cfg);
         let aws: Vec<_> = findings
             .iter()
@@ -344,9 +374,16 @@ mod tests {
             .collect();
         assert_eq!(aws.len(), 1);
         assert!(aws[0].snippet.ends_with("***"));
-        assert!(!aws[0].snippet.contains("JKLMNOP\"") || !findings.iter().any(|f| f.kind == ScaffoldKind::Secret && f.snippet.contains('J')));
+        assert!(
+            !aws[0].snippet.contains("JKLMNOP\"")
+                || !findings
+                    .iter()
+                    .any(|f| f.kind == ScaffoldKind::Secret && f.snippet.contains('J'))
+        );
         // The full key must not appear anywhere in any snippet.
-        assert!(!findings.iter().any(|f| f.snippet.contains("AKIAABCDEFGHIJKLMNOP")));
+        assert!(!findings
+            .iter()
+            .any(|f| f.snippet.contains("AKIAABCDEFGHIJKLMNOP")));
     }
 
     #[test]
@@ -354,8 +391,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join(".gitignore"), "ignored_dir/\n").unwrap();
         std::fs::create_dir(dir.path().join("ignored_dir")).unwrap();
-        std::fs::write(dir.path().join("app.py"), "# Phase 1: wire the client\n# TODO: retry\nx = 1\n").unwrap();
-        std::fs::write(dir.path().join("ignored_dir").join("skip.py"), "# TODO: hidden\n").unwrap();
+        std::fs::write(
+            dir.path().join("app.py"),
+            "# Phase 1: wire the client\n# TODO: retry\nx = 1\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("ignored_dir").join("skip.py"),
+            "# TODO: hidden\n",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("temp_notes.md"), "scratch\n").unwrap();
 
         let findings = scan_path(dir.path(), &ScaffoldConfig::default());
@@ -368,7 +413,9 @@ mod tests {
         assert_eq!(app_markers.len(), 1, "TODO only; Phase N is not a marker");
         assert!(findings.iter().any(|f| f.kind == ScaffoldKind::TempFile));
         assert!(
-            !findings.iter().any(|f| f.file.to_string_lossy().contains("ignored_dir")),
+            !findings
+                .iter()
+                .any(|f| f.file.to_string_lossy().contains("ignored_dir")),
             "gitignored files must be skipped"
         );
     }

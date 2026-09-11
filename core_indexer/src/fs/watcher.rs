@@ -7,8 +7,7 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender};
 use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{
-    DebounceEventHandler, DebounceEventResult, DebouncedEventKind,
-    new_debouncer,
+    new_debouncer, DebounceEventHandler, DebounceEventResult, DebouncedEventKind,
 };
 
 /// A batch of file changes emitted together.
@@ -237,11 +236,51 @@ impl FileWatcher {
 fn is_source_extension(ext: &str) -> bool {
     matches!(
         ext,
-        "py" | "pyi" | "rs" | "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs"
-            | "go" | "java" | "kt" | "kts" | "c" | "h" | "cpp" | "cc" | "cxx"
-            | "hpp" | "hxx" | "rb" | "php" | "cs" | "swift" | "scala" | "sc"
-            | "lua" | "ex" | "exs" | "zig" | "zon" | "r" | "R" | "sql" | "toml" | "yaml" | "yml" | "json"
-            | "md" | "rst" | "sh" | "bash" | "html" | "css" | "vue" | "svelte"
+        "py" | "pyi"
+            | "rs"
+            | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "mjs"
+            | "cjs"
+            | "go"
+            | "java"
+            | "kt"
+            | "kts"
+            | "c"
+            | "h"
+            | "cpp"
+            | "cc"
+            | "cxx"
+            | "hpp"
+            | "hxx"
+            | "rb"
+            | "php"
+            | "cs"
+            | "swift"
+            | "scala"
+            | "sc"
+            | "lua"
+            | "ex"
+            | "exs"
+            | "zig"
+            | "zon"
+            | "r"
+            | "R"
+            | "sql"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "json"
+            | "md"
+            | "rst"
+            | "sh"
+            | "bash"
+            | "html"
+            | "css"
+            | "vue"
+            | "svelte"
     )
 }
 
@@ -308,10 +347,16 @@ mod tests {
     fn test_an_existing_path_is_never_a_delete() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("here.py");
-        std::fs::write(&path, "x = 1
-").unwrap();
+        std::fs::write(
+            &path, "x = 1
+",
+        )
+        .unwrap();
 
-        assert_eq!(classify(&path, DebouncedEventKind::Any), FileChangeKind::Any);
+        assert_eq!(
+            classify(&path, DebouncedEventKind::Any),
+            FileChangeKind::Any
+        );
         assert_eq!(
             classify(&path, DebouncedEventKind::AnyContinuous),
             FileChangeKind::Modify
@@ -324,12 +369,21 @@ mod tests {
     fn test_a_recreated_path_is_not_a_delete() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("churn.py");
-        std::fs::write(&path, "x = 1
-").unwrap();
+        std::fs::write(
+            &path, "x = 1
+",
+        )
+        .unwrap();
         std::fs::remove_file(&path).unwrap();
-        std::fs::write(&path, "x = 2
-").unwrap();
+        std::fs::write(
+            &path, "x = 2
+",
+        )
+        .unwrap();
 
-        assert_eq!(classify(&path, DebouncedEventKind::Any), FileChangeKind::Any);
+        assert_eq!(
+            classify(&path, DebouncedEventKind::Any),
+            FileChangeKind::Any
+        );
     }
 }

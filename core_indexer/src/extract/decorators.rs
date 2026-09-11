@@ -24,17 +24,17 @@ pub fn known_decorator_effects(decorator: &str) -> Option<DecoratorEffect> {
         "@staticmethod" => Some(DecoratorEffect::FunctionKind(FunctionKind::StaticMethod)),
         "@classmethod" => Some(DecoratorEffect::FunctionKind(FunctionKind::ClassMethod)),
         "@property" => Some(DecoratorEffect::FunctionKind(FunctionKind::Property)),
-        "@abstractmethod" => {
-            Some(DecoratorEffect::FunctionKind(FunctionKind::AbstractMethod))
-        }
+        "@abstractmethod" => Some(DecoratorEffect::FunctionKind(FunctionKind::AbstractMethod)),
         "@functools.cached_property" => {
             Some(DecoratorEffect::FunctionKind(FunctionKind::CachedProperty))
         }
-        "@dataclass" | "@dataclass()" => Some(DecoratorEffect::ClassEffect(EffectiveClass::Dataclass {
-            frozen: false,
-            eq: true,
-            order: false,
-        })),
+        "@dataclass" | "@dataclass()" => {
+            Some(DecoratorEffect::ClassEffect(EffectiveClass::Dataclass {
+                frozen: false,
+                eq: true,
+                order: false,
+            }))
+        }
         "@dataclass(frozen=True)" | "@dataclass(frozen=True,)" => {
             Some(DecoratorEffect::ClassEffect(EffectiveClass::Dataclass {
                 frozen: true,
@@ -72,7 +72,8 @@ pub fn is_dataclass_decorator(decorator: &str) -> bool {
 }
 
 /// Synthesized methods that dataclass decorators generate.
-pub fn dataclass_synthesized_methods() -> Vec<(&'static str, Vec<(&'static str, Option<&'static str>)>)> {
+pub fn dataclass_synthesized_methods(
+) -> Vec<(&'static str, Vec<(&'static str, Option<&'static str>)>)> {
     vec![
         ("__init__", vec![("self", None), ("*", None)]),
         ("__repr__", vec![("self", None)]),
@@ -82,9 +83,7 @@ pub fn dataclass_synthesized_methods() -> Vec<(&'static str, Vec<(&'static str, 
 
 /// Check if a decorator string matches a known pattern that requires
 /// special handling (e.g., class-level effects).
-pub fn classify_decorator_impact(
-    decorators: &[String],
-) -> Option<EffectiveClass> {
+pub fn classify_decorator_impact(decorators: &[String]) -> Option<EffectiveClass> {
     for d in decorators {
         match d.as_str() {
             s if s.starts_with("@dataclass") => {

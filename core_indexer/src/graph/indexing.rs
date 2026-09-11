@@ -93,15 +93,24 @@ impl CodeGraph {
             .ok_or_else(|| format!("Failed to compile query for {:?}", language))?;
 
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&ts_lang)
+        parser
+            .set_language(&ts_lang)
             .map_err(|e| format!("Failed to set language: {}", e))?;
-        let tree = parser.parse(source, None)
+        let tree = parser
+            .parse(source, None)
             .ok_or_else(|| "Failed to parse source".to_string())?;
         let root_node = tree.root_node();
 
         let mut units = crate::extract::single_pass::extract_single_pass(
-            source, root_node, &compiled_query, file_path);
-        units.insert(0, Self::synthesize_module_unit(file_path, language, source, root_node));
+            source,
+            root_node,
+            &compiled_query,
+            file_path,
+        );
+        units.insert(
+            0,
+            Self::synthesize_module_unit(file_path, language, source, root_node),
+        );
 
         let lang_str = format!("{:?}", language).to_lowercase();
         let concepts: Vec<macrame::ConceptUpsert> = units
@@ -172,44 +181,69 @@ impl CodeGraph {
                 }
                 ExtractedUnit::Class(c) => {
                     let class = Class::from_extracted(
-                        c, c.id.clone(), module_id.clone(), c.parent_class.clone());
+                        c,
+                        c.id.clone(),
+                        module_id.clone(),
+                        c.parent_class.clone(),
+                    );
                     projection.classes.insert(class.id.clone(), Arc::new(class));
                     module_classes.push(c.id.clone());
                 }
                 ExtractedUnit::Function(f) => {
                     let func = Function::from_extracted(
-                        f, f.id.clone(), module_id.clone(), f.parent_class.clone());
+                        f,
+                        f.id.clone(),
+                        module_id.clone(),
+                        f.parent_class.clone(),
+                    );
                     projection.functions.insert(func.id.clone(), Arc::new(func));
                     module_functions.push(f.id.clone());
                 }
                 ExtractedUnit::Import(i) => {
                     let import = Import {
-                        id: i.id.clone(), raw: i.raw.clone(),
+                        id: i.id.clone(),
+                        raw: i.raw.clone(),
                         kind: i.kind.clone(),
                         resolution: ImportResolution::Unresolved,
-                        line: i.line, is_type_only: i.is_type_only,
+                        line: i.line,
+                        is_type_only: i.is_type_only,
                         name_span: i.name_span,
-                        embedding: EmbeddingVec::default(),                    };
-                    projection.imports.insert(import.id.clone(), Arc::new(import));
+                        embedding: EmbeddingVec::default(),
+                    };
+                    projection
+                        .imports
+                        .insert(import.id.clone(), Arc::new(import));
                     module_imports.push(i.id.clone());
                 }
                 ExtractedUnit::Constant(k) => {
                     let constant = Constant {
-                        id: k.id.clone(), name: k.name.clone(),
-                        annotation: k.annotation.clone(), source: k.source.clone(),
+                        id: k.id.clone(),
+                        name: k.name.clone(),
+                        annotation: k.annotation.clone(),
+                        source: k.source.clone(),
                         default_value: k.default_value.clone(),
-                        span: k.span, name_span: k.name_span,
-                        embedding: EmbeddingVec::default(),                    };
-                    projection.constants.insert(constant.id.clone(), Arc::new(constant));
+                        span: k.span,
+                        name_span: k.name_span,
+                        embedding: EmbeddingVec::default(),
+                    };
+                    projection
+                        .constants
+                        .insert(constant.id.clone(), Arc::new(constant));
                     module_constants.push(k.id.clone());
                 }
                 ExtractedUnit::TypeAlias(ta) => {
                     let alias = TypeAlias {
-                        id: ta.id.clone(), name: ta.name.clone(),
-                        target: ta.target.clone(), source: ta.source.clone(),
-                        span: ta.span, name_span: ta.name_span,
-                        embedding: EmbeddingVec::default(),                    };
-                    projection.type_aliases.insert(alias.id.clone(), Arc::new(alias));
+                        id: ta.id.clone(),
+                        name: ta.name.clone(),
+                        target: ta.target.clone(),
+                        source: ta.source.clone(),
+                        span: ta.span,
+                        name_span: ta.name_span,
+                        embedding: EmbeddingVec::default(),
+                    };
+                    projection
+                        .type_aliases
+                        .insert(alias.id.clone(), Arc::new(alias));
                     module_type_aliases.push(ta.id.clone());
                 }
                 _ => {}
@@ -226,11 +260,15 @@ impl CodeGraph {
                     } else {
                         format!("{}::{}.{}", file_path, call.path.join("."), call.name)
                     };
-                    projection.callees_by_caller
-                        .entry(func_id.clone()).or_default()
+                    projection
+                        .callees_by_caller
+                        .entry(func_id.clone())
+                        .or_default()
                         .insert(target_id.clone());
-                    projection.callers_by_callee
-                        .entry(target_id).or_default()
+                    projection
+                        .callers_by_callee
+                        .entry(target_id)
+                        .or_default()
                         .insert(func_id.clone());
                 }
             }
@@ -238,23 +276,33 @@ impl CodeGraph {
 
         // Synthetic module entity
         let module = Module {
-            id: module_id.clone(), name: file_stem.to_string(),
+            id: module_id.clone(),
+            name: file_stem.to_string(),
             path: PathBuf::from(file_path),
-            language: language.clone(), package: None,
-            exports: vec![], star_exports: None,
-            classes: module_classes, functions: module_functions,
-            imports: module_imports, constants: module_constants,
+            language: language.clone(),
+            package: None,
+            exports: vec![],
+            star_exports: None,
+            classes: module_classes,
+            functions: module_functions,
+            imports: module_imports,
+            constants: module_constants,
             type_aliases: module_type_aliases,
-            parse_quality: module_quality, file_version: 1, content_hash: module_content_hash,
-                        embedding: EmbeddingVec::default(),        };
-        projection.modules.insert(module_id.clone(), Arc::new(module));
+            parse_quality: module_quality,
+            file_version: 1,
+            content_hash: module_content_hash,
+            embedding: EmbeddingVec::default(),
+        };
+        projection
+            .modules
+            .insert(module_id.clone(), Arc::new(module));
         // F14: the map is keyed NORMALIZED (dot-prefix stripped, forward
         // slashes) — the one join key every writer and lookup agrees on,
         // independent of which id spelling each path mints.
         projection.file_to_modules.insert(
-            std::path::PathBuf::from(
-                crate::graph::module_resolution::normalize_path_str(file_path),
-            ),
+            std::path::PathBuf::from(crate::graph::module_resolution::normalize_path_str(
+                file_path,
+            )),
             vec![module_id],
         );
 
@@ -275,16 +323,25 @@ impl CodeGraph {
 
         // Phase 1: Parse with tree-sitter
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&ts_lang)
+        parser
+            .set_language(&ts_lang)
             .map_err(|e| format!("Failed to set language: {}", e))?;
-        let tree = parser.parse(source, None)
+        let tree = parser
+            .parse(source, None)
             .ok_or_else(|| "Failed to parse source".to_string())?;
         let root_node = tree.root_node();
 
         // Phase 2+3: Single-pass cursor-driven extraction
         let mut units = crate::extract::single_pass::extract_single_pass(
-            source, root_node, &compiled_query, file_path);
-        units.insert(0, Self::synthesize_module_unit(file_path, language, source, root_node));
+            source,
+            root_node,
+            &compiled_query,
+            file_path,
+        );
+        units.insert(
+            0,
+            Self::synthesize_module_unit(file_path, language, source, root_node),
+        );
 
         // Phase 3: Insert into ProjectedGraph
         let count = units.len();

@@ -11,7 +11,9 @@ pub struct ExcessiveReturns {
 
 impl Default for ExcessiveReturns {
     fn default() -> Self {
-        Self { return_threshold: 5 }
+        Self {
+            return_threshold: 5,
+        }
     }
 }
 

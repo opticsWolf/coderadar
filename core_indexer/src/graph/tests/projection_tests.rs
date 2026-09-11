@@ -2,319 +2,417 @@
 
 use super::*;
 
-    /// Canonical id for an entity `update_file` wrote (F14): the write-time
-    /// canonical form, built the same way the write path builds it, so the
-    /// tests assert agreement of FORM — not a hardcoded spelling that would
-    /// re-pin whatever the implementation happens to mint today.
-    fn canon_id(file: &str, name: &str) -> String {
-        format!(
-            "{}::{}",
-            crate::graph::module_resolution::canonical_file_form(file),
-            name
+/// Canonical id for an entity `update_file` wrote (F14): the write-time
+/// canonical form, built the same way the write path builds it, so the
+/// tests assert agreement of FORM — not a hardcoded spelling that would
+/// re-pin whatever the implementation happens to mint today.
+fn canon_id(file: &str, name: &str) -> String {
+    format!(
+        "{}::{}",
+        crate::graph::module_resolution::canonical_file_form(file),
+        name
+    )
+}
+
+/// `insert_extracted` stored `name_span` in `params_span`. `build_fragment`
+/// and `apply_diff_update` both got it right, so the divergence was invisible
+/// outside the `index_file` path — until `plan_signature_update` replaced
+/// `params_span` verbatim and overwrote the function *name* with the new
+/// parameter list.
+#[test]
+fn test_index_file_records_params_span_not_name_span() {
+    let source = "def greet(name, greeting=\"hi\"):\n    return greeting\n";
+    let graph = CodeGraph::new(GraphConfig::default());
+    graph
+        .index_file(source, "spans.py", &Language::Python)
+        .unwrap();
+
+    let snap = graph.snapshot();
+    let f = snap
+        .functions
+        .get("spans.py::greet")
+        .expect("greet indexed");
+
+    assert_ne!(
+        f.params_span, f.name_span,
+        "params_span must not alias name_span"
+    );
+    assert_eq!(&source[f.name_span.start..f.name_span.end], "greet");
+    assert_eq!(
+        &source[f.params_span.start..f.params_span.end],
+        "(name, greeting=\"hi\")",
+    );
+}
+
+/// All three ingest paths must agree on every span they record.
+#[test]
+fn test_index_file_and_update_file_agree_on_spans() {
+    let source = "def greet(name, greeting=\"hi\"):\n    return greeting\n";
+
+    let indexed = CodeGraph::new(GraphConfig::default());
+    indexed
+        .index_file(source, "spans.py", &Language::Python)
+        .unwrap();
+    let via_index = indexed
+        .snapshot()
+        .functions
+        .get("spans.py::greet")
+        .cloned()
+        .unwrap();
+
+    let updated = CodeGraph::new(GraphConfig::default());
+    updated
+        .index_file("def greet(): pass\n", "spans.py", &Language::Python)
+        .unwrap();
+    updated.update_file("spans.py", Some(source), None).unwrap();
+    // F14: update_file mints the canonical form — same spans, one id form.
+    let via_update = updated
+        .snapshot()
+        .functions
+        .get(&canon_id("spans.py", "greet"))
+        .cloned()
+        .unwrap();
+
+    assert_eq!(via_index.name_span, via_update.name_span);
+    assert_eq!(via_index.params_span, via_update.params_span);
+    assert_eq!(via_index.body_span, via_update.body_span);
+    assert_eq!(via_index.parameters.len(), via_update.parameters.len());
+}
+
+/// A body edit that leaves the signature alone must still reach the graph.
+#[test]
+fn test_update_file_reindexes_a_changed_function() {
+    let graph = CodeGraph::new(GraphConfig::default());
+    // Seeded through update_file so the whole test lives in the
+    // canonical id form (F14) — index_file mints bare test ids.
+    graph
+        .update_file("chg.py", Some("def f():\n    return 1\n"), None)
+        .unwrap();
+    let before = graph
+        .snapshot()
+        .functions
+        .get(&canon_id("chg.py", "f"))
+        .cloned()
+        .unwrap();
+
+    let outcome = graph
+        .update_file("chg.py", Some("def f():\n    return 2\n"), None)
+        .unwrap();
+    let (added, removed) = (outcome.entities_added, outcome.entities_removed);
+    // A changed entity is replaced in place: one insert, and no removal —
+    // the removal counter tracks entities that disappeared from the file.
+    assert_eq!((added, removed), (1, 0));
+
+    let after = graph
+        .snapshot()
+        .functions
+        .get(&canon_id("chg.py", "f"))
+        .cloned()
+        .unwrap();
+    assert_ne!(
+        before.body_hash, after.body_hash,
+        "body_hash must track the body"
+    );
+    assert_eq!(
+        before.signature_hash, after.signature_hash,
+        "signature is unchanged"
+    );
+}
+
+/// tree-sitter recovers from syntax errors instead of failing, so a broken
+/// file still indexes. update_file used to report `clean` / 0 errors
+/// regardless, which made every caller's failure branch unreachable.
+#[test]
+fn test_update_file_reports_a_recovered_parse() {
+    let graph = CodeGraph::new(GraphConfig::default());
+    graph
+        .index_file("def f():\n    return 1\n", "broken.py", &Language::Python)
+        .unwrap();
+
+    let outcome = graph
+        .update_file("broken.py", Some("def f(:\n    return 1\n"), None)
+        .unwrap();
+
+    assert_eq!(outcome.parse_quality, ParseQuality::Partial);
+    assert!(
+        outcome.parse_errors > 0,
+        "a recovered parse has error nodes"
+    );
+}
+
+#[test]
+fn test_update_file_reports_a_clean_parse() {
+    let graph = CodeGraph::new(GraphConfig::default());
+    graph
+        .index_file("def f():\n    return 1\n", "ok.py", &Language::Python)
+        .unwrap();
+
+    let outcome = graph
+        .update_file("ok.py", Some("def f():\n    return 2\n"), None)
+        .unwrap();
+
+    assert_eq!(outcome.parse_quality, ParseQuality::Clean);
+    assert_eq!(outcome.parse_errors, 0);
+    assert!(outcome.elapsed_ms > 0.0, "elapsed_ms was hardcoded to 0.0");
+}
+
+/// The entity carries the quality of its own subtree, not the file's: a
+/// syntax error in one function must not mark its neighbours Partial.
+#[test]
+fn test_parse_quality_is_recorded_per_entity() {
+    let graph = CodeGraph::new(GraphConfig::default());
+    graph
+        .index_file(
+            "def broken(:\n    return 1\n\n\ndef fine():\n    return 2\n",
+            "mixed.py",
+            &Language::Python,
         )
-    }
+        .unwrap();
 
-    /// `insert_extracted` stored `name_span` in `params_span`. `build_fragment`
-    /// and `apply_diff_update` both got it right, so the divergence was invisible
-    /// outside the `index_file` path — until `plan_signature_update` replaced
-    /// `params_span` verbatim and overwrote the function *name* with the new
-    /// parameter list.
-    #[test]
-    fn test_index_file_records_params_span_not_name_span() {
-        let source = "def greet(name, greeting=\"hi\"):\n    return greeting\n";
-        let graph = CodeGraph::new(GraphConfig::default());
-        graph.index_file(source, "spans.py", &Language::Python).unwrap();
+    let snap = graph.snapshot();
+    let fine = snap
+        .functions
+        .get("mixed.py::fine")
+        .expect("clean function still indexes");
+    assert_eq!(fine.parse_quality, ParseQuality::Clean);
+    assert_ne!(fine.content_hash, 0, "content_hash was hardcoded to 0");
 
-        let snap = graph.snapshot();
-        let f = snap.functions.get("spans.py::greet").expect("greet indexed");
+    let module = snap.modules.get("mixed.py::module").expect("module entity");
+    assert_eq!(
+        module.parse_quality,
+        ParseQuality::Partial,
+        "the file as a whole did not parse cleanly"
+    );
+}
 
-        assert_ne!(f.params_span, f.name_span, "params_span must not alias name_span");
-        assert_eq!(&source[f.name_span.start..f.name_span.end], "greet");
-        assert_eq!(
-            &source[f.params_span.start..f.params_span.end],
-            "(name, greeting=\"hi\")",
-        );
-    }
+/// An unchanged file must not churn the projection — that is the whole point
+/// of the diff.
+#[test]
+fn test_update_file_skips_unchanged_functions() {
+    let source = "def f():\n    return 1\n\n\ndef g():\n    return 2\n";
+    let graph = CodeGraph::new(GraphConfig::default());
+    graph.update_file("same.py", Some(source), None).unwrap();
+    // Second identical update: nothing changed, nothing to do. (The
+    // first update converges any seed spelling to canonical — F14.)
+    let outcome = graph.update_file("same.py", Some(source), None).unwrap();
+    let (added, removed) = (outcome.entities_added, outcome.entities_removed);
+    assert_eq!((added, removed), (0, 0), "nothing changed, nothing to do");
+}
 
-    /// All three ingest paths must agree on every span they record.
-    #[test]
-    fn test_index_file_and_update_file_agree_on_spans() {
-        let source = "def greet(name, greeting=\"hi\"):\n    return greeting\n";
+/// A bare-spelled seed (index_file form) converges to canonical on the
+/// first update: stale spellings removed, canonical inserted — once.
+#[test]
+fn test_update_file_converges_bare_ids_to_canonical_f14() {
+    let source = "def f():\n    return 1\n";
+    let graph = CodeGraph::new(GraphConfig::default());
+    graph
+        .index_file(source, "same.py", &Language::Python)
+        .unwrap();
+    assert!(graph.snapshot().functions.contains_key("same.py::f"));
 
-        let indexed = CodeGraph::new(GraphConfig::default());
-        indexed.index_file(source, "spans.py", &Language::Python).unwrap();
-        let via_index = indexed.snapshot().functions.get("spans.py::greet").cloned().unwrap();
+    let outcome = graph.update_file("same.py", Some(source), None).unwrap();
+    let snap = graph.snapshot();
+    assert!(snap.functions.contains_key(&canon_id("same.py", "f")));
+    assert!(
+        !snap.functions.contains_key("same.py::f"),
+        "stale spelling must not survive beside the canonical one"
+    );
+    // One-time migration noise: the bare function AND bare module are
+    // removed, the canonical pair inserted (module inserts don't bump
+    // `added`, so the counters read (1, 2) — asserted loosely).
+    assert!(outcome.entities_added >= 1);
+    assert!(outcome.entities_removed >= 1);
 
-        let updated = CodeGraph::new(GraphConfig::default());
-        updated.index_file("def greet(): pass\n", "spans.py", &Language::Python).unwrap();
-        updated.update_file("spans.py", Some(source), None).unwrap();
-        // F14: update_file mints the canonical form — same spans, one id form.
-        let via_update = updated.snapshot().functions.get(&canon_id("spans.py", "greet")).cloned().unwrap();
+    // And now it is stable: a further identical update is a no-op.
+    let again = graph.update_file("same.py", Some(source), None).unwrap();
+    assert_eq!((again.entities_added, again.entities_removed), (0, 0));
+}
 
-        assert_eq!(via_index.name_span, via_update.name_span);
-        assert_eq!(via_index.params_span, via_update.params_span);
-        assert_eq!(via_index.body_span, via_update.body_span);
-        assert_eq!(via_index.parameters.len(), via_update.parameters.len());
-    }
+#[test]
+fn test_update_file_adds_entities() {
+    let graph = CodeGraph::new(GraphConfig::default());
 
-    /// A body edit that leaves the signature alone must still reach the graph.
-    #[test]
-    fn test_update_file_reindexes_a_changed_function() {
-        let graph = CodeGraph::new(GraphConfig::default());
-        // Seeded through update_file so the whole test lives in the
-        // canonical id form (F14) — index_file mints bare test ids.
-        graph.update_file("chg.py", Some("def f():\n    return 1\n"), None).unwrap();
-        let before = graph.snapshot().functions.get(&canon_id("chg.py", "f")).cloned().unwrap();
+    // Seed through update_file (canonical ids throughout — F14).
+    graph
+        .update_file("mod.py", Some("def foo(): pass\ndef bar(): pass\n"), None)
+        .unwrap();
+    let initial = graph.snapshot().functions.len();
+    assert_eq!(initial, 2, "Expected 2 functions");
 
-        let outcome = graph
-            .update_file("chg.py", Some("def f():\n    return 2\n"), None)
-            .unwrap();
-        let (added, removed) = (outcome.entities_added, outcome.entities_removed);
-        // A changed entity is replaced in place: one insert, and no removal —
-        // the removal counter tracks entities that disappeared from the file.
-        assert_eq!((added, removed), (1, 0));
+    // Update: change bar, add baz — foo unchanged → diff skips it
+    let result = graph.update_file(
+        "mod.py",
+        Some("def foo(): pass\ndef bar(): return 42\ndef baz(): pass\n"),
+        None,
+    );
+    assert!(result.is_ok(), "update_file error: {:?}", result.err());
+    let outcome = result.unwrap();
+    let (added, removed) = (outcome.entities_added, outcome.entities_removed);
 
-        let after = graph.snapshot().functions.get(&canon_id("chg.py", "f")).cloned().unwrap();
-        assert_ne!(before.body_hash, after.body_hash, "body_hash must track the body");
-        assert_eq!(before.signature_hash, after.signature_hash, "signature is unchanged");
-    }
+    // baz is new, and bar's changed body rewrites it under the same id.
+    assert!(added >= 1, "Should insert at least 1, got {}", added);
+    // The assertion here was `removed >= 0`, always true on a usize. The
+    // real count is 0: a changed entity is rewritten in place, so nothing
+    // is retired. Removal is what happens when an entity disappears —
+    // test_update_file_removes_entities covers that.
+    assert_eq!(removed, 0, "a rewritten entity is not a removed one");
 
-    /// tree-sitter recovers from syntax errors instead of failing, so a broken
-    /// file still indexes. update_file used to report `clean` / 0 errors
-    /// regardless, which made every caller's failure branch unreachable.
-    #[test]
-    fn test_update_file_reports_a_recovered_parse() {
-        let graph = CodeGraph::new(GraphConfig::default());
-        graph.index_file("def f():\n    return 1\n", "broken.py", &Language::Python).unwrap();
+    let snap = graph.snapshot();
+    assert!(
+        snap.functions.contains_key(&canon_id("mod.py", "baz")),
+        "Should have new baz"
+    );
+    assert!(
+        snap.functions.contains_key(&canon_id("mod.py", "foo")),
+        "Foo should survive"
+    );
+}
+#[test]
+fn test_update_file_removes_entities() {
+    let graph = CodeGraph::new(GraphConfig::default());
 
-        let outcome = graph
-            .update_file("broken.py", Some("def f(:\n    return 1\n"), None)
-            .unwrap();
-
-        assert_eq!(outcome.parse_quality, ParseQuality::Partial);
-        assert!(outcome.parse_errors > 0, "a recovered parse has error nodes");
-    }
-
-    #[test]
-    fn test_update_file_reports_a_clean_parse() {
-        let graph = CodeGraph::new(GraphConfig::default());
-        graph.index_file("def f():\n    return 1\n", "ok.py", &Language::Python).unwrap();
-
-        let outcome = graph
-            .update_file("ok.py", Some("def f():\n    return 2\n"), None)
-            .unwrap();
-
-        assert_eq!(outcome.parse_quality, ParseQuality::Clean);
-        assert_eq!(outcome.parse_errors, 0);
-        assert!(outcome.elapsed_ms > 0.0, "elapsed_ms was hardcoded to 0.0");
-    }
-
-    /// The entity carries the quality of its own subtree, not the file's: a
-    /// syntax error in one function must not mark its neighbours Partial.
-    #[test]
-    fn test_parse_quality_is_recorded_per_entity() {
-        let graph = CodeGraph::new(GraphConfig::default());
-        graph
-            .index_file(
-                "def broken(:\n    return 1\n\n\ndef fine():\n    return 2\n",
-                "mixed.py",
-                &Language::Python,
-            )
-            .unwrap();
-
-        let snap = graph.snapshot();
-        let fine = snap.functions.get("mixed.py::fine").expect("clean function still indexes");
-        assert_eq!(fine.parse_quality, ParseQuality::Clean);
-        assert_ne!(fine.content_hash, 0, "content_hash was hardcoded to 0");
-
-        let module = snap.modules.get("mixed.py::module").expect("module entity");
-        assert_eq!(module.parse_quality, ParseQuality::Partial,
-                   "the file as a whole did not parse cleanly");
-    }
-
-    /// An unchanged file must not churn the projection — that is the whole point
-    /// of the diff.
-    #[test]
-    fn test_update_file_skips_unchanged_functions() {
-        let source = "def f():\n    return 1\n\n\ndef g():\n    return 2\n";
-        let graph = CodeGraph::new(GraphConfig::default());
-        graph.update_file("same.py", Some(source), None).unwrap();
-        // Second identical update: nothing changed, nothing to do. (The
-        // first update converges any seed spelling to canonical — F14.)
-        let outcome = graph.update_file("same.py", Some(source), None).unwrap();
-        let (added, removed) = (outcome.entities_added, outcome.entities_removed);
-        assert_eq!((added, removed), (0, 0), "nothing changed, nothing to do");
-    }
-
-    /// A bare-spelled seed (index_file form) converges to canonical on the
-    /// first update: stale spellings removed, canonical inserted — once.
-    #[test]
-    fn test_update_file_converges_bare_ids_to_canonical_f14() {
-        let source = "def f():\n    return 1\n";
-        let graph = CodeGraph::new(GraphConfig::default());
-        graph.index_file(source, "same.py", &Language::Python).unwrap();
-        assert!(graph.snapshot().functions.contains_key("same.py::f"));
-
-        let outcome = graph.update_file("same.py", Some(source), None).unwrap();
-        let snap = graph.snapshot();
-        assert!(snap.functions.contains_key(&canon_id("same.py", "f")));
-        assert!(!snap.functions.contains_key("same.py::f"),
-                "stale spelling must not survive beside the canonical one");
-        // One-time migration noise: the bare function AND bare module are
-        // removed, the canonical pair inserted (module inserts don't bump
-        // `added`, so the counters read (1, 2) — asserted loosely).
-        assert!(outcome.entities_added >= 1);
-        assert!(outcome.entities_removed >= 1);
-
-        // And now it is stable: a further identical update is a no-op.
-        let again = graph.update_file("same.py", Some(source), None).unwrap();
-        assert_eq!((again.entities_added, again.entities_removed), (0, 0));
-    }
-
-    #[test]
-    fn test_update_file_adds_entities() {
-        let graph = CodeGraph::new(GraphConfig::default());
-
-        // Seed through update_file (canonical ids throughout — F14).
-        graph.update_file("mod.py", Some("def foo(): pass\ndef bar(): pass\n"), None).unwrap();
-        let initial = graph.snapshot().functions.len();
-        assert_eq!(initial, 2, "Expected 2 functions");
-
-        // Update: change bar, add baz — foo unchanged → diff skips it
-        let result = graph.update_file(
-            "mod.py",
-            Some("def foo(): pass\ndef bar(): return 42\ndef baz(): pass\n"),
-            None,
-        );
-        assert!(result.is_ok(), "update_file error: {:?}", result.err());
-        let outcome = result.unwrap();
-        let (added, removed) = (outcome.entities_added, outcome.entities_removed);
-
-        // baz is new, and bar's changed body rewrites it under the same id.
-        assert!(added >= 1, "Should insert at least 1, got {}", added);
-        // The assertion here was `removed >= 0`, always true on a usize. The
-        // real count is 0: a changed entity is rewritten in place, so nothing
-        // is retired. Removal is what happens when an entity disappears —
-        // test_update_file_removes_entities covers that.
-        assert_eq!(removed, 0, "a rewritten entity is not a removed one");
-
-        let snap = graph.snapshot();
-        assert!(snap.functions.contains_key(&canon_id("mod.py", "baz")), "Should have new baz");
-        assert!(snap.functions.contains_key(&canon_id("mod.py", "foo")), "Foo should survive");
-    }
-    #[test]
-    fn test_update_file_removes_entities() {
-        let graph = CodeGraph::new(GraphConfig::default());
-
-        graph.update_file("animals.py", Some("class Dog: pass\nclass Cat: pass\n"), None).unwrap();
-        assert_eq!(graph.snapshot().classes.len(), 2);
-
-        // Remove Cat — Dog unchanged → 0 inserts, 1 remove
-        let result = graph.update_file(
+    graph
+        .update_file(
             "animals.py",
-            Some("class Dog: pass\n"),
+            Some("class Dog: pass\nclass Cat: pass\n"),
             None,
-        );
-        assert!(result.is_ok(), "update_file error: {:?}", result.err());
-        let outcome = result.unwrap();
-        let (added, removed) = (outcome.entities_added, outcome.entities_removed);
+        )
+        .unwrap();
+    assert_eq!(graph.snapshot().classes.len(), 2);
 
-        // Diff semantics: Dog unchanged → 0 insert, Cat gone → 1 remove
-        assert_eq!(added, 0, "Should add 0 (Dog unchanged), got {}", added);
-        assert_eq!(removed, 1, "Should remove 1 (Cat), got {}", removed);
+    // Remove Cat — Dog unchanged → 0 inserts, 1 remove
+    let result = graph.update_file("animals.py", Some("class Dog: pass\n"), None);
+    assert!(result.is_ok(), "update_file error: {:?}", result.err());
+    let outcome = result.unwrap();
+    let (added, removed) = (outcome.entities_added, outcome.entities_removed);
 
-        let snap = graph.snapshot();
-        assert!(snap.classes.contains_key(&canon_id("animals.py", "Dog")));
-        assert!(!snap.classes.contains_key(&canon_id("animals.py", "Cat")));
-    }
+    // Diff semantics: Dog unchanged → 0 insert, Cat gone → 1 remove
+    assert_eq!(added, 0, "Should add 0 (Dog unchanged), got {}", added);
+    assert_eq!(removed, 1, "Should remove 1 (Cat), got {}", removed);
 
-    // ── Retirement reaches the ledger (plan §1.1) ────────────────────────
+    let snap = graph.snapshot();
+    assert!(snap.classes.contains_key(&canon_id("animals.py", "Dog")));
+    assert!(!snap.classes.contains_key(&canon_id("animals.py", "Cat")));
+}
 
-    /// Live concept ids in the attached store, so a removal can be checked
-    /// where it used never to land: the projection dropped the entity and the
-    /// ledger kept claiming it was still there.
-    fn live_ids(graph: &CodeGraph) -> Vec<String> {
-        let store = graph.store.as_ref().expect("store attached");
-        store.live_concept_ids().unwrap()
-    }
+// ── Retirement reaches the ledger (plan §1.1) ────────────────────────
 
-    #[test]
-    fn test_update_file_retires_removed_entities_in_the_store() {
-        let (graph, _dir) = graph_with_temp_store();
-        graph.update_file("animals.py", Some("class Dog: pass\nclass Cat: pass\n"), None).unwrap();
-        assert!(live_ids(&graph).contains(&canon_id("animals.py", "Cat")));
+/// Live concept ids in the attached store, so a removal can be checked
+/// where it used never to land: the projection dropped the entity and the
+/// ledger kept claiming it was still there.
+fn live_ids(graph: &CodeGraph) -> Vec<String> {
+    let store = graph.store.as_ref().expect("store attached");
+    store.live_concept_ids().unwrap()
+}
 
-        graph.update_file("animals.py", Some("class Dog: pass\n"), None).unwrap();
+#[test]
+fn test_update_file_retires_removed_entities_in_the_store() {
+    let (graph, _dir) = graph_with_temp_store();
+    graph
+        .update_file(
+            "animals.py",
+            Some("class Dog: pass\nclass Cat: pass\n"),
+            None,
+        )
+        .unwrap();
+    assert!(live_ids(&graph).contains(&canon_id("animals.py", "Cat")));
 
-        let live = live_ids(&graph);
-        assert!(!live.contains(&canon_id("animals.py", "Cat")),
-                "the deleted class must not stay current: {:?}", live);
-        assert!(live.contains(&canon_id("animals.py", "Dog")),
-                "the surviving class must stay current: {:?}", live);
-    }
+    graph
+        .update_file("animals.py", Some("class Dog: pass\n"), None)
+        .unwrap();
 
-    #[test]
-    fn test_remove_file_entities_retires_the_whole_file() {
-        let (graph, _dir) = graph_with_temp_store();
-        index_source(&graph, "def a(): pass\ndef b(): pass\n", "gone.py");
-        index_source(&graph, "def c(): pass\n", "kept.py");
+    let live = live_ids(&graph);
+    assert!(
+        !live.contains(&canon_id("animals.py", "Cat")),
+        "the deleted class must not stay current: {:?}",
+        live
+    );
+    assert!(
+        live.contains(&canon_id("animals.py", "Dog")),
+        "the surviving class must stay current: {:?}",
+        live
+    );
+}
 
-        let mut projection = (*graph.snapshot()).clone();
-        let removed = graph.remove_file_entities(&mut projection, "gone.py");
-        graph.commit_projection(projection);
+#[test]
+fn test_remove_file_entities_retires_the_whole_file() {
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(&graph, "def a(): pass\ndef b(): pass\n", "gone.py");
+    index_source(&graph, "def c(): pass\n", "kept.py");
 
-        assert!(!removed.is_empty());
-        let live = live_ids(&graph);
-        assert!(live.iter().all(|id| !id.starts_with("gone.py")),
-                "nothing from the deleted file stays current: {:?}", live);
-        assert!(live.contains(&"kept.py::c".to_string()), "{:?}", live);
-    }
+    let mut projection = (*graph.snapshot()).clone();
+    let removed = graph.remove_file_entities(&mut projection, "gone.py");
+    graph.commit_projection(projection);
 
-    /// A graph with no store must not panic or complain when entities go.
-    #[test]
-    fn test_removal_without_a_store_is_silent() {
-        let graph = CodeGraph::new(GraphConfig::default());
-        graph.update_file("animals.py", Some("class Dog: pass\nclass Cat: pass\n"), None).unwrap();
-        let outcome = graph.update_file("animals.py", Some("class Dog: pass\n"), None).unwrap();
-        assert_eq!(outcome.entities_removed, 1);
-    }
+    assert!(!removed.is_empty());
+    let live = live_ids(&graph);
+    assert!(
+        live.iter().all(|id| !id.starts_with("gone.py")),
+        "nothing from the deleted file stays current: {:?}",
+        live
+    );
+    assert!(live.contains(&"kept.py::c".to_string()), "{:?}", live);
+}
 
-    // ── Deletions reach the graph (plan §1.3) ────────────────────────────
+/// A graph with no store must not panic or complain when entities go.
+#[test]
+fn test_removal_without_a_store_is_silent() {
+    let graph = CodeGraph::new(GraphConfig::default());
+    graph
+        .update_file(
+            "animals.py",
+            Some("class Dog: pass\nclass Cat: pass\n"),
+            None,
+        )
+        .unwrap();
+    let outcome = graph
+        .update_file("animals.py", Some("class Dog: pass\n"), None)
+        .unwrap();
+    assert_eq!(outcome.entities_removed, 1);
+}
 
-    #[test]
-    fn test_remove_file_drops_entities_and_retires_them() {
-        let (graph, _dir) = graph_with_temp_store();
-        index_source(&graph, "def a(): pass\ndef b(): pass\n", "gone.py");
-        index_source(&graph, "def c(): pass\n", "kept.py");
+// ── Deletions reach the graph (plan §1.3) ────────────────────────────
 
-        let removed = graph.remove_file("gone.py");
+#[test]
+fn test_remove_file_drops_entities_and_retires_them() {
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(&graph, "def a(): pass\ndef b(): pass\n", "gone.py");
+    index_source(&graph, "def c(): pass\n", "kept.py");
 
-        assert!(removed.len() >= 2, "functions + module, got {:?}", removed);
-        let snap = graph.snapshot();
-        assert!(!snap.functions.contains_key("gone.py::a"));
-        assert!(snap.functions.contains_key("kept.py::c"));
-        let live = graph.store.as_ref().unwrap().live_concept_ids().unwrap();
-        assert!(live.iter().all(|id| !id.starts_with("gone.py")), "{:?}", live);
-    }
+    let removed = graph.remove_file("gone.py");
 
-    /// The file→module mapping outlived the module, so a recreated file
-    /// resolved to an id that was no longer in the projection.
-    #[test]
-    fn test_remove_file_clears_the_file_to_module_mapping() {
-        let graph = CodeGraph::new(GraphConfig::default());
-        index_source(&graph, "def a(): pass\n", "gone.py");
+    assert!(removed.len() >= 2, "functions + module, got {:?}", removed);
+    let snap = graph.snapshot();
+    assert!(!snap.functions.contains_key("gone.py::a"));
+    assert!(snap.functions.contains_key("kept.py::c"));
+    let live = graph.store.as_ref().unwrap().live_concept_ids().unwrap();
+    assert!(
+        live.iter().all(|id| !id.starts_with("gone.py")),
+        "{:?}",
+        live
+    );
+}
 
-        graph.remove_file("gone.py");
+/// The file→module mapping outlived the module, so a recreated file
+/// resolved to an id that was no longer in the projection.
+#[test]
+fn test_remove_file_clears_the_file_to_module_mapping() {
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(&graph, "def a(): pass\n", "gone.py");
 
-        let snap = graph.snapshot();
-        assert!(!snap.file_to_modules.contains_key(&std::path::PathBuf::from("gone.py")));
-    }
+    graph.remove_file("gone.py");
 
-    #[test]
-    fn test_remove_file_is_a_no_op_for_an_unknown_file() {
-        let graph = CodeGraph::new(GraphConfig::default());
-        index_source(&graph, "def a(): pass\n", "kept.py");
+    let snap = graph.snapshot();
+    assert!(!snap
+        .file_to_modules
+        .contains_key(&std::path::PathBuf::from("gone.py")));
+}
 
-        assert!(graph.remove_file("never_indexed.py").is_empty());
-        assert!(graph.snapshot().functions.contains_key("kept.py::a"));
-    }
+#[test]
+fn test_remove_file_is_a_no_op_for_an_unknown_file() {
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(&graph, "def a(): pass\n", "kept.py");
+
+    assert!(graph.remove_file("never_indexed.py").is_empty());
+    assert!(graph.snapshot().functions.contains_key("kept.py::a"));
+}

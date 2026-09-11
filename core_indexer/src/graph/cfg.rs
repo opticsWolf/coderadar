@@ -78,11 +78,16 @@ struct Scan {
 
 impl Scan {
     fn is_ws_gap(src: &[u8], from: usize, to: usize) -> bool {
-        src.get(from..to).is_some_and(|gap| gap.iter().all(u8::is_ascii_whitespace))
+        src.get(from..to)
+            .is_some_and(|gap| gap.iter().all(u8::is_ascii_whitespace))
     }
 
     fn new(node: tree_sitter::Node, src: &[u8]) -> Self {
-        let mut s = Self { predicates: Vec::new(), short_circuits: 0, dead_runs: Vec::new() };
+        let mut s = Self {
+            predicates: Vec::new(),
+            short_circuits: 0,
+            dead_runs: Vec::new(),
+        };
         s.walk(node, src, false);
         s
     }
@@ -183,7 +188,11 @@ impl ControlFlowGraph {
         let mut current = entry;
         let total = scan.predicates.len() + scan.short_circuits;
         for i in 0..total {
-            let span = scan.predicates.get(i).copied().unwrap_or(ByteSpan { start: 0, end: 0 });
+            let span = scan
+                .predicates
+                .get(i)
+                .copied()
+                .unwrap_or(ByteSpan { start: 0, end: 0 });
             let p = graph.add_node(BasicBlock {
                 func_id: func_id.clone(),
                 spans: vec![span],
@@ -210,7 +219,12 @@ impl ControlFlowGraph {
             });
         }
 
-        Self { func_id: func_id.clone(), graph, entry, exit }
+        Self {
+            func_id: func_id.clone(),
+            graph,
+            entry,
+            exit,
+        }
     }
 
     /// McCabe on the reachable subgraph: M = E − N + 2P (P = 1).
@@ -310,7 +324,11 @@ mod tests {
         let tree = parse_py(src);
         let body = body_node(&tree, "f");
         let cfg = ControlFlowGraph::build(&"f".to_string(), body, src.as_bytes());
-        assert_eq!(cfg.unreachable_blocks().len(), 1, "contiguous dead run merges into one block");
+        assert_eq!(
+            cfg.unreachable_blocks().len(),
+            1,
+            "contiguous dead run merges into one block"
+        );
         let dead = &cfg.graph[cfg.unreachable_blocks()[0]];
         assert!(dead.spans[0].end > dead.spans[0].start);
     }
@@ -322,7 +340,11 @@ mod tests {
         let tree = parse_py(src);
         let body = body_node(&tree, "f");
         let cfg = ControlFlowGraph::build(&"f".to_string(), body, src.as_bytes());
-        assert_eq!(cfg.cyclomatic(), 3, "a && b || c — two short-circuits + none else");
+        assert_eq!(
+            cfg.cyclomatic(),
+            3,
+            "a && b || c — two short-circuits + none else"
+        );
     }
 }
 
@@ -340,20 +362,25 @@ mod dbg {
         let mut cursor = tree.root_node().walk();
         loop {
             let n = cursor.node();
-            if n.kind() == "block" { 
+            if n.kind() == "block" {
                 eprintln!("body: kind='{}' children={}", n.kind(), n.child_count());
                 let mut c2 = n.walk();
                 for c in n.children(&mut c2) {
-                    eprintln!("child kind='{}' dec={}", c.kind(), crate::smells::metrics::is_decision_point(c.kind()));
+                    eprintln!(
+                        "child kind='{}' dec={}",
+                        c.kind(),
+                        crate::smells::metrics::is_decision_point(c.kind())
+                    );
                 }
                 break;
             }
             if !cursor.goto_first_child() {
                 while !cursor.goto_next_sibling() {
-                    if !cursor.goto_parent() { return; }
+                    if !cursor.goto_parent() {
+                        return;
+                    }
                 }
             }
         }
     }
 }
-

@@ -45,7 +45,11 @@ pub fn nesting_depth(node: Node) -> usize {
 }
 
 fn nesting_depth_inner(node: Node, current: usize) -> (usize, usize) {
-    let this = if is_nesting_node(node.kind()) { current + 1 } else { current };
+    let this = if is_nesting_node(node.kind()) {
+        current + 1
+    } else {
+        current
+    };
     let mut max = this;
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -109,11 +113,18 @@ fn is_nesting_node(kind: &str) -> bool {
     is_decision_point(kind)
         || matches!(
             kind,
-            "try_statement" | "try_expression" | "try_block"
-                | "with_statement" | "with_clause"
-                | "do_statement" | "do_block"
-                | "else_clause" | "else_block" | "else_branch"
-                | "finally_clause" | "finally_block"
+            "try_statement"
+                | "try_expression"
+                | "try_block"
+                | "with_statement"
+                | "with_clause"
+                | "do_statement"
+                | "do_block"
+                | "else_clause"
+                | "else_block"
+                | "else_branch"
+                | "finally_clause"
+                | "finally_block"
         )
 }
 

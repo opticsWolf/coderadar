@@ -1,9 +1,7 @@
 // CodeRadar v3.6 — Git Integration (§12)
 // Branch-switch detection, .gitignore integration, and blame annotation.
 
-
 use git2::{BlameOptions, DiffOptions, Repository};
-
 
 #[derive(Clone, Debug)]
 pub struct BlameLine {
@@ -48,17 +46,16 @@ pub fn changed_files_between(
                 }
                 true
             },
-            None, None, None,
+            None,
+            None,
+            None,
         )
         .map_err(GitError::Diff)?;
     }
     Ok(files)
 }
 
-pub fn blame_file(
-    repo_path: &str,
-    file_path: &str,
-) -> Result<Vec<BlameLine>, GitError> {
+pub fn blame_file(repo_path: &str, file_path: &str) -> Result<Vec<BlameLine>, GitError> {
     let repo = Repository::open(repo_path).map_err(GitError::Open)?;
     let head = repo.head().map_err(GitError::Head)?;
     let commit = head.peel_to_commit().map_err(GitError::Commit)?;

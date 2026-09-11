@@ -2,8 +2,8 @@
 // Bridges CodeRadar's entity model to Macrame's concept+assertion model.
 // Macrame is tokio-based; CodeRadar wraps it with block_on behind a sync API.
 
+use macrame::graph::{EdgeAssertion, Subgraph, TraversalBuilder};
 use macrame::prelude::*;
-use macrame::graph::{Subgraph, EdgeAssertion, TraversalBuilder};
 use macrame::temporal::{MaterializedState, SnapshotCadence};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -33,7 +33,7 @@ pub mod annotation {
     pub const CONTENT_HASH: &str = "content_hash";
     pub const PARSE_QUALITY: &str = "parse_quality";
     pub const RETURN_TYPE: &str = "return_type";
-    pub const GRAMMAR_KIND: &str = "grammar_kind";  // v3.6: tree-sitter node kind
+    pub const GRAMMAR_KIND: &str = "grammar_kind"; // v3.6: tree-sitter node kind
 }
 
 /// Edge types for Macrame edge assertions.
@@ -101,9 +101,8 @@ pub struct CodeGraphStore {
 /// shared runtime). Production only ever opens one store, so this costs it
 /// nothing and gives the tests the same shape production has.
 fn runtime() -> &'static Runtime {
-    static RUNTIME: std::sync::LazyLock<Runtime> = std::sync::LazyLock::new(|| {
-        Runtime::new().expect("tokio runtime for Macrame")
-    });
+    static RUNTIME: std::sync::LazyLock<Runtime> =
+        std::sync::LazyLock::new(|| Runtime::new().expect("tokio runtime for Macrame"));
     &RUNTIME
 }
 
@@ -132,9 +131,17 @@ impl CodeGraphStore {
     }
 
     /// Synchronous wrapper around Macrame's async upsert.
-    pub fn upsert_entity(&self, unit: &ExtractedUnit, file_path: &str, language: &str) -> macrame::Result<()> {
+    pub fn upsert_entity(
+        &self,
+        unit: &ExtractedUnit,
+        file_path: &str,
+        language: &str,
+    ) -> macrame::Result<()> {
         let concept = build_concept(unit, file_path, language);
-        if self.filter_unchanged(std::slice::from_ref(&concept)).is_empty() {
+        if self
+            .filter_unchanged(std::slice::from_ref(&concept))
+            .is_empty()
+        {
             return Ok(());
         }
         runtime().block_on(self.db.upsert_concept(concept))
@@ -248,8 +255,10 @@ impl CodeGraphStore {
             let sql = format!(
                 "SELECT id, title, content, retired FROM concepts WHERE id IN ({placeholders})"
             );
-            let params: Vec<libsql::Value> =
-                chunk.iter().map(|s| libsql::Value::Text(s.clone())).collect();
+            let params: Vec<libsql::Value> = chunk
+                .iter()
+                .map(|s| libsql::Value::Text(s.clone()))
+                .collect();
             let mut rows = runtime()
                 .block_on(conn.query(&sql, params))
                 .map_err(macrame::DbError::Engine)?;
@@ -330,7 +339,6 @@ impl CodeGraphStore {
         let ts = now_iso8601();
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         runtime().block_on(async {
-
             // Title and content are carried over: the upsert overwrites every
             // column, so reading them back is what keeps the retired row a
             // record of the entity rather than a blank tombstone.
@@ -346,14 +354,11 @@ impl CodeGraphStore {
                     .map_err(macrame::DbError::Engine)?;
                 if let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
                     concepts.push(
-                        ConceptUpsert::new(
-                            id.clone(),
-                            row.get::<String>(0).unwrap_or_default(),
-                        )
-                        .content(row.get::<String>(1).unwrap_or_default())
-                        .valid_from(row.get::<String>(2).unwrap_or_else(|_| ts.clone()))
-                        .valid_to(ts.clone())
-                        .retired(true),
+                        ConceptUpsert::new(id.clone(), row.get::<String>(0).unwrap_or_default())
+                            .content(row.get::<String>(1).unwrap_or_default())
+                            .valid_from(row.get::<String>(2).unwrap_or_else(|_| ts.clone()))
+                            .valid_to(ts.clone())
+                            .retired(true),
                     );
                 }
             }
@@ -393,8 +398,13 @@ impl CodeGraphStore {
                 // desired end state either way.
                 if self
                     .db
-                    .retire_edge(source.as_str(), target.as_str(), etype.as_str(),
-                                 valid_from.as_str(), ts.as_str())
+                    .retire_edge(
+                        source.as_str(),
+                        target.as_str(),
+                        etype.as_str(),
+                        valid_from.as_str(),
+                        ts.as_str(),
+                    )
                     .await
                     .is_ok()
                 {
@@ -489,10 +499,7 @@ impl CodeGraphStore {
     /// constant weight), so re-asserting it would only add a new version for
     /// `as_of` to replay through — and with per-assertion `valid_from` it
     /// would abort on macrame's single-open-interval guard anyway.
-    pub fn open_edge_triples(
-        &self,
-        now: &str,
-    ) -> macrame::Result<Vec<(String, String, String)>> {
+    pub fn open_edge_triples(&self, now: &str) -> macrame::Result<Vec<(String, String, String)>> {
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         runtime().block_on(async {
             let mut rows = conn
@@ -556,8 +563,7 @@ impl CodeGraphStore {
         edge_types: &[String],
         ts: &str,
     ) -> macrame::Result<Subgraph> {
-        let mut traversal = TraversalBuilder::new(start_id)
-            .max_depth(max_depth);
+        let mut traversal = TraversalBuilder::new(start_id).max_depth(max_depth);
         if !edge_types.is_empty() {
             traversal = traversal.edge_types(edge_types.to_vec());
         }
@@ -627,7 +633,11 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 }
 
 /// Build entity metadata JSON for a ConceptUpsert.content field.
-fn entity_meta<'a>(unit: &'a ExtractedUnit, file_path: &'a str, language: &'a str) -> (&'a str, &'a str, serde_json::Value) {
+fn entity_meta<'a>(
+    unit: &'a ExtractedUnit,
+    file_path: &'a str,
+    language: &'a str,
+) -> (&'a str, &'a str, serde_json::Value) {
     use serde_json::json;
 
     let base = json!({
@@ -733,8 +743,14 @@ fn span_to_str(span: ByteSpan) -> String {
 pub const V2_META_VERSION: u64 = 2;
 
 /// Canonical entity kinds a v2 concept may declare.
-pub const V2_CANONICAL_KINDS: &[&str] =
-    &["module", "class", "function", "import", "constant", "type_alias"];
+pub const V2_CANONICAL_KINDS: &[&str] = &[
+    "module",
+    "class",
+    "function",
+    "import",
+    "constant",
+    "type_alias",
+];
 
 fn file_path_of(id: &str) -> &str {
     // Entity ids are `{file_path}::{rest}`; file paths never contain "::".
@@ -744,7 +760,15 @@ fn file_path_of(id: &str) -> &str {
     }
 }
 
-fn v2_common(kind: &str, name: &str, file_path: &str, line: u64, exit_line: u64, docstring: &Option<String>, decorators: &[String]) -> serde_json::Value {
+fn v2_common(
+    kind: &str,
+    name: &str,
+    file_path: &str,
+    line: u64,
+    exit_line: u64,
+    docstring: &Option<String>,
+    decorators: &[String],
+) -> serde_json::Value {
     serde_json::json!({
         "meta_version": V2_META_VERSION,
         "kind": kind,
@@ -819,7 +843,15 @@ fn module_content(m: &Module) -> serde_json::Value {
 
 fn class_content(c: &Class) -> serde_json::Value {
     let file_path = file_path_of(&c.id);
-    let mut v = v2_common("class", &c.name, file_path, c.line as u64, c.exit_line as u64, &c.docstring, &c.decorators);
+    let mut v = v2_common(
+        "class",
+        &c.name,
+        file_path,
+        c.line as u64,
+        c.exit_line as u64,
+        &c.docstring,
+        &c.decorators,
+    );
     v["grammar_kind"] = serde_json::json!(&c.grammar_kind);
     v["parent_class"] = serde_json::json!(&c.parent_class);
     v["bases"] = serde_json::json!(&c.bases);
@@ -837,7 +869,15 @@ fn class_content(c: &Class) -> serde_json::Value {
 
 fn function_content(f: &Function) -> serde_json::Value {
     let file_path = file_path_of(&f.id);
-    let mut v = v2_common("function", &f.name, file_path, f.line as u64, f.exit_line as u64, &f.docstring, &f.decorators);
+    let mut v = v2_common(
+        "function",
+        &f.name,
+        file_path,
+        f.line as u64,
+        f.exit_line as u64,
+        &f.docstring,
+        &f.decorators,
+    );
     v["parent_class"] = serde_json::json!(&f.parent_class);
     v["parameters"] = serde_json::json!(&f.parameters);
     v["return_type"] = serde_json::json!(&f.return_type);
@@ -938,7 +978,10 @@ pub fn build_v2_concepts_all(projection: &ProjectedGraph) -> Vec<ConceptUpsert> 
 
 /// Build concept JSON v2 upserts for the entities of ONE file (id prefix
 /// `{file_path}::`). Used by `update_file` after its scoped cascade.
-pub fn build_v2_concepts_for_file(projection: &ProjectedGraph, file_path: &str) -> Vec<ConceptUpsert> {
+pub fn build_v2_concepts_for_file(
+    projection: &ProjectedGraph,
+    file_path: &str,
+) -> Vec<ConceptUpsert> {
     let prefix = format!("{file_path}::");
     let now = now_iso8601();
     let mut out: Vec<ConceptUpsert> = Vec::new();
@@ -1050,14 +1093,17 @@ fn hex_u64(v: &serde_json::Value, key: &str, id: &str) -> std::result::Result<u6
         .get(key)
         .and_then(|x| x.as_str())
         .ok_or_else(|| v2_err(id, &format!("missing '{key}'")))?;
-    u64::from_str_radix(s, 16)
-        .map_err(|e| v2_err(id, &format!("'{key}' is not hex: {e}")))
+    u64::from_str_radix(s, 16).map_err(|e| v2_err(id, &format!("'{key}' is not hex: {e}")))
 }
 
 fn str_list(v: &serde_json::Value, key: &str) -> Vec<String> {
     v.get(key)
         .and_then(|x| x.as_array())
-        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -1079,10 +1125,14 @@ fn span_opt_of(v: &serde_json::Value, key: &str) -> Option<ByteSpan> {
 }
 
 fn deser<T: serde::de::DeserializeOwned>(v: &serde_json::Value, key: &str) -> Option<T> {
-    v.get(key).and_then(|x| serde_json::from_value::<T>(x.clone()).ok())
+    v.get(key)
+        .and_then(|x| serde_json::from_value::<T>(x.clone()).ok())
 }
 
-fn deser_or_default<T: serde::de::DeserializeOwned + Default>(v: &serde_json::Value, key: &str) -> T {
+fn deser_or_default<T: serde::de::DeserializeOwned + Default>(
+    v: &serde_json::Value,
+    key: &str,
+) -> T {
     deser(v, key).unwrap_or_default()
 }
 
@@ -1124,7 +1174,11 @@ fn parse_v2_class(id: &str, v: &serde_json::Value) -> std::result::Result<Class,
     Ok(Class {
         id: id.to_string(),
         name: req_str(v, "name", id)?,
-        grammar_kind: v.get("grammar_kind").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        grammar_kind: v
+            .get("grammar_kind")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
         parent_module: format!("{file_path}::module"),
         parent_class: opt_str(v, "parent_class"),
         bases: deser_or_default(v, "bases"),
@@ -1155,8 +1209,8 @@ fn parse_v2_class(id: &str, v: &serde_json::Value) -> std::result::Result<Class,
 fn parse_v2_function(id: &str, v: &serde_json::Value) -> std::result::Result<Function, String> {
     let file_path = req_str(v, "file_path", id)?;
     let parse_quality = req_str(v, "parse_quality", id)?;
-    let kind = deser::<FunctionKind>(v, "fn_kind")
-        .ok_or_else(|| v2_err(id, "missing 'fn_kind'"))?;
+    let kind =
+        deser::<FunctionKind>(v, "fn_kind").ok_or_else(|| v2_err(id, "missing 'fn_kind'"))?;
     Ok(Function {
         id: id.to_string(),
         name: req_str(v, "name", id)?,
@@ -1322,9 +1376,15 @@ mod concept_v2_tests {
             docstring: Some("Doc.".into()),
             parse_quality: ParseQuality::Clean,
             content_hash: 0x1234,
-            span: ByteSpan { start: 30, end: 200 },
+            span: ByteSpan {
+                start: 30,
+                end: 200,
+            },
             name_span: ByteSpan { start: 36, end: 41 },
-            body_span: ByteSpan { start: 42, end: 199 },
+            body_span: ByteSpan {
+                start: 42,
+                end: 199,
+            },
             decorators_span: Some(ByteSpan { start: 20, end: 30 }),
             embedding: EmbeddingVec::default(),
         }
@@ -1384,10 +1444,22 @@ mod concept_v2_tests {
             is_type_checking_only: false,
             parse_quality: ParseQuality::Partial,
             content_hash: 0x77,
-            span: ByteSpan { start: 100, end: 250 },
-            name_span: ByteSpan { start: 112, end: 118 },
-            params_span: ByteSpan { start: 119, end: 123 },
-            body_span: ByteSpan { start: 124, end: 249 },
+            span: ByteSpan {
+                start: 100,
+                end: 250,
+            },
+            name_span: ByteSpan {
+                start: 112,
+                end: 118,
+            },
+            params_span: ByteSpan {
+                start: 119,
+                end: 123,
+            },
+            body_span: ByteSpan {
+                start: 124,
+                end: 249,
+            },
             decorators_span: None,
             embedding: EmbeddingVec::default(),
         }
@@ -1606,13 +1678,21 @@ mod concept_v2_tests {
             other => panic!("expected Canonical, got {other:?}"),
         }
         let v1 = r#"{"kind": "function", "name": "f", "file_path": "a.py"}"#;
-        assert!(matches!(classify_v2_concept(v1), V2ConceptClass::V1Leftover));
+        assert!(matches!(
+            classify_v2_concept(v1),
+            V2ConceptClass::V1Leftover
+        ));
         let field = r#"{"kind": "field", "name": "x", "file_path": "a.py"}"#;
-        assert!(matches!(classify_v2_concept(field), V2ConceptClass::StandaloneField));
-        assert!(matches!(classify_v2_concept("not json"), V2ConceptClass::Unreadable));
+        assert!(matches!(
+            classify_v2_concept(field),
+            V2ConceptClass::StandaloneField
+        ));
+        assert!(matches!(
+            classify_v2_concept("not json"),
+            V2ConceptClass::Unreadable
+        ));
     }
 }
-
 
 // ── Edge Properties Builder ─────────────────────────────────────────────────
 
@@ -1654,13 +1734,13 @@ mod tests {
             macrame::util::timestamp::is_canonical(&ts),
             "macrame does not consider {ts:?} canonical"
         );
-        assert!(ts[20..26].chars().all(|c| c.is_ascii_digit()), "frac: {ts:?}");
+        assert!(
+            ts[20..26].chars().all(|c| c.is_ascii_digit()),
+            "frac: {ts:?}"
+        );
         // And the normalizer accepts it unchanged (the call load_snapshot
         // must survive — `reconstruct(&now_iso8601())`).
-        assert_eq!(
-            macrame::util::timestamp::normalize(&ts).unwrap(),
-            ts
-        );
+        assert_eq!(macrame::util::timestamp::normalize(&ts).unwrap(), ts);
     }
 
     /// Regression: `now_iso8601()` once truncated to whole seconds (the
@@ -1689,7 +1769,11 @@ mod tests {
             "reconstruct at now must see the concept written microseconds ago (predates_recorded_history = {})",
             state.predates_recorded_history
         );
-        assert!(state.seq_anchor > 0, "empty fold: seq_anchor = {}", state.seq_anchor);
+        assert!(
+            state.seq_anchor > 0,
+            "empty fold: seq_anchor = {}",
+            state.seq_anchor
+        );
     }
 
     #[test]
@@ -1698,7 +1782,12 @@ mod tests {
         // other common-but-invalid shapes) must be rejected by macrame, so
         // that a regression in [`now_iso8601`] toward any of them is a
         // loud failure rather than a silent broken ledger.
-        for bad in ["now", "latest", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00.123Z"] {
+        for bad in [
+            "now",
+            "latest",
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:00:00.123Z",
+        ] {
             // `2024-01-01T00:00:00Z` is the legacy second-precision form and
             // IS accepted (widened); the others must not be. Keep the set to
             // the genuinely-invalid ones.
@@ -1740,10 +1829,22 @@ mod tests {
             signature_hash: 0,
             body_hash: 0xdead,
             metrics: crate::types::FunctionMetrics::default(),
-            span: ByteSpan { start: 1000, end: 1500 },
-            name_span: ByteSpan { start: 1004, end: 1007 },
-            params_span: ByteSpan { start: 1008, end: 1020 },
-            body_span: ByteSpan { start: 1030, end: 1490 },
+            span: ByteSpan {
+                start: 1000,
+                end: 1500,
+            },
+            name_span: ByteSpan {
+                start: 1004,
+                end: 1007,
+            },
+            params_span: ByteSpan {
+                start: 1008,
+                end: 1020,
+            },
+            body_span: ByteSpan {
+                start: 1030,
+                end: 1490,
+            },
             decorators_span: None,
         })
     }
@@ -1762,7 +1863,10 @@ mod tests {
         assert_eq!(meta["line"], 42);
         assert_eq!(meta["is_async"], true);
         assert_eq!(meta["return_type"], "int");
-        assert!(meta["decorators"].as_str().unwrap().contains("@staticmethod"));
+        assert!(meta["decorators"]
+            .as_str()
+            .unwrap()
+            .contains("@staticmethod"));
     }
 
     #[test]
@@ -1784,9 +1888,18 @@ mod tests {
             is_type_checking_only: false,
             parse_quality: ParseQuality::Clean,
             content_hash: 0,
-            span: ByteSpan { start: 200, end: 800 },
-            name_span: ByteSpan { start: 206, end: 213 },
-            body_span: ByteSpan { start: 220, end: 790 },
+            span: ByteSpan {
+                start: 200,
+                end: 800,
+            },
+            name_span: ByteSpan {
+                start: 206,
+                end: 213,
+            },
+            body_span: ByteSpan {
+                start: 220,
+                end: 790,
+            },
             decorators_span: None,
         });
 
@@ -1919,14 +2032,11 @@ mod tests {
     fn seed(store: &CodeGraphStore) {
         let ts = now_iso8601();
         let concept = |id: &str| {
-            ConceptUpsert::new(
-                id.to_string(),
-                id.rsplit("::").next().unwrap().to_string(),
-            )
-            .content("{}")
-            .valid_from(ts.clone())
-            .valid_to(TS_OPEN.to_string())
-            .retired(false)
+            ConceptUpsert::new(id.to_string(), id.rsplit("::").next().unwrap().to_string())
+                .content("{}")
+                .valid_from(ts.clone())
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)
         };
         store
             .upsert_concepts_bulk(&[
@@ -1949,7 +2059,9 @@ mod tests {
         seed(&store);
         assert_eq!(live_concept_ids(&store).len(), 3);
 
-        let (concepts, _) = store.retire_entities(&["a.py::callee".to_string()]).unwrap();
+        let (concepts, _) = store
+            .retire_entities(&["a.py::callee".to_string()])
+            .unwrap();
 
         assert_eq!(concepts, 1);
         assert_eq!(
@@ -1966,7 +2078,9 @@ mod tests {
         seed(&store);
         assert_eq!(open_edge_count(&store), 2);
 
-        let (_, edges) = store.retire_entities(&["a.py::callee".to_string()]).unwrap();
+        let (_, edges) = store
+            .retire_entities(&["a.py::callee".to_string()])
+            .unwrap();
 
         assert_eq!(edges, 2, "both the incoming and the outgoing edge close");
         assert_eq!(open_edge_count(&store), 0);
@@ -1977,7 +2091,9 @@ mod tests {
         let (_dir, store) = temp_store();
         seed(&store);
 
-        store.retire_entities(&["b.py::bystander".to_string()]).unwrap();
+        store
+            .retire_entities(&["b.py::bystander".to_string()])
+            .unwrap();
 
         assert!(live_concept_ids(&store).contains(&"a.py::caller".to_string()));
         assert_eq!(
@@ -1994,7 +2110,9 @@ mod tests {
 
         assert_eq!(store.retire_entities(&[]).unwrap(), (0, 0));
         assert_eq!(
-            store.retire_entities(&["nowhere.py::ghost".to_string()]).unwrap(),
+            store
+                .retire_entities(&["nowhere.py::ghost".to_string()])
+                .unwrap(),
             (0, 0)
         );
         assert_eq!(live_concept_ids(&store).len(), 3);
@@ -2007,8 +2125,12 @@ mod tests {
         let (_dir, store) = temp_store();
         seed(&store);
 
-        store.retire_entities(&["a.py::callee".to_string()]).unwrap();
-        let (concepts, edges) = store.retire_entities(&["a.py::callee".to_string()]).unwrap();
+        store
+            .retire_entities(&["a.py::callee".to_string()])
+            .unwrap();
+        let (concepts, edges) = store
+            .retire_entities(&["a.py::callee".to_string()])
+            .unwrap();
 
         assert_eq!((concepts, edges), (0, 0), "nothing left open to close");
         assert_eq!(live_concept_ids(&store).len(), 2);

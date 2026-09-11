@@ -12,7 +12,10 @@ pub struct BrainMethod {
 
 impl Default for BrainMethod {
     fn default() -> Self {
-        Self { max_method_cyclo_threshold: 15, min_class_wmc: 20 }
+        Self {
+            max_method_cyclo_threshold: 15,
+            min_class_wmc: 20,
+        }
     }
 }
 

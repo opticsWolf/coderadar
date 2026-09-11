@@ -33,7 +33,10 @@ impl WriteGuard {
             PathBuf::from(crate::graph::module_resolution::normalize_path_str(
                 &path.to_string_lossy(),
             )),
-            (expected_hash, Instant::now() + std::time::Duration::from_secs(ttl_secs)),
+            (
+                expected_hash,
+                Instant::now() + std::time::Duration::from_secs(ttl_secs),
+            ),
         );
     }
 
@@ -76,8 +79,7 @@ impl WriteGuard {
     /// Clean up expired entries.
     pub fn prune_expired(&self) {
         let now = Instant::now();
-        self.suppressed
-            .retain(|_, (_, expiry)| now <= *expiry);
+        self.suppressed.retain(|_, (_, expiry)| now <= *expiry);
     }
 
     /// Remove a path from the guard (e.g., after successful reindex).

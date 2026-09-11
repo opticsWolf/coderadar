@@ -422,5 +422,4 @@ mod tests {
         let tree2 = parser.parse(src2, None).unwrap();
         assert_eq!(count_decided_conditions(body_block(&tree2), src2), None);
     }
-
 }

@@ -81,13 +81,18 @@ pub struct DeadCodeOptions {
 
 impl Default for DeadCodeOptions {
     fn default() -> Self {
-        Self { include_test_only: false }
+        Self {
+            include_test_only: false,
+        }
     }
 }
 
 /// Detect dead functions over the resolved projection.
 pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<DeadFinding> {
-    let EntryPoints { production, test_only } = entry_points::detect_entry_points(graph);
+    let EntryPoints {
+        production,
+        test_only,
+    } = entry_points::detect_entry_points(graph);
 
     let live_prod = compute_reachable(graph, &production);
     // Second pass: seed with test entries too, to classify test-only liveness.
@@ -144,11 +149,9 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
     // classes that are never constructed anywhere in the root. The base pass
     // skips them as live; RTA re-flags them with the weakest evidence tier.
     let direct = crate::graph::rta_lite::direct_call_reachable(graph, &production);
-    for cand in crate::graph::rta_lite::uninstantiated_overrides(
-        graph,
-        &live_prod.reachable,
-        &direct,
-    ) {
+    for cand in
+        crate::graph::rta_lite::uninstantiated_overrides(graph, &live_prod.reachable, &direct)
+    {
         let Some(f) = graph.functions.get(&cand.entity_id) else {
             continue;
         };
@@ -214,7 +217,10 @@ pub(crate) mod tests {
             params_span: ByteSpan { start: 0, end: 1 },
             body_span: ByteSpan { start: 0, end: 200 },
             decorators_span: None,
-            embedding: EmbeddingVec { vec: vec![], hash: String::new() },
+            embedding: EmbeddingVec {
+                vec: vec![],
+                hash: String::new(),
+            },
         }
     }
 
@@ -230,39 +236,61 @@ pub(crate) mod tests {
             ("app.py::d", "d"),
             ("app.py::e", "e"),
         ] {
-            g.functions.insert(id.into(), std::sync::Arc::new(func(id, name, "app.py::module")));
+            g.functions.insert(
+                id.into(),
+                std::sync::Arc::new(func(id, name, "app.py::module")),
+            );
         }
         g.functions.insert(
             "tests/test_x.py::f".into(),
             std::sync::Arc::new(func("tests/test_x.py::f", "f", "tests/test_x.py::module")),
         );
         // Module records (for test-path detection).
-        g.modules.insert("app.py::module".into(), std::sync::Arc::new(mk_module("app.py::module")));
+        g.modules.insert(
+            "app.py::module".into(),
+            std::sync::Arc::new(mk_module("app.py::module")),
+        );
         g.modules.insert(
             "tests/test_x.py::module".into(),
             std::sync::Arc::new(mk_module("tests/test_x.py::module")),
         );
 
         let edge = |g: &mut ProjectedGraph, from: &str, to: &str| {
-            g.callees_by_caller.entry(from.into()).or_default().insert(to.into());
-            g.callers_by_callee.entry(to.into()).or_default().insert(from.into());
+            g.callees_by_caller
+                .entry(from.into())
+                .or_default()
+                .insert(to.into());
+            g.callers_by_callee
+                .entry(to.into())
+                .or_default()
+                .insert(from.into());
         };
         edge(&mut g, "app.py::main", "app.py::a");
         edge(&mut g, "app.py::a", "app.py::b");
         edge(&mut g, "app.py::b", "app.py::c");
         edge(&mut g, "app.py::d", "app.py::e");
         edge(&mut g, "tests/test_x.py::f", "app.py::c");
-        g.importers.entry("app.py::module".into()).or_default().insert("x".into());
+        g.importers
+            .entry("app.py::module".into())
+            .or_default()
+            .insert("x".into());
         g
     }
 
     #[test]
     fn mains_and_dead_chains_classify_correctly() {
         let g = fixture();
-        let out = detect_dead(&g, DeadCodeOptions { include_test_only: true });
+        let out = detect_dead(
+            &g,
+            DeadCodeOptions {
+                include_test_only: true,
+            },
+        );
 
         let kind_of = |name: &str| {
-            let f = out.iter().find(|f| f.entity_id.ends_with(&format!("::{name}")));
+            let f = out
+                .iter()
+                .find(|f| f.entity_id.ends_with(&format!("::{name}")));
             (f.map(|f| f.kind), f.is_some())
         };
 
@@ -312,9 +340,12 @@ pub(crate) mod tests {
         // A route-decorated function becomes a production root even with no callers.
         let mut routed = func("api.py::index", "index", "api.py::module");
         routed.decorators = vec!["app.route(\"/\")".into()];
-        g.functions.insert("api.py::index".into(), std::sync::Arc::new(routed));
-        g.modules
-            .insert("api.py::module".into(), std::sync::Arc::new(mk_module("api.py::module")));
+        g.functions
+            .insert("api.py::index".into(), std::sync::Arc::new(routed));
+        g.modules.insert(
+            "api.py::module".into(),
+            std::sync::Arc::new(mk_module("api.py::module")),
+        );
         let eps = detect_entry_points(&g);
         assert!(eps.production.contains("app.py::main"));
         assert!(eps.production.contains("api.py::index"));
@@ -342,7 +373,8 @@ pub(crate) mod tests {
         let mut m = mk_module("bridge.rs::module");
         m.language = crate::types::Language::Rust;
         m.path = rs;
-        g.modules.insert("bridge.rs::module".into(), std::sync::Arc::new(m));
+        g.modules
+            .insert("bridge.rs::module".into(), std::sync::Arc::new(m));
         for (id, name, line) in [
             ("bridge.rs::Engine.apply", "apply", 3),
             ("bridge.rs::Engine.internal", "internal", 4),
@@ -371,12 +403,18 @@ pub(crate) mod tests {
         let mut g = fixture();
         let mut cmd = func("cli.py::serve", "serve", "cli.py::module");
         cmd.decorators = vec!["main.command()".into()];
-        g.functions.insert("cli.py::serve".into(), std::sync::Arc::new(cmd));
-        g.modules
-            .insert("cli.py::module".into(), std::sync::Arc::new(mk_module("cli.py::module")));
+        g.functions
+            .insert("cli.py::serve".into(), std::sync::Arc::new(cmd));
+        g.modules.insert(
+            "cli.py::module".into(),
+            std::sync::Arc::new(mk_module("cli.py::module")),
+        );
         // Imported module: step-4 (public API of never-imported modules)
         // cannot root it — only the decorator rule can.
-        g.importers.entry("cli.py::module".into()).or_default().insert("y".into());
+        g.importers
+            .entry("cli.py::module".into())
+            .or_default()
+            .insert("y".into());
         let eps = detect_entry_points(&g);
         assert!(eps.production.contains("cli.py::serve"));
     }
@@ -398,7 +436,10 @@ pub(crate) mod tests {
             parse_quality: ParseQuality::Clean,
             file_version: 1,
             content_hash: 0,
-            embedding: EmbeddingVec { vec: vec![], hash: String::new() },
+            embedding: EmbeddingVec {
+                vec: vec![],
+                hash: String::new(),
+            },
         }
     }
 }

@@ -84,7 +84,10 @@ fn js_multiline_strip(s: &str, pat: &Regex) -> String {
     let mut pos = 0usize;
     while pos <= s.len() {
         let at_line_start = pos == 0
-            || s[..pos].chars().next_back().is_some_and(is_js_line_terminator);
+            || s[..pos]
+                .chars()
+                .next_back()
+                .is_some_and(is_js_line_terminator);
         if at_line_start {
             if let Some(m) = pat.find(&s[pos..]) {
                 if !m.is_empty() {
@@ -208,7 +211,10 @@ mod tests {
 
     #[test]
     fn strips_hash_comment() {
-        assert_eq!(clean_comment_markers("# This is a Python comment"), "This is a Python comment");
+        assert_eq!(
+            clean_comment_markers("# This is a Python comment"),
+            "This is a Python comment"
+        );
     }
 
     #[test]
@@ -218,8 +224,14 @@ mod tests {
 
     #[test]
     fn strips_rust_doc() {
-        assert_eq!(clean_comment_markers("/// Adds two numbers."), "Adds two numbers.");
-        assert_eq!(clean_comment_markers("//! Module-level doc"), "Module-level doc");
+        assert_eq!(
+            clean_comment_markers("/// Adds two numbers."),
+            "Adds two numbers."
+        );
+        assert_eq!(
+            clean_comment_markers("//! Module-level doc"),
+            "Module-level doc"
+        );
     }
 
     #[test]
@@ -229,10 +241,7 @@ mod tests {
             clean_comment_markers("/**\r\n * Class docs.\r\n * Multi-line.\r\n */"),
             "Class docs.\rMulti-line."
         );
-        assert_eq!(
-            clean_comment_markers("// a\r\n// b"),
-            "a\r\nb"
-        );
+        assert_eq!(clean_comment_markers("// a\r\n// b"), "a\r\nb");
     }
 
     #[test]

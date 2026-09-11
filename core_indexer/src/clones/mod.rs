@@ -74,7 +74,10 @@ pub struct CloneOptions {
 
 impl Default for CloneOptions {
     fn default() -> Self {
-        Self { min_lines: 10, min_similarity: 0.8 }
+        Self {
+            min_lines: 10,
+            min_similarity: 0.8,
+        }
     }
 }
 
@@ -113,7 +116,9 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
     for (mid, m) in &graph.modules {
         // F14 follow-up: module paths are canonical root-relative ids —
         // resolve against the indexed root, not the CWD.
-        if let Ok(src) = std::fs::read_to_string(crate::graph::module_resolution::disk_path_for(&m.path.to_string_lossy())) {
+        if let Ok(src) = std::fs::read_to_string(crate::graph::module_resolution::disk_path_for(
+            &m.path.to_string_lossy(),
+        )) {
             sources.insert(mid, src);
         }
         languages.insert(mid, m.language);
@@ -141,15 +146,21 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
         if lines < options.min_lines {
             continue;
         }
-        let Some(src) = sources.get(&f.parent_module) else { continue };
-        let Some(body) = src.get(f.body_span.start..f.body_span.end) else { continue };
+        let Some(src) = sources.get(&f.parent_module) else {
+            continue;
+        };
+        let Some(body) = src.get(f.body_span.start..f.body_span.end) else {
+            continue;
+        };
         if body.trim().is_empty() {
             continue;
         }
-        let lang = languages.get(&f.parent_module).copied().unwrap_or(Language::Python);
+        let lang = languages
+            .get(&f.parent_module)
+            .copied()
+            .unwrap_or(Language::Python);
 
-        let (raw_hash, norm_hash, sig, shingle_set, struct_tree) = match memo.get(&f.content_hash)
-        {
+        let (raw_hash, norm_hash, sig, shingle_set, struct_tree) = match memo.get(&f.content_hash) {
             Some(hit) => hit.clone(),
             None => {
                 let raw = tokenize_body(body, lang, Mode::Raw);
@@ -235,7 +246,12 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
 
     let mut uf: Vec<usize> = (0..pool.len()).collect();
     fn find(uf: &mut Vec<usize>, x: usize) -> usize {
-        debug_assert!(x < uf.len(), "find: slot {} out of bounds (len {})", x, uf.len());
+        debug_assert!(
+            x < uf.len(),
+            "find: slot {} out of bounds (len {})",
+            x,
+            uf.len()
+        );
         let mut x = x;
         while uf[x] != x {
             uf[x] = uf[uf[x]];
@@ -247,8 +263,7 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
         // Union-find operates in SLOT space; fps indexes come after mapping.
         // F1 fix: bounds-checked mapping — a stale slot skips the pair
         // instead of panicking the worker thread and wedging the session.
-        let (Some(&ia), Some(&ib)) = (pool.get(a as usize), pool.get(b as usize))
-        else {
+        let (Some(&ia), Some(&ib)) = (pool.get(a as usize), pool.get(b as usize)) else {
             continue;
         };
         let sim = jaccard(&fps[ia].shingles, &fps[ib].shingles);
@@ -305,8 +320,12 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
                 let ja = jaccard(&fps[members[x]].shingles, &fps[members[y]].shingles);
                 let score = if ja >= TED_VERIFY_FLOOR {
                     match (
-                        trees.get(&fps[members[x]].entity_id).and_then(|t| (**t).as_ref()),
-                        trees.get(&fps[members[y]].entity_id).and_then(|t| (**t).as_ref()),
+                        trees
+                            .get(&fps[members[x]].entity_id)
+                            .and_then(|t| (**t).as_ref()),
+                        trees
+                            .get(&fps[members[y]].entity_id)
+                            .and_then(|t| (**t).as_ref()),
                     ) {
                         (Some(ta), Some(tb)) => apted::apted_similarity(ta, tb),
                         _ => ja,
@@ -323,10 +342,11 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
     }
 
     groups.sort_by(|a, b| {
-        b.instances
-            .len()
-            .cmp(&a.instances.len())
-            .then(b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal))
+        b.instances.len().cmp(&a.instances.len()).then(
+            b.similarity
+                .partial_cmp(&a.similarity)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
     });
     groups
 }
@@ -369,12 +389,24 @@ mod tests {
     fn normalization_makes_renames_equivalent() {
         let a = tokenize_body("def f(x):\n    return x + 1", Language::Python, Mode::Raw);
         let b = tokenize_body("def g(y):\n    return y + 2", Language::Python, Mode::Raw);
-        let na = tokenize_body("def f(x):\n    return x + 1", Language::Python, Mode::Normalized);
-        let nb = tokenize_body("def g(y):\n    return y + 2", Language::Python, Mode::Normalized);
+        let na = tokenize_body(
+            "def f(x):\n    return x + 1",
+            Language::Python,
+            Mode::Normalized,
+        );
+        let nb = tokenize_body(
+            "def g(y):\n    return y + 2",
+            Language::Python,
+            Mode::Normalized,
+        );
         assert_ne!(a, b, "raw streams keep identifier text");
         assert_eq!(na, nb, "normalized streams collapse renames");
         // Comments never participate.
-        let c = tokenize_body("def f(x):\n    # note\n    return x + 1", Language::Python, Mode::Raw);
+        let c = tokenize_body(
+            "def f(x):\n    # note\n    return x + 1",
+            Language::Python,
+            Mode::Raw,
+        );
         assert_eq!(a, c);
     }
 
@@ -414,11 +446,16 @@ mod tests {
             if extra {
                 v.insert(6, "    total = audit_extra(total)".into());
             }
-            format!("    total = 0
+            format!(
+                "    total = 0
 {}
     return finish(total)
-", v.join("
-"))
+",
+                v.join(
+                    "
+"
+                )
+            )
         };
         let src = format!(
             "def plain(x):
@@ -434,17 +471,25 @@ def extended(x):
         let mut g = crate::smells::engine::tests::empty_graph();
         let mut module = mk_module("pipes.py::module", &src_path);
         module.language = Language::Python;
-        g.modules.insert("pipes.py::module".into(), Arc::new(module));
+        g.modules
+            .insert("pipes.py::module".into(), Arc::new(module));
 
         // body_span covers the BODY ONLY (after the signature line) —
         // matching real extraction.
         let span_of = |name: &str| {
             let start = src.find(&format!("def {name}")).unwrap();
-            let colon = src[start..].find(":
-").map(|rel| start + rel + 2).unwrap();
+            let colon = src[start..]
+                .find(
+                    ":
+",
+                )
+                .map(|rel| start + rel + 2)
+                .unwrap();
             let end = src[colon..]
-                .find("
-def ")
+                .find(
+                    "
+def ",
+                )
                 .map(|rel| colon + rel)
                 .unwrap_or(src.len());
             ByteSpan { start: colon, end }
@@ -460,8 +505,13 @@ def ")
             g.functions.insert(format!("pipes.py::{name}"), Arc::new(f));
         }
 
-        let groups =
-            detect_clones(&g, CloneOptions { min_lines: 10, min_similarity: 0.8 });
+        let groups = detect_clones(
+            &g,
+            CloneOptions {
+                min_lines: 10,
+                min_similarity: 0.8,
+            },
+        );
         let t3: Vec<_> = groups
             .iter()
             .filter(|grp| grp.clone_type == CloneType::Type3)
@@ -542,7 +592,13 @@ def unrelated(q):
             g.functions.insert(format!("dup.py::{name}"), Arc::new(f));
         }
 
-        let groups = detect_clones(&g, CloneOptions { min_lines: 4, min_similarity: 0.7 });
+        let groups = detect_clones(
+            &g,
+            CloneOptions {
+                min_lines: 4,
+                min_similarity: 0.7,
+            },
+        );
 
         let type_of = |name: &str| {
             groups
@@ -565,7 +621,10 @@ def unrelated(q):
             Some(CloneType::Type2),
             "renamed body lands in a Type-2 group"
         );
-        assert!(type_of("unrelated").is_none(), "dissimilar bodies must not be grouped");
+        assert!(
+            type_of("unrelated").is_none(),
+            "dissimilar bodies must not be grouped"
+        );
     }
 
     fn func_fp(name: &str) -> Function {
@@ -598,7 +657,10 @@ def unrelated(q):
             params_span: ByteSpan { start: 0, end: 1 },
             body_span: ByteSpan { start: 0, end: 10 },
             decorators_span: None,
-            embedding: crate::types::EmbeddingVec { vec: vec![], hash: String::new() },
+            embedding: crate::types::EmbeddingVec {
+                vec: vec![],
+                hash: String::new(),
+            },
         }
     }
 
@@ -619,7 +681,10 @@ def unrelated(q):
             parse_quality: ParseQuality::Clean,
             file_version: 1,
             content_hash: 0,
-            embedding: crate::types::EmbeddingVec { vec: vec![], hash: String::new() },
+            embedding: crate::types::EmbeddingVec {
+                vec: vec![],
+                hash: String::new(),
+            },
         }
     }
 }

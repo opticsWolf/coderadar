@@ -20,20 +20,48 @@ use crate::types::{EntityId, FunctionKind, ProjectedGraph};
 /// `@app.route`, `@router.get("/x")` and bare `@get` all hit.
 pub const ENTRY_DECORATORS: &[&str] = &[
     // Web frameworks (Flask/FastAPI/Starlette/Sanic/...)
-    "app.route", "router.route", "api.route",
-    ".get(", ".post(", ".put(", ".delete(", ".patch(", ".head(", ".options(",
-    "@app.", "@router.", "@api.",
-    "route", "websocket",
+    "app.route",
+    "router.route",
+    "api.route",
+    ".get(",
+    ".post(",
+    ".put(",
+    ".delete(",
+    ".patch(",
+    ".head(",
+    ".options(",
+    "@app.",
+    "@router.",
+    "@api.",
+    "route",
+    "websocket",
     // CLIs (Click/Typer/argparse)
-    "click.command", "click.group", "typer.command", "app.command", "cli.command",
+    "click.command",
+    "click.group",
+    "typer.command",
+    "app.command",
+    "cli.command",
     // Click subcommand decorators on a local group object (`@main.command()`,
     // `@cli.group()`): the group variable is rarely named app/cli/click (F7).
-    "main.command", "main.group", ".command(", ".group(",
+    "main.command",
+    "main.group",
+    ".command(",
+    ".group(",
     // Spring / Java-ish annotations
-    "RequestMapping", "GetMapping", "PostMapping", "PutMapping", "DeleteMapping",
-    "EventListener", "Scheduled", "Async",
+    "RequestMapping",
+    "GetMapping",
+    "PostMapping",
+    "PutMapping",
+    "DeleteMapping",
+    "EventListener",
+    "Scheduled",
+    "Async",
     // Message/event handlers
-    "EventHandler", "Subscribe", "Listener", "consumer", "handler",
+    "EventHandler",
+    "Subscribe",
+    "Listener",
+    "consumer",
+    "handler",
 ];
 
 /// Decorators that mark a function as a TEST entry point: reachable, but only
@@ -126,7 +154,11 @@ pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
             && matches!(f.kind, FunctionKind::Free)
             && MAIN_NAMES.contains(&f.name.as_str())
         {
-            if in_tests { test_only.insert(id.clone()); } else { production.insert(id.clone()); }
+            if in_tests {
+                test_only.insert(id.clone());
+            } else {
+                production.insert(id.clone());
+            }
             continue;
         }
 
@@ -148,7 +180,11 @@ pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
 
         // 3. Dunder protocol methods are invoked by the runtime.
         if f.name.starts_with("__") && f.name.ends_with("__") && f.name.len() > 4 {
-            if in_tests { test_only.insert(id.clone()); } else { production.insert(id.clone()); }
+            if in_tests {
+                test_only.insert(id.clone());
+            } else {
+                production.insert(id.clone());
+            }
             continue;
         }
 
@@ -189,7 +225,10 @@ pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
         }
     }
 
-    EntryPoints { production, test_only }
+    EntryPoints {
+        production,
+        test_only,
+    }
 }
 
 fn is_ident_byte(b: u8) -> bool {

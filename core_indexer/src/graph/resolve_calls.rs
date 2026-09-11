@@ -1,6 +1,6 @@
+use super::module_resolution::{find_module_by_dotted_name, find_symbol_in_module};
 use super::CodeGraph;
 use super::ImportGraph;
-use super::module_resolution::{find_module_by_dotted_name, find_symbol_in_module};
 use crate::types::*;
 
 /// `class id → [(method name, method id)]`, in the order the projection's
@@ -46,26 +46,27 @@ impl CodeGraph {
         // for the function's own class — O(functions² × mro_depth), paid
         // independently by each resolve thread. `methods_by_class` is the same
         // grouping computed once per pass.
-        let mro_methods: std::collections::HashMap<String, String> =
-            if let Some(ref class_id) = my_parent_class {
-                let mut methods = std::collections::HashMap::new();
-                let absorb = |cid: &str, methods: &mut std::collections::HashMap<String, String>| {
-                    for (name, fid) in methods_by_class.get(cid).into_iter().flatten() {
-                        methods.entry(name.clone()).or_insert_with(|| fid.clone());
-                    }
-                };
-                if let Some(class) = projection.classes.get(class_id) {
-                    for node in &class.mro {
-                        if let MroNode::Class(ref cid) = node {
-                            absorb(cid, &mut methods);
-                        }
+        let mro_methods: std::collections::HashMap<String, String> = if let Some(ref class_id) =
+            my_parent_class
+        {
+            let mut methods = std::collections::HashMap::new();
+            let absorb = |cid: &str, methods: &mut std::collections::HashMap<String, String>| {
+                for (name, fid) in methods_by_class.get(cid).into_iter().flatten() {
+                    methods.entry(name.clone()).or_insert_with(|| fid.clone());
+                }
+            };
+            if let Some(class) = projection.classes.get(class_id) {
+                for node in &class.mro {
+                    if let MroNode::Class(ref cid) = node {
+                        absorb(cid, &mut methods);
                     }
                 }
-                absorb(class_id, &mut methods);
-                methods
-            } else {
-                std::collections::HashMap::new()
-            };
+            }
+            absorb(class_id, &mut methods);
+            methods
+        } else {
+            std::collections::HashMap::new()
+        };
 
         let resolved = orchestrator.resolve_calls(calls, func_id, import_graph);
 
@@ -73,7 +74,10 @@ impl CodeGraph {
             .into_iter()
             .map(|rc| {
                 if let crate::types::ResolvedCall::Unresolved { reason, raw } = &rc {
-                    if matches!(reason, crate::types::UnresolvedReason::TypeInferenceRequired) {
+                    if matches!(
+                        reason,
+                        crate::types::UnresolvedReason::TypeInferenceRequired
+                    ) {
                         if let Some(target_id) = mro_methods.get(&raw.name) {
                             return crate::types::ResolvedCall::Function(target_id.clone());
                         }
@@ -85,8 +89,9 @@ impl CodeGraph {
                         return crate::types::ResolvedCall::Function(target_id.clone());
                     }
                     if let Some(target_mod_id) = import_targets.get(name.as_str()) {
-                        if let Some(imported_func_id) = find_symbol_in_module(
-                            projection, target_mod_id, name) {
+                        if let Some(imported_func_id) =
+                            find_symbol_in_module(projection, target_mod_id, name)
+                        {
                             return crate::types::ResolvedCall::Function(imported_func_id);
                         }
                     }
@@ -126,7 +131,11 @@ impl CodeGraph {
     }
 
     /// Resolve calls scoped to a single file (or all if None).
-    pub(super) fn resolve_calls_scoped(&self, projection: &mut ProjectedGraph, scope_file: Option<&str>) {
+    pub(super) fn resolve_calls_scoped(
+        &self,
+        projection: &mut ProjectedGraph,
+        scope_file: Option<&str>,
+    ) {
         use crate::resolve::orchestrator::ResolutionOrchestrator;
 
         let mut orchestrator = ResolutionOrchestrator::with_config(&self.config.import_graph);
@@ -143,25 +152,32 @@ impl CodeGraph {
             .collect();
 
         // Filter to scoped file if specified
-        let calls_to_resolve: Vec<&(String, Vec<crate::types::UnresolvedRef>)> = if let Some(fp) = scope_file {
-            all_calls.iter().filter(|(fid, _)| {
-                projection.functions.get(fid.as_str())
-                    .map(|f| {
-                        // `parent_module` is "<path>::module". This compared
-                        // with `contains`, so scoping to `a.py` also swept in
-                        // `xa.py` and `a.pyi` — re-resolving their calls and
-                        // clearing their edges on an edit that missed them.
-                        let path = f.parent_module
-                            .rsplit_once("::")
-                            .map(|(p, _)| p)
-                            .unwrap_or(f.parent_module.as_str());
-                        path == fp
+        let calls_to_resolve: Vec<&(String, Vec<crate::types::UnresolvedRef>)> =
+            if let Some(fp) = scope_file {
+                all_calls
+                    .iter()
+                    .filter(|(fid, _)| {
+                        projection
+                            .functions
+                            .get(fid.as_str())
+                            .map(|f| {
+                                // `parent_module` is "<path>::module". This compared
+                                // with `contains`, so scoping to `a.py` also swept in
+                                // `xa.py` and `a.pyi` — re-resolving their calls and
+                                // clearing their edges on an edit that missed them.
+                                let path = f
+                                    .parent_module
+                                    .rsplit_once("::")
+                                    .map(|(p, _)| p)
+                                    .unwrap_or(f.parent_module.as_str());
+                                path == fp
+                            })
+                            .unwrap_or(false)
                     })
-                    .unwrap_or(false)
-            }).collect()
-        } else {
-            all_calls.iter().collect()
-        };
+                    .collect()
+            } else {
+                all_calls.iter().collect()
+            };
 
         // Early exit if no calls to resolve — avoid clearing edge maps
         let has_calls = calls_to_resolve.iter().any(|(_, calls)| !calls.is_empty());
@@ -177,9 +193,12 @@ impl CodeGraph {
         // pairs are tracked apart in `synthetic_edges`; snapshot and
         // re-assert them so only natural CALLS edges are rebuilt.
         if scope_file.is_some() {
-            let scoped: std::collections::HashSet<String> =
-                calls_to_resolve.iter().map(|(fid, _)| (*fid).clone()).collect();
-            let keep: Vec<(String, String)> = projection.synthetic_edges
+            let scoped: std::collections::HashSet<String> = calls_to_resolve
+                .iter()
+                .map(|(fid, _)| (*fid).clone())
+                .collect();
+            let keep: Vec<(String, String)> = projection
+                .synthetic_edges
                 .iter()
                 .filter(|(s, _)| scoped.contains(s))
                 .cloned()
@@ -195,16 +214,23 @@ impl CodeGraph {
                 }
             }
             for (s, t) in keep {
-                projection.callees_by_caller.entry(s.clone()).or_default().insert(t.clone());
+                projection
+                    .callees_by_caller
+                    .entry(s.clone())
+                    .or_default()
+                    .insert(t.clone());
                 projection.callers_by_callee.entry(t).or_default().insert(s);
             }
         } else {
-            let keep: Vec<(String, String)> =
-                projection.synthetic_edges.iter().cloned().collect();
+            let keep: Vec<(String, String)> = projection.synthetic_edges.iter().cloned().collect();
             projection.callers_by_callee.clear();
             projection.callees_by_caller.clear();
             for (s, t) in keep {
-                projection.callees_by_caller.entry(s.clone()).or_default().insert(t.clone());
+                projection
+                    .callees_by_caller
+                    .entry(s.clone())
+                    .or_default()
+                    .insert(t.clone());
                 projection.callers_by_callee.entry(t).or_default().insert(s);
             }
         }
@@ -215,10 +241,14 @@ impl CodeGraph {
         // (codegraph-kernel/src/python.rs): same-file lookups built once
         // during the walk and reused. MIT license.
         // https://github.com/opticsWolf/codegraph
-        let mut by_module: std::collections::HashMap<EntityId, Vec<(&String, &Vec<crate::types::UnresolvedRef>)>> =
-            std::collections::HashMap::new();
+        let mut by_module: std::collections::HashMap<
+            EntityId,
+            Vec<(&String, &Vec<crate::types::UnresolvedRef>)>,
+        > = std::collections::HashMap::new();
         for entry in &calls_to_resolve {
-            let pm = projection.functions.get(entry.0.as_str())
+            let pm = projection
+                .functions
+                .get(entry.0.as_str())
                 .map(|f| f.parent_module.clone())
                 .unwrap_or_default();
             by_module.entry(pm).or_default().push((&entry.0, &entry.1));
@@ -228,8 +258,10 @@ impl CodeGraph {
         // per module (siblings) and once per MRO node per function (methods).
         // Both were O(F) inside an O(F) loop; this is the grouping they were
         // recomputing.
-        let mut siblings_by_module: std::collections::HashMap<EntityId, std::collections::HashMap<String, String>> =
-            std::collections::HashMap::new();
+        let mut siblings_by_module: std::collections::HashMap<
+            EntityId,
+            std::collections::HashMap<String, String>,
+        > = std::collections::HashMap::new();
         let mut methods_by_class: MethodsByClass = std::collections::HashMap::new();
         for (id, f) in projection.functions.iter() {
             // `insert`, not `or_insert`: the scan this replaces collected into
@@ -245,8 +277,13 @@ impl CodeGraph {
                     .push((f.name.clone(), id.clone()));
             }
         }
-        let siblings_by_module: std::collections::HashMap<EntityId, std::sync::Arc<std::collections::HashMap<String, String>>> =
-            siblings_by_module.into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect();
+        let siblings_by_module: std::collections::HashMap<
+            EntityId,
+            std::sync::Arc<std::collections::HashMap<String, String>>,
+        > = siblings_by_module
+            .into_iter()
+            .map(|(k, v)| (k, std::sync::Arc::new(v)))
+            .collect();
 
         // Phase A: Build per-module lookups and collect work items.
         // Use Arc<HashMap> so per-function work items share the module lookups
@@ -270,32 +307,38 @@ impl CodeGraph {
                 for import_id in &module.imports {
                     if let Some(import) = projection.imports.get(import_id) {
                         match &import.kind {
-                            crate::types::ImportKind::FromImport { module: src_mod, names } => {
-                                let target_mod_id = find_module_by_dotted_name(
-                                    projection, src_mod, parent_module);
+                            crate::types::ImportKind::FromImport {
+                                module: src_mod,
+                                names,
+                            } => {
+                                let target_mod_id =
+                                    find_module_by_dotted_name(projection, src_mod, parent_module);
                                 for (name, _alias) in names {
                                     if let Some(ref tgt_id) = target_mod_id {
                                         import_targets_map.insert(name.clone(), tgt_id.clone());
                                     }
                                 }
                             }
-                            crate::types::ImportKind::ModuleImport { module: src_mod, alias: _ } => {
-                                if let Some(tgt_id) = find_module_by_dotted_name(
-                                    projection, src_mod, parent_module)
+                            crate::types::ImportKind::ModuleImport {
+                                module: src_mod,
+                                alias: _,
+                            } => {
+                                if let Some(tgt_id) =
+                                    find_module_by_dotted_name(projection, src_mod, parent_module)
                                 {
                                     let short_name = src_mod.rsplit('.').next().unwrap_or(src_mod);
                                     import_targets_map.insert(short_name.to_string(), tgt_id);
                                 }
                             }
                             crate::types::ImportKind::StarImport { module: src_mod } => {
-                                if let Some(tgt_id) = find_module_by_dotted_name(
-                                    projection, src_mod, parent_module)
+                                if let Some(tgt_id) =
+                                    find_module_by_dotted_name(projection, src_mod, parent_module)
                                 {
                                     if let Some(tgt_module) = projection.modules.get(&tgt_id) {
                                         if let Some(ref exports) = tgt_module.star_exports {
                                             for name in exports {
-                                                import_targets_map.insert(
-                                                    name.clone(), tgt_id.clone());
+                                                import_targets_map
+                                                    .insert(name.clone(), tgt_id.clone());
                                             }
                                         }
                                     }
@@ -313,7 +356,7 @@ impl CodeGraph {
                 all_work.push((
                     (*func_id).clone(),
                     (*calls).clone(),
-                    lookups.clone(),  // Arc clone (reference count only)
+                    lookups.clone(), // Arc clone (reference count only)
                 ));
             }
         }
@@ -321,7 +364,11 @@ impl CodeGraph {
         // Phase B: Resolve calls (parallel if enough work, else sequential).
         // Threads read from projection (immutable); writes are collected
         // and applied in Phase C.
-        type ResolveResult = (String, Vec<crate::types::ResolvedCall>, Vec<(String, String)>);
+        type ResolveResult = (
+            String,
+            Vec<crate::types::ResolvedCall>,
+            Vec<(String, String)>,
+        );
         let results: Vec<ResolveResult>;
 
         if all_work.len() > 50 {
@@ -334,7 +381,7 @@ impl CodeGraph {
                 .unwrap_or(2);
             let chunk_size = (all_work.len() + num_threads - 1) / num_threads;
             let results_mutex = std::sync::Mutex::new(Vec::<ResolveResult>::new());
-            let projection_ro: &ProjectedGraph = projection;  // shared borrow
+            let projection_ro: &ProjectedGraph = projection; // shared borrow
             let methods_ref: &MethodsByClass = &methods_by_class;
 
             let import_cfg: &crate::graph::ImportGraphConfig = &self.config.import_graph;
@@ -342,19 +389,25 @@ impl CodeGraph {
             std::thread::scope(|s| {
                 let results_ref = &results_mutex;
                 for chunk in all_work.chunks(chunk_size) {
-                    let chunk_owned: Vec<WorkItem> = chunk.iter().map(|(fid, c, lkp)| {
-                        (fid.clone(), c.clone(), lkp.clone())
-                    }).collect();
+                    let chunk_owned: Vec<WorkItem> = chunk
+                        .iter()
+                        .map(|(fid, c, lkp)| (fid.clone(), c.clone(), lkp.clone()))
+                        .collect();
                     let import_graph = import_graph_ref;
                     s.spawn(move || {
                         let mut local = Vec::new();
                         let mut orch = ResolutionOrchestrator::with_config(import_cfg);
                         for (fid, calls, lkp) in &chunk_owned {
                             let (rc, ep) = Self::resolve_one_function(
-                                fid, calls,
-                                &lkp.0, &lkp.1, methods_ref,
-                                projection_ro, import_graph,
-                                &mut orch);
+                                fid,
+                                calls,
+                                &lkp.0,
+                                &lkp.1,
+                                methods_ref,
+                                projection_ro,
+                                import_graph,
+                                &mut orch,
+                            );
                             local.push((fid.clone(), rc, ep));
                         }
                         results_ref.lock().unwrap().extend(local);
@@ -368,10 +421,15 @@ impl CodeGraph {
             let mut results_vec = Vec::new();
             for (fid, calls, lkp) in &all_work {
                 let (rc, ep) = Self::resolve_one_function(
-                    fid, calls,
-                    &lkp.0, &lkp.1, &methods_by_class,
-                    projection, import_graph_ref,
-                    &mut orchestrator);
+                    fid,
+                    calls,
+                    &lkp.0,
+                    &lkp.1,
+                    &methods_by_class,
+                    projection,
+                    import_graph_ref,
+                    &mut orchestrator,
+                );
                 results_vec.push((fid.clone(), rc, ep));
             }
             results = results_vec;
@@ -383,7 +441,9 @@ impl CodeGraph {
                 if func_arc.resolved_calls != *resolved {
                     let mut updated = (**func_arc).clone();
                     updated.resolved_calls = resolved.clone();
-                    projection.functions.insert(func_id.clone(), std::sync::Arc::new(updated));
+                    projection
+                        .functions
+                        .insert(func_id.clone(), std::sync::Arc::new(updated));
                 }
             }
 

@@ -46,10 +46,7 @@ impl CodeGraph {
     }
 
     /// Persist call edges from the projection to the Macrame store.
-    pub fn persist_edges(
-        &self,
-        projection: &ProjectedGraph,
-    ) -> Result<usize, macrame::DbError> {
+    pub fn persist_edges(&self, projection: &ProjectedGraph) -> Result<usize, macrame::DbError> {
         self.persist_edges_scoped(projection, None)
     }
 
@@ -287,18 +284,21 @@ impl CodeGraph {
         }
         let mut projection = (*self.snapshot()).clone();
         for (source_id, target_id, _kind) in &edges {
-            projection.callees_by_caller
+            projection
+                .callees_by_caller
                 .entry(source_id.clone())
                 .or_default()
                 .insert(target_id.clone());
-            projection.callers_by_callee
+            projection
+                .callers_by_callee
                 .entry(target_id.clone())
                 .or_default()
                 .insert(source_id.clone());
             // Issue 8: track synthetic pairs apart from natural CALLS so
             // scoped re-resolution preserves them instead of clearing.
-            projection.synthetic_edges.insert(
-                (source_id.clone(), target_id.clone()));
+            projection
+                .synthetic_edges
+                .insert((source_id.clone(), target_id.clone()));
         }
         self.commit_projection(projection);
 
@@ -339,9 +339,12 @@ impl CodeGraph {
                 })
                 .map(|(source_id, target_id, kind)| {
                     macrame::graph::EdgeAssertion::new(
-                        source_id.as_str(), target_id.as_str(), kind.as_str())
-                        .valid_from(ts_now.as_str())
-                        .weight(1.0)
+                        source_id.as_str(),
+                        target_id.as_str(),
+                        kind.as_str(),
+                    )
+                    .valid_from(ts_now.as_str())
+                    .weight(1.0)
                 })
                 .collect();
             if !batch.is_empty() {

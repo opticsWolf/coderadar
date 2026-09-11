@@ -109,7 +109,11 @@ mod tests {
         let mut g = crate::smells::engine::tests::empty_graph();
         let names: Vec<String> = (0..5)
             .map(|i| format!("m.py::leaf_{i}"))
-            .chain(["m.py::core".into(), "m.py::util".into(), "m.py::loner".into()])
+            .chain([
+                "m.py::core".into(),
+                "m.py::util".into(),
+                "m.py::loner".into(),
+            ])
             .collect();
         for name in &names {
             g.functions.insert(name.clone(), Arc::new(func(name)));
