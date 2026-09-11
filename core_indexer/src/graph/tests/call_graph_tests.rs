@@ -106,3 +106,71 @@ fn new_expression_calls_are_extracted_per_language() {
         );
     }
 }
+
+#[test]
+fn reexport_chain_resolves_to_defining_module() {
+    // Issue 9: `from app import combine` (re-exported via app/__init__
+    // from .helpers) resolved to external::combine on every leg. FromImport
+    // chains are followed transitively now.
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(&graph, "from .helpers import combine\n", "app/__init__.py");
+    index_source(
+        &graph,
+        "def combine(items):\n    return items\n",
+        "app/helpers.py",
+    );
+    index_source(
+        &graph,
+        "from app import combine\ndef run(items):\n    return combine(items)\n",
+        "main.py",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    graph.resolve_imports(&mut projection);
+    graph.resolve_all_calls(&mut projection);
+    let run = fn_id_of(&projection, "run");
+    let callees = projection
+        .callees_by_caller
+        .get(&run)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        callees
+            .iter()
+            .any(|c| c.contains("helpers") && c.ends_with("::combine")),
+        "run -> combine must resolve through the re-export, got {callees:?}"
+    );
+    assert!(
+        !callees.iter().any(|c| c == "external::combine"),
+        "no external fallback should remain, got {callees:?}"
+    );
+}
+
+#[test]
+fn reexport_cycle_terminates() {
+    // Issue 9 guard: A re-exports x from B, B re-exports x from A, no
+    // definition anywhere -- resolution must terminate (with no answer),
+    // not recurse forever.
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(&graph, "from mod_b import x\n", "mod_a.py");
+    index_source(&graph, "from mod_a import x\n", "mod_b.py");
+    index_source(
+        &graph,
+        "from mod_a import x\ndef run():\n    return x()\n",
+        "main.py",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    graph.resolve_imports(&mut projection);
+    graph.resolve_all_calls(&mut projection);
+    let run = fn_id_of(&projection, "run");
+    let callees = projection
+        .callees_by_caller
+        .get(&run)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !callees
+            .iter()
+            .any(|c| c.contains("mod_a") || c.contains("mod_b")),
+        "cyclic re-export with no definition resolves nowhere, got {callees:?}"
+    );
+}

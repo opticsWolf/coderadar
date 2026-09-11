@@ -19,7 +19,7 @@ from __future__ import annotations
 #: installed wheel/sdist reports its own version) and falls back to the
 #: release constant below, which MUST be kept in sync with pyproject.toml
 #: and Cargo.toml [workspace.package] on every bump.
-_FALLBACK_VERSION = "0.8.20"
+_FALLBACK_VERSION = "0.8.21"
 
 
 def _resolve_version() -> str:
@@ -52,6 +52,32 @@ __version__ = _resolve_version()
 import json
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Literal, Optional, Union
+
+# R2-13: structlog with no configuration logs to stdout at DEBUG, so every
+# logger.debug/info call in the package (macrame.traverse, lsp lines, ...)
+# polluted piped output. Route logs to stderr, default WARNING level;
+# CODERADAR_DEBUG=1 restores DEBUG. Configured here so every entry path
+# (CLI, MCP server, library, background) inherits it.
+try:
+    import logging as _logging
+    import os as _os
+    import sys as _sys
+    import structlog as _structlog
+    _structlog.configure(
+        wrapper_class=_structlog.make_filtering_bound_logger(
+            _logging.DEBUG
+            if _os.environ.get("CODERADAR_DEBUG")
+            else _logging.WARNING
+        ),
+        processors=[
+            _structlog.processors.add_log_level,
+            _structlog.processors.TimeStamper(fmt="iso", utc=True),
+            _structlog.dev.ConsoleRenderer(colors=False),
+        ],
+        logger_factory=_structlog.PrintLoggerFactory(file=_sys.stderr),
+    )
+except ImportError:
+    pass
 
 # The caller/callee indexes the facade walks carry exactly one kind of
 # edge. Named so explore() can answer honestly when asked for another.

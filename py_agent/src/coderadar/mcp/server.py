@@ -1894,6 +1894,15 @@ def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
     if not timestamp:
         return "Please provide an ISO 8601 timestamp (e.g. '2025-01-15T10:00:00Z')."
 
+    # R2-10: garbage used to sail through into a snapshot template that
+    # echoed it back with no complaint (only "" was validated).
+    try:
+        from datetime import datetime
+        datetime.fromisoformat(timestamp)
+    except ValueError:
+        return (f"Invalid timestamp {timestamp!r}: expected ISO 8601 "
+                f"(e.g. '2025-01-15T10:00:00Z').")
+
     try:
         snapshot = graph.as_of(timestamp)
     except Exception as e:

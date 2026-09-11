@@ -222,25 +222,137 @@ pub(crate) fn find_module_by_dotted_name(
 }
 
 /// Find a symbol (function or class) with a given name within a specific module.
+///
+/// Direct definitions win; otherwise (Issue 9) the module's own `from`
+/// imports are followed transitively: `from app import combine` lands in
+/// `app/__init__`, which defines nothing but re-exports
+/// `from .helpers import combine` -- the answer is `helpers::combine`, not
+/// `external::combine`. Later imports shadow earlier ones (source order),
+/// and a `visited` set of module ids stops A-re-exports-B-re-exports-A
+/// cycles (a cycle with no definition resolves to nothing, correctly).
+/// Star re-exports (`from x import *`, `Wildcard` resolutions) are followed
+/// the same way when the name is exposed.
 pub(super) fn find_symbol_in_module(
     projection: &ProjectedGraph,
     module_id: &str,
     symbol_name: &str,
 ) -> Option<String> {
-    if let Some(module) = projection.modules.get(module_id) {
-        // Search functions
-        for func_id in &module.functions {
-            if let Some(func) = projection.functions.get(func_id) {
-                if func.name == symbol_name {
-                    return Some(func.id.clone());
-                }
+    let mut visited = std::collections::BTreeSet::new();
+    find_symbol_in_module_guarded(projection, module_id, symbol_name, &mut visited)
+}
+
+fn find_symbol_in_module_guarded(
+    projection: &ProjectedGraph,
+    module_id: &str,
+    symbol_name: &str,
+    visited: &mut std::collections::BTreeSet<EntityId>,
+) -> Option<String> {
+    if !visited.insert(module_id.to_string()) {
+        return None;
+    }
+    let module = projection.modules.get(module_id)?;
+    // 1. Direct definitions (unchanged precedence).
+    for func_id in &module.functions {
+        if let Some(func) = projection.functions.get(func_id) {
+            if func.name == symbol_name {
+                return Some(func.id.clone());
             }
         }
-        // Search classes
-        for class_id in &module.classes {
-            if let Some(class) = projection.classes.get(class_id) {
-                if class.name == symbol_name {
-                    return Some(class.id.clone());
+    }
+    for class_id in &module.classes {
+        if let Some(class) = projection.classes.get(class_id) {
+            if class.name == symbol_name {
+                return Some(class.id.clone());
+            }
+        }
+    }
+    // 2. Re-export chain: `from X import <symbol> [as <alias>]`.
+    // Later imports shadow earlier ones, so walk in reverse source order.
+    for import_id in module.imports.iter().rev() {
+        let import = match projection.imports.get(import_id) {
+            Some(i) => i,
+            None => continue,
+        };
+        // Which name does this import look up, and does it bind our symbol?
+        // StarImport binds every name (checked against Wildcard exposure).
+        enum Binding<'a> {
+            Named(&'a str),
+            Star,
+        }
+        let binding: Binding = match &import.kind {
+            ImportKind::FromImport { names, .. } | ImportKind::RelativeImport { names, .. } => {
+                match names.iter().find(|(n, a)| {
+                    a.as_deref() == Some(symbol_name) || (a.is_none() && n == symbol_name)
+                }) {
+                    Some((original, _)) => Binding::Named(original.as_str()),
+                    None => continue,
+                }
+            }
+            ImportKind::StarImport { .. } => Binding::Star,
+            _ => continue,
+        };
+        match &import.resolution {
+            // Already resolved to a concrete callable: direct hit.
+            ImportResolution::Symbol(SymbolId::Function(id))
+            | ImportResolution::Symbol(SymbolId::Class(id)) => {
+                return Some(id.clone());
+            }
+            // Bound to a MODULE (`from . import sibling`): a bare call
+            // would be a TypeError at runtime, and an earlier shadowed
+            // definition must NOT be resurrected -- stop, don't continue.
+            ImportResolution::Symbol(SymbolId::Module(_)) => {
+                return None;
+            }
+            ImportResolution::Module(source_mod) => {
+                let want = match binding {
+                    Binding::Named(original) => original,
+                    // `from x import *` where x resolved only as a module:
+                    // the name must be defined there (checked by recursion).
+                    Binding::Star => symbol_name,
+                };
+                if let Some(hit) =
+                    find_symbol_in_module_guarded(projection, source_mod, want, visited)
+                {
+                    return Some(hit);
+                }
+            }
+            ImportResolution::Wildcard { module, exposed } => {
+                let ok = match binding {
+                    Binding::Named(_) => true,
+                    Binding::Star => exposed.iter().any(|e| e == symbol_name),
+                };
+                if ok {
+                    if let Some(hit) =
+                        find_symbol_in_module_guarded(projection, module, symbol_name, visited)
+                    {
+                        return Some(hit);
+                    }
+                }
+            }
+            // Unresolved / External / Dynamic / Symbol(Import): fall back
+            // to the dotted source name, then try the next import.
+            _ => {
+                let src_dotted: Option<&str> = match &import.kind {
+                    ImportKind::FromImport { module, .. } | ImportKind::StarImport { module } => {
+                        Some(module.as_str())
+                    }
+                    ImportKind::RelativeImport { module, .. } => module.as_deref(),
+                    _ => None,
+                };
+                if let Some(dotted) = src_dotted {
+                    if let Some(source_mod) =
+                        find_module_by_dotted_name(projection, dotted, module_id)
+                    {
+                        let want = match binding {
+                            Binding::Named(original) => original,
+                            Binding::Star => symbol_name,
+                        };
+                        if let Some(hit) =
+                            find_symbol_in_module_guarded(projection, &source_mod, want, visited)
+                        {
+                            return Some(hit);
+                        }
+                    }
                 }
             }
         }

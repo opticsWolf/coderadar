@@ -192,6 +192,7 @@ flag); never truncate the `name`/`id` columns below usefulness; consider
 a `--format json|tsv` machine mode (agents are the primary readers).
 Battery anchor: `cli/query-basic`.
 DONE v0.8.20: identity columns `no_wrap`, everything else folds, pipes
+DONE v0.8.20: identity columns `no_wrap`, everything else folds, pipes
 render at width 250 (a pipe has no width; tty keeps auto-detect), plus
 `query --format json` (soft-wrapped, parse-verified). Enabling it
 required a slice of R2-13: `_ensure_graph` diagnostics (cold-start note,
@@ -203,25 +204,56 @@ Rust `[debug]` lines remain for the v0.8.21 P3 batch.
 - **R2-9** `traverse --edges bogus_kind` → silent "No results", rc 0.
   Validate edge kinds (calls/imports/extends/overrides + aliases) and error
   like query-syntax does. Anchor: `cli/traverse-bad-edge-kind-errors`.
+  DONE v0.8.21: pure `validate_edge_kinds` in the core binding (both
+  `traverse` legs) + CLI `Traversal error: …` exit 1.
 - **R2-10** `codegraph_as_of` with garbage timestamp echoes it into a
   snapshot template with no validation (empty string IS validated — only
   garbage slips). Validate ISO-8601 at the boundary. Anchor:
   `mcp/as-of-bad-ts-signals`.
+  DONE v0.8.21: `datetime.fromisoformat` gate in `_as_of` returns
+  `Invalid timestamp … expected ISO 8601`.
 - **R2-11** shell `traverse`/`callers` print nothing on empty results —
   looks hung. Print the same honest "No …" lines the CLI uses.
+  DONE v0.8.21: shell prints `No results` (query/traverse) and
+  `No callers found for <id>` (callers).
 - **R2-12** `diagnose --unresolved` shows counts per function but not WHICH
   targets (`run: 1` — which one?). List the target names.
+  DONE v0.8.21: new `unresolved_targets` core binding (same
+  Unresolved+External-not-Builtin population, dotted member spellings)
+  and `diagnose --unresolved` lists names per function — attributing each
+  function's OWN targets (the old neighborhood-count listed callers for
+  their callees' gaps).
 - **R2-13** `[debug] macrame.traverse …` log lines pollute CLI/shell stdout
   (breaks piping/parsing). Logs → stderr, or gate debug behind a flag.
+  DONE v0.8.21: structlog configured once in `coderadar/__init__.py` —
+  stderr sink, WARNING default, `CODERADAR_DEBUG=1` restores DEBUG.
+  Every entry path (CLI, MCP, library, background) inherits it.
 - **R2-14** `visualize --format bogus` silently ignored (renders as if
   valid). Error listing supported formats. Anchor:
   `cli/visualize-bad-format-errors` (now with correct VIZ_TYPE).
+  DONE v0.8.21: CLI rejects anything but mermaid/graphviz/dot with
+  `Unknown format: … (supported: …)` exit 1.
 
 ## 4. Carryover (still open from round 1)
 
 - **Issue 9** (re-export resolution): `from app import combine` via
   `__init__` re-export still resolves `external::` on all legs. Follow
   `FromImport` chains transitively with a cycle guard (R1§9 Issue 9).
+  DONE v0.8.21: `find_symbol_in_module` follows `FromImport`/`Relative`/
+  star re-export chains transitively (direct definitions win, later
+  imports shadow earlier, `visited` set stops A↔B cycles, module-bound
+  names stop without resurrecting shadows). `run → helpers::combine` on
+  every leg; two regression tests (chain resolves, cycle terminates).
+- **R2-17** (new, v0.9.0 carryover — rename through re-export chains):
+  found while closing Issue 9. `rename helpers::combine → combine_r2`
+  rewrites the definition and the call site but NOT the import bindings
+  (`from app import combine` in main.py, `from .helpers import combine`
+  in `__init__`), leaving a broken tree; rename-back then cannot restore
+  the call site (it no longer resolves to the entity). Full fix = rewrite
+  import bindings along the re-export chain on rename. Repro: battery
+  `mcp/rename-real` + `mcp/rename-back` round-trip on the r2proj chain;
+  the harness now snapshots/restores the fixture and re-analyzes, with a
+  `mcp/fixture-restored-after-rename` guard.
 - **R1§6-13** (partial): exclusion-system follow-ups not yet covered by
   R2-7 — e.g. `exclude stats` stack output, watcher respect for excludes.
 - **R1§6-14/15/17**: placeholder-scan stats follow-ups, heartbeat tuning
@@ -301,3 +333,22 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   works, `--new` HEAD default honored, unknown revs error); query tables
   never crop piped output (wide pipe console, no-wrap ids) +
   `--format json`, with CLI diagnostics moved to stderr.
+- **v0.8.21 — R2-9…R2-14 + Issue 9 DONE.** Edge-kind validation
+  (`validate_edge_kinds`, both traverse legs, CLI exit 1); as-of
+  ISO-8601 gate; shell empty-result lines; `unresolved_targets` binding +
+  per-function target names in `diagnose --unresolved` (own-target
+  attribution, not neighborhood counts); structlog→stderr /
+  WARNING-by-default (`CODERADAR_DEBUG=1` restores DEBUG);
+  visualize-format rejection; transitive `FromImport` re-export chains
+  with cycle guard (`run → helpers::combine` everywhere, 2 regression
+  tests). Battery 114/118 → **119/119**: the three red anchors flipped,
+  but closing Issue 9 exposed two harness truths, both fixed in-harness —
+  (a) the rename round-trip is lossy through re-export chains (filed as
+  R2-17: import bindings are not rewritten, so rename-back cannot restore
+  the call site; the battery now snapshots/restores the fixture +
+  re-analyzes with a `fixture-restored-after-rename` guard), and
+  (b) the C4 synthetic pair (RUN, COMB) union-collided with the newly-real
+  CALL of the same pair, costing the parity probe its +1 — C4 now
+  registers the novel (COMB, RUN) pair; the R2-1 `external-callee-visible`
+  anchor repointed from `run` (no external callees left, correctly) to
+  `makeStore → external::Store`. 359 Rust + 746 Python green.

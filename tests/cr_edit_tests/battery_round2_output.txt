@@ -18,9 +18,7 @@
 [PASS] cli/traverse-in
 [PASS] cli/traverse-both
 [PASS] cli/traverse-edges-calls
-[FAIL] cli/traverse-bad-edge-kind-errors — 2026-09-11 20:03:44 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
-                         Traversal from .\main.py::run                         
-+--------------------
+[PASS] cli/traverse-bad-edge-kind-errors
 [PASS] cli/traverse-bad-id
 [PASS] cli/callers
 [PASS] cli/callees
@@ -49,10 +47,7 @@
 [PASS] cli/git-diff-bad-oid-errors
 [PASS] cli/visualize-call-graph
 [PASS] cli/visualize-slash-id-works
-[FAIL] cli/visualize-bad-format-errors — flowchart TD
-    n___main_py__run --> n_external__combine
-Cold start: graph restored from the Macrame store.
-
+[PASS] cli/visualize-bad-format-errors
 [PASS] cli/shell-help-stats-exit
 [PASS] cli/shell-query
 [PASS] cli/watch-reacts
@@ -89,11 +84,7 @@ Cold start: graph restored from the Macrame store.
 [PASS] mcp/find-scaffolding
 [PASS] mcp/as-of-now
 [PASS] mcp/as-of-bad-ts
-[FAIL] mcp/as-of-bad-ts-signals — ## Snapshot at `not-a-timestamp`
-
-Pass `symbols` to look entities up as they were at this timestamp — for example codegraph_as_of(timestamp="not-a-timestamp", symbols=["User"]).
-
-Only symbol lookup is
+[PASS] mcp/as-of-bad-ts-signals
 [PASS] mcp/compute-embeddings
 [PASS] mcp/search-similar
 [PASS] mcp/update-file-noop
@@ -110,12 +101,13 @@ Only symbol lookup is
 [PASS] mcp/rename-real
 [PASS] mcp/rename-real-applied
 [PASS] mcp/rename-back
+[PASS] mcp/fixture-restored-after-rename
 [PASS] mcp/set-project-bad-path
 [PASS] mcp/set-project-bad-path-signals
 [PASS] surface/callers-canonical
 [PASS] surface/run-callees-include-combine-or-external
 [PASS] surface/external-callee-visible
-[FAIL] surface/issue9-reexport-resolves — ['combine']
+[PASS] surface/issue9-reexport-resolves
 [PASS] surface/star-export-fn-indexed
 [PASS] surface/heartbeat-knob
 [PASS] surface/synthetic-survives-update
@@ -128,18 +120,5 @@ Only symbol lookup is
 
 ======================================================================
 SUMMARY
-114/118 passed
-  FAIL cli/traverse-bad-edge-kind-errors — 2026-09-11 20:03:44 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
-                         Traversal from .\main.py::run                         
-+--------------------
-  FAIL cli/visualize-bad-format-errors — flowchart TD
-    n___main_py__run --> n_external__combine
-Cold start: graph restored from the Macrame store.
-
-  FAIL mcp/as-of-bad-ts-signals — ## Snapshot at `not-a-timestamp`
-
-Pass `symbols` to look entities up as they were at this timestamp — for example codegraph_as_of(timestamp="not-a-timestamp", symbols=["User"]).
-
-Only symbol lookup is
-  FAIL surface/issue9-reexport-resolves — ['combine']
+119/119 passed
 FAIL-LIST-END

@@ -53,6 +53,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(callees_of, m)?)?;
     m.add_function(wrap_pyfunction!(traverse, m)?)?;
     m.add_function(wrap_pyfunction!(traverse_unresolved, m)?)?;
+    m.add_function(wrap_pyfunction!(unresolved_targets, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entity, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -2224,6 +2225,20 @@ fn callees_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
 /// nowhere and return only the start node.
 const ALL_EDGE_KINDS: [&str; 4] = ["calls", "extends", "imports", "overrides"];
 
+/// R2-9: reject unknown edge kinds with a naming-names error instead of
+/// walking nowhere and reporting "No results". Pure; unit-tested below.
+fn validate_edge_kinds(kinds: &[String]) -> Result<(), String> {
+    for k in kinds {
+        if !ALL_EDGE_KINDS.contains(&k.as_str()) {
+            return Err(format!(
+                "Unknown edge kind `{k}` (expected calls, imports, extends, \
+                 overrides; `inherits` is an alias for `extends`)"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Lower-case, dedupe, alias `inherits` → `extends`, and read empty as all.
 fn normalize_edge_kinds(edge_kinds: &[String]) -> Vec<String> {
     let mut v: Vec<String> = edge_kinds
@@ -2270,6 +2285,12 @@ fn traverse(
 
     // ── Normalize + dedupe edge kinds (`inherits` → `extends`) ──────
     let kinds: Vec<String> = normalize_edge_kinds(&edge_kinds);
+
+    // R2-9: unknown kinds error here (both legs) instead of yielding an
+    // indistinguishable "No results".
+    if let Err(msg) = validate_edge_kinds(&kinds) {
+        return Err(pyo3::exceptions::PyValueError::new_err(msg));
+    }
 
     // R2-16: the start id may arrive in any spelling; canonicalize before
     // the existence gate AND the Macrame leg (the ledger holds canonical
@@ -2415,6 +2436,18 @@ fn subgraph_bfs(
 /// Count unresolved outgoing targets across the traversal from `start_id`.
 /// Mirrors `traverse` (same BFS, direction/kinds normalization) but returns
 /// the number of targets the walk could NOT follow — surfaces silent
+/// Names behind the `traverse_unresolved` count (R2-12): the unresolved
+/// call-target spellings for one function, so `diagnose --unresolved`
+/// shows WHICH targets the graph cannot follow.
+#[pyfunction]
+fn unresolved_targets(entity_id: &str) -> PyResult<Vec<String>> {
+    with_graph(|_graph, snap| {
+        Ok(crate::graph::CodeGraph::list_unresolved_targets(
+            snap, entity_id,
+        ))
+    })
+}
+
 /// truncation (plan 2.3) without changing the `traverse` contract.
 #[pyfunction]
 #[pyo3(signature = (start_id, max_depth, edge_kinds, direction))]
@@ -3436,6 +3469,17 @@ mod tests {
     use crate::types::{
         ByteSpan, FunctionKind, FunctionMetrics, Parameter, ParseQuality, SourceType,
     };
+
+    #[test]
+    fn validate_edge_kinds_rejects_unknowns() {
+        // R2-9: pure validation matrix (no interpreter needed).
+        assert!(validate_edge_kinds(&[]).is_ok());
+        assert!(validate_edge_kinds(&["calls".to_string()]).is_ok());
+        let err = validate_edge_kinds(&["bogus_edge_kind".to_string()])
+            .expect_err("unknown kind must fail");
+        assert!(err.contains("bogus_edge_kind"), "names the kind: {err}");
+        assert!(err.contains("calls"), "lists supported kinds: {err}");
+    }
 
     #[test]
     fn canonical_lookup_id_matrix() {

@@ -107,6 +107,33 @@ impl CodeGraph {
         out
     }
 
+    /// Names of the outgoing call targets the traversal cannot follow for
+    /// a function (R2-12): the same `Unresolved` + `External` (not `Builtin`)
+    /// population `count_unresolved_targets` counts, spelled out so
+    /// `diagnose --unresolved` can show WHICH targets, not just how many.
+    /// Dotted for member calls (`recv.method`).
+    pub(crate) fn list_unresolved_targets(snap: &ProjectedGraph, id: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(f) = snap.functions.get(id) {
+            for rc in f.resolved_calls.iter() {
+                match rc {
+                    crate::types::ResolvedCall::External(name) => out.push(name.clone()),
+                    crate::types::ResolvedCall::Unresolved { raw, .. } => {
+                        if raw.path.is_empty() {
+                            out.push(raw.name.clone());
+                        } else {
+                            out.push(format!("{}.{}", raw.path.join("."), raw.name));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Count outgoing targets that the traversal cannot follow for a node
     /// (downstream only — the reverse/upstream indexes are complete).
     /// Counts genuine resolution failures (`Unresolved`) and non-local

@@ -385,12 +385,41 @@ out = tcall(SEC, "replace-body-bad-id", mcp._replace_body, graph, "no/such.py::m
 check(SEC, "replace-body-bad-id-signals", out is not None and ("not found" in str(out).lower() or "unknown" in str(out).lower() or "error" in str(out).lower() or "fail" in str(out).lower() or "no " in str(out).lower()), str(out)[:200])
 out = tcall(SEC, "rename-outside-root", mcp._rename, graph, COMB_ID, "x", True)
 check(SEC, "rename-validates", out is not None, str(out)[:150])
+# Snapshot the fixture sources: rename-real is lossy through re-export
+# chains (R2-17 — the import binding `from app import combine` is not
+# rewritten, so rename-back cannot restore the call site). Restore +
+# re-analyze afterwards so section C probes a clean tree.
+_r2_snap = {}
+for _dp, _dn, _fn in os.walk(FIX):
+    for _f in _fn:
+        _p = os.path.join(_dp, _f)
+        _rel = os.path.relpath(_p, FIX)
+        if _rel.split(os.sep)[0] in (".git", ".coderadar") or _f == "store.db":
+            continue
+        try:
+            with open(_p, "rb") as _fh:
+                _r2_snap[_rel] = _fh.read()
+        except OSError:
+            pass
 # real rename on scratch, then rename back
 tcall(SEC, "rename-real", mcp._rename, graph, COMB_ID, "combine_r2", False)
 back = [h for h in search_entities("combine_r2", 5, "function")]
 check(SEC, "rename-real-applied", len(back) > 0, f"hits={len(back)}")
 if back:
     tcall(SEC, "rename-back", mcp._rename, graph, back[0]["id"], "combine", False)
+# R2-17: restore the fixture (rename-back is lossy, see above) and
+# re-analyze so the in-memory graph matches disk for section C.
+for _rel, _data in _r2_snap.items():
+    try:
+        with open(os.path.join(FIX, _rel), "wb") as _fh:
+            _fh.write(_data)
+    except OSError as _e:
+        log(f"[WARN] fixture restore {_rel}: {_e}")
+graph = coderadar.analyze(FIX)
+run_hits = search_entities("run", 10, "function")
+RUN_ID = run_hits[0]["id"] if run_hits else ""
+COMB_ID = next((h["id"] for h in search_entities("combine", 10, "function") if "helpers" in h.get("id", "")), "")
+check(SEC, "fixture-restored-after-rename", bool(RUN_ID and COMB_ID) and "combine_r2" not in open(os.path.join(FIX, "main.py"), encoding="utf-8", errors="replace").read(), f"run={RUN_ID!r} comb={COMB_ID!r}")
 
 # set_project error paths (operates on server-global graph; use confirm=False)
 out = tcall(SEC, "set-project-bad-path", mcp._set_project, os.path.join(FIX, "no-such-dir"), False)
@@ -406,10 +435,12 @@ check(SEC, "callers-canonical", isinstance(c1, list), f"n={len(c1) if isinstance
 cal = callees_of(RUN_ID)
 names = [c.get("name", c.get("id", "")) for c in cal] if isinstance(cal, list) else []
 check(SEC, "run-callees-include-combine-or-external", any("combine" in n for n in names), str(names)[:200])
-# R2 finding R2-1: run DOES call combine (query shows resolved_call_targets
-# ['external::combine']) but callees_of filters external:: targets via
-# entity_ref_to_dict -> []. The edge exists; the presentation layer drops it.
-check(SEC, "external-callee-visible", any("external" in str(c.get("id", "")) for c in (cal if isinstance(cal, list) else [])), str(names)[:250])
+# R2-1 anchor, repointed v0.8.21: run has NO external callee anymore since
+# Issue 9 resolves combine -> helpers::combine (correctly). Probe a
+# genuinely-external call instead: makeStore -> new Store() (external::Store).
+_ms_ext = next((h["id"] for h in search_entities("makeStore", 5, "function")), "")
+_ms_cal = callees_of(_ms_ext) if _ms_ext else []
+check(SEC, "external-callee-visible", any("external" in str(c.get("id", "")) for c in (_ms_cal if isinstance(_ms_cal, list) else [])), str([c.get("id", "?") for c in (_ms_cal if isinstance(_ms_cal, list) else [])])[:250])
 # Issue 9 probe: does run -> helpers.combine resolve naturally?
 resolved_helpers = any("helpers" in str(c.get("id", "")) for c in (cal if isinstance(cal, list) else []))
 check(SEC, "issue9-reexport-resolves", resolved_helpers, str(names)[:250])
@@ -418,14 +449,18 @@ star_hits = search_entities("starred_alpha", 5, "function")
 check(SEC, "star-export-fn-indexed", len(star_hits) > 0, f"hits={len(star_hits)}")
 # C3 heartbeat: env knob exists (functional check = too slow; assert surface)
 check(SEC, "heartbeat-knob", "CODERADAR_INDEX_HEARTBEAT" in open(os.path.join(HERE, "..", "..", "py_agent", "src", "coderadar", "mcp", "server.py"), encoding="utf-8", errors="replace").read() or True, "")
-# C4 synthetic survival in-process: register, no-op update, still there
+# C4 synthetic survival in-process: register, no-op update, still there.
+# The pair MUST be novel vs real edges: (RUN, COMB) was novel while run ->
+# combine resolved external::, but post-Issue-9 (v0.8.21) the real CALL is
+# that same pair, so a synthetic on it union-collides to zero (and the
+# parity probe below lost its +1). (COMB, RUN) has no real edge.
 try:
     from coderadar._core import register_synthetic_edges_bulk
-    register_synthetic_edges_bulk([(RUN_ID, COMB_ID, "DEPENDS_ON")])
+    register_synthetic_edges_bulk([(COMB_ID, RUN_ID, "DEPENDS_ON")])
     mcp._update_file(graph, os.path.join(FIX, "main.py"), None)
-    cal2 = callees_of(RUN_ID)
+    cal2 = callees_of(COMB_ID)
     ids2 = [c.get("id", "") for c in cal2] if isinstance(cal2, list) else []
-    check(SEC, "synthetic-survives-update", COMB_ID in ids2, str(ids2)[:250])
+    check(SEC, "synthetic-survives-update", RUN_ID in ids2, str(ids2)[:250])
 except BaseException as e:
     check(SEC, "synthetic-survives-update", False, f"{type(e).__name__}: {e}"[:200])
 # C6 remove_file must clear definitions from search (R2-4, corrected
@@ -438,8 +473,8 @@ after = search_entities("starred_alpha", 5)
 fn_hits = [h for h in after if h.get("kind") == "function"]
 check(SEC, "remove-file-clears-search", len(fn_hits) == 0,
       f"function-hits={len(fn_hits)} all={[(h.get('id'), h.get('kind')) for h in after]}")
-# C7 TS `new Store()` constructor call has no target at all — not even
-# external/unresolved (R2 finding R2-3: no .scm captures new_expression).
+# C7 TS `new Store()` constructor call (R2-3, fixed v0.8.20: .scm now
+# captures new_expression; unresolved class -> external::Store).
 ms = next((h["id"] for h in search_entities("makeStore", 5, "function")), "")
 mscal = callees_of(ms) if ms else []
 check(SEC, "ts-new-expression-captured", len(mscal) > 0, f"makeStore callees={mscal}")
@@ -465,6 +500,8 @@ if n1 and n2:
     # ledger durably restores the ONE synthetic C4 registered (by design),
     # but no synthetic pair may persist as CALLS anymore -- pre-fix this
     # read 4 vs 5 with the duplicate structural row; healed it reads N+1.
+    # The C4 pair must stay novel vs real CALLS (see C4 note): post-Issue-9
+    # (RUN, COMB) collides with the real edge and the +1 vanishes.
     _a, _b = int(n1.group(1)), int(n2.group(1))
     check(SEC, "load-analyze-edge-parity", _b - _a == 1,
           f"fresh-analyze={_a} ledger-load={_b} (want load-analyze==1)")

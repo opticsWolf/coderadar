@@ -447,7 +447,12 @@ def traverse(start_id: str, depth: int, edges: str, direction: str):
     graph = _ensure_graph()
     mq = MacrameQuery(graph)
     edge_types = [e.strip() for e in edges.split(",")] if edges else None
-    results = mq.traverse(start_id, depth, edge_types, direction)
+    try:
+        results = mq.traverse(start_id, depth, edge_types, direction)
+    except ValueError as exc:
+        # R2-9: unknown edge kinds surface here (not as "No results").
+        console.print(f"[red]Traversal error:[/red] {exc}")
+        raise SystemExit(1)
 
     if not results:
         # R2-16: an unknown start id and a known-but-isolated one used to
@@ -550,17 +555,27 @@ def shell():
             console.print("Commands: query <pest>, traverse <id>, callers <id>, stats, exit")
         elif cmd.startswith("query "):
             query_str = cmd[6:]
-            for row in graph.query(query_str):
+            # R2-11: empty results printed nothing at all (looked hung).
+            rows = list(graph.query(query_str))
+            if not rows:
+                console.print("[yellow]No results[/yellow]")
+            for row in rows:
                 console.print(row)
         elif cmd.startswith("traverse "):
             start_id = cmd[9:].strip()
             from .query import MacrameQuery
-            for row in MacrameQuery(graph).traverse(start_id):
+            rows = MacrameQuery(graph).traverse(start_id)
+            if not rows:
+                console.print("[yellow]No results[/yellow]")
+            for row in rows:
                 console.print(row)
         elif cmd.startswith("callers "):
             entity_id = cmd[8:].strip()
             from .query import MacrameQuery
-            for row in MacrameQuery(graph).callers_of(entity_id):
+            rows = MacrameQuery(graph).callers_of(entity_id)
+            if not rows:
+                console.print(f"[yellow]No callers found for {entity_id}[/yellow]")
+            for row in rows:
                 console.print(row)
         elif cmd.strip() == "stats":
             console.print(graph.stats())
@@ -789,6 +804,13 @@ def visualize(viz_type: str, args: tuple, output: Optional[str], fmt: str):
     graph = _ensure_graph()
     arg_list = list(args)
 
+    # R2-14: anything but the supported formats used to render mermaid
+    # anyway, silently.
+    if fmt not in ("mermaid", "graphviz", "dot"):
+        console.print(f"[red]Unknown format:[/red] {fmt} "
+                      f"(supported: mermaid, graphviz, dot)")
+        raise SystemExit(1)
+
     try:
         text = _render(viz_type, fmt, arg_list, graph,
                        generate_dot, generate_mermaid, generate_call_graph)
@@ -858,24 +880,28 @@ def diagnose(unresolved: bool, low_confidence: bool):
     _ensure_graph()
 
     if unresolved:
+        from coderadar._core import unresolved_targets as _unresolved_names
         console.print("[bold]Unresolved references:[/bold]")
         rows = []
         for fn in search_entities("", 1000, "function"):
-            count = traverse_unresolved(fn["id"], 1, ["calls"], "out")
-            if count:
-                rows.append((fn["id"], count))
+            # R2-12: attribute each function's OWN targets (the old
+            # traverse_unresolved count summed the 1-hop neighborhood,
+            # which listed callers for their callees' gaps).
+            names = ", ".join(_unresolved_names(fn["id"]))
+            if names:
+                rows.append((fn["id"], names))
         if not rows:
             console.print("  [green]none[/green]")
         else:
             table = Table()
             table.add_column("Entity", style="cyan")
             table.add_column("Unresolved call targets", style="yellow")
-            for entity_id, count in sorted(rows, key=lambda r: -r[1]):
-                table.add_row(entity_id, str(count))
+            for entity_id, names in sorted(rows, key=lambda r: -len(r[1])):
+                table.add_row(entity_id, names)
             console.print(table)
             console.print(
-                f"[dim]{sum(c for _, c in rows)} target(s) the call graph "
-                f"cannot follow, across {len(rows)} function(s)[/dim]"
+                f"[dim]{len(rows)} function(s) call targets the graph "
+                f"cannot follow[/dim]"
             )
 
     if low_confidence:
