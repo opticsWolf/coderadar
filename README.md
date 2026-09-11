@@ -1,4 +1,4 @@
-# CodeRadar v0.8.0
+# CodeRadar v0.8.14
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -55,8 +55,8 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 1075 (335 Rust + 740 Python) |
-| **MCP Tools** | 19 (explore, search, node, affected, resolve, query, search_similar, module_children, as_of, traverse, get_smells, replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file, set_project) |
+| **Tests** | 1096 (348 Rust + 748 Python) |
+| **MCP Tools** | 22 — 17 `codegraph_*` (explore, search, node, affected, query, search_similar, compute_embeddings, module_children, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, reindex, update_file, set_project) + 5 `coderadar_*` (resolve, replace_body, update_signature, rename, create_entity) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
 | **Agents** | MCP server over stdio — finds the project root, indexes in the background, and exits with its client |
@@ -125,7 +125,6 @@ for cls in children["classes"]:
 
 # Temporal queries (Macrame bitemporal)
 past = graph.as_of("2026-08-01T00:00:00Z")
-
 # Graph walk across calls / imports / extends / overrides — full entity rows,
 # with the start node at depth 0. edge_types=None walks all four kinds.
 neighbors = graph.traverse("src/auth.py::validate_user", max_depth=3, direction="both")
@@ -135,6 +134,16 @@ from coderadar._core import get_smells
 for finding in get_smells(rule_id="god-class"):
     print(finding["entity_name"], finding["severity"], finding["message"])
 ```
+
+### Entity IDs
+
+Stored ids are canonical root-relative form: `.<relative-path>::<Qualified.name>`
+with native separators (`.\src\auth.py::validate_user` on Windows,
+`./src/auth.py::validate_user` elsewhere) — minted at write time by every
+path: analyze, `update_file`, and the store migration, so `analyze(".")`
+and `analyze(<abs-root>)` produce identical keys. Pasted variants (absolute
+paths, forward slashes, missing `./` prefix) resolve back to the stored key
+at every tool boundary, but prefer the canonical form in scripts.
 
 ## MCP Server
 
@@ -168,11 +177,14 @@ not assume the cwd is the project:
   awaiting one during `initialize` deadlocks, so it is asked lazily on the
   first tool call — once, and only if nothing on disk confirmed the root.
 - **Same directory as the index.** The process moves onto the resolved root
-  before indexing, because entity ids carry the path the walk started from
-  while every read helper resolves against the cwd.
+  before indexing, because entity ids are canonical root-relative form
+  (`.\src\auth.py::validate_user`) and every read helper — Rust or Python
+  — resolves them against the recorded indexed root, never the cwd.
 - **Fast handshake.** Indexing runs on a background thread; a tool call that
   arrives early waits, then reports elapsed seconds rather than answering from
-  a half-built graph.
+  a half-built graph. While waiting, heartbeats (`[coderadar] indexing … Ns
+  elapsed`) go to stderr every few seconds (`CODERADAR_INDEX_HEARTBEAT`) —
+  never silent, never an answer from a half-built graph.
 - **Saying where it looked.** A "no index" reply names the directory being
   served and how that directory was chosen, so an agent pointed at the wrong
   project can say so.
@@ -194,9 +206,14 @@ not assume the cwd is the project:
   list, not the bare names used in this README; a batched script that calls
   bare `codegraph_*` names will fail with `tool_not_found` even though the
   server is healthy (CODERADAR_BUGS_QUIRKS.md #10).
-- **Default excludes.** The file walk always skips build output — `target/`,
-  `node_modules/`, `dist/` — on top of `.gitignore` and any `[project] exclude`
-  patterns, so generated artifacts never pollute counts or smells.
+- **Default excludes.** The file walk skips a 15-directory build-output
+  baseline (`.venv/`, `node_modules/`, `target/`, `dist/`, `build/`,
+  `__pycache__/`, `.git/`, …) on top of `.gitignore` and `[project] exclude`,
+  and one shared matcher enforces it in every pass — walker, star exports,
+  framework extraction, watcher, and staleness — so generated artifacts never
+  pollute counts or smells. `coderadar exclude list|add|remove` edits the
+  config; `--exclude` narrows a single `analyze`/`rebuild`; `coderadar stats`
+  prints the effective stack.
 
 ## Language Support
 
@@ -282,6 +299,38 @@ cold-start design in [`docs/v0.8-p1-cold-start-design.md`](docs/v0.8-p1-cold-sta
   of a full `reconstruct` fold (1.7 s → 0.08 s per analyze on a large log), and
   content-hash-gated upserts make no-op analyzes write zero rows (see
   [`docs/macrame-0.15-upgrade-notes.md`](docs/macrame-0.15-upgrade-notes.md)).
+
+## v0.8.1–v0.8.14 Highlights — the dogfood batch
+
+CodeRadar indexed and mutated itself (207 files, every CLI command, all 22
+MCP tools); the review found four P0 defects in the mutation engine plus
+ten more findings, and each was fixed against a live repro on the repo
+(see [`docs/dogfood-review-2026-09.md`](docs/dogfood-review-2026-09.md) for
+the full record, including the two diagnoses the first pass got wrong):
+
+- **Mutation safety (P0s).** Clone-detection panic fixed at its true root
+  (slot-space mapping, not the suspected off-by-one) with `catch_unwind` on
+  analysis entries; the allow-list is anchored (`src/` no longer matches
+  `.venv/…/src/…`) and gated at dry-run, not just apply; brace-language
+  body splices and signature-span rebasing apply cleanly with stale plans
+  healing (warning) instead of mangling; friendly errors replace raw Rust
+  debug structs.
+- **One canonical id form.** Entity ids are project-relative dot-prefix at
+  every write path — no more absolute/walk/update triple spellings breaking
+  store keys, call edges, and module lookups; analyze retires legacy rows.
+- **First-class exclusion.** One shared matcher across walker, star exports,
+  resolvers, watcher, and staleness; `exclude list|add|remove`,
+  `--exclude` one-shots, retraction on next analyze, effective stack in
+  `stats`. The star-export pass also stopped rglobbing `.venv` (17.6 s →
+  0.16 s), restoring the benchmark claims.
+- **Dead-code cross-language awareness.** `#[pyfunction]` bridge functions
+  are production roots; Rust `pub`-export detection is source-backed;
+  findings carry file+line.
+- **Store repair + single version source.** `coderadar store-repair`,
+  `init --force` ledger rebuild, v1-orphan auto-retirement; `--version`
+  agrees everywhere; first-call index heartbeats on stderr.
+- **Slop scan made loud.** Skip accounting with a stats footer, per-kind
+  caps, noise markers dropped — 15/15 across all graph provenances.
 
 ## v0.7.18 Feature Highlights — the fossil-mcp port
 
@@ -557,7 +606,7 @@ py_agent/src/coderadar/    # Python layer
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Specifications + code review + performance roadmap
-tests/                     # 650+ Python tests (E2E incl. dead-code/clones/scaffold/CFG/
+tests/                     # 748 Python tests (E2E incl. dead-code/clones/scaffold/CFG/
                            #   centrality/dead-branch/RTA goldens, mutation E2E, MCP,
                            #   framework resolvers, ingest parity, benchmarks)
   mcp/                     # Root resolution, background init, lifecycle, project_path
