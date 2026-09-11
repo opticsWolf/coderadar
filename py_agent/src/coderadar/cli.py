@@ -15,6 +15,9 @@ from rich.table import Table
 from . import __version__
 
 console = Console()
+# R2-15/R2-13: diagnostics (cold-start notes, fallbacks, config nudges)
+# go to stderr, so stdout stays machine-readable (pipes, --format json).
+err_console = Console(file=sys.stderr)
 
 
 def _run_framework_extraction(project_root: Path) -> dict:
@@ -178,16 +181,16 @@ def _ensure_graph(path: str = "."):
     if db_path is not None and _store_is_fresh(root_path, db_path):
         try:
             coderadar.load(str(db_path), str(root_path))
-            console.print(
+            err_console.print(
                 "[dim]Cold start: graph restored from the Macrame store.[/dim]")
             return graph
         except Exception as exc:
-            console.print(
+            err_console.print(
                 f"[yellow]Store load failed ({exc}); falling back to a full "
                 f"analyze (this also upgrades a v1 store).[/yellow]"
             )
 
-    console.print("[dim]No graph for this directory - indexing...[/dim]")
+    err_console.print("[dim]No graph for this directory - indexing...[/dim]")
     coderadar.analyze(path)
     return graph
 
@@ -388,7 +391,9 @@ def update(file: str, content: Optional[str]):
 
 @main.command()
 @click.argument("query_string")
-def query(query_string: str):
+@click.option("--format", "fmt", type=click.Choice(["table", "json"]),
+              default="table", help="Output format (json for machine readers).")
+def query(query_string: str, fmt: str):
     """Execute a Pest query; pretty-print results."""
     graph = _ensure_graph()
     results = list(graph.query(query_string))
@@ -397,14 +402,36 @@ def query(query_string: str):
         console.print("[yellow]No results[/yellow]")
         return
 
-    # Build table from keys of first result
+    if fmt == "json":
+        # R2-15: machine mode -- agents are the primary readers; a table
+        # shaped for a tty is data loss through a pipe.
+        import json as _json
+        # soft_wrap: rich must not fold long lines mid-string (that would
+        # corrupt the JSON for parsers); piped output goes through verbatim.
+        console.print(_json.dumps(results, indent=2, default=str),
+                        soft_wrap=True)
+        return
+
+    # Build table from keys of first result. R2-15: when piped, rich
+    # squeezed every column to a few chars (`com�`). A pipe has no width,
+    # so render wide instead -- identity columns never wrap (grep-able),
+    # the rest folds only past a generous width. Interactive terminals
+    # keep auto-detected width (this branch is pipe-only).
+    if sys.stdout.isatty():
+        tbl_console = console
+    else:
+        from rich.console import Console as _Console
+        tbl_console = _Console(file=sys.stdout, width=250)
     table = Table(title=f"Query: {query_string}")
     for key in results[0]:
-        table.add_column(key, style="cyan")
+        if key in ("id", "name", "entity_id"):
+            table.add_column(key, style="cyan", no_wrap=True)
+        else:
+            table.add_column(key, style="cyan", overflow="fold")
     for row in results:
         table.add_row(*[str(row.get(k, "")) for k in results[0]])
-    console.print(table)
-    console.print(f"[dim]{len(results)} result(s)[/dim]")
+    tbl_console.print(table)
+    tbl_console.print(f"[dim]{len(results)} result(s)[/dim]")
 
 
 @main.command()
@@ -1048,6 +1075,10 @@ def git_diff(repo: str, old_oid: Optional[str], new_oid: Optional[str]):
         files = _diff(repo, old_oid, new_oid)
     except ImportError:
         files = []
+    except Exception as exc:
+        # R2-6: unknown revisions surface here (not as an empty diff).
+        console.print(f"[red]Could not diff revisions:[/red] {exc}")
+        raise SystemExit(1)
 
     if not files:
         console.print("[yellow]No changed files (or git feature disabled)[/yellow]")

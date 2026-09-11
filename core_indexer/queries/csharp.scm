@@ -16,6 +16,10 @@
 
 (invocation_expression) @call
 
+;; R2-3: constructor calls (`new Store()`) -- invisible before.
+(object_creation_expression
+  type: (identifier) @call.name) @call
+
 ;; ── Comments ────────────────────────────────────────────────────────
 
 (comment) @docstring

@@ -11,18 +11,16 @@
 [PASS] cli/rebuild-one-shot-exclude
 [PASS] cli/have-ids
 [PASS] cli/have-main-id
-[FAIL] cli/query-basic — Cold start: graph restored from the Macrame store.
-                               Query: functions                                
-+--------------------------------------------------------------------
+[PASS] cli/query-basic
 [PASS] cli/query-filtered
 [PASS] cli/query-syntax-error
 [PASS] cli/traverse-out
 [PASS] cli/traverse-in
 [PASS] cli/traverse-both
 [PASS] cli/traverse-edges-calls
-[FAIL] cli/traverse-bad-edge-kind-errors — Cold start: graph restored from the Macrame store.
-2026-09-11 19:41:30 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
-                         Traversal from .\main.py:
+[FAIL] cli/traverse-bad-edge-kind-errors — 2026-09-11 20:03:44 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
+                         Traversal from .\main.py::run                         
++--------------------
 [PASS] cli/traverse-bad-id
 [PASS] cli/callers
 [PASS] cli/callees
@@ -48,13 +46,12 @@
 [PASS] cli/git-clean-when-dirty
 [PASS] cli/git-diff-head-clean
 [PASS] cli/git-diff-two-commits
-[FAIL] cli/git-diff-bad-oid-errors — No changed files (or git feature disabled)
-
+[PASS] cli/git-diff-bad-oid-errors
 [PASS] cli/visualize-call-graph
 [PASS] cli/visualize-slash-id-works
-[FAIL] cli/visualize-bad-format-errors — Cold start: graph restored from the Macrame store.
-flowchart TD
+[FAIL] cli/visualize-bad-format-errors — flowchart TD
     n___main_py__run --> n_external__combine
+Cold start: graph restored from the Macrame store.
 
 [PASS] cli/shell-help-stats-exit
 [PASS] cli/shell-query
@@ -123,26 +120,21 @@ Only symbol lookup is
 [PASS] surface/heartbeat-knob
 [PASS] surface/synthetic-survives-update
 [PASS] surface/remove-file
-[FAIL] surface/remove-file-clears-search — hits=1
-[FAIL] surface/ts-new-expression-captured — makeStore callees=[]
+[PASS] surface/remove-file-clears-search
+[PASS] surface/ts-new-expression-captured
 [PASS] surface/load-analyze-edge-parity
 [PASS] surface/ts-indexed
 [PASS] surface/rs-indexed
 
 ======================================================================
 SUMMARY
-110/118 passed
-  FAIL cli/query-basic — Cold start: graph restored from the Macrame store.
-                               Query: functions                                
-+--------------------------------------------------------------------
-  FAIL cli/traverse-bad-edge-kind-errors — Cold start: graph restored from the Macrame store.
-2026-09-11 19:41:30 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
-                         Traversal from .\main.py:
-  FAIL cli/git-diff-bad-oid-errors — No changed files (or git feature disabled)
-
-  FAIL cli/visualize-bad-format-errors — Cold start: graph restored from the Macrame store.
-flowchart TD
+114/118 passed
+  FAIL cli/traverse-bad-edge-kind-errors — 2026-09-11 20:03:44 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
+                         Traversal from .\main.py::run                         
++--------------------
+  FAIL cli/visualize-bad-format-errors — flowchart TD
     n___main_py__run --> n_external__combine
+Cold start: graph restored from the Macrame store.
 
   FAIL mcp/as-of-bad-ts-signals — ## Snapshot at `not-a-timestamp`
 
@@ -150,6 +142,4 @@ Pass `symbols` to look entities up as they were at this timestamp — for exampl
 
 Only symbol lookup is
   FAIL surface/issue9-reexport-resolves — ['combine']
-  FAIL surface/remove-file-clears-search — hits=1
-  FAIL surface/ts-new-expression-captured — makeStore callees=[]
 FAIL-LIST-END

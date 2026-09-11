@@ -19,7 +19,7 @@ from __future__ import annotations
 #: installed wheel/sdist reports its own version) and falls back to the
 #: release constant below, which MUST be kept in sync with pyproject.toml
 #: and Cargo.toml [workspace.package] on every bump.
-_FALLBACK_VERSION = "0.8.19"
+_FALLBACK_VERSION = "0.8.20"
 
 
 def _resolve_version() -> str:

@@ -57,16 +57,46 @@ impl CodeGraph {
             .unwrap_or_default();
 
         if module_ids.is_empty() {
-            // Fallback: entity IDs start with file_path, find them by prefix scan
-            let prefix = format!("{}::", lookup);
+            // Fallback: entity IDs start with file_path, find them by prefix
+            // scan. R2-4: ids are canonical (`.\x.py::f`) since F14, so the
+            // bare normalized prefix never matches -- try the canonical form
+            // too, or this whole branch silently keeps everything. Collect
+            // across ALL entity maps (functions/classes alone left
+            // constants, aliases, imports and the module itself behind).
+            let canon =
+                super::module_resolution::canonical_file_form(file_path);
+            let prefixes = [format!("{}::", lookup), format!("{}::", canon)];
+            let matches = |id: &str| {
+                prefixes.iter().any(|p| id.starts_with(p.as_str()))
+            };
             for (func_id, _) in projection.functions.iter() {
-                if func_id.starts_with(&prefix) && !removed.contains(func_id) {
+                if matches(func_id) && !removed.contains(func_id) {
                     removed.insert(func_id.clone());
                 }
             }
             for (class_id, _) in projection.classes.iter() {
-                if class_id.starts_with(&prefix) && !removed.contains(class_id) {
+                if matches(class_id) && !removed.contains(class_id) {
                     removed.insert(class_id.clone());
+                }
+            }
+            for (id, _) in projection.constants.iter() {
+                if matches(id) && !removed.contains(id) {
+                    removed.insert(id.clone());
+                }
+            }
+            for (id, _) in projection.type_aliases.iter() {
+                if matches(id) && !removed.contains(id) {
+                    removed.insert(id.clone());
+                }
+            }
+            for (id, _) in projection.imports.iter() {
+                if matches(id) && !removed.contains(id) {
+                    removed.insert(id.clone());
+                }
+            }
+            for (id, _) in projection.modules.iter() {
+                if matches(id) && !removed.contains(id) {
+                    removed.insert(id.clone());
                 }
             }
             // Remove entities directly without module lookup
@@ -76,6 +106,7 @@ impl CodeGraph {
                 projection.imports.remove(id);
                 projection.constants.remove(id);
                 projection.type_aliases.remove(id);
+                projection.modules.remove(id);
                 projection.callers_by_callee.remove(id);
                 projection.callees_by_caller.remove(id);
                 projection.subclasses.remove(id);

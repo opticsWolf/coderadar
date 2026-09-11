@@ -30,6 +30,15 @@
     object: (identifier) @call.receiver
     property: (property_identifier) @call.method)) @call
 
+;; R2-3: constructor calls (`new Store()`) -- invisible before.
+(new_expression
+  constructor: (identifier) @call.name) @call
+
+(new_expression
+  constructor: (member_expression
+    object: (identifier) @call.receiver
+    property: (property_identifier) @call.method)) @call
+
 ;; ── Imports ─────────────────────────────────────────────────────────
 
 (import_statement) @import

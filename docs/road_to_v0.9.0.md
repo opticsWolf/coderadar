@@ -144,15 +144,29 @@ Fix: add `(new_expression constructor: … @call.name) @call` patterns per
 language + constructor-field mapping in `emit_call_for_node`; resolve
 `new Store()` to the class constructor like Python `Constructor` targets.
 Battery anchor: `surface/ts-new-expression-captured`.
+DONE v0.8.20 (extraction half): `new_expression` (TS/JS, `constructor`
+field) + `object_creation_expression` (Java/C#, `type` field) +
+`new_expression` (C++, `type` field) patterns, `constructor`/`type`
+fields and `type_identifier` names in `emit_call_for_node`, per-language
+regression test (5 legs). Unresolved class names fall back to
+`external::Store` -- visible via R2-1, honest until constructor-target
+resolution exists (deferred: even Python doesn't resolve `Derived(...)`
+to `Constructor` today; needs cross-language class matching). Scoped
+`new pkg.Store()` (Java `scoped_type_identifier`) stays uncovered.
 
-### R2-4 — `remove_file` leaves search ghosts
-`remove_file("pkg/mod.py")` reports 4 removals (module + 3 fns — correct)
-but `search_entities("starred_alpha")` still returns the removed function.
-Concept rows go; the search backend is never invalidated. Stale search →
-stale plans → mutations against deleted code.
-Fix: purge per-file entries from the search index on remove (and audit the
-`update_file` rename path, which round-1 showed working — keep it green).
-Battery anchor: `surface/remove-file-clears-search`.
+### R2-4 — `remove_file` leaves search ghosts (CORRECTED v0.8.20: battery misreading)
+`remove_file("pkg/mod.py")` reports 4 removals and the function IS gone
+from every map -- search scans the live projection, there is no separate
+index to invalidate. The remaining `hits=1` is `pkg/__init__.py`'s
+`from .mod import starred_alpha` IMPORT entity, whose raw statement text
+still names it: a legitimate reference hit, not a ghost. Battery anchor
+corrected to assert zero `function`-kind hits.
+Real hardening underneath: the `file_to_modules`-miss fallback collected
+only functions+classes by a bare normalized prefix that can never match
+canonical ids -- constants, aliases, imports and the module itself would
+have survived had the branch ever run. It now tries the canonical prefix
+too and collects across all six entity maps (regression test:
+`remove_file_fallback_clears_every_kind_map`).
 
 ### R2-6 — git revision errors swallowed (`.ok()` × 2)
 `git_changed_files` binding: `Oid::from_str(s).ok()`; `changed_files_between`:
@@ -163,6 +177,11 @@ Battery anchor: `surface/remove-file-clears-search`.
 `git rev-parse`). Fix: surface unknown-revision as an error; optionally
 resolve rev syntax via `revparse_single`. Battery anchor:
 `cli/git-diff-bad-oid-errors`.
+DONE v0.8.20: `changed_files_between` takes revision strings and resolves
+via `revparse_single` (hex, HEAD, HEAD~1, branches, tags) with a new
+`GitError::UnknownRevision`; the CLI prints the error and exits 1.
+Side effect, also fixed: `--new`'s documented HEAD default was
+unimplemented (None always diffed empty) -- now honored.
 
 ### R2-15 — CLI `query` table truncates every column to ~4 chars
 `coderadar query functions` renders `com�`, `hel�`, `['.�` — names, ids,
@@ -172,6 +191,12 @@ Fix: sane `max_width`/no-wrap defaults for piped output (or `--full`
 flag); never truncate the `name`/`id` columns below usefulness; consider
 a `--format json|tsv` machine mode (agents are the primary readers).
 Battery anchor: `cli/query-basic`.
+DONE v0.8.20: identity columns `no_wrap`, everything else folds, pipes
+render at width 250 (a pipe has no width; tty keeps auto-detect), plus
+`query --format json` (soft-wrapped, parse-verified). Enabling it
+required a slice of R2-13: `_ensure_graph` diagnostics (cold-start note,
+fallback note) moved to stderr so stdout stays machine-readable; the
+Rust `[debug]` lines remain for the v0.8.21 P3 batch.
 
 ## 3. P3 papercuts (UX — batch into one polish pass)
 
@@ -267,3 +292,12 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   `callers_of`/`callees_of`/`traverse`/`lookup_entity`, and CLI
   callers/callees/traverse/visualize print `Unknown entity` distinctly
   from true empties.
+- **v0.8.20 — R2-3 + R2-4 + R2-6 + R2-15 DONE.** `new`-expression
+  extraction in TS/JS/Java/C#/C++ (unresolved names fall back to
+  `external::`; constructor-target resolution deferred); `remove_file`
+  fallback hardened (canonical prefix, all six maps) with the battery
+  anchor corrected to the real contract (the import-reference hit is
+  legitimate); git revisions resolve strictly via revparse (`HEAD~1`
+  works, `--new` HEAD default honored, unknown revs error); query tables
+  never crop piped output (wide pipe console, no-wrap ids) +
+  `--format json`, with CLI diagnostics moved to stderr.

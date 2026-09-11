@@ -416,3 +416,37 @@ fn test_remove_file_is_a_no_op_for_an_unknown_file() {
     assert!(graph.remove_file("never_indexed.py").is_empty());
     assert!(graph.snapshot().functions.contains_key("kept.py::a"));
 }
+
+#[test]
+fn remove_file_fallback_clears_every_kind_map() {
+    // R2-4: the file_to_modules-miss fallback collected only functions +
+    // classes by a bare normalized prefix that can never match canonical
+    // ids -- constants, aliases, imports and the module itself survived as
+    // search ghosts. Simulate key-form drift and assert every map is clean.
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(
+        &graph,
+        "import os\nX = 1\ntype Alias = int\ndef f():\n    pass\nclass C:\n    pass\n",
+        "gone.py",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    assert!(projection.functions.keys().any(|id| id.ends_with("::f")));
+    // Simulate key-form drift: the module lookup misses.
+    projection.file_to_modules.clear();
+    let removed = graph.remove_file_entities(&mut projection, "gone.py");
+    assert!(
+        !removed.is_empty(),
+        "fallback must collect by canonical prefix"
+    );
+    for id in projection
+        .functions
+        .keys()
+        .chain(projection.classes.keys())
+        .chain(projection.constants.keys())
+        .chain(projection.type_aliases.keys())
+        .chain(projection.imports.keys())
+        .chain(projection.modules.keys())
+    {
+        assert!(!id.contains("gone.py"), "ghost left in maps: {id}");
+    }
+}

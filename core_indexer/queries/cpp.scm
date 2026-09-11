@@ -14,6 +14,10 @@
 
 (call_expression) @call
 
+;; R2-3: constructor calls (`new Store()`) -- invisible before.
+(new_expression
+  type: (type_identifier) @call.name) @call
+
 ;; ── Includes ───────────────────────────────────────────────────────
 
 (preproc_include) @import

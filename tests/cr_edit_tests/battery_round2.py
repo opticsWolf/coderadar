@@ -428,12 +428,16 @@ try:
     check(SEC, "synthetic-survives-update", COMB_ID in ids2, str(ids2)[:250])
 except BaseException as e:
     check(SEC, "synthetic-survives-update", False, f"{type(e).__name__}: {e}"[:200])
-# C6 remove_file must clear the search index too (R2 finding R2-4: the
-# concept row goes away — remove_file reports 4 removals — but search still
-# returns the removed function).
+# C6 remove_file must clear definitions from search (R2-4, corrected
+# v0.8.20: the removed FUNCTION is gone; the remaining hit is
+# pkg/__init__.py's `from .mod import starred_alpha` IMPORT entity, whose
+# raw statement text still names it -- a legitimate reference hit, not a
+# ghost. The v0.8.16-era assertion (zero hits of any kind) was wrong.)
 rm_out = tcall(SEC, "remove-file", graph.remove_file, os.path.join(FIX, "pkg", "mod.py"))
 after = search_entities("starred_alpha", 5)
-check(SEC, "remove-file-clears-search", len(after) == 0, f"hits={len(after)}")
+fn_hits = [h for h in after if h.get("kind") == "function"]
+check(SEC, "remove-file-clears-search", len(fn_hits) == 0,
+      f"function-hits={len(fn_hits)} all={[(h.get('id'), h.get('kind')) for h in after]}")
 # C7 TS `new Store()` constructor call has no target at all — not even
 # external/unresolved (R2 finding R2-3: no .scm captures new_expression).
 ms = next((h["id"] for h in search_entities("makeStore", 5, "function")), "")

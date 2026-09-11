@@ -26,6 +26,12 @@
   object: (identifier) @call.receiver
   name: (identifier) @call.method) @call
 
+;; R2-3: constructor calls (`new Store()`) -- invisible before.
+;; (Scoped `new pkg.Store()` stays uncovered: the type node is a
+;; scoped_type_identifier, not a plain type_identifier.)
+(object_creation_expression
+  type: (type_identifier) @call.name) @call
+
 ;; ── Imports ────────────────────────────────────────────────────────
 
 (import_declaration) @import

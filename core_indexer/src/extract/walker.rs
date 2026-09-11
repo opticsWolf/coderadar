@@ -620,14 +620,20 @@ pub fn emit_call_for_node(
         return;
     }
 
+    // R2-3: constructor expressions carry the target under `constructor`
+    // (tree-sitter-typescript/javascript `new_expression`) or `type`
+    // (Java/C# `object_creation_expression`, C++ `new_expression`).
     let name_node = node
         .child_by_field_name("function")
         .or_else(|| node.child_by_field_name("method"))
         .or_else(|| node.child_by_field_name("name"))
-        .or_else(|| node.child_by_field_name("callee"));
+        .or_else(|| node.child_by_field_name("callee"))
+        .or_else(|| node.child_by_field_name("constructor"))
+        .or_else(|| node.child_by_field_name("type"));
 
     match name_node {
-        Some(n) if n.kind() == "identifier" => {
+        // `type_identifier`: Java/C++ constructor type names.
+        Some(n) if n.kind() == "identifier" || n.kind() == "type_identifier" => {
             let name = n.utf8_text(source.as_bytes()).unwrap_or("").to_string();
             if !is_stoplisted(&name) {
                 func.calls.push(UnresolvedRef {

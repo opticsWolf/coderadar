@@ -42,3 +42,67 @@ fn test_codegraph_callers_of_empty() {
     let graph = CodeGraph::new(GraphConfig::default());
     assert!(graph.callers_of("nonexistent").is_empty());
 }
+
+#[test]
+fn new_expression_calls_are_extracted_per_language() {
+    // R2-3: `new Store()` produced zero targets in every language -- no
+    // .scm captured new/object-creation expressions. Each leg indexes a
+    // minimal constructor call and asserts the resolved edge (same-file
+    // and cross-file names fall back to `external::`, which is the honest
+    // answer until constructor-target resolution exists).
+    let cases: &[(&str, &str, &str, &str)] = &[
+        (
+            "store.ts",
+            "export class Store {}\nexport function makeStore() { return new Store(); }\n",
+            "makeStore",
+            "external::Store",
+        ),
+        (
+            "make.js",
+            "class Store {}\nfunction makeStore() { return new Store(); }\n",
+            "makeStore",
+            "external::Store",
+        ),
+        (
+            "A.java",
+            "class A { Object m() { return new Store(); } }\n",
+            "m",
+            "external::Store",
+        ),
+        (
+            "A.cs",
+            "class A { object M() { return new Store(); } }\n",
+            "M",
+            "external::Store",
+        ),
+        (
+            "m.cpp",
+            "class Store {};\nStore* m() { return new Store(); }\n",
+            "m",
+            "external::Store",
+        ),
+    ];
+    for (file, src, caller_name, want) in cases {
+        let graph = CodeGraph::new(GraphConfig::default());
+        index_source(&graph, src, file);
+        let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_all_calls(&mut projection);
+        // (C++ function names carry a trailing `()` -- pre-existing naming
+        // quirk, out of scope here.)
+        let caller = projection
+            .functions
+            .values()
+            .find(|f| f.name.trim_end_matches("()") == *caller_name)
+            .map(|f| f.id.clone())
+            .unwrap_or_else(|| panic!("{file}: caller `{caller_name}` should be indexed"));
+        let callees = projection
+            .callees_by_caller
+            .get(&caller)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            callees.iter().any(|c| c == want),
+            "{file}: `new Store()` must extract, got {callees:?}"
+        );
+    }
+}

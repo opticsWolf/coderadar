@@ -23,16 +23,28 @@ pub fn detect_branch_switch(repo_path: &str) -> Result<Option<Vec<String>>, GitE
 
 pub fn changed_files_between(
     repo_path: &str,
-    old_oid: Option<git2::Oid>,
-    new_oid: Option<git2::Oid>,
+    old_rev: Option<&str>,
+    new_rev: Option<&str>,
 ) -> Result<Vec<String>, GitError> {
     let repo = Repository::open(repo_path).map_err(GitError::Open)?;
-    let old_tree = old_oid
-        .and_then(|oid| repo.find_commit(oid).ok())
-        .and_then(|c| c.tree().ok());
-    let new_tree = new_oid
-        .and_then(|oid| repo.find_commit(oid).ok())
-        .and_then(|c| c.tree().ok());
+    // R2-6: unknown revisions used to degrade to None (two `.ok()`
+    // swallows) and report an empty diff -- indistinguishable from "no
+    // changes". Resolve strictly instead, accepting rev syntax (HEAD,
+    // HEAD~1, branches, tags) that Oid::from_str never could.
+    let resolve = |rev: &str| -> Result<git2::Tree, GitError> {
+        repo.revparse_single(rev)
+            .map_err(|_| GitError::UnknownRevision(rev.to_string()))?
+            .peel_to_tree()
+            .map_err(|_| GitError::UnknownRevision(rev.to_string()))
+    };
+    let old_tree = old_rev.map(resolve).transpose()?;
+    // Documented CLI default: --new falls back to HEAD. A repo without HEAD
+    // (fresh, nothing committed) has nothing to diff against: None, which
+    // yields the same empty result as before.
+    let new_tree = match new_rev {
+        Some(rev) => Some(resolve(rev)?),
+        None => repo.head().ok().and_then(|h| h.peel_to_tree().ok()),
+    };
     let mut files = Vec::new();
     let mut diff_opts = DiffOptions::new();
     if let (Some(old), Some(new)) = (old_tree, new_tree) {
@@ -108,13 +120,17 @@ pub enum GitError {
     Commit(git2::Error),
     Blame(String),
     Status(git2::Error),
+    /// R2-6: a revision string that resolves to nothing (bad hex, unknown
+    /// object, unpeelable type). Surfaced instead of diffing empty.
+    UnknownRevision(String),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn init_commit_repo(dir: &std::path::Path) {
+    // Shared by the R2-8 (clean) and R2-6 (revision) regression tests.
+    pub(super) fn init_commit_repo(dir: &std::path::Path) {
         std::fs::write(dir.join("a.txt"), "hi\n").unwrap();
         std::fs::write(dir.join(".gitignore"), ".coderadar/\n*.log\n").unwrap();
         let repo = git2::Repository::init(dir).unwrap();
@@ -158,6 +174,63 @@ mod tests {
         assert!(
             !is_worktree_clean(root).unwrap(),
             "untracked non-ignored files must dirty the tree"
+        );
+    }
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::tests::init_commit_repo;
+    use super::*;
+
+    fn commit_file(dir: &std::path::Path, name: &str, msg: &str) {
+        std::fs::write(dir.join(name), "v\n").unwrap();
+        let repo = Repository::open(dir).unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new(name))
+            .unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@t.t").unwrap();
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, msg, &tree, &[&head])
+            .unwrap();
+    }
+
+    #[test]
+    fn unknown_revisions_error_instead_of_diffing_empty() {
+        // R2-6: garbage hex AND well-formed-but-unknown OIDs errored into
+        // an empty diff. Both must surface UnknownRevision now.
+        let dir = tempfile::tempdir().unwrap();
+        init_commit_repo(dir.path());
+        let root = dir.path().to_str().unwrap();
+        assert!(matches!(
+            changed_files_between(root, Some("deadbeef"), None),
+            Err(GitError::UnknownRevision(_))
+        ));
+        assert!(matches!(
+            changed_files_between(root, Some(&"a".repeat(40)), None),
+            Err(GitError::UnknownRevision(_))
+        ));
+        // Same-rev diff is honestly empty (not an error).
+        let files = changed_files_between(root, Some("HEAD"), Some("HEAD")).unwrap();
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn rev_syntax_and_head_default_work() {
+        // R2-6: HEAD~1 never parsed as hex (silently diffed nothing); a bare
+        // --old now diffs against the documented HEAD default.
+        let dir = tempfile::tempdir().unwrap();
+        init_commit_repo(dir.path());
+        commit_file(dir.path(), "b.txt", "t2");
+        let root = dir.path().to_str().unwrap();
+        let files = changed_files_between(root, Some("HEAD~1"), None).unwrap();
+        assert!(
+            files.iter().any(|f| f == "b.txt"),
+            "HEAD~1..HEAD must list b.txt, got {files:?}"
         );
     }
 }

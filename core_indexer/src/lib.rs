@@ -1274,9 +1274,9 @@ mod git_bindings {
         old_oid: Option<&str>,
         new_oid: Option<&str>,
     ) -> PyResult<Vec<String>> {
-        let old = old_oid.and_then(|s| git2::Oid::from_str(s).ok());
-        let new = new_oid.and_then(|s| git2::Oid::from_str(s).ok());
-        match crate::fs::git::changed_files_between(repo_path, old, new) {
+        // R2-6: revision strings pass through unresolved; unknown ones
+        // error (UnknownRevision) instead of diffing empty.
+        match crate::fs::git::changed_files_between(repo_path, old_oid, new_oid) {
             Ok(files) => Ok(files),
             Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
                 "git diff failed: {:?}",
