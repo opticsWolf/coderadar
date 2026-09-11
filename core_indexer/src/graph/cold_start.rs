@@ -428,32 +428,29 @@ mod tests {
         for c in &concepts {
             map.insert(
                 c.id.clone(),
-                NodeAttributes {
-                    id: c.id.clone(),
-                    title: c.title.clone(),
-                    content: c.content.clone(),
-                    embedding_model: None,
-                },
+                // macrame 0.17: NodeAttributes is #[non_exhaustive]
+                // (embedding_model defaults None, as before).
+                NodeAttributes::new(c.id.clone(), c.title.clone(), c.content.clone()),
             );
         }
-        MaterializedState {
-            seq_anchor: 42,
-            timestamp: "2026-02-08T00:00:00.000000Z".to_string(),
-            concepts: map,
-            edges: edges
-                .into_iter()
-                .map(|(s, t, k)| {
-                    EdgeBelief::new(
-                        s,
-                        t,
-                        k,
-                        "2026-01-01T00:00:00.000000Z".to_string(),
-                        "9999-12-31T23:59:59.999999Z".to_string(),
-                    )
-                })
-                .collect(),
-            predates_recorded_history: false,
-        }
+        // macrame 0.17: MaterializedState is #[non_exhaustive] —
+        // assemble from empty(); fields stay pub and assignable.
+        let mut state = MaterializedState::empty("2026-02-08T00:00:00.000000Z");
+        state.seq_anchor = 42;
+        state.concepts = map;
+        state.edges = edges
+            .into_iter()
+            .map(|(s, t, k)| {
+                EdgeBelief::new(
+                    s,
+                    t,
+                    k,
+                    "2026-01-01T00:00:00.000000Z".to_string(),
+                    "9999-12-31T23:59:59.999999Z".to_string(),
+                )
+            })
+            .collect();
+        state
     }
 
     #[test]
@@ -550,13 +547,12 @@ mod tests {
         let mut concepts = HashMap::new();
         concepts.insert(
             "a.py::module".to_string(),
-            NodeAttributes {
-                id: "a.py::module".to_string(),
-                title: "a".to_string(),
-                content: "{\"id\":\"a.py::module\",\"name\":\"a\",\"kind\":\"module\",\"path\":\"a.py\",\"language\":\"Python\"}"
+            NodeAttributes::new(
+                "a.py::module".to_string(),
+                "a".to_string(),
+                "{\"id\":\"a.py::module\",\"name\":\"a\",\"kind\":\"module\",\"path\":\"a.py\",\"language\":\"Python\"}"
                     .to_string(),
-                embedding_model: None,
-            },
+            ),
         );
         state.concepts = concepts;
         match projection_from_state(&state) {
@@ -573,13 +569,12 @@ mod tests {
         let mut state = state_from(&sample_projection(), Vec::new());
         state.concepts.insert(
             "a.py::C.x".to_string(),
-            NodeAttributes {
-                id: "a.py::C.x".to_string(),
-                title: "x".to_string(),
-                content: "{\"id\":\"a.py::C.x\",\"name\":\"x\",\"kind\":\"field\",\"module\":\"a.py::module\",\"class\":\"a.py::C\"}"
+            NodeAttributes::new(
+                "a.py::C.x".to_string(),
+                "x".to_string(),
+                "{\"id\":\"a.py::C.x\",\"name\":\"x\",\"kind\":\"field\",\"module\":\"a.py::module\",\"class\":\"a.py::C\"}"
                     .to_string(),
-                embedding_model: None,
-            },
+            ),
         );
         let (_g, stats) = projection_from_state(&state).expect("load");
         assert_eq!(stats.skipped_field_concepts, 1);

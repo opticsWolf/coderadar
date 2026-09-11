@@ -352,3 +352,12 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   registers the novel (COMB, RUN) pair; the R2-1 `external-callee-visible`
   anchor repointed from `run` (no external callees left, correctly) to
   `makeStore → external::Store`. 359 Rust + 746 Python green.
+- **v0.8.22 — macrame-db 0.15 → 0.17 DONE** (off-plan dep bump). The 0.16
+  cycle's one caller-visible break was the W15.3 `#[non_exhaustive]` wave:
+  four literal sites in `cold_start.rs` moved to constructors
+  (`NodeAttributes::new`, `MaterializedState::empty` + pub field
+  assignment; `EdgeBelief::new`/`ConceptUpsert` builder already
+  constructor-based, `DbError` never matched exhaustively). libsql stays
+  0.9.30 — 0.17.0 still pins it. Schema v15→v19 rungs climb on open;
+  ledger round-trip counts identical (5 edges/16 fns on r2proj). 359 Rust
+  + 746 Python green; battery_round2 119/119.

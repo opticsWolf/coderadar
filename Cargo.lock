@@ -445,7 +445,7 @@ checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
 name = "core_indexer"
-version = "0.8.21"
+version = "0.8.22"
 dependencies = [
  "crossbeam-channel",
  "dashmap",
@@ -1640,9 +1640,9 @@ dependencies = [
 
 [[package]]
 name = "macrame-db"
-version = "0.15.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4ac819f0d116021737daba133ce5dca0934cd2da534c966742c46f723ee3417"
+checksum = "2e2a46b8789555136ad929e72df4ebb5b7cda21e8c6512dc45a1dec54ad2a54d"
 dependencies = [
  "bincode",
  "libsql",
