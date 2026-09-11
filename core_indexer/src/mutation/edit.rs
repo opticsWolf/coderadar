@@ -128,7 +128,8 @@ pub fn diff_preview_for_edits(edits: &[MutationEdit]) -> String {
             .filter(|e| e.file == file)
             .cloned()
             .collect();
-        match std::fs::read_to_string(file) {
+        // F14: edit files are canonical root-relative ids — resolve for disk.
+        match std::fs::read_to_string(super::disk_path_for(file)) {
             Ok(original) => match apply_edits_to_file(&original, &for_file) {
                 Ok(updated) => out.push_str(&unified_diff(file, &original, &updated)),
                 Err(e) => out.push_str(&format!("# {}: edits do not apply ({:?})\n", file, e)),

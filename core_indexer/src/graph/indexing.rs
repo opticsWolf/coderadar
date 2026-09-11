@@ -247,7 +247,15 @@ impl CodeGraph {
             parse_quality: module_quality, file_version: 1, content_hash: module_content_hash,
                         embedding: EmbeddingVec::default(),        };
         projection.modules.insert(module_id.clone(), Arc::new(module));
-        projection.file_to_modules.insert(PathBuf::from(file_path), vec![module_id]);
+        // F14: the map is keyed NORMALIZED (dot-prefix stripped, forward
+        // slashes) — the one join key every writer and lookup agrees on,
+        // independent of which id spelling each path mints.
+        projection.file_to_modules.insert(
+            std::path::PathBuf::from(
+                crate::graph::module_resolution::normalize_path_str(file_path),
+            ),
+            vec![module_id],
+        );
 
         projection
     }

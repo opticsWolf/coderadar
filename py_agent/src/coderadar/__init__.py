@@ -19,7 +19,7 @@ from __future__ import annotations
 #: installed wheel/sdist reports its own version) and falls back to the
 #: release constant below, which MUST be kept in sync with pyproject.toml
 #: and Cargo.toml [workspace.package] on every bump.
-_FALLBACK_VERSION = "0.8.13"
+_FALLBACK_VERSION = "0.8.14"
 
 
 def _resolve_version() -> str:
@@ -756,6 +756,13 @@ def analyze(root: str, create_store: bool = False, exclude: list | None = None) 
         _analyze_rust(root, create_store, exclude or [])
     except ImportError:
         pass
+    # F14: readers (_read_source et al.) resolve canonical relative ids
+    # against this, not the CWD.
+    try:
+        from coderadar.excludes import set_indexed_root as _set_root
+        _set_root(root)
+    except ImportError:
+        pass
 
     # v0.5: Extract __all__ star exports for wildcard import resolution.
     # Must run after Rust analysis populates modules, before MCP server reads.
@@ -848,6 +855,12 @@ def load(db_path: str, root: Optional[str] = None) -> CodeGraph:
 
     if root:
         _apply_star_exports(root)
+        # F14: readers resolve canonical relative ids against this.
+        try:
+            from coderadar.excludes import set_indexed_root as _set_root
+            _set_root(root)
+        except ImportError:
+            pass
 
     return CodeGraph()
 

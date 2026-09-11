@@ -4,9 +4,81 @@ use crate::types::*;
 
 /// Normalize a file path string: convert backslashes to forward slashes,
 /// strip leading ./ or .\ for consistent keying.
-pub(super) fn normalize_path_str(p: &str) -> String {
+pub(crate) fn normalize_path_str(p: &str) -> String {
     let s = p.trim_start_matches("./").trim_start_matches(".\\");
     s.replace('\\', "/")
+}
+
+/// Lexically clean a path without touching the filesystem (no `canonicalize`:
+/// `update_file` mints ids for files that may not exist on disk yet when
+/// content is provided inline). Resolves `.` and `..` components.
+fn clean_lexical(p: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for comp in p.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            c => out.push(c.as_os_str()),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        out.push(".");
+    }
+    out
+}
+
+/// The ONE canonical file form for entity ids (F14 / items 12a, 16):
+/// project-root-relative with the walk's dot prefix (`.\rel` on
+/// Windows, `./rel` elsewhere) in native separators.
+///
+/// `analyze` used to mint whatever spelling the walk root produced
+/// (`sub\x.py` for `root="sub"`, absolute ids for absolute roots) while
+/// `update_file` minted `normalize_path_str` form (`x/y.py`) — three forms
+/// in one store, invisible at query time (reader-side `canonical()`), fatal
+/// to store keys, cross-form call edges and the slop scan's module lookup.
+/// Both write paths now mint through here, so the form is root-independent:
+/// `analyze(".")`, `analyze(abs_root)` and `update_file("x/y.py")` all
+/// yield the same ids. Paths outside the indexed root keep absolute form
+/// (no worse than today; they never matched anything anyway).
+pub(crate) fn canonical_file_form(path: &str) -> String {
+    let root = crate::indexed_root();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let p = std::path::Path::new(path);
+    let abs = if p.is_absolute() {
+        clean_lexical(p)
+    } else {
+        let via_cwd = clean_lexical(&cwd.join(p));
+        if via_cwd.starts_with(&root) {
+            via_cwd
+        } else {
+            clean_lexical(&root.join(p))
+        }
+    };
+    let rel = match abs.strip_prefix(&root) {
+        Ok(r) if !r.as_os_str().is_empty() => r.to_path_buf(),
+        // Outside the root (or the root itself): absolute form, as before.
+        _ => return normalize_path_str(path),
+    };
+    let sep = std::path::MAIN_SEPARATOR;
+    let joined = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join(&sep.to_string());
+    format!(".{sep}{joined}")
+}
+
+/// Whether a concept-id file head is already canonical: relative with the
+/// dot prefix (`./` or `.\`). Everything else — forward-slash update-form
+/// (`tests/x.py`), bare (`x.py`), absolute — is a pre-fix leftover and a
+/// retraction candidate on the next analyze.
+pub(crate) fn is_canonical_file_head(head: &str) -> bool {
+    head.starts_with("./") || head.starts_with(".\\")
 }
 
 /// Extensions we recognize; also handles /__init__.* patterns for
@@ -174,4 +246,39 @@ pub(super) fn find_symbol_in_module(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod canonical_form_tests {
+    use super::*;
+
+    /// canonical_file_form reads the INDEXED_ROOT global, which tests must
+    /// not touch (parallel execution). These tests therefore only assert
+    /// the SHAPE INVARIANT — dot prefix, native separators, idempotence —
+    /// plus the head predicate, which is pure. Exact-root tests live in
+    /// projection_tests (agreement between write paths).
+    #[test]
+    fn canonical_form_has_dot_prefix_and_native_separators() {
+        let c = canonical_file_form("some/dir/x.py");
+        let sep = std::path::MAIN_SEPARATOR;
+        assert!(
+            c.starts_with(&format!(".{sep}")),
+            "dot-prefixed, got {c:?}"
+        );
+        assert!(!c.contains(if sep == '/' { '\\' } else { '/' }), "native separators, got {c:?}");
+        // Idempotent: canonicalizing twice is a fixed point.
+        assert_eq!(canonical_file_form(&c), c);
+        // Forward-slash update-form input converges to the same id.
+        assert_eq!(canonical_file_form("some\\dir\\x.py"), c);
+    }
+
+    #[test]
+    fn canonical_head_predicate_sorts_all_three_historical_forms() {
+        assert!(is_canonical_file_head(r".\tests\x.py"));
+        assert!(is_canonical_file_head("./tests/x.py"));
+        assert!(!is_canonical_file_head("tests/x.py")); // update_file form (F14)
+        assert!(!is_canonical_file_head("tests\\x.py")); // rooted-walk form
+        assert!(!is_canonical_file_head("x.py")); // bare form
+        assert!(!is_canonical_file_head(r"D:\proj\x.py")); // absolute form
+    }
 }

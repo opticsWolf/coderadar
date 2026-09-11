@@ -109,8 +109,7 @@ def is_excluded(path: str | Path, root: str | Path) -> bool:
     return _fallback_excluded(rel_posix)
 
 
-def iter_project_files(
-    root: str | Path,
+def iter_project_files(    root: str | Path,
     *,
     suffixes: Sequence[str] = (),
     names: Iterable[str] = (),
@@ -136,3 +135,36 @@ def iter_project_files(
             if is_excluded(candidate, root_path):
                 continue
             yield candidate
+
+
+# ── Indexed-root tracking (F14: readers) ────────────────────────────────
+# Entity ids are canonical root-relative form (`.\x.py`). Any Python code
+# that opens such a path must resolve it against the indexed root — the
+# process CWD is only right by accident. `analyze()`/`load()` record the
+# root here; readers resolve through `resolve_entity_path`.
+_INDEXED_ROOT: Path | None = None
+
+
+def set_indexed_root(root: str | Path | None) -> None:
+    """Record the project root the current graph was indexed from."""
+    global _INDEXED_ROOT
+    _INDEXED_ROOT = Path(os.path.abspath(os.fspath(root))) if root else None
+
+
+def resolve_entity_path(path: str | Path) -> Path:
+    """Resolve a possibly root-relative entity path for disk reads."""
+    p = Path(os.fspath(path))
+    if p.is_absolute():
+        return p
+    # F14: the Rust core knows the indexed root in every flow (analyze and
+    # load record it, even through the raw binding); the Python record is
+    # the fallback for extension-less flows.
+    try:
+        from coderadar._core import indexed_root_py as _rust_root
+        if _rust_root():
+            return Path(_rust_root()) / p
+    except (ImportError, Exception):
+        pass
+    if _INDEXED_ROOT is not None:
+        return _INDEXED_ROOT / p
+    return p

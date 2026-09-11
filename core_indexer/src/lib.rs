@@ -65,6 +65,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load_snapshot, m)?)?;
     m.add_function(wrap_pyfunction!(store_repair, m)?)?;
     m.add_function(wrap_pyfunction!(default_excludes, m)?)?;
+    m.add_function(wrap_pyfunction!(indexed_root_py, m)?)?;
     m.add_function(wrap_pyfunction!(is_path_excluded, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
@@ -95,8 +96,31 @@ static GLOBAL_GRAPH: std::sync::LazyLock<RwLock<Option<CodeGraph>>> =
 ///
 /// The mutation policy confines writes to it, so a plan cannot reach outside
 /// the project it was planned against. Set by `analyze`.
-static INDEXED_ROOT: std::sync::LazyLock<RwLock<Option<std::path::PathBuf>>> =
+pub(crate) static INDEXED_ROOT: std::sync::LazyLock<RwLock<Option<std::path::PathBuf>>> =
     std::sync::LazyLock::new(|| RwLock::new(None));
+
+/// The indexed root for write-path canonicalization (F14): `analyze` sets
+/// it (canonicalized absolute); before any analyze, or when it cannot be
+/// read, the process working directory stands in.
+pub(crate) fn indexed_root() -> std::path::PathBuf {
+    if let Some(root) = INDEXED_ROOT.read().clone() {
+        return strip_verbatim_prefix(root);
+    }
+    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+}
+
+/// `std::fs::canonicalize` returns verbatim paths on Windows (`\\?\D:\…`),
+/// which defeat `starts_with`/`strip_prefix` against regular paths.
+fn strip_verbatim_prefix(p: std::path::PathBuf) -> std::path::PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return std::path::PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        return std::path::PathBuf::from(rest);
+    }
+    p
+}
 
 /// The configuration every consumer in this process reads.
 ///
@@ -499,6 +523,14 @@ fn default_excludes() -> Vec<String> {
     DEFAULT_EXCLUDES.iter().map(|s| s.to_string()).collect()
 }
 
+/// The indexed root `analyze`/`load_snapshot` recorded (F14): Python
+/// readers resolve canonical relative ids against this, not the CWD.
+/// Empty string when nothing has been indexed yet in this process.
+#[pyfunction]
+fn indexed_root_py() -> String {
+    indexed_root().to_string_lossy().to_string()
+}
+
 /// One shared exclusion predicate for the Python passes (item 7): star
 /// exports, framework resolvers and any library caller ask THIS whether a
 /// path is excluded instead of keeping private skip lists. `path` is
@@ -637,11 +669,33 @@ pub(crate) fn path_excluded(
     false
 }
 
-/// Retire live concepts whose file the current exclusion set skips
-/// (item 7: store retraction). Concept ids are `relpath::Qualified.name`
-/// (v1 absolute ids never match the relative matcher and are F6's job).
+/// Retire live concepts whose file head is not the canonical form (F14
+/// migration): forward-slash `update_file` ids (`tests/x.py::f`), bare
+/// names and absolute paths from absolute-root analyzes. Fresh writes are
+/// canonical since the fix, so anything else is an orphan no write path
+/// will ever touch again — the same reasoning as F6's v1 retirement.
+fn retire_noncanonical_concepts(
+    store: &crate::storage::CodeGraphStore,
+) -> macrame::Result<usize> {
+    use crate::graph::module_resolution::is_canonical_file_head;
+    let doomed: Vec<String> = store
+        .live_concept_ids()?
+        .into_iter()
+        .filter(|id| {
+            let head = id.split("::").next().unwrap_or("");
+            !head.is_empty() && !is_canonical_file_head(head)
+        })
+        .collect();
+    if doomed.is_empty() {
+        return Ok(0);
+    }
+    let (n, _) = store.retire_entities(&doomed)?;
+    Ok(n)
+}
 /// Files inherit their directories' exclusion, so every ancestor dir is
 /// checked too — patterns like `.venv/` only match directories.
+/// Concept ids are `relpath::Qualified.name` (v1 absolute ids never match
+/// the relative matcher and are F6's job).
 fn retire_excluded_concepts(
     store: &crate::storage::CodeGraphStore,
     extra: &[String],
@@ -714,6 +768,13 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
 
     let config = active_config();
     let mut graph = CodeGraph::new((*config).clone());
+    // F14: the write-time canonical form strips THIS root — it must be
+    // visible before the walk mints the first id, not after the flush.
+    // (Previously set at the end; every FileTask fell back to unrooted
+    // spelling and update/remove could never match analyze's ids.)
+    *INDEXED_ROOT.write() = std::fs::canonicalize(root)
+        .ok()
+        .or_else(|| Some(std::path::PathBuf::from(root)));
 
     // Attach Macrame persistent store — Macrame/libSQL needs a file path, not
     // a directory.
@@ -783,8 +844,14 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                             continue;
                         }
                         if let Ok(source) = fs::read_to_string(path) {
+                            // F14: mint the canonical id form at write time —
+                            // the walk's spelling embeds the root used (`.`
+                            // vs absolute), so it is normalized here.
+                            let canon = crate::graph::module_resolution::canonical_file_form(
+                                &path.to_string_lossy(),
+                            );
                             tasks.push(FileTask {
-                                path: path.to_string_lossy().to_string(),
+                                path: canon,
                                 source,
                                 language,
                             });
@@ -797,8 +864,11 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                             && CodeGraph::ts_language(&language).is_some()
                         {
                             if let Ok(source) = fs::read_to_string(path) {
+                                let canon = crate::graph::module_resolution::canonical_file_form(
+                                    &path.to_string_lossy(),
+                                );
                                 tasks.push(FileTask {
-                                    path: path.to_string_lossy().to_string(),
+                                    path: canon,
                                     source,
                                     language,
                                 });
@@ -969,6 +1039,9 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         // the CURRENT exclusion set skips — same matcher as the walk, so
         // no pass disagrees about what "excluded" means. Skipped while
         // workers panicked: a partial walk must never mass-retire.
+        // F14: same guarded block retires non-canonical id forms
+        // (forward-slash update_file ids, absolute ids) — fresh writes
+        // are canonical, so the rest are orphans no path will touch.
         if panicked_workers == 0 {
             if let Some(ref store) = graph.store {
                 match retire_excluded_concepts(store, extra_excludes) {
@@ -977,6 +1050,13 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                     ),
                     Ok(_) => {}
                     Err(e) => eprintln!("[diag] excluded-path retraction failed: {e:?}"),
+                }
+                match retire_noncanonical_concepts(store) {
+                    Ok(n) if n > 0 => eprintln!(
+                        "[coderadar] retired {n} non-canonical concept(s) from pre-fix id forms"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("[diag] non-canonical retraction failed: {e:?}"),
                 }
             }
         }
@@ -1006,9 +1086,6 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
 
     let mut guard = GLOBAL_GRAPH.write();
     *guard = Some(graph);
-    *INDEXED_ROOT.write() = std::fs::canonicalize(root)
-        .ok()
-        .or_else(|| Some(std::path::PathBuf::from(root)));
 
     AnalyzeOutcome { files_indexed, total_entities, failures, panicked_workers }
 }
@@ -1117,7 +1194,10 @@ fn remove_file(file_path: &str) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|graph, _snap| {
         let started = std::time::Instant::now();
-        let removed = graph.remove_file(file_path);
+        // F14: remove by the canonical form or the walk-form entry is
+        // never found (forward-slash input vs `\` -joined stored ids).
+        let canonical = crate::graph::module_resolution::canonical_file_form(file_path);
+        let removed = graph.remove_file(&canonical);
         let dict = PyDict::new(py);
         dict.set_item("entities_removed", removed.len())?;
         dict.set_item("removed_ids", removed)?;
@@ -1128,6 +1208,22 @@ fn remove_file(file_path: &str) -> PyResult<PyObject> {
 
 // ── Mutation planning ──────────────────────────────────────────────────────
 
+/// Canonicalize an entity id's file head at the mutation boundary (F14):
+/// agents hold ids in whatever spelling they were minted under (absolute,
+/// walk-form, update-form) while the projection is canonical. The `::`-tail
+/// (qualified name) never contains a path, so the head is everything
+/// before the first `::`. Ids without `::` pass through untouched.
+fn canonical_entity_id(entity_id: &str) -> String {
+    match entity_id.split_once("::") {
+        Some((head, tail)) => format!(
+            "{}::{}",
+            crate::graph::module_resolution::canonical_file_form(head),
+            tail
+        ),
+        None => entity_id.to_string(),
+    }
+}
+
 #[pyfunction]
 fn plan_body_replacement(
     entity_id: &str, new_body: &str,
@@ -1136,8 +1232,9 @@ fn plan_body_replacement(
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|_graph, snap| {
         let engine = mutation_engine();
+        let entity_id = canonical_entity_id(entity_id);
         let plan = engine.plan_body_replacement(
-            entity_id, new_body, expected_hash, dry_run.unwrap_or(false), snap,
+            &entity_id, new_body, expected_hash, dry_run.unwrap_or(false), snap,
         ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
         plan_to_dict(py, &plan)
     })
@@ -1152,8 +1249,9 @@ fn plan_signature_update(
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|_graph, snap| {
         let engine = mutation_engine();
+        let entity_id = canonical_entity_id(entity_id);
         let plan = engine.plan_signature_update(
-            entity_id, new_signature,
+            &entity_id, new_signature,
             &call_site_values.unwrap_or_default(),
             inject_defaults.unwrap_or(true), dry_run.unwrap_or(false), snap,
         ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
@@ -1169,8 +1267,9 @@ fn plan_rename(
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|_graph, snap| {
         let engine = mutation_engine();
+        let entity_id = canonical_entity_id(entity_id);
         let plan = engine.plan_rename(
-            entity_id, new_name,
+            &entity_id, new_name,
             include_strings.unwrap_or(false), dry_run.unwrap_or(false), snap,
         ).map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
         plan_to_dict(py, &plan)
@@ -2495,8 +2594,13 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             let revision = state.seq_anchor;
             *LEDGER_REVISION.write() = Some(revision);
             *GLOBAL_GRAPH.write() = Some(graph);
+            // F14: canonicalized absolute, exactly like analyze_inner — a
+            // relative root here made every later strip_prefix fail and
+            // every update fall back to unrooted spelling.
             if let Some(r) = root_owned {
-                *INDEXED_ROOT.write() = Some(std::path::PathBuf::from(r));
+                *INDEXED_ROOT.write() = Some(
+                    std::fs::canonicalize(&r).unwrap_or_else(|_| std::path::PathBuf::from(r)),
+                );
             }
             Ok((revision, stats, indexed_at))
         }

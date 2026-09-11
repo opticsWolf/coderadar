@@ -2679,6 +2679,13 @@ def _read_source(entity: dict) -> str | None:
     end_line = entity.get("end_line", start_line)
     if not file_path or not start_line:
         return None
+    # F14: entity paths are canonical root-relative ids — resolve against
+    # the indexed root, not the CWD.
+    try:
+        from coderadar.excludes import resolve_entity_path as _resolve
+        file_path = _resolve(file_path)
+    except ImportError:
+        pass
     try:
         with open(file_path, encoding="utf-8", errors="replace") as f:
             all_lines = f.readlines()

@@ -215,6 +215,59 @@ impl CodeGraph {
         //    Normalize entity IDs for cross-platform prefix matching.
         let normalized_file_path = normalize_path_str(file_path);
 
+        let mut inserted = 0usize;
+        let mut removed = 0usize;
+        // Kept so the ledger can be told what went away; the counter alone
+        // says how many, which is not enough to retire them.
+        let mut removed_ids: Vec<EntityId> = Vec::new();
+
+        // F14 convergence (one-time per entity): fresh units mint the
+        // canonical spelling while the projection may still hold a pre-fix
+        // one (`tests/x.py::f`, rooted-walk `sub\x.py::f`). Normalized ids
+        // match, so without this the stale spelling would survive next to
+        // the canonical insert — the duplication the `canonical()` reuse
+        // below used to paper over by pinning the old spelling forever.
+        // Drop stale spellings up front; step 4 inserts the canonical ones
+        // (counted as removed + added exactly once).
+        let new_spellings: std::collections::HashMap<EntityId, EntityId> = units
+            .iter()
+            .map(|u| (normalize_path_str(&u.entity_id()), u.entity_id()))
+            .collect();
+        {
+            let mut respelled: Vec<EntityId> = Vec::new();
+            let mut note = |id: &EntityId| {
+                let normalized = normalize_path_str(id);
+                if !normalized.starts_with(&normalized_file_path) {
+                    return;
+                }
+                if let Some(canon) = new_spellings.get(&normalized) {
+                    if canon != id {
+                        respelled.push(id.clone());
+                    }
+                }
+            };
+            for id in projection.functions.keys() { note(id); }
+            for id in projection.classes.keys() { note(id); }
+            for id in projection.imports.keys() { note(id); }
+            for id in projection.constants.keys() { note(id); }
+            for id in projection.type_aliases.keys() { note(id); }
+            for id in projection.modules.keys() { note(id); }
+            for id in respelled {
+                projection.functions.remove(&id);
+                projection.classes.remove(&id);
+                projection.imports.remove(&id);
+                projection.constants.remove(&id);
+                projection.type_aliases.remove(&id);
+                projection.modules.remove(&id);
+                projection.callers_by_callee.remove(&id);
+                projection.callees_by_caller.remove(&id);
+                projection.subclasses.remove(&id);
+                projection.overridden_by.remove(&id);
+                removed_ids.push(id);
+                removed += 1;
+            }
+        }
+
         // Map normalized id → the exact spelling the projection already stores.
         //
         // `analyze` walks with OS separators and records `.\p.py::f`; this path
@@ -301,11 +354,8 @@ impl CodeGraph {
             .filter_map(|u| match u { ExtractedUnit::TypeAlias(t) => Some(normalize_id(&t.id)), _ => None })
             .collect();
 
-        let mut inserted = 0usize;
-        let mut removed = 0usize;
-        // Kept so the ledger can be told what went away; the counter alone
-        // says how many, which is not enough to retire them.
-        let mut removed_ids: Vec<EntityId> = Vec::new();
+        // (`inserted`/`removed`/`removed_ids` are declared up top — the F14
+        // respell pass in §1 already counted its one-time removals.)
 
         // 3. Remove entities that don't exist in new units
         let remove_entity = |id: &str,
@@ -347,6 +397,24 @@ impl CodeGraph {
         }
 
         // 4. Insert new entities + re-insert changed ones (hash mismatch)
+        // F14: the Module unit is upserted too — previously only members
+        // were, so a file added via update_file had functions but no
+        // module: module lookups (slop scan, file_to_modules, parent
+        // resolution) went blind on every update-ingested file.
+        let mut member_ids: std::collections::HashMap<&str, Vec<EntityId>> =
+            std::collections::HashMap::new();
+        for unit in units {
+            let (kind, id) = match unit {
+                ExtractedUnit::Function(f) => ("f", f.id.clone()),
+                ExtractedUnit::Class(c) => ("c", c.id.clone()),
+                ExtractedUnit::Import(i) => ("i", i.id.clone()),
+                ExtractedUnit::Constant(k) => ("k", k.id.clone()),
+                ExtractedUnit::TypeAlias(t) => ("t", t.id.clone()),
+                _ => continue,
+            };
+            let canon = canonical(&id);
+            member_ids.entry(kind).or_default().push(canon);
+        }
         for unit in units {
             let id = unit.entity_id();
             let needs_insert = match unit {
@@ -359,7 +427,18 @@ impl CodeGraph {
                 ExtractedUnit::Import(_) => !old_imports.contains(&normalize_id(&id)),
                 ExtractedUnit::Constant(_) => !old_constants.contains(&normalize_id(&id)),
                 ExtractedUnit::TypeAlias(_) => !old_aliases.contains(&normalize_id(&id)),
-                ExtractedUnit::Module(_) => true,
+                ExtractedUnit::Module(m) => match projection.modules.get(&module_id) {
+                    // Unchanged module: skip the upsert so clean updates
+                    // stay (0, 0). Anything else (missing, re-parsed
+                    // quality/content change) rewrites it below.
+                    Some(existing)
+                        if existing.content_hash == m.content_hash
+                            && existing.parse_quality == m.parse_quality =>
+                    {
+                        false
+                    }
+                    _ => true,
+                },
                 ExtractedUnit::Field(_) => true,
             };
 
@@ -457,6 +536,41 @@ impl CodeGraph {
                     projection.type_aliases.insert(entity_id, Arc::new(alias));
                     inserted += 1;
                 }
+                ExtractedUnit::Module(m) => {
+                    let file_stem = std::path::Path::new(file_path)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown");
+                    let module = Module {
+                        id: module_id.clone(),
+                        name: file_stem.to_string(),
+                        path: std::path::PathBuf::from(file_path),
+                        language: language.clone(),
+                        package: None,
+                        exports: vec![],
+                        star_exports: None,
+                        classes: member_ids.get("c").cloned().unwrap_or_default(),
+                        functions: member_ids.get("f").cloned().unwrap_or_default(),
+                        imports: member_ids.get("i").cloned().unwrap_or_default(),
+                        constants: member_ids.get("k").cloned().unwrap_or_default(),
+                        type_aliases: member_ids.get("t").cloned().unwrap_or_default(),
+                        parse_quality: m.parse_quality,
+                        file_version: 1,
+                        content_hash: m.content_hash,
+                        embedding: EmbeddingVec::default(),
+                    };
+                    projection.modules.insert(module_id.clone(), Arc::new(module));
+                    // Normalized join key (see build_fragment) — closes the
+                    // gap where update-added files were never mapped.
+                    let key = std::path::PathBuf::from(normalize_path_str(file_path));
+                    let entry = projection.file_to_modules.entry(key).or_default();
+                    if !entry.contains(&module_id) {
+                        entry.push(module_id.clone());
+                    }
+                    // Deliberately uncounted: the module row is bookkeeping
+                    // for lookups, not an entity the caller changed. Counting
+                    // it would report "2 added" for every 1-function edit.
+                }
                 _ => {}
             }
         }
@@ -479,9 +593,31 @@ impl CodeGraph {
         _force: Option<bool>,
     ) -> Result<UpdateOutcome, String> {
         let started = std::time::Instant::now();
-        // Normalize path for consistent lookups
-        let normalized = normalize_path_str(file_path);
-        let file_path = normalized.as_str();
+        // F14: mint the SAME form `analyze` writes (project-relative dot
+        // prefix, native separators) — not `normalize_path_str`'s
+        // forward-slash form, which forked every updated entity's id.
+        // The canonical form is an ID spelling, not a disk path: reads go
+        // through `disk_path` (indexed root first, CWD fallback) so
+        // `content=None` updates resolve wherever the caller stands.
+        let raw_input = file_path.to_string();
+        let disk_path = {
+            let p = std::path::Path::new(&raw_input);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                let root = crate::indexed_root();
+                let cand = root.join(p);
+                if cand.exists() {
+                    cand
+                } else {
+                    std::env::current_dir()
+                        .unwrap_or(root)
+                        .join(p)
+                }
+            }
+        };
+        let canonical = super::module_resolution::canonical_file_form(file_path);
+        let file_path = canonical.as_str();
         let lang = Language::from_extension(
             std::path::Path::new(file_path)
                 .extension()
@@ -497,7 +633,7 @@ impl CodeGraph {
         // Read source (or use provided content)
         let source = match content {
             Some(c) => c.to_string(),
-            None => std::fs::read_to_string(file_path)
+            None => std::fs::read_to_string(&disk_path)
                 .map_err(|e| format!("Failed to read file: {}", e))?,
         };
 
@@ -732,8 +868,11 @@ impl CodeGraph {
             content_hash: module_content_hash,
                         embedding: EmbeddingVec::default(),        };
         projection.modules.insert(module_id.clone(), Arc::new(module));
+        // F14: normalized join key (see build_fragment) — and the update
+        // path previously never recorded the mapping at all, so a file
+        // added via update_file could not be removed by path.
         projection.file_to_modules
-            .entry(PathBuf::from(file_path))
+            .entry(PathBuf::from(normalize_path_str(file_path)))
             .or_default()
             .push(module_id);
     }

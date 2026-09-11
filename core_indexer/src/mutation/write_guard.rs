@@ -24,15 +24,29 @@ impl WriteGuard {
 
     /// Register a file path with its expected content hash.
     /// The watcher will suppress events for this path for TTL duration (default 5s).
+    ///
+    /// F14: keys are normalized on both sides (`suppress` and the queries
+    /// below) — mutation keys are canonical ids (`.\x.py`) while watcher
+    /// events arrive in walked form, and exact-match missed across the two.
     pub fn suppress(&self, path: PathBuf, expected_hash: String, ttl_secs: u64) {
-        self.suppressed
-            .insert(path, (expected_hash, Instant::now() + std::time::Duration::from_secs(ttl_secs)));
+        self.suppressed.insert(
+            PathBuf::from(crate::graph::module_resolution::normalize_path_str(
+                &path.to_string_lossy(),
+            )),
+            (expected_hash, Instant::now() + std::time::Duration::from_secs(ttl_secs)),
+        );
+    }
+
+    fn key_of(path: &PathBuf) -> PathBuf {
+        PathBuf::from(crate::graph::module_resolution::normalize_path_str(
+            &path.to_string_lossy(),
+        ))
     }
 
     /// Check if a path has an active (non-expired) suppression entry.
     /// Cheap — does not hash file content.
     pub fn is_suppressed(&self, path: &PathBuf) -> bool {
-        if let Some(entry) = self.suppressed.get(path) {
+        if let Some(entry) = self.suppressed.get(&Self::key_of(path)) {
             let (_, expiry) = entry.value();
             return Instant::now() <= *expiry;
         }
@@ -42,12 +56,13 @@ impl WriteGuard {
     /// Check if a file event should be dropped (the engine just wrote it).
     /// Returns true if the event should be suppressed.
     pub fn should_drop(&self, path: &PathBuf, current_hash: &str) -> bool {
-        if let Some(entry) = self.suppressed.get(path) {
+        let key = Self::key_of(path);
+        if let Some(entry) = self.suppressed.get(&key) {
             let (expected_hash, expiry) = entry.value();
             if Instant::now() > *expiry {
                 // TTL expired — remove stale entry
                 drop(entry);
-                self.suppressed.remove(path);
+                self.suppressed.remove(&key);
                 return false;
             }
             // If hash matches expected, suppress

@@ -97,6 +97,37 @@ fn module_file_path(projection: &ProjectedGraph, module_id: &str) -> String {
         .to_string()
 }
 
+/// Read a project file by module-derived path (F14): module paths are the
+/// canonical root-relative form (`.\src\foo.py`), which resolves from the
+/// filesystem only via the indexed root — not the process CWD, which may
+/// be anywhere for library users. Absolute paths pass through untouched.
+fn read_project_file(path: &str) -> String {
+    std::fs::read_to_string(disk_path_for(path)).unwrap_or_default()
+}
+
+/// Resolve a canonical id-form path for disk IO (F14): absolute passes
+/// through; relative resolves against the indexed root, then CWD.
+/// Report keys stay in id form — only the fs ops use the resolved path.
+fn disk_path_for(path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+    let root = crate::indexed_root();
+    let cand = root.join(p);
+    // The file itself (reads, backups) or its parent dir (tmp/backup
+    // targets that do not exist yet) decides — never the CWD by default.
+    if cand.exists() {
+        return cand;
+    }
+    if let Some(parent) = cand.parent() {
+        if !parent.as_os_str().is_empty() && parent.exists() {
+            return cand;
+        }
+    }
+    std::env::current_dir().unwrap_or(root).join(p)
+}
+
 /// Confirm that `span` in `source` still holds the identifier the index recorded.///
 /// Spans are captured at index time. The stale-write hash carried on every edit
 /// is computed from the same read the span was resolved against, so it proves
@@ -158,7 +189,7 @@ fn textual_call_sites(projection: &ProjectedGraph, name: &str) -> Vec<(String, u
         } else {
             continue;
         }
-        let source = std::fs::read_to_string(&file).unwrap_or_default();
+        let source = read_project_file(&file);
         for (idx, line) in source.lines().enumerate() {
             // One report per line is enough — the snippet carries the context.
             for (pos, _) in line.match_indices(&needle) {
@@ -284,7 +315,7 @@ fn verify_parse_introduced_error(
             .unwrap_or("py")
     );
     let before = parse_has_error(lang, original);
-    let after_bytes = std::fs::read(file_path).ok()?;
+    let after_bytes = std::fs::read(disk_path_for(file_path)).ok()?;
     let after = parse_has_error(lang, &after_bytes);
 
     match (before, after) {
@@ -347,17 +378,25 @@ fn path_matches(rel: &str, pattern: &str) -> bool {
 /// The file may not exist yet (`create_entity`), so fall back to canonicalizing
 /// the parent directory and re-attaching the file name — enough to defeat
 /// `..` traversal, which is the point.
-fn canonicalize_target(path: &str) -> std::path::PathBuf {
+fn canonicalize_target(path: &str, project_root: Option<&std::path::Path>) -> std::path::PathBuf {
     let p = std::path::Path::new(path);
-    if let Ok(c) = std::fs::canonicalize(p) {
+    // F14: plan targets are canonical root-relative ids (`.\d.py`) — they
+    // resolve against the project root, not the process CWD (the agent may
+    // stand anywhere; resolving via CWD put every canonical id outside
+    // the root and every plan died at the gate).
+    let abs = match (p.is_absolute(), project_root) {
+        (false, Some(root)) => root.join(p),
+        _ => p.to_path_buf(),
+    };
+    if let Ok(c) = std::fs::canonicalize(&abs) {
         return c;
     }
-    match (p.parent(), p.file_name()) {
+    match (abs.parent(), abs.file_name()) {
         (Some(parent), Some(name)) => match std::fs::canonicalize(parent) {
             Ok(c) => c.join(name),
-            Err(_) => p.to_path_buf(),
+            Err(_) => abs,
         },
-        _ => p.to_path_buf(),
+        _ => abs,
     }
 }
 
@@ -441,7 +480,7 @@ impl MutationEngine {
                 ));
             }
 
-            let target = canonicalize_target(&edit.file);
+            let target = canonicalize_target(&edit.file, self.project_root.as_deref());
 
             let rel = match &self.project_root {
                 Some(root) => match target.strip_prefix(root) {
@@ -712,7 +751,7 @@ impl MutationEngine {
 
         // Detect indent style from the file (spaces vs tabs, width).
         let file_path = module_file_path(projection, &fn_entity.parent_module);
-        let file_source = std::fs::read_to_string(&file_path).unwrap_or_default();
+        let file_source = read_project_file(&file_path);
 
         // Stale-write guard: hash the current body span content so apply() can
         // reject the edit if the file changed between planning and applying.
@@ -827,7 +866,7 @@ impl MutationEngine {
         let params_span = fn_entity.params_span;
 
         let def_file = module_file_path(projection, &fn_entity.parent_module);
-        let def_source = std::fs::read_to_string(&def_file).unwrap_or_default();
+        let def_source = read_project_file(&def_file);
 
         // Warnings live for the whole plan: the rebase below may add one.
         let mut warnings = Vec::new();
@@ -1082,7 +1121,7 @@ impl MutationEngine {
                 continue;
             };
             let caller_file = module_file_path(projection, &caller_fn.parent_module);
-            let caller_source = std::fs::read(&caller_file).unwrap_or_default();
+            let caller_source = read_project_file(&caller_file).into_bytes();
 
             for (i, rc) in caller_fn.resolved_calls.iter().enumerate() {
                 let targets_entity = match rc {
@@ -1147,7 +1186,7 @@ impl MutationEngine {
 
         // 1. Definition: rewrite name_span
         let def_file = module_file_path(projection, &fn_entity.parent_module);
-        let def_source = std::fs::read(&def_file).unwrap_or_default();
+        let def_source = read_project_file(&def_file).into_bytes();
         // The definition anchors the whole rename — if the index no longer
         // agrees with disk here, every span in this plan is suspect. Fail the
         // plan rather than renaming call sites against a definition we would
@@ -1244,7 +1283,7 @@ impl MutationEngine {
 
         // 1. Definition: rewrite name_span
         let def_file = module_file_path(projection, &cls.parent_module);
-        let def_source = std::fs::read(&def_file).unwrap_or_default();
+        let def_source = read_project_file(&def_file).into_bytes();
         if !span_holds_name(&def_source, cls.name_span, &cls.name) {
             return Err(MutationError::StaleIndex {
                 file: def_file,
@@ -1272,7 +1311,7 @@ impl MutationEngine {
                 continue;
             };
             let sub_file = module_file_path(projection, &sub.parent_module);
-            let sub_source = std::fs::read(&sub_file).unwrap_or_default();
+            let sub_source = read_project_file(&sub_file).into_bytes();
 
             for base in sub.bases.iter().filter(|b| b.name == cls.name) {
                 if base.path.is_empty() {
@@ -1387,7 +1426,8 @@ impl MutationEngine {
         projection: &ProjectedGraph,
     ) -> Result<MutationPlan, MutationError> {
         // 1. Determine insertion point + replacement (with newline normalization)
-        let file_bytes = std::fs::read(target_file).unwrap_or_default();
+        // F14: agent-supplied target resolves against the indexed root.
+        let file_bytes = std::fs::read(disk_path_for(target_file)).unwrap_or_default();
         let file_len = file_bytes.len();
         let code_trimmed = code.trim_matches(['\n', '\r']);
 
@@ -1493,7 +1533,14 @@ impl MutationEngine {
         // Every non-empty expected_hash must match the current content at its
         // span. Any mismatch → reject the entire plan (nothing is written).
         for (file_path, edits) in &by_file {
-            let original = match std::fs::read_to_string(file_path) {
+            // F14: keys are canonical root-relative ids; resolve for disk.
+            let disk_path = if std::path::Path::new(file_path).is_absolute() {
+                std::path::PathBuf::from(file_path)
+            } else {
+                crate::indexed_root().join(file_path)
+            };
+            let original = match std::fs::read_to_string(&disk_path)
+                .or_else(|_| std::fs::read_to_string(file_path)) {
                 Ok(s) => s,
                 Err(e) => {
                     syntax_errors.push(SyntaxDiagnostic {
@@ -1538,8 +1585,8 @@ impl MutationEngine {
         let mut backups: Vec<(String, String)> = Vec::new(); // (file, backup)
         for file_path in by_file.keys() {
             let backup_path = format!("{}.coderadar-bak", file_path);
-            if let Err(e) = std::fs::copy(file_path, &backup_path) {
-                for (_, bp) in &backups { let _ = std::fs::remove_file(bp); }
+            if let Err(e) = std::fs::copy(disk_path_for(file_path), disk_path_for(&backup_path)) {
+                for (_, bp) in &backups { let _ = std::fs::remove_file(disk_path_for(bp)); }
                 syntax_errors.push(SyntaxDiagnostic {
                     file: file_path.clone(), line: 0, column: 0,
                     message: format!("backup failed: {}", e),
@@ -1578,9 +1625,9 @@ impl MutationEngine {
             };
 
             let tmp_path = format!("{}.coderadar-tmp", file_path);
-            let write_ok = std::fs::File::create(&tmp_path)
+            let write_ok = std::fs::File::create(disk_path_for(&tmp_path))
                 .and_then(|mut f| f.write_all(new_content.as_bytes()))
-                .and_then(|_| std::fs::rename(&tmp_path, file_path))
+                .and_then(|_| std::fs::rename(disk_path_for(&tmp_path), disk_path_for(file_path)))
                 .is_ok();
 
             if write_ok {
@@ -1593,7 +1640,7 @@ impl MutationEngine {
                     5,
                 );
             } else {
-                let _ = std::fs::remove_file(&tmp_path);
+                let _ = std::fs::remove_file(disk_path_for(&tmp_path));
                 rollback_all(&backups);
                 syntax_errors.push(SyntaxDiagnostic {
                     file: file_path.clone(), line: 0, column: 0,
@@ -1633,7 +1680,7 @@ impl MutationEngine {
 
         // ── Phase 5: Success — clean up backups ──────────────────────────
         for (_, backup_path) in &backups {
-            let _ = std::fs::remove_file(backup_path);
+            let _ = std::fs::remove_file(disk_path_for(backup_path));
         }
 
         MutationResult {
@@ -1654,8 +1701,8 @@ impl MutationEngine {
 /// Restore every backup (rollback) and remove the backup files.
 fn rollback_all(backups: &[(String, String)]) {
     for (file_path, backup_path) in backups {
-        let _ = std::fs::copy(backup_path, file_path);
-        let _ = std::fs::remove_file(backup_path);
+        let _ = std::fs::copy(disk_path_for(backup_path), disk_path_for(file_path));
+        let _ = std::fs::remove_file(disk_path_for(backup_path));
     }
 }
 
