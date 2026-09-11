@@ -25,6 +25,17 @@ Harnesses (kept for reproduction of every finding in
   the real undo path); writes `battery_mutation_output.txt`
 - `mcp_stdio_probe.py` — real protocol test of `coderadar mcp serve`
   (initialize → tools/list → tools/call)
+- `battery_round2.py` — round-2 sweep: ALL 22 CLI commands (flags + error
+  paths) and ALL 22 MCP tools (happy + error paths) against the `r2proj`
+  fixture below, plus new-surface checks; writes `battery_round2_output.txt`.
+  104/118 green at v0.8.16 — the 14 reds are findings R2-1…R2-16 filed in
+  [docs/road_to_v0.9.0.md](../../docs/road_to_v0.9.0.md)
+- `r2proj/` — round-2 fixture (committed sources only; the harness
+  git-inits it at runtime and removes `.git`/`.coderadar*` afterwards):
+  re-export chain (`main.py` → `app/__init__` → `app/helpers.py`), internal
+  edge (`main` → `run`), star-export `pkg/`, clone pair
+  (`combine`/`combine_copy`), smelly `sprawling_report`, TS `store.ts`
+  (incl. uncaptured `new Store()`), Rust `ledger.rs`, excludable `ignored/`
 
 Re-run after resetting the demo files:
 

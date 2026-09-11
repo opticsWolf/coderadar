@@ -798,3 +798,16 @@ why parity never caught it. Fixing means following re-export imports
 transitively (with a cycle guard): when the name isn't defined in the
 target module, walk that module's own `FromImport`s. Scoped to
 `FromImport` chains first; star-re-export (`__all__`) chains after.
+
+---
+
+## §10 — Round 2 (v0.8.16): wide sweep, new plan
+
+A second dogfood round covered all 22 CLI commands × flags/error-paths and
+all 22 MCP tools × happy/error paths (104/118 green) via
+`tests/cr_edit_tests/battery_round2.py` + `r2proj/` fixture. Findings R2-1…R2-16
+and the v0.9.0 plan live in `docs/road_to_v0.9.0.md`. Headliners: external
+callees invisible in index APIs (R2-1), synthetic edges re-persisted as CALLS
+(R2-2), toml excludes ignored by library `analyze()` (R2-7), `git-clean`
+false-dirty on ignored artifacts (R2-8), CLI ids not canonicalized (R2-16).
+Issue 9 re-confirmed open. Round-1 items 13/14/15/17 carry over (see plan §4).
