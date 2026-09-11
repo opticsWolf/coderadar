@@ -1,5 +1,14 @@
 # CodeRadar Dogfood Review — v0.8.0
 
+> **Batch complete (2026-09-11, `dev_dogfood` → v0.8.14).** Every P0/P1
+> finding below (F1–F11, F13–F15, item 7) is fixed, each with live
+> acceptance on this repo, 348 crate + 388 Python tests green. §0.1 maps
+> findings → fixing versions; §6 items carry their status; §8 notes what
+> the second pass got wrong; §9 lists the deferred follow-ups (filed as
+> issues, not carried on this branch). The finding text is preserved
+> verbatim as the historical record — read the status markers, not the
+> original severity, for current state.
+
 **Date:** 2026-09-10 · **Project exercised on itself:** `D:/User/Documents/Python/CodeRadar`
 (207 files: Python + Rust + fixture TS/JS/Java/PHP/Ruby/C#/Go)
 **Method:** every CLI command and every MCP tool driven against the repo, including
@@ -37,6 +46,27 @@ performance claims (554 ms analyze, millisecond cold start).
 | F13 | **P1 correctness** | Slop scan | `PlaceholderBody` detector silently returns **zero findings** on fresh-analyze and update_file graphs; works only after cold-load — provenance-dependent detector (§8) |
 | F14 | **P1 correctness** | ID forms | `codegraph_update_file` mints a **third** id form for new files (`tests/x.py::f`, forward slashes, no `.`\) — query-time canonicalization hides it from most tools, breaks store-keyed consistency |
 | F15 | P1 quality | Slop scan | `max_findings` truncates the **raw** list before grouping: a comment-marker flood (97% of default output is routine "Phase 1/Step 1" comments) can push every secret/stub finding past the cap, silently |
+
+### 0.1 Resolution status — batch complete at v0.8.14
+
+| Finding | Fixed in | Fix commit (dev_dogfood) | Note |
+|---|---|---|---|
+| F1 | v0.8.5 | `8a10fbf` | Root cause was the Layer-C slot-space mapping feeding fingerprint indexes to slot-space union-find, not the suspected LSH off-by-one; bounds-checked mapping + `catch_unwind` on `find_clones` |
+| F2 | v0.8.6 | `fef945e` | Anchored `path_matches` + `gate_plan_policy` in all five planners; dry-run refused |
+| F3 | v0.8.7 | `d40b808` | `brace_splice_body` reconstructs braces planner-side; no stored-concept change |
+| F4 | v0.8.8 | `841cbb6` | `rebased_params_span` validates fast path, re-resolves from def line, else `StaleIndex`; CRLF-safe |
+| F5 | v0.8.2 | `2329310` | Pruned walk + honoring `[project] exclude`; 17.6 s → 0.16 s (110×). Ledger persistence (the "or better") deferred — §9 |
+| F6 | v0.8.9 | `9206872` | `retire_v1_leftovers` on analyze + `store-repair` CLI + `init --force` ledger rebuild |
+| F7 | v0.8.12 | `431e37f` | Bridge decorators as production roots; source-backed `pub`-export rule; findings carry file+line |
+| F8 | v0.8.4 | `e00f641` | `_display_file` fallback chain; callers/callees/query/traverse show IDs + files |
+| F9 | v0.8.11 | `e4b17d7` | Elapsed-time heartbeats on stderr (Python side, no rebuild); short budgets stay silent |
+| F10 | v0.8.3 | `8a54a0a` | `_format_mutation_error`; `find_clones` `PanicException` caught |
+| F11 | v0.8.1 | `33dfe53` | `__version__` newer-of(metadata, fallback); CLI + metadata agree |
+| F12 | — | — | Partially: F8's file+ID display mitigates; bare-name fallback + traverse/json + shell `status` remain open — §9 |
+| F13 | v0.8.10 | `914ff83` | Correction: the fresh-analyze miss did **not** reproduce on the current binary (suspect stale v0.8.0 `.pyd` under the original probe); fixed by making the scan loud (skip accounting, PlaceholderStats) instead of chasing a ghost |
+| F14 | v0.8.14 | `2553a48` | Write-time canonicalization everywhere (see §8.4 note); 2 live ghosts retired; store verified zero non-canonical |
+| F15 | v0.8.10 | `914ff83` | Per-kind caps + dropped noise markers; cap applies after grouping |
+| item 7 | v0.8.13 | `369ccca` | One shared matcher (walk/retraction/watcher/Python), `exclude` CLI, `--exclude` flags, stats shows effective stack |
 
 ---
 
@@ -358,17 +388,23 @@ message ("content changed since planning (expected deadbeef, found c87e420f)")
 
 ## 6. Improvement plan
 
+> **Status (v0.8.14):** items 1–13 and 16 **done** (see §0.1 for
+> version/commit per finding); item 7 done in v0.8.13; items 14, 15, 17
+> **open** — moved to §9 as filed follow-ups. Per-item deltas from the
+> original text are noted inline.
+
 ### P0 — ship-stoppers (target: one week)
 
 1. **Bound the LSH pool off-by-one** (`clones/mod.rs:238`): build `pool`
    over a materialized filtered `Vec<(usize, &Fingerprint)>` and index with
    bounds-checked access; add `#[cfg(debug_assertions)]` invariant checks.
-   Then **wrap every PyO3-exposed analysis entry in `catch_unwind`** so a
-   panic becomes a tool error, and fix the stdio hang (response must complete
-   or fail — investigate why the Tokio request task dies without replying;
-   candidate: panic during the call kills the connection's read half). Add a
-   regression test that runs `find_clones` on this repo's fixtures
-   (`tests/rust/clones/`) in CI.
+   ✅ **Done in v0.8.5 — with a corrected diagnosis:** the panic was the
+   Layer-C slot-space bug (loop fed fingerprint indexes to slot-space
+   `uf`), not the suspected off-by-one; fixed with bounds-checked mapping
+   + `catch_unwind` in `find_clones`, which also resolves the stdio hang
+   (no panic → nothing wedges the connection). Regression coverage via
+   the clone test-suite (`cargo test clones`, 12 tests) rather than a
+   fixtures-in-CI job.
 2. **Anchor `path_matches`** (mutation/mod.rs:318): a leading-directory
    pattern (`src/`) must match `rel.starts_with("src/")` only — delete the
    `contains("/src/")` fallback for those; interior fragments keep the
@@ -377,15 +413,21 @@ message ("content changed since planning (expected deadbeef, found c87e420f)")
    ∉ allow; `src/x.py` ∈. Re-run `tests/cr_edit_tests/battery_mutation.py`.
    Also surface the policy check in **dry-run** (plan phase) so forbidden
    targets are refused before a diff preview is shown.
+   ✅ **Done in v0.8.6** — all five planners gated; 47 mutation tests;
+   live `py_agent/src` refused, `tests/` planned.
 3. **Fix the brace-language splice** (`edit.rs` / `indent.rs`): body_span for
    brace languages must exclude the braces, and the splice must re-emit
    `{ … }` around the re-indented body. Acceptance test: apply
    `battery_mutation.py`'s TS and Rust cases — status `Applied`, on-disk file
    re-parses clean, `update_file` reflects the change.
+   ✅ **Done in v0.8.7** — planner-side brace reconstruction (stored
+   concepts/hashes untouched); RS `total_cents` + TS `Router.match` Applied.
 4. **Fix `update_signature` span math**: the replacement span is computed from
    the *pre-edit* concept's span without rebasing to the file (off by body +
    docstring length). Add a regression test with two consecutive methods
    (the `demo_billing.py` case is exactly that fixture).
+   ✅ **Done in v0.8.8** — validate-fast-path / re-resolve-from-def-line /
+   refuse-`StaleIndex`; stale plans heal with a warning.
 
 ### P1 — promises restored (target: two weeks)
 
@@ -395,11 +437,16 @@ message ("content changed since planning (expected deadbeef, found c87e420f)")
    persist star exports in the ledger so cold load doesn't re-run the pass at
    all. Acceptance: `coderadar stats` on this repo < 2 s wall; cold load
    < 1 s. This one change restores both README benchmark claims.
+   ✅ **Done in v0.8.2** via prune-and-honor (17.6 s → 0.16 s); the
+   persist-in-ledger alternative was **not** taken — §9, issue 1.
 6. **v1 store repair**: on full analyze, retire v1 concepts (their absolute-
    path ids can be rewritten to relative ids mechanically); on `init --force`,
    rebuild the store from scratch instead of reusing the ledger; add
    `coderadar store repair` that reports counts and offers deletion. The
    error message must stop recommending a path that doesn't work.
+   ✅ **Done in v0.8.9** — analyze auto-retires v1 leftovers,
+   `store-repair` binding + `coderadar store-repair` CLI, `init --force`
+   rebuilds from a fresh ledger.
 7. **First-class path / folder / subfolder exclusion** (synthesizes F5, the
    §4 fixture-routes noise, and F6): today `exclude` in `[project]` is
    honored by the Rust walker only — the star-export pass, framework
@@ -436,6 +483,12 @@ message ("content changed since planning (expected deadbeef, found c87e420f)")
      re-analyze — its entities vanish from search/query/stats on the next
      cold load; the star-export pass and framework extraction never touch
      an excluded folder (verify with the cProfile method from F5).
+   ✅ **Done in v0.8.13** — one shared matcher (`exclusion_gitignore` +
+   `path_excluded`) for walker, retraction, watcher, and all Python passes
+   (`excludes.py`); `exclude list|add|remove`, `--exclude` on
+   analyze/rebuild, effective stack in `stats`. Deliberate semantic split:
+   bare `name/` floats (fail toward exclusion) vs F2 allow-side anchoring
+   (fail closed).
 8. **Dead-code cross-language awareness**: treat PyO3-exposed functions
    (everything reachable from the `#[pyfunction]`/`#[pymethods]` bridge and
    the `__init__.py` facade) as entry points; cap confidence at Medium for
@@ -443,15 +496,25 @@ message ("content changed since planning (expected deadbeef, found c87e420f)")
    dead-code for Rust `pub fn` outside `#[allow(dead_code)]` context until
    export analysis lands. Add file path + `codegraph_node` id to every
    smell finding; group by file; cap output or add top_k.
+   ✅ **Done in v0.8.12** — `attribute_item` (`#[pyfunction]`) collected
+   into decorators; bridge fns are production roots (suppress, not cap —
+   the Medium-cap variant was not taken); source-backed `pub`-export rule
+   (`pub(...)` stays internal); findings carry file+line. Same-language
+   RTA gaps (nested wrappers, facade receivers) and `pub(crate)` export
+   analysis remain open — §9, issues 2–3.
 9. **Query/callers/callees output completeness**: include `id` and
    `file_path` in `_query_graph`, CLI `callers`/`callees`, and `traverse`
    rows (the data is in the Rust dicts already). Acceptance: zero `?` fields.
+   ✅ **Done in v0.8.4**.
 10. **MCP first-call UX**: while the background index runs, tool calls should
    return immediately with a "warming up, N files remaining, retry" message
    (matching the stale-banner pattern), or block with progress lines on
    stderr. Never silent.
+   ✅ **Done in v0.8.11** via the second variant (elapsed-time heartbeats
+   on stderr, `CODERADAR_INDEX_HEARTBEAT`); short budgets stay silent.
 11. **Mutation error translation**: map `StaleIndex`/`RejectedPolicy`/etc.
     to the same friendly prose the stale-body path already has.
+    ✅ **Done in v0.8.3** (plus `PanicException` catch on `find_clones`).
 
 ### P2 — hygiene (target: next release)
 
@@ -468,25 +531,48 @@ message ("content changed since planning (expected deadbeef, found c87e420f)")
     — on this repo they are 97% noise; (f) acceptance: `battery_slop.py`
     reports placeholder hits for all five stub shapes under **all three**
     graph provenances, and secrets remain visible with marker volume ≥ 100.
+    ✅ **Done across v0.8.10 + v0.8.14** — (a) write-time canonicalization
+    in v0.8.14 closed the module-lookup gap for real (plus the module
+    upsert `update_file` never did); (b) loud skip accounting +
+    PlaceholderStats footer in v0.8.10; (c) **correction:** the body_span
+    off-by-one was a CRLF measurement artifact, not a storage bug — no
+    fix needed, recorded so nobody re-chases it; (d) per-kind caps;
+    (e) noise markers dropped; (f) `battery_slop.py` 15/15 under all
+    provenances.
 13. **Single version source**: `__version__` reads `importlib.metadata` with
     a pyproject-derived fallback; CI asserts the three agree. Add a build
     freshness check (fail tests if `lib.rs` newer than `_core.pyd`).
+    ⚠️ **Partial (v0.8.1)** — newer-of version source done; the freshness
+    guard was never added — §9, issue 6.
 14. **CLI polish**: bare-name fallback via `search_entities` with
     disambiguation; `traverse` limited columns + `--format json`;
     UTF-8 stdout reconfigure in `cli.py` entry; `git-diff` docstring fix;
     shell `status` implemented + cold-load reuse.
+    ❌ **Open** — §9, issue 4.
 15. **Schema enums** for `strictness` and `kind`; document the entity-ID
     grammar (`.<relative-path>::<Qualified.name>`) in the MCP tool
     descriptions and README (BUGS_QUIRKS #5 closure).
+    ❌ **Open** — the grammar is now *enforced* (v0.8.14) but still
+    undocumented; enums untouched — §9, issue 5.
 16. **Path-form normalization**: one canonical form (project-relative, `.\`
     prefix on Windows) across IDs, files, and diff previews — per F14 this
     must be enforced at write time, not only at the query boundary.
+    ✅ **Done in v0.8.14** — `canonical_file_form()` at every write path
+    (analyze tasks, update/remove, respell migration); `INDEXED_ROOT`
+    recorded by analyze *and* load; mutation + Python readers resolve
+    against it; `canonical_entity_id` at the plan boundary.
 17. **Document the backup/undo story**: `.coderadar-bak` files, `git checkout`
     caveat for untracked files, `post_verify`/rollback behavior.
+    ❌ **Open** — §9, issue 7.
 
 ---
 
 ## 7. Reproduction index
+
+> **Status (v0.8.14):** every repro below now passes / no longer reproduces
+> — the batteries are the regression suite. `battery_mutation.py` 12/12
+> plans Apply-or-correctly-refuse; `battery_slop.py` 15/15; readonly +
+> stdio probe green; 348 crate + 388 Python tests.
 
 | Finding | Repro |
 |---|---|
@@ -537,6 +623,17 @@ doesn't trust the persisted span for this check), but any consumer slicing a
 persisted `body_span` loses the first body byte — `todo!()` would read as
 `odo!()` and miss.
 
+> **Resolution correction (v0.8.10, kept honest):** the fresh-analyze miss
+> **did not reproduce** on the current binary — all three provenances hit
+> under `battery_slop.py` (15/15). Prime suspect for the original §8.1
+> table is a stale v0.8.0 `.pyd` under the first probe, not a code path.
+> Fixed by making the scan *loud* instead of chasing the ghost:
+> `scan_placeholder_bodies` returns `(findings, PlaceholderStats)` with
+> per-skip accounting, and the footer prints
+> `_placeholder scan: N functions, M stubs, K skipped…_`. Likewise the
+> `body_span` off-by-one above was re-measured as a **CRLF artifact**, not
+> a storage bug — recorded here so nobody re-chases it.
+
 ### 8.2 F15 — the findings cap truncates before grouping
 
 `find_scaffolding` slices `findings.into_iter().take(max_findings)` over the
@@ -564,6 +661,8 @@ noise, which trains users to ignore the scan.
 - **`find_clones` crashes at every parameter combination** (5/0.6 and 30/0.95
   both panic) — F1 is not parameter-dependent; the off-by-one hits the whole
   repo pool.
+  > **Stale as of v0.8.5:** 71 groups at defaults, 100 at 5/0.6, 1 at
+  > 30/0.95 — no panic at any combination.
 
 ### 8.4 F14 — update_file mints a third id form
 
@@ -577,3 +676,78 @@ the Rust-internal lookups (F13's scan) see the difference. Three canonical
 forms now coexist in one store; F6's orphan-accumulation mechanism and this
 share a root cause: **id canonicalization is applied at the query boundary,
 not at write time**.
+
+> **Fixed in v0.8.14 (`2553a48`):** write-time canonicalization at every
+> path — analyze `FileTask`s, `update_file`/`remove_file`, one-time
+> respell migration, analyze-time retirement of non-canonical rows (the 2
+> live ghosts retired; store verified zero non-canonical). `update_file`
+> on a new file now also upserts the `Module` entity it never wrote, so
+> new files participate in callers/callees and the slop scan. Committed
+> proof: `battery_slop_output.txt` shows canonical
+> `.\tests\cr_edit_tests\demo_slop.py` ids where it used to show
+> absolute `D:/…` ids.
+
+---
+
+## 9. Technical follow-ups (file as issues, not carried on this branch)
+
+Deliberately deferred during the batch — each is scoped, none blocks the
+PR. Titles are issue-ready; body sketches the starting point.
+
+### Issue 1 — Persist star exports in the ledger (F5 remainder)
+
+v0.8.2 killed the 17 s tax by pruning the walk and honoring excludes, but
+cold load still re-runs the pass (0.16 s today — fine, not free). The
+"or better" from plan item 5: persist star-export edges as concepts so
+cold load reads instead of recomputes. Watch for: invalidation on
+`update_file` of an `__init__.py`, and the exclude-retraction interplay
+(item 7's retire mechanism is the template).
+
+### Issue 2 — Same-language RTA gaps in dead-code (F7 remainder)
+
+v0.8.12 covers the cross-language bridge, but same-language reachability
+still misses: nested MCP wrapper functions (defined inside other
+functions, called via the tools registry rather than by name) and
+`CodeGraph` facade receivers (methods invoked on the facade object the
+agent holds, never referenced as `Class.method` in source). Needs real
+receiver/registry analysis, not a bigger decorator list. Repro anchor:
+`cli.py::init`/`store_repair` were GONE at v0.8.12 — extend that live
+assertion to the wrapper/facade cases.
+
+### Issue 3 — `pub(crate)` / `pub(super)` export analysis (F7 remainder)
+
+The v0.8.12 source-backed rule treats only unrestricted `pub` as export;
+`pub(crate)` etc. fall through to internal. Correct until a Rust consumer
+outside the crate exists — then it under-reports reachability. Options:
+workspace-member graph (who depends on this crate?) or conservative
+treat-as-exported. Per-module def-line cache from v0.8.12 is the hook.
+
+### Issue 4 — CLI polish bundle (plan item 14, F12 remainder)
+
+Bare-name fallback via `search_entities` with disambiguation (`callers
+foo` → "did you mean …?"); `traverse` limited columns + `--format
+json`; UTF-8 stdout reconfigure in the `cli.py` entry; `git-diff`
+docstring fix; shell `status` implemented + cold-load reuse. F8's file+ID
+display already removed the worst of F12 — this is the rest.
+
+### Issue 5 — Schema enums + ID-grammar docs (plan item 15)
+
+`strictness`/`kind` are free strings; make them enums. And document the
+entity-ID grammar (`.<relative-path>::<Qualified.name>`, native
+separators) in the MCP tool descriptions and README — v0.8.14 enforces
+it, nothing describes it (BUGS_QUIRKS #5 closure).
+
+### Issue 6 — Build-freshness guard (plan item 13 remainder)
+
+v0.8.1 fixed the version source, but nothing fails when `_core.pyd` is
+older than the Rust source — the exact trap that produced the phantom
+F13 miss (§8.1). Fail fast: compare `lib.rs` (or crate) mtime against
+the built extension at test-session start, or embed the commit hash in
+both and compare at import.
+
+### Issue 7 — Backup/undo story docs (plan item 17)
+
+`.coderadar-bak` lifecycle (when written, when cleaned, what survives a
+rollback), the `git checkout` caveat for untracked files, and
+`post_verify`/rollback behavior — the safety narrative a mutation tool
+needs before strangers trust `apply`.
