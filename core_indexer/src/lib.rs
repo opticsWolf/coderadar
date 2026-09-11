@@ -765,6 +765,47 @@ fn retire_excluded_concepts(
     Ok(n)
 }
 
+/// The fresh projection's structural triples, for R2-2 edge retraction.
+///
+/// Pure constructor (unit-tested below): every (source, target, kind) the
+/// full index still believes for CALLS / IMPORTS / EXTENDS / OVERRIDES.
+/// CALLS pairs registered as synthetic are EXCLUDED — their ledger life is
+/// under the synthetic kind, so a CALLS-kind row for the same pair is
+/// pre-R2-2 pollution and must be retracted, not kept.
+fn stale_edge_keep_set(
+    projection: &ProjectedGraph,
+) -> std::collections::HashSet<(String, String, String)> {
+    let mut keep = std::collections::HashSet::new();
+    for (caller, callees) in projection.callees_by_caller.iter() {
+        for callee in callees.iter() {
+            if !projection
+                .synthetic_edges
+                .contains(&(caller.clone(), callee.clone()))
+            {
+                keep.insert((caller.clone(), callee.clone(), "CALLS".to_string()));
+            }
+        }
+    }
+    for (target_mod, importer_mods) in projection.importers.iter() {
+        for importer in importer_mods.iter() {
+            keep.insert((importer.clone(), target_mod.clone(), "IMPORTS".to_string()));
+        }
+    }
+    for (cid, class) in projection.classes.iter() {
+        for base_id in class.resolved_bases.iter() {
+            keep.insert((cid.clone(), base_id.clone(), "EXTENDS".to_string()));
+        }
+    }
+    for (override_fid, base_fid) in projection.overrides_base.iter() {
+        keep.insert((
+            override_fid.clone(),
+            base_fid.clone(),
+            "OVERRIDES".to_string(),
+        ));
+    }
+    keep
+}
+
 // ── analyze() ──────────────────────────────────────────────────────────────
 
 /// What `analyze_inner` has to say once it is done.
@@ -1121,6 +1162,22 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                     ),
                     Ok(_) => {}
                     Err(e) => eprintln!("[diag] non-canonical retraction failed: {e:?}"),
+                }
+                // R2-2: edge retraction. The persist above is assert-only
+                // and the concept retractions only close edges of removed
+                // entities, so an edge whose endpoints both survive but
+                // whose fact is gone (deleted call, pre-R2-2
+                // synthetic-as-CALLS row) stayed open forever. Close every
+                // open structural edge absent from the fresh projection
+                // (bitemporal close, history preserved). Same
+                // panicked-workers guard as the concept retractions: a
+                // partial walk must never mass-retire.
+                match store.retire_stale_edges(&stale_edge_keep_set(&projection)) {
+                    Ok(n) if n > 0 => eprintln!(
+                        "[coderadar] retired {n} stale edge(s) absent from the fresh index"
+                    ),
+                    Ok(_) => {}
+                    Err(e) => eprintln!("[diag] stale-edge retraction failed: {e:?}"),
                 }
             }
         }

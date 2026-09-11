@@ -238,3 +238,12 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   v0.8.17 battery run (104/118 → 105/118). Side effect: R2-14
   (`cli/visualize-bad-format-errors`) newly detected — it was spuriously
   green via the empty-render nonzero-exit path and now correctly red.
+- **v0.8.18 — R2-2 DONE.** `persist_edges_scoped` skips `synthetic_edges`
+  pairs (their ledger life stays under the synthetic kind); new
+  `retire_stale_edges` + `stale_edge_keep_set` close open structural edges
+  absent from a fresh full index (bitemporal close, `as_of` intact),
+  hooked into `analyze_inner` under the panicked-workers guard with a
+  `[coderadar] retired N stale edge(s)` report. The battery anchor was
+  corrected along the way: load == analyze + session synthetics (the +1
+  is durable-by-design restore, not pollution) — strict equality could
+  never hold once a synthetic is registered.

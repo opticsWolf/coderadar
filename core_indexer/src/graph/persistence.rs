@@ -72,10 +72,10 @@ impl CodeGraph {
     /// single-open-interval guard. Removal is not this path's job: deleted
     /// entities retire their edges via `retire_entities`.
     ///
-    /// Returns the number of in-scope, FK-safe (non-external, no symbolic
-    /// heuristic target) edges in the projection — whether newly asserted or
-    /// already open — so the count is a property of the projection, not of
-    /// the ledger's prior state.
+    /// Returns the number of in-scope, FK-safe, non-synthetic (non-external,
+    /// no symbolic heuristic target, not a registered synthetic pair) edges
+    /// in the projection — whether newly asserted or already open — so the
+    /// count is a property of the projection, not of the ledger's prior state.
     pub fn persist_edges_scoped(
         &self,
         projection: &ProjectedGraph,
@@ -140,6 +140,17 @@ impl CodeGraph {
         for (caller, callees) in projection.callees_by_caller.iter() {
             for callee in callees.iter() {
                 if !in_scope(caller, callee) {
+                    continue;
+                }
+                // R2-2: synthetic pairs carry their own ledger rows under
+                // the synthetic kind (see register_synthetic_edges_bulk).
+                // Re-asserting them here as CALLS gave every synthetic edge
+                // a second, structural life that restore could no longer
+                // distinguish from a natural call.
+                if projection
+                    .synthetic_edges
+                    .contains(&(caller.clone(), callee.clone()))
+                {
                     continue;
                 }
                 // External/builtin callees and symbolic heuristic targets

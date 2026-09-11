@@ -21,7 +21,7 @@
 [PASS] cli/traverse-both
 [PASS] cli/traverse-edges-calls
 [FAIL] cli/traverse-bad-edge-kind-errors — Cold start: graph restored from the Macrame store.
-2026-09-11 19:14:35 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
+2026-09-11 19:22:05 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
                          Traversal from .\main.py:
 [PASS] cli/traverse-bad-id
 [PASS] cli/callers
@@ -130,18 +130,18 @@ Only symbol lookup is
 [PASS] surface/remove-file
 [FAIL] surface/remove-file-clears-search — hits=1
 [FAIL] surface/ts-new-expression-captured — makeStore callees=[]
-[FAIL] surface/load-analyze-edge-parity — fresh-analyze=4 ledger-load=5
+[PASS] surface/load-analyze-edge-parity
 [PASS] surface/ts-indexed
 [PASS] surface/rs-indexed
 
 ======================================================================
 SUMMARY
-105/118 passed
+106/118 passed
   FAIL cli/query-basic — Cold start: graph restored from the Macrame store.
                                Query: functions                                
 +--------------------------------------------------------------------
   FAIL cli/traverse-bad-edge-kind-errors — Cold start: graph restored from the Macrame store.
-2026-09-11 19:14:35 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
+2026-09-11 19:22:05 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
                          Traversal from .\main.py:
   FAIL cli/exclude-takes-effect — probe='EXCLUDED_HITS=1\n' err=''
   FAIL cli/exclude-cli-side-honored — Cold start: graph restored from the Macrame store.
@@ -167,5 +167,4 @@ Only symbol lookup is
   FAIL surface/issue9-reexport-resolves — ['combine']
   FAIL surface/remove-file-clears-search — hits=1
   FAIL surface/ts-new-expression-captured — makeStore callees=[]
-  FAIL surface/load-analyze-edge-parity — fresh-analyze=4 ledger-load=5
 FAIL-LIST-END

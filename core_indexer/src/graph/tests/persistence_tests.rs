@@ -465,3 +465,98 @@ fn probe_synthetic_persist_error() {
         .unwrap();
     eprintln!("OPEN TRIPLES: {open:?}");
 }
+
+#[test]
+fn synthetic_pairs_not_persisted_as_calls_and_stale_edges_retracted() {
+    // R2-2: (a) persist_edges must not re-assert a registered synthetic
+    // pair as CALLS; (b) retire_stale_edges must close the pre-fix
+    // synthetic-as-CALLS row while keeping the natural edge and the
+    // synthetic-kind row open.
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(
+        &graph,
+        "def main():\n    run()\n\n\ndef run():\n    pass\n\n\ndef combine():\n    pass\n",
+        "r2.py",
+    );
+
+    let mut projection = (*graph.snapshot()).clone();
+    graph.resolve_all_calls(&mut projection);
+    graph.commit_projection(projection);
+
+    let snap = graph.snapshot();
+    let id_of = |name: &str| {
+        snap.functions
+            .values()
+            .find(|f| f.name == name)
+            .map(|f| f.id.clone())
+            .unwrap()
+    };
+    let main_id = id_of("main");
+    let run_id = id_of("run");
+    let combine_id = id_of("combine");
+    assert!(
+        snap.callees_by_caller
+            .get(&main_id)
+            .map_or(false, |s| s.contains(&run_id)),
+        "natural main -> run edge must resolve"
+    );
+
+    // Synthetic run -> combine between two REAL concepts (FK-safe, so the
+    // register path persists a synthetic-kind row for it).
+    graph
+        .register_synthetic_edge(&run_id, &combine_id, "DEPENDS_ON")
+        .unwrap();
+
+    // (a) persist asserts only the natural CALLS edge.
+    let projection = (*graph.snapshot()).clone();
+    assert!(
+        projection
+            .synthetic_edges
+            .contains(&(run_id.clone(), combine_id.clone())),
+        "synthetic pair must be tracked apart"
+    );
+    let n = graph.persist_edges(&projection).expect("persist_edges");
+    assert_eq!(n, 1, "only main -> run is a persistable CALLS edge");
+
+    let store = graph.store.as_ref().unwrap();
+    let kinds_for = |src: &str, dst: &str| -> Vec<String> {
+        store
+            .open_edge_triples(&crate::storage::now_iso8601())
+            .expect("open triples")
+            .into_iter()
+            .filter(|(s, t, _)| s == src && t == dst)
+            .map(|(_, _, k)| k)
+            .collect()
+    };
+    // Register strips the underscore (macrame kinds are [A-Z0-9]+).
+    assert_eq!(
+        kinds_for(&run_id, &combine_id),
+        vec!["DEPENDSON".to_string()]
+    );
+    assert_eq!(kinds_for(&main_id, &run_id), vec!["CALLS".to_string()]);
+
+    // Simulate pre-R2-2 pollution: the old persist wrote the synthetic pair
+    // as CALLS too.
+    let ts = crate::storage::now_iso8601();
+    store
+        .assert_edges_bulk(vec![macrame::graph::EdgeAssertion::new(
+            run_id.as_str(),
+            combine_id.as_str(),
+            "CALLS",
+        )
+        .valid_from(ts.as_str())
+        .weight(1.0)])
+        .expect("legacy pollution row");
+    assert_eq!(kinds_for(&run_id, &combine_id).len(), 2);
+
+    // (b) retract against the fresh projection.
+    let retired = store
+        .retire_stale_edges(&crate::stale_edge_keep_set(&projection))
+        .expect("retire_stale_edges");
+    assert_eq!(retired, 1, "only the legacy synthetic-as-CALLS row closes");
+    assert_eq!(
+        kinds_for(&run_id, &combine_id),
+        vec!["DEPENDSON".to_string()]
+    );
+    assert_eq!(kinds_for(&main_id, &run_id), vec!["CALLS".to_string()]);
+}

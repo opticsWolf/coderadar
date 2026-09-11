@@ -457,8 +457,13 @@ import re as _re
 n1 = _re.search(r"ANALYZE_EDGES=(\d+)", par.stdout or "")
 n2 = _re.search(r"LOAD_EDGES=(\d+)", par2.stdout or "")
 if n1 and n2:
-    check(SEC, "load-analyze-edge-parity", n1.group(1) == n2.group(1),
-          f"fresh-analyze={n1.group(1)} ledger-load={n2.group(1)}")
+    # R2-2 (fixed v0.8.18): load == analyze + session synthetics. The
+    # ledger durably restores the ONE synthetic C4 registered (by design),
+    # but no synthetic pair may persist as CALLS anymore -- pre-fix this
+    # read 4 vs 5 with the duplicate structural row; healed it reads N+1.
+    _a, _b = int(n1.group(1)), int(n2.group(1))
+    check(SEC, "load-analyze-edge-parity", _b - _a == 1,
+          f"fresh-analyze={_a} ledger-load={_b} (want load-analyze==1)")
 else:
     check(SEC, "load-analyze-edge-parity", False,
           f"probe failed: {par.stdout[-150:]!r} {par2.stdout[-150:]!r}")

@@ -522,6 +522,85 @@ impl CodeGraphStore {
         })
     }
 
+    /// R2-2: close open STRUCTURAL edges absent from a fresh full index.
+    ///
+    /// `persist_edges` is assert-only and `retire_entities` only fires for
+    /// removed entities, so an edge whose endpoints both survive but whose
+    /// fact vanished — a deleted call, a pre-R2-2 synthetic-as-CALLS row, a
+    /// resolver that stopped emitting — stayed open forever (a full rebuild
+    /// reported 4 edges on a 3-edge tree). After a full unscoped index,
+    /// every open CALLS / IMPORTS / EXTENDS / OVERRIDES triple not present
+    /// in the fresh projection is closed with `valid_to = now`: a bitemporal
+    /// assertion, not an erasure, so `as_of` history is preserved.
+    /// Synthetic-kind rows are NOT touched — the register path owns them.
+    ///
+    /// `keep` holds the fresh projection's (source, target, kind) triples
+    /// for the four structural kinds, with CALLS pairs minus
+    /// `synthetic_edges` (built by `stale_edge_keep_set` in lib.rs).
+    /// Returns the number of edges retired.
+    pub fn retire_stale_edges(
+        &self,
+        keep: &std::collections::HashSet<(String, String, String)>,
+    ) -> macrame::Result<usize> {
+        const STRUCTURAL: [&str; 4] = ["CALLS", "IMPORTS", "EXTENDS", "OVERRIDES"];
+        let ts = now_iso8601();
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        let stale: Vec<(String, String, String, String)> = runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT source_id, target_id, edge_type, valid_from \
+                     FROM links_current WHERE valid_to > ?1",
+                    libsql::params![ts.as_str()],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut stale = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                let triple = (
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                );
+                if !STRUCTURAL.contains(&triple.2.as_str()) {
+                    continue;
+                }
+                if keep.contains(&triple) {
+                    continue;
+                }
+                stale.push((
+                    triple.0,
+                    triple.1,
+                    triple.2,
+                    row.get::<String>(3).unwrap_or_default(),
+                ));
+            }
+            Ok::<_, macrame::DbError>(stale)
+        })?;
+        // NotFound means something else closed it first; that is the
+        // desired end state either way (same tolerance as retire_entities).
+        let retired = runtime().block_on(async {
+            let mut n = 0usize;
+            for (source, target, etype, valid_from) in &stale {
+                if self
+                    .db
+                    .retire_edge(
+                        source.as_str(),
+                        target.as_str(),
+                        etype.as_str(),
+                        valid_from.as_str(),
+                        ts.as_str(),
+                    )
+                    .await
+                    .is_ok()
+                {
+                    n += 1;
+                }
+            }
+            n
+        });
+        Ok(retired)
+    }
+
     /// Assert a single edge.
     pub fn assert_edge(
         &self,
