@@ -1363,6 +1363,26 @@ fn canonical_entity_id(entity_id: &str) -> String {
     }
 }
 
+/// Canonicalize a READ-path entity id (R2-16): the F14 mutation-boundary
+/// treatment, with carve-outs. `external::*` pseudo-targets are not
+/// file-backed -- canonicalizing their heads would mangle live patterns
+/// like `callers_of("external::len")` into `.\external::len`. Symbolic
+/// resolver spellings (`Date::now`) and bare names pass through for the
+/// same reason: their heads are names, not paths. Only heads containing a
+/// path separator or a dot (i.e. plausibly a file) go through the global
+/// root resolution; everything else keeps exact-match behavior.
+fn canonical_lookup_id(entity_id: &str) -> String {
+    match entity_id.split_once("::") {
+        Some((head, _))
+            if head != "external"
+                && (head.contains('/') || head.contains('\\') || head.contains('.')) =>
+        {
+            canonical_entity_id(entity_id)
+        }
+        _ => entity_id.to_string(),
+    }
+}
+
 #[pyfunction]
 fn plan_body_replacement(
     entity_id: &str,
@@ -1899,7 +1919,9 @@ fn get_config(py: Python<'_>) -> PyResult<PyObject> {
 /// Look up a single entity by ID. Returns a dict or None.
 #[pyfunction]
 fn lookup_entity(py: Python<'_>, entity_id: &str) -> PyResult<Option<PyObject>> {
-    with_graph(|_graph, snap| Ok(entity_ref_to_dict(py, entity_id, snap)))
+    // R2-16: existence checks accept any id spelling too.
+    let entity_id = canonical_lookup_id(entity_id);
+    with_graph(|_graph, snap| Ok(entity_ref_to_dict(py, &entity_id, snap)))
 }
 
 /// Search tokens from a free-text query: whitespace-split, surrounding
@@ -2125,10 +2147,12 @@ fn search_entities(
 /// Get callers of an entity from the reverse call index.
 #[pyfunction]
 fn callers_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
+    // R2-16: accept ids in any spelling (slash-form, bare head, ...).
+    let entity_id = canonical_lookup_id(entity_id);
     with_graph(|_graph, snap| {
         let caller_ids: Vec<String> = snap
             .callers_by_callee
-            .get(entity_id)
+            .get(entity_id.as_str())
             .map(|s| s.iter().cloned().collect())
             .unwrap_or_default();
 
@@ -2147,10 +2171,12 @@ fn callers_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
 /// Get callees of an entity from the forward call index.
 #[pyfunction]
 fn callees_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
+    // R2-16: accept ids in any spelling (slash-form, bare head, ...).
+    let entity_id = canonical_lookup_id(entity_id);
     with_graph(|_graph, snap| {
         let callee_ids: Vec<String> = snap
             .callees_by_caller
-            .get(entity_id)
+            .get(entity_id.as_str())
             .map(|s| s.iter().cloned().collect())
             .unwrap_or_default();
 
@@ -2244,6 +2270,12 @@ fn traverse(
 
     // ── Normalize + dedupe edge kinds (`inherits` → `extends`) ──────
     let kinds: Vec<String> = normalize_edge_kinds(&edge_kinds);
+
+    // R2-16: the start id may arrive in any spelling; canonicalize before
+    // the existence gate AND the Macrame leg (the ledger holds canonical
+    // ids, so a slash-form start missed there too).
+    let start_id_canon = canonical_lookup_id(start_id);
+    let start_id: &str = &start_id_canon;
 
     // ── Temporal traversal: route `as_of` to Macrame (downstream only) ──
     if let Some(ts) = as_of {
@@ -3404,6 +3436,27 @@ mod tests {
     use crate::types::{
         ByteSpan, FunctionKind, FunctionMetrics, Parameter, ParseQuality, SourceType,
     };
+
+    #[test]
+    fn canonical_lookup_id_matrix() {
+        // R2-16: file-backed heads converge to canonical form; names and
+        // pseudo-targets pass through untouched (no global-root dependence
+        // in the passthrough legs, so these hold under parallel tests).
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            canonical_lookup_id("external::combine"),
+            "external::combine"
+        );
+        assert_eq!(canonical_lookup_id("external::len"), "external::len");
+        assert_eq!(canonical_lookup_id("Date::now"), "Date::now");
+        assert_eq!(canonical_lookup_id("main"), "main");
+        assert_eq!(
+            canonical_lookup_id("main.py::main"),
+            format!(".{sep}main.py::main")
+        );
+        let canon = format!(".{sep}main.py::main");
+        assert_eq!(canonical_lookup_id(&canon), canon);
+    }
 
     #[test]
     fn unresolved_ref_kind_classifies_non_concept_targets() {

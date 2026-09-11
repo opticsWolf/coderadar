@@ -423,7 +423,12 @@ def traverse(start_id: str, depth: int, edges: str, direction: str):
     results = mq.traverse(start_id, depth, edge_types, direction)
 
     if not results:
-        console.print("[yellow]No results[/yellow]")
+        # R2-16: an unknown start id and a known-but-isolated one used to
+        # report the identical "No results".
+        if mq.find(start_id) is None and not start_id.startswith("external::"):
+            console.print(f"[yellow]Unknown entity: {start_id}[/yellow]")
+        else:
+            console.print("[yellow]No results[/yellow]")
         return
 
     table = Table(title=f"Traversal from [bold]{start_id}[/bold]")
@@ -446,7 +451,13 @@ def callers(entity_id: str):
     results = mq.callers_of(entity_id)
 
     if not results:
-        console.print(f"[yellow]No callers found for {entity_id}[/yellow]")
+        # R2-16: typo'd ids reported the same "No callers" as truly
+        # callerless entities. Pseudo-targets (external::) are addressable
+        # graph members, not unknowns.
+        if mq.find(entity_id) is None and not entity_id.startswith("external::"):
+            console.print(f"[yellow]Unknown entity: {entity_id}[/yellow]")
+        else:
+            console.print(f"[yellow]No callers found for {entity_id}[/yellow]")
         return
 
     console.print(f"[bold]Callers of {entity_id}:[/bold]")
@@ -473,7 +484,11 @@ def callees(entity_id: str):
     results = mq.callees_of(entity_id)
 
     if not results:
-        console.print(f"[yellow]No callees from {entity_id}[/yellow]")
+        # R2-16: see callers() above.
+        if mq.find(entity_id) is None and not entity_id.startswith("external::"):
+            console.print(f"[yellow]Unknown entity: {entity_id}[/yellow]")
+        else:
+            console.print(f"[yellow]No callees from {entity_id}[/yellow]")
         return
 
     console.print(f"[bold]Callees from {entity_id}:[/bold]")
@@ -752,6 +767,14 @@ def visualize(viz_type: str, args: tuple, output: Optional[str], fmt: str):
                        generate_dot, generate_mermaid, generate_call_graph)
     except NothingToVisualize as exc:
         # Exiting 0 here is how a fabricated diagram used to reach the user.
+        # R2-16: for call-graph with an id-form arg, distinguish an unknown
+        # id from a known-but-edgeless entity (name-form args resolve via
+        # search upstream, so only id-form args are checked here).
+        if viz_type == "call-graph" and arg_list and "::" in str(arg_list[0]):
+            from .query import MacrameQuery
+            if MacrameQuery(graph).find(str(arg_list[0])) is None:
+                console.print(f"[red]Unknown entity:[/red] {arg_list[0]}")
+                raise SystemExit(1)
         console.print(f"[red]Nothing to visualize:[/red] {exc}")
         raise SystemExit(1)
 

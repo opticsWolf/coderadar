@@ -21,7 +21,7 @@
 [PASS] cli/traverse-both
 [PASS] cli/traverse-edges-calls
 [FAIL] cli/traverse-bad-edge-kind-errors — Cold start: graph restored from the Macrame store.
-2026-09-11 19:22:05 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
+2026-09-11 19:41:30 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
                          Traversal from .\main.py:
 [PASS] cli/traverse-bad-id
 [PASS] cli/callers
@@ -33,10 +33,8 @@
 [PASS] cli/exclude-list
 [PASS] cli/exclude-add
 [PASS] cli/exclude-list-has-ignored
-[FAIL] cli/exclude-takes-effect — probe='EXCLUDED_HITS=1\n' err=''
-[FAIL] cli/exclude-cli-side-honored — Cold start: graph restored from the Macrame store.
-              Query: functions where name contains 'should_never'              
-+--------------------------------------------------------------------
+[PASS] cli/exclude-takes-effect
+[PASS] cli/exclude-cli-side-honored
 [PASS] cli/exclude-remove
 [PASS] cli/exclude-remove-missing
 [PASS] cli/exclude-add-back
@@ -46,17 +44,14 @@
 [PASS] cli/store-repair-bad-db
 [PASS] cli/blame
 [PASS] cli/blame-missing
-[FAIL] cli/git-clean-when-clean — Worktree has uncommitted changes
-
+[PASS] cli/git-clean-when-clean
 [PASS] cli/git-clean-when-dirty
 [PASS] cli/git-diff-head-clean
 [PASS] cli/git-diff-two-commits
 [FAIL] cli/git-diff-bad-oid-errors — No changed files (or git feature disabled)
 
 [PASS] cli/visualize-call-graph
-[FAIL] cli/visualize-slash-id-works — Cold start: graph restored from the Macrame store.
-Nothing to visualize: No call edges found from `./main.py::main`. Either the 
-index is empty (run `coderadar analyze` in this process first � the CLI
+[PASS] cli/visualize-slash-id-works
 [FAIL] cli/visualize-bad-format-errors — Cold start: graph restored from the Macrame store.
 flowchart TD
     n___main_py__run --> n_external__combine
@@ -136,25 +131,15 @@ Only symbol lookup is
 
 ======================================================================
 SUMMARY
-106/118 passed
+110/118 passed
   FAIL cli/query-basic — Cold start: graph restored from the Macrame store.
                                Query: functions                                
 +--------------------------------------------------------------------
   FAIL cli/traverse-bad-edge-kind-errors — Cold start: graph restored from the Macrame store.
-2026-09-11 19:22:05 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
+2026-09-11 19:41:30 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
                          Traversal from .\main.py:
-  FAIL cli/exclude-takes-effect — probe='EXCLUDED_HITS=1\n' err=''
-  FAIL cli/exclude-cli-side-honored — Cold start: graph restored from the Macrame store.
-              Query: functions where name contains 'should_never'              
-+--------------------------------------------------------------------
-  FAIL cli/git-clean-when-clean — Worktree has uncommitted changes
-
   FAIL cli/git-diff-bad-oid-errors — No changed files (or git feature disabled)
 
-  FAIL cli/visualize-slash-id-works — Cold start: graph restored from the Macrame store.
-Nothing to visualize: No call edges found from `./main.py::main`. Either the 
-index is empty (run `coderadar analyze` in this process first � the CLI does 
-not yet load a stored graph) or that functi
   FAIL cli/visualize-bad-format-errors — Cold start: graph restored from the Macrame store.
 flowchart TD
     n___main_py__run --> n_external__combine

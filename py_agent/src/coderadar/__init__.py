@@ -19,7 +19,7 @@ from __future__ import annotations
 #: installed wheel/sdist reports its own version) and falls back to the
 #: release constant below, which MUST be kept in sync with pyproject.toml
 #: and Cargo.toml [workspace.package] on every bump.
-_FALLBACK_VERSION = "0.8.18"
+_FALLBACK_VERSION = "0.8.19"
 
 
 def _resolve_version() -> str:
@@ -729,6 +729,25 @@ class BatchContext:
 
 # ── Top-Level API Functions ─────────────────────────────────────────────────
 
+def _project_excludes(root: str) -> list:
+    """`[project] exclude` patterns from `<root>/.coderadar.toml`, or [].
+
+    R2-7 narrow step: the walk-level fix only. A first cut pushed the whole
+    file via `activate_config`, but that also enforced `[mutation] allow`
+    (and roots/embedding keys) on library flows -- bare-library mutations
+    outside src/lib/tests/scripts started failing where the CLI/server had
+    always gated them, a behavior change far beyond "honor excludes".
+    Full activation stays where it was: CLI `_activate`, MCP `_set_project`.
+    Best-effort: a missing or broken toml yields [], never an exception.
+    """
+    try:
+        from pathlib import Path
+        from .config import load_config
+        pats = load_config(Path(root)).project.exclude or []
+        return [p for p in pats if p]
+    except Exception:
+        return []
+
 def analyze(root: str, create_store: bool = False, exclude: list | None = None) -> CodeGraph:
     """Perform initial analysis of a codebase.
 
@@ -741,8 +760,10 @@ def analyze(root: str, create_store: bool = False, exclude: list | None = None) 
         exclude: One-shot extra exclusion patterns (gitignore syntax) for
             this run, merged with `[project] exclude` + the built-in
             baseline — ad-hoc narrowing without touching config (item 7).
-            Library users get the full exclusion stack through this, no
-            config file required.
+            The toml's `[project] exclude` is picked up automatically
+            (R2-7), so library users get the full exclusion stack with or
+            without a config file. (Only excludes -- other file keys still
+            need `_activate` / server project selection.)
 
     Returns:
         A CodeGraph backed by Macrame persistence.
@@ -751,9 +772,16 @@ def analyze(root: str, create_store: bool = False, exclude: list | None = None) 
     Phase 2: Persist to Macrame via content-addressed Concepts.
     Phase 3: Build in-memory ProjectedGraph with reverse indexes.
     """
+    # R2-7: honor `<root>/.coderadar.toml` excludes on the library path too.
+    # CLI flows activate the whole file via `_activate`; bare `analyze()`
+    # never did, so `[project] exclude` was silently ignored outside the CLI
+    # (and a bare analyze could even write excluded concepts back into an
+    # attached store). Toml patterns go FIRST, mirroring exclusion_gitignore
+    # (config -> extra -> baseline) so one-shot `!` negations keep working.
+    _merged_excludes = _project_excludes(root) + list(exclude or [])
     try:
         from coderadar._core import analyze as _analyze_rust
-        _analyze_rust(root, create_store, exclude or [])
+        _analyze_rust(root, create_store, _merged_excludes)
     except ImportError:
         pass
     # F14: readers (_read_source et al.) resolve canonical relative ids
@@ -854,6 +882,9 @@ def load(db_path: str, root: Optional[str] = None) -> CodeGraph:
         pass
 
     if root:
+        # R2-7: load() needs no exclude handling -- it walks nothing, and
+        # post-load passes only attach to graph entities (excluded paths
+        # have none, and set_module_star_exports_bulk skips unknown ids).
         _apply_star_exports(root)
         # F14: readers resolve canonical relative ids against this.
         try:

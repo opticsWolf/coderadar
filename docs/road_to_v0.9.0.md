@@ -89,10 +89,18 @@ project writes the excluded concepts **back into the ledger**, undoing
 `exclude add` + `rebuild` for later readers. In-battery sequence
 `exclude add → rebuild → library-analyze-probe → query` finds the excluded
 symbol, while the probe-free manual sequence does not.
-Fix: a shared ensure-config step — `analyze()` (and server startup)
-loads `.coderadar.toml` excludes before walking; or `build_graph`
-activates project config like `_activate` does. Battery anchors:
-`cli/exclude-takes-effect`, `cli/exclude-cli-side-honored`.
+Fix: `analyze()` prepends the toml's `[project] exclude` to the explicit
+`exclude=` list before walking (toml-first, mirroring
+`exclusion_gitignore`'s config → extra → baseline order, so one-shot `!`
+negations keep working). Deliberately NOT a full `activate_config`: that
+would also enforce `[mutation] allow` (and roots/embedding keys) on
+library flows — bare-library renames outside src/lib/tests/scripts
+started failing where the CLI/server had always gated them (verified:
+`app/helpers.py` rename rejected under activation). Full activation stays
+with CLI `_activate` / MCP `_set_project`; `load()` needs nothing (it
+walks nothing, and post-load passes only attach to graph entities).
+Battery anchors: `cli/exclude-takes-effect`,
+`cli/exclude-cli-side-honored`.
 
 ### R2-8 — `git-clean` reports dirty for ignored artifacts (always dirty on real projects)
 `is_worktree_clean` (`core_indexer/src/fs/git.rs:85`) uses
@@ -247,3 +255,15 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   corrected along the way: load == analyze + session synthetics (the +1
   is durable-by-design restore, not pollution) — strict equality could
   never hold once a synthetic is registered.
+- **v0.8.19 — R2-7 + R2-8 + R2-16 DONE.** `analyze()` prepends the toml's
+  `[project] exclude` to the walk (narrow fix -- a first-cut full
+  activation leaked `[mutation] allow` enforcement into library flows and
+  broke bare-library renames; reverted to excludes-only), so
+  library/MCP/background paths honor excludes and previously-persisted
+  exclusions heal via the existing retraction; `is_worktree_clean` spells out `git status`
+  semantics (untracked counts, ignored never does — libgit2 defaults
+  report IGNORED entries); read-path ids go through `canonical_lookup_id`
+  (F14 heads converge, `external::*`/names pass through) in
+  `callers_of`/`callees_of`/`traverse`/`lookup_entity`, and CLI
+  callers/callees/traverse/visualize print `Unknown entity` distinctly
+  from true empties.
