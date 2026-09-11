@@ -97,36 +97,10 @@ fn module_file_path(projection: &ProjectedGraph, module_id: &str) -> String {
         .to_string()
 }
 
-/// Read a project file by module-derived path (F14): module paths are the
-/// canonical root-relative form (`.\src\foo.py`), which resolves from the
-/// filesystem only via the indexed root — not the process CWD, which may
-/// be anywhere for library users. Absolute paths pass through untouched.
-fn read_project_file(path: &str) -> String {
-    std::fs::read_to_string(disk_path_for(path)).unwrap_or_default()
-}
-
-/// Resolve a canonical id-form path for disk IO (F14): absolute passes
-/// through; relative resolves against the indexed root, then CWD.
-/// Report keys stay in id form — only the fs ops use the resolved path.
-fn disk_path_for(path: &str) -> std::path::PathBuf {
-    let p = std::path::Path::new(path);
-    if p.is_absolute() {
-        return p.to_path_buf();
-    }
-    let root = crate::indexed_root();
-    let cand = root.join(p);
-    // The file itself (reads, backups) or its parent dir (tmp/backup
-    // targets that do not exist yet) decides — never the CWD by default.
-    if cand.exists() {
-        return cand;
-    }
-    if let Some(parent) = cand.parent() {
-        if !parent.as_os_str().is_empty() && parent.exists() {
-            return cand;
-        }
-    }
-    std::env::current_dir().unwrap_or(root).join(p)
-}
+/// Read a project file by module-derived path / resolve a canonical
+/// id-form path for disk IO (F14): centralized in module_resolution so
+/// analysis passes share the same root-aware resolution as the engine.
+use crate::graph::module_resolution::{disk_path_for, read_project_file};
 
 /// Confirm that `span` in `source` still holds the identifier the index recorded.///
 /// Spans are captured at index time. The stale-write hash carried on every edit

@@ -73,8 +73,7 @@ pub(crate) fn canonical_file_form(path: &str) -> String {
     format!(".{sep}{joined}")
 }
 
-/// Whether a concept-id file head is already canonical: relative with the
-/// dot prefix (`./` or `.\`). Everything else — forward-slash update-form
+/// Whether a concept-id file head is already canonical: relative with the/// dot prefix (`./` or `.\`). Everything else — forward-slash update-form
 /// (`tests/x.py`), bare (`x.py`), absolute — is a pre-fix leftover and a
 /// retraction candidate on the next analyze.
 pub(crate) fn is_canonical_file_head(head: &str) -> bool {
@@ -269,7 +268,12 @@ mod canonical_form_tests {
         // Idempotent: canonicalizing twice is a fixed point.
         assert_eq!(canonical_file_form(&c), c);
         // Forward-slash update-form input converges to the same id.
+        // (Backslash is a separator only on Windows — on POSIX it is a
+        // valid filename char, so the equivalent assertion is cfg-gated.)
+        #[cfg(windows)]
         assert_eq!(canonical_file_form("some\\dir\\x.py"), c);
+        #[cfg(not(windows))]
+        assert_eq!(canonical_file_form("some/dir/x.py"), c);
     }
 
     #[test]
@@ -281,4 +285,35 @@ mod canonical_form_tests {
         assert!(!is_canonical_file_head("x.py")); // bare form
         assert!(!is_canonical_file_head(r"D:\proj\x.py")); // absolute form
     }
+}
+
+/// Resolve a canonical id-form path for disk IO (F14 follow-up): absolute
+/// passes through; relative resolves against the indexed root (the file
+/// itself decides via `exists()`, else its parent dir — tmp/backup targets
+/// do not exist yet), then CWD. Report keys stay in id form — only fs ops
+/// use the resolved path. Centralized here so analysis passes (clones,
+/// smells, scaffold, dead-code) share it with the mutation engine instead
+/// of each assuming CWD == indexed root.
+pub(crate) fn disk_path_for(path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+    let root = crate::indexed_root();
+    let cand = root.join(p);
+    if cand.exists() {
+        return cand;
+    }
+    if let Some(parent) = cand.parent() {
+        if !parent.as_os_str().is_empty() && parent.exists() {
+            return cand;
+        }
+    }
+    std::env::current_dir().unwrap_or(root).join(p)
+}
+
+/// Read a project file by canonical id-form path: empty string when
+/// missing (callers treat unreadable as skip, never as crash).
+pub(crate) fn read_project_file(path: &str) -> String {
+    std::fs::read_to_string(disk_path_for(path)).unwrap_or_default()
 }

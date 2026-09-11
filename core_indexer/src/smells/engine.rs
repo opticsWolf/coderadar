@@ -430,7 +430,11 @@ fn refine_with_cfg(
     f: &crate::types::Function,
 ) -> Option<CfgFacts> {
     let module = graph.modules.get(&f.parent_module)?;
-    let src = std::fs::read_to_string(&module.path).ok()?;
+    // F14 follow-up: canonical module paths resolve via the indexed root.
+    let src = crate::graph::module_resolution::read_project_file(&module.path.to_string_lossy());
+    if src.is_empty() {
+        return None;
+    }
     let ts_lang = crate::graph::CodeGraph::ts_language(&module.language)?;
     let mut parser = tree_sitter::Parser::new();
     parser.set_language(&ts_lang).ok()?;

@@ -751,3 +751,21 @@ both and compare at import.
 rollback), the `git checkout` caveat for untracked files, and
 `post_verify`/rollback behavior — the safety narrative a mutation tool
 needs before strangers trust `apply`.
+
+### Issue 8 — `update_file` drops a resolved call edge (CI, pre-existing)
+
+`test_three_way_ingest_parity` fails **identically at v0.8.0 and v0.8.14**
+(CI runs 33817644225 and 34568679586): after a no-op `update_file` of
+`main.py`, the `run -> combine` edge (a star-export re-export chain:
+`helpers` defines it, `app/__init__` re-exports, `main.py` imports from
+`app`) is lost from the update leg while the analyze leg keeps it. Not an
+id-form bug — the pair text differs only by spelling across versions —
+but an update-path **re-resolution gap**: the fresh walk resolves the
+chain, the single-file re-resolve does not. Repro anchor: the leg-B
+script in `tests/test_load_snapshot.py` (fresh subprocess per leg; note
+legs share the CWD store file, so run it via pytest, not by hand).
+Related CI watch-items, same runs: `test_cold_start_load_latency` (hard
+wall-clock threshold — flaky on loaded machines, passes/fails by runner
+luck) and a one-off `test_as_of_temporal_traversal` miss on Windows CI
+that passes locally in full-suite runs (needs a second CI data point
+before calling it real).

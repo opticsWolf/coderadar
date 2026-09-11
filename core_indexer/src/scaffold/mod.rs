@@ -215,7 +215,8 @@ pub fn scan_placeholder_bodies(graph: &ProjectedGraph) -> (Vec<ScaffoldFinding>,
     let mut sources: HashMap<&EntityId, String> = HashMap::new();
     let mut paths: HashMap<&EntityId, PathBuf> = HashMap::new();
     for (mid, m) in &graph.modules {
-        if let Ok(src) = std::fs::read_to_string(&m.path) {
+        // F14 follow-up: canonical module paths resolve via the indexed root.
+        if let Ok(src) = std::fs::read_to_string(crate::graph::module_resolution::disk_path_for(&m.path.to_string_lossy())) {
             sources.insert(mid, src);
         }
         paths.insert(mid, m.path.clone());
@@ -248,7 +249,9 @@ pub fn scan_placeholder_bodies(graph: &ProjectedGraph) -> (Vec<ScaffoldFinding>,
                     stats.skipped_no_module += 1;
                     None
                 } else {
-                    match std::fs::read_to_string(rel) {
+                    // F14 follow-up: the id-fallback head is canonical
+                    // root-relative — resolve via the indexed root.
+                    match std::fs::read_to_string(crate::graph::module_resolution::disk_path_for(rel)) {
                         Ok(text) => {
                             stats.resolved_via_id_fallback += 1;
                             fallback_sources.insert(f.parent_module.clone(), text);

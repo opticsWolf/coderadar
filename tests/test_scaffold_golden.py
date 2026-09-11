@@ -28,8 +28,11 @@ class TestScaffoldGolden:
 
     def test_comment_markers_found(self):
         kinds = self._kinds()
-        assert any(k == "comment-marker" and "Phase 1" in l for k, l in kinds)
         assert any(k == "comment-marker" and "TODO" in l for k, l in kinds)
+        # F15 (v0.8.10): routine "Phase N" engineering comments are
+        # deliberately NOT markers anymore — they were 97% noise.
+        assert not any(k == "comment-marker" and "Phase 1" in l
+                       for k, l in kinds)
 
     def test_placeholder_body_found(self):
         kinds = self._kinds()

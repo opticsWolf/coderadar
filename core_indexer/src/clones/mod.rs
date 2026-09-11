@@ -111,7 +111,9 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
     let mut languages: HashMap<&EntityId, Language> = HashMap::new();
     let mut paths: HashMap<&EntityId, String> = HashMap::new();
     for (mid, m) in &graph.modules {
-        if let Ok(src) = std::fs::read_to_string(&m.path) {
+        // F14 follow-up: module paths are canonical root-relative ids —
+        // resolve against the indexed root, not the CWD.
+        if let Ok(src) = std::fs::read_to_string(crate::graph::module_resolution::disk_path_for(&m.path.to_string_lossy())) {
             sources.insert(mid, src);
         }
         languages.insert(mid, m.language);

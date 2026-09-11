@@ -235,7 +235,8 @@ fn is_rust_pub_export(
         return false;
     }
     if !cache.contains_key(parent_module) {
-        let text = std::fs::read_to_string(&m.path).unwrap_or_default();
+        // F14 follow-up: canonical module paths resolve via the indexed root.
+        let text = crate::graph::module_resolution::read_project_file(&m.path.to_string_lossy());
         cache.insert(
             parent_module.clone(),
             text.lines().map(|l| l.to_string()).collect(),
