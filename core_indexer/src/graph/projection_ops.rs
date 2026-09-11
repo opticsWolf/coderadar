@@ -575,6 +575,16 @@ impl CodeGraph {
             }
         }
 
+        // Issue 8: prune synthetic pairs touching removed entities so the
+        // tracking set cannot outlive its endpoints (deletions, respells).
+        if !removed_ids.is_empty() {
+            let gone: std::collections::HashSet<&EntityId> =
+                removed_ids.iter().collect();
+            projection.synthetic_edges.retain(|(s, t)| {
+                !gone.contains(s) && !gone.contains(t)
+            });
+        }
+
         self.retire_in_store(removed_ids.iter());
 
         (inserted, removed)

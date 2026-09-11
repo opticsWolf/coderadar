@@ -152,6 +152,7 @@ impl CodeGraph {
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
             ambiguous_bases: Vec::new(),
+            synthetic_edges: Default::default(),
         };
 
         let mut module_classes: Vec<EntityId> = Vec::new();

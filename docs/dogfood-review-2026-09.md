@@ -754,18 +754,47 @@ needs before strangers trust `apply`.
 
 ### Issue 8 — `update_file` drops a resolved call edge (CI, pre-existing)
 
-`test_three_way_ingest_parity` fails **identically at v0.8.0 and v0.8.14**
-(CI runs 33817644225 and 34568679586): after a no-op `update_file` of
-`main.py`, the `run -> combine` edge (a star-export re-export chain:
-`helpers` defines it, `app/__init__` re-exports, `main.py` imports from
-`app`) is lost from the update leg while the analyze leg keeps it. Not an
-id-form bug — the pair text differs only by spelling across versions —
-but an update-path **re-resolution gap**: the fresh walk resolves the
-chain, the single-file re-resolve does not. Repro anchor: the leg-B
-script in `tests/test_load_snapshot.py` (fresh subprocess per leg; note
-legs share the CWD store file, so run it via pytest, not by hand).
-Related CI watch-items, same runs: `test_cold_start_load_latency` (hard
-wall-clock threshold — flaky on loaded machines, passes/fails by runner
-luck) and a one-off `test_as_of_temporal_traversal` miss on Windows CI
-that passes locally in full-suite runs (needs a second CI data point
-before calling it real).
+✅ **Fixed in v0.8.16.** Root cause was *not* a re-resolution gap but
+scoped edge clearing: synthetic edges (framework routes, bulk-registered
+pairs) live in the same `callees_by_caller`/`callers_by_callee` maps as
+natural CALLS, kind-agnostic — so `update_file`'s scoped clear wiped the
+synthetic `run -> combine` pair whose source sits in the updated file,
+and re-resolution only rebuilds natural edges. Fix: `synthetic_edges:
+BTreeSet<(source, target)>` tracked apart on `ProjectedGraph`, populated
+by `register_synthetic_edges_bulk` + ledger `restore_synthetic_edges`,
+preserved across scoped *and* unscoped clears, pruned on entity removal.
+`test_three_way_ingest_parity` (red since v0.8.0) now passes; the
+re-export chain itself (`from app import combine` via `__init__`
+re-export) still resolves to `external::` — that deeper gap is real but
+was never what the test measured (both legs agreed on it).
+
+> Original (pre-fix) symptom record, preserved: ~~`test_three_way_ingest_parity`
+> fails **identically at v0.8.0 and v0.8.14**~~ (CI runs 33817644225 and
+> 34568679586): after a no-op `update_file` of `main.py`, the
+> `run -> combine` edge is lost from the update leg while the analyze leg
+> keeps it. The first diagnosis (a star-export re-export chain the fresh
+> walk resolves but single-file re-resolve does not) was **wrong**: both
+> legs agree the natural chain resolves to `external::` — the lost edge
+> was the test's own *synthetic* pair, wiped by scoped clearing (see fix
+> note above). The re-export-through-`__init__` resolution gap is still
+> real and still open — filed as Issue 9 below.
+> Repro anchor: the leg-B script in `tests/test_load_snapshot.py` (fresh
+> subprocess per leg; note legs share the CWD store file, so run it via
+> pytest, not by hand).
+> Related CI watch-items, same runs: `test_cold_start_load_latency` (hard
+> wall-clock threshold — flaky on loaded machines, passes/fails by runner
+> luck) and a one-off `test_as_of_temporal_traversal` miss on Windows CI
+> that passes locally in full-suite runs (needs a second CI data point
+> before calling it real).
+
+### Issue 9 — Re-exported symbols don't resolve through `__init__` (new)
+
+Found while fixing Issue 8: `find_symbol_in_module` only searches
+functions/classes *defined* in the target module, so
+`from app import combine` (defined in `helpers.py`, re-exported by
+`app/__init__.py` via `from .helpers import helper, combine`) resolves
+to `external::combine` on every leg — analyze and update agree, which is
+why parity never caught it. Fixing means following re-export imports
+transitively (with a cycle guard): when the name isn't defined in the
+target module, walk that module's own `FromImport`s. Scoped to
+`FromImport` chains first; star-re-export (`__all__`) chains after.

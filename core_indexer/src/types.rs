@@ -1258,6 +1258,12 @@ pub struct ProjectedGraph {
     /// Ambiguous base-resolution findings (2.1b), populated by
     /// `resolve_class_hierarchy` and read by `index_edge_stats`.
     pub ambiguous_bases: Vec<AmbiguousBase>,
+    /// Synthetic (non-structural-kind) call edges: framework routes,
+    /// `register_synthetic_edges_bulk`, ledger-restored synthetic pairs.
+    /// Kept apart from the natural CALLS edges so scoped re-resolution
+    /// (`update_file`) can clear-and-rebuild natural edges without dropping
+    /// synthetic ones (Issue 8: no-op update lost `run -> combine`).
+    pub synthetic_edges: BTreeSet<(EntityId, EntityId)>,
 }
 
 // ── ResolvedEdge (§3.4a, §6.1a) — used by resolution engine ─────────────────

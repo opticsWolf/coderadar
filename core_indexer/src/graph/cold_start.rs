@@ -97,6 +97,7 @@ pub fn projection_from_state(
         overridden_by: HashMap::new(),
         overrides_base: HashMap::new(),
         ambiguous_bases: Vec::new(),
+        synthetic_edges: Default::default(),
     };
     let mut stats = ColdStartStats::new();
     let mut v1_leftovers = 0usize;
@@ -236,6 +237,9 @@ fn restore_synthetic_edges(
             .entry(e.target_id.clone())
             .or_default()
             .insert(e.source_id.clone());
+        // Issue 8: same tracking as the live registration path.
+        g.synthetic_edges.insert(
+            (e.source_id.clone(), e.target_id.clone()));
         stats.synthetic_edges += 1;
     }
 }
@@ -276,6 +280,7 @@ mod tests {
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
             ambiguous_bases: Vec::new(),
+            synthetic_edges: Default::default(),
         };
 
         g.modules.insert(

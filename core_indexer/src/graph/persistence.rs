@@ -295,6 +295,10 @@ impl CodeGraph {
                 .entry(target_id.clone())
                 .or_default()
                 .insert(source_id.clone());
+            // Issue 8: track synthetic pairs apart from natural CALLS so
+            // scoped re-resolution preserves them instead of clearing.
+            projection.synthetic_edges.insert(
+                (source_id.clone(), target_id.clone()));
         }
         self.commit_projection(projection);
 

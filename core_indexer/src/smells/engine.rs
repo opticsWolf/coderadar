@@ -291,6 +291,7 @@ pub(crate) mod tests {
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
             ambiguous_bases: Vec::new(),
+            synthetic_edges: Default::default(),
         }
     }
 

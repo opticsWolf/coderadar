@@ -171,7 +171,19 @@ impl CodeGraph {
 
         // v0.5: Scoped edge clearing — only remove edges from affected functions.
         // In unscoped mode (batch analyze), clear all and rebuild.
+        // Issue 8: the clear used to drop synthetic edges (framework routes,
+        // registered bulk pairs) whose source sits in the updated file — a
+        // no-op update_file then lost `run -> combine` forever. Synthetic
+        // pairs are tracked apart in `synthetic_edges`; snapshot and
+        // re-assert them so only natural CALLS edges are rebuilt.
         if scope_file.is_some() {
+            let scoped: std::collections::HashSet<String> =
+                calls_to_resolve.iter().map(|(fid, _)| (*fid).clone()).collect();
+            let keep: Vec<(String, String)> = projection.synthetic_edges
+                .iter()
+                .filter(|(s, _)| scoped.contains(s))
+                .cloned()
+                .collect();
             for (func_id, _) in &calls_to_resolve {
                 // Remove outgoing edges from this function
                 if let Some(callees) = projection.callees_by_caller.remove(func_id.as_str()) {
@@ -182,9 +194,19 @@ impl CodeGraph {
                     }
                 }
             }
+            for (s, t) in keep {
+                projection.callees_by_caller.entry(s.clone()).or_default().insert(t.clone());
+                projection.callers_by_callee.entry(t).or_default().insert(s);
+            }
         } else {
+            let keep: Vec<(String, String)> =
+                projection.synthetic_edges.iter().cloned().collect();
             projection.callers_by_callee.clear();
             projection.callees_by_caller.clear();
+            for (s, t) in keep {
+                projection.callees_by_caller.entry(s.clone()).or_default().insert(t.clone());
+                projection.callers_by_callee.entry(t).or_default().insert(s);
+            }
         }
 
         // Group calls by parent module so we build sibling_funcs and
