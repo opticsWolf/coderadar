@@ -472,6 +472,44 @@ fn entity_ref_to_dict(py: Python<'_>, entity_id: &str, snap: &ProjectedGraph) ->
     }
 }
 
+/// Classify a call-graph id with no concept row (pure half of the R2-1
+/// fallback; unit-tested below without needing a Python interpreter).
+///
+/// `external::{name}` covers builtins, third-party imports, and Issue-9
+/// re-export-chain targets alike -- all "outside the indexed project".
+/// Anything else without a concept row is a symbolic heuristic target
+/// (`Date::now`-style) the resolver invented, reported as `unresolved`.
+fn unresolved_ref_kind(entity_id: &str) -> &'static str {
+    if let Some(name) = entity_id.strip_prefix("external::") {
+        if crate::resolve::orchestrator::is_python_builtin(name) {
+            "builtin"
+        } else {
+            "external"
+        }
+    } else {
+        "unresolved"
+    }
+}
+
+/// Minimal dict for a call-graph id with no concept row.
+///
+/// `callees_of` / `callers_of` / `traverse` used to drop these silently
+/// (`entity_ref_to_dict` -> `None` -> skipped), so `run -> combine`
+/// (resolved to `external::combine` via the re-export chain) presented as
+/// "run calls nothing". The edge exists -- only the presentation dropped
+/// it. R2-1 materializes the honest answer instead: id, derived name, and
+/// the external/builtin/unresolved kind. Every downstream consumer
+/// (CLI, MCP, visualizers) reads these keys via `.get()` with defaults,
+/// so the sparse shape is safe.
+fn unresolved_ref_to_dict(py: Python<'_>, entity_id: &str) -> PyObject {
+    let dict = PyDict::new(py);
+    let name = entity_id.rsplit("::").next().unwrap_or(entity_id);
+    let _ = dict.set_item("id", entity_id);
+    let _ = dict.set_item("name", name);
+    let _ = dict.set_item("kind", unresolved_ref_kind(entity_id));
+    dict.into()
+}
+
 /// Where the Macrame store file goes for `root`.
 ///
 /// `[database] path` is taken relative to the project root unless it is
@@ -2039,9 +2077,11 @@ fn callers_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
 
         let mut results = Vec::with_capacity(caller_ids.len());
         for cid in &caller_ids {
-            if let Some(d) = entity_ref_to_dict(py, cid, snap) {
-                results.push(d);
-            }
+            // R2-1: materialize non-concept callers instead of dropping them.
+            results.push(
+                entity_ref_to_dict(py, cid, snap)
+                    .unwrap_or_else(|| unresolved_ref_to_dict(py, cid)),
+            );
         }
         Ok(results)
     })
@@ -2059,9 +2099,12 @@ fn callees_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
 
         let mut results = Vec::with_capacity(callee_ids.len());
         for cid in &callee_ids {
-            if let Some(d) = entity_ref_to_dict(py, cid, snap) {
-                results.push(d);
-            }
+            // R2-1: materialize non-concept callees (external:: / builtins /
+            // symbolic targets) instead of dropping them.
+            results.push(
+                entity_ref_to_dict(py, cid, snap)
+                    .unwrap_or_else(|| unresolved_ref_to_dict(py, cid)),
+            );
         }
         Ok(results)
     })
@@ -2087,7 +2130,9 @@ fn callees_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
 /// The start entity is included at depth 0; each reached neighbor is tagged
 /// with its BFS depth and the edge kind that first reached it. Entities not
 /// present in the graph (e.g. `external::` targets) are naturally filtered —
-/// `entity_ref_to_dict` returns `None` for them.
+/// `entity_ref_to_dict` returns `None` for them, and the bindings below
+/// materialize those as minimal external/builtin/unresolved dicts (R2-1)
+/// instead of dropping them.
 /// Every edge kind `neighbors_of` knows how to walk.
 ///
 /// Named here because an empty `edge_kinds` from Python means "all of them",
@@ -2198,13 +2243,14 @@ fn traverse(
         let reached = subgraph_bfs(&sub, &start_owned, max_depth);
         let mut results = Vec::with_capacity(reached.len());
         for (id, depth, ek) in reached {
-            if let Some(d) = entity_ref_to_dict(py, &id, &snap) {
-                if let Ok(dd) = d.downcast_bound::<pyo3::types::PyDict>(py) {
-                    let _ = dd.set_item("depth", depth);
-                    let _ = dd.set_item("edge_type", &ek);
-                }
-                results.push(d);
+            // R2-1: materialize non-concept nodes instead of dropping them.
+            let d = entity_ref_to_dict(py, &id, &snap)
+                .unwrap_or_else(|| unresolved_ref_to_dict(py, &id));
+            if let Ok(dd) = d.downcast_bound::<pyo3::types::PyDict>(py) {
+                let _ = dd.set_item("depth", depth);
+                let _ = dd.set_item("edge_type", &ek);
             }
+            results.push(d);
         }
         return Ok(results);
     }
@@ -2230,13 +2276,14 @@ fn traverse(
         });
         let mut results = Vec::with_capacity(reached.len());
         for (id, depth, ek) in reached {
-            if let Some(d) = entity_ref_to_dict(py, &id, &snap_owned) {
-                if let Ok(dd) = d.downcast_bound::<pyo3::types::PyDict>(py) {
-                    let _ = dd.set_item("depth", depth);
-                    let _ = dd.set_item("edge_type", &ek);
-                }
-                results.push(d);
+            // R2-1: materialize non-concept nodes instead of dropping them.
+            let d = entity_ref_to_dict(py, &id, &snap_owned)
+                .unwrap_or_else(|| unresolved_ref_to_dict(py, &id));
+            if let Ok(dd) = d.downcast_bound::<pyo3::types::PyDict>(py) {
+                let _ = dd.set_item("depth", depth);
+                let _ = dd.set_item("edge_type", &ek);
             }
+            results.push(d);
         }
         Ok(results)
     })
@@ -3300,6 +3347,23 @@ mod tests {
     use crate::types::{
         ByteSpan, FunctionKind, FunctionMetrics, Parameter, ParseQuality, SourceType,
     };
+
+    #[test]
+    fn unresolved_ref_kind_classifies_non_concept_targets() {
+        // R2-1: the presentation fallback must agree with the resolver's
+        // own classification -- builtins stay builtins, everything else
+        // outside the project is external, resolver-invented shapes are
+        // unresolved. Pure function, no interpreter needed.
+        assert_eq!(unresolved_ref_kind("external::len"), "builtin");
+        assert_eq!(unresolved_ref_kind("external::isinstance"), "builtin");
+        assert_eq!(unresolved_ref_kind("external::combine"), "external");
+        assert_eq!(
+            unresolved_ref_kind("external::requests.get"),
+            "external"
+        );
+        assert_eq!(unresolved_ref_kind("Date::now"), "unresolved");
+        assert_eq!(unresolved_ref_kind("C::run"), "unresolved");
+    }
 
     #[test]
     fn default_excludes_skip_build_dirs() {

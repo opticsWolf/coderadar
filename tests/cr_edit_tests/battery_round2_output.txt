@@ -21,7 +21,7 @@
 [PASS] cli/traverse-both
 [PASS] cli/traverse-edges-calls
 [FAIL] cli/traverse-bad-edge-kind-errors — Cold start: graph restored from the Macrame store.
-2026-09-11 18:28:32 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
+2026-09-11 19:14:35 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
                          Traversal from .\main.py:
 [PASS] cli/traverse-bad-id
 [PASS] cli/callers
@@ -57,7 +57,10 @@
 [FAIL] cli/visualize-slash-id-works — Cold start: graph restored from the Macrame store.
 Nothing to visualize: No call edges found from `./main.py::main`. Either the 
 index is empty (run `coderadar analyze` in this process first � the CLI
-[PASS] cli/visualize-bad-format-errors
+[FAIL] cli/visualize-bad-format-errors — Cold start: graph restored from the Macrame store.
+flowchart TD
+    n___main_py__run --> n_external__combine
+
 [PASS] cli/shell-help-stats-exit
 [PASS] cli/shell-query
 [PASS] cli/watch-reacts
@@ -118,9 +121,9 @@ Only symbol lookup is
 [PASS] mcp/set-project-bad-path
 [PASS] mcp/set-project-bad-path-signals
 [PASS] surface/callers-canonical
-[FAIL] surface/run-callees-include-combine-or-external — []
-[FAIL] surface/external-callee-visible — []
-[FAIL] surface/issue9-reexport-resolves — []
+[PASS] surface/run-callees-include-combine-or-external
+[PASS] surface/external-callee-visible
+[FAIL] surface/issue9-reexport-resolves — ['combine']
 [PASS] surface/star-export-fn-indexed
 [PASS] surface/heartbeat-knob
 [PASS] surface/synthetic-survives-update
@@ -133,12 +136,12 @@ Only symbol lookup is
 
 ======================================================================
 SUMMARY
-104/118 passed
+105/118 passed
   FAIL cli/query-basic — Cold start: graph restored from the Macrame store.
                                Query: functions                                
 +--------------------------------------------------------------------
   FAIL cli/traverse-bad-edge-kind-errors — Cold start: graph restored from the Macrame store.
-2026-09-11 18:28:32 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
+2026-09-11 19:14:35 [debug    ] macrame.traverse               max_depth=3 start_id=.\main.py::run
                          Traversal from .\main.py:
   FAIL cli/exclude-takes-effect — probe='EXCLUDED_HITS=1\n' err=''
   FAIL cli/exclude-cli-side-honored — Cold start: graph restored from the Macrame store.
@@ -152,14 +155,16 @@ SUMMARY
 Nothing to visualize: No call edges found from `./main.py::main`. Either the 
 index is empty (run `coderadar analyze` in this process first � the CLI does 
 not yet load a stored graph) or that functi
+  FAIL cli/visualize-bad-format-errors — Cold start: graph restored from the Macrame store.
+flowchart TD
+    n___main_py__run --> n_external__combine
+
   FAIL mcp/as-of-bad-ts-signals — ## Snapshot at `not-a-timestamp`
 
 Pass `symbols` to look entities up as they were at this timestamp — for example codegraph_as_of(timestamp="not-a-timestamp", symbols=["User"]).
 
 Only symbol lookup is
-  FAIL surface/run-callees-include-combine-or-external — []
-  FAIL surface/external-callee-visible — []
-  FAIL surface/issue9-reexport-resolves — []
+  FAIL surface/issue9-reexport-resolves — ['combine']
   FAIL surface/remove-file-clears-search — hits=1
   FAIL surface/ts-new-expression-captured — makeStore callees=[]
   FAIL surface/load-analyze-edge-parity — fresh-analyze=4 ledger-load=5

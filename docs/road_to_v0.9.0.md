@@ -189,5 +189,52 @@ Battery anchor: `cli/query-basic`.
 - **Issue 9** (re-export resolution): `from app import combine` via
   `__init__` re-export still resolves `external::` on all legs. Follow
   `FromImport` chains transitively with a cycle guard (R1§9 Issue 9).
-- **R1§6-13** (partial): exclusion-s
-...[truncated 3010 chars]
+- **R1§6-13** (partial): exclusion-system follow-ups not yet covered by
+  R2-7 — e.g. `exclude stats` stack output, watcher respect for excludes.
+- **R1§6-14/15/17**: placeholder-scan stats follow-ups, heartbeat tuning
+  (`CODERADAR_INDEX_HEARTBEAT` default), bridge-decorator production-root
+  list maintenance.
+- **R1§9 Issues 1–7**: closed in round 1; their regression tests stay green
+  (verified in the v0.8.16 CI triage).
+
+## 5. Sequencing (v0.8.17 → v0.9.0)
+
+One fix = +0.0.1, each verified by its battery anchor flipping red→green
+plus the standard gates (`cargo test`, `maturin develop`, `--version`,
+relevant pytest files, full battery before merge):
+
+| Release | Content | Battery anchors |
+|---|---|---|
+| v0.8.17 | R2-1 external-callee visibility | `surface/external-callee-visible`, `surface/run-callees-include-combine-or-external` |
+| v0.8.18 | R2-2 synthetic persist skip + rebuild retraction | `surface/load-analyze-edge-parity` |
+| v0.8.19 | R2-7 toml excludes on library path + R2-8 git-clean + R2-16 CLI canonicalization | `cli/exclude-takes-effect`, `cli/git-clean-when-clean`, `cli/visualize-slash-id-works` |
+| v0.8.20 | R2-3 `new`-expression extraction + R2-4 remove_file search purge + R2-6 git OID errors + R2-15 table widths | `surface/ts-new-expression-captured`, `surface/remove-file-clears-search`, `cli/git-diff-bad-oid-errors`, `cli/query-basic` |
+| v0.8.21 | P3 batch (R2-9…R2-14) + Issue 9 re-export chains | `cli/traverse-bad-edge-kind-errors`, `mcp/as-of-bad-ts-signals`, `surface/issue9-reexport-resolves` |
+| v0.9.0 | Carryover (§4) + full battery green + release notes | everything |
+
+Order inside Phase 1 is dependency-driven: R2-1 first (presentation-only,
+no schema/ledger risk), R2-2 second (ledger semantics — do before R2-7's
+resurrection interaction complicates testing), then R2-7/R2-8/R2-16
+(independent, batchable).
+
+## 6. Acceptance (v0.9.0 exits when…)
+
+- `battery_round2.py` fully green (118/118) on a clean checkout.
+- Round-1 batteries (`battery_readonly/mutation/slop`) still green.
+- Full Rust suite + Python suite green, clippy advisory clean.
+- `docs/road_to_v0.9.0.md` §§1–4 all marked DONE with release tags.
+- No `external::` target silently dropped by any index API; no synthetic
+  pair persisted as CALLS; excludes honored on every entry path;
+  `git-clean` agrees with `git status`; CLI ids canonicalized.
+
+## 7. Progress log
+
+- **v0.8.17 — R2-1 DONE.** `unresolved_ref_to_dict` fallback in
+  `callees_of`/`callers_of`/`traverse` (+as_of leg); builtin vs external
+  split via shared `is_python_builtin`; CLI callers/callees print
+  `(external)` for file-less targets. Anchors
+  `surface/external-callee-visible` +
+  `surface/run-callees-include-combine-or-external` flipped PASS in the
+  v0.8.17 battery run (104/118 → 105/118). Side effect: R2-14
+  (`cli/visualize-bad-format-errors`) newly detected — it was spuriously
+  green via the empty-render nonzero-exit path and now correctly red.

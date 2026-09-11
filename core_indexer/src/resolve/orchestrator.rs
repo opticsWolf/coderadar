@@ -555,6 +555,13 @@ static BUILTINS: &[&str] = &[
     "None",
 ];
 
+/// R2-1: shared so the index-API presentation layer (`entity_ref_to_dict`
+/// fallback in lib.rs) classifies `external::{name}` targets the same way
+/// the resolver does — no second copy of the builtin list to drift.
+pub(crate) fn is_python_builtin(name: &str) -> bool {
+    BUILTINS.contains(&name)
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

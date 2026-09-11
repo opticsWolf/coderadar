@@ -451,11 +451,15 @@ def callers(entity_id: str):
 
     console.print(f"[bold]Callers of {entity_id}:[/bold]")
     for r in results:
+        _rid = str(r.get('id', r.get('entity_id', '?')))
+        if _rid.startswith('external::'):
+            # R2-1: external/builtin targets have no file/line -- say so.
+            console.print(f"  {_rid} (external)")
+            continue
         _f = r.get('file', None) or r.get('file_path', None) or r.get('path', None)
-        if not _f and '::' in str(r.get('id', r.get('entity_id', ''))):
-            _f = str(r.get('id', r.get('entity_id', ''))).split('::')[0]
-        console.print(f"  {r.get('id', r.get('entity_id', '?'))} "
-                      f"({_f or '?'}:{r.get('line', '?')})")
+        if not _f and '::' in _rid:
+            _f = _rid.split('::')[0]
+        console.print(f"  {_rid} ({_f or '?'}:{r.get('line', '?')})")
 
 
 @main.command()
@@ -474,11 +478,15 @@ def callees(entity_id: str):
 
     console.print(f"[bold]Callees from {entity_id}:[/bold]")
     for r in results:
+        _rid = str(r.get('id', r.get('entity_id', '?')))
+        if _rid.startswith('external::'):
+            # R2-1: external/builtin targets have no file/line -- say so.
+            console.print(f"  {_rid} (external)")
+            continue
         _f = r.get('file', None) or r.get('file_path', None) or r.get('path', None)
-        if not _f and '::' in str(r.get('id', r.get('entity_id', ''))):
-            _f = str(r.get('id', r.get('entity_id', ''))).split('::')[0]
-        console.print(f"  {r.get('id', r.get('entity_id', '?'))} "
-                      f"({_f or '?'}:{r.get('line', '?')})")
+        if not _f and '::' in _rid:
+            _f = _rid.split('::')[0]
+        console.print(f"  {_rid} ({_f or '?'}:{r.get('line', '?')})")
 
 
 @main.command()
