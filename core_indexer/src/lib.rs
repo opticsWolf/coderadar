@@ -2039,8 +2039,8 @@ fn search_entities(
     with_graph(|_graph, snap| {
         let tokens = search_tokens(query);
         let mut results: Vec<(usize, PyObject)> = Vec::new(); // (score, dict)
-        // Issue 5 (schema enums): a garbage kind used to match nothing and
-        // read as "no results". Refuse loudly like Strictness::parse.
+                                                              // Issue 5 (schema enums): a garbage kind used to match nothing and
+                                                              // read as "no results". Refuse loudly like Strictness::parse.
         const KNOWN_KINDS: &[&str] = &[
             "function",
             "class",
@@ -3529,10 +3529,7 @@ mod tests {
         assert_eq!(unresolved_ref_kind("external::len"), "builtin");
         assert_eq!(unresolved_ref_kind("external::isinstance"), "builtin");
         assert_eq!(unresolved_ref_kind("external::combine"), "external");
-        assert_eq!(
-            unresolved_ref_kind("external::requests.get"),
-            "external"
-        );
+        assert_eq!(unresolved_ref_kind("external::requests.get"), "external");
         assert_eq!(unresolved_ref_kind("Date::now"), "unresolved");
         assert_eq!(unresolved_ref_kind("C::run"), "unresolved");
     }

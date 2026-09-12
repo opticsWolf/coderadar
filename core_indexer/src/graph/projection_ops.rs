@@ -63,12 +63,9 @@ impl CodeGraph {
             // too, or this whole branch silently keeps everything. Collect
             // across ALL entity maps (functions/classes alone left
             // constants, aliases, imports and the module itself behind).
-            let canon =
-                super::module_resolution::canonical_file_form(file_path);
+            let canon = super::module_resolution::canonical_file_form(file_path);
             let prefixes = [format!("{}::", lookup), format!("{}::", canon)];
-            let matches = |id: &str| {
-                prefixes.iter().any(|p| id.starts_with(p.as_str()))
-            };
+            let matches = |id: &str| prefixes.iter().any(|p| id.starts_with(p.as_str()));
             for (func_id, _) in projection.functions.iter() {
                 if matches(func_id) && !removed.contains(func_id) {
                     removed.insert(func_id.clone());

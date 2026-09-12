@@ -105,9 +105,7 @@ pub fn is_worktree_clean(repo_path: &str) -> Result<bool, GitError> {
         .recurse_untracked_dirs(true)
         .include_ignored(false)
         .recurse_ignored_dirs(false);
-    let statuses = repo
-        .statuses(Some(&mut opts))
-        .map_err(GitError::Status)?;
+    let statuses = repo.statuses(Some(&mut opts)).map_err(GitError::Status)?;
     Ok(statuses.is_empty())
 }
 
@@ -135,12 +133,8 @@ mod tests {
         std::fs::write(dir.join(".gitignore"), ".coderadar/\n*.log\n").unwrap();
         let repo = git2::Repository::init(dir).unwrap();
         let mut index = repo.index().unwrap();
-        index
-            .add_path(std::path::Path::new("a.txt"))
-            .unwrap();
-        index
-            .add_path(std::path::Path::new(".gitignore"))
-            .unwrap();
+        index.add_path(std::path::Path::new("a.txt")).unwrap();
+        index.add_path(std::path::Path::new(".gitignore")).unwrap();
         index.write().unwrap();
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
@@ -156,7 +150,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         init_commit_repo(dir.path());
         let root = dir.path().to_str().unwrap();
-        assert!(is_worktree_clean(root).unwrap(), "committed base must be clean");
+        assert!(
+            is_worktree_clean(root).unwrap(),
+            "committed base must be clean"
+        );
 
         std::fs::write(dir.path().join("top.log"), "x\n").unwrap();
         std::fs::create_dir_all(dir.path().join(".coderadar/store")).unwrap();
@@ -187,9 +184,7 @@ mod revision_tests {
         std::fs::write(dir.join(name), "v\n").unwrap();
         let repo = Repository::open(dir).unwrap();
         let mut index = repo.index().unwrap();
-        index
-            .add_path(std::path::Path::new(name))
-            .unwrap();
+        index.add_path(std::path::Path::new(name)).unwrap();
         index.write().unwrap();
         let tree_id = index.write_tree().unwrap();
         let tree = repo.find_tree(tree_id).unwrap();
