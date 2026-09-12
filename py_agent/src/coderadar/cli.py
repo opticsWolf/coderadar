@@ -728,7 +728,9 @@ def _print_effective_excludes() -> None:
                     excluded += 1
         console.print(f"[bold]Effect on .[/bold]: {total} file(s), "
                       f"{excluded} excluded, {total - excluded} indexed")
-    except Exception as e:
+    except OSError as e:
+        # os.walk ignores scandir errors itself; this is the walk root
+        # going away mid-listing (or a broken symlink under is_excluded).
         console.print(f"[dim]Effect stats unavailable: {e}[/dim]")
 
 

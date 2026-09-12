@@ -7,9 +7,8 @@ kinds (Rust + MCP) error instead of reading as "no results".
 """
 import os
 
-import pytest
-
 import coderadar
+import pytest
 from coderadar._core import callees_of, callers_of, search_entities
 from coderadar.mcp import server as mcp
 
@@ -53,7 +52,7 @@ def test_canonical_spelling_resolves_through_reexport(chain):
 
 def test_absolute_forward_slash_and_bare_spellings_agree(chain):
     _, root, run_id, comb_id = chain
-    head, _, tail = run_id.partition("::")
+    _, _, tail = run_id.partition("::")
     assert tail == "run"
     absolute = os.path.join(root, "main.py") + "::run"
     fwd = run_id.replace(os.sep, "/") if os.sep in run_id else run_id

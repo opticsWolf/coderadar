@@ -425,7 +425,9 @@ graph = coderadar.analyze(FIX)
 run_hits = search_entities("run", 10, "function")
 RUN_ID = run_hits[0]["id"] if run_hits else ""
 COMB_ID = next((h["id"] for h in search_entities("combine", 10, "function") if "helpers" in h.get("id", "")), "")
-check(SEC, "fixture-restored-after-rename", bool(RUN_ID and COMB_ID) and "combine_r2" not in open(os.path.join(FIX, "main.py"), encoding="utf-8", errors="replace").read(), f"run={RUN_ID!r} comb={COMB_ID!r}")
+with open(os.path.join(FIX, "main.py"), encoding="utf-8", errors="replace") as _fh:
+    _main_restored = "combine_r2" not in _fh.read()
+check(SEC, "fixture-restored-after-rename", bool(RUN_ID and COMB_ID) and _main_restored, f"run={RUN_ID!r} comb={COMB_ID!r}")
 
 # set_project error paths (operates on server-global graph; use confirm=False)
 out = tcall(SEC, "set-project-bad-path", mcp._set_project, os.path.join(FIX, "no-such-dir"), False)

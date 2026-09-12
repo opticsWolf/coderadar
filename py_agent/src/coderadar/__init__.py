@@ -62,6 +62,7 @@ try:
     import logging as _logging
     import os as _os
     import sys as _sys
+
     import structlog as _structlog
     _structlog.configure(
         wrapper_class=_structlog.make_filtering_bound_logger(
