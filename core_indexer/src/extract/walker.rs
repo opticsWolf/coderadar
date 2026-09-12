@@ -830,6 +830,29 @@ pub fn extract_decorators(node: Node, source: &str) -> Vec<String> {
     if out.is_empty() {
         collect(node, source, &mut out);
     }
+    if out.is_empty() {
+        // R1§6-14/15/17 bridge maintenance: in tree-sitter-rust, outer
+        // attributes are SIBLINGS of the `function_item`, not children —
+        // `#[pyfunction]` on a free fn never reached `decorators`, so the
+        // bridge rule silently never fired and only entry-root/pub rules
+        // saved anything. Collect contiguous preceding `attribute_item`
+        // siblings (doc comments and anything else stop the scan, so an
+        // attribute of a previous item is never misattributed).
+        let mut sib = node.prev_sibling();
+        let mut pending: Vec<String> = Vec::new();
+        while let Some(s) = sib {
+            if s.kind() == "attribute_item" {
+                if let Ok(text) = s.utf8_text(source.as_bytes()) {
+                    pending.push(text.trim().to_string());
+                }
+                sib = s.prev_sibling();
+            } else {
+                break;
+            }
+        }
+        pending.reverse();
+        out.extend(pending);
+    }
     out
 }
 
@@ -1054,4 +1077,59 @@ pub fn extract_parameters(node: Node, source: &str) -> Vec<Parameter> {
     }
 
     params
+}
+
+
+#[cfg(test)]
+mod decorator_capture_tests {
+    use super::*;
+
+    fn decorators_of(src: &str) -> Vec<String> {
+        let lang = crate::graph::CodeGraph::ts_language(&crate::types::Language::Rust)
+            .expect("rust grammar");
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let root = tree.root_node();
+        let mut stack = vec![root];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "function_item" {
+                return extract_decorators(n, src);
+            }
+            let mut cursor = n.walk();
+            for child in n.children(&mut cursor) {
+                stack.push(child);
+            }
+        }
+        panic!("no function_item in {src:?}");
+    }
+
+    #[test]
+    fn sibling_rust_attributes_are_captured() {
+        // R1§6-14/15/17: outer attributes are siblings of function_item —
+        // without the sibling scan these all came back empty and the
+        // bridge rule never fired.
+        assert_eq!(
+            decorators_of("#[pyfunction]\nfn f() {}\n"),
+            vec!["#[pyfunction]"]
+        );
+        assert_eq!(
+            decorators_of("#[pymodule]\nfn m() {}\n"),
+            vec!["#[pymodule]"]
+        );
+        // Stacked attributes collect in order.
+        assert_eq!(
+            decorators_of("#[a]\n#[b]\nfn f() {}\n"),
+            vec!["#[a]", "#[b]"]
+        );
+        // A doc comment between attribute and fn stops nothing that
+        // matters (attribute is adjacent); a comment ABOVE the attribute
+        // stops the scan so previous items are never misattributed.
+        assert_eq!(
+            decorators_of("/// docs\n#[pyfunction]\nfn f() {}\n"),
+            vec!["#[pyfunction]"]
+        );
+        // Bare fn: nothing, and importantly no panic.
+        assert!(decorators_of("fn f() {}\n").is_empty());
+    }
 }

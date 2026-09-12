@@ -364,7 +364,10 @@ tcall(SEC, "dead-code", mcp._dead_code, graph, 0.6, False, 100)
 tcall(SEC, "dead-code-incl-tests", mcp._dead_code, graph, 0.6, True, 100)
 tcall(SEC, "find-clones", mcp._find_clones, graph, 10, 0.8, 100)
 tcall(SEC, "find-clones-loose", mcp._find_clones, graph, 3, 0.5, 100)
-tcall(SEC, "find-scaffolding", mcp._find_scaffolding, False, 100)
+slop_out = tcall(SEC, "find-scaffolding", mcp._find_scaffolding, False, 100)
+# R1§6-14/15/17: the placeholder scan-stats footer must survive even on a
+# clean tree — a degraded scan must read as degraded, never as clean (F13).
+check(SEC, "scaffolding-shows-scan-stats", isinstance(slop_out, str) and "placeholder scan:" in slop_out, str(slop_out)[:200])
 tcall(SEC, "as-of-now", mcp._as_of, graph, "2026-09-11T00:00:00Z", "", [])
 out = tcall(SEC, "as-of-bad-ts", mcp._as_of, graph, "not-a-timestamp", "", [])
 # R2 finding: garbage timestamp is echoed into a snapshot template with no

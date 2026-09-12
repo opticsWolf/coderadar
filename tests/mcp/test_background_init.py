@@ -13,6 +13,7 @@ import time
 
 import pytest
 
+from coderadar.mcp import startup as startup_mod
 from coderadar.mcp.startup import (
     BackgroundIndex,
     IndexStatus,
@@ -250,3 +251,26 @@ class TestTheGuardConsultsIt:
                 assert "unreachable" not in answer, name
         finally:
             release.set()
+
+
+class TestEnvKnobs:
+    """R1§6-14/15/17: env knobs must not take the server down on garbage."""
+
+    def test_garbage_falls_back_with_note(self, monkeypatch, capsys):
+        monkeypatch.setenv("CODERADAR_INDEX_HEARTBEAT", "every-so-often")
+        assert startup_mod._env_seconds("CODERADAR_INDEX_HEARTBEAT", 5) == 5
+        assert "ignoring invalid" in capsys.readouterr().err
+
+    def test_blank_means_default_silently(self, monkeypatch, capsys):
+        monkeypatch.setenv("CODERADAR_INDEX_WAIT", "   ")
+        assert startup_mod._env_seconds("CODERADAR_INDEX_WAIT", 25) == 25
+        assert capsys.readouterr().err == ""
+
+    def test_sub_minimum_clamps(self, monkeypatch, capsys):
+        monkeypatch.setenv("CODERADAR_INDEX_HEARTBEAT", "0.01")
+        assert startup_mod._env_seconds("CODERADAR_INDEX_HEARTBEAT", 5) == 1.0
+        assert "clamping" in capsys.readouterr().err
+
+    def test_valid_passes_through(self, monkeypatch):
+        monkeypatch.setenv("CODERADAR_INDEX_HEARTBEAT", "2.5")
+        assert startup_mod._env_seconds("CODERADAR_INDEX_HEARTBEAT", 5) == 2.5

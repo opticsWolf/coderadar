@@ -83,6 +83,7 @@
 [PASS] mcp/find-clones
 [PASS] mcp/find-clones-loose
 [PASS] mcp/find-scaffolding
+[PASS] mcp/scaffolding-shows-scan-stats
 [PASS] mcp/as-of-now
 [PASS] mcp/as-of-bad-ts
 [PASS] mcp/as-of-bad-ts-signals
@@ -121,5 +122,5 @@
 
 ======================================================================
 SUMMARY
-120/120 passed
+121/121 passed
 FAIL-LIST-END

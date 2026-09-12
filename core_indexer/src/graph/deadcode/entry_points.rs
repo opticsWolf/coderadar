@@ -71,8 +71,12 @@ pub const TEST_DECORATORS: &[&str] = &["pytest.fixture", "fixture", "given", "pa
 /// Cross-language bridge attributes (F7): invoked from outside the indexed
 /// call graph — Python via PyO3 — so no in-repo caller does NOT mean dead.
 /// `#[pyfunction]` annotates the function itself; `#[pymethods]` annotates
-/// the impl block (its methods are covered by the Rust-`pub` rule below).
-pub const BRIDGE_DECORATORS: &[&str] = &["pyfunction", "pymethods"];
+/// the impl block (its methods are covered by the Rust-`pub` rule below);
+/// `#[pymodule]` annotates the module init fn, called by the Python import
+/// system and never by name in-repo. (`#[pyclass]` is deliberately absent:
+/// classes are not dead-code findings, and their methods fall under the
+/// `pub` rule like `#[pymethods]` members do.)
+pub const BRIDGE_DECORATORS: &[&str] = &["pyfunction", "pymethods", "pymodule"];
 
 /// Conventional program-entry names per language family (free functions).
 const MAIN_NAMES: &[&str] = &["main", "__main__", "_start"];

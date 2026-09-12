@@ -386,8 +386,15 @@ pub(crate) mod tests {
             f.parent_class = Some("bridge.rs::Engine".into());
             g.functions.insert(id.into(), std::sync::Arc::new(f));
         }
+        // R1§6-14/15/17: #[pymodule] init fns are bridge roots too —
+        // called by the Python import system, never by name in-repo.
+        let mut moduled = func("lib.rs::core_init", "core_init", "lib.rs::module");
+        moduled.decorators = vec!["#[pymodule]".into()];
+        g.functions
+            .insert("lib.rs::core_init".into(), std::sync::Arc::new(moduled));
         let eps = detect_entry_points(&g);
         assert!(eps.production.contains("lib.rs::find_things"));
+        assert!(eps.production.contains("lib.rs::core_init"));
         assert!(eps.production.contains("bridge.rs::Engine.apply"));
         assert!(!eps.production.contains("bridge.rs::Engine.internal"));
         assert!(!eps.production.contains("bridge.rs::Engine.private"));

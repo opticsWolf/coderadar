@@ -279,6 +279,15 @@ Rust `[debug]` lines remain for the v0.8.21 P3 batch.
 - **R1§6-14/15/17**: placeholder-scan stats follow-ups, heartbeat tuning
   (`CODERADAR_INDEX_HEARTBEAT` default), bridge-decorator production-root
   list maintenance.
+  DONE v0.8.25: slop footer anchored in battery (`scaffolding-shows-scan-stats`
+  — stats survive even on clean trees); env knobs hardened (`_env_seconds`:
+  garbage falls back with a note instead of crashing import, sub-minimum
+  clamps, 4 tests); bridge maintenance with teeth — sibling `attribute_item`
+  capture fixed (outer attributes are siblings of `function_item`, so
+  `#[pyfunction]` never reached decorators and the bridge rule never fired)
+  + `pymodule` added to `BRIDGE_DECORATORS` (with the `pyclass` non-listing
+  documented). Live: bridge fns carry decorators and survive dead-code at
+  0.0 confidence while plain privates still report.
 - **R1§9 Issues 1–7**: closed in round 1; their regression tests stay green
   (verified in the v0.8.16 CI triage).
 
@@ -297,6 +306,7 @@ relevant pytest files, full battery before merge):
 | v0.8.21 | P3 batch (R2-9…R2-14) + Issue 9 re-export chains | `cli/traverse-bad-edge-kind-errors`, `mcp/as-of-bad-ts-signals`, `surface/issue9-reexport-resolves` |
 | v0.8.23 | R2-17 rename-chain rewrite (plan + scoped-update refresh + resolve fixpoint) | `mcp/rename-real-applied`, `mcp/fixture-restored-after-rename`, `surface/issue9-reexport-resolves` |
 | v0.8.24 | R1§6-13 exclusion follow-ups (list layers + effect totals, watcher proof) | `cli/exclude-list-effect-totals` |
+| v0.8.25 | R1§6-14/15/17 hygiene (slop footer anchor, knob hardening, bridge list) | `mcp/scaffolding-shows-scan-stats` |
 | v0.9.0 | Carryover (§4) + full battery green + release notes | everything |
 
 Order inside Phase 1 is dependency-driven: R2-1 first (presentation-only,
@@ -386,6 +396,11 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   exclusion covered by a direct EventBridge test + a defaults-vs-baseline
   pinning test. 367 Rust + 747 Python green; battery_round2 120/120
   (new `cli/exclude-list-effect-totals` anchor).
+- **v0.8.25 — R1§6-14/15/17 DONE.** Sibling-attribute capture in the
+  extractor + `pymodule` in the bridge list (1 extractor test, F7 entry
+  test extended); `_env_seconds` knob hardening (4 tests, defaults
+  unchanged: wait 25 s, heartbeat 5 s); scaffolding footer battery anchor.
+  368 Rust + 751 Python green; battery_round2 121/121.
 - **v0.8.22 — macrame-db 0.15 → 0.17 DONE** (off-plan dep bump). The 0.16
   cycle's one caller-visible break was the W15.3 `#[non_exhaustive]` wave:
   four literal sites in `cold_start.rs` moved to constructors

@@ -28,17 +28,41 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Optional
 
+def _env_seconds(name: str, default: float, minimum: float = 1.0) -> float:
+    """Read a seconds-valued env knob defensively (heartbeat tuning).
+
+    A garbage value used to raise ValueError at import time, taking the
+    whole server down for a typo. Invalid/blank values fall back with a
+    one-line stderr note; values below `minimum` clamp (sub-second
+    heartbeats are log spam, sub-second waits answer nothing).
+    """
+    import sys as _sys
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        print(f"[coderadar] ignoring invalid {name}={raw!r} "
+              f"(want seconds, using {default})", file=_sys.stderr)
+        return default
+    if value < minimum:
+        print(f"[coderadar] clamping {name}={raw} up to {minimum:g}s",
+              file=_sys.stderr)
+        return minimum
+    return value
+
 #: How long a tool handler waits for a running index before answering with
 #: progress instead. Long enough that a small project simply works, short
 #: enough that the agent is never left wondering.
-DEFAULT_WAIT_SECONDS = float(os.environ.get("CODERADAR_INDEX_WAIT", "25"))
+DEFAULT_WAIT_SECONDS = _env_seconds("CODERADAR_INDEX_WAIT", 25)
 
 #: Seconds between "still indexing" heartbeats on stderr while a handler
 #: waits. The wait used to be completely silent (F9): the client sees
 #: nothing until the budget expires either way, but an operator watching
 #: server logs — and any client forwarding stderr — can now tell warming
 #: from hung. Read at wait time so tests can shrink it.
-HEARTBEAT_SECONDS = float(os.environ.get("CODERADAR_INDEX_HEARTBEAT", "5"))
+HEARTBEAT_SECONDS = _env_seconds("CODERADAR_INDEX_HEARTBEAT", 5)
 
 #: Spawn order for background builds (see BackgroundIndex._run). A newer
 #: spawn supersedes older queued builds: building a stale tree only to let
