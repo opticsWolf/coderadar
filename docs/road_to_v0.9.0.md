@@ -415,7 +415,8 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   `test_as_of_temporal_traversal` fails identically on the pre-macrame
   Sept-11 main run (34622503038): pre-existing timing-sensitive failure
   (wall-clock `ts1` vs edge `valid_from`), passes locally + Ubuntu —
-  documented, not chased.
+  CHASED in v0.9.1 (see below): root cause was 8.3 short-name TEMP, not
+  clocks — see `canonical_file_form` FS-canonicalize fallback.
 - **Ruff cleanup (no bump, tag moved).** `ruff check` was 951 errors deep —
   a standing backlog (never green) on a tree written before ruff 0.16's
   expanded defaults, same drift class as the fmt break. Cleaned to zero
@@ -430,6 +431,24 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   FAIL). Behavior-neutral by construction; verified by 758 Python +
   121/121 battery. The one full-suite failure (`test_cold_start_load_latency`)
   is the known wall-clock flake — passes solo, unrelated to the cleanup.
+- **v0.9.1 — as_of temporal traversal on aliased roots.** Windows CI's
+  `test_as_of_temporal_traversal` failed 3/3 runs with `got []` while
+  passing locally + Ubuntu. Root cause: GitHub runners set TEMP with an
+  8.3 short component (`C:\Users\RUNNER~1\…`); the walk spells paths
+  as passed (short) while INDEXED_ROOT is filesystem-canonicalized
+  (long), so the purely-lexical strip in `canonical_file_form` missed,
+  ids fell back to absolute form, and `retire_noncanonical_concepts`
+  closed all 3 fixture concepts (+ their CALLS edge) in the same run —
+  the CI log's `retired 3 non-canonical` line was the tell (module + a
+  + b = exactly 3). In-memory search still found `a`; only the ledger
+  path (`traverse_at`) went blind. Fix: on strip miss, FS-canonicalize
+  the file once and retry before absolute fallback (mismatch path only,
+  hot path untouched). Proven locally with a subst-drive alias (pre-fix:
+  same retirement message + `[]`; post-fix: `.\a.py::a` + `[a, b]`),
+  plus `verbatim_aliased_path_still_mints_relative_id` (win) /
+  `symlinked_path_still_mints_relative_id` (unix) unit tests — the former
+  verified red without the fix. 369 Rust + full pytest + 121/121 battery
+  green; version cut 0.9.0 → 0.9.1.
 - **v0.9.0 — RELEASE + Issue 5 fold-in.** `docs/v0.9.0-release-notes.md` (changelog v0.8.16→,
   behavior changes, verification totals, deferred list); version cut
   0.8.25 → 0.9.0 across `__init__.py` + `pyproject.toml` + `Cargo.toml` +

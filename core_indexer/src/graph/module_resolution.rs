@@ -46,23 +46,48 @@ fn clean_lexical(p: &std::path::Path) -> std::path::PathBuf {
 /// yield the same ids. Paths outside the indexed root keep absolute form
 /// (no worse than today; they never matched anything anyway).
 pub(crate) fn canonical_file_form(path: &str) -> String {
-    let root = crate::indexed_root();
+    canonical_file_form_with_root(path, &crate::indexed_root())
+}
+
+/// Inner funnel with the root injectable (unit tests must not touch the
+/// process-global `INDEXED_ROOT`; parallel tests share it).
+fn canonical_file_form_with_root(path: &str, root: &std::path::Path) -> String {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let p = std::path::Path::new(path);
     let abs = if p.is_absolute() {
         clean_lexical(p)
     } else {
         let via_cwd = clean_lexical(&cwd.join(p));
-        if via_cwd.starts_with(&root) {
+        if via_cwd.starts_with(root) {
             via_cwd
         } else {
             clean_lexical(&root.join(p))
         }
     };
-    let rel = match abs.strip_prefix(&root) {
+    let rel = match abs.strip_prefix(root) {
         Ok(r) if !r.as_os_str().is_empty() => r.to_path_buf(),
-        // Outside the root (or the root itself): absolute form, as before.
-        _ => return normalize_path_str(path),
+        // Aliased root: the walk spells the path as passed (8.3 short
+        // names like C:\Users\RUNNER~1\… on CI, symlinks, verbatim
+        // `\\?\` form, on-disk case) while INDEXED_ROOT is
+        // filesystem-canonicalized — a lexical strip can never match
+        // those. Resolve through the FS once (mismatch path only, never
+        // the hot path) and retry before falling back to absolute form,
+        // which `retire_noncanonical_concepts` would close as an orphan
+        // (Windows CI's `test_as_of_temporal_traversal`: 3 concepts
+        // retired, as_of reads []).
+        _ => match std::fs::canonicalize(&abs) {
+            Ok(canon) => {
+                let canon = crate::strip_verbatim_prefix(canon);
+                match canon.strip_prefix(root) {
+                    Ok(r) if !r.as_os_str().is_empty() => r.to_path_buf(),
+                    // Outside the root (or the root itself): absolute form.
+                    _ => return normalize_path_str(path),
+                }
+            }
+            // Unresolvable (update_file mints ids for files that may not
+            // exist yet): absolute form, as before.
+            _ => return normalize_path_str(path),
+        },
     };
     let sep = std::path::MAIN_SEPARATOR;
     let joined = rel
@@ -387,6 +412,50 @@ mod canonical_form_tests {
         assert_eq!(canonical_file_form("some\\dir\\x.py"), c);
         #[cfg(not(windows))]
         assert_eq!(canonical_file_form("some/dir/x.py"), c);
+    }
+
+    /// Aliased root (Windows): the walk may spell a path verbatim
+    /// (`\\\\?\\C:\\…`) while INDEXED_ROOT is the stripped form — same
+    /// file, lexical mismatch. Models CI's 8.3 TEMP (`RUNNER~1`), which
+    /// retired all 3 concepts of `test_as_of_temporal_traversal`'s fixture
+    /// as "non-canonical" and made as_of read [].
+    #[cfg(windows)]
+    #[test]
+    fn verbatim_aliased_path_still_mints_relative_id() {
+        let base = std::env::temp_dir().join(format!("cr_alias_{}", std::process::id()));
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("a.py"), "x = 1\n").unwrap();
+        // What INDEXED_ROOT holds: canonicalized, verbatim stripped.
+        let root = crate::strip_verbatim_prefix(std::fs::canonicalize(&real).unwrap());
+        // What the walk may yield for the same file: verbatim spelling.
+        let verbatim = std::path::PathBuf::from(format!(r"\\?\{}", real.join("a.py").display()));
+        let got = canonical_file_form_with_root(&verbatim.to_string_lossy(), &root);
+        assert!(
+            got.starts_with(r".\"),
+            "aliased path must mint a canonical relative id, got {got:?}"
+        );
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// Aliased root (POSIX): same mismatch class via symlink — lexical
+    /// strip of the unresolved spelling fails, the FS fallback resolves.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_path_still_mints_relative_id() {
+        let base = std::env::temp_dir().join(format!("cr_alias_{}", std::process::id()));
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("a.py"), "x = 1\n").unwrap();
+        std::os::unix::fs::symlink(&real, base.join("alias")).unwrap();
+        let root = std::fs::canonicalize(&real).unwrap();
+        let via_alias = base.join("alias").join("a.py");
+        let got = canonical_file_form_with_root(&via_alias.to_string_lossy(), &root);
+        assert!(
+            got.starts_with("./"),
+            "aliased path must mint a canonical relative id, got {got:?}"
+        );
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

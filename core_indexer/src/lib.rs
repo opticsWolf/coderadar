@@ -112,7 +112,7 @@ pub(crate) fn indexed_root() -> std::path::PathBuf {
 
 /// `std::fs::canonicalize` returns verbatim paths on Windows (`\\?\D:\…`),
 /// which defeat `starts_with`/`strip_prefix` against regular paths.
-fn strip_verbatim_prefix(p: std::path::PathBuf) -> std::path::PathBuf {
+pub(crate) fn strip_verbatim_prefix(p: std::path::PathBuf) -> std::path::PathBuf {
     let s = p.to_string_lossy();
     if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
         return std::path::PathBuf::from(format!(r"\\{rest}"));
