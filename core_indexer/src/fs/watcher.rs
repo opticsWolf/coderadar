@@ -387,3 +387,64 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod exclusion_tests {
+    use super::*;
+    use notify_debouncer_mini::DebouncedEvent;
+
+    fn test_bridge(patterns: &[&str]) -> (EventBridge, Receiver<BatchEvent>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(".");
+        for pat in patterns {
+            let _ = builder.add_line(None, pat);
+        }
+        let bridge = EventBridge {
+            tx,
+            excludes: builder.build().ok(),
+            max_file_size_bytes: 1_048_576,
+            write_guard: crate::mutation::shared_write_guard(),
+            batch_counter: 0,
+        };
+        (bridge, rx)
+    }
+
+    #[test]
+    fn excluded_paths_never_become_events() {
+        // R1§6-13 follow-up: the item-7 matcher must drop excluded paths
+        // before they become FileChanges — no timing involved, drive the
+        // bridge directly with synthetic debouncer output.
+        let dir = tempfile::tempdir().unwrap();
+        let denied = dir.path().join("skipme.log");
+        let allowed = dir.path().join("keep.py");
+        std::fs::write(&allowed, "x = 1\n").unwrap();
+        let (mut bridge, rx) = test_bridge(&["*.log"]);
+        bridge.handle_event(Ok(vec![
+            DebouncedEvent {
+                path: denied,
+                kind: DebouncedEventKind::Any,
+            },
+            DebouncedEvent {
+                path: allowed.clone(),
+                kind: DebouncedEventKind::Any,
+            },
+        ]));
+        let batch = rx.try_recv().expect("allowed file must arrive");
+        assert_eq!(batch.changes.len(), 1, "{batch:?}");
+        assert_eq!(batch.changes[0].path, allowed.to_string_lossy());
+        assert!(rx.try_recv().is_err(), "excluded file must not arrive");
+    }
+
+    #[test]
+    fn watcher_default_keeps_walk_baseline() {
+        // The watcher must never drift from the walk's pattern source:
+        // every DEFAULT_EXCLUDES entry is in the default watch config.
+        let config = WatcherConfig::default();
+        for pat in crate::DEFAULT_EXCLUDES {
+            assert!(
+                config.exclude_patterns.iter().any(|p| p == pat),
+                "walk baseline {pat:?} missing from watcher defaults"
+            );
+        }
+    }
+}

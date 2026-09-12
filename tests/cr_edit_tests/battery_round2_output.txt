@@ -27,6 +27,7 @@
 [PASS] cli/diagnose-unresolved
 [PASS] cli/diagnose-low-confidence
 [PASS] cli/exclude-list
+[PASS] cli/exclude-list-effect-totals
 [PASS] cli/exclude-add
 [PASS] cli/exclude-list-has-ignored
 [PASS] cli/exclude-takes-effect
@@ -120,5 +121,5 @@
 
 ======================================================================
 SUMMARY
-119/119 passed
+120/120 passed
 FAIL-LIST-END

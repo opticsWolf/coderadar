@@ -694,13 +694,42 @@ def _print_effective_excludes() -> None:
         user = list(load_config(Path(".")).project.exclude or [])
     except Exception:
         pass
-    console.print("[bold]Effective excludes[/bold] (baseline + [project] exclude):")
+    # R1§6-13 follow-up: the .gitignore layer was invisible. Walk-level
+    # passes honor it (WalkBuilder reads it under the exclude overrides),
+    # so the stack shows its patterns; effect counts use the engine matcher
+    # (baseline + config), which is what analyze/retraction enforce.
+    gitignore: list = []
+    try:
+        for line in (Path(".") / ".gitignore").read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s and not s.startswith("#"):
+                gitignore.append(s)
+    except OSError:
+        pass
+    console.print("[bold]Effective excludes[/bold] (baseline + [project] exclude + .gitignore):")
     for pat in baseline:
         console.print(f"  [dim]baseline[/dim]  {pat}")
     for pat in user:
         console.print(f"  [cyan]config[/cyan]    {pat}")
-    if not baseline and not user:
+    if gitignore:
+        for pat in gitignore:
+            console.print(f"  [yellow]gitignore[/yellow] {pat}")
+    else:
+        console.print("  [dim]gitignore  (no .gitignore)[/dim]")
+    if not baseline and not user and not gitignore:
         console.print("  [dim](none)[/dim]")
+    try:
+        from .excludes import is_excluded as _is_excluded
+        total = excluded = 0
+        for dirpath, _dirnames, filenames in os.walk("."):
+            for fn in filenames:
+                total += 1
+                if _is_excluded(os.path.join(dirpath, fn), "."):
+                    excluded += 1
+        console.print(f"[bold]Effect on .[/bold]: {total} file(s), "
+                      f"{excluded} excluded, {total - excluded} indexed")
+    except Exception as e:
+        console.print(f"[dim]Effect stats unavailable: {e}[/dim]")
 
 
 @main.group()

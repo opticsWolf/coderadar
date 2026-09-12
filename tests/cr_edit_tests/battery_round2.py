@@ -161,6 +161,7 @@ check(SEC, "diagnose-low-confidence", rc == 0, out[:200])
 
 rc, out = cli("exclude", "list")
 check(SEC, "exclude-list", rc == 0 and ("node_modules" in out or "target" in out or "exclud" in out.lower()), out[:300])
+check(SEC, "exclude-list-effect-totals", "Effect on" in out and "excluded" in out and "indexed" in out, out[:200])
 rc, out = cli("exclude", "add", "ignored/")
 check(SEC, "exclude-add", rc == 0, out[:200])
 rc, out = cli("exclude", "list")

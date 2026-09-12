@@ -270,6 +270,12 @@ Rust `[debug]` lines remain for the v0.8.21 P3 batch.
   tests.
 - **R1§6-13** (partial): exclusion-system follow-ups not yet covered by
   R2-7 — e.g. `exclude stats` stack output, watcher respect for excludes.
+  DONE v0.8.24: `exclude list` shows all three layers (baseline + config +
+  `.gitignore` patterns, comments skipped) plus engine effect totals
+  (`N file(s), E excluded, N-E indexed` on the live tree); watcher
+  exclusion proven by direct bridge test (synthetic debouncer events:
+  excluded path dropped, normal path arrives) + a defaults test pinning
+  every `DEFAULT_EXCLUDES` entry in the watch config.
 - **R1§6-14/15/17**: placeholder-scan stats follow-ups, heartbeat tuning
   (`CODERADAR_INDEX_HEARTBEAT` default), bridge-decorator production-root
   list maintenance.
@@ -290,6 +296,7 @@ relevant pytest files, full battery before merge):
 | v0.8.20 | R2-3 `new`-expression extraction + R2-4 remove_file search purge + R2-6 git OID errors + R2-15 table widths | `surface/ts-new-expression-captured`, `surface/remove-file-clears-search`, `cli/git-diff-bad-oid-errors`, `cli/query-basic` |
 | v0.8.21 | P3 batch (R2-9…R2-14) + Issue 9 re-export chains | `cli/traverse-bad-edge-kind-errors`, `mcp/as-of-bad-ts-signals`, `surface/issue9-reexport-resolves` |
 | v0.8.23 | R2-17 rename-chain rewrite (plan + scoped-update refresh + resolve fixpoint) | `mcp/rename-real-applied`, `mcp/fixture-restored-after-rename`, `surface/issue9-reexport-resolves` |
+| v0.8.24 | R1§6-13 exclusion follow-ups (list layers + effect totals, watcher proof) | `cli/exclude-list-effect-totals` |
 | v0.9.0 | Carryover (§4) + full battery green + release notes | everything |
 
 Order inside Phase 1 is dependency-driven: R2-1 first (presentation-only,
@@ -374,6 +381,11 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   multi-file plans in `CodeGraph.apply`. Live round-trip: rename → mem
   `helpers::combine_r2`, rename-back → mem `helpers::combine`, disk
   byte-identical. 365 Rust + 746 Python green; battery_round2 119/119.
+- **v0.8.24 — R1§6-13 DONE.** `exclude list` gains the `.gitignore`
+  pattern layer and engine effect totals on the live tree; watcher
+  exclusion covered by a direct EventBridge test + a defaults-vs-baseline
+  pinning test. 367 Rust + 747 Python green; battery_round2 120/120
+  (new `cli/exclude-list-effect-totals` anchor).
 - **v0.8.22 — macrame-db 0.15 → 0.17 DONE** (off-plan dep bump). The 0.16
   cycle's one caller-visible break was the W15.3 `#[non_exhaustive]` wave:
   four literal sites in `cold_start.rs` moved to constructors

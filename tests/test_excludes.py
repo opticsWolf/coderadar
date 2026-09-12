@@ -94,3 +94,20 @@ def test_exclude_add_list_remove_round_trip(tmp_path, monkeypatch):
     assert out.exit_code == 0, out.output
     out = runner.invoke(main, ["exclude", "remove", "scratch/"])
     assert "Not excluded" in out.output
+
+
+def test_exclude_list_shows_gitignore_layer_and_effect(tmp_path, monkeypatch):
+    # R1§6-13 follow-up: the .gitignore layer used to be invisible and the
+    # stack had no effect numbers — list shows layers plus engine effect.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".gitignore").write_text("*.log\n# comment\n\n")
+    (tmp_path / "a.py").write_text("x = 1\n")
+    (tmp_path / "b.log").write_text("noise\n")
+    runner = CliRunner()
+    out = runner.invoke(main, ["exclude", "list"])
+    assert out.exit_code == 0, out.output
+    assert "gitignore" in out.output
+    assert "*.log" in out.output
+    assert "comment" not in out.output  # comments are not patterns
+    assert "Effect on" in out.output
+    assert "3 file(s)" in out.output  # .gitignore + a.py + b.log walked
