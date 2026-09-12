@@ -408,6 +408,14 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   test extended); `_env_seconds` knob hardening (4 tests, defaults
   unchanged: wait 25 s, heartbeat 5 s); scaffolding footer battery anchor.
   368 Rust + 751 Python green; battery_round2 121/121.
+- **Post-v0.9.0 CI triage (run 34683729297).** Lint `cargo fmt` red was
+  toolchain drift, not regression: CI stable is rustfmt 1.98, local stable
+  was stale 1.97 — `cargo fmt --all` under 1.98, committed behavior-neutral
+  (tag moved to the fmt tip per v0.8.16 precedent). Windows
+  `test_as_of_temporal_traversal` fails identically on the pre-macrame
+  Sept-11 main run (34622503038): pre-existing timing-sensitive failure
+  (wall-clock `ts1` vs edge `valid_from`), passes locally + Ubuntu —
+  documented, not chased.
 - **v0.9.0 — RELEASE + Issue 5 fold-in.** `docs/v0.9.0-release-notes.md` (changelog v0.8.16→,
   behavior changes, verification totals, deferred list); version cut
   0.8.25 → 0.9.0 across `__init__.py` + `pyproject.toml` + `Cargo.toml` +
