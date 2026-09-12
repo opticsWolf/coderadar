@@ -19,7 +19,7 @@ from __future__ import annotations
 #: installed wheel/sdist reports its own version) and falls back to the
 #: release constant below, which MUST be kept in sync with pyproject.toml
 #: and Cargo.toml [workspace.package] on every bump.
-_FALLBACK_VERSION = "0.8.22"
+_FALLBACK_VERSION = "0.8.23"
 
 
 def _resolve_version() -> str:
@@ -651,6 +651,19 @@ class CodeGraph:
                     self.update_file(f)
                 except Exception:
                     pass
+            # R2-17: multi-file plans resolve order-dependently — an
+            # importer re-resolved before its source re-indexed keeps a
+            # stale external:: edge (rename across a re-export chain hit
+            # exactly this). A second pass over the same files converges:
+            # pass 1 leaves every affected file's entities/imports current,
+            # so pass 2 resolves calls against settled siblings. Single-file
+            # plans cannot strand cross-file edges; skip the extra work.
+            if len(plan.affected_files) > 1:
+                for f in plan.affected_files:
+                    try:
+                        self.update_file(f)
+                    except Exception:
+                        pass
             for f in plan.affected_files:
                 try:
                     clear_embeddings_for_file(f)

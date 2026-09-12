@@ -254,6 +254,20 @@ Rust `[debug]` lines remain for the v0.8.21 P3 batch.
   `mcp/rename-real` + `mcp/rename-back` round-trip on the r2proj chain;
   the harness now snapshots/restores the fixture and re-analyzes, with a
   `mcp/fixture-restored-after-rename` guard.
+  DONE v0.8.23 (three layers): (1) plan — `collect_import_binding_edits`
+  rewrites every confirmed `from X import <old>` binding (tree-sitter span
+  location: first identifier after `import`/`export` not preceded by `as`;
+  star imports need nothing; `__all__` strings stay for review), hooked
+  into function + class rename; (2) scoped-update import refresh —
+  `apply_diff_update` re-inserted imports by ID presence only, and import
+  ids are line-stable, so same-line binding edits never landed (plus a
+  missing dedupe on the per-unit membership push accumulated duplicate
+  import entries, N-identical-edits-at-one-span corrupted files on apply);
+  (3) `CodeGraph.apply` runs a second `update_file` pass over multi-file
+  plans so importers re-resolve against settled sources. Full round-trip
+  verified live: rename → mem `helpers::combine_r2`, rename-back → mem
+  `helpers::combine`, disk byte-identical. 4 rename tests + 2 projection
+  tests.
 - **R1§6-13** (partial): exclusion-system follow-ups not yet covered by
   R2-7 — e.g. `exclude stats` stack output, watcher respect for excludes.
 - **R1§6-14/15/17**: placeholder-scan stats follow-ups, heartbeat tuning
@@ -275,6 +289,7 @@ relevant pytest files, full battery before merge):
 | v0.8.19 | R2-7 toml excludes on library path + R2-8 git-clean + R2-16 CLI canonicalization | `cli/exclude-takes-effect`, `cli/git-clean-when-clean`, `cli/visualize-slash-id-works` |
 | v0.8.20 | R2-3 `new`-expression extraction + R2-4 remove_file search purge + R2-6 git OID errors + R2-15 table widths | `surface/ts-new-expression-captured`, `surface/remove-file-clears-search`, `cli/git-diff-bad-oid-errors`, `cli/query-basic` |
 | v0.8.21 | P3 batch (R2-9…R2-14) + Issue 9 re-export chains | `cli/traverse-bad-edge-kind-errors`, `mcp/as-of-bad-ts-signals`, `surface/issue9-reexport-resolves` |
+| v0.8.23 | R2-17 rename-chain rewrite (plan + scoped-update refresh + resolve fixpoint) | `mcp/rename-real-applied`, `mcp/fixture-restored-after-rename`, `surface/issue9-reexport-resolves` |
 | v0.9.0 | Carryover (§4) + full battery green + release notes | everything |
 
 Order inside Phase 1 is dependency-driven: R2-1 first (presentation-only,
@@ -352,6 +367,13 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   registers the novel (COMB, RUN) pair; the R2-1 `external-callee-visible`
   anchor repointed from `run` (no external callees left, correctly) to
   `makeStore → external::Store`. 359 Rust + 746 Python green.
+- **v0.8.23 — R2-17 DONE.** Import-binding rewrites in the rename planner
+  (function + class paths, alias-aware, shadow-safe via
+  `find_symbol_in_module`); scoped-update import refresh (line-stable ids
+  always replace) + membership dedupe; second `update_file` pass over
+  multi-file plans in `CodeGraph.apply`. Live round-trip: rename → mem
+  `helpers::combine_r2`, rename-back → mem `helpers::combine`, disk
+  byte-identical. 365 Rust + 746 Python green; battery_round2 119/119.
 - **v0.8.22 — macrame-db 0.15 → 0.17 DONE** (off-plan dep bump). The 0.16
   cycle's one caller-visible break was the W15.3 `#[non_exhaustive]` wave:
   four literal sites in `cold_start.rs` moved to constructors

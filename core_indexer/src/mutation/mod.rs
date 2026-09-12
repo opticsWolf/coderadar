@@ -1147,6 +1147,263 @@ impl MutationEngine {
         Ok(callers.len())
     }
 
+    /// Rewrite the `from X import <old>` bindings that name this entity
+    /// (R2-17): a rename that stops at the definition + call sites leaves
+    /// every import binding dangling — `from app import combine` still
+    /// says `combine` after the definition became `combine_r2`, and the
+    /// next resolve lands on `external::`. Each module's explicit-name
+    /// imports are checked independently, so re-export chains heal link
+    /// by link in one plan: the import's source module is resolved,
+    /// `find_symbol_in_module` (cycle guard + shadow rules) must land on
+    /// exactly this entity, and the bound-name span is located with
+    /// tree-sitter — every identifier after the `import`/`export` keyword
+    /// that is not an `as` alias. Star imports need nothing (runtime
+    /// name-agnostic); `__all__` string literals stay for review.
+    fn collect_import_binding_edits(
+        &self,
+        entity_id: &str,
+        old_name: &str,
+        new_name: &str,
+        projection: &ProjectedGraph,
+        edits: &mut Vec<MutationEdit>,
+        affected: &mut Vec<String>,
+        unverified: &mut Vec<UnverifiedSite>,
+    ) -> Result<usize, MutationError> {
+        use crate::graph::module_resolution::{find_module_by_dotted_name, find_symbol_in_module};
+        use crate::types::{ImportKind, ImportResolution, SymbolId};
+
+        // (importer module id, import id) pairs confirmed to bind us.
+        let mut confirmed: Vec<(String, String)> = Vec::new();
+        for (mod_id, module) in &projection.modules {
+            for import_id in &module.imports {
+                let Some(import) = projection.imports.get(import_id) else {
+                    continue;
+                };
+                let names: &Vec<(String, Option<String>)> = match &import.kind {
+                    ImportKind::FromImport { names, .. } => names,
+                    ImportKind::RelativeImport { names, .. } => names,
+                    // ModuleImport/Side bind modules, StarImport is
+                    // name-agnostic at runtime — nothing to rewrite.
+                    _ => continue,
+                };
+                if !names.iter().any(|(orig, _)| orig == old_name) {
+                    continue;
+                }
+                let bound = match &import.resolution {
+                    ImportResolution::Symbol(SymbolId::Function(id))
+                    | ImportResolution::Symbol(SymbolId::Class(id)) => id == entity_id,
+                    ImportResolution::Module(src) => {
+                        find_symbol_in_module(projection, src, old_name).as_deref()
+                            == Some(entity_id)
+                    }
+                    ImportResolution::Wildcard { module, .. } => {
+                        find_symbol_in_module(projection, module, old_name).as_deref()
+                            == Some(entity_id)
+                    }
+                    // Unresolved/External/Dynamic/Symbol(Module|Import):
+                    // fall back to the dotted source name, fail closed.
+                    _ => {
+                        let dotted: Option<&str> = match &import.kind {
+                            ImportKind::FromImport { module, .. } => Some(module.as_str()),
+                            ImportKind::RelativeImport { module, .. } => module.as_deref(),
+                            _ => None,
+                        };
+                        dotted
+                            .and_then(|d| find_module_by_dotted_name(projection, d, mod_id))
+                            .is_some_and(|src| {
+                                find_symbol_in_module(projection, &src, old_name).as_deref()
+                                    == Some(entity_id)
+                            })
+                    }
+                };
+                if bound {
+                    confirmed.push((mod_id.clone(), import_id.clone()));
+                }
+            }
+        }
+
+        // Cap like call sites: a widely re-exported name fans out the same way.
+        let mut files: Vec<String> = confirmed
+            .iter()
+            .filter_map(|(m, _)| projection.modules.get(m))
+            .map(|m| m.path.to_string_lossy().to_string())
+            .collect();
+        files.sort();
+        files.dedup();
+        if files.len() > self.config.max_files_per_plan {
+            return Err(MutationError::TooManyFiles(files.len()));
+        }
+
+        // Group by importer file: parse once, locate each binding in it.
+        let mut by_file: Vec<(String, crate::types::Language, Vec<String>)> = Vec::new();
+        for (mod_id, import_id) in &confirmed {
+            let Some(module) = projection.modules.get(mod_id) else {
+                continue;
+            };
+            let file = module.path.to_string_lossy().to_string();
+            match by_file.iter_mut().find(|(f, _, _)| f == &file) {
+                Some((_, _, ids)) => ids.push(import_id.clone()),
+                None => {
+                    by_file.push((file, module.language, vec![import_id.clone()]));
+                }
+            }
+        }
+
+        for (file, language, import_ids) in &by_file {
+            let source = read_project_file(file).into_bytes();
+            let tree: Option<tree_sitter::Tree> = crate::graph::CodeGraph::ts_language(language)
+                .and_then(|ts_lang| {
+                    let mut parser = tree_sitter::Parser::new();
+                    parser.set_language(&ts_lang).ok()?;
+                    parser.parse(&source, None)
+                });
+            for import_id in import_ids {
+                let Some(import) = projection.imports.get(import_id) else {
+                    continue;
+                };
+                let Some(stmt_tree) = tree.as_ref() else {
+                    unverified.push(UnverifiedSite {
+                        file: file.clone(),
+                        line: import.line as u32,
+                        snippet: format!("from-import binding of \"{old_name}\""),
+                        reason: "No tree-sitter grammar: import binding needs manual review".into(),
+                    });
+                    continue;
+                };
+                let Some(stmt) = Self::import_statement_at_line(stmt_tree.root_node(), import.line)
+                else {
+                    unverified.push(UnverifiedSite {
+                        file: file.clone(),
+                        line: import.line as u32,
+                        snippet: format!("from-import binding of \"{old_name}\""),
+                        reason:
+                            "Import statement moved since indexing: binding needs manual review"
+                                .into(),
+                    });
+                    continue;
+                };
+                let spans = Self::import_binding_spans(&source, stmt, old_name);
+                if spans.is_empty() {
+                    unverified.push(UnverifiedSite {
+                        file: file.clone(),
+                        line: import.line as u32,
+                        snippet: format!("from-import binding of \"{old_name}\""),
+                        reason: "Bound name not located in import statement: needs manual review"
+                            .into(),
+                    });
+                    continue;
+                }
+                for span in spans {
+                    if !span_holds_name(&source, span, old_name) {
+                        unverified.push(UnverifiedSite {
+                            file: file.clone(),
+                            line: import.line as u32,
+                            snippet: old_name.to_string(),
+                            reason: format!(
+                                "Reference no longer holds \"{old_name}\" — file changed since                                  indexing; reindex and retry"
+                            ),
+                        });
+                        continue;
+                    }
+                    edits.push(MutationEdit {
+                        file: file.clone(),
+                        span,
+                        replacement: new_name.to_string(),
+                        expected_hash: hash_span(&source, span),
+                    });
+                    if !affected.iter().any(|f| f == file) {
+                        affected.push(file.clone());
+                    }
+                }
+            }
+        }
+
+        Ok(files.len())
+    }
+
+    /// The import statement starting on `line` (1-based), located
+    /// grammar-agnostically: the first `import`/`export` keyword leaf on
+    /// that row, whose parent is its statement in every grammar's import
+    /// forms. (An outermost-starter search returns the whole program root
+    /// for line-1 imports — and the binding walk then eats same-named
+    /// call sites as duplicates. The keyword's parent can't overreach.)
+    fn import_statement_at_line(
+        root: tree_sitter::Node<'_>,
+        line: usize,
+    ) -> Option<tree_sitter::Node<'_>> {
+        let target = line.saturating_sub(1);
+        let mut stack = vec![root];
+        while let Some(n) = stack.pop() {
+            if n.child_count() == 0 {
+                let kind = n.kind();
+                if (kind == "import" || kind == "export") && n.start_position().row == target {
+                    return match n.parent() {
+                        Some(p) if p.start_position().row == target => Some(p),
+                        // Degenerate: walk it anyway, find nothing, report.
+                        _ => Some(n),
+                    };
+                }
+            } else {
+                for i in (0..n.child_count()).rev() {
+                    if let Some(c) = n.child(i as u32) {
+                        stack.push(c);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Bound-name spans in one import statement: every identifier after the
+    /// `import`/`export` keyword whose previous significant token is not
+    /// `as` — so `from x import combine as c` rewrites the bound `combine`
+    /// and keeps the alias, while `from x import c as combine` (a local
+    /// alias, still valid after the rename) is left alone.
+    fn import_binding_spans(
+        source: &[u8],
+        stmt: tree_sitter::Node<'_>,
+        old_name: &str,
+    ) -> Vec<ByteSpan> {
+        fn walk(
+            n: tree_sitter::Node<'_>,
+            source: &[u8],
+            old_name: &str,
+            seen_kw: &mut bool,
+            prev_as: &mut bool,
+            out: &mut Vec<ByteSpan>,
+        ) {
+            if n.child_count() == 0 {
+                let text = n.utf8_text(source).unwrap_or("");
+                if text == "import" || text == "export" {
+                    *seen_kw = true;
+                    *prev_as = false;
+                } else if *seen_kw {
+                    if n.is_named() {
+                        if text == old_name && !*prev_as {
+                            out.push(ByteSpan {
+                                start: n.start_byte(),
+                                end: n.end_byte(),
+                            });
+                        }
+                        *prev_as = false;
+                    } else {
+                        *prev_as = text == "as";
+                    }
+                }
+                return;
+            }
+            let mut cursor = n.walk();
+            for child in n.children(&mut cursor) {
+                walk(child, source, old_name, seen_kw, prev_as, out);
+            }
+        }
+        let mut out = Vec::new();
+        let mut seen_kw = false;
+        let mut prev_as = false;
+        walk(stmt, source, old_name, &mut seen_kw, &mut prev_as, &mut out);
+        out
+    }
+
     fn plan_rename_function(
         &self,
         entity_id: &str,
@@ -1190,6 +1447,20 @@ impl MutationEngine {
         // 2. Caller side: rewrite every verified reference
         let _ = self.collect_call_site_edits(
             std::slice::from_ref(&entity_id.to_string()),
+            new_name,
+            projection,
+            &mut edits,
+            &mut affected,
+            &mut unverified,
+        )?;
+
+        // 2b. Import side (R2-17): rewrite the `from X import <old>`
+        // bindings that name this entity, link by link down any
+        // re-export chain — otherwise the renamed definition strands
+        // every importer on `external::`.
+        let _ = self.collect_import_binding_edits(
+            entity_id,
+            &fn_entity.name,
             new_name,
             projection,
             &mut edits,
@@ -1324,6 +1595,18 @@ impl MutationEngine {
         let targets = vec![entity_id.to_string(), format!("{}.__init__", entity_id)];
         let caller_count = self.collect_call_site_edits(
             &targets,
+            new_name,
+            projection,
+            &mut edits,
+            &mut affected,
+            &mut unverified,
+        )?;
+
+        // 3b. Import side (R2-17): `from X import Old` bindings name the
+        // class the same way they name functions — heal the chain.
+        let _ = self.collect_import_binding_edits(
+            entity_id,
+            &cls.name,
             new_name,
             projection,
             &mut edits,
@@ -2925,6 +3208,242 @@ mod tests {
             assert!(sites[0].snippet.contains("target_fn()"));
             // Definition (line 1) and the resolved site (line 6) stay quiet.
             assert!(!sites.iter().any(|s| s.line == 1 || s.line == 6));
+        }
+
+        /// Index a re-export chain on disk: helpers defines `combine`,
+        /// app/__init__ re-exports it, main imports it from app and calls it.
+        fn indexed_reexport_chain(
+            dir: &std::path::Path,
+        ) -> (ProjectedGraph, String, String, String) {
+            let app = dir.join("app");
+            std::fs::create_dir_all(&app).unwrap();
+            let helpers = app.join("helpers.py");
+            let init = app.join("__init__.py");
+            let main = dir.join("main.py");
+            std::fs::write(&helpers, "def combine(items):\n    return items\n").unwrap();
+            std::fs::write(&init, "from .helpers import combine\n").unwrap();
+            std::fs::write(
+                &main,
+                "from app import combine\ndef run(items):\n    return combine(items)\n",
+            )
+            .unwrap();
+            let graph = CodeGraph::new(GraphConfig::default());
+            for p in [&helpers, &init, &main] {
+                let src = std::fs::read_to_string(p).unwrap();
+                graph
+                    .index_file(&src, &p.to_string_lossy(), &Language::Python)
+                    .unwrap();
+            }
+            let mut projection = (*graph.snapshot()).clone();
+            graph.resolve_imports(&mut projection);
+            graph.resolve_all_calls(&mut projection);
+            (
+                projection,
+                helpers.to_string_lossy().to_string(),
+                init.to_string_lossy().to_string(),
+                main.to_string_lossy().to_string(),
+            )
+        }
+
+        fn fn_id_named(projection: &ProjectedGraph, name: &str, file_frag: &str) -> String {
+            projection
+                .functions
+                .keys()
+                .find(|id| id.contains(file_frag) && id.ends_with(&format!("::{name}")))
+                .cloned()
+                .expect("fixture function missing")
+        }
+
+        fn applied_for(plan: &MutationPlan, file: &str, src: &str) -> String {
+            let edits: Vec<MutationEdit> = plan
+                .edits
+                .iter()
+                .filter(|e| e.file == file)
+                .cloned()
+                .collect();
+            crate::mutation::edit::apply_edits_to_file(src, &edits).unwrap()
+        }
+
+        #[test]
+        fn rename_rewrites_import_bindings_through_reexport_chain() {
+            // R2-17: rename stopped at def + call sites, stranding
+            // `from app import combine` on the old name (next resolve:
+            // external::). The chain must heal link by link in one plan.
+            let dir = tempfile::tempdir().unwrap();
+            let (projection, helpers, init, main) = indexed_reexport_chain(dir.path());
+            let comb = fn_id_named(&projection, "combine", "helpers");
+            let plan = engine()
+                .plan_rename(&comb, "combine_r2", false, true, &projection)
+                .expect("rename plans");
+            let src_h = std::fs::read_to_string(&helpers).unwrap();
+            let src_i = std::fs::read_to_string(&init).unwrap();
+            let src_m = std::fs::read_to_string(&main).unwrap();
+            assert!(applied_for(&plan, &helpers, &src_h).contains("def combine_r2(items):"));
+            assert!(
+                applied_for(&plan, &init, &src_i).contains("from .helpers import combine_r2"),
+                "init re-export must track the rename"
+            );
+            let applied_main = applied_for(&plan, &main, &src_m);
+            assert!(
+                applied_main.contains("from app import combine_r2"),
+                "importer binding must track the rename: {applied_main}"
+            );
+            assert!(applied_main.contains("return combine_r2(items)"));
+            assert!(
+                !plan
+                    .unverified_sites
+                    .iter()
+                    .any(|s| s.snippet.contains("binding")),
+                "bindings verified, not reported: {:?}",
+                plan.unverified_sites
+            );
+            // Round-trip: the rewritten tree re-indexes with run resolved
+            // to the renamed definition — no external::, no dangling import.
+            std::fs::write(&helpers, applied_for(&plan, &helpers, &src_h)).unwrap();
+            std::fs::write(&init, applied_for(&plan, &init, &src_i)).unwrap();
+            std::fs::write(&main, applied_main.clone()).unwrap();
+            let graph2 = CodeGraph::new(GraphConfig::default());
+            for (p, s) in [
+                (&helpers, std::fs::read_to_string(&helpers).unwrap()),
+                (&init, std::fs::read_to_string(&init).unwrap()),
+                (&main, applied_main),
+            ] {
+                graph2.index_file(&s, p, &Language::Python).unwrap();
+            }
+            let mut proj2 = (*graph2.snapshot()).clone();
+            graph2.resolve_imports(&mut proj2);
+            graph2.resolve_all_calls(&mut proj2);
+            let run2 = fn_id_named(&proj2, "run", "main");
+            let new_comb = format!("{}::combine_r2", helpers);
+            let callees = proj2
+                .callees_by_caller
+                .get(&run2)
+                .cloned()
+                .unwrap_or_default();
+            assert!(
+                callees.contains(&new_comb),
+                "round-trip callees: {callees:?}"
+            );
+            assert!(
+                !callees.iter().any(|c| c.starts_with("external::")),
+                "no external fallback after chain rename: {callees:?}"
+            );
+        }
+
+        #[test]
+        fn rename_rewrites_bound_name_but_keeps_alias() {
+            // `from h import combine as c`: the bound `combine` must track
+            // the rename, the local alias `c` stays valid and untouched.
+            let dir = tempfile::tempdir().unwrap();
+            let h = dir.path().join("h.py");
+            let u = dir.path().join("u.py");
+            std::fs::write(&h, "def combine(items):\n    return items\n").unwrap();
+            std::fs::write(&u, "from h import combine as c\n").unwrap();
+            let graph = CodeGraph::new(GraphConfig::default());
+            for p in [&h, &u] {
+                let src = std::fs::read_to_string(p).unwrap();
+                graph
+                    .index_file(&src, &p.to_string_lossy(), &Language::Python)
+                    .unwrap();
+            }
+            let mut projection = (*graph.snapshot()).clone();
+            graph.resolve_imports(&mut projection);
+            graph.resolve_all_calls(&mut projection);
+            let comb = fn_id_named(&projection, "combine", "h.py");
+            let plan = engine()
+                .plan_rename(&comb, "combine_r2", false, true, &projection)
+                .expect("rename plans");
+            let u_str = u.to_string_lossy().to_string();
+            let applied = applied_for(&plan, &u_str, &std::fs::read_to_string(&u).unwrap());
+            assert!(
+                applied.contains("from h import combine_r2 as c"),
+                "bound name tracks, alias kept: {applied}"
+            );
+        }
+
+        #[test]
+        fn rename_skips_same_named_import_from_another_module() {
+            // Two modules each define `combine`; only the renamed one's
+            // importers are rewritten (find_symbol_in_module shadow rule).
+            let dir = tempfile::tempdir().unwrap();
+            let h = dir.path().join("h.py");
+            let other = dir.path().join("other.py");
+            let u = dir.path().join("u.py");
+            std::fs::write(&h, "def combine(items):\n    return items\n").unwrap();
+            std::fs::write(&other, "def combine(items):\n    return None\n").unwrap();
+            std::fs::write(&u, "from other import combine\n").unwrap();
+            let graph = CodeGraph::new(GraphConfig::default());
+            for p in [&h, &other, &u] {
+                let src = std::fs::read_to_string(p).unwrap();
+                graph
+                    .index_file(&src, &p.to_string_lossy(), &Language::Python)
+                    .unwrap();
+            }
+            let mut projection = (*graph.snapshot()).clone();
+            graph.resolve_imports(&mut projection);
+            graph.resolve_all_calls(&mut projection);
+            let comb = fn_id_named(&projection, "combine", "h.py");
+            let plan = engine()
+                .plan_rename(&comb, "combine_r2", false, true, &projection)
+                .expect("rename plans");
+            let u_str = u.to_string_lossy().to_string();
+            assert!(
+                plan.edits.iter().all(|e| e.file != u_str),
+                "foreign binding untouched: {:?}",
+                plan.edits
+            );
+            assert_eq!(
+                std::fs::read_to_string(&u).unwrap(),
+                "from other import combine\n"
+            );
+        }
+
+        #[test]
+        fn class_rename_rewrites_import_bindings() {
+            // R2-17 hook on the class path: `from pkg import Widget`
+            // tracks `Widget -> Gadget` the same way functions do.
+            let dir = tempfile::tempdir().unwrap();
+            let pkg = dir.path().join("pkg");
+            std::fs::create_dir_all(&pkg).unwrap();
+            let m = pkg.join("m.py");
+            let init = pkg.join("__init__.py");
+            let main = dir.path().join("main2.py");
+            std::fs::write(&m, "class Widget:\n    pass\n").unwrap();
+            std::fs::write(&init, "from .m import Widget\n").unwrap();
+            std::fs::write(&main, "from pkg import Widget\n").unwrap();
+            let graph = CodeGraph::new(GraphConfig::default());
+            for p in [&m, &init, &main] {
+                let src = std::fs::read_to_string(p).unwrap();
+                graph
+                    .index_file(&src, &p.to_string_lossy(), &Language::Python)
+                    .unwrap();
+            }
+            let mut projection = (*graph.snapshot()).clone();
+            graph.resolve_imports(&mut projection);
+            graph.resolve_all_calls(&mut projection);
+            let widget = projection
+                .classes
+                .keys()
+                .find(|id| id.ends_with("::Widget"))
+                .cloned()
+                .expect("fixture class missing");
+            let plan = engine()
+                .plan_rename(&widget, "Gadget", false, true, &projection)
+                .expect("rename plans");
+            let init_str = init.to_string_lossy().to_string();
+            let main_str = main.to_string_lossy().to_string();
+            assert!(
+                applied_for(&plan, &init_str, &std::fs::read_to_string(&init).unwrap())
+                    .contains("from .m import Gadget"),
+                "{:?}",
+                plan.edits
+            );
+            assert!(
+                applied_for(&plan, &main_str, &std::fs::read_to_string(&main).unwrap())
+                    .contains("from pkg import Gadget"),
+                "{:?}",
+                plan.edits
+            );
         }
 
         #[test]

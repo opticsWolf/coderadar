@@ -515,7 +515,12 @@ impl CodeGraph {
                         f.signature_hash != *sig || f.body_hash != *body
                     }),
                 ExtractedUnit::Class(_) => !old_classes.contains(&normalize_id(&id)),
-                ExtractedUnit::Import(_) => !old_imports.contains(&normalize_id(&id)),
+                // R2-17: import ids are line-stable (`file::import@N`), so a
+                // binding edit on the same line (`combine` -> `combine_r2`)
+                // keeps its id and an ID-presence check would keep the stale
+                // names forever. Functions compare content hashes; imports
+                // carry none, so always replace (same id, fresh content).
+                ExtractedUnit::Import(_) => true,
                 ExtractedUnit::Constant(_) => !old_constants.contains(&normalize_id(&id)),
                 ExtractedUnit::TypeAlias(_) => !old_aliases.contains(&normalize_id(&id)),
                 ExtractedUnit::Module(m) => match projection.modules.get(&module_id) {
@@ -591,7 +596,14 @@ impl CodeGraph {
                         .insert(entity_id.clone(), Arc::new(import));
                     if let Some(mod_arc) = projection.modules.get(&module_id) {
                         let mut m = (**mod_arc).clone();
-                        m.imports.push(entity_id);
+                        // R2-17: imports re-insert on every update (line-stable
+                        // ids must refresh bindings), so push must dedupe —
+                        // otherwise the membership accumulates one entry per
+                        // update and planners visit the same import N times
+                        // (duplicate edits at one span corrupt the file).
+                        if !m.imports.contains(&entity_id) {
+                            m.imports.push(entity_id);
+                        }
                         projection.modules.insert(module_id.clone(), Arc::new(m));
                     }
                     // Build import graph edges

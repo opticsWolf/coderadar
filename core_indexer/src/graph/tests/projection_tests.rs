@@ -450,3 +450,77 @@ fn remove_file_fallback_clears_every_kind_map() {
         assert!(!id.contains("gone.py"), "ghost left in maps: {id}");
     }
 }
+
+#[test]
+fn update_file_refreshes_same_line_import_bindings() {
+    // R2-17: import ids are line-stable (`file::import@N`), so an
+    // ID-presence check kept the stale binding forever — the scoped path
+    // re-resolved `combine_r2` against an import that still said `combine`
+    // (disk healed by the rename plan, memory stuck on external::).
+    // Same-line binding edits must replace the stored import.
+    let graph = CodeGraph::new(GraphConfig::default());
+    graph
+        .index_file(
+            "from app import combine\ndef run():\n    return combine()\n",
+            "main.py",
+            &Language::Python,
+        )
+        .unwrap();
+    graph
+        .update_file(
+            "main.py",
+            Some("from app import combine_r2\ndef run():\n    return combine_r2()\n"),
+            None,
+        )
+        .unwrap();
+    let snap = graph.snapshot();
+    let names: Vec<String> = snap
+        .imports
+        .values()
+        .flat_map(|i| match &i.kind {
+            crate::types::ImportKind::FromImport { names, .. } => {
+                names.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>()
+            }
+            _ => vec![],
+        })
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "combine_r2"),
+        "stored import must carry the new binding, got {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "combine"),
+        "stale binding must be gone, got {names:?}"
+    );
+}
+
+#[test]
+fn repeated_updates_do_not_duplicate_import_membership() {
+    // R2-17: the per-unit import insert appended to module.imports without
+    // dedup, so every update_file added another entry per import id and the
+    // rename planner emitted N identical edits at one span — applied twice,
+    // the second lands on shifted bytes and the parse check rolls back.
+    let graph = CodeGraph::new(GraphConfig::default());
+    graph
+        .index_file("from app import combine\n", "main.py", &Language::Python)
+        .unwrap();
+    graph
+        .update_file("main.py", Some("from app import combine_r2\n"), None)
+        .unwrap();
+    graph
+        .update_file("main.py", Some("from app import combine_r3\n"), None)
+        .unwrap();
+    let snap = graph.snapshot();
+    let module = snap
+        .modules
+        .values()
+        .find(|m| m.path.to_string_lossy().ends_with("main.py"))
+        .expect("main module present");
+    let mut seen = std::collections::BTreeSet::new();
+    for id in &module.imports {
+        assert!(
+            seen.insert(id.clone()),
+            "duplicate import membership after updates: {id}"
+        );
+    }
+}

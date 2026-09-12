@@ -232,7 +232,7 @@ pub(crate) fn find_module_by_dotted_name(
 /// cycles (a cycle with no definition resolves to nothing, correctly).
 /// Star re-exports (`from x import *`, `Wildcard` resolutions) are followed
 /// the same way when the name is exposed.
-pub(super) fn find_symbol_in_module(
+pub(crate) fn find_symbol_in_module(
     projection: &ProjectedGraph,
     module_id: &str,
     symbol_name: &str,
