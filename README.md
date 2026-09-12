@@ -1,4 +1,4 @@
-# CodeRadar v0.9.0
+# CodeRadar v0.9.2
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -55,7 +55,7 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 1119 (368 Rust + 751 Python) |
+| **Tests** | 1128 (369 Rust + 759 Python) |
 | **MCP Tools** | 22 — 17 `codegraph_*` (explore, search, node, affected, query, search_similar, compute_embeddings, module_children, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, reindex, update_file, set_project) + 5 `coderadar_*` (resolve, replace_body, update_signature, rename, create_entity) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
@@ -230,7 +230,7 @@ not assume the cwd is the project:
 |------|-----------|------------|----------|
 | **Tier 1** | Python, TypeScript, JavaScript, Rust, Go, Java, C, C++, Ruby, PHP, C#, Kotlin | Import → Signature → Framework | Full tool suite |
 | **Tier 2** | Swift, Scala, Lua, Elixir, Zig, R, Bash, Dart, Protobuf, Dockerfile, SQL, HCL, CMake, GraphQL, Erlang, Haskell, **Nix, Shell, Groovy, Perl, SystemVerilog, OCaml, Clojure, F#, Verilog, Julia, PowerShell, Emacs Lisp, Objective-C** | Import → Signature | replace_body, create_entity |
-| **Tier 3** | Shell, SQL, HTML, CSS, YAML, TOML, JSON, Markdown + 280 more | Signature Match only | replace_body, create_entity |
+| **Tier 3** | HTML, CSS, YAML, TOML, JSON, Markdown + 280 more | Signature Match only | replace_body, create_entity |
 
 ## Resolution Cascade
 
@@ -367,6 +367,24 @@ tracked finding with a battery anchor (see
   watcher exclusions proven; Rust bridge attributes actually captured
   (`#[pyfunction]` never reached the graph before) with `#[pymodule]`
   added as a production root.
+
+## v0.9.1–v0.9.2 Highlights — CI reds closed + docs refresh
+
+- **Temporal traversal on aliased roots (v0.9.1).** Windows CI failed
+  `test_as_of_temporal_traversal` 3/3 runs (`got []`) while local +
+  Ubuntu passed: GitHub runners set `TEMP` with an 8.3 short component
+  (`C:\Users\RUNNER~1\…`), the walk spells paths as passed while
+  `INDEXED_ROOT` is filesystem-canonicalized, the lexical strip missed,
+  ids fell back to absolute form, and analyze retired all 3 fixture
+  concepts as orphans in the same run. `canonical_file_form` now
+  FS-canonicalizes once on a strip miss and retries (mismatch path only),
+  with verbatim-alias (Windows) and symlink-alias (unix) regression tests.
+- **Lint fully green.** The 951-error ruff backlog is cleaned to zero
+  against pinned `ruff@0.16.5` (fixture excludes, mechanical fixes,
+  per-site `noqa` where deliberate) — `cargo fmt` + clippy + ruff all pass.
+- **This refresh (v0.9.2).** Test counts 1119 → 1128 (369 Rust + 759
+  Python), query files 18 → 41 (one per Tier-1/2 language), Shell/SQL
+  de-duplicated out of the Tier-3 row (both ship `.scm` files in Tier 2).
 
 ## v0.7.18 Feature Highlights — the fossil-mcp port
 
@@ -605,7 +623,7 @@ truth, scaling, dead-code retirement, configuration, and the MCP layer.
 
 ```
 core_indexer/              # Rust core
-  queries/                 # 18 .scm query files (one per language)
+  queries/                 # 41 .scm query files (one per Tier-1/2 language)
   src/
     extract/               # Tree-sitter: tagger (query cursor) + walker (hierarchy) + docstring + decorators
     update/                # Incremental diff + patch + WAL
@@ -642,7 +660,7 @@ py_agent/src/coderadar/    # Python layer
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Specifications + code review + performance roadmap
-tests/                     # 748 Python tests (E2E incl. dead-code/clones/scaffold/CFG/
+tests/                     # 759 Python tests (E2E incl. dead-code/clones/scaffold/CFG/
                            #   centrality/dead-branch/RTA goldens, mutation E2E, MCP,
                            #   framework resolvers, ingest parity, benchmarks)
   mcp/                     # Root resolution, background init, lifecycle, project_path
