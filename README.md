@@ -176,6 +176,15 @@ not assume the cwd is the project:
 - **Asking the client.** `roots/list` is a server-to-client request and
   awaiting one during `initialize` deadlocks, so it is asked lazily on the
   first tool call — once, and only if nothing on disk confirmed the root.
+- **Entity-id grammar.** Every tool speaks one id shape:
+  `.<relative-path>::<Qualified.name>` — dot-prefix, project-root-relative,
+  native separators (`.\app\helpers.py::combine`; methods as
+  `File::Class.member`, modules as `File::module`). Read paths also accept
+  absolute paths, forward slashes, and a missing dot-prefix; `external::name`
+  marks a callee outside the index (it resolves nothing further). Search
+  `kind` is one of `function | class | type_alias | constant | module |
+  import`; smell `strictness` is `strict | normal | loose` — anything else
+  errors instead of returning empty.
 - **Same directory as the index.** The process moves onto the resolved root
   before indexing, because entity ids are canonical root-relative form
   (`.\src\auth.py::validate_user`) and every read helper — Rust or Python

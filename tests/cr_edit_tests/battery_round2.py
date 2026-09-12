@@ -85,7 +85,9 @@ from coderadar._core import search_entities
 SEC = "cli"
 
 rc, out = cli("--version")
-check(SEC, "version", rc == 0 and "0.8" in out, out[:120])
+# v0.9.0 fold-in: was a hardcoded "0.8" (broke the day 0.9.0 cut).
+# Anchor on the package's own version so the check never rots again.
+check(SEC, "version", rc == 0 and coderadar.__version__ in out, out[:120])
 
 rc, out = cli("no-such-command")
 check(SEC, "bad-command-rc", rc != 0, f"rc={rc} {out[:120]}")

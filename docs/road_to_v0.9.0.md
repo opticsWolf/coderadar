@@ -408,11 +408,16 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   test extended); `_env_seconds` knob hardening (4 tests, defaults
   unchanged: wait 25 s, heartbeat 5 s); scaffolding footer battery anchor.
   368 Rust + 751 Python green; battery_round2 121/121.
-- **v0.9.0 — RELEASE.** `docs/v0.9.0-release-notes.md` (changelog v0.8.16→,
+- **v0.9.0 — RELEASE + Issue 5 fold-in.** `docs/v0.9.0-release-notes.md` (changelog v0.8.16→,
   behavior changes, verification totals, deferred list); version cut
   0.8.25 → 0.9.0 across `__init__.py` + `pyproject.toml` + `Cargo.toml` +
   README. All §6 acceptance met: round2 121/121, round-1 green, 368 Rust
-  + 751 Python, §§1–4 DONE.
+  + 751 Python, §§1–4 DONE. Post-cut: Issue 5 folded in with no version
+  change — ID-grammar block in README + shared grammar line on the eight
+  id-taking tool descriptions (+ kind/strictness value lists); `kind`
+  validated at `search_entities` + MCP `_search` (unknown kinds error);
+  `tests/test_entity_id_grammar.py` (6 tests: spelling agreement,
+  external passthrough, refusal, mirror).
 - **v0.8.22 — macrame-db 0.15 → 0.17 DONE** (off-plan dep bump). The 0.16
   cycle's one caller-visible break was the W15.3 `#[non_exhaustive]` wave:
   four literal sites in `cold_start.rs` moved to constructors

@@ -1079,7 +1079,6 @@ pub fn extract_parameters(node: Node, source: &str) -> Vec<Parameter> {
     params
 }
 
-
 #[cfg(test)]
 mod decorator_capture_tests {
     use super::*;

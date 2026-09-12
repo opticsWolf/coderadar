@@ -193,6 +193,7 @@ def create_server(graph: Any) -> MCPServer:
             "summary of what depends on them. Use this instead of grep + Read for any "
             "structural or flow question. For multiple symbols, pass them together in "
             "one call to get the relationships between them."
+            " " + _ENTITY_ID_GRAMMAR
         ),
         annotations={
             "read_only_hint": True,
@@ -222,6 +223,7 @@ def create_server(graph: Any) -> MCPServer:
             "Get full details for a specific entity identified via codegraph_explore. "
             "Returns complete metadata, source location, docstring, decorators, "
             "and optionally immediate neighbors (callers and callees)."
+            " " + _ENTITY_ID_GRAMMAR
         ),
         annotations={
             "read_only_hint": True,
@@ -248,7 +250,8 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Search for symbols by keyword or natural-language description when "
             "you don't know the exact symbol name. Returns ranked results with "
-            "snippets. Use this to discover what's available before calling explore."
+            "snippets. Use this to discover what's available before calling explore. "
+            "kind filters to one of: function | class | type_alias | constant | module | import."
         ),
         annotations={
             "read_only_hint": True,
@@ -280,6 +283,7 @@ def create_server(graph: Any) -> MCPServer:
             "(Stage 5 triage: the top entry per group is what actually matters; "
             "the three most-depended-on ids carry a star marker). "
             "Use this before editing to understand the impact."
+            " " + _ENTITY_ID_GRAMMAR
         ),
         annotations={
             "read_only_hint": True,
@@ -481,6 +485,7 @@ def create_server(graph: Any) -> MCPServer:
             "Edge kinds: 'calls', 'imports', 'inherits', 'overrides', 'handles', "
             "'declares', 'references', 'navigation'. Returns a tree of linked entities. "
             "Use for custom flow analysis beyond explore/affected."
+            " " + _ENTITY_ID_GRAMMAR
         ),
         annotations={
             "read_only_hint": True,
@@ -518,6 +523,7 @@ def create_server(graph: Any) -> MCPServer:
             "triggered it. strictness selects the threshold profile: 'strict' "
             "catches more (thresholds drop ~40%), 'loose' only egregious cases "
             "(thresholds rise ~80%); default 'normal'."
+            " " + _ENTITY_ID_GRAMMAR
         ),
         annotations={
             "read_only_hint": True,
@@ -656,6 +662,7 @@ def create_server(graph: Any) -> MCPServer:
             "the replacement is re-based to the function's body column — pass it "
             "either unindented or copied verbatim from the source; both produce "
             "identical files. Do not include the def/signature line or decorators."
+            " " + _ENTITY_ID_GRAMMAR
         ),
         annotations={
             "read_only_hint": False,
@@ -688,6 +695,7 @@ def create_server(graph: Any) -> MCPServer:
             "NOTE: the definition signature is edited automatically, but call sites are "
             "returned as unverified_sites (with line numbers) for manual review — "
             "call-site argument spans are not indexed, so they cannot be auto-edited safely."
+            " " + _ENTITY_ID_GRAMMAR
         ),
         annotations={
             "read_only_hint": False,
@@ -718,6 +726,7 @@ def create_server(graph: Any) -> MCPServer:
             "With dry_run=True: shows all files and references that need updating. "
             "With dry_run=False: renames the definition and ALL references, "
             "updates the graph. Covers definition site and all usages."
+            " " + _ENTITY_ID_GRAMMAR
         ),
         annotations={
             "read_only_hint": False,
@@ -1353,6 +1362,18 @@ NO_EXTENSION_MESSAGE = (
     "MCP server. Until then, fall back to reading files directly."
 )
 
+#: Entity-ID grammar (Issue 5): appended to every tool description that
+#: takes an entity id, so agents stop guessing spellings. The copy/paste
+#: source is always a previous tool result; this is the shape to expect.
+_ENTITY_ID_GRAMMAR = (
+    "Entity ids look like `.\\path\\to\\file.py::Qualified.name` "
+    "(dot-prefix, project-root-relative, native separators; methods as "
+    "`File::Class.member`, modules as `File::module`). Absolute paths, "
+    "forward slashes, and a missing dot-prefix are also accepted. "
+    "`external::name` marks a callee outside the index (not an entity — "
+    "it resolves nothing further)."
+)
+
 
 def requires_index(func):
     """Return a message instead of raising when there is no index yet.
@@ -1562,6 +1583,14 @@ def _search(graph: Any, query: str, kind: str | None, top_k: int) -> str:
     """Keyword search for symbols."""
     if not query.strip():
         return "Please provide a query to search for."
+
+    # Issue 5: refuse unknown kinds like Rust search_entities does — a
+    # garbage kind otherwise reads as "no results".
+    if kind and kind.lower() not in (
+        "function", "class", "type_alias", "constant", "module", "import"
+    ):
+        return (f"Unknown kind `{kind}` (expected: function | class | "
+                f"type_alias | constant | module | import).")
 
     results = _text_search(graph, query, min(top_k, 20))
     if kind:

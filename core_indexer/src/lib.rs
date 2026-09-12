@@ -2039,7 +2039,25 @@ fn search_entities(
     with_graph(|_graph, snap| {
         let tokens = search_tokens(query);
         let mut results: Vec<(usize, PyObject)> = Vec::new(); // (score, dict)
+        // Issue 5 (schema enums): a garbage kind used to match nothing and
+        // read as "no results". Refuse loudly like Strictness::parse.
+        const KNOWN_KINDS: &[&str] = &[
+            "function",
+            "class",
+            "type_alias",
+            "constant",
+            "module",
+            "import",
+        ];
         let kind_filter = kind.map(|k| k.to_lowercase());
+        if let Some(ref kf) = kind_filter {
+            if !KNOWN_KINDS.contains(&kf.as_str()) {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unknown kind `{kf}` (expected: function | class | type_alias | \
+                     constant | module | import)"
+                )));
+            }
+        }
         let wants = |k: &str| kind_filter.is_none() || kind_filter.as_deref() == Some(k);
 
         // Per-kind signature/docstring accessors. Closures (not call-site
