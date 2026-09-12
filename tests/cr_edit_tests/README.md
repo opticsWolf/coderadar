@@ -28,8 +28,14 @@ Harnesses (kept for reproduction of every finding in
 - `battery_round2.py` — round-2 sweep: ALL 22 CLI commands (flags + error
   paths) and ALL 22 MCP tools (happy + error paths) against the `r2proj`
   fixture below, plus new-surface checks; writes `battery_round2_output.txt`.
-  104/118 green at v0.8.16 — the 14 reds are findings R2-1…R2-16 filed in
-  [docs/road_to_v0.9.0.md](../../docs/road_to_v0.9.0.md)
+  **121/121 green at v0.9.0** (104/118 at v0.8.16 — the 14 reds became
+  findings R2-1…R2-16 filed in
+  [docs/road_to_v0.9.0.md](../../docs/road_to_v0.9.0.md), all closed since).
+  Self-protecting harness: the rename round-trip snapshots/restores the
+  fixture and re-analyzes (`fixture-restored-after-rename` guard); the C4
+  synthetic uses the novel `(COMB, RUN)` pair so the parity probe keeps its
+  +1; the external-callee anchor probes genuinely-external `makeStore →
+  Store` (see the road §7 v0.8.21 entry for why).
 - `r2proj/` — round-2 fixture (committed sources only; the harness
   git-inits it at runtime and removes `.git`/`.coderadar*` afterwards):
   re-export chain (`main.py` → `app/__init__` → `app/helpers.py`), internal

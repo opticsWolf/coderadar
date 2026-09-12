@@ -811,3 +811,14 @@ callees invisible in index APIs (R2-1), synthetic edges re-persisted as CALLS
 (R2-2), toml excludes ignored by library `analyze()` (R2-7), `git-clean`
 false-dirty on ignored artifacts (R2-8), CLI ids not canonicalized (R2-16).
 Issue 9 re-confirmed open. Round-1 items 13/14/15/17 carry over (see plan §4).
+
+### §10.1 — Round-2 arc closed at v0.9.0 (pointer, not a reopen)
+
+This report stays as written (its batch closed at v0.8.14); the round-2
+arc it pointed at is now complete: `battery_round2.py` 104/118 → **121/121**,
+Issues 8 (v0.8.16) and 9 (v0.8.21) fixed, P3s R2-9…R2-14 closed, new finding
+R2-17 (rename through re-export chains) fixed in v0.8.23, round-1 carryover
+items 13/14/15/17 closed in v0.8.24–v0.8.25. The living record is
+[`road_to_v0.9.0.md`](road_to_v0.9.0.md) (§§1–4 DONE, §5 sequencing, §7 log)
+and [`v0.9.0-release-notes.md`](v0.9.0-release-notes.md). Still deferred,
+as filed: §9 Issues 1–7.

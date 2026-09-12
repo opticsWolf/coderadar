@@ -55,7 +55,7 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 1096 (348 Rust + 748 Python) |
+| **Tests** | 1119 (368 Rust + 751 Python) |
 | **MCP Tools** | 22 — 17 `codegraph_*` (explore, search, node, affected, query, search_similar, compute_embeddings, module_children, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, reindex, update_file, set_project) + 5 `coderadar_*` (resolve, replace_body, update_signature, rename, create_entity) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
@@ -292,7 +292,7 @@ cold-start design in [`docs/v0.8-p1-cold-start-design.md`](docs/v0.8-p1-cold-sta
 - **Shell-friendly entity IDs (E7).** Stored IDs keep OS-native separators (FK stability);
   display renders forward slashes with the redundant `./` dropped, and every pasted variant
   resolves back to the stored key.
-- **macrame-db 0.15 (schema v15).** Builders for the now-`#[non_exhaustive]`
+- **macrame-db 0.17 (schema v19, auto-rungs v15→v19 on open).** Builders for the now-`#[non_exhaustive]`
   `ConceptUpsert`, `Vec<EdgeBelief>` replay folds, distinct `BulkInterrupted`
   reporting, and `Database::analyze()` planner statistics after the bulk flush.
   Two perf fixes fell out: the ledger-revision stamp reads `MAX(seq_id)` instead
@@ -331,6 +331,33 @@ the full record, including the two diagnoses the first pass got wrong):
   agrees everywhere; first-call index heartbeats on stderr.
 - **Slop scan made loud.** Skip accounting with a stats footer, per-kind
   caps, noise markers dropped — 15/15 across all graph provenances.
+
+## v0.8.15–v0.9.0 Highlights — the round-2 arc
+
+A second dogfood round swept all 22 CLI commands and all 22 MCP tools
+(104/118 green at v0.8.16 → **121/121 at v0.9.0**); every red became a
+tracked finding with a battery anchor (see
+[`docs/road_to_v0.9.0.md`](docs/road_to_v0.9.0.md), [`docs/v0.9.0-release-notes.md`](docs/v0.9.0-release-notes.md)):
+
+- **Index accuracy.** External callees are visible instead of silently
+  dropped; re-export chains resolve transitively (`from app import combine`
+  → `helpers.py::combine`, cycle-guarded); rename heals the whole chain —
+  import bindings rewrite link-by-link, scoped updates refresh imports,
+  rename-back restores byte-identical; synthetic edges never persist as
+  CALLS and stale edges retract; `new Store()`-style constructor calls
+  extract across TS/JS/Java/C#/C++.
+- **Strict, scriptable surfaces.** Unknown `--edges`/`--format` values and
+  garbage `as_of` timestamps error instead of rendering plausibly; CLI ids
+  canonicalize (`Unknown entity` vs empty); `query --format json`; all
+  logging goes to stderr (WARNING default, `CODERADAR_DEBUG=1` for DEBUG),
+  so stdout stays machine-readable; `diagnose --unresolved` names names;
+  env knobs (`CODERADAR_INDEX_WAIT/HEARTBEAT`) validate instead of crashing.
+- **Platform.** macrame-db 0.15 → 0.17 (schema v15→v19, libsql stays
+  0.9.30); `[project] exclude` honored on library paths with `exclude
+  list` layers + effect totals; `git-clean` agrees with `git status`;
+  watcher exclusions proven; Rust bridge attributes actually captured
+  (`#[pyfunction]` never reached the graph before) with `#[pymodule]`
+  added as a production root.
 
 ## v0.7.18 Feature Highlights — the fossil-mcp port
 
