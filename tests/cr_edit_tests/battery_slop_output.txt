@@ -1,81 +1,82 @@
 slop files indexed
 
 ======================================================================
-[OK] scaffolding (defaults) (354ms)
+[OK] scaffolding (defaults) (405ms)
 ## Scaffolding Signals — 38 finding(s)
 
 ### Placeholder Body (14)
 - `.\tests\test_semantic_engine.py:58` — test_body_replacement_preserves_signature is a stub: pass
-- `.\tests\test_semantic_engine.py:24` — test_cyclic_call_graph_returns is a stub: pass
 - `.\tests\test_semantic_engine.py:45` — test_simple_mro is a stub: pass
-- `.\tests\test_semantic_engine.py:67` — test_syntax_error_triggers_rollback is a stub: pass
-- `.\tests\cr_edit_tests\demo_slop.py:9` — stub_one is a stub: pass
-- `.\tests\test_semantic_engine.py:51` — test_c3_failure_sets_error_flag is a stub: pass
-- `.\tests\test_semantic_engine.py:64` — test_stale_expected_hash_rejects is a stub: pass
-- `.\tests\cr_edit_tests\demo_slop.py:21` — stub_raise is a stub: raise NotImplementedError
-- `.\tests\test_semantic_engine.py:31` — test_remove_file_stable is a stub: pass
-- `.\tests\cr_edit_tests\demo_slop.py:13` — stub_two is a stub: ...
-- `.\tests\fixtures\python\scaffold\vibe.py:8` — handler is a stub: pass
-- `.\tests\test_semantic_engine.py:48` — test_diamond_mro is a stub: pass
 - `.\tests\test_semantic_engine.py:38` — test_module_level_refs_have_source is a stub: pass
+- `.\tests\cr_edit_tests\demo_slop.py:21` — stub_raise is a stub: raise NotImplementedError
 - `.\tests\test_semantic_engine.py:61` — test_indent_normalization_rebases_column_zero is a stub: pass
+- `.\tests\test_semantic_engine.py:31` — test_remove_file_stable is a stub: pass
+- `.\tests\cr_edit_tests\demo_slop.py:9` — stub_one is a stub: pass
+- `.\tests\test_semantic_engine.py:48` — test_diamond_mro is a stub: pass
+- `.\tests\cr_edit_tests\demo_slop.py:13` — stub_two is a stub: ...
+- `.\tests\test_semantic_engine.py:51` — test_c3_failure_sets_error_flag is a stub: pass
+- `.\tests\test_semantic_engine.py:67` — test_syntax_error_triggers_rollback is a stub: pass
+- `.\tests\fixtures\python\scaffold\vibe.py:8` — handler is a stub: pass
+- `.\tests\test_semantic_engine.py:64` — test_stale_expected_hash_rejects is a stub: pass
+- `.\tests\test_semantic_engine.py:24` — test_cyclic_call_graph_returns is a stub: pass
 
 ### Comment Marker (22)
 - `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:19` — TODO: /// "Phase \d", "Step \d", TODO/FIXME/HACK/WIP-style markers.
-- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:354` — TODO: std::fs::write(dir.path().join("app.py"), "# Phase 1: wire the client\n# TODO: retry\nx = 1\n").unwrap();
-- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:355` — TODO: std::fs::write(dir.path().join("ignored_dir").join("skip.py"), "# TODO: hidden\n").unwrap();
-- 
+- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:396` — TODO: "# Phase 1: wire the client\n# TODO: retry\nx = 1\n",
+- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:401` — TODO: "# TODO: hidden\n",
+- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:412` — TODO: // only the TODO remains.
+- `\\?\D:\Use
 
 ======================================================================
-[OK] scaffolding include_secrets=True (908ms)
-## Scaffolding Signals — 50 finding(s)
+[OK] scaffolding include_secrets=True (1024ms)
+## Scaffolding Signals — 51 finding(s)
 
 ### Placeholder Body (14)
 - `.\tests\test_semantic_engine.py:58` — test_body_replacement_preserves_signature is a stub: pass
-- `.\tests\test_semantic_engine.py:24` — test_cyclic_call_graph_returns is a stub: pass
 - `.\tests\test_semantic_engine.py:45` — test_simple_mro is a stub: pass
-- `.\tests\test_semantic_engine.py:67` — test_syntax_error_triggers_rollback is a stub: pass
-- `.\tests\cr_edit_tests\demo_slop.py:9` — stub_one is a stub: pass
-- `.\tests\test_semantic_engine.py:51` — test_c3_failure_sets_error_flag is a stub: pass
-- `.\tests\test_semantic_engine.py:64` — test_stale_expected_hash_rejects is a stub: pass
-- `.\tests\cr_edit_tests\demo_slop.py:21` — stub_raise is a stub: raise NotImplementedError
-- `.\tests\test_semantic_engine.py:31` — test_remove_file_stable is a stub: pass
-- `.\tests\cr_edit_tests\demo_slop.py:13` — stub_two is a stub: ...
-- `.\tests\fixtures\python\scaffold\vibe.py:8` — handler is a stub: pass
-- `.\tests\test_semantic_engine.py:48` — test_diamond_mro is a stub: pass
 - `.\tests\test_semantic_engine.py:38` — test_module_level_refs_have_source is a stub: pass
+- `.\tests\cr_edit_tests\demo_slop.py:21` — stub_raise is a stub: raise NotImplementedError
 - `.\tests\test_semantic_engine.py:61` — test_indent_normalization_rebases_column_zero is a stub: pass
+- `.\tests\test_semantic_engine.py:31` — test_remove_file_stable is a stub: pass
+- `.\tests\cr_edit_tests\demo_slop.py:9` — stub_one is a stub: pass
+- `.\tests\test_semantic_engine.py:48` — test_diamond_mro is a stub: pass
+- `.\tests\cr_edit_tests\demo_slop.py:13` — stub_two is a stub: ...
+- `.\tests\test_semantic_engine.py:51` — test_c3_failure_sets_error_flag is a stub: pass
+- `.\tests\test_semantic_engine.py:67` — test_syntax_error_triggers_rollback is a stub: pass
+- `.\tests\fixtures\python\scaffold\vibe.py:8` — handler is a stub: pass
+- `.\tests\test_semantic_engine.py:64` — test_stale_expected_hash_rejects is a stub: pass
+- `.\tests\test_semantic_engine.py:24` — test_cyclic_call_graph_returns is a stub: pass
 
 ### Secret (9)
-- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:316` — openai_key: sk-abcde***
-- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:329` — aws_access_key: AKIAABCD***
-- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:346` — aws_access_key: AKIAABCD***
+- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:344` — openai_key: sk-abcde***
+- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:360` — aws_access_key: AKIAABCD***
+- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:386` — aws_access_key: AKIAABCD***
 - `\\?\D:\User\Documents\Python\CodeRadar\tests\cr_edit_tests\battery_slop.py:67` — hardcoded_credential: api_key ***
 - `\\?\D:\User\Documents\Python\CodeRadar\tests\cr_edit_tests\demo_slop.py:27` — openai_key
 
 ======================================================================
-[OK] scaffolding max_findings=3 (399ms)
+[OK] scaffolding max_findings=3 (500ms)
 ## Scaffolding Signals — 8 finding(s)
 
 ### Placeholder Body (3)
 - `.\tests\test_semantic_engine.py:58` — test_body_replacement_preserves_signature is a stub: pass
-- `.\tests\test_semantic_engine.py:24` — test_cyclic_call_graph_returns is a stub: pass
 - `.\tests\test_semantic_engine.py:45` — test_simple_mro is a stub: pass
+- `.\tests\test_semantic_engine.py:38` — test_module_level_refs_have_source is a stub: pass
 
 ### Comment Marker (3)
 - `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:19` — TODO: /// "Phase \d", "Step \d", TODO/FIXME/HACK/WIP-style markers.
-- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:354` — TODO: std::fs::write(dir.path().join("app.py"), "# Phase 1: wire the client\n# TODO: retry\nx = 1\n").unwrap();
-- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:355` — TODO: std::fs::write(dir.path().join("ignored_dir").join("skip.py"), "# TODO: hidden\n").unwrap();
+- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:396` — TODO: "# Phase 1: wire the client\n# TODO: retry\nx = 1\n",
+- `\\?\D:\User\Documents\Python\CodeRadar\core_indexer\src\scaffold\mod.rs:401` — TODO: "# TODO: hidden\n",
 
 ### Temp File (2)
 - `\\?\D:\User\Documents\Python\CodeRadar\tests\cr_edit_tests\old_slop_backup.py` — suspicious file name: old_slop_backup.py
 - `\\?\D:\User\Documents\Python\CodeRadar\tests\cr_edit_tests\temp_slop_notes.py` — suspicious file name: temp_slop_notes.py
 
-_placeholder scan: 2430 functions, 14 stubs, 24 skipped (no-module 0, unreadable 5, span 19; 0 via id fallback)_
+_placeholder scan: 2430 functions, 14 stubs, 29 skipped (no-module 0, unreadable 5, span 24; 0 via id fallback)_
 
 scaffolding(secrets) findings targeting cr_edit_tests/: 24
-- `.\tests\cr_edit_tests\demo_slop.py:9` — stub_one is a stub: pass
 - `.\tests\cr_edit_tests\demo_slop.py:21` — stub_raise is a stub: raise NotImplementedError
+- `.\tests\cr_edit_tests\demo_slop.py:9` — stub_one is a stub: pass
 - `.\tests\cr_edit_tests\demo_slop.py:13` — stub_two is a stub: ...
 - `\\?\D:\User\Documents\Python\CodeRadar\tests\cr_edit_tests\battery_slop.py:67` — hardcoded_credential: api_key ***
 - `\\?\D:\User\Documents\Python\CodeRadar\tests\cr_edit_tests\demo_slop.py:27` — openai_key: sk-xxxxx***
@@ -86,89 +87,89 @@ scaffolding(secrets) findings targeting cr_edit_tests/: 24
 - `\\?\D:\User\Documents\Python\CodeRadar\tests\cr_edit_tests\battery_slop.py:43` — FIXME: # FIXME: this is WIP for Step 1 of Phase 2
 
 ======================================================================
-[OK] get_smells strictness=strict (slop file) (69ms)
+[OK] get_smells strictness=strict (slop file) (58ms)
 ## Code smells
 
 No findings for entity `.\tests\cr_edit_tests\demo_slop.py::slop_with_secret`.
 
 ======================================================================
-[OK] get_smells strictness=normal (slop file) (66ms)
+[OK] get_smells strictness=normal (slop file) (55ms)
 ## Code smells
 
 No findings for entity `.\tests\cr_edit_tests\demo_slop.py::slop_with_secret`.
 
 ======================================================================
-[OK] get_smells strictness=loose (slop file) (61ms)
+[OK] get_smells strictness=loose (slop file) (60ms)
 ## Code smells
 
 No findings for entity `.\tests\cr_edit_tests\demo_slop.py::slop_with_secret`.
 
 ======================================================================
-[OK] get_smells rule_id=long-method (whole repo) (65ms)
+[OK] get_smells rule_id=long-method (whole repo) (53ms)
 ## Code smells
 Found 168 finding(s)
 
-- **[Medium]** `long-method` — _node_detail: Method '_node_detail' is too long (LOC=63, Cyclomatic=15) - consider extracting
-  - signals: cyclomatic=15, LOC=63
-- **[Medium]** `long-method` — capture_name_to_tag: Method 'capture_name_to_tag' is too long (LOC=19, Cyclomatic=16) - consider extracting
-  - signals: cyclomatic=16, LOC=19
-- **[Medium]** `long-method` — resolve_imports: Method 'resolve_imports' is too long (LOC=53, Cyclomatic=13) - consider extracting
-  - signals: cyclomatic=13, LOC=53
-- **[Medium]** `long-method` — update_file: Method 'update_file' is too long (LOC=50, Cyclomatic=4) - consider extracting
-  - signals: cyclomatic=4, LOC=50
-- **[Medium]** `long-method` — c3_linearize: Method 'c3_linearize' is too long (LOC=81, Cyclomatic=14) - consider extracting
-  - signals: LOC=81, cyclomatic=14
-- **[Medium]** `long-method` — apply_mutation: Method 'apply_mutation' is too long (LOC=53, Cyclomatic=1) - consider extracting
-  - signals: LOC=53, cyclomatic=1
-- **[Medium]** `long-method` — _as_of: Method '_as_of' is too long (LOC=57, Cyclomatic=11) - consider extracting
-  - signals: cyclomatic=11, LOC=57
-- **[High]** `long-method` — scan_subtree_for_fn_ref: Method 'scan_subtree_for_fn_ref' is too long (LOC=105, Cyclomatic=34) - consider extracting
-  - signals: LOC=105, cyclomatic=34
-- **[High]** `long-method` — sample_projection: Method 'sample_projection' is too long (LOC=156, Cyclomatic=1) - consider extracting
-  - signals: LOC=156, cyclomatic=1
-- **[Medium]** `long-method` — _dot_call_graph: Method '_dot_call_graph' is too long (LOC=56, Cyclomatic=13) - consider extracting
-  - signals: LOC=56, cyclomatic=13
-- **[Medium]** `long-method` — _find_scaffolding: Method '_find_scaffolding' is too long (LOC=47, Cyclomatic=14) - consid
+- **[Medium]** `long-method` — find_name_paren: Method 'find_name_paren' is too long (LOC=51, Cyclomatic=13) - consider extracting
+  - signals: LOC=51, cyclomatic=13
+- **[Medium]** `long-method` — _resolve_ref: Method '_resolve_ref' is too long (LOC=79, Cyclomatic=12) - consider extracting
+  - signals: cyclomatic=12, LOC=79
+- **[Medium]** `long-method` — test_cold_start_load_latency: Method 'test_cold_start_load_latency' is too long (LOC=61, Cyclomatic=4) - consider extracting
+  - signals: LOC=61, cyclomatic=4
+- **[Medium]** `long-method` — extract: Method 'extract' is too long (LOC=82, Cyclomatic=9) - consider extracting
+  - signals: cyclomatic=9, LOC=82
+- **[Medium]** `long-method` — serve: Method 'serve' is too long (LOC=77, Cyclomatic=1) - consider extracting
+  - signals: cyclomatic=1, LOC=77
+- **[Medium]** `long-method` — extract_all_exports: Method 'extract_all_exports' is too long (LOC=58, Cyclomatic=15) - consider extracting
+  - signals: LOC=58, cyclomatic=15
+- **[Medium]** `long-method` — plan_query: Method 'plan_query' is too long (LOC=64, Cyclomatic=6) - consider extracting
+  - signals: cyclomatic=6, LOC=64
+- **[Medium]** `long-method` — parse_comp_op: Method 'parse_comp_op' is too long (LOC=14, Cyclomatic=11) - consider extracting
+  - signals: cyclomatic=11, LOC=14
+- **[Medium]** `long-method` — collect_call_site_edits: Method 'collect_call_site_edits' is too long (LOC=70, Cyclomatic=8) - consider extracting
+  - signals: LOC=70, cyclomatic=8
+- **[Medium]** `long-method` — function_to_dict: Method 'function_to_dict' is too long (LOC=74, Cyclomatic=13) - consider extracting
+  - signals: LOC=74, cyclomatic=13
+- **[Medium]** `long-method` — detect_entry_points: Method 'detect_entry_points' is too long (LOC=96, Cyclomatic=13) 
 
 ======================================================================
-[OK] get_smells rule_id=deep-nesting entity scope (68ms)
+[OK] get_smells rule_id=deep-nesting entity scope (74ms)
 ## Code smells
 
 No findings for entity `.\tests\cr_edit_tests\demo_slop.py::slop_with_secret` and rule=deep-nesting.
 
 ======================================================================
-[OK] dead_code min_confidence=0.0 (44ms)
+[OK] dead_code min_confidence=0.0 (31ms)
 ## Dead Code — 15 finding(s) at confidence >= 0.00
 
 Ranked most-safely-deletable first. Verify each with `affected` before removal.
 
+- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~209 lines — `.\core_indexer\src\mutation\mod.rs:1490`
 - **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~170 lines — `.\core_indexer\src\mutation\mod.rs:828`
+- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~166 lines — `.\core_indexer\src\graph\projection_ops.rs:713`
+- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~136 lines — `.\core_indexer\src\graph\indexing.rs:126`
+- **update_file** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.update_file`) — unreachable, High (0.90), ~122 lines — `.\core_indexer\src\graph\projection_ops.rs:589`
 - **extract** (`.\py_agent\src\coderadar\resolvers\actix.py::RustActixResolver.extract`) — unreachable, High (0.90), ~118 lines — `.\py_agent\src\coderadar\resolvers\actix.py:75`
 - **plan_body_replacement** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_body_replacement`) — unreachable, High (0.90), ~114 lines — `.\core_indexer\src\mutation\mod.rs:712`
 - **extract** (`.\py_agent\src\coderadar\resolvers\reactrouter.py::ReactRouterResolver.extract`) — unreachable, High (0.90), ~110 lines — `.\py_agent\src\coderadar\resolvers\reactrouter.py:102`
 - **extract** (`.\py_agent\src\coderadar\resolvers\express.py::ExpressResolver.extract`) — unreachable, High (0.90), ~109 lines — `.\py_agent\src\coderadar\resolvers\express.py:112`
-- **resolve_one_function** (`.\core_indexer\src\graph\resolve_calls.rs::CodeGraph.resolve_one_function`) — unreachable, High (0.90), ~100 lines — `.\core_indexer\src\graph\resolve_calls.rs:27`
-- **extract** (`.\py_agent\src\coderadar\resolvers\laravel.py::LaravelResolver.extract`) — unreachable, High (0.90), ~97 lines — `.\py_agent\src\coderadar\resolvers\laravel.py:130`
-- **extract** (`.\py_agent\src\coderadar\resolvers\rails.py::RailsResolver.extract`) — unreachable, High (0.90), ~94 lines — `.\py_agent\src\coderadar\resolvers\rails.py:99`
-- **extract** (`.\py_agent\src\coderadar\resolvers\vuerouter.py::VueRouterResolver.extract`) — unreachable, High (0.90), ~88 lines — `.\py_agent\src\coderadar\resolvers\vuerouter.py:88`
-- **
+- **resolve_one_function** (`.\core_indexer\
 
 ======================================================================
-[OK] dead_code min_confidence=0.3 (48ms)
+[OK] dead_code min_confidence=0.3 (36ms)
 ## Dead Code — 15 finding(s) at confidence >= 0.30
 
 Ranked most-safely-deletable first. Verify each with `affected` before removal.
 
+- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~209 lines — `.\core_indexer\src\mutation\mod.rs:1490`
 - **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~170 lines — `.\core_indexer\src\mutation\mod.rs:828`
+- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~166 lines — `.\core_indexer\src\graph\projection_ops.rs:713`
+- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~136 lines — `.\core_indexer\src\graph\indexing.rs:126`
+- **update_file** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.update_file`) — unreachable, High (0.90), ~122 lines — `.\core_indexer\src\graph\projection_ops.rs:589`
 - **extract** (`.\py_agent\src\coderadar\resolvers\actix.py::RustActixResolver.extract`) — unreachable, High (0.90), ~118 lines — `.\py_agent\src\coderadar\resolvers\actix.py:75`
 - **plan_body_replacement** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_body_replacement`) — unreachable, High (0.90), ~114 lines — `.\core_indexer\src\mutation\mod.rs:712`
 - **extract** (`.\py_agent\src\coderadar\resolvers\reactrouter.py::ReactRouterResolver.extract`) — unreachable, High (0.90), ~110 lines — `.\py_agent\src\coderadar\resolvers\reactrouter.py:102`
 - **extract** (`.\py_agent\src\coderadar\resolvers\express.py::ExpressResolver.extract`) — unreachable, High (0.90), ~109 lines — `.\py_agent\src\coderadar\resolvers\express.py:112`
-- **resolve_one_function** (`.\core_indexer\src\graph\resolve_calls.rs::CodeGraph.resolve_one_function`) — unreachable, High (0.90), ~100 lines — `.\core_indexer\src\graph\resolve_calls.rs:27`
-- **extract** (`.\py_agent\src\coderadar\resolvers\laravel.py::LaravelResolver.extract`) — unreachable, High (0.90), ~97 lines — `.\py_agent\src\coderadar\resolvers\laravel.py:130`
-- **extract** (`.\py_agent\src\coderadar\resolvers\rails.py::RailsResolver.extract`) — unreachable, High (0.90), ~94 lines — `.\py_agent\src\coderadar\resolvers\rails.py:99`
-- **extract** (`.\py_agent\src\coderadar\resolvers\vuerouter.py::VueRouterResolver.extract`) — unreachable, High (0.90), ~88 lines — `.\py_agent\src\coderadar\resolvers\vuerouter.py:88`
-- **
+- **resolve_one_function** (`.\core_indexer\
 
 ======================================================================
 [OK] dead_code min_confidence=0.6 (48ms)
@@ -176,16 +177,16 @@ Ranked most-safely-deletable first. Verify each with `affected` before removal.
 
 Ranked most-safely-deletable first. Verify each with `affected` before removal.
 
+- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~209 lines — `.\core_indexer\src\mutation\mod.rs:1490`
 - **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~170 lines — `.\core_indexer\src\mutation\mod.rs:828`
+- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~166 lines — `.\core_indexer\src\graph\projection_ops.rs:713`
+- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~136 lines — `.\core_indexer\src\graph\indexing.rs:126`
+- **update_file** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.update_file`) — unreachable, High (0.90), ~122 lines — `.\core_indexer\src\graph\projection_ops.rs:589`
 - **extract** (`.\py_agent\src\coderadar\resolvers\actix.py::RustActixResolver.extract`) — unreachable, High (0.90), ~118 lines — `.\py_agent\src\coderadar\resolvers\actix.py:75`
 - **plan_body_replacement** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_body_replacement`) — unreachable, High (0.90), ~114 lines — `.\core_indexer\src\mutation\mod.rs:712`
 - **extract** (`.\py_agent\src\coderadar\resolvers\reactrouter.py::ReactRouterResolver.extract`) — unreachable, High (0.90), ~110 lines — `.\py_agent\src\coderadar\resolvers\reactrouter.py:102`
 - **extract** (`.\py_agent\src\coderadar\resolvers\express.py::ExpressResolver.extract`) — unreachable, High (0.90), ~109 lines — `.\py_agent\src\coderadar\resolvers\express.py:112`
-- **resolve_one_function** (`.\core_indexer\src\graph\resolve_calls.rs::CodeGraph.resolve_one_function`) — unreachable, High (0.90), ~100 lines — `.\core_indexer\src\graph\resolve_calls.rs:27`
-- **extract** (`.\py_agent\src\coderadar\resolvers\laravel.py::LaravelResolver.extract`) — unreachable, High (0.90), ~97 lines — `.\py_agent\src\coderadar\resolvers\laravel.py:130`
-- **extract** (`.\py_agent\src\coderadar\resolvers\rails.py::RailsResolver.extract`) — unreachable, High (0.90), ~94 lines — `.\py_agent\src\coderadar\resolvers\rails.py:99`
-- **extract** (`.\py_agent\src\coderadar\resolvers\vuerouter.py::VueRouterResolver.extract`) — unreachable, High (0.90), ~88 lines — `.\py_agent\src\coderadar\resolvers\vuerouter.py:88`
-- **
+- **resolve_one_function** (`.\core_indexer\
 
 ======================================================================
 [OK] dead_code min_confidence=0.9 (47ms)
@@ -193,54 +194,54 @@ Ranked most-safely-deletable first. Verify each with `affected` before removal.
 
 Ranked most-safely-deletable first. Verify each with `affected` before removal.
 
+- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~209 lines — `.\core_indexer\src\mutation\mod.rs:1490`
 - **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~170 lines — `.\core_indexer\src\mutation\mod.rs:828`
+- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~166 lines — `.\core_indexer\src\graph\projection_ops.rs:713`
+- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~136 lines — `.\core_indexer\src\graph\indexing.rs:126`
+- **update_file** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.update_file`) — unreachable, High (0.90), ~122 lines — `.\core_indexer\src\graph\projection_ops.rs:589`
 - **extract** (`.\py_agent\src\coderadar\resolvers\actix.py::RustActixResolver.extract`) — unreachable, High (0.90), ~118 lines — `.\py_agent\src\coderadar\resolvers\actix.py:75`
 - **plan_body_replacement** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_body_replacement`) — unreachable, High (0.90), ~114 lines — `.\core_indexer\src\mutation\mod.rs:712`
 - **extract** (`.\py_agent\src\coderadar\resolvers\reactrouter.py::ReactRouterResolver.extract`) — unreachable, High (0.90), ~110 lines — `.\py_agent\src\coderadar\resolvers\reactrouter.py:102`
 - **extract** (`.\py_agent\src\coderadar\resolvers\express.py::ExpressResolver.extract`) — unreachable, High (0.90), ~109 lines — `.\py_agent\src\coderadar\resolvers\express.py:112`
-- **resolve_one_function** (`.\core_indexer\src\graph\resolve_calls.rs::CodeGraph.resolve_one_function`) — unreachable, High (0.90), ~100 lines — `.\core_indexer\src\graph\resolve_calls.rs:27`
-- **extract** (`.\py_agent\src\coderadar\resolvers\laravel.py::LaravelResolver.extract`) — unreachable, High (0.90), ~97 lines — `.\py_agent\src\coderadar\resolvers\laravel.py:130`
-- **extract** (`.\py_agent\src\coderadar\resolvers\rails.py::RailsResolver.extract`) — unreachable, High (0.90), ~94 lines — `.\py_agent\src\coderadar\resolvers\rails.py:99`
-- **extract** (`.\py_agent\src\coderadar\resolvers\vuerouter.py::VueRouterResolver.extract`) — unreachable, High (0.90), ~88 lines — `.\py_agent\src\coderadar\resolvers\vuerouter.py:88`
-- **
+- **resolve_one_function** (`.\core_indexer\
 
 ======================================================================
-[OK] dead_code include_test_reachable=True (0.6) (44ms)
+[OK] dead_code include_test_reachable=True (0.6) (43ms)
 ## Dead Code — 15 finding(s) at confidence >= 0.60
 
 Ranked most-safely-deletable first. Verify each with `affected` before removal.
 
+- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~209 lines — `.\core_indexer\src\mutation\mod.rs:1490`
 - **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~170 lines — `.\core_indexer\src\mutation\mod.rs:828`
+- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~166 lines — `.\core_indexer\src\graph\projection_ops.rs:713`
+- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~136 lines — `.\core_indexer\src\graph\indexing.rs:126`
+- **update_file** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.update_file`) — unreachable, High (0.90), ~122 lines — `.\core_indexer\src\graph\projection_ops.rs:589`
 - **extract** (`.\py_agent\src\coderadar\resolvers\actix.py::RustActixResolver.extract`) — unreachable, High (0.90), ~118 lines — `.\py_agent\src\coderadar\resolvers\actix.py:75`
 - **plan_body_replacement** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_body_replacement`) — unreachable, High (0.90), ~114 lines — `.\core_indexer\src\mutation\mod.rs:712`
 - **extract** (`.\py_agent\src\coderadar\resolvers\reactrouter.py::ReactRouterResolver.extract`) — unreachable, High (0.90), ~110 lines — `.\py_agent\src\coderadar\resolvers\reactrouter.py:102`
 - **extract** (`.\py_agent\src\coderadar\resolvers\express.py::ExpressResolver.extract`) — unreachable, High (0.90), ~109 lines — `.\py_agent\src\coderadar\resolvers\express.py:112`
-- **resolve_one_function** (`.\core_indexer\src\graph\resolve_calls.rs::CodeGraph.resolve_one_function`) — unreachable, High (0.90), ~100 lines — `.\core_indexer\src\graph\resolve_calls.rs:27`
-- **extract** (`.\py_agent\src\coderadar\resolvers\laravel.py::LaravelResolver.extract`) — unreachable, High (0.90), ~97 lines — `.\py_agent\src\coderadar\resolvers\laravel.py:130`
-- **extract** (`.\py_agent\src\coderadar\resolvers\rails.py::RailsResolver.extract`) — unreachable, High (0.90), ~94 lines — `.\py_agent\src\coderadar\resolvers\rails.py:99`
-- **extract** (`.\py_agent\src\coderadar\resolvers\vuerouter.py::VueRouterResolver.extract`) — unreachable, High (0.90), ~88 lines — `.\py_agent\src\coderadar\resolvers\vuerouter.py:88`
-- **
+- **resolve_one_function** (`.\core_indexer\
 
 ======================================================================
-[OK] find_clones min_lines=5 sim=0.6 (46033ms)
+[OK] find_clones min_lines=5 sim=0.6 (47588ms)
 ## Clone Groups — 20 group(s)
 
-### Group 1 — type-3, similarity 0.56, Speculative
-- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_go_method_receiver` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 9956..10424)
-- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_fn_ref_argument_list` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 24131..24908)
+### Group 1 — type-3, similarity 0.47, Speculative
+- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_go_function_indexing` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 4083..4438)
+- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_fn_ref_assignment_callback` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 21570..22581)
 - `.\core_indexer\src\graph\tests\indexing_tests.rs::test_typescript_class_indexing` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 1655..2135)
-- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_member_expression_base_is_stringified_not_dropped` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 2212..3887)
-- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_java_call_indexing` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 5647..6066)
-- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_zig_struct_indexing` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 20546..20951)
-- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_fn_ref_no_false_positives` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 23433..24083)
-- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_scala_class_indexing` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 18137..18612)
-- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_elixir_module_indexing` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 19433..20031)
-- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_fn_ref_cross_file_import` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 29707..30657)
 - `.\core_indexer\src\graph\tests\indexing_tests.rs::test_kotlin_call_indexing` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 792..1092)
-- `.\core_indexe
+- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_typescript_function_indexing` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 1148..1602)
+- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_ruby_module_indexing` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 7773..8094)
+- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_fn_ref_argument_list` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 24131..24908)
+- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_php_class_indexing` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 8289..8593)
+- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_fn_ref_dict_values` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 24954..25732)
+- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_fn_ref_cross_file_import` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 29707..30657)
+- `.\core_indexer\src\graph\tests\indexing_tests.rs::test_kotlin_class_indexing` (.\core_indexer\src\graph\tests\indexing_tests.rs @ bytes 301..744)
+- `.\core_indexer\src\graph\tests\indexing_
 
 ======================================================================
-[OK] find_clones min_lines=30 sim=0.95 (8719ms)
+[OK] find_clones min_lines=30 sim=0.95 (9908ms)
 No clone groups found at >= 0.95 similarity and >= 30 lines. Clean result — not an indexing failure.
 
 cleanup: slop demo files removed, graph re-synced

@@ -1,13 +1,13 @@
 ======================================================================
 LOADING GRAPH (cold start)
-loaded in 16.70s
+loaded in 0.95s
 demo_py_id='.\\tests\\cr_edit_tests\\demo_billing.py::Invoice.calculate_total'
 demo_ts_id=''
 demo_rs_id='.\\tests\\cr_edit_tests\\demo_ledger.rs::Ledger.total_cents'
 core_id='.\\py_agent\\src\\coderadar\\cli.py::_ensure_graph'
 
 ======================================================================
-[OK] codegraph_explore (6ms)
+[OK] codegraph_explore (23ms)
 **.\core_indexer\src\graph\cold_start.rs** — ColdStartStats(class), cold_start(module)
 
 40	pub struct ColdStartStats {
@@ -36,8 +36,8 @@ core_id='.\\py_agent\\src\\coderadar\\cli.py::_ensure_graph'
 1	"""Incremental cold start: load the store, update what changed.
 
 
-70	def store_is_fresh(project_root: Path, db_path: Path,
-71	                  
+72	def store_is_fresh(project_root: Path, db_path: Path,
+73	                  
 
 ======================================================================
 [OK] codegraph_node (0ms)
@@ -66,7 +66,7 @@ Return a CodeGraph with an index behind it, restoring one if a
     upgrade path) fall back to a full analyze. For a
 
 ======================================================================
-[OK] codegraph_search (1ms)
+[OK] codegraph_search (7ms)
 ## Search: `mutation plan`
 Found 5 result(s)
 
@@ -98,7 +98,7 @@ Found 5 result(s)
 - 
 
 ======================================================================
-[OK] codegraph_affected (1ms)
+[OK] codegraph_affected (10ms)
 ## Affected by `_ensure_graph`
 
 Transitive impact for `.\py_agent\src\coderadar\cli.py::_ensure_graph` (max depth: 3)
@@ -118,54 +118,54 @@ Transitive impact for `.\py_agent\src\coderadar\cli.py::_ensure_graph` (max dept
 
 
 ======================================================================
-[OK] coderadar_resolve (1ms)
+[OK] coderadar_resolve (5ms)
 No handler found for route `/users/:id`. Try codegraph_search.
 
 ======================================================================
-[OK] codegraph_query (1ms)
+[OK] codegraph_query (10ms)
 ## Query: `functions where name contains 'parse'`
 Found 73 result(s)
 
-1. `test_parse_with_and_chain` (?) — `?`
-   Line: 463
-2. `parse_group_by` (?) — `?`
-   Line: 323
-3. `test_update_file_reports_a_clean_parse` (?) — `?`
-   Line: 84
-4. `test_parse_class_query` (?) — `?`
-   Line: 371
-5. `test_parse_invalid_query_returns_err` (?) — `?`
-   Line: 553
-6. `test_parse_derived_call` (?) — `?`
-   Line: 523
-7. `test_name_parser_filters_short_tokens` (?) — `?`
-   Line: 100
-8. `parse` (?) — `?`
-   Line: 53
-9. `parse_v2_module` (?) — `?`
-   Line: 1051
-10. `parse_py` (?) — `?`
+1. `test_parse_quality_deferred` (?) — `?`
+   Line: 1376
+2. `count_parse_errors` (?) — `?`
+   Line: 47
+3. `parse_py` (?) — `?`
    Line: 248
-11. `test_name_parser_splits_query` (?) — `?`
-   Line: 86
-12. `parse_where_clause` (?) — `?`
-   Line: 211
-13. `test_query_parses` (?) — `?`
-   Line: 809
-14. `parse_import_from_statement` (?) — `?`
-   Line: 178
-15. `test_integrated_into_parse_names` (?) — `?`
-   Line: 476
-16. `parse_query` (?) — `?`
-   Line: 103
-17. `parse_operand` (?) — `?`
+4. `test_parse_with_or_chain` (?) — `?`
+   Line: 486
+5. `parse_primary` (?) — `?`
+   Line: 243
+6. `parse_limit` (?) — `?`
+   Line: 350
+7. `_parse_handler` (?) — `?`
+   Line: 248
+8. `parse_is_loud_on_unknown_values` (?) — `?`
+   Line: 106
+9. `test_name_parser_filters_short_tokens` (?) — `?`
+   Line: 100
+10. `parse_quality_roundtrip_matches_debug` (?) — `?`
+   Line: 1617
+11. `test_name_parser_handles_explicit_symbols` (?) — `?`
+   Line: 91
+12. `parse_v2_concept` (?) — `?`
+   Line: 1196
+13. `parse_import_statement` (?) — `?`
+   Line: 41
+14. `test_name_parser_rejects_empty` (?) — `?`
+   Line: 95
+15. `test_parse_with_not` (?) — `?`
+   Line: 499
+16. `parse_operand` (?) — `?`
    Line: 262
-18. `helper_parse` (?) — `?`
-   Line: 6
-19. `_parse_names` (?
+17. `parse_v2_import` (?) — `?`
+   Line: 1149
+18. `test_parse_simple_query` (?) — `?`
+   Line: 363
+
 
 ======================================================================
-[OK] codegraph_search_similar (548ms)
+[OK] codegraph_search_similar (555ms)
 No semantically similar results found for 'incremental file update'.
 
 ======================================================================
@@ -181,88 +181,87 @@ Pass `symbols` to look entities up as they were at this timestamp — for exampl
 Only symbol lookup is reconstructed from the ledger. `codegraph_query` and `codegraph_search` always run against the current index.
 
 ======================================================================
-[OK] codegraph_traverse (4ms)
+[OK] codegraph_traverse (7ms)
 ## Traverse from `_ensure_graph`
 Direction: both, max depth: 2, edge kinds: ['calls']
-Found 243 reachable entities
+Found 281 reachable entities
 
-⚠️ Traversal incomplete: 1241 outgoing target(s) could not be resolved and were excluded from the walk.
+⚠️ Traversal incomplete: 1357 outgoing target(s) could not be resolved and were excluded from the walk.
 ### Depth 0 (1)
-- `_ensure_graph` (function) — `.\py_agent\src\coderadar\cli.py`
+- `_ensure_graph` (function) — `.\py_agent\src\coderadar\cli.py` — `.\py_agent\src\coderadar\cli.py::_ensure_graph`
 
-### Depth 1 (11)
-- `callees` (function) — `.\py_agent\src\coderadar\cli.py`
-- `callers` (function) — `.\py_agent\src\coderadar\cli.py`
-- `diagnose` (function) — `.\py_agent\src\coderadar\cli.py`
-- `query` (function) — `.\py_agent\src\coderadar\cli.py`
-- `shell` (function) — `.\py_agent\src\coderadar\cli.py`
-- `stats` (function) — `.\py_agent\src\coderadar\cli.py`
-- `traverse` (function) — `.\py_agent\src\coderadar\cli.py`
-- `update` (function) — `.\py_agent\src\coderadar\cli.py`
-- `visualize` (function) — `.\py_agent\src\coderadar\cli.py`
-- `watch` (function) — `.\py_agent\src\coderadar\cli.py`
-- `_activate` (function) — `.\py_agent\src\coderadar\cli.py`
-
-### Depth 2 (231)
-- `_render` (fun
+### Depth 1 (16)
+- `callees` (function) — `.\py_agent\src\coderadar\cli.py` — `.\py_agent\src\coderadar\cli.py::callees`
+- `callers` (function) — `.\py_agent\src\coderadar\cli.py` — `.\py_agent\src\coderadar\cli.py::callers`
+- `diagnose` (function) — `.\py_agent\src\coderadar\cli.py` — `.\py_agent\src\coderadar\cli.py::diagnose`
+- `query` (function) — `.\py_agent\src\coderadar\cli.py` — `.\py_agent\src\coderadar\cli.py::query`
+- `shell` (function) — `.\py_agent\src\coderadar\cli.py` — `.\py_agent\src\coderadar\cli.py::shell`
+- `stats` (function) — `.\py_agent\src\coderadar\cli.py` — `.\py_agent\src\coderadar\cli.py::stats`
+- `traverse` (fu
 
 ======================================================================
-[OK] codegraph_get_smells (14ms)
+[OK] codegraph_get_smells (101ms)
 ## Code smells
-Found 2169 finding(s)
+Found 2117 finding(s)
 
-- **[Medium]** `deep-nesting` — extract: Method 'extract' is nested 4 levels deep - consider using guard clauses or extracting methods
-  - signals: nesting_depth=4
-- **[High]** `dead-code` — extract: 'extract' is unreachable from any entry point — verify with `affected` before removing
+- **[High]** `dead-code` — default: 'default' is unreachable from any entry point — verify with `affected` before removing
   - signals: reachable=0
-- **[Medium]** `long-method` — round_trip_restores_entities_and_indices: Method 'round_trip_restores_entities_and_indices' is too long (LOC=55, Cyclomatic=1) - consider extracting
-  - signals: cyclomatic=1, LOC=55
-- **[High]** `dead-code` — invalidate: 'invalidate' is unreachable from any entry point — verify with `affected` before removing
+- **[Medium]** `excessive-returns` — many_returns: Method 'many_returns' has 6 return statements - consider consolidating control flow
+  - signals: return_count=6
+- **[High]** `dead-code` — test_instructions_mention_temporal_and_traverse: 'test_instructions_mention_temporal_and_traverse' is unreachable from any entry point — verify with `affected` before removing
   - signals: reachable=0
-- **[High]** `dead-code` — test_remove_file_is_a_no_op_for_an_unknown_file: 'test_remove_file_is_a_no_op_for_an_unknown_file' is unreachable from any entry point — verify with `affected` before removing
-  - signals: reachable=0
-- **[High]** `dead-code` — name: 'name' is unreachable
+- **[Medium]** `long-method` — _get_smells: Method '_get_smells' is too long (LOC=49, Cyclomatic=12) - consider extracting
+  - signals: LOC=49, cyclomatic=12
+- **[High]** `high-cyclomatic-complexity` — _get_smells: Method '_get_smells' has high cyclomatic complexity (12) - too many branching paths
+  - signals: cyclomatic=12
+- **[Medium]** `excessive-returns` — _get_smells: Method '_get_smells' has 7 return statements - 
 
 ======================================================================
-[OK] codegraph_dead_code (2ms)
+[OK] codegraph_dead_code (31ms)
 ## Dead Code — 100 finding(s) at confidence >= 0.60
 
 Ranked most-safely-deletable first. Verify each with `affected` before removal.
 
-- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~202 lines
-- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~163 lines
-- **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~156 lines
-- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~128 lines
-- **extract** (`.\py_agent\src\coderadar\resolvers\actix.py::RustActixResolver.extract`) — unreachable, High (0.90), ~118 lines
-- **extract** (`.\py_agent\src\coderadar\resolvers\reactrouter.py::ReactRouterResolver.extract`) — unreachable, High (0.90), ~110 lines
-- **extract** (`.\py_agent\src\coderadar\resolvers\express.py::ExpressResolver.ext
+- **apply** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.apply`) — unreachable, High (0.90), ~209 lines — `.\core_indexer\src\mutation\mod.rs:1490`
+- **plan_signature_update** (`.\core_indexer\src\mutation\mod.rs::MutationEngine.plan_signature_update`) — unreachable, High (0.90), ~170 lines — `.\core_indexer\src\mutation\mod.rs:828`
+- **insert_extracted** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.insert_extracted`) — unreachable, High (0.90), ~166 lines — `.\core_indexer\src\graph\projection_ops.rs:713`
+- **build_fragment** (`.\core_indexer\src\graph\indexing.rs::CodeGraph.build_fragment`) — unreachable, High (0.90), ~136 lines — `.\core_indexer\src\graph\indexing.rs:126`
+- **update_file** (`.\core_indexer\src\graph\projection_ops.rs::CodeGraph.update_file`) — unreachable, High (0.90), ~122 lines — `.\core_indexer\src\graph\projecti
 
 ======================================================================
-[ERROR] codegraph_find_clones (5941ms)
-EXCEPTION: Traceback (most recent call last):
-  File "D:\User\Documents\Python\CodeRadar\tests\cr_edit_tests\battery_readonly.py", line 35, in run
-    out = fn(*args, **kwargs)
-  File "D:\User\Documents\Python\CodeRadar\py_agent\src\coderadar\mcp\server.py", line 1951, in _find_clones
-    groups = _find_clones_rust(min_lines, min_similarity, max_groups)
-pyo3_runtime.PanicException: index out of bounds: the len is 1057 but the index is 1057
+[OK] codegraph_find_clones (32637ms)
+## Clone Groups — 45 group(s)
 
+### Group 1 — type-1, similarity 1.00, Certain
+- `.\tests\fixtures\python\smells\golden\god_class.py::God.m1` (.\tests\fixtures\python\smells\golden\god_class.py @ bytes 408..876)
+- `.\tests\fixtures\python\smells\golden\god_class.py::God.m3` (.\tests\fixtures\python\smells\golden\god_class.py @ bytes 1406..1874)
+- `.\tests\fixtures\python\smells\golden\god_class.py::God.m4` (.\tests\fixtures\python\smells\golden\god_class.py @ bytes 1905..2373)
+- `.\tests\fixtures\python\smells\golden\god_class.py::God.m2` (.\tests\fixtures\python\smells\golden\god_class.py @ bytes 907..1375)
 
-======================================================================
-[OK] codegraph_find_scaffolding (491ms)
-## Scaffolding Signals — 100 finding(s)
-
-### Comment Marker (100)
-- `.\core_indexer\src\extract\single_pass.rs:77` — Phase 1: // Phase 1: Emit file-level module frame
-- `.\core_indexer\src\extract\single_pass.rs:84` — Phase 2: // Phase 2: Direct cursor-driven dispatch.
-- `.\core_indexer\src\extract\single_pass.rs:117` — Phase 3: // Phase 3: Resolve fn_ref candidates (inline scan happened during emit_function)
-- `.\core_indexer\src\extract\walker.rs:259` — Step 1: // ── Step 1: Extracted emit_* functions for single-pass migration ──────────
-- `.\core_indexer\src\graph\deadcode\entry_points.rs:78` — in production: /// split by whether they make things live *in production* or *only in tests*.
-- `.\core_indexer\src\graph\deadcode\mod.rs:102` — in production: continue; // live in production — not a candidate
-- `.\core_indexer\src\graph\indexing.rs:122` — Phase 2: ///   `ImportGraph::build_import_edges` during Phase 2)
-- `.\core_indexer\src\graph\indexing.rs:267` — Phase 1: // Phase 1: Parse
+### Group 2 — type-2, similarity 1.00, Medium
+- `.\py_agent\src\coderadar\resolvers\base.py::FrameworkResolver.detect` (.\py_agent\src\coderadar\resolvers\base.py @ bytes 2262..2492)
+- `.\py_agent\src\coderadar\resolvers\base.py::FrameworkResolver.claims_reference` (.\py_agent\src\coderadar\resolvers\base.py @ bytes 2573..2887)
+- `.\py_agent\src\coderadar\resolvers\base.py::Framewo
 
 ======================================================================
-[OK] codegraph_update_file (14ms)
+[OK] codegraph_find_scaffolding (498ms)
+## Scaffolding Signals — 37 finding(s)
+
+### Placeholder Body (11)
+- `.\tests\test_semantic_engine.py:61` — test_indent_normalization_rebases_column_zero is a stub: pass
+- `.\tests\test_semantic_engine.py:48` — test_diamond_mro is a stub: pass
+- `.\tests\test_semantic_engine.py:38` — test_module_level_refs_have_source is a stub: pass
+- `.\tests\test_semantic_engine.py:67` — test_syntax_error_triggers_rollback is a stub: pass
+- `.\tests\test_semantic_engine.py:45` — test_simple_mro is a stub: pass
+- `.\tests\test_semantic_engine.py:64` — test_stale_expected_hash_rejects is a stub: pass
+- `.\tests\fixtures\python\scaffold\vibe.py:8` — handler is a stub: pass
+- `.\tests\test_semantic_engine.py:58` — test_body_replacement_preserves_signature is a stub: pass
+- `.\tests\test_semantic_engine.py:51` — test_c3_failure_sets_error_flag is a stub: pass
+- `.\tests\test_semantic_engine.py:24` — test_cyclic_call_graph_returns is a stub: pass
+- `.\tests\test_semantic_engine.py:31` — test_remove_file_st
+
+======================================================================
+[OK] codegraph_update_file (130ms)
 ## File Updated
 
 - **File:** `.\tests\cr_edit_tests\demo_billing.py`
@@ -270,20 +269,28 @@ pyo3_runtime.PanicException: index out of bounds: the len is 1057 but the index 
 
 
 ======================================================================
-[OK] coderadar_replace_body[core,dry] (0ms)
+[OK] coderadar_replace_body[core,dry] (2ms)
 ## Mutation Plan: `replace_entity_body` (DRY RUN)
 
-- **Plan ID:** `01M268N60W4ACHXBDPXHY57SSH`
+- **Plan ID:** `01M2A3NSE6NDPYMH3Z64D3KWWK`
 - **Affected files:** 1
 
 ### Diff Preview
 ```diff
 --- a/.\py_agent\src\coderadar\cli.py
 +++ b/.\py_agent\src\coderadar\cli.py
-@@ -131,65 +131,7 @@
- 
- 
- def _ensure_graph(path: str = "."):
+@@ -126,68 +126,7 @@
+ # implementation shared by the CLI's load/analyze ordering and the MCP
+ # background index's incremental cold start.
+ from .coldstart import (
+-    INDEXABLE_EXTS as _INDEXABLE_EXTS,
+-    STALENESS_SKIP_DIRS as _STALENESS_SKIP_DIRS,
+-    store_db_path as _store_db_path,
+-    store_is_fresh as _store_is_fresh,
+-)
+-
+-
+-def _ensure_graph(path: str = "."):
 -    """Return a CodeGraph with an index behind it, restoring one if a
 -    store exists.
 -
@@ -291,26 +298,20 @@ pyo3_runtime.PanicException: index out of bounds: the len is 1057 but the index 
 -    and exits, so every read-only command that followed it started with an
 -    empty core. v0.8 P1: before re-indexing, the command tries a cold
 -    start from the Macrame ledger - `load_snapshot` rebuilds the in-memory
--    graph from concept JSON v2 in milliseconds, instead of the full
--    analyze the re-analysis did before.
--
--    Order: reuse a matching loaded graph; else `_activate(path)` (the
--    effective config for every command is the one in the project -
--    BUGS_QUIRKS #3); else, if the store exists and is fresh, cold-start
-- 
+-    graph 
 
 ======================================================================
-[OK] coderadar_update_signature[core,dry] (10ms)
+[OK] coderadar_update_signature[core,dry] (25ms)
 ## Mutation Plan: `update_signature` (DRY RUN)
 
-- **Plan ID:** `01M268N617SA4RRQTXTZTK5W1A`
+- **Plan ID:** `01M2A3NSF0X30DTH8XF5GVBNBK`
 - **Affected files:** 1
 
 ### Diff Preview
 ```diff
 --- a/.\py_agent\src\coderadar\cli.py
 +++ b/.\py_agent\src\coderadar\cli.py
-@@ -130,7 +130,7 @@
+@@ -133,7 +133,7 @@
  )
  
  
@@ -322,45 +323,26 @@ pyo3_runtime.PanicException: index out of bounds: the len is 1057 but the index 
 
 ```
 
-⚠️ **WARNING: 22 call site(s) could not be verified/rewritten. Manual review required.**
+⚠️ **WARNING: 24 call site(s) could not be verified/rewritten. Manual review required.**
 - `.\py_agent\src\coderadar\cli.py:0` — Call site needs manual update — no values provided (`call to .\py_agent\src\coderadar\cli.py::_ensure_graph in .\py_agent\src\coderadar\cli.py::callees`)
 - `.\py_agent\src\coderadar\cli.py:0` — Call site needs manual update — no values provided (`call to .\py_agent\src\coderadar\cli.py::_ensure_graph in .\py_agent\src\coderadar\cli.py::callers`)
 - `.\py_agent\src\coderadar\cli.py:0` — Call site needs manual update — no values provided (`call to .\py_agent\
 
 ======================================================================
-[OK] coderadar_rename[core,dry] (10ms)
-## Mutation Plan: `rename_symbol` (DRY RUN)
+[OK] coderadar_rename[core,dry] (0ms)
+## Mutation Rejected — Stale Index
 
-- **Plan ID:** `01M268N61HE14VVTG5N6GTF1Y2`
-- **Affected files:** 1
+The file changed on disk after it was indexed, so the planned span no longer lines up. Nothing was written.
 
-### Diff Preview
-```diff
---- a/.\py_agent\src\coderadar\cli.py
-+++ b/.\py_agent\src\coderadar\cli.py
-@@ -130,7 +130,7 @@
- )
- 
- 
--def _ensure_graph(path: str = "."):
-+def _ensure_graph_renamed(path: str = "."):
-     """Return a CodeGraph with an index behind it, restoring one if a
-     store exists.
- 
+**Next step:** run `codegraph_update_file` on the file (or re-analyze), then retry the mutation.
 
-```
-
-⚠️ **WARNING: 12 call site(s) could not be verified/rewritten. Manual review required.**
-- `.\py_agent\src\coderadar\cli.py:360` — Textual occurrence — may be inside a macro body, comment or string; check manually (`graph = _ensure_graph()`)
-- `.\py_agent\src\coderadar\cli.py:376` — Textual occurrence — may be inside a macro body, comment or string; check manually (`graph = _ensure_graph()`)
-- `.\py_agent\src\coderadar\cli.py:403` — Textual occurrence — may be inside a macro body, comment or string; check manually (`graph = _ensure_graph()`)
-- `.\py_agent\src\coderadar\cl
+<details>Raw error: `StaleIndex { file: ".\\py_agent\\src\\coderadar\\cli.py", expected: "_ensure_graph", span: ByteSpan { start: 4760, end: 4773 } }`</details>
 
 ======================================================================
 [OK] coderadar_create_entity[demo,dry] (0ms)
 ## Mutation Plan: `create_entity` (DRY RUN)
 
-- **Plan ID:** `01M268N61JFJ4DX28AGR6WZY9J`
+- **Plan ID:** `01M2A3NSF275ED2JF96YBG0Z5N`
 - **Affected files:** 1
 
 ### Diff Preview
@@ -382,35 +364,35 @@ pyo3_runtime.PanicException: index out of bounds: the len is 1057 but the index 
 **To apply:** call again with `dry_run=False`.
 
 ======================================================================
-[OK] codegraph_compute_embeddings (13939ms)
+[OK] codegraph_compute_embeddings (17557ms)
 ## Embeddings Complete
 
-- **Generated:** 4322
+- **Generated:** 4850
 - **Cached (unchanged):** 0
-- **Total entities:** 4322
+- **Total entities:** 4850
 - **Errors:** 0
 
 Semantic search (codegraph_search_similar) is now available.
 
 ======================================================================
 SUMMARY
-  OK          6ms  codegraph_explore
+  OK         23ms  codegraph_explore
   OK          0ms  codegraph_node
-  OK          1ms  codegraph_search
-  OK          1ms  codegraph_affected
-  OK          1ms  coderadar_resolve
-  OK          1ms  codegraph_query
-  OK        548ms  codegraph_search_similar
+  OK          7ms  codegraph_search
+  OK         10ms  codegraph_affected
+  OK          5ms  coderadar_resolve
+  OK         10ms  codegraph_query
+  OK        555ms  codegraph_search_similar
   OK          0ms  codegraph_module_children
   OK          0ms  codegraph_as_of
-  OK          4ms  codegraph_traverse
-  OK         14ms  codegraph_get_smells
-  OK          2ms  codegraph_dead_code
-  ERROR    5941ms  codegraph_find_clones
-  OK        491ms  codegraph_find_scaffolding
-  OK         14ms  codegraph_update_file
-  OK          0ms  coderadar_replace_body[core,dry]
-  OK         10ms  coderadar_update_signature[core,dry]
-  OK         10ms  coderadar_rename[core,dry]
+  OK          7ms  codegraph_traverse
+  OK        101ms  codegraph_get_smells
+  OK         31ms  codegraph_dead_code
+  OK      32637ms  codegraph_find_clones
+  OK        498ms  codegraph_find_scaffolding
+  OK        130ms  codegraph_update_file
+  OK          2ms  coderadar_replace_body[core,dry]
+  OK         25ms  coderadar_update_signature[core,dry]
+  OK          0ms  coderadar_rename[core,dry]
   OK          0ms  coderadar_create_entity[demo,dry]
-  OK      13939ms  codegraph_compute_embeddings
+  OK      17557ms  codegraph_compute_embeddings

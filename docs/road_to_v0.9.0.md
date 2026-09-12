@@ -307,7 +307,7 @@ relevant pytest files, full battery before merge):
 | v0.8.23 | R2-17 rename-chain rewrite (plan + scoped-update refresh + resolve fixpoint) | `mcp/rename-real-applied`, `mcp/fixture-restored-after-rename`, `surface/issue9-reexport-resolves` |
 | v0.8.24 | R1§6-13 exclusion follow-ups (list layers + effect totals, watcher proof) | `cli/exclude-list-effect-totals` |
 | v0.8.25 | R1§6-14/15/17 hygiene (slop footer anchor, knob hardening, bridge list) | `mcp/scaffolding-shows-scan-stats` |
-| v0.9.0 | Carryover (§4) + full battery green + release notes | everything |
+| v0.9.0 | Carryover (§4) + full battery green + release notes | everything → 121/121 DONE |
 
 Order inside Phase 1 is dependency-driven: R2-1 first (presentation-only,
 no schema/ledger risk), R2-2 second (ledger semantics — do before R2-7's
@@ -315,6 +315,13 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
 (independent, batchable).
 
 ## 6. Acceptance (v0.9.0 exits when…)
+
+> **Status at v0.9.0: all met.** `battery_round2.py` **121/121** (118 +
+> `fixture-restored-after-rename`, `exclude-list-effect-totals`,
+> `scaffolding-shows-scan-stats`); round-1 batteries green; Rust 368 +
+> Python 751 green; clippy advisory clean of new warnings (pre-existing
+> toolchain drift untouched); §§1–4 DONE-marked (§7 log carries the
+> release tags); the five invariants hold (verified live in §7 entries).
 
 - `battery_round2.py` fully green (118/118) on a clean checkout.
 - Round-1 batteries (`battery_readonly/mutation/slop`) still green.
@@ -401,6 +408,11 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   test extended); `_env_seconds` knob hardening (4 tests, defaults
   unchanged: wait 25 s, heartbeat 5 s); scaffolding footer battery anchor.
   368 Rust + 751 Python green; battery_round2 121/121.
+- **v0.9.0 — RELEASE.** `docs/v0.9.0-release-notes.md` (changelog v0.8.16→,
+  behavior changes, verification totals, deferred list); version cut
+  0.8.25 → 0.9.0 across `__init__.py` + `pyproject.toml` + `Cargo.toml` +
+  README. All §6 acceptance met: round2 121/121, round-1 green, 368 Rust
+  + 751 Python, §§1–4 DONE.
 - **v0.8.22 — macrame-db 0.15 → 0.17 DONE** (off-plan dep bump). The 0.16
   cycle's one caller-visible break was the W15.3 `#[non_exhaustive]` wave:
   four literal sites in `cold_start.rs` moved to constructors

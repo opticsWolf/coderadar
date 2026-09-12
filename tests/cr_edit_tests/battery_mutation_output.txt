@@ -1,9 +1,9 @@
-before: tests\cr_edit_tests\demo_billing.py sha=5edf9c5aa805ba88f0a6db9e9e33472d27a9dd85
-before: tests\cr_edit_tests\demo_router.ts sha=730e89ecdf890430aed18a9ddbbd549cc1467721
+before: tests\cr_edit_tests\demo_billing.py sha=d15225787ed218e9bd783b29c5d1d0de50a97dcd
+before: tests\cr_edit_tests\demo_router.ts sha=c3bafdb25b022576610205b25b3e1f864f72449e
 before: tests\cr_edit_tests\demo_ledger.rs sha=776a5c2c7dd3ac6f0b063394ac3c9833cda4f799
 
 ======================================================================
-[OK] replace_body demo_billing.calculate_total (apply) (25ms)
+[OK] replace_body demo_billing.calculate_total (apply) (111ms)
 ## Mutation Applied
 
 - **Status:** Applied
@@ -14,7 +14,7 @@ before: tests\cr_edit_tests\demo_ledger.rs sha=776a5c2c7dd3ac6f0b063394ac3c9833c
 on-disk verify: 'taxed = subtotal' present: True
 
 ======================================================================
-[OK] update_file demo_billing.py after replace_body (13ms)
+[OK] update_file demo_billing.py after replace_body (84ms)
 ## File Updated
 
 - **File:** `tests\cr_edit_tests\demo_billing.py`
@@ -23,7 +23,7 @@ on-disk verify: 'taxed = subtotal' present: True
 graph verify: calculate_total entries: [('.\\tests\\cr_edit_tests\\demo_billing.py::Invoice.calculate_total', 27), ('.\\tests\\cr_edit_tests\\demo_billing.py::Invoice.summary', 45)]
 
 ======================================================================
-[OK] replace_body demo_ledger.total_cents (apply) (8ms)
+[OK] replace_body demo_ledger.total_cents (apply) (11ms)
 ## Mutation Rolled Back
 
 - **Status:** RolledBack
@@ -36,36 +36,27 @@ graph verify: calculate_total entries: [('.\\tests\\cr_edit_tests\\demo_billing.
 No changes were kept. Address the reason above and re-plan.
 
 ======================================================================
-[OK] replace_body demo_router.ts Router.match (apply) (9ms)
-## Mutation Rolled Back
+[OK] replace_body demo_router.ts Router.match (apply) (127ms)
+## Mutation Applied
 
-- **Status:** RolledBack
-- **File written:** no
-- **Graph updated:** no — nothing changed
-- **Syntax errors:** 1
-  - .\tests\cr_edit_tests\demo_router.ts:0 — post-write parse check failed — mutation introduced a syntax error
-- **Backup:** `.\tests\cr_edit_tests\demo_router.ts.coderadar-bak`
-
-No changes were kept. Address the reason above and re-plan.
+- **Status:** Applied
+- **File written:** yes
+- **Graph updated:** yes
+- **Files written:** 1
+  - `.\tests\cr_edit_tests\demo_router.ts`
 
 ======================================================================
-[OK] update_signature demo_billing.apply_loyalty_discount (apply) (26ms)
-## Mutation Rolled Back
+[OK] update_signature demo_billing.apply_loyalty_discount (apply) (0ms)
+## Mutation Rejected — Stale Index
 
-- **Status:** RolledBack
-- **File written:** no
-- **Graph updated:** no — nothing changed
-- **Syntax errors:** 1
-  - .\tests\cr_edit_tests\demo_billing.py:0 — post-write parse check failed — mutation introduced a syntax error
-- **Backup:** `.\tests\cr_edit_tests\demo_billing.py.coderadar-bak`
+The file changed on disk after it was indexed, so the planned span no longer lines up. Nothing was written.
 
-No changes were kept. Address the reason above and re-plan.
+**Next step:** run `codegraph_update_file` on the file (or re-analyze), then retry the mutation.
 
-⚠️ **WARNING: 1 call site(s) could not be verified/rewritten. Manual review required.**
-- `{'file': '.\\tests\\cr_edit_tests\\demo_billing.py', 'line': 32, 'snippet': 'def apply_loyalty_discount(self, pct: float, tier: str) -> float:', 'reason': 'Textual occurrence — may be inside a macro body, comment or string; check manually'}`
+<details>Raw error: `StaleIndex { file: ".\\tests\\cr_edit_tests\\demo_billing.py", expected: "def-line params for apply_loyalty_discount", span: ByteSpan { start: 1304, end: 1333 } }`</details>
 
 ======================================================================
-[OK] rename demo_ledger.fmt_total_for_display (apply) (36ms)
+[OK] rename demo_ledger.fmt_total_for_display (apply) (130ms)
 ## Mutation Applied
 
 - **Status:** Applied
@@ -75,7 +66,7 @@ No changes were kept. Address the reason above and re-plan.
   - `.\tests\cr_edit_tests\demo_ledger.rs`
 
 ======================================================================
-[OK] create_entity demo_billing.py (apply) (21ms)
+[OK] create_entity demo_billing.py (apply) (97ms)
 ## Mutation Applied
 
 - **Status:** Applied
@@ -85,7 +76,7 @@ No changes were kept. Address the reason above and re-plan.
   - `.\tests\cr_edit_tests\demo_billing.py`
 
 ======================================================================
-[OK] replace_body demo_billing.calculate_total (stale hash guard) (0ms)
+[OK] replace_body demo_billing.calculate_total (stale hash guard) (1ms)
 ## Mutation Rejected — Stale
 
 - **Status:** RejectedStale
@@ -97,7 +88,7 @@ No changes were kept. Address the reason above and re-plan.
 The file changed since planning — call the plan tool again to re-read the current content, then apply the fresh plan.
 
 ======================================================================
-[OK] replace_body coldstart.store_is_fresh (policy refusal expected) (23ms)
+[OK] replace_body coldstart.store_is_fresh (policy refusal expected) (111ms)
 ## Mutation Applied
 
 - **Status:** Applied
@@ -107,18 +98,18 @@ The file changed since planning — call the plan tool again to re-read the curr
   - `.\py_agent\src\coderadar\coldstart.py`
 
 ======================================================================
-restored: tests\cr_edit_tests\demo_billing.py sha=acfea1ff5dd64a9a7955434f125db07358608626
-restored: tests\cr_edit_tests\demo_router.ts sha=730e89ecdf890430aed18a9ddbbd549cc1467721
-restored: tests\cr_edit_tests\demo_ledger.rs sha=c77c1949cfd57aa13a4670810cc09c64e69a6af3
+restored: tests\cr_edit_tests\demo_billing.py sha=d15225787ed218e9bd783b29c5d1d0de50a97dcd
+restored: tests\cr_edit_tests\demo_router.ts sha=c3bafdb25b022576610205b25b3e1f864f72449e
+restored: tests\cr_edit_tests\demo_ledger.rs sha=776a5c2c7dd3ac6f0b063394ac3c9833cda4f799
 graph resynced to restored files
 
 SUMMARY
-  OK         25ms  replace_body demo_billing.calculate_total (apply)
-  OK         13ms  update_file demo_billing.py after replace_body
-  OK          8ms  replace_body demo_ledger.total_cents (apply)
-  OK          9ms  replace_body demo_router.ts Router.match (apply)
-  OK         26ms  update_signature demo_billing.apply_loyalty_discount (apply)
-  OK         36ms  rename demo_ledger.fmt_total_for_display (apply)
-  OK         21ms  create_entity demo_billing.py (apply)
-  OK          0ms  replace_body demo_billing.calculate_total (stale hash guard)
-  OK         23ms  replace_body coldstart.store_is_fresh (policy refusal expected)
+  OK        111ms  replace_body demo_billing.calculate_total (apply)
+  OK         84ms  update_file demo_billing.py after replace_body
+  OK         11ms  replace_body demo_ledger.total_cents (apply)
+  OK        127ms  replace_body demo_router.ts Router.match (apply)
+  OK          0ms  update_signature demo_billing.apply_loyalty_discount (apply)
+  OK        130ms  rename demo_ledger.fmt_total_for_display (apply)
+  OK         97ms  create_entity demo_billing.py (apply)
+  OK          1ms  replace_body demo_billing.calculate_total (stale hash guard)
+  OK        111ms  replace_body coldstart.store_is_fresh (policy refusal expected)
