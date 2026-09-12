@@ -30,8 +30,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "py_agent" / "src"))
 
-import coderadar  # noqa: E402
-from coderadar import cli as _cli  # noqa: E402
+import coderadar
+from coderadar import cli as _cli
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "cold_start"
 SRC = Path(__file__).parent.parent / "py_agent" / "src"
@@ -59,7 +59,10 @@ def _downgrade_store_to_v1(db: Path) -> None:
             "SELECT id, content, recorded_at FROM concepts WHERE retired = 0"
         ).fetchall()
         assert rows, "no open concepts in store"
-        base = max(datetime.datetime.strptime(ra, fmt) for *_, ra in rows)
+        # Stored ledger timestamps are naive by schema; this helper bumps them by
+        # microseconds and writes them back in the same format. Attaching a zone
+        # would corrupt the round-trip under test.
+        base = max(datetime.datetime.strptime(ra, fmt) for *_, ra in rows)  # noqa: DTZ007
         for i, (cid, content, _) in enumerate(rows):
             data = json.loads(content)
             data.pop("meta_version", None)
@@ -169,12 +172,13 @@ Path(out).write_text(json.dumps(dump(), sort_keys=True, default=str))
 """
 
 
-def _run_leg(mode: str, proj: Path, out: Path, db: Path = None) -> dict:
+def _run_leg(mode: str, proj: Path, out: Path, db: Path | None = None) -> dict:
     args = [sys.executable, "-c", LEG_SCRIPT, str(SRC), mode,
             str(proj), str(out)]
     if db is not None:
         args.append(str(db))
-    proc = subprocess.run(args, capture_output=True, text=True, timeout=600)
+    proc = subprocess.run(args, capture_output=True, text=True, timeout=600,
+                          check=False)  # returncode asserted on the next line
     assert proc.returncode == 0, (
         f"leg {mode} failed:\nstdout: {proc.stdout}\nstderr: {proc.stderr}")
     return json.loads(out.read_text(encoding="utf-8"))
@@ -295,7 +299,8 @@ def test_ensure_graph_falls_back_to_analyze_on_v1_store(tmp_path):
     _run_leg("A", proj, tmp_path / "init.json")
     proc = subprocess.run(
         [sys.executable, "-c", FALLBACK_SCRIPT, str(SRC), str(proj)],
-        capture_output=True, text=True, timeout=600)
+        capture_output=True, text=True, timeout=600,
+        check=False)  # returncode asserted on the next line
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "OK" in proc.stdout
     # The store is now v2: a fresh cold start succeeds.
@@ -342,7 +347,8 @@ def test_ensure_graph_reuses_a_matching_loaded_graph(tmp_path):
     proj = _copy_fixture(tmp_path / "proj")
     proc = subprocess.run(
         [sys.executable, "-c", REUSE_SCRIPT, str(SRC), str(proj)],
-        capture_output=True, text=True, timeout=600)
+        capture_output=True, text=True, timeout=600,
+        check=False)  # returncode asserted on the next line
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "REUSED" in proc.stdout
 
@@ -446,5 +452,5 @@ def test_store_db_path_absolute_config(tmp_path):
     other = tmp_path / "abs.db"
     # TOML basic string: backslashes must be escaped; repr produces that.
     (tmp_path / ".coderadar.toml").write_text(
-        "[database]\npath = %r\n" % str(other), encoding="utf-8")
+        f"[database]\npath = {str(other)!r}\n", encoding="utf-8")
     assert _cli._store_db_path(tmp_path) == other

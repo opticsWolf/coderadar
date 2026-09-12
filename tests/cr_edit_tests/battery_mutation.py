@@ -7,14 +7,20 @@ demo files are restored from git.
 
 Outputs a machine-readable summary.
 """
-import sys, time, json, traceback, os, subprocess
+import os
+import subprocess
+import sys
+import time
+import traceback
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
+except Exception:  # noqa: BLE001, S110 - best-effort console setup for Windows pipes
     pass
 
-LOG = open(os.path.join(os.path.dirname(__file__), "battery_mutation_output.txt"), "w", encoding="utf-8")
+LOG = open(  # noqa: SIM115 - module-global run log, lives until process exit
+    os.path.join(os.path.dirname(__file__), "battery_mutation_output.txt"), "w", encoding="utf-8"
+)
 def log(*a):
     s = " ".join(str(x) for x in a)
     print(s); LOG.write(s + "\n"); LOG.flush()
@@ -30,7 +36,7 @@ def run(name, fn, *args, **kwargs):
     try:
         out = fn(*args, **kwargs)
         status = "OK"
-    except BaseException as e:
+    except BaseException:  # noqa: BLE001 - harness records failure, never dies mid-run
         out = f"EXCEPTION: {traceback.format_exc()}"
         status = "ERROR"
     ms = int((time.time() - t) * 1000)
@@ -39,7 +45,8 @@ def run(name, fn, *args, **kwargs):
     log(str(out)[:1500])
 
 def git(*args):
-    return subprocess.run(["git", *args], capture_output=True, text=True).stdout.strip()
+    # check=False: empty stdout on git failure is the long-standing contract here.
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=False).stdout.strip()
 
 # ── entity ids (full relative form, as discovered by the read battery) ────
 PY_TOTAL   = r".\tests\cr_edit_tests\demo_billing.py::Invoice.calculate_total"
@@ -65,13 +72,15 @@ run("replace_body demo_billing.calculate_total (apply)",
     mcp._replace_body, graph, PY_TOTAL, NEW_PY, None, False)
 
 # verify on disk
-disk = open("tests/cr_edit_tests/demo_billing.py", encoding="utf-8").read()
+with open("tests/cr_edit_tests/demo_billing.py", encoding="utf-8") as _fh:
+    disk = _fh.read()
 log("on-disk verify: 'taxed = subtotal' present:", "taxed = subtotal" in disk)
 
 # graph update + verify
 run("update_file demo_billing.py after replace_body",
     mcp._update_file, graph, r"tests\cr_edit_tests\demo_billing.py", None)
-from coderadar._core import search_entities, callees_of
+from coderadar._core import search_entities
+
 e = search_entities("calculate_total", 5)
 log("graph verify: calculate_total entries:", [(x["id"], x.get("line")) for x in e])
 

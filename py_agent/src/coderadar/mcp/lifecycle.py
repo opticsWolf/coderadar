@@ -22,7 +22,8 @@ from __future__ import annotations
 import os
 import sys
 import threading
-from typing import Any, Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import structlog
 
@@ -47,7 +48,7 @@ def _leave(reason: str, code: int = 0) -> None:
     log.info("mcp.lifecycle.exit", reason=reason)
     try:
         sys.stderr.flush()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110 - exiting anyway, nothing left to save
         pass
     os._exit(code)
 
@@ -108,14 +109,14 @@ class ParentWatchdog:
         self,
         interval: float = PARENT_POLL_SECONDS,
         on_orphan: Callable[[str], None] = _leave,
-        alive: Optional[Callable[[int], bool]] = None,
+        alive: Callable[[int], bool] | None = None,
     ):
         self._interval = interval
         self._on_orphan = on_orphan
         self._alive = alive or _parent_is_alive
         self._ppid = os.getppid()
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         if self._thread is not None:
@@ -161,7 +162,7 @@ class HandshakeTimeout:
     ):
         self._seconds = seconds
         self._on_timeout = on_timeout
-        self._timer: Optional[threading.Timer] = None
+        self._timer: threading.Timer | None = None
         self._lock = threading.Lock()
         self.disarmed = False
 
@@ -195,17 +196,17 @@ class HandshakeTimeout:
 
 # ── module-level handle and middleware ────────────────────────────────────
 
-_HANDSHAKE: Optional[HandshakeTimeout] = None
+_HANDSHAKE: HandshakeTimeout | None = None
 _HANDSHAKE_LOCK = threading.Lock()
 
 
-def configure(handshake: Optional[HandshakeTimeout]) -> None:
+def configure(handshake: HandshakeTimeout | None) -> None:
     global _HANDSHAKE
     with _HANDSHAKE_LOCK:
         _HANDSHAKE = handshake
 
 
-def current() -> Optional[HandshakeTimeout]:
+def current() -> HandshakeTimeout | None:
     with _HANDSHAKE_LOCK:
         return _HANDSHAKE
 
@@ -227,7 +228,7 @@ def make_middleware() -> Callable[..., Awaitable[Any]]:
     return middleware
 
 
-def install(seconds: Optional[float] = None) -> tuple[HandshakeTimeout, ParentWatchdog]:
+def install(seconds: float | None = None) -> tuple[HandshakeTimeout, ParentWatchdog]:
     """Arm both guards. Call from `serve` before the transport starts."""
     handshake = HandshakeTimeout(
         HANDSHAKE_TIMEOUT_SECONDS if seconds is None else seconds)

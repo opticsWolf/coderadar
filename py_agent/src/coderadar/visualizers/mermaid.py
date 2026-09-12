@@ -6,13 +6,13 @@ with real data from the CodeGraph projection.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from . import NothingToVisualize
 
 
-def generate_mermaid(viz_type: str, args: List[str],
-                     graph: Optional[Any] = None) -> str:
+def generate_mermaid(viz_type: str, args: list[str],
+                     graph: Any | None = None) -> str:
     """Generate Mermaid diagram source for a visualization type.
 
     Args:
@@ -55,15 +55,13 @@ def _truncated_label(qualified: str, max_len: int = 40) -> str:
 
 # ── Class Hierarchy ──────────────────────────────────────────────────────
 
-def _mermaid_class_hierarchy(args: List[str],
-                              graph: Optional[Any] = None) -> str:
+def _mermaid_class_hierarchy(args: list[str],
+                              graph: Any | None = None) -> str:
     """Render a class inheritance hierarchy as Mermaid classDiagram."""
     lines = ["classDiagram"]
 
     if graph:
         try:
-            from coderadar._core import graph_stats
-            stats = graph_stats()
             # Walk all classes and their subclasses
             visited = set()
 
@@ -74,7 +72,7 @@ def _mermaid_class_hierarchy(args: List[str],
                 label = _truncated_label(cls_data.get("name", cls_id))
                 lines.append(f"    class {safe} {{")
                 lines.append(f"        +{label}")
-                lines.append(f"    }}")
+                lines.append("    }")
                 visited.add(cls_id)
 
             # Inheritance comes from the resolved `bases` names; callees_of
@@ -101,8 +99,8 @@ def _mermaid_class_hierarchy(args: List[str],
 
 # ── Call Graph ──────────────────────────────────────────────────────────
 
-def _mermaid_call_graph(args: List[str],
-                         graph: Optional[Any] = None) -> str:
+def _mermaid_call_graph(args: list[str],
+                         graph: Any | None = None) -> str:
     """Render a function call graph as Mermaid flowchart.
 
     Uses real callers_of/callees_of data when graph is available.
@@ -115,7 +113,7 @@ def _mermaid_call_graph(args: List[str],
         direction = args[2] if len(args) > 2 else "both"
 
         visited: set = set()
-        edges: List[tuple] = []
+        edges: list[tuple] = []
         _gather_call_edges(graph, entity_id, depth_limit, direction, visited, edges)
 
         if edges:
@@ -158,8 +156,8 @@ def _gather_call_edges(graph, entity_id: str, depth: int,
 
 # ── Dependency Graph ────────────────────────────────────────────────────
 
-def _mermaid_dependency_graph(args: List[str],
-                                graph: Optional[Any] = None) -> str:
+def _mermaid_dependency_graph(args: list[str],
+                                graph: Any | None = None) -> str:
     """Render module dependencies as Mermaid flowchart.
 
     Shows import relationships between modules.
@@ -168,7 +166,7 @@ def _mermaid_dependency_graph(args: List[str],
 
     if graph:
         try:
-            from coderadar._core import search_entities, callees_of
+            from coderadar._core import callees_of, search_entities
             # Get all modules
             modules = search_entities("module", 100)
             module_names = {}

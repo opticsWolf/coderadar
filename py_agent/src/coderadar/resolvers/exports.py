@@ -13,10 +13,9 @@ Copyright (c) 2024 Colby McHenry — MIT License
 from __future__ import annotations
 
 import ast
-from typing import List, Optional
 
 
-def extract_all_exports(source: str) -> Optional[List[str]]:
+def extract_all_exports(source: str) -> list[str] | None:
     """Extract __all__ exports from Python source.
 
     Returns None if __all__ cannot be statically determined.
@@ -26,7 +25,7 @@ def extract_all_exports(source: str) -> Optional[List[str]]:
     except SyntaxError:
         return None
 
-    names: List[str] = []
+    names: list[str] = []
     all_found = False
 
     for node in ast.walk(tree):
@@ -38,14 +37,16 @@ def extract_all_exports(source: str) -> Optional[List[str]]:
                     names.extend(_extract_list_literals(node.value))
 
         # __all__ += ["baz"]
-        if isinstance(node, ast.AugAssign):
-            if isinstance(node.target, ast.Name) and node.target.id == "__all__":
+        if (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "__all__"
+        ):
                 all_found = True
                 names.extend(_extract_list_literals(node.value))
 
         # __all__.extend(["qux"])
-        if isinstance(node, ast.Call):
-            if (
+        if isinstance(node, ast.Call) and (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "extend"
                 and isinstance(node.func.value, ast.Name)
@@ -56,8 +57,7 @@ def extract_all_exports(source: str) -> Optional[List[str]]:
                     names.extend(_extract_list_literals(node.args[0]))
 
         # __all__.append("single")
-        if isinstance(node, ast.Call):
-            if (
+        if isinstance(node, ast.Call) and (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr == "append"
                 and isinstance(node.func.value, ast.Name)
@@ -76,9 +76,9 @@ def extract_all_exports(source: str) -> Optional[List[str]]:
     return list(dict.fromkeys(names))  # deduplicate, preserve order
 
 
-def _extract_list_literals(node: ast.expr) -> List[str]:
+def _extract_list_literals(node: ast.expr) -> list[str]:
     """Extract string literals from a list/tuple node."""
-    names: List[str] = []
+    names: list[str] = []
     if isinstance(node, (ast.List, ast.Tuple)):
         for elem in node.elts:
             if isinstance(elem, ast.Constant) and isinstance(elem.value, str):

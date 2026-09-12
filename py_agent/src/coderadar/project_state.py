@@ -26,12 +26,11 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Optional
 
-__all__ = ["record_project", "last_project_for", "state_file"]
+__all__ = ["last_project_for", "record_project", "state_file"]
 
 
-def state_file() -> Optional[Path]:
+def state_file() -> Path | None:
     """Where the record lives, or None if there is no usable home."""
     try:
         return Path.home() / ".coderadar" / "mcp" / "last_projects.json"
@@ -74,11 +73,11 @@ def record_project(launch_cwd: Path, root: Path) -> None:
         data[_key(launch_cwd)] = str(root)
         path.write_text(
             json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    except Exception:  # noqa: BLE001 — best-effort, see module docstring
+    except Exception:  # noqa: BLE001, S110 - best-effort, see module docstring
         pass
 
 
-def last_project_for(launch_cwd: Path) -> Optional[Path]:
+def last_project_for(launch_cwd: Path) -> Path | None:
     """The root recorded for this launch directory, validated.
 
     Returns None when there is no record, the record file is corrupt, or the

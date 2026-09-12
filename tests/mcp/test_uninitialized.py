@@ -14,7 +14,6 @@ fix it.
 from __future__ import annotations
 
 import pytest
-
 from coderadar.mcp import lazy
 
 

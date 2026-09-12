@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class QueryIntent(str, Enum):
@@ -38,7 +38,7 @@ class QueryPlan:
     """
     intent: QueryIntent
     method: str                    # MacrameQuery method name
-    params: Dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
     top_k: int = 10
 
 

@@ -24,8 +24,8 @@ from __future__ import annotations
 
 import fnmatch
 import os
+from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
-from typing import Iterable, Iterator, Sequence
 
 # Last-resort copy of Rust DEFAULT_EXCLUDES (lib.rs). Used ONLY when the
 # compiled extension is unavailable; otherwise default_excludes() is read
@@ -57,7 +57,7 @@ def _rust_excluded(rel_posix: str) -> bool | None:
         return None
     try:
         return bool(_rust_fn(rel_posix))
-    except Exception:
+    except Exception:  # noqa: BLE001 - matcher hiccup means "fall back to Python"
         return None
 
 
@@ -163,7 +163,7 @@ def resolve_entity_path(path: str | Path) -> Path:
         from coderadar._core import indexed_root_py as _rust_root
         if _rust_root():
             return Path(_rust_root()) / p
-    except (ImportError, Exception):
+    except Exception:  # noqa: BLE001, S110 - best-effort root probe, None means "unknown"
         pass
     if _INDEXED_ROOT is not None:
         return _INDEXED_ROOT / p

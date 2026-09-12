@@ -3,7 +3,6 @@
 Golden resolution tests: per-language fixtures with expected-resolution manifests.
 """
 
-import pytest
 
 
 class TestPythonImportResolution:
@@ -11,11 +10,9 @@ class TestPythonImportResolution:
 
     def test_simple_import_resolves(self):
         """from app.models import User should resolve to User class."""
-        pass
 
     def test_relative_import_resolves(self):
         """from .models import User should resolve within package."""
-        pass
 
 
 class TestCyclicCallGraphTerminates:

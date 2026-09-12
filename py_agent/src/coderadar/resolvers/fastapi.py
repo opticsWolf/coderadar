@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any
+
 from coderadar.excludes import iter_project_files as _iter_files
-from typing import Any, Dict, List, Optional
 
 from .base import (
-    FrameworkResolver,
     FrameworkExtraction,
-    SyntheticNode,
+    FrameworkResolver,
     SyntheticEdge,
+    SyntheticNode,
 )
 
 
@@ -101,14 +102,14 @@ class FastAPIResolver(FrameworkResolver):
 
         return result
 
-    def _detect_app_name(self, tree: ast.Module) -> Optional[str]:
+    def _detect_app_name(self, tree: ast.Module) -> str | None:
         """Find the FastAPI app variable name."""
         for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                if (
-                    isinstance(node.value, ast.Call)
-                    and self._get_call_name(node.value) == "FastAPI"
-                ):
+            if (
+                isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Call)
+                and self._get_call_name(node.value) == "FastAPI"
+            ):
                     for target in node.targets:
                         if isinstance(target, ast.Name):
                             return target.id
@@ -117,11 +118,11 @@ class FastAPIResolver(FrameworkResolver):
     def _extract_routes(
         self,
         func_node: ast.FunctionDef,
-        app_name: Optional[str],
+        app_name: str | None,
         file_path: str,
-    ) -> List[SyntheticNode]:
+    ) -> list[SyntheticNode]:
         """Extract route nodes from function decorators."""
-        nodes: List[SyntheticNode] = []
+        nodes: list[SyntheticNode] = []
 
         for decorator in func_node.decorator_list:
             if not isinstance(decorator, ast.Call):
@@ -138,7 +139,7 @@ class FastAPIResolver(FrameworkResolver):
             if not path:
                 continue
 
-            metadata: Dict[str, Any] = {
+            metadata: dict[str, Any] = {
                 "pattern": path,
                 "handler": func_node.name,
             }
@@ -178,12 +179,12 @@ class FastAPIResolver(FrameworkResolver):
 
     def _extract_dependencies(
         self, func_node: ast.FunctionDef | ast.AsyncFunctionDef, file_path: str,
-    ) -> List[SyntheticEdge]:
+    ) -> list[SyntheticEdge]:
         """Extract dependency injection edges from function parameter defaults.
 
         Handles: Depends(some_callable) in parameter defaults.
         """
-        edges: List[SyntheticEdge] = []
+        edges: list[SyntheticEdge] = []
 
         # args.defaults holds the last N defaults
         defaults = func_node.args.defaults
@@ -209,7 +210,7 @@ class FastAPIResolver(FrameworkResolver):
 
         return edges
 
-    def _find_depends_call(self, annotation: ast.expr) -> Optional[str]:
+    def _find_depends_call(self, annotation: ast.expr) -> str | None:
         """Find a Depends() call within an annotation AST node.
 
         Handles:
@@ -225,9 +226,9 @@ class FastAPIResolver(FrameworkResolver):
 
     def _extract_router_include(
         self, node: ast.Call, file_path: str,
-    ) -> List[SyntheticEdge]:
+    ) -> list[SyntheticEdge]:
         """Extract edges from app.include_router(router)."""
-        edges: List[SyntheticEdge] = []
+        edges: list[SyntheticEdge] = []
 
         if self._get_call_name(node) != "include_router":
             return edges
@@ -253,15 +254,15 @@ class FastAPIResolver(FrameworkResolver):
         return edges
 
     def resolve(
-        self, ref_name: str, candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        self, ref_name: str, candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         """Resolve FastAPI naming conventions."""
         return None  # FastAPI uses explicit imports
 
     # ── AST Helpers ─────────────────────────────────────────────────
 
     @staticmethod
-    def _get_call_name(call: ast.Call) -> Optional[str]:
+    def _get_call_name(call: ast.Call) -> str | None:
         if isinstance(call.func, ast.Name):
             return call.func.id
         if isinstance(call.func, ast.Attribute):
@@ -269,7 +270,7 @@ class FastAPIResolver(FrameworkResolver):
         return None
 
     @staticmethod
-    def _get_decorator_attr(decorator: ast.Call) -> Optional[str]:
+    def _get_decorator_attr(decorator: ast.Call) -> str | None:
         """Get the attribute name from @app.get or @router.post."""
         if isinstance(decorator.func, ast.Attribute):
             return decorator.func.attr
@@ -278,7 +279,7 @@ class FastAPIResolver(FrameworkResolver):
         return None
 
     @staticmethod
-    def _get_name(node: ast.expr) -> Optional[str]:
+    def _get_name(node: ast.expr) -> str | None:
         if isinstance(node, ast.Name):
             return node.id
         if isinstance(node, ast.Attribute):
@@ -289,13 +290,13 @@ class FastAPIResolver(FrameworkResolver):
         return None
 
     @staticmethod
-    def _get_string_value(node: ast.expr) -> Optional[str]:
+    def _get_string_value(node: ast.expr) -> str | None:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
         return None
 
     @staticmethod
-    def _get_list_value(node: ast.expr) -> Optional[List[str]]:
+    def _get_list_value(node: ast.expr) -> list[str] | None:
         if isinstance(node, ast.List):
             return [
                 e.value

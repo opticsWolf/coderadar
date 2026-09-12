@@ -30,7 +30,7 @@ def _resolve_version() -> str:
     def _tup(v: str) -> tuple:
         try:
             return tuple(int(p) for p in v.split("."))
-        except Exception:
+        except ValueError:
             return ()
     best = _FALLBACK_VERSION
     try:
@@ -40,9 +40,9 @@ def _resolve_version() -> str:
                 _meta = _pkg_version(_dist)
                 if _tup(_meta) > _tup(best):
                     best = _meta
-            except Exception:
+            except ImportError:
                 continue
-    except Exception:
+    except ImportError:
         pass
     return best
 
@@ -50,8 +50,9 @@ def _resolve_version() -> str:
 __version__ = _resolve_version()
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Literal, Optional, Union
+from typing import Any, Literal
 
 # R2-13: structlog with no configuration logs to stdout at DEBUG, so every
 # logger.debug/info call in the package (macrame.traverse, lsp lines, ...)
@@ -86,16 +87,16 @@ EDGE_KIND_CALLS = "calls"
 
 # ── Public API Types ────────────────────────────────────────────────────────
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class UpdateReport:
     """Result of a single-file or batch update (§8.2)."""
-    affected_files: List[str]
-    changed_symbols: List[SymbolChange]
-    new_unresolved_references: List[dict]
-    newly_resolved_references: List[dict]
+    affected_files: list[str]
+    changed_symbols: list[SymbolChange]
+    new_unresolved_references: list[dict]
+    newly_resolved_references: list[dict]
     elapsed_ms: float
     parse_quality: str  # "Clean" | "Partial" | "Tainted"
     parse_errors: int
@@ -112,7 +113,7 @@ class SymbolChange:
     qualified_name: str
     file: str
     line: int
-    id: Optional[int] = None
+    id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -120,11 +121,11 @@ class MutationPlan:
     """A planned mutation — produced by the planner, applied by apply()."""
     id: str
     tool: str
-    edits: List[MutationEdit]
-    affected_files: List[str]
+    edits: list[MutationEdit]
+    affected_files: list[str]
     diff_preview: str
-    unverified_sites: List[dict]
-    warnings: List[str]
+    unverified_sites: list[dict]
+    warnings: list[str]
 
 
 @dataclass(frozen=True)
@@ -133,17 +134,17 @@ class MutationEdit:
     file: str
     replacement: str
     expected_hash: str = ""
-    span_start: Optional[int] = None
-    span_end: Optional[int] = None
+    span_start: int | None = None
+    span_end: int | None = None
 
 
 @dataclass(frozen=True)
 class MutationResult:
     """Result of applying a mutation plan."""
     status: Literal["Applied", "RolledBack", "RejectedStale", "RejectedPolicy"]
-    files_written: List[str]
-    syntax_errors: List[dict]
-    backup_path: Optional[str] = None
+    files_written: list[str]
+    syntax_errors: list[dict]
+    backup_path: str | None = None
 
 
 # ── Exceptions ──────────────────────────────────────────────────────────────
@@ -174,7 +175,7 @@ class PolicyViolation(MutationError):
 
 # ── CodeGraph Python Wrapper ────────────────────────────────────────────────
 
-def _parse_plan_dict(result: dict, tool: str) -> "MutationPlan":
+def _parse_plan_dict(result: dict, tool: str) -> MutationPlan:
     """Convert a Rust plan_to_dict result into a MutationPlan."""
     edits = []
     for e in result.get("edits", []) or []:
@@ -213,14 +214,14 @@ class CodeGraph:
             print(caller["name"])
     """
 
-    def __init__(self, db_path: Optional[str] = None):
+    def __init__(self, db_path: str | None = None):
         self._db_path = db_path or ".coderadar/store/coderadar.db"
-        self._config: Dict[str, Any] = {}
+        self._config: dict[str, Any] = {}
         self._macrame = None  # Macrame Database handle (lazy)
 
     # ── Query ──────────────────────────────────────────────────────────
 
-    def query(self, query_str: str) -> Iterator[Dict[str, Any]]:
+    def query(self, query_str: str) -> Iterator[dict[str, Any]]:
         """Execute a Pest query against the in-memory ProjectedGraph.
 
         Returns an iterator over result rows (each row is a dict).
@@ -240,8 +241,8 @@ class CodeGraph:
         start_id: str,
         direction: Literal["in", "out", "both"] = "both",
         max_depth: int = 3,
-        edge_kinds: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
+        edge_kinds: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Walk the call graph outward from start_id.
 
         Breadth-first, so the depth reported for an entity is the length of
@@ -262,15 +263,15 @@ class CodeGraph:
         if edge_kinds is not None and EDGE_KIND_CALLS not in edge_kinds:
             return []
 
-        directions: List[str] = (
+        directions: list[str] = (
             ["out", "in"] if direction == "both" else [direction]
         )
-        results: List[Dict[str, Any]] = []
+        results: list[dict[str, Any]] = []
         visited: set = {start_id}
-        frontier: List[str] = [start_id]
+        frontier: list[str] = [start_id]
 
         for depth in range(1, max(max_depth, 0) + 1):
-            next_frontier: List[str] = []
+            next_frontier: list[str] = []
             for current in frontier:
                 for way in directions:
                     rows = (
@@ -298,7 +299,7 @@ class CodeGraph:
 
         return results
 
-    def _get_incoming(self, entity_id: str) -> List[Dict[str, Any]]:
+    def _get_incoming(self, entity_id: str) -> list[dict[str, Any]]:
         """Internal: the entities that call entity_id."""
         # Delegates to Rust core via _core module
         try:
@@ -307,7 +308,7 @@ class CodeGraph:
         except ImportError:
             return []
 
-    def _get_outgoing(self, entity_id: str) -> List[Dict[str, Any]]:
+    def _get_outgoing(self, entity_id: str) -> list[dict[str, Any]]:
         """Internal: the entities entity_id calls."""
         try:
             from coderadar._core import callees_of as _callees_of
@@ -321,35 +322,35 @@ class CodeGraph:
         self,
         start_id: str,
         max_depth: int = 3,
-        edge_types: Optional[List[str]] = None,
+        edge_types: list[str] | None = None,
         direction: Literal["in", "out", "both"] = "both",
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Traverse the graph from start_id via Macrame."""
         from .query import MacrameQuery
         return MacrameQuery(self).traverse(start_id, max_depth, edge_types, direction)
 
-    def as_of(self, timestamp: str) -> "Snapshot":
+    def as_of(self, timestamp: str) -> Snapshot:
         """Return a point-in-time snapshot via Macrame's reconstruct(ts)."""
         return Snapshot(self, timestamp)
 
-    def find(self, entity_id: str) -> Optional[Dict[str, Any]]:
+    def find(self, entity_id: str) -> dict[str, Any] | None:
         """Look up an entity by ID."""
         from .query import MacrameQuery
         return MacrameQuery(self).find(entity_id)
 
-    def callers_of(self, entity_id: str) -> List[Dict[str, Any]]:
+    def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
         """Find callers via reverse call index."""
         from .query import MacrameQuery
         return MacrameQuery(self).callers_of(entity_id)
 
-    def callees_of(self, entity_id: str) -> List[Dict[str, Any]]:
+    def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
         """Find callees via forward call index."""
         from .query import MacrameQuery
         return MacrameQuery(self).callees_of(entity_id)
 
     def search_similar(
-        self, query_embedding: List[float], top_k: int = 10,
-    ) -> List[Dict[str, Any]]:
+        self, query_embedding: list[float], top_k: int = 10,
+    ) -> list[dict[str, Any]]:
         """Vector similarity search via cosine similarity against stored embeddings.
 
         Requires embeddings to be pre-computed and stored via the embedding pipeline.
@@ -362,8 +363,8 @@ class CodeGraph:
 
     # ── Embedding Pipeline ────────────────────────────────────────────
 
-    def compute_embeddings(self, model_name: Optional[str] = None,
-                           batch_size: int = 32) -> Dict[str, int]:
+    def compute_embeddings(self, model_name: str | None = None,
+                           batch_size: int = 32) -> dict[str, int]:
         """Compute and store embeddings for all indexable entities.
 
         Uses fastembed for local embedding generation. Embeddings are
@@ -380,13 +381,16 @@ class CodeGraph:
             Dict with metrics: {generated, cached, total, errors}.
         """
         from .embedding import (
-            EmbeddingDedup, EmbedTarget, compute_content_hash, embedding_settings,
+            EmbeddingDedup,
+            EmbedTarget,
+            compute_content_hash,
+            embedding_settings,
         )
 
         configured_model, dimension = embedding_settings()
         dedup = EmbeddingDedup(model_name=model_name or configured_model,
                                dimension=dimension, batch_size=batch_size)
-        targets: List[EmbedTarget] = []
+        targets: list[EmbedTarget] = []
 
         try:
             from coderadar._core import search_entities
@@ -437,7 +441,7 @@ class CodeGraph:
 
     # ── Update ─────────────────────────────────────────────────────────
 
-    def update_file(self, file_path: str, content: Optional[str] = None,
+    def update_file(self, file_path: str, content: str | None = None,
                     force: bool = False) -> UpdateReport:
         """Update the graph after a file change.
 
@@ -504,9 +508,9 @@ class CodeGraph:
         result = _remove_file_rust(file_path)
         return int(result.get("entities_removed", 0))
 
-    def watch(self, paths: Optional[List[str]] = None,
-              debounce_ms: Optional[int] = None,
-              max_file_size_bytes: Optional[int] = None) -> "Watcher":
+    def watch(self, paths: list[str] | None = None,
+              debounce_ms: int | None = None,
+              max_file_size_bytes: int | None = None) -> Watcher:
         """Start watching paths for file changes and auto-update the graph.
 
         Returns a Watcher handle that runs the event loop.
@@ -523,7 +527,7 @@ class CodeGraph:
         return Watcher(self, paths or ["src/", "tests/"], debounce_ms,
                        max_file_size_bytes)
 
-    def batch(self) -> "BatchContext":
+    def batch(self) -> BatchContext:
         """Context manager for batched updates."""
         return BatchContext(self)
 
@@ -533,7 +537,7 @@ class CodeGraph:
         self,
         entity_id: str,
         new_body: str,
-        expected_hash: Optional[str] = None,
+        expected_hash: str | None = None,
         dry_run: bool = True,
     ) -> MutationPlan:
         """Plan a body-only replacement for a function/method.
@@ -556,7 +560,7 @@ class CodeGraph:
         self,
         entity_id: str,
         new_signature: str,
-        call_site_values: Optional[Dict[str, str]] = None,
+        call_site_values: dict[str, str] | None = None,
         inject_defaults: bool = False,
         dry_run: bool = True,
     ) -> MutationPlan:
@@ -622,7 +626,8 @@ class CodeGraph:
         Phase 3: Rebuild ProjectedGraph reverse indexes.
         """
         try:
-            from coderadar._core import apply_mutation as _am, clear_embeddings_for_file
+            from coderadar._core import apply_mutation as _am
+            from coderadar._core import clear_embeddings_for_file
         except ImportError as exc:  # pragma: no cover - requires an unbuilt extension
             # This used to fall through to status="Applied" with
             # files_written=plan.affected_files — reporting a write that could
@@ -650,7 +655,7 @@ class CodeGraph:
             for f in plan.affected_files:
                 try:
                     self.update_file(f)
-                except Exception:
+                except Exception:  # noqa: BLE001, S110 - best-effort graph refresh
                     pass
             # R2-17: multi-file plans resolve order-dependently — an
             # importer re-resolved before its source re-indexed keeps a
@@ -663,7 +668,7 @@ class CodeGraph:
                 for f in plan.affected_files:
                     try:
                         self.update_file(f)
-                    except Exception:
+                    except Exception:  # noqa: BLE001, S110 - best-effort graph refresh
                         pass
             for f in plan.affected_files:
                 try:
@@ -693,7 +698,7 @@ class CodeGraph:
 
     # ── Stats / Debug ──────────────────────────────────────────────────
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Return counts, parse quality summary, memory usage."""
         try:
             from coderadar._core import graph_stats as _gs
@@ -724,16 +729,16 @@ class Snapshot:
     def timestamp(self) -> str:
         return self._timestamp
 
-    def query(self, query_str: str) -> Iterator[Dict[str, Any]]:
+    def query(self, query_str: str) -> Iterator[dict[str, Any]]:
         """Execute a Pest query against the reconstructed snapshot."""
         # Macrame reconstruct(ts) + ProjectedGraph from that point
         return self._graph.query(query_str)
 
-    def callers_of(self, entity_id: str) -> List[Dict[str, Any]]:
+    def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
         """Find callers at this point in time."""
         return self._graph.callers_of(entity_id)
 
-    def callees_of(self, entity_id: str) -> List[Dict[str, Any]]:
+    def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
         """Find callees at this point in time."""
         return self._graph.callees_of(entity_id)
 
@@ -742,7 +747,7 @@ class Snapshot:
         start_id: str,
         direction: Literal["in", "out", "both"] = "both",
         max_depth: int = 3,
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Traverse from start_id at this point in time."""
         return self._graph.explore(start_id, direction, max_depth)
 
@@ -754,12 +759,12 @@ class BatchContext:
 
     def __init__(self, graph: CodeGraph):
         self.graph = graph
-        self._updates: List[tuple] = []
+        self._updates: list[tuple] = []
 
-    def update_file(self, file_path: str, content: Optional[str] = None) -> None:
+    def update_file(self, file_path: str, content: str | None = None) -> None:
         self._updates.append((file_path, content))
 
-    def __enter__(self) -> "BatchContext":
+    def __enter__(self) -> BatchContext:  # noqa: PYI034 - typing.Self needs 3.11+
         return self
 
     def __exit__(self, *args) -> None:
@@ -782,10 +787,11 @@ def _project_excludes(root: str) -> list:
     """
     try:
         from pathlib import Path
+
         from .config import load_config
         pats = load_config(Path(root)).project.exclude or []
         return [p for p in pats if p]
-    except Exception:
+    except Exception:  # noqa: BLE001 - best-effort: broken toml yields [], never raises
         return []
 
 def analyze(root: str, create_store: bool = False, exclude: list | None = None) -> CodeGraph:
@@ -852,9 +858,10 @@ def _apply_star_exports(root: str) -> None:
     derived, in-memory state and the ledger does not persist them).
     """
     try:
-        from coderadar.resolvers.exports import extract_all_exports
-        from coderadar._core import set_module_star_exports_bulk
         import pathlib
+
+        from coderadar._core import set_module_star_exports_bulk
+        from coderadar.resolvers.exports import extract_all_exports
         # Collected, then applied in one call: the per-module variant clones
         # the whole ProjectedGraph each time, i.e. once per file with __all__.
         #
@@ -894,7 +901,7 @@ def _apply_star_exports(root: str) -> None:
         pass
 
 
-def load(db_path: str, root: Optional[str] = None) -> CodeGraph:
+def load(db_path: str, root: str | None = None) -> CodeGraph:
     """Cold-start a CodeGraph from a Macrame ledger (v0.8 P1).
 
     Rebuilds the in-memory ProjectedGraph from the ledger instead of
@@ -936,7 +943,7 @@ def load(db_path: str, root: Optional[str] = None) -> CodeGraph:
     return CodeGraph()
 
 
-def watch(root: str) -> "Watcher":
+def watch(root: str) -> Watcher:
     """Index `root`, then return a watcher over it.
 
     This used to construct a stub `Watcher(root)` defined further down the
@@ -954,32 +961,32 @@ def watch(root: str) -> "Watcher":
 
 
 __all__ = [
-    "CodeGraph",
-    "Snapshot",
-    "UpdateReport",
-    "SymbolChange",
-    "MutationPlan",
-    "MutationEdit",
-    "MutationResult",
     "BatchContext",
+    "CodeGraph",
+    "MutationEdit",
+    "MutationError",
+    "MutationPlan",
+    "MutationResult",
+    "ParseError",
+    "PolicyViolation",
+    "ResolutionError",
+    "Snapshot",
+    "StaleHandle",
+    "SymbolChange",
+    "UpdateReport",
     "Watcher",
     "analyze",
     "load",
     "watch",
-    "StaleHandle",
-    "ParseError",
-    "ResolutionError",
-    "MutationError",
-    "PolicyViolation",
 ]
 
 
 class Watcher:
     """Live file watcher that auto-updates the CodeGraph on file changes."""
 
-    def __init__(self, graph: "CodeGraph", paths: List[str],
-                 debounce_ms: Optional[int] = None,
-                 max_file_size_bytes: Optional[int] = None):
+    def __init__(self, graph: CodeGraph, paths: list[str],
+                 debounce_ms: int | None = None,
+                 max_file_size_bytes: int | None = None):
         """None takes the value from `[watch]` in .coderadar.toml.
 
         An explicit argument still wins, so a CLI flag overrides the file.
@@ -987,7 +994,7 @@ class Watcher:
         from .config import WatchConfig, load_config
         try:
             watch = load_config(Path.cwd()).watch
-        except Exception:
+        except Exception:  # noqa: BLE001 - broken watch config falls back to defaults
             watch = WatchConfig()
         self._graph = graph
         self._paths = paths
@@ -998,7 +1005,7 @@ class Watcher:
             if max_file_size_bytes is None else max_file_size_bytes)
         self._running = False
 
-    def start(self) -> "Watcher":
+    def start(self) -> Watcher:
         """Begin watching. Idempotent; `run_forever` and iteration call it."""
         if self._running:
             return self
@@ -1018,10 +1025,10 @@ class Watcher:
         """
         import time
         started = time.perf_counter()
-        affected: List[str] = []
-        changed: List[SymbolChange] = []
-        new_unresolved: List[dict] = []
-        newly_resolved: List[dict] = []
+        affected: list[str] = []
+        changed: list[SymbolChange] = []
+        new_unresolved: list[dict] = []
+        newly_resolved: list[dict] = []
         quality_rank = {"Clean": 0, "Partial": 1, "Tainted": 2}
         quality = "Clean"
         parse_errors = 0
@@ -1039,7 +1046,7 @@ class Watcher:
                     affected.append(file_path)
                     if echo:
                         print(f"  - {file_path} ({removed} entities removed)")
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - watch loop must not die on one file
                     fully_applied = False
                     if echo:
                         print(f"  {file_path}: {e}")
@@ -1050,7 +1057,7 @@ class Watcher:
 
             try:
                 report = self._graph.update_file(file_path)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - watch loop must not die on one file
                 fully_applied = False
                 if echo:
                     print(f"  {file_path}: {e}")
@@ -1084,13 +1091,13 @@ class Watcher:
             epoch_after=epoch_after if epoch_after is not None else 0,
         )
 
-    def __enter__(self) -> "Watcher":
+    def __enter__(self) -> Watcher:  # noqa: PYI034 - typing.Self needs 3.11+
         return self.start()
 
     def __exit__(self, *args) -> None:
         self.stop()
 
-    def __iter__(self) -> "Watcher":
+    def __iter__(self) -> Watcher:
         self.start()
         return self
 

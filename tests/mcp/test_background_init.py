@@ -12,7 +12,6 @@ import threading
 import time
 
 import pytest
-
 from coderadar.mcp import startup as startup_mod
 from coderadar.mcp.startup import (
     BackgroundIndex,
@@ -132,7 +131,7 @@ class TestBackgroundIndex:
         assert index.elapsed == first
 
     def test_wait_emits_heartbeat_on_stderr_while_blocked(self, monkeypatch, capsys):
-        import coderadar.mcp.startup as startup
+        from coderadar.mcp import startup
 
         monkeypatch.setattr(startup, "HEARTBEAT_SECONDS", 0.05)
         release = threading.Event()
@@ -147,7 +146,7 @@ class TestBackgroundIndex:
             release.set()
 
     def test_short_budget_stays_silent(self, monkeypatch, capsys):
-        import coderadar.mcp.startup as startup
+        from coderadar.mcp import startup
 
         monkeypatch.setattr(startup, "HEARTBEAT_SECONDS", 60)
         release = threading.Event()

@@ -14,7 +14,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from coderadar.mcp import lazy
 from coderadar.mcp.lazy import LazyRootRetry, make_middleware
 from coderadar.mcp.roots import ResolvedRoot, client_roots

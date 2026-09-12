@@ -8,8 +8,7 @@ the stored vector from LadybugDB.
 from __future__ import annotations
 
 import hashlib
-import struct
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import structlog
 
@@ -40,7 +39,7 @@ class EmbeddingDedup:
         self.max_body_tokens = max_body_tokens
         self.batch_size = batch_size
         self._model = None  # Lazy-loaded fastembed model
-        self.metrics: Dict[str, int] = {
+        self.metrics: dict[str, int] = {
             "cache_hit": 0,
             "cache_miss": 0,
             "generated": 0,
@@ -48,9 +47,9 @@ class EmbeddingDedup:
 
     def embed_batch(
         self,
-        to_embed: List[EmbedTarget],
+        to_embed: list[EmbedTarget],
         db: Any,
-    ) -> List[Optional[List[float]]]:
+    ) -> list[list[float] | None]:
         """Embed a batch with deduplication.
 
         Returns list where each element is:
@@ -58,7 +57,7 @@ class EmbeddingDedup:
           - None for hash-cached entities (skip)
         """
         CACHE_HIT = object()  # unique sentinel
-        out: List[Any] = []
+        out: list[Any] = []
 
         for entity in to_embed:
             if self._get_cached(db, entity.id, entity.content_hash):
@@ -81,7 +80,7 @@ class EmbeddingDedup:
         # Convert CACHE_HIT → None (caller skips None entries)
         return [None if v is CACHE_HIT else v for v in out]
 
-    def _model_embed(self, texts: List[str]) -> List[List[float]]:
+    def _model_embed(self, texts: list[str]) -> list[list[float]]:
         """Run the embedding model on a batch of texts."""
         if self._model is None:
             try:
@@ -127,7 +126,7 @@ class EmbeddingDedup:
 
 class EmbedTarget:
     """A single entity to embed."""
-    __slots__ = ("id", "body", "content_hash", "kind")
+    __slots__ = ("body", "content_hash", "id", "kind")
 
     def __init__(self, entity_id: str, body: str, content_hash: str,
                  kind: str = "function"):

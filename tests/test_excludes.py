@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-
 from coderadar.cli import main
 from coderadar.excludes import FALLBACK_BASELINE, is_excluded, iter_project_files
 

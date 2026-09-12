@@ -170,8 +170,8 @@ class TestTheGraphFollowsTheFile:
 
 class TestCreateEntity:
     def test_a_new_function_is_appended_and_indexed(self, project):
-        from coderadar.mcp.server import _create_entity, _reindex
         from coderadar._core import search_entities
+        from coderadar.mcp.server import _create_entity, _reindex
 
         out = _create_entity(
             coderadar.CodeGraph(), "app.py", "python", "function",

@@ -41,7 +41,7 @@ dev = [
     "pytest-asyncio>=0.21",
     "hypothesis>=6.0",
     "mypy>=1.0",
-    "ruff>=0.1",
+    "ruff==0.16.5",
 ]
 visualizers = [
     "graphviz>=0.20",
@@ -61,6 +61,13 @@ include = ["LICENSE"]
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+# Fixture data analyzed BY the indexer (clone goldens, re-export chains,
+# r2proj battery project): cleaned formatting would change what the tests
+# assert about. Harnesses (battery_*.py, mcp_stdio_probe.py) stay checked.
+exclude = [
+    "tests/fixtures/**",
+    "tests/cr_edit_tests/r2proj/**",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

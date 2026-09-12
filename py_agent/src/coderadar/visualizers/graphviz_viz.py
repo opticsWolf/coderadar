@@ -6,13 +6,13 @@ class hierarchy with inheritance edges, wired to real CodeGraph data.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 from . import NothingToVisualize
 
 
 def generate_dot(viz_type: str, args: list,
-                 graph: Optional[Any] = None) -> str:
+                 graph: Any | None = None) -> str:
     """Generate Graphviz DOT source for a visualization type.
 
     Args:
@@ -63,7 +63,7 @@ def _short_name(qualified: str) -> str:
     return tail
 
 
-def _entities_of_kind(kind: str, limit: int = 500) -> List[Dict[str, Any]]:
+def _entities_of_kind(kind: str, limit: int = 500) -> list[dict[str, Any]]:
     """Every indexed entity of one kind.
 
     Both callers used to ask `graph.search_entities(...)` — a method
@@ -76,19 +76,19 @@ def _entities_of_kind(kind: str, limit: int = 500) -> List[Dict[str, Any]]:
     return list(search_entities("", limit, kind))
 
 
-def _iter_modules(graph) -> List[Dict[str, Any]]:
+def _iter_modules(graph) -> list[dict[str, Any]]:
     """Yield all module entities from the graph."""
     return _entities_of_kind("module")
 
 
-def _iter_classes(graph) -> List[Dict[str, Any]]:
+def _iter_classes(graph) -> list[dict[str, Any]]:
     """Yield all class entities from the graph."""
     return _entities_of_kind("class")
 
 
 # ── Module Dependency Graph ──────────────────────────────────────────────
 
-def _dot_dependency_graph(args: list, graph: Optional[Any] = None) -> str:
+def _dot_dependency_graph(args: list, graph: Any | None = None) -> str:
     """Module dependency graph with cycle highlighting via Kosaraju SCC.
 
     Edges are extracted from module imports. An empty graph is an error,
@@ -121,14 +121,14 @@ def _dot_dependency_graph(args: list, graph: Optional[Any] = None) -> str:
     # Find SCCs and highlight cycles
     sccs = _find_sccs(edges)
     cluster_idx = 0
-    nodes_in_cycles: Set[str] = set()
+    nodes_in_cycles: set[str] = set()
 
     for scc in sccs:
         if len(scc) > 1:
             cluster_idx += 1
             nodes_in_cycles.update(scc)
             lines.append(f"    subgraph cluster_{cluster_idx} {{")
-            lines.append(f'        label="SCC (cycle)";')
+            lines.append('        label="SCC (cycle)";')
             lines.append('        style=filled;')
             lines.append('        color=lightcoral;')
             lines.append('        fontcolor=darkred;')
@@ -151,7 +151,7 @@ def _dot_dependency_graph(args: list, graph: Optional[Any] = None) -> str:
     return "\n".join(lines)
 
 
-def _extract_module_edges(graph) -> List[Tuple[str, str]]:
+def _extract_module_edges(graph) -> list[tuple[str, str]]:
     """Resolved module→module import edges.
 
     The `imports` list on a module entity holds import-statement *entity
@@ -162,7 +162,7 @@ def _extract_module_edges(graph) -> List[Tuple[str, str]]:
     """
     from coderadar._core import traverse as _traverse
 
-    edges: List[Tuple[str, str]] = []
+    edges: list[tuple[str, str]] = []
     module_ids = {m.get("id", "") for m in _iter_modules(graph)}
 
     for mod_id in sorted(module_ids):
@@ -177,7 +177,7 @@ def _extract_module_edges(graph) -> List[Tuple[str, str]]:
 
 # ── Class Hierarchy ──────────────────────────────────────────────────────
 
-def _dot_class_hierarchy(args: list, graph: Optional[Any] = None) -> str:
+def _dot_class_hierarchy(args: list, graph: Any | None = None) -> str:
     """Class hierarchy as Graphviz DOT with real inheritance edges.
 
     When a CodeGraph is provided, walks class entities and their
@@ -192,7 +192,6 @@ def _dot_class_hierarchy(args: list, graph: Optional[Any] = None) -> str:
 
     if graph:
         classes = _iter_classes(graph)
-        class_ids = {c.get("id", ""): c for c in classes}
 
         # Emit class nodes
         for cls in classes:
@@ -235,17 +234,17 @@ def _dot_class_hierarchy(args: list, graph: Optional[Any] = None) -> str:
 
 # ── Kosaraju SCC ─────────────────────────────────────────────────────────
 
-def _find_sccs(edges: List[Tuple[str, str]]) -> List[Set[str]]:
+def _find_sccs(edges: list[tuple[str, str]]) -> list[set[str]]:
     """Find strongly-connected components using Kosaraju's algorithm."""
     # Build adjacency list
-    adj: Dict[str, Set[str]] = {}
+    adj: dict[str, set[str]] = {}
     for src, dst in edges:
         adj.setdefault(src, set()).add(dst)
         adj.setdefault(dst, set())
 
     # First pass: compute finish order
-    visited: Set[str] = set()
-    order: List[str] = []
+    visited: set[str] = set()
+    order: list[str] = []
 
     def dfs1(node: str) -> None:
         stack = [(node, False)]
@@ -267,16 +266,16 @@ def _find_sccs(edges: List[Tuple[str, str]]) -> List[Set[str]]:
             dfs1(node)
 
     # Reverse graph
-    rev_adj: Dict[str, Set[str]] = {}
+    rev_adj: dict[str, set[str]] = {}
     for src, dst in edges:
         rev_adj.setdefault(dst, set()).add(src)
         rev_adj.setdefault(src, set())
 
     visited.clear()
-    components: List[Set[str]] = []
+    components: list[set[str]] = []
 
-    def dfs2(start: str) -> Set[str]:
-        comp: Set[str] = set()
+    def dfs2(start: str) -> set[str]:
+        comp: set[str] = set()
         stack = [start]
         while stack:
             n = stack.pop()
@@ -298,7 +297,7 @@ def _find_sccs(edges: List[Tuple[str, str]]) -> List[Set[str]]:
 
 # ── Call Graph ───────────────────────────────────────────────────────────
 
-def _dot_call_graph(args: list, graph: Optional[Any] = None) -> str:
+def _dot_call_graph(args: list, graph: Any | None = None) -> str:
     """Fan-out (or fan-in) around one function, as DOT.
 
     The Mermaid renderer in `call_graph.py` already walks the graph; this
@@ -328,8 +327,8 @@ def _dot_call_graph(args: list, graph: Optional[Any] = None) -> str:
         if hits:
             entity_id = hits[0].get("id", func_name)
 
-    visited: Set[str] = set()
-    edges: List[Tuple[str, str, float]] = []
+    visited: set[str] = set()
+    edges: list[tuple[str, str, float]] = []
     if direction == "out":
         _gather_fan_out(graph, entity_id, max_depth, 0.0, visited, edges)
     else:

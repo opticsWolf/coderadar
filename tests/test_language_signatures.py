@@ -22,7 +22,8 @@ from pathlib import Path
 import pytest
 
 try:
-    from coderadar._core import analyze as _analyze, search_entities
+    from coderadar._core import analyze as _analyze
+    from coderadar._core import search_entities
     _CORE = True
 except ImportError:  # pragma: no cover
     _CORE = False
@@ -52,9 +53,11 @@ CASES = [
      "class C {\n  String hello(String name) {\n    return name;\n  }\n}\n",
      "hello", "name", ""),
     ("s.cpp",
-     '#include <string>\n\n'
-     'std::string hello(const std::string& name) {\n'
-     '    return name;\n}\n',
+     (
+         '#include <string>\n\n'
+         'std::string hello(const std::string& name) {\n'
+         '    return name;\n}\n'
+     ),
      "hello", "name", ""),
 ]
 

@@ -24,9 +24,11 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Optional
+from typing import Any
+
 
 def _env_seconds(name: str, default: float, minimum: float = 1.0) -> float:
     """Read a seconds-valued env knob defensively (heartbeat tuning).
@@ -93,7 +95,7 @@ class IndexOutcome:
 
     status: IndexStatus
     elapsed: float = 0.0
-    error: Optional[str] = None
+    error: str | None = None
     stats: dict = field(default_factory=dict)
 
     @property
@@ -110,14 +112,14 @@ class BackgroundIndex:
     and neither should have to know whether the other got there first.
     """
 
-    def __init__(self, root: str = ".", analyze: Optional[Callable[[str], Any]] = None):
+    def __init__(self, root: str = ".", analyze: Callable[[str], Any] | None = None):
         self._root = root
         self._analyze = analyze
         self._lock = threading.Lock()
         self._done = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._status = IndexStatus.NOT_STARTED
-        self._error: Optional[str] = None
+        self._error: str | None = None
         self._started_at: float = 0.0
         self._finished_at: float = 0.0
         # Bumped by every restart. A thread from a previous generation is a
@@ -183,7 +185,7 @@ class BackgroundIndex:
         with self._lock:
             return self._root
 
-    def restart(self, root: Optional[str] = None) -> None:
+    def restart(self, root: str | None = None) -> None:
         """Index again, optionally somewhere else.
 
         The lazy root retry uses this: the first tool call may learn from the
@@ -219,7 +221,7 @@ class BackgroundIndex:
         end = self._finished_at or time.monotonic()
         return end - self._started_at
 
-    def wait(self, timeout: Optional[float] = None) -> IndexOutcome:
+    def wait(self, timeout: float | None = None) -> IndexOutcome:
         """Start if needed, wait up to `timeout`, and report where we got to.
 
         Long waits are sliced so each `HEARTBEAT_SECONDS` of blocking emits
@@ -256,23 +258,23 @@ class BackgroundIndex:
 # The server is single-project (the core keeps one GLOBAL_GRAPH), so one
 # handle is the honest shape. `configure` replaces it; tests do that.
 
-_INDEX: Optional[BackgroundIndex] = None
+_INDEX: BackgroundIndex | None = None
 _INDEX_LOCK = threading.Lock()
 
 
-def configure(index: Optional[BackgroundIndex]) -> None:
+def configure(index: BackgroundIndex | None) -> None:
     """Install the handle every handler will consult. None clears it."""
     global _INDEX
     with _INDEX_LOCK:
         _INDEX = index
 
 
-def current() -> Optional[BackgroundIndex]:
+def current() -> BackgroundIndex | None:
     with _INDEX_LOCK:
         return _INDEX
 
 
-def ensure_ready(timeout: Optional[float] = None) -> IndexOutcome:
+def ensure_ready(timeout: float | None = None) -> IndexOutcome:
     """Called by every tool handler before it touches the graph.
 
     With no handle installed — a directly constructed server, or a test —

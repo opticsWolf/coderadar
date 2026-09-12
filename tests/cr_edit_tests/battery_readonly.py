@@ -7,14 +7,19 @@ are restored via git checkout afterwards.
 
 Writes a machine-readable summary to stdout at the end.
 """
-import sys, time, json, traceback, os
+import os
+import sys
+import time
+import traceback
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
+except Exception:  # noqa: BLE001, S110 - best-effort console setup for Windows pipes
     pass
 
-LOG = open(os.path.join(os.path.dirname(__file__), "battery_output.txt"), "w", encoding="utf-8")
+LOG = open(  # noqa: SIM115 - module-global run log, lives until process exit
+    os.path.join(os.path.dirname(__file__), "battery_output.txt"), "w", encoding="utf-8"
+)
 def log(*a):
     s = " ".join(str(x) for x in a)
     print(s); LOG.write(s + "\n"); LOG.flush()
@@ -34,7 +39,7 @@ def run(name, fn, *args, **kwargs):
     try:
         out = fn(*args, **kwargs)
         status = "OK"
-    except BaseException as e:  # PanicException is BaseException, not Exception
+    except BaseException:  # noqa: BLE001 - PanicException is BaseException, not Exception
         out = f"EXCEPTION: {traceback.format_exc()}"
         status = "ERROR"
     ms = int((time.time() - t) * 1000)
@@ -44,6 +49,8 @@ def run(name, fn, *args, **kwargs):
 
 # ── discover entity ids ───────────────────────────────────────────────────
 from coderadar._core import search_entities
+
+
 def first(q, kind=None):
     r = search_entities(q, 3, kind)
     return r[0] if r else None

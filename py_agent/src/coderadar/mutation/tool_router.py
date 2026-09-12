@@ -6,9 +6,10 @@ update_signature, rename_symbol, create_entity.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
 import structlog
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
 
 logger = structlog.get_logger(__name__)
 
@@ -17,7 +18,7 @@ logger = structlog.get_logger(__name__)
 class ToolCall:
     """An LLM tool call with parsed function selection and arguments."""
     tool_name: str
-    arguments: Dict[str, Any]
+    arguments: dict[str, Any]
     call_id: str
 
 
@@ -27,7 +28,7 @@ class ToolResult:
     call_id: str
     success: bool
     result: Any
-    error: Optional[str] = None
+    error: str | None = None
 
 
 class ToolRouter:
@@ -62,7 +63,7 @@ class ToolRouter:
                     result=None,
                     error=f"Unknown tool: {call.tool_name}",
                 )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - tool boundary must return failure, never raise
             logger.error("tool_call_error", tool=call.tool_name,
                           error=str(e))
             return ToolResult(

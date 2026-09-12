@@ -10,16 +10,24 @@ sources, this script, and battery_round2_output.txt stay in the tree.
 
 Usage: .venv/Scripts/python tests/cr_edit_tests/battery_round2.py
 """
-import sys, os, re, json, time, shutil, subprocess, tempfile
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
+except Exception:  # noqa: BLE001, S110 - best-effort console setup for Windows pipes
     pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIX = os.path.join(HERE, "r2proj")
-LOG = open(os.path.join(HERE, "battery_round2_output.txt"), "w", encoding="utf-8")
+LOG = open(  # noqa: SIM115 - module-global run log, lives until process exit
+    os.path.join(HERE, "battery_round2_output.txt"), "w", encoding="utf-8"
+)
 
 EXE = os.path.join(os.path.dirname(sys.executable),
                    "coderadar.exe" if os.name == "nt" else "coderadar")
@@ -42,7 +50,8 @@ def cli(*args, cwd=FIX, input_text=None, timeout=120):
     cmd = [EXE] + list(args) if "|" not in EXE else [sys.executable, "-m", "coderadar.cli"] + list(args)
     try:
         p = subprocess.run(cmd, cwd=cwd, input=input_text, capture_output=True,
-                           text=True, timeout=timeout, encoding="utf-8", errors="replace")
+                           text=True, timeout=timeout, encoding="utf-8", errors="replace",
+                           check=False)  # returncode asserted by callers via check()
         return p.returncode, (p.stdout or "") + (p.stderr or "")
     except subprocess.TimeoutExpired as e:
         return -99, f"TIMEOUT after {timeout}s: {(e.stdout or '')}{(e.stderr or '')}"[:500]
@@ -56,6 +65,7 @@ for junk in (".git", ".coderadar.toml", ".coderadar.toml.bak", ".gitignore",
     elif os.path.exists(p):
         os.remove(p)
 import glob as _glob
+
 for pat in ("*.bak", ".coderadar-bak*", "*_bak.py"):
     for p in _glob.glob(os.path.join(FIX, pat)):
         try:
@@ -65,7 +75,8 @@ for pat in ("*.bak", ".coderadar-bak*", "*_bak.py"):
 
 def git(*args):
     r = subprocess.run(["git"] + list(args), cwd=FIX, capture_output=True,
-                       text=True, timeout=30)
+                       text=True, timeout=30,
+                       check=False)  # returncode logged, never raised (harness rule above)
     # R2 harness rule: never silently ignore git failures — an unchecked
     # `git commit` once poisoned three downstream checks with a dirty tree.
     if r.returncode != 0:
@@ -177,8 +188,10 @@ par3 = subprocess.run(
      "coderadar.analyze(r'" + FIX.replace(chr(92), chr(92)*2) + "');"
      "from coderadar._core import search_entities;"
      "print('EXCLUDED_HITS=' + str(len(search_entities('should_never_be_indexed', 5))))"],
-    cwd=os.path.dirname(FIX), capture_output=True, text=True, timeout=300)
+    cwd=os.path.dirname(FIX), capture_output=True, text=True, timeout=300,
+    check=False)  # stdout parsed manually below
 import re as _re2
+
 m3 = _re2.search(r"EXCLUDED_HITS=(\d+)", par3.stdout or "")
 check(SEC, "exclude-takes-effect", m3 is not None and m3.group(1) == "0",
       f"probe={par3.stdout[-150:]!r} err={par3.stderr[-150:]!r}")
@@ -192,7 +205,9 @@ check(SEC, "exclude-remove-missing", rc == 0 or "not" in out.lower() or "no " in
 rc, out = cli("exclude", "add", "ignored/")
 check(SEC, "exclude-add-back", rc == 0, out[:120])
 
-rc, out = cli("update", "main.py", "--content", open(os.path.join(FIX, "main.py"), encoding="utf-8").read())
+with open(os.path.join(FIX, "main.py"), encoding="utf-8") as _fh:
+    _main_content = _fh.read()
+rc, out = cli("update", "main.py", "--content", _main_content)
 check(SEC, "update-noop-content", rc == 0, out[:200])
 rc, out = cli("update", "does/not/exist.py", "--content", "x = 1")
 check(SEC, "update-missing-file", rc != 0 or "error" in out.lower() or "not" in out.lower() or "no " in out.lower(), out[:200])
@@ -261,12 +276,11 @@ try:
         wout, _ = w.communicate(timeout=10)
     git("checkout", "--", "main.py")
     check(SEC, "watch-reacts", ("main.py" in wout or "updat" in wout.lower() or "change" in wout.lower() or "watch" in wout.lower()), wout[:300])
-except Exception as e:
+except Exception as e:  # noqa: BLE001 - harness records failure, never dies mid-run
     check(SEC, "watch-reacts", False, f"harness error: {e}")
 
 # mcp serve stdio probe (minimal inline)
 try:
-    import threading
     m = subprocess.Popen([EXE, "mcp", "serve"], cwd=FIX, stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                          text=True, encoding="utf-8", errors="replace", bufsize=1)
@@ -283,7 +297,7 @@ try:
                 continue
             try:
                 return json.loads(line)
-            except Exception:
+            except Exception:  # noqa: BLE001, S112 - stdio may carry non-JSON log lines
                 continue
         return None
     send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -303,7 +317,7 @@ try:
         call_r = read_msg()
         check(SEC, "mcp-tools-call", bool(call_r and "result" in call_r), str(call_r)[:200])
     m.kill()
-except Exception as e:
+except Exception as e:  # noqa: BLE001 - harness records failure, never dies mid-run
     check(SEC, "mcp-serve", False, f"harness error: {e}")
 
 # load-snapshot: need a store path — rebuild created one; discover it
@@ -334,10 +348,9 @@ check(SEC, "ids-resolved", bool(RUN_ID and COMB_ID), f"run={RUN_ID!r} comb={COMB
 def tcall(section, name, fn, *args, **kwargs):
     try:
         out = fn(*args, **kwargs)
-        ok = not (isinstance(out, str) and out.startswith("EXCEPTION"))
         check(section, name, True, "")
         return out
-    except BaseException as e:
+    except BaseException as e:  # noqa: BLE001 - harness records failure, never dies mid-run
         check(section, name, False, f"{type(e).__name__}: {e}"[:250])
         return None
 
@@ -436,7 +449,8 @@ check(SEC, "set-project-bad-path-signals", out is not None and ("not" in str(out
 # ════════════════ C. NEW-SURFACE + OPEN-ITEM CHECKS ════════════════
 SEC = "surface"
 # C1 canonical ids: absolute vs relative spellings resolve the same entity
-from coderadar._core import callers_of, callees_of
+from coderadar._core import callees_of, callers_of
+
 abs_id = os.path.join(FIX, "main.py") + "::run"
 c1 = callers_of(COMB_ID)
 check(SEC, "callers-canonical", isinstance(c1, list), f"n={len(c1) if isinstance(c1, list) else '?'}")
@@ -456,7 +470,9 @@ check(SEC, "issue9-reexport-resolves", resolved_helpers, str(names)[:250])
 star_hits = search_entities("starred_alpha", 5, "function")
 check(SEC, "star-export-fn-indexed", len(star_hits) > 0, f"hits={len(star_hits)}")
 # C3 heartbeat: env knob exists (functional check = too slow; assert surface)
-check(SEC, "heartbeat-knob", "CODERADAR_INDEX_HEARTBEAT" in open(os.path.join(HERE, "..", "..", "py_agent", "src", "coderadar", "mcp", "server.py"), encoding="utf-8", errors="replace").read() or True, "")
+with open(os.path.join(HERE, "..", "..", "py_agent", "src", "coderadar", "mcp", "server.py"), encoding="utf-8", errors="replace") as _fh:
+    _server_src = _fh.read()
+check(SEC, "heartbeat-knob", "CODERADAR_INDEX_HEARTBEAT" in _server_src or True, "")
 # C4 synthetic survival in-process: register, no-op update, still there.
 # The pair MUST be novel vs real edges: (RUN, COMB) was novel while run ->
 # combine resolved external::, but post-Issue-9 (v0.8.21) the real CALL is
@@ -469,7 +485,7 @@ try:
     cal2 = callees_of(COMB_ID)
     ids2 = [c.get("id", "") for c in cal2] if isinstance(cal2, list) else []
     check(SEC, "synthetic-survives-update", RUN_ID in ids2, str(ids2)[:250])
-except BaseException as e:
+except BaseException as e:  # noqa: BLE001 - harness records failure, never dies mid-run
     check(SEC, "synthetic-survives-update", False, f"{type(e).__name__}: {e}"[:200])
 # C6 remove_file must clear definitions from search (R2-4, corrected
 # v0.8.20: the removed FUNCTION is gone; the remaining hit is
@@ -493,14 +509,17 @@ par = subprocess.run(
      "import coderadar, os;"
      "g=coderadar.analyze(r'" + FIX.replace(chr(92), chr(92)*2) + "');"
      "print('ANALYZE_EDGES=' + str(g.stats().get('call_edges')))"],
-    cwd=os.path.dirname(FIX), capture_output=True, text=True, timeout=300)
+    cwd=os.path.dirname(FIX), capture_output=True, text=True, timeout=300,
+    check=False)  # stdout parsed manually below
 par2 = subprocess.run(
     [sys.executable, "-c",
      "import coderadar;"
      "g=coderadar.load(r'" + os.path.join(FIX, ".coderadar", "store", "coderadar.db").replace(chr(92), chr(92)*2) + "', r'" + FIX.replace(chr(92), chr(92)*2) + "');"
      "print('LOAD_EDGES=' + str(g.stats().get('call_edges')))"],
-    cwd=os.path.dirname(FIX), capture_output=True, text=True, timeout=300)
+    cwd=os.path.dirname(FIX), capture_output=True, text=True, timeout=300,
+    check=False)  # stdout parsed manually below
 import re as _re
+
 n1 = _re.search(r"ANALYZE_EDGES=(\d+)", par.stdout or "")
 n2 = _re.search(r"LOAD_EDGES=(\d+)", par2.stdout or "")
 if n1 and n2:

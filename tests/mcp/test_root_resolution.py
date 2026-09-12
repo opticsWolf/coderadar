@@ -12,14 +12,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import pytest
-
 from coderadar.mcp.roots import (
     CLIENT_ROOT,
     CWD,
     PATH_FLAG,
     PROJECT_PATH,
-    ResolvedRoot,
     adopt_project_root,
     describe,
     find_marker,
@@ -269,7 +266,7 @@ class TestAdoptingTheRoot:
         try:
             adopt_project_root(resolve_project_root(cwd=str(nested)))
             # This is the property `_reindex`'s analyze('.') depends on.
-            assert Path(".").resolve() == tmp_path.resolve()
+            assert Path.cwd() == tmp_path.resolve()
         finally:
             os.chdir(previous)
 
@@ -283,7 +280,7 @@ class TestTheWalkUpHasABoundary:
     """
 
     def test_a_marker_at_home_is_not_adopted(self, tmp_path, monkeypatch):
-        import coderadar.mcp.roots as roots
+        from coderadar.mcp import roots
 
         home = tmp_path / "home"
         (home / ".coderadar").mkdir(parents=True)
@@ -294,7 +291,7 @@ class TestTheWalkUpHasABoundary:
         assert roots.find_marker(nested) is None
 
     def test_a_real_project_under_home_is_still_found(self, tmp_path, monkeypatch):
-        import coderadar.mcp.roots as roots
+        from coderadar.mcp import roots
 
         home = tmp_path / "home"
         (home / ".coderadar").mkdir(parents=True)
@@ -307,7 +304,7 @@ class TestTheWalkUpHasABoundary:
         assert roots.find_marker(nested) == project / ".coderadar"
 
     def test_a_marker_above_home_is_not_adopted_either(self, tmp_path, monkeypatch):
-        import coderadar.mcp.roots as roots
+        from coderadar.mcp import roots
 
         above = tmp_path / "users"
         home = above / "someone"

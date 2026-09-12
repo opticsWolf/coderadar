@@ -24,15 +24,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
 
 __all__ = [
     "INDEXABLE_EXTS",
     "STALENESS_SKIP_DIRS",
+    "build_graph",
+    "stale_source_files",
     "store_db_path",
     "store_is_fresh",
-    "stale_source_files",
-    "build_graph",
 ]
 
 #: Extensions the Rust indexer will parse (Language::from_extension minus
@@ -52,7 +51,7 @@ STALENESS_SKIP_DIRS = frozenset(
 #: `coderadar.excludes` matcher. Kept for backward-compatible import.
 
 
-def store_db_path(project_root: Path) -> Optional[Path]:
+def store_db_path(project_root: Path) -> Path | None:
     """Where the Macrame store file lives for this project.
 
     Mirrors `store_path_for` (core_indexer/src/lib.rs): an absolute
@@ -62,7 +61,7 @@ def store_db_path(project_root: Path) -> Optional[Path]:
     from .config import load_config
     try:
         configured = Path(load_config(project_root).database.path)
-    except Exception:
+    except Exception:  # noqa: BLE001 - broken config falls back to default path
         configured = Path(".coderadar/store/coderadar.db")
     if configured.is_absolute():
         return configured
@@ -133,7 +132,7 @@ def stale_source_files(project_root: Path, db_path: Path,
     return stale
 
 
-def build_graph(root: "str | Path" = ".", create_store: bool = False):
+def build_graph(root: str | Path = ".", create_store: bool = False):
     """A current CodeGraph for `root`, the cheap way to get one.
 
     See the module docstring for the load-vs-analyze contract. The build
@@ -179,7 +178,7 @@ def build_graph(root: "str | Path" = ".", create_store: bool = False):
             if db is not None and db.is_file():
                 try:
                     coderadar.load(str(db), root_str)
-                except Exception:
+                except Exception:  # noqa: BLE001 - corrupt/foreign/v1 store falls back to analyze
                     # Corrupt, foreign, or v1 store. The full analyze also
                     # performs the v1 -> v2 upgrade; do not report the load
                     # error — analyze succeeding is the answer.
@@ -193,7 +192,7 @@ def build_graph(root: "str | Path" = ".", create_store: bool = False):
                             continue
                         try:
                             graph.update_file(rel)
-                        except Exception:
+                        except Exception:  # noqa: BLE001, S112 - one bad file must not sink cold start
                             # One unreadable or unparseable file must not sink
                             # the whole cold start: everything else is current
                             # and the next update_file can retry this one.

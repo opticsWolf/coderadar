@@ -3,25 +3,25 @@
 Framework-specific graph enrichment for web frameworks.
 """
 
+from .actix import RustActixResolver
+from .aspnet import AspNetResolver
 from .base import (
-    FrameworkResolver,
     FrameworkExtraction,
-    SyntheticNode,
+    FrameworkResolver,
     SyntheticEdge,
+    SyntheticNode,
 )
 from .django import DjangoResolver
-from .flask import FlaskResolver
-from .fastapi import FastAPIResolver
-from .go import GoResolver
-from .actix import RustActixResolver
 from .express import ExpressResolver
-from .springboot import SpringBootResolver
+from .fastapi import FastAPIResolver
+from .flask import FlaskResolver
+from .go import GoResolver
 from .laravel import LaravelResolver
-from .aspnet import AspNetResolver
-from .rails import RailsResolver
 from .nestjs import NestJSResolver
-from .vuerouter import VueRouterResolver
+from .rails import RailsResolver
 from .reactrouter import ReactRouterResolver
+from .springboot import SpringBootResolver
+from .vuerouter import VueRouterResolver
 
 # Registry of all available resolvers
 ALL_RESOLVERS: list[type[FrameworkResolver]] = [
@@ -41,22 +41,22 @@ ALL_RESOLVERS: list[type[FrameworkResolver]] = [
 ]
 
 __all__ = [
-    "FrameworkResolver",
-    "FrameworkExtraction",
-    "SyntheticNode",
-    "SyntheticEdge",
-    "DjangoResolver",
-    "FlaskResolver",
-    "FastAPIResolver",
-    "GoResolver",
-    "RustActixResolver",
-    "ExpressResolver",
-    "SpringBootResolver",
-    "LaravelResolver",
-    "AspNetResolver",
-    "RailsResolver",
-    "NestJSResolver",
-    "VueRouterResolver",
-    "ReactRouterResolver",
     "ALL_RESOLVERS",
+    "AspNetResolver",
+    "DjangoResolver",
+    "ExpressResolver",
+    "FastAPIResolver",
+    "FlaskResolver",
+    "FrameworkExtraction",
+    "FrameworkResolver",
+    "GoResolver",
+    "LaravelResolver",
+    "NestJSResolver",
+    "RailsResolver",
+    "ReactRouterResolver",
+    "RustActixResolver",
+    "SpringBootResolver",
+    "SyntheticEdge",
+    "SyntheticNode",
+    "VueRouterResolver",
 ]

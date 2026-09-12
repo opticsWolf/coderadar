@@ -17,11 +17,9 @@ alone.
 
 from __future__ import annotations
 
-import os
 import threading
-
-
-from typing import Any, Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 import structlog
 
@@ -44,8 +42,8 @@ class LazyRootRetry:
         self,
         resolved: ResolvedRoot,
         index: BackgroundIndex,
-        path_flag: Optional[str] = None,
-        index_is_empty: Optional[Callable[[], bool]] = None,
+        path_flag: str | None = None,
+        index_is_empty: Callable[[], bool] | None = None,
     ):
         self.resolved = resolved
         self._index = index
@@ -135,17 +133,17 @@ def _index_is_empty() -> bool:
 
 # ── module-level handle ───────────────────────────────────────────────────
 
-_RETRY: Optional[LazyRootRetry] = None
+_RETRY: LazyRootRetry | None = None
 _RETRY_LOCK = threading.Lock()
 
 
-def configure(retry: Optional[LazyRootRetry]) -> None:
+def configure(retry: LazyRootRetry | None) -> None:
     global _RETRY
     with _RETRY_LOCK:
         _RETRY = retry
 
 
-def current() -> Optional[LazyRootRetry]:
+def current() -> LazyRootRetry | None:
     with _RETRY_LOCK:
         return _RETRY
 
@@ -166,7 +164,7 @@ def make_middleware() -> Callable[..., Awaitable[Any]]:
             if retry is not None and retry.should_ask():
                 try:
                     await retry.attempt(ctx.session)
-                except Exception:  # noqa: BLE001
+                except Exception:
                     log.warning("mcp.root.retry_failed", exc_info=True)
         return await call_next(ctx)
 

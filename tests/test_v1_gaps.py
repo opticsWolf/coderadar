@@ -20,7 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / "py_agent" / "src"))
 
 try:
-    from coderadar._core import analyze, search_entities, traverse, get_smells, traverse_unresolved
+    from coderadar._core import analyze, get_smells, search_entities, traverse, traverse_unresolved
     _CORE_AVAILABLE = True
 except ImportError:
     _CORE_AVAILABLE = False
@@ -139,6 +139,7 @@ def test_cold_start_load_latency():
              str(Path(__file__).parent.parent / "py_agent" / "src"),
              str(db), str(root)],
             capture_output=True, text=True, timeout=300,
+            check=False,  # returncode inspected by the caller below
         )
         wall_s = time.perf_counter() - t_wall0
         return proc, wall_s
@@ -198,6 +199,7 @@ def test_traverse_unresolved_counts():
 def test_unverified_sites_warning():
     """Plan 2.4 — mutation renderers surface unverified_sites loudly."""
     from types import SimpleNamespace
+
     from coderadar.mcp.server import _format_mutation_applied, _format_mutation_plan
 
     result = SimpleNamespace(
@@ -301,7 +303,7 @@ def test_concurrent_reads():
                     nodes = traverse(fid, 2, ["calls"], "both", None)
                     results.append(len(nodes))
                     get_smells(None, None)  # engine run under the read lock
-                except Exception as e:  # pragma: no cover - failure path
+                except Exception as e:  # noqa: BLE001 - pragma: no cover - failure path
                     errors.append(e)
 
     threads = [threading.Thread(target=worker) for _ in range(N_THREADS)]

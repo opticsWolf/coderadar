@@ -16,9 +16,13 @@ class NothingToVisualize(RuntimeError):
     """
 
 
-from .mermaid import generate_mermaid
-from .graphviz_viz import generate_dot
 from .call_graph import generate_call_graph
+from .graphviz_viz import generate_dot
+from .mermaid import generate_mermaid
 
-__all__ = ["generate_mermaid", "generate_dot", "generate_call_graph",
-           "NothingToVisualize"]
+__all__ = [
+    "NothingToVisualize",
+    "generate_call_graph",
+    "generate_dot",
+    "generate_mermaid",
+]

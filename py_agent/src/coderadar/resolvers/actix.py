@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
 
@@ -62,25 +62,17 @@ class RustActixResolver(FrameworkResolver):
 
     def claims_reference(self, name: str) -> bool:
         """Claim Rust/Actix handler and service patterns."""
-        return (
-            name.endswith("_handler")
-            or name.endswith("_service")
-            or name.startswith("handle_")
-            or name.startswith("get_")
-            or name.startswith("post_")
-            or name.startswith("put_")
-            or name.startswith("delete_")
+        return name.endswith(("_handler", "_service")) or name.startswith(
+            ("handle_", "get_", "post_", "put_", "delete_")
         )
 
     def extract(self, file_path: str, source: str) -> FrameworkExtraction:
         """Extract route nodes and handler edges from Rust source."""
-        nodes: List[SyntheticNode] = []
-        edges: List[SyntheticEdge] = []
+        nodes: list[SyntheticNode] = []
+        edges: list[SyntheticEdge] = []
 
         if not file_path.endswith('.rs'):
             return FrameworkExtraction(file_path=file_path)
-
-        lines = source.split('\n')
 
         # Pattern 1: Attribute macros
         for match in _ATTR_ROUTE_RE.finditer(source):
@@ -192,8 +184,8 @@ class RustActixResolver(FrameworkResolver):
         )
 
     def resolve(
-        self, ref_name: str, candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        self, ref_name: str, candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         """Query-time resolution: prefer Actix handler patterns."""
         if not candidates:
             return None

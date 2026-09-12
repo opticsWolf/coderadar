@@ -16,9 +16,9 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from coderadar import project_state
-from coderadar.mcp import lazy, roots, server as server_mod, startup
+from coderadar.mcp import lazy, roots, startup
+from coderadar.mcp import server as server_mod
 
 
 @pytest.fixture
@@ -184,11 +184,14 @@ def test_serve_subprocess_resumes_recorded_project(home, tmp_path):
     env["USERPROFILE"] = str(home)
     proc = subprocess.run(
         [sys.executable, "-c",
-         "import sys; sys.argv = ['coderadar', 'mcp', 'serve']; "
-         "from coderadar.cli import main; main()"],
+         (
+             "import sys; sys.argv = ['coderadar', 'mcp', 'serve']; "
+             "from coderadar.cli import main; main()"
+         )],
         cwd=str(launch), env=env,
         stdin=subprocess.DEVNULL,
         capture_output=True, text=True, timeout=120,
+        check=False,  # output asserted manually below
     )
     log = proc.stderr + proc.stdout
     assert "previous session" in log, log

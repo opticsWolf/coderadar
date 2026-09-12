@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+from coderadar.excludes import iter_project_files as _iter_files
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
-from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -97,23 +98,14 @@ class ExpressResolver(FrameworkResolver):
     def claims_reference(self, name: str) -> bool:
         """Claim Express-idiomatic reference patterns."""
         parts = name.rsplit(".", 1)[-1]
-        return (
-            parts.endswith("Controller")
-            or parts.endswith("Handler")
-            or parts.endswith("Middleware")
-            or parts.endswith("Service")
-            or parts.endswith("Router")
-            or parts.startswith("handle")
-            or parts.startswith("get")
-            or parts.startswith("post")
-            or parts.startswith("put")
-            or parts.startswith("delete")
-        )
+        return parts.endswith(
+            ("Controller", "Handler", "Middleware", "Service", "Router")
+        ) or parts.startswith(("handle", "get", "post", "put", "delete"))
 
     def extract(self, file_path: str, source: str) -> FrameworkExtraction:
         """Extract route nodes and handler edges from JS/TS source."""
-        nodes: List[SyntheticNode] = []
-        edges: List[SyntheticEdge] = []
+        nodes: list[SyntheticNode] = []
+        edges: list[SyntheticEdge] = []
 
         ext = Path(file_path).suffix
         if ext not in ('.js', '.ts', '.mjs', '.cjs', '.mts', '.cts'):
@@ -182,7 +174,7 @@ class ExpressResolver(FrameworkResolver):
             line_no = source[:match.start()].count('\n') + 1
 
             # app.use() without path: just middleware — still create a node
-            effective_path = path_str or (f"/*" if raw_method == 'use' else "/")
+            effective_path = path_str or ("/*" if raw_method == 'use' else "/")
             route_id = f"express:route:{file_path}:{line_no}:{method}:{effective_path}"
 
             nodes.append(SyntheticNode(
@@ -221,8 +213,8 @@ class ExpressResolver(FrameworkResolver):
         )
 
     def resolve(
-        self, ref_name: str, candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        self, ref_name: str, candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         """Query-time resolution: prefer matches in route/controller/handler directories."""
         if not candidates:
             return None
@@ -243,7 +235,7 @@ class ExpressResolver(FrameworkResolver):
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _split_handlers(exprs_str: str) -> List[str]:
+def _split_handlers(exprs_str: str) -> list[str]:
     """Split comma-separated handler expressions respecting nesting depth.
 
     Handles: handler, (req, res) => {...}, userController.list
@@ -251,9 +243,9 @@ def _split_handlers(exprs_str: str) -> List[str]:
     if not exprs_str or not exprs_str.strip():
         return []
 
-    parts: List[str] = []
+    parts: list[str] = []
     depth = 0
-    current: List[str] = []
+    current: list[str] = []
     for ch in exprs_str:
         if ch in '({[':
             depth += 1
@@ -268,7 +260,7 @@ def _split_handlers(exprs_str: str) -> List[str]:
     return [p for p in parts if p]
 
 
-def _extract_tail_ident(expr: str) -> Optional[str]:
+def _extract_tail_ident(expr: str) -> str | None:
     """Extract last identifier from expression.
 
     Examples:

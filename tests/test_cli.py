@@ -19,7 +19,6 @@ from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
-
 from coderadar.cli import main
 
 try:
@@ -145,7 +144,7 @@ class TestQueriesSeeRealFields:
         assert "1 result(s)" not in result.output
 
     def test_callers_finds_the_call_site(self, run):
-        result = run("callers", ".{sep}app.py::helper".format(sep=os.sep))
+        result = run("callers", f".{os.sep}app.py::helper")
 
         assert result.exit_code == 0, result.output
         assert "describe" in result.output

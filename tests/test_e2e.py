@@ -8,10 +8,7 @@ Usage:
     pytest tests/test_e2e.py -v -k "test_full_pipeline"
 """
 
-import os
 import sys
-import json
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -21,9 +18,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "py_agent" / "src"))
 
 # Check if the Rust extension is available
 try:
-    from coderadar._core import analyze, graph_stats, search_entities
-    from coderadar._core import lookup_entity, callers_of, callees_of
-    from coderadar._core import update_file, search_similar
+    from coderadar._core import (
+        analyze,
+        callees_of,
+        callers_of,
+        graph_stats,
+        lookup_entity,
+        search_entities,
+        search_similar,
+        update_file,
+    )
     _CORE_AVAILABLE = True
 except ImportError:
     _CORE_AVAILABLE = False
@@ -271,8 +275,8 @@ class TestVisualizerPipeline:
         analyze(str(E2E_DIR))
 
     def test_mermaid_hierarchy_names_the_real_classes(self):
-        from coderadar.visualizers.mermaid import generate_mermaid
         from coderadar import CodeGraph
+        from coderadar.visualizers.mermaid import generate_mermaid
         output = generate_mermaid("hierarchy", [], CodeGraph())
         assert output.startswith("classDiagram")
         assert "User" in output and "UserService" in output
@@ -285,8 +289,8 @@ class TestVisualizerPipeline:
         emitted the demo diagram — and the old assertion (`startswith
         "digraph Hierarchy"`) passed against it.
         """
-        from coderadar.visualizers.graphviz_viz import _safe_id, generate_dot
         from coderadar import CodeGraph
+        from coderadar.visualizers.graphviz_viz import generate_dot
         output = generate_dot("hierarchy", [], CodeGraph())
 
         assert output.startswith("digraph Hierarchy")
@@ -296,8 +300,8 @@ class TestVisualizerPipeline:
         assert edges, "no inheritance edge was drawn"
 
     def test_graphviz_dependencies_draws_module_to_module_edges(self):
-        from coderadar.visualizers.graphviz_viz import generate_dot
         from coderadar import CodeGraph
+        from coderadar.visualizers.graphviz_viz import generate_dot
         output = generate_dot("dependencies", [], CodeGraph())
 
         assert output.startswith("digraph Dependencies")
@@ -309,8 +313,8 @@ class TestVisualizerPipeline:
         assert [ln for ln in output.splitlines() if "->" in ln]
 
     def test_dot_ids_are_parseable_on_windows_paths(self):
-        from coderadar.visualizers.graphviz_viz import generate_dot
         from coderadar import CodeGraph
+        from coderadar.visualizers.graphviz_viz import generate_dot
         for viz in ("hierarchy", "dependencies"):
             output = generate_dot(viz, [], CodeGraph())
             for line in output.splitlines():
@@ -325,16 +329,16 @@ class TestVisualizerPipeline:
         This used to assert `len(output) > 0` against the fabricated
         `main --> validate_input` stub.
         """
+        from coderadar import CodeGraph
         from coderadar.visualizers import NothingToVisualize
         from coderadar.visualizers.call_graph import generate_call_graph
-        from coderadar import CodeGraph
         with pytest.raises(NothingToVisualize):
             generate_call_graph(["User"], CodeGraph())
 
     def test_call_graph_draws_a_real_call(self):
-        from coderadar.visualizers.call_graph import generate_call_graph
-        from coderadar._core import search_entities
         from coderadar import CodeGraph
+        from coderadar._core import search_entities
+        from coderadar.visualizers.call_graph import generate_call_graph
 
         caller = next(
             (h["id"] for h in search_entities("", 200, "function")
@@ -354,8 +358,8 @@ class TestMutationPipeline:
     def test_mutation_tools_exist(self):
         """Mutation functions should be importable."""
         from coderadar._core import (
-            plan_body_replacement, plan_signature_update,
-            plan_rename, plan_create_entity, apply_mutation
+            apply_mutation,
+            plan_rename,
         )
         assert callable(plan_rename)
         assert callable(apply_mutation)
@@ -388,9 +392,13 @@ class TestWatcherPipeline:
     def test_watcher_detects_file_modification(self, tmp_path):
         """Start watcher, modify a file, verify batch contains the change."""
         from coderadar._core import (
-            analyze, graph_stats, start_watcher,
-            next_watcher_batch_timeout, stop_watcher, update_file,
+            analyze,
+            graph_stats,
+            next_watcher_batch_timeout,
             search_entities,
+            start_watcher,
+            stop_watcher,
+            update_file,
         )
 
         # Set up: create a Python file and analyze it
@@ -441,8 +449,12 @@ class TestWatcherPipeline:
         delete branch were unreachable. The watcher now stats the path.
         """
         from coderadar._core import (
-            analyze, start_watcher, next_watcher_batch_timeout, stop_watcher,
-            remove_file, search_entities,
+            analyze,
+            next_watcher_batch_timeout,
+            remove_file,
+            search_entities,
+            start_watcher,
+            stop_watcher,
         )
 
         doomed = tmp_path / "doomed_mod.py"
@@ -480,7 +492,10 @@ class TestWatcherPipeline:
     def test_watcher_honours_a_custom_debounce(self, tmp_path):
         """`--debounce` was stored and never passed to the binding (§1.4)."""
         from coderadar._core import (
-            analyze, start_watcher, next_watcher_batch_timeout, stop_watcher,
+            analyze,
+            next_watcher_batch_timeout,
+            start_watcher,
+            stop_watcher,
         )
 
         target = tmp_path / "tuned.py"
@@ -501,7 +516,10 @@ class TestWatcherPipeline:
     def test_watcher_skips_files_over_the_size_limit(self, tmp_path):
         """`max_file_size_bytes` was configurable and never consulted (§1.4)."""
         from coderadar._core import (
-            analyze, start_watcher, next_watcher_batch_timeout, stop_watcher,
+            analyze,
+            next_watcher_batch_timeout,
+            start_watcher,
+            stop_watcher,
         )
 
         small = tmp_path / "small.py"
@@ -523,7 +541,7 @@ class TestWatcherPipeline:
 
     def test_watcher_timeout_returns_none(self, tmp_path):
         """When no file changes occur, timeout returns None."""
-        from coderadar._core import start_watcher, next_watcher_batch_timeout, stop_watcher
+        from coderadar._core import next_watcher_batch_timeout, start_watcher, stop_watcher
 
         # Create a clean directory for watching
         (tmp_path / "dummy.py").write_text("x = 1\n")
@@ -539,7 +557,7 @@ class TestWatcherPipeline:
 
     def test_watcher_ignores_non_source_files(self, tmp_path):
         """Watcher should not report changes to .txt, .png, etc."""
-        from coderadar._core import start_watcher, next_watcher_batch_timeout, stop_watcher
+        from coderadar._core import next_watcher_batch_timeout, start_watcher, stop_watcher
 
         (tmp_path / "code.py").write_text("x = 1\n")
         start_watcher([str(tmp_path)])
@@ -573,7 +591,9 @@ class TestBenchmarkPipeline:
     def test_index_50_files_250_functions(self, tmp_path):
         """Index 50 files / 250 functions and verify counts."""
         import time
-        from coderadar._core import analyze as _analyze_rust, graph_stats
+
+        from coderadar._core import analyze as _analyze_rust
+        from coderadar._core import graph_stats
 
         for i in range(50):
             src = '\n'.join(
@@ -608,7 +628,9 @@ class TestBenchmarkPipeline:
         reports as 'Edges' in its status output.
         """
         import time
-        from coderadar._core import analyze as _analyze_rust, graph_stats
+
+        from coderadar._core import analyze as _analyze_rust
+        from coderadar._core import graph_stats
 
         # 199 leaf modules with 5 functions each = 995 leaf functions
         for i in range(199):
@@ -660,7 +682,8 @@ class TestBenchmarkPipeline:
 
     def test_cross_file_call_edges_at_scale(self, tmp_path):
         """Index 50 files with cross-file imports and verify call edges."""
-        from coderadar._core import analyze as _analyze_rust, graph_stats
+        from coderadar._core import analyze as _analyze_rust
+        from coderadar._core import graph_stats
 
         # Create a dependency chain: mod_0 -> mod_1 -> ... -> mod_49
         (tmp_path / 'mod_0.py').write_text('def leaf(): return 0\n')
@@ -733,7 +756,9 @@ class TestBenchmarkPipeline:
         Benchmark B from docs/performance-roadmap.md.
         """
         import time
-        from coderadar._core import analyze as _analyze_rust, graph_stats
+
+        from coderadar._core import analyze as _analyze_rust
+        from coderadar._core import graph_stats
 
         # 50 leaf modules, 5 functions each = 250 leaf functions
         for i in range(50):
@@ -787,7 +812,9 @@ class TestBenchmarkPipeline:
         Benchmark C from docs/performance-roadmap.md.
         """
         import time
-        from coderadar._core import analyze as _analyze_rust, graph_stats
+
+        from coderadar._core import analyze as _analyze_rust
+        from coderadar._core import graph_stats
 
         for i in range(100):
             funcs = [f'def leaf_{i}_{j}(): return {i}+{j}' for j in range(5)]

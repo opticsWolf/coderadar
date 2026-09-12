@@ -18,10 +18,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+from coderadar.excludes import iter_project_files as _iter_files
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
-from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -107,18 +108,13 @@ class AspNetResolver(FrameworkResolver):
 
     def claims_reference(self, name: str) -> bool:
         parts = name.rsplit(".", 1)[-1]
-        return (
-            parts.endswith("Controller")
-            or parts.endswith("Service")
-            or parts.endswith("Repository")
-            or parts.endswith("Handler")
-            or parts.endswith("Endpoint")
-            or parts.endswith("Middleware")
+        return parts.endswith(
+            ("Controller", "Service", "Repository", "Handler", "Endpoint", "Middleware")
         )
 
     def extract(self, file_path: str, source: str) -> FrameworkExtraction:
-        nodes: List[SyntheticNode] = []
-        edges: List[SyntheticEdge] = []
+        nodes: list[SyntheticNode] = []
+        edges: list[SyntheticEdge] = []
 
         if not file_path.endswith('.cs'):
             return FrameworkExtraction(file_path=file_path)
@@ -195,8 +191,8 @@ class AspNetResolver(FrameworkResolver):
         return FrameworkExtraction(file_path=file_path, nodes=nodes, edges=edges)
 
     def resolve(
-        self, ref_name: str, candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        self, ref_name: str, candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         if not candidates:
             return None
         pref_dirs = _HANDLER_DIRS + _SERVICE_DIRS
@@ -211,7 +207,7 @@ class AspNetResolver(FrameworkResolver):
         return result
 
     @staticmethod
-    def _join_paths(base: str, fragment: str, class_name: Optional[str] = None) -> str:
+    def _join_paths(base: str, fragment: str, class_name: str | None = None) -> str:
         resolved_base = _resolve_route_tokens(base, class_name)
         if not resolved_base:
             return _resolve_route_tokens(fragment, class_name)
@@ -228,21 +224,20 @@ class AspNetResolver(FrameworkResolver):
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _resolve_route_tokens(path: str, class_name: Optional[str]) -> str:
+def _resolve_route_tokens(path: str, class_name: str | None) -> str:
     """Replace [controller] token with class name minus 'Controller' suffix."""
     if not path or not class_name:
         return path
     if '[controller]' in path:
         short_name = class_name
-        if short_name.endswith('Controller'):
-            short_name = short_name[:-10]
+        short_name = short_name.removesuffix('Controller')
         path = _ROUTE_TOKEN_RE.sub(short_name.lower(), path)
     return path
 
 
-def _find_class_regions(source: str) -> list[tuple[Optional[str], str, int, int]]:
+def _find_class_regions(source: str) -> list[tuple[str | None, str, int, int]]:
     """Find all [ApiController] classes and their [Route] base paths."""
-    regions: list[tuple[Optional[str], str, int, int]] = []
+    regions: list[tuple[str | None, str, int, int]] = []
     for m in _CLASS_DECL_RE.finditer(source):
         base_path = m.group(1) or ""
         class_name = m.group(2)
@@ -255,20 +250,20 @@ def _find_class_regions(source: str) -> list[tuple[Optional[str], str, int, int]
     return regions
 
 
-def _class_context(pos: int, regions: list[tuple[Optional[str], str, int, int]]) -> tuple[Optional[str], str]:
+def _class_context(pos: int, regions: list[tuple[str | None, str, int, int]]) -> tuple[str | None, str]:
     for name, base, start, end in reversed(regions):
         if start <= pos < end:
             return name, base
     return None, ""
 
 
-def _find_handler_method(source: str, after_pos: int) -> Optional[str]:
+def _find_handler_method(source: str, after_pos: int) -> str | None:
     window = source[after_pos:after_pos + 500]
     m = _METHOD_DECL_RE.search(window)
     return m.group(1) if m else None
 
 
-def _parse_minimal_handler(expr: str) -> Optional[str]:
+def _parse_minimal_handler(expr: str) -> str | None:
     """Parse a minimal API handler expression.
 
     Patterns:

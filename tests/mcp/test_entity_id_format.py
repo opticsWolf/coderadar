@@ -15,11 +15,10 @@ paste back into a command. Two things fix that without touching storage:
 from __future__ import annotations
 
 import pytest
-
 from coderadar.mcp import server as server_mod
 
 try:
-    from coderadar._core import analyze as _analyze
+    from coderadar._core import analyze as _analyze  # noqa: F401 - availability probe
     _CORE = True
 except ImportError:  # pragma: no cover
     _CORE = False

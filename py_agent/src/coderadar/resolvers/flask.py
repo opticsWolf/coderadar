@@ -8,14 +8,15 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any
+
 from coderadar.excludes import iter_project_files as _iter_files
-from typing import Any, Dict, List, Optional
 
 from .base import (
-    FrameworkResolver,
     FrameworkExtraction,
-    SyntheticNode,
+    FrameworkResolver,
     SyntheticEdge,
+    SyntheticNode,
 )
 
 
@@ -97,14 +98,14 @@ class FlaskResolver(FrameworkResolver):
 
         return result
 
-    def _detect_app_name(self, tree: ast.Module) -> Optional[str]:
+    def _detect_app_name(self, tree: ast.Module) -> str | None:
         """Find the Flask app variable name."""
         for node in ast.walk(tree):
-            if isinstance(node, ast.Assign):
-                if (
-                    isinstance(node.value, ast.Call)
-                    and self._get_call_name(node.value) == "Flask"
-                ):
+            if (
+                isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Call)
+                and self._get_call_name(node.value) == "Flask"
+            ):
                     for target in node.targets:
                         if isinstance(target, ast.Name):
                             return target.id
@@ -113,11 +114,11 @@ class FlaskResolver(FrameworkResolver):
     def _extract_route_decorators(
         self,
         func_node: ast.FunctionDef,
-        app_name: Optional[str],
+        app_name: str | None,
         file_path: str,
-    ) -> List[SyntheticNode]:
+    ) -> list[SyntheticNode]:
         """Extract route SyntheticNodes from @app.route() decorators."""
-        nodes: List[SyntheticNode] = []
+        nodes: list[SyntheticNode] = []
 
         for decorator in func_node.decorator_list:
             # Handle @app.route(...) and @app.get(...) etc.
@@ -146,7 +147,7 @@ class FlaskResolver(FrameworkResolver):
         decorator_name: str,
         handler_name: str,
         file_path: str,
-    ) -> Optional[SyntheticNode]:
+    ) -> SyntheticNode | None:
         """Parse a route decorator into a SyntheticNode."""
         if not decorator.args:
             return None
@@ -155,7 +156,7 @@ class FlaskResolver(FrameworkResolver):
         if not route_pattern:
             return None
 
-        metadata: Dict[str, Any] = {
+        metadata: dict[str, Any] = {
             "pattern": route_pattern,
             "handler": handler_name,
         }
@@ -182,12 +183,12 @@ class FlaskResolver(FrameworkResolver):
 
     def _extract_add_resource(
         self, node: ast.Call, file_path: str,
-    ) -> List[SyntheticEdge]:
+    ) -> list[SyntheticEdge]:
         """Extract edges from Flask-RESTful api.add_resource().
 
         Pattern: api.add_resource(HelloWorld, '/', '/hello')
         """
-        edges: List[SyntheticEdge] = []
+        edges: list[SyntheticEdge] = []
         call_name = self._get_call_name(node)
         if call_name != "add_resource":
             return edges
@@ -195,7 +196,7 @@ class FlaskResolver(FrameworkResolver):
             return edges
         resource = self._get_name(node.args[0])
         # Paths can be passed as multiple positional args or a list
-        paths: List[str] = []
+        paths: list[str] = []
         for arg in node.args[1:]:
             if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
                 paths.append(arg.value)
@@ -219,9 +220,9 @@ class FlaskResolver(FrameworkResolver):
 
     def _extract_blueprint_register(
         self, node: ast.Call, file_path: str,
-    ) -> List[SyntheticEdge]:
+    ) -> list[SyntheticEdge]:
         """Extract edges from app.register_blueprint(bp)."""
-        edges: List[SyntheticEdge] = []
+        edges: list[SyntheticEdge] = []
 
         if self._get_call_name(node) != "register_blueprint":
             return edges
@@ -242,15 +243,15 @@ class FlaskResolver(FrameworkResolver):
         return edges
 
     def resolve(
-        self, ref_name: str, candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        self, ref_name: str, candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         """Resolve Flask naming conventions."""
         return None  # Flask uses direct imports, not naming conventions
 
     # ── AST Helpers ─────────────────────────────────────────────────
 
     @staticmethod
-    def _get_call_name(call: ast.Call) -> Optional[str]:
+    def _get_call_name(call: ast.Call) -> str | None:
         if isinstance(call.func, ast.Name):
             return call.func.id
         if isinstance(call.func, ast.Attribute):
@@ -258,7 +259,7 @@ class FlaskResolver(FrameworkResolver):
         return None
 
     @staticmethod
-    def _get_decorator_name(decorator: ast.Call) -> Optional[str]:
+    def _get_decorator_name(decorator: ast.Call) -> str | None:
         """Get the function name from a decorator call."""
         if isinstance(decorator.func, ast.Name):
             return decorator.func.id
@@ -267,7 +268,7 @@ class FlaskResolver(FrameworkResolver):
         return None
 
     @staticmethod
-    def _get_name(node: ast.expr) -> Optional[str]:
+    def _get_name(node: ast.expr) -> str | None:
         if isinstance(node, ast.Name):
             return node.id
         if isinstance(node, ast.Attribute):
@@ -278,13 +279,13 @@ class FlaskResolver(FrameworkResolver):
         return None
 
     @staticmethod
-    def _get_string_value(node: ast.expr) -> Optional[str]:
+    def _get_string_value(node: ast.expr) -> str | None:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value
         return None
 
     @staticmethod
-    def _get_list_value(node: ast.expr) -> Optional[List[str]]:
+    def _get_list_value(node: ast.expr) -> list[str] | None:
         if isinstance(node, ast.List):
             return [
                 e.value

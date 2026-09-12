@@ -12,10 +12,11 @@ No Cypher; intents route directly to MacrameQuery primitives:
 
 from __future__ import annotations
 
-import structlog
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Tuple
+from typing import Any
+
+import structlog
 
 from ..query import MacrameQuery
 from ..query.planner import QueryIntent, QueryPlan, plan_query
@@ -33,9 +34,9 @@ class ContextStrategy(Enum):
 class GraphRAGResult:
     """Result of a GraphRAG query execution."""
     intent: QueryIntent
-    rows: List[Dict[str, Any]]
+    rows: list[dict[str, Any]]
     tokens_used: int
-    strategy_per_entity: Dict[str, str]
+    strategy_per_entity: dict[str, str]
     elapsed_ms: float
 
 
@@ -48,11 +49,11 @@ class GraphRAGContextBuilder:
         self.default_strategy = strategy
 
     def build_context(
-        self, results: List[Dict[str, Any]], intent: QueryIntent,
+        self, results: list[dict[str, Any]], intent: QueryIntent,
     ) -> GraphRAGResult:
         tokens_used = 0
-        rows: List[Dict[str, Any]] = []
-        strategies: Dict[str, str] = {}
+        rows: list[dict[str, Any]] = []
+        strategies: dict[str, str] = {}
 
         for result in results:
             entity_id = result.get("id", result.get("entity_id", ""))
@@ -75,8 +76,8 @@ class GraphRAGContextBuilder:
             elapsed_ms=0.0,
         )
 
-    def _compress(self, result: Dict[str, Any],
-                  strategy: ContextStrategy) -> Dict[str, Any]:
+    def _compress(self, result: dict[str, Any],
+                  strategy: ContextStrategy) -> dict[str, Any]:
         if strategy == ContextStrategy.SIGNATURES_ONLY:
             return {
                 "name": result.get("name", ""),
@@ -96,13 +97,11 @@ class GraphRAGContextBuilder:
             if any(stripped.startswith(kw)
                    for kw in ("if ", "for ", "while ", "return ",
                               "def ", "class ", "try:", "except", "raise",
-                              "with ", "match ", "case ")):
-                lines.append(line)
-            elif "(" in stripped and stripped.endswith(")"):
+                              "with ", "match ", "case ")) or "(" in stripped and stripped.endswith(")"):
                 lines.append(line)
         return "\n".join(lines)
 
-    def _estimate_tokens(self, entity: Dict[str, Any]) -> int:
+    def _estimate_tokens(self, entity: dict[str, Any]) -> int:
         total_chars = sum(len(str(v)) for v in entity.values())
         return max(1, total_chars // 4)
 
@@ -141,7 +140,7 @@ class GraphRAGPipeline:
                       rows=len(result.rows), elapsed_ms=elapsed)
         return result
 
-    def _execute_plan(self, plan: QueryPlan) -> List[Dict[str, Any]]:
+    def _execute_plan(self, plan: QueryPlan) -> list[dict[str, Any]]:
         """Execute a QueryPlan via the appropriate MacrameQuery method."""
         method = plan.method
         params = plan.params

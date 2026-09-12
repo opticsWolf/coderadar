@@ -14,8 +14,8 @@ import os
 from pathlib import Path
 
 import pytest
-
-from coderadar.mcp import lazy, server as server_mod, startup
+from coderadar.mcp import lazy, startup
+from coderadar.mcp import server as server_mod
 from coderadar.mcp.lazy import LazyRootRetry
 from coderadar.mcp.roots import ResolvedRoot
 from coderadar.mcp.server import _set_project

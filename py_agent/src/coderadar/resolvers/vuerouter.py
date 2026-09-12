@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+from coderadar.excludes import iter_project_files as _iter_files
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
-from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -87,19 +88,12 @@ class VueRouterResolver(FrameworkResolver):
         return "View" in name or "Page" in name or "Layout" in name
 
     def extract(self, file_path: str, source: str) -> FrameworkExtraction:
-        nodes: List[SyntheticNode] = []
-        edges: List[SyntheticEdge] = []
+        nodes: list[SyntheticNode] = []
+        edges: list[SyntheticEdge] = []
 
         ext = Path(file_path).suffix
         if ext not in ('.js', '.ts', '.vue', '.mjs', '.mts'):
             return FrameworkExtraction(file_path=file_path)
-
-        # Only extract from router files
-        is_router_file = (
-            'createRouter' in source
-            or 'router' in file_path.lower()
-            or 'routes.' in file_path.lower()
-        )
 
         # ── Route config objects ──
         for match in _ROUTE_OBJECT_RE.finditer(source):
@@ -176,8 +170,8 @@ class VueRouterResolver(FrameworkResolver):
         return FrameworkExtraction(file_path=file_path, nodes=nodes, edges=edges)
 
     def resolve(
-        self, ref_name: str, candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        self, ref_name: str, candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         if not candidates:
             return None
         for result in candidates:
@@ -191,14 +185,14 @@ class VueRouterResolver(FrameworkResolver):
         return result
 
 
-def _extract_component_name(ref: str) -> Optional[str]:
+def _extract_component_name(ref: str) -> str | None:
     """Extract component name from a reference.
 
     Direct: UserList → UserList
     Lazy: () => import('./User.vue') → User
     """
     ref = ref.strip()
-    if ref.startswith('() =>') or ref.startswith('=>'):
+    if ref.startswith(('() =>', '=>')):
         m = _LAZY_IMPORT_RE.search(ref)
         return m.group(1) if m else None
     if ref.startswith('import('):

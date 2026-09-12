@@ -416,6 +416,20 @@ resurrection interaction complicates testing), then R2-7/R2-8/R2-16
   Sept-11 main run (34622503038): pre-existing timing-sensitive failure
   (wall-clock `ts1` vs edge `valid_from`), passes locally + Ubuntu —
   documented, not chased.
+- **Ruff cleanup (no bump, tag moved).** `ruff check` was 951 errors deep —
+  a standing backlog (never green) on a tree written before ruff 0.16's
+  expanded defaults, same drift class as the fmt break. Cleaned to zero
+  against pinned `ruff@0.16.5` (CI + dev pin, so the gate can't drift
+  silently again): ~790 safe auto-fixes (UP/I/RUF modernization, import
+  sort), fixture excludes (`tests/fixtures`, `r2proj` are indexed test
+  data — reformatting them would corrupt golden expectations), mechanical
+  manual fixes (tuple startswith, combined `with`s, `check=False` where
+  returncodes are asserted, parens for ISC004), and per-site `noqa` with
+  reasons where the pattern is deliberate (MCP tool boundaries must return
+  errors never raise; best-effort fallbacks; harness catch-alls that record
+  FAIL). Behavior-neutral by construction; verified by 758 Python +
+  121/121 battery. The one full-suite failure (`test_cold_start_load_latency`)
+  is the known wall-clock flake — passes solo, unrelated to the cleanup.
 - **v0.9.0 — RELEASE + Issue 5 fold-in.** `docs/v0.9.0-release-notes.md` (changelog v0.8.16→,
   behavior changes, verification totals, deferred list); version cut
   0.8.25 → 0.9.0 across `__init__.py` + `pyproject.toml` + `Cargo.toml` +

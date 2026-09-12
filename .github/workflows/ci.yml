@@ -96,4 +96,7 @@ jobs:
         run: cargo clippy --package core_indexer --all-targets
 
       - name: ruff
-        run: uvx ruff check py_agent/src tests
+        # Pinned: unpinned `uvx ruff` drifted defaults under us before
+        # (0.16.x flags 950+ on a tree written pre-rule). Bump the pin
+        # deliberately and clean to zero against the new version.
+        run: uvx ruff@0.16.5 check py_agent/src tests

@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
-
-from coderadar.mcp import lazy, server as server_mod
+from coderadar.mcp import lazy
+from coderadar.mcp import server as server_mod
 from coderadar.mcp.lazy import LazyRootRetry
 from coderadar.mcp.roots import ResolvedRoot
 from coderadar.mcp.startup import BackgroundIndex
@@ -38,7 +39,7 @@ def _serving(path: Path) -> None:
 class TestTheSchema:
     #: `codegraph_set_project` names a project rather than asking about one,
     #: so it has no project_path argument of its own.
-    NO_PROJECT_PATH_TOOLS = {"codegraph_set_project"}
+    NO_PROJECT_PATH_TOOLS: ClassVar[set[str]] = {"codegraph_set_project"}
 
     def test_every_tool_offers_project_path(self):
         tools = server_mod.create_server(None)._tool_manager.list_tools()

@@ -9,8 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from functools import wraps
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 
 class QueryCache:
@@ -23,9 +24,9 @@ class QueryCache:
     def __init__(self, max_size: int = 256, ttl_seconds: int = 300):
         self._max_size = max_size
         self._ttl_seconds = ttl_seconds
-        self._cache: Dict[str, _CacheEntry] = {}
+        self._cache: dict[str, _CacheEntry] = {}
 
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         entry = self._cache.get(key)
         if entry is None:
             return None
@@ -58,7 +59,7 @@ class QueryCache:
         return len(expired)
 
     @staticmethod
-    def make_key(method: str, params: Dict[str, Any],
+    def make_key(method: str, params: dict[str, Any],
                  graph_epoch: int) -> str:
         param_str = json.dumps(params, sort_keys=True)
         raw = f"{method}|{param_str}|{graph_epoch}"
@@ -69,7 +70,7 @@ class QueryCache:
 
 
 class _CacheEntry:
-    __slots__ = ("value", "timestamp")
+    __slots__ = ("timestamp", "value")
 
     def __init__(self, value: Any, timestamp: float):
         self.value = value

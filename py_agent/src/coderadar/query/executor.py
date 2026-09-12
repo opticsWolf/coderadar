@@ -7,8 +7,7 @@ edge assertion, and vector search. These are the primitives.
 
 from __future__ import annotations
 
-import time
-from typing import Any, Dict, Iterator, List, Literal, Optional
+from typing import Any, Literal
 
 import structlog
 
@@ -40,9 +39,9 @@ class MacrameQuery:
         self,
         start_id: str,
         max_depth: int = 3,
-        edge_types: Optional[List[str]] = None,
+        edge_types: list[str] | None = None,
         direction: Literal["out", "in", "both"] = "both",
-    ) -> List[Dict[str, Any]]:
+    ) -> list[dict[str, Any]]:
         """Traverse the graph from start_id along typed edges.
 
         Delegates to Macrame's TraversalBuilder::load_subgraph_with().
@@ -85,7 +84,7 @@ class MacrameQuery:
         """
         return MacrameSnapshot(self._graph, timestamp)
 
-    def timeline(self, entity_id: str) -> List[Dict[str, Any]]:
+    def timeline(self, entity_id: str) -> list[dict[str, Any]]:
         """Get the full version history of an entity.
 
         Macrame stores every upsert as a new version. This returns the
@@ -102,7 +101,7 @@ class MacrameQuery:
 
     # ── Concept Lookup ──────────────────────────────────────────────────
 
-    def find(self, entity_id: str) -> Optional[Dict[str, Any]]:
+    def find(self, entity_id: str) -> dict[str, Any] | None:
         """Look up a single entity by ID.
 
         Args:
@@ -118,7 +117,7 @@ class MacrameQuery:
         except ImportError:
             return None
 
-    def list_by_kind(self, kind: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def list_by_kind(self, kind: str, limit: int = 100) -> list[dict[str, Any]]:
         """List all entities of a given kind.
 
         Args:
@@ -134,7 +133,7 @@ class MacrameQuery:
         except ImportError:
             return []
 
-    def callers_of(self, entity_id: str) -> List[Dict[str, Any]]:
+    def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
         """Find all callers of an entity (reverse call index)."""
         try:
             from coderadar._core import callers_of
@@ -142,7 +141,7 @@ class MacrameQuery:
         except ImportError:
             return []
 
-    def callees_of(self, entity_id: str) -> List[Dict[str, Any]]:
+    def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
         """Find all callees called by an entity (forward call index)."""
         try:
             from coderadar._core import callees_of
@@ -154,10 +153,10 @@ class MacrameQuery:
 
     def search_similar(
         self,
-        query_embedding: List[float],
+        query_embedding: list[float],
         top_k: int = 10,
-        kind_filter: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        kind_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Vector similarity search via Macrame embedding index.
 
         Macrame stores embeddings on Concepts via ConceptUpsert.embedding_model.
@@ -177,8 +176,8 @@ class MacrameQuery:
         self,
         query: str,
         top_k: int = 10,
-        kind_filter: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        kind_filter: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Full-text search across entity names and docstrings.
 
         Searches Macrame Concept content (JSON metadata) for text matches.
@@ -195,7 +194,7 @@ class MacrameQuery:
 
     # ── Stats ───────────────────────────────────────────────────────────
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Return entity counts, edge counts, memory usage."""
         try:
             from coderadar._core import graph_stats
@@ -214,21 +213,21 @@ class MacrameSnapshot:
         self._graph = graph
         self.timestamp = timestamp
 
-    def find(self, entity_id: str) -> Optional[Dict[str, Any]]:
+    def find(self, entity_id: str) -> dict[str, Any] | None:
         """Look up an entity as it existed at snapshot time."""
         return MacrameQuery(self._graph).find(entity_id)
 
     def traverse(
         self, start_id: str, max_depth: int = 3,
-        edge_types: Optional[List[str]] = None,
-    ) -> List[Dict[str, Any]]:
+        edge_types: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Traverse at snapshot time."""
         return MacrameQuery(self._graph).traverse(start_id, max_depth, edge_types)
 
-    def callers_of(self, entity_id: str) -> List[Dict[str, Any]]:
+    def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
         """Callers at snapshot time."""
         return MacrameQuery(self._graph).callers_of(entity_id)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Snapshot metadata."""
         return {"timestamp": self.timestamp}

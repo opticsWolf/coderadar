@@ -13,8 +13,7 @@ import os
 from pathlib import Path
 
 import pytest
-
-from coderadar.mcp import lazy, server as server_mod, startup
+from coderadar.mcp import lazy, startup
 from coderadar.mcp.server import _render_entity_code
 
 try:

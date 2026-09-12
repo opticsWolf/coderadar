@@ -14,19 +14,19 @@ Copyright (c) 2024 Colby McHenry — MIT License
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional
-
+from collections.abc import Callable
+from typing import Any
 
 # ── Public API ──────────────────────────────────────────────────────────────
 
 
 def resolve_reference(
     name: str,
-    searcher: Callable[[str, int], List[Dict[str, Any]]],
+    searcher: Callable[[str, int], list[dict[str, Any]]],
     resolvers: list,
     *,
     limit: int = 5,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Resolve a reference name through framework resolvers.
 
     Args:
@@ -38,7 +38,7 @@ def resolve_reference(
     Returns:
         List of resolved entities with ``resolved_by`` and ``confidence``.
     """
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
 
     for resolver_cls in resolvers:
         resolver = resolver_cls()
@@ -48,7 +48,7 @@ def resolve_reference(
 
         try:
             candidates = searcher(name, limit)
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - one bad searcher must not kill resolution
             continue
 
         if not candidates:
@@ -68,7 +68,7 @@ def resolve_reference(
 
     # Sort by confidence descending, deduplicate by ID
     seen: set[str] = set()
-    deduped: List[Dict[str, Any]] = []
+    deduped: list[dict[str, Any]] = []
     for r in sorted(results, key=lambda x: x.get("confidence", 0), reverse=True):
         eid = r.get("id", "")
         if eid and eid not in seen:
@@ -80,16 +80,16 @@ def resolve_reference(
 
 def resolve_route(
     path: str,
-    searcher: Callable[[str, int], List[Dict[str, Any]]],
+    searcher: Callable[[str, int], list[dict[str, Any]]],
     *,
     limit: int = 5,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Resolve a URL path to its handler(s).
 
     Searches for route nodes matching the path pattern, then follows
     handler edges to find the implementing function.
     """
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
 
     route_candidates = searcher(path, limit * 2)
     route_nodes = [
@@ -115,7 +115,7 @@ def resolve_route(
 
 def prefer_in_dir(
     candidates: list, name: str, dir_hint: str, *, confidence: float = 0.85,
-) -> Optional[dict]:
+) -> dict | None:
     """Select the best candidate, preferring matches in a specific directory."""
     if not candidates:
         return None

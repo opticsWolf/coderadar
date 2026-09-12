@@ -6,9 +6,10 @@ from Python source code.
 """
 
 from pathlib import Path
+
 from coderadar.resolvers.django import DjangoResolver
-from coderadar.resolvers.flask import FlaskResolver
 from coderadar.resolvers.fastapi import FastAPIResolver
+from coderadar.resolvers.flask import FlaskResolver
 
 
 class TestDjangoResolver:

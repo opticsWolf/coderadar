@@ -13,13 +13,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any
 
-from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
 from coderadar.excludes import iter_project_files as _iter_files
 
-if TYPE_CHECKING:
-    pass
+from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
 
 # ── Route regex ────────────────────────────────────────────────────────────
 
@@ -64,26 +62,17 @@ class GoResolver(FrameworkResolver):
 
     def claims_reference(self, name: str) -> bool:
         """Claim Go-idiomatic reference patterns."""
-        return (
-            name.endswith("Handler")
-            or name.startswith("Handle")
-            or name.endswith("Service")
-            or name.endswith("Repository")
-            or name.endswith("Store")
-            or name.endswith("Middleware")
-            or name.startswith("Auth")
-            or name.startswith("Log")
-        )
+        return name.endswith(
+            ("Handler", "Service", "Repository", "Store", "Middleware")
+        ) or name.startswith(("Handle", "Auth", "Log"))
 
     def extract(self, file_path: str, source: str) -> FrameworkExtraction:
         """Extract route nodes and handler edges from Go source."""
-        nodes: List[SyntheticNode] = []
-        edges: List[SyntheticEdge] = []
+        nodes: list[SyntheticNode] = []
+        edges: list[SyntheticEdge] = []
 
         if not file_path.endswith('.go'):
             return FrameworkExtraction(file_path=file_path)
-
-        lines = source.split('\n')
 
         for match in _ROUTE_RE.finditer(source):
             raw_method = match.group(1)
@@ -143,8 +132,8 @@ class GoResolver(FrameworkResolver):
         )
 
     def resolve(
-        self, ref_name: str, candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        self, ref_name: str, candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         """Query-time resolution: prefer matches in framework-conventional dirs."""
         if not candidates:
             return None
@@ -167,7 +156,7 @@ class GoResolver(FrameworkResolver):
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _match_go122_method(route_path: str, raw_method: str) -> Optional[str]:
+def _match_go122_method(route_path: str, raw_method: str) -> str | None:
     """Detect Go 1.22 mux pattern: HandleFunc("GET /path", h)."""
     if raw_method not in ('Handle', 'HandleFunc'):
         return None
@@ -175,7 +164,7 @@ def _match_go122_method(route_path: str, raw_method: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def _extract_tail_ident(expr: str) -> Optional[str]:
+def _extract_tail_ident(expr: str) -> str | None:
     """Extract last identifier from expression like pkg.Sub.handler or handler."""
     cleaned = re.sub(r'\s+', '', expr.strip()).rstrip('()')
     m = _TAIL_IDENT_RE.search(cleaned)

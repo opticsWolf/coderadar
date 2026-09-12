@@ -14,11 +14,9 @@ from __future__ import annotations
 
 import re
 
-import pytest
-
 import coderadar
+import pytest
 from coderadar.mcp.server import create_server
-
 
 TOOL_RE = re.compile(r"`(code(?:graph|radar)_[a-z_]+)`")
 

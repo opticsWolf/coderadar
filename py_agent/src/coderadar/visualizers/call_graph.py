@@ -6,10 +6,10 @@ for a single function, with real data from the CodeGraph.
 
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import Any
 
 
-def generate_call_graph(args: list, graph: Optional[Any] = None) -> str:
+def generate_call_graph(args: list, graph: Any | None = None) -> str:
     """Generate a call graph visualization for a function.
 
     Args:
@@ -31,7 +31,7 @@ def generate_call_graph(args: list, graph: Optional[Any] = None) -> str:
 
     if graph and func_name:
         visited: set = set()
-        edges: List[tuple] = []
+        edges: list[tuple] = []
 
         # Try to look up by name first, then by ID
         entity_id = func_name
@@ -41,7 +41,7 @@ def generate_call_graph(args: list, graph: Optional[Any] = None) -> str:
                 results = search_entities(func_name, 1)
                 if results:
                     entity_id = results[0].get("id", func_name)
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - best-effort name resolution
                 pass
 
         if direction == "out":
@@ -91,7 +91,7 @@ def _gather_fan_out(graph, entity_id: str, depth: int,
                 edges.append((entity_id, callee_id, 1.0))
                 _gather_fan_out(graph, callee_id, depth - 1,
                                min_conf, visited, edges)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - partial fan-out beats no graph
         pass
 
 
@@ -110,7 +110,7 @@ def _gather_fan_in(graph, entity_id: str, depth: int,
                 edges.append((caller_id, entity_id, 1.0))
                 _gather_fan_in(graph, caller_id, depth - 1,
                               min_conf, visited, edges)
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - partial fan-in beats no graph
         pass
 
 

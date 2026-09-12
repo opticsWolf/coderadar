@@ -11,7 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 
 @dataclass
@@ -26,7 +26,7 @@ class SyntheticNode:
     name: str
     kind: str                    # "route", "middleware", "dependency"
     file_path: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -39,15 +39,15 @@ class SyntheticEdge:
     source_id: str
     target_id: str
     kind: str                    # "handles", "uses", "injects", "registers"
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class FrameworkExtraction:
     """Result of a per-file framework extraction."""
     file_path: str
-    nodes: List[SyntheticNode] = field(default_factory=list)
-    edges: List[SyntheticEdge] = field(default_factory=list)
+    nodes: list[SyntheticNode] = field(default_factory=list)
+    edges: list[SyntheticEdge] = field(default_factory=list)
 
 
 class FrameworkResolver(ABC):
@@ -107,8 +107,8 @@ class FrameworkResolver(ABC):
 
     @abstractmethod
     def resolve(
-        self, ref_name: str, candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        self, ref_name: str, candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         """Resolve a reference against search candidates.
 
         Args:

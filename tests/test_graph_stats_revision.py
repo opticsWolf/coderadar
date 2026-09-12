@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 
 try:
-    from coderadar._core import analyze as _analyze
-    from coderadar._core import graph_stats
+    from coderadar._core import analyze as _analyze  # noqa: F401 - availability probe
+    from coderadar._core import graph_stats  # noqa: F401 - availability probe
     _CORE = True
 except ImportError:  # pragma: no cover
     _CORE = False
@@ -63,6 +63,7 @@ def test_analyze_reports_a_live_revision(tmp_path, monkeypatch):
     proc = subprocess.run(
         [sys.executable, "-c", script],
         capture_output=True, text=True, timeout=120,
+        check=False,  # output asserted manually below
     )
     assert proc.returncode == 0, proc.stderr
     revision = proc.stdout.strip()

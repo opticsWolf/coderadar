@@ -11,7 +11,7 @@ which the CLI and the MCP server call at startup.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any
 
 try:
     import tomllib
@@ -19,7 +19,6 @@ except ImportError:
     import tomli as tomllib  # type: ignore
 
 from pydantic import BaseModel, Field
-
 
 # ── .coderadar.toml ─────────────────────────────────────────────────────────
 
@@ -29,8 +28,8 @@ class ProjectConfig(BaseModel):
     # Empty walks the whole project root. A non-empty default would narrow
     # indexing for every project that does not set `roots` — the file is
     # loaded for real now, so a wrong default is a wrong index.
-    roots: List[str] = []
-    exclude: List[str] = ["**/migrations/**", "**/__pycache__/**", "**/.venv/**"]
+    roots: list[str] = []
+    exclude: list[str] = ["**/migrations/**", "**/__pycache__/**", "**/.venv/**"]
 
 
 class ImportGraphConfig(BaseModel):
@@ -62,7 +61,7 @@ class LSPConfig(BaseModel):
     idle_timeout_s: int = 600
     timeout_ms: int = 5000
     override_threshold: float = 0.90
-    servers: Dict[str, str] = Field(default_factory=lambda: {
+    servers: dict[str, str] = Field(default_factory=lambda: {
         "python": "pyright-langserver --stdio",
         "typescript": "typescript-language-server --stdio",
         "rust": "rust-analyzer",
@@ -110,8 +109,8 @@ class MutationConfig(BaseModel):
     post_verify: bool = True
     max_repair_attempts: int = 3
     require_clean_git: bool = False
-    allow: List[str] = Field(default_factory=lambda: ["src/", "lib/", "tests/", "scripts/"])
-    deny: List[str] = Field(default_factory=lambda: [".git/", ".coderadar/", "/migrations/", "/*.lock", "/generated/"])
+    allow: list[str] = Field(default_factory=lambda: ["src/", "lib/", "tests/", "scripts/"])
+    deny: list[str] = Field(default_factory=lambda: [".git/", ".coderadar/", "/migrations/", "/*.lock", "/generated/"])
 
 
 class QueryConfig(BaseModel):
@@ -169,7 +168,7 @@ def load_config(project_root: Path) -> CodeRadarConfig:
     return CodeRadarConfig()
 
 
-def activate_config(project_root: Path) -> "ActivatedConfig":
+def activate_config(project_root: Path) -> ActivatedConfig:
     """Load `project_root/.coderadar.toml` and push it into the Rust core.
 
     Loading alone changed nothing before: every consumer built its own
@@ -188,7 +187,7 @@ def activate_config(project_root: Path) -> "ActivatedConfig":
     """
     cfg = load_config(project_root)
     payload = cfg.model_dump(exclude_unset=True, mode="json")
-    ignored: List[str] = []
+    ignored: list[str] = []
     try:
         from coderadar._core import set_config
     except ImportError:
@@ -209,5 +208,5 @@ def activate_config(project_root: Path) -> "ActivatedConfig":
 class ActivatedConfig(BaseModel):
     """The configuration in force, plus what the core made of it."""
     config: CodeRadarConfig
-    applied: Dict[str, Any] = Field(default_factory=dict)
-    ignored: List[str] = Field(default_factory=list)
+    applied: dict[str, Any] = Field(default_factory=dict)
+    ignored: list[str] = Field(default_factory=list)

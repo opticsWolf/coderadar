@@ -12,15 +12,20 @@ literals), indexes them, then exercises the FULL option surface:
 Read-only tools only. Demo files are deleted again at the end and the graph
 re-synced.
 """
-import sys, os, time, traceback
+import os
+import sys
+import time
+import traceback
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
+except Exception:  # noqa: BLE001, S110 - best-effort console setup for Windows pipes
     pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LOG = open(os.path.join(HERE, "battery_slop_output.txt"), "w", encoding="utf-8")
+LOG = open(  # noqa: SIM115 - module-global run log, lives until process exit
+    os.path.join(HERE, "battery_slop_output.txt"), "w", encoding="utf-8"
+)
 def log(*a):
     s = " ".join(str(x) for x in a)
     print(s); LOG.write(s + "\n"); LOG.flush()
@@ -86,7 +91,7 @@ def run(name, fn, *args, **kwargs):
     try:
         out = fn(*args, **kwargs)
         status = "OK"
-    except BaseException as e:
+    except BaseException:  # noqa: BLE001 - harness records failure, never dies mid-run
         out = f"EXCEPTION: {traceback.format_exc()}"
         status = "ERROR"
     ms = int((time.time() - t) * 1000)
@@ -94,9 +99,12 @@ def run(name, fn, *args, **kwargs):
     log(str(out)[:1800])
 
 # ── create + index slop files ──────────────────────────────────────────────
-open(SLOP_PY, "w", encoding="utf-8").write(SLOP_SOURCE)
-open(TEMP_PY, "w", encoding="utf-8").write(TEMP_SOURCE)
-open(OLD_PY, "w", encoding="utf-8").write(OLD_SOURCE)
+with open(SLOP_PY, "w", encoding="utf-8") as _fh:
+    _fh.write(SLOP_SOURCE)
+with open(TEMP_PY, "w", encoding="utf-8") as _fh:
+    _fh.write(TEMP_SOURCE)
+with open(OLD_PY, "w", encoding="utf-8") as _fh:
+    _fh.write(OLD_SOURCE)
 
 graph = coderadar.load(r".coderadar/store/coderadar.db", ".")
 for f in (SLOP_PY, TEMP_PY, OLD_PY):

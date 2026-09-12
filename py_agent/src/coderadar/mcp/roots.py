@@ -30,9 +30,9 @@ install directory.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional
 from urllib.parse import unquote, urlparse
 
 #: Names that mark a directory as a CodeRadar project root. `.coderadar/` is
@@ -59,14 +59,14 @@ class ResolvedRoot:
     source: str
     #: The marker that confirmed it, or None if nothing confirmed it and this
     #: is a bare guess. Callers should say so out loud when it is None.
-    marker: Optional[Path] = None
+    marker: Path | None = None
 
     @property
     def confirmed(self) -> bool:
         return self.marker is not None
 
 
-def uri_to_path(uri: str) -> Optional[Path]:
+def uri_to_path(uri: str) -> Path | None:
     """Convert a `file://` URI from `roots/list` into a local path.
 
     MCP roots are URIs, and the spec currently only defines `file://`. Returns
@@ -90,14 +90,14 @@ def uri_to_path(uri: str) -> Optional[Path]:
     return Path(path) if path else None
 
 
-def _home() -> Optional[Path]:
+def _home() -> Path | None:
     try:
         return Path.home().resolve()
     except (OSError, RuntimeError):
         return None
 
 
-def _can_be_a_root(directory: Path, home: Optional[Path]) -> bool:
+def _can_be_a_root(directory: Path, home: Path | None) -> bool:
     """Is this directory low enough in the tree to be somebody's project?
 
     Projects live *inside* the home directory, never at it and never above
@@ -116,7 +116,7 @@ def _can_be_a_root(directory: Path, home: Optional[Path]) -> bool:
     return directory not in home.parents
 
 
-def find_marker(start: Path) -> Optional[Path]:
+def find_marker(start: Path) -> Path | None:
     """Walk up from `start` looking for a project marker.
 
     Returns the marker itself (`.../.coderadar` or `.../.coderadar.toml`), so
@@ -136,7 +136,7 @@ def find_marker(start: Path) -> Optional[Path]:
     return None
 
 
-def _canonical(path: Path) -> Optional[Path]:
+def _canonical(path: Path) -> Path | None:
     """Resolve symlinks and `..`, or None if the path is not a usable dir."""
     try:
         resolved = path.expanduser().resolve()
@@ -151,10 +151,10 @@ def _canonical(path: Path) -> Optional[Path]:
 
 
 def resolve_project_root(
-    client_roots: Optional[Iterable[str]] = None,
-    path_flag: Optional[str] = None,
-    cwd: Optional[str] = None,
-    launch_cwd: Optional[Path] = None,
+    client_roots: Iterable[str] | None = None,
+    path_flag: str | None = None,
+    cwd: str | None = None,
+    launch_cwd: Path | None = None,
 ) -> ResolvedRoot:
     """Pick a project root by walking the ladder described in this module.
 
@@ -209,7 +209,7 @@ def resolve_project_root(
     return ResolvedRoot(path=raw_cwd, source=CWD, marker=None)
 
 
-def resolve_from_client_roots(uris: Iterable[str]) -> Optional[ResolvedRoot]:
+def resolve_from_client_roots(uris: Iterable[str]) -> ResolvedRoot | None:
     """Resolve *only* over the client's declared roots.
 
     The lazy retry cannot re-run the whole ladder: cwd is always its last
@@ -241,7 +241,7 @@ def resolve_from_client_roots(uris: Iterable[str]) -> Optional[ResolvedRoot]:
     return None
 
 
-def resolve_selector(project_path: str) -> Optional[ResolvedRoot]:
+def resolve_selector(project_path: str) -> ResolvedRoot | None:
     """Resolve a tool call's ``project_path`` argument the way agents mean it.
 
     Agents rarely pass a project *root*: they pass a source file they can see

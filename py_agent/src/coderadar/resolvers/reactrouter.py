@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+from coderadar.excludes import iter_project_files as _iter_files
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
-from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -92,17 +93,11 @@ class ReactRouterResolver(FrameworkResolver):
 
     def claims_reference(self, name: str) -> bool:
         parts = name.rsplit(".", 1)[-1]
-        return (
-            parts.endswith("Page")
-            or parts.endswith("View")
-            or parts.endswith("Route")
-            or parts.endswith("Layout")
-            or parts.endswith("Screen")
-        )
+        return parts.endswith(("Page", "View", "Route", "Layout", "Screen"))
 
     def extract(self, file_path: str, source: str) -> FrameworkExtraction:
-        nodes: List[SyntheticNode] = []
-        edges: List[SyntheticEdge] = []
+        nodes: list[SyntheticNode] = []
+        edges: list[SyntheticEdge] = []
 
         ext = Path(file_path).suffix
         if ext not in ('.jsx', '.tsx', '.js', '.ts'):
@@ -212,8 +207,8 @@ class ReactRouterResolver(FrameworkResolver):
         return FrameworkExtraction(file_path=file_path, nodes=nodes, edges=edges)
 
     def resolve(
-        self, ref_name: str, candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        self, ref_name: str, candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         if not candidates:
             return None
         for result in candidates:

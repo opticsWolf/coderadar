@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+from coderadar.excludes import iter_project_files as _iter_files
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
-from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -98,20 +99,21 @@ class SpringBootResolver(FrameworkResolver):
 
     def claims_reference(self, name: str) -> bool:
         parts = name.rsplit(".", 1)[-1]
-        return (
-            parts.endswith("Controller")
-            or parts.endswith("Service")
-            or parts.endswith("Repository")
-            or parts.endswith("Component")
-            or parts.endswith("Handler")
-            or parts.endswith("Resource")
-            or parts.endswith("Facade")
-            or "ServiceImpl" in parts
-        )
+        return parts.endswith(
+            (
+                "Controller",
+                "Service",
+                "Repository",
+                "Component",
+                "Handler",
+                "Resource",
+                "Facade",
+            )
+        ) or "ServiceImpl" in parts
 
     def extract(self, file_path: str, source: str) -> FrameworkExtraction:
-        nodes: List[SyntheticNode] = []
-        edges: List[SyntheticEdge] = []
+        nodes: list[SyntheticNode] = []
+        edges: list[SyntheticEdge] = []
 
         if not file_path.endswith('.java'):
             return FrameworkExtraction(file_path=file_path)
@@ -184,7 +186,7 @@ class SpringBootResolver(FrameworkResolver):
 
         return FrameworkExtraction(file_path=file_path, nodes=nodes, edges=edges)
 
-    def resolve(self, ref_name: str, candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def resolve(self, ref_name: str, candidates: list[dict[str, Any]]) -> dict[str, Any] | None:
         if not candidates:
             return None
         pref_dirs = _HANDLER_DIRS + _SERVICE_DIRS
@@ -214,13 +216,12 @@ class SpringBootResolver(FrameworkResolver):
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _find_class_regions(source: str) -> list[tuple[Optional[str], str, int, int]]:
+def _find_class_regions(source: str) -> list[tuple[str | None, str, int, int]]:
     """Find all @RestController classes and their @RequestMapping base paths.
 
     Returns: list of (class_name, base_path, start_pos, end_pos)
     """
-    regions: list[tuple[Optional[str], str, int, int]] = []
-    prev_end = 0
+    regions: list[tuple[str | None, str, int, int]] = []
 
     for m in _CLASS_DECL_RE.finditer(source):
         base_path = m.group(1) or ""
@@ -239,7 +240,7 @@ def _find_class_regions(source: str) -> list[tuple[Optional[str], str, int, int]
     return regions
 
 
-def _class_context(pos: int, regions: list[tuple[Optional[str], str, int, int]]) -> tuple[Optional[str], str]:
+def _class_context(pos: int, regions: list[tuple[str | None, str, int, int]]) -> tuple[str | None, str]:
     """Find the class context for a given position in source."""
     for name, base, start, end in reversed(regions):
         if start <= pos < end:
@@ -247,7 +248,7 @@ def _class_context(pos: int, regions: list[tuple[Optional[str], str, int, int]])
     return None, ""
 
 
-def _find_handler_method(source: str, after_pos: int) -> Optional[str]:
+def _find_handler_method(source: str, after_pos: int) -> str | None:
     window = source[after_pos:after_pos + 500]
     m = _METHOD_DECL_RE.search(window)
     return m.group(1) if m else None

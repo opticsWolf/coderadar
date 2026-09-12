@@ -13,7 +13,6 @@ import threading
 import time
 
 import pytest
-
 from coderadar.mcp import lifecycle
 from coderadar.mcp.lifecycle import (
     HandshakeTimeout,

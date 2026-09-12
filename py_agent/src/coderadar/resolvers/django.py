@@ -7,15 +7,14 @@ patterns, resolves Model/View/Form naming conventions.
 from __future__ import annotations
 
 import ast
-import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .base import (
-    FrameworkResolver,
     FrameworkExtraction,
-    SyntheticNode,
+    FrameworkResolver,
     SyntheticEdge,
+    SyntheticNode,
 )
 
 
@@ -43,12 +42,9 @@ class DjangoResolver(FrameworkResolver):
 
     def claims_reference(self, name: str) -> bool:
         parts = name.rsplit(".", 1)[-1]  # bare class name
-        return (
-            parts.endswith(self.MODEL_SUFFIX)
-            or parts.endswith(self.VIEW_SUFFIX)
-            or parts.endswith(self.FORM_SUFFIX)
-            or name in ("objects", "DoesNotExist", "MultipleObjectsReturned")
-        )
+        return parts.endswith(
+            (self.MODEL_SUFFIX, self.VIEW_SUFFIX, self.FORM_SUFFIX)
+        ) or name in ("objects", "DoesNotExist", "MultipleObjectsReturned")
 
     def extract(self, file_path: str, source: str) -> FrameworkExtraction:
         result = FrameworkExtraction(file_path=file_path)
@@ -75,9 +71,9 @@ class DjangoResolver(FrameworkResolver):
 
         return result
 
-    def _extract_routes(self, value: ast.expr) -> List[SyntheticNode]:
+    def _extract_routes(self, value: ast.expr) -> list[SyntheticNode]:
         """Extract SyntheticNode for each path()/re_path() call."""
-        nodes: List[SyntheticNode] = []
+        nodes: list[SyntheticNode] = []
         if not isinstance(value, (ast.List, ast.Tuple)):
             return nodes
 
@@ -93,9 +89,9 @@ class DjangoResolver(FrameworkResolver):
 
     def _extract_route_edges(
         self, value: ast.expr, file_path: str,
-    ) -> List[SyntheticEdge]:
+    ) -> list[SyntheticEdge]:
         """Create edges from route nodes to their view handlers."""
-        edges: List[SyntheticEdge] = []
+        edges: list[SyntheticEdge] = []
         if not isinstance(value, (ast.List, ast.Tuple)):
             return edges
 
@@ -121,9 +117,9 @@ class DjangoResolver(FrameworkResolver):
 
     def _extract_admin_register(
         self, node: ast.Call, file_path: str,
-    ) -> List[SyntheticEdge]:
+    ) -> list[SyntheticEdge]:
         """Extract edges from admin.site.register(Model)."""
-        edges: List[SyntheticEdge] = []
+        edges: list[SyntheticEdge] = []
 
         # Check for admin.site.register pattern
         if (
@@ -133,8 +129,8 @@ class DjangoResolver(FrameworkResolver):
             and node.func.value.attr == "site"
             and isinstance(node.func.value.value, ast.Name)
             and node.func.value.value.id == "admin"
+            and node.args
         ):
-            if node.args:
                 model_name = self._get_name(node.args[0])
                 if model_name:
                     edges.append(SyntheticEdge(
@@ -152,12 +148,12 @@ class DjangoResolver(FrameworkResolver):
 
     def _extract_drf_router(
         self, node: ast.Call, file_path: str,
-    ) -> List[SyntheticEdge]:
+    ) -> list[SyntheticEdge]:
         """Extract edges from DRF router.register(prefix, ViewSet).
 
         Pattern: router.register(r'users/', UserViewSet, basename='user')
         """
-        edges: List[SyntheticEdge] = []
+        edges: list[SyntheticEdge] = []
         call_name = self._get_call_name(node)
         if call_name != "register":
             return edges
@@ -182,7 +178,7 @@ class DjangoResolver(FrameworkResolver):
             ))
         return edges
 
-    def _parse_route_call(self, call: ast.Call) -> Optional[SyntheticNode]:
+    def _parse_route_call(self, call: ast.Call) -> SyntheticNode | None:
         """Parse a path()/re_path() call into a SyntheticNode."""
         if not call.args:
             return None
@@ -191,7 +187,7 @@ class DjangoResolver(FrameworkResolver):
         if not route_pattern:
             return None
 
-        metadata: Dict[str, Any] = {"pattern": route_pattern}
+        metadata: dict[str, Any] = {"pattern": route_pattern}
 
         for kw in call.keywords:
             if kw.arg == "name":
@@ -207,7 +203,7 @@ class DjangoResolver(FrameworkResolver):
             metadata=metadata,
         )
 
-    def _get_route_handler(self, call: ast.Call) -> Optional[str]:
+    def _get_route_handler(self, call: ast.Call) -> str | None:
         """Get the view handler name from a path() call.
 
         Strips .as_view() suffix for Django class-based views.
@@ -222,7 +218,7 @@ class DjangoResolver(FrameworkResolver):
         return None
 
     @staticmethod
-    def _strip_as_view(handler: Optional[str]) -> Optional[str]:
+    def _strip_as_view(handler: str | None) -> str | None:
         """Remove .as_view() suffix from Django CBV handlers.
 
         views.MyView.as_view → views.MyView
@@ -232,8 +228,8 @@ class DjangoResolver(FrameworkResolver):
         return handler
 
     def resolve(
-        self, ref_name: str, candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        self, ref_name: str, candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         """Resolve Django naming conventions against search candidates.
 
         *Model → prefer matches in models.py
@@ -266,7 +262,7 @@ class DjangoResolver(FrameworkResolver):
     # ── AST Helpers ─────────────────────────────────────────────────
 
     @staticmethod
-    def _get_call_name(call: ast.Call) -> Optional[str]:
+    def _get_call_name(call: ast.Call) -> str | None:
         """Get the function name from a call."""
         if isinstance(call.func, ast.Name):
             return call.func.id
@@ -275,7 +271,7 @@ class DjangoResolver(FrameworkResolver):
         return None
 
     @staticmethod
-    def _get_name(node: ast.expr) -> Optional[str]:
+    def _get_name(node: ast.expr) -> str | None:
         """Get a dotted name from an AST expression."""
         if isinstance(node, ast.Name):
             return node.id
@@ -287,7 +283,7 @@ class DjangoResolver(FrameworkResolver):
         return None
 
     @staticmethod
-    def _get_string_value(node: ast.expr) -> Optional[str]:
+    def _get_string_value(node: ast.expr) -> str | None:
         """Get a string literal value."""
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             return node.value

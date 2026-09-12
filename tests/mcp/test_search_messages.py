@@ -12,8 +12,8 @@ import os
 from pathlib import Path
 
 import pytest
-
-from coderadar.mcp import lazy, server as server_mod, startup
+from coderadar.mcp import lazy, startup
+from coderadar.mcp import server as server_mod
 
 try:
     from coderadar._core import analyze as _analyze
@@ -56,8 +56,8 @@ def test_single_token_miss_names_the_match_scope():
 
 def test_empty_query_still_asks_for_one(project):
     # Needs a loaded graph: the requires_index guard answers first otherwise.
-    from coderadar.mcp.server import _search
     import coderadar
+    from coderadar.mcp.server import _search
     msg = _search(coderadar.CodeGraph(), "   ", None, 10)
     assert "Please provide a query" in msg
 

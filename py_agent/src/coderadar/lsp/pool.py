@@ -6,12 +6,12 @@ kept synchronized via didOpen/didChange on ingestion.
 
 from __future__ import annotations
 
-import structlog
-import os
 import subprocess
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+import structlog
 
 logger = structlog.get_logger(__name__)
 
@@ -40,7 +40,7 @@ class LSPPool:
                  timeout_ms: int = 5000,
                  result_ttl_s: int = 300,
                  override_threshold: float = 0.90,
-                 server_commands: Optional[Dict[str, str]] = None):
+                 server_commands: dict[str, str] | None = None):
         self.enabled = enabled
         self.idle_timeout_s = idle_timeout_s
         self.timeout_ms = timeout_ms
@@ -53,15 +53,15 @@ class LSPPool:
             "go": "gopls",
         }
 
-        self._servers: Dict[str, ManagedServer] = {}
-        self._cache: Dict[tuple, Any] = {}
-        self._last_activity: Dict[str, float] = {}
+        self._servers: dict[str, ManagedServer] = {}
+        self._cache: dict[tuple, Any] = {}
+        self._last_activity: dict[str, float] = {}
 
     def is_enabled(self, language: str) -> bool:
         """Check if LSP is enabled for a language."""
         return self.enabled and language in self.server_commands
 
-    def ensure_server(self, language: str, workspace_root: str) -> Optional[ManagedServer]:
+    def ensure_server(self, language: str, workspace_root: str) -> ManagedServer | None:
         """Get or create a managed LSP server for a language."""
         if not self.is_enabled(language):
             return None
@@ -103,7 +103,7 @@ class LSPPool:
 
     def definition(self, path: str, line: int, col: int,
                    content_hash: str, language: str,
-                   workspace_root: str) -> Optional[LSPOverride]:
+                   workspace_root: str) -> LSPOverride | None:
         """Look up the definition of a symbol at a position."""
         if not self.is_enabled(language):
             return None
@@ -125,10 +125,10 @@ class LSPPool:
         return result
 
     def override_batch(
-        self, low_confidence_edges: List[Any]
-    ) -> List[LSPOverride]:
+        self, low_confidence_edges: list[Any]
+    ) -> list[LSPOverride]:
         """Only consulted for edges the Rust engine resolved below override_threshold."""
-        overrides: List[LSPOverride] = []
+        overrides: list[LSPOverride] = []
         for edge in low_confidence_edges:
             lsp_result = self.definition(
                 edge.file, edge.line, edge.column, edge.content_hash,
@@ -170,8 +170,8 @@ class ManagedServer:
     language: str
     command: str
     workspace_root: str
-    _process: Optional[subprocess.Popen] = None
-    _open_files: Dict[str, int] = field(default_factory=dict)
+    _process: subprocess.Popen | None = None
+    _open_files: dict[str, int] = field(default_factory=dict)
 
     def is_open(self, path: str) -> bool:
         return path in self._open_files
@@ -190,8 +190,8 @@ class ManagedServer:
         """Send textDocument/didChange notification."""
         self._open_files[path] = version
 
-    def request(self, method: str, params: Dict[str, Any],
-                timeout: float = 5.0) -> Optional[Any]:
+    def request(self, method: str, params: dict[str, Any],
+                timeout: float = 5.0) -> Any | None:
         """Send a JSON-RPC request to the LSP server."""
         # In production: communicate over stdio with JSON-RPC
         return None

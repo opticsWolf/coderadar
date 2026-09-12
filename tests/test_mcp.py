@@ -14,8 +14,8 @@ Usage:
     pytest tests/test_mcp.py -v -k "test_agent"
 """
 
-import sys
 import os
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "py_agent" / "src"))
@@ -58,7 +58,6 @@ class TestMCPCreation:
 
     def test_create_server_has_correct_name_and_version(self):
         import coderadar
-
         from coderadar.mcp.server import create_server
         server = create_server(None)
         assert server.name == "CodeRadar"
@@ -347,8 +346,9 @@ class TestMCPServerRoundTrip:
 
     def test_call_tool_search(self):
         """call_tool dispatches to codegraph_search."""
-        from coderadar.mcp.server import create_server
         import asyncio
+
+        from coderadar.mcp.server import create_server
 
         server = create_server(None)
 
@@ -369,8 +369,9 @@ class TestMCPServerRoundTrip:
 
     def test_call_tool_explore(self):
         """call_tool dispatches to codegraph_explore."""
-        from coderadar.mcp.server import create_server
         import asyncio
+
+        from coderadar.mcp.server import create_server
 
         server = create_server(None)
 
@@ -389,8 +390,9 @@ class TestMCPServerRoundTrip:
 
     def test_call_tool_node_detail(self):
         """call_tool dispatches to codegraph_node."""
-        from coderadar.mcp.server import create_server
         import asyncio
+
+        from coderadar.mcp.server import create_server
 
         # First find an entity ID
         results = search_entities("User", 3, None)
@@ -416,8 +418,9 @@ class TestMCPServerRoundTrip:
 
     def test_call_tool_affected(self):
         """call_tool dispatches to codegraph_affected."""
-        from coderadar.mcp.server import create_server
         import asyncio
+
+        from coderadar.mcp.server import create_server
 
         results = search_entities("format_username", 3, None)
         assert len(results) > 0
@@ -714,6 +717,7 @@ class TestQueryTimeResolution:
     def test_mcp_tool_registered(self):
         """coderadar_resolve tool is registered on the MCP server."""
         import asyncio
+
         from coderadar.mcp.server import create_server
         server = create_server(None)
         tool_names = [t.name for t in asyncio.run(server.list_tools())]
@@ -818,8 +822,8 @@ class TestModuleChildren:
     @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
     def test_module_children_returns_structure(self):
         analyze(str(E2E_DIR))
-        from coderadar.mcp.server import _module_children
         from coderadar._core import search_entities as _se
+        from coderadar.mcp.server import _module_children
         entries = _se("User", 3, None)
         if entries:
             fp = entries[0].get("file_path", "")
@@ -875,7 +879,8 @@ class TestUninitializedIndex:
             "print(json.dumps(out))"
         )
         proc = subprocess.run([sys.executable, "-c", probe],
-                              capture_output=True, text=True)
+                              capture_output=True, text=True,
+                              check=False)  # returncode asserted on the next line
         assert proc.returncode == 0, proc.stderr
         results = json.loads(proc.stdout.strip().splitlines()[-1])
 
@@ -936,7 +941,6 @@ class TestMutationTools:
         assert go == 'func run() {\nreturn nil\n}\n'
 
     def test_canonical_file_path(self):
-        import os
         from coderadar.mcp.server import _canonical_file_path
         # Relative without prefix gets ./
         assert _canonical_file_path("a/b.py").startswith(".")
@@ -949,10 +953,9 @@ class TestMutationTools:
 
     @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
     def test_create_entity_end_to_end(self, tmp_path):
-        import tempfile
-        from coderadar._core import analyze
         from coderadar import CodeGraph
-        from coderadar.mcp.server import _render_entity_code, _create_entity
+        from coderadar._core import analyze
+        from coderadar.mcp.server import _render_entity_code
 
         # Create a writable target file, then index the directory holding it:
         # the mutation policy confines writes to the indexed root, so the
@@ -976,8 +979,8 @@ class TestMutationTools:
 
     @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
     def test_apply_rejects_stale_write(self, tmp_path):
-        from coderadar._core import analyze
         from coderadar import CodeGraph
+        from coderadar._core import analyze
         target = tmp_path / "stale_mod.py"
         target.write_text("def foo():\n    return 1\n", encoding="utf-8")
         analyze(str(tmp_path))
@@ -997,8 +1000,8 @@ class TestMutationTools:
     def test_apply_refuses_to_write_outside_the_indexed_root(self, tmp_path):
         """apply_mutation takes an arbitrary JSON plan, so containment is
         enforced in the engine, not by the caller that built the plan."""
-        from coderadar._core import analyze
         from coderadar import CodeGraph, MutationEdit, MutationPlan
+        from coderadar._core import analyze
         project = tmp_path / "project"
         project.mkdir()
         (project / "mod.py").write_text("value = 1\n", encoding="utf-8")
@@ -1025,8 +1028,8 @@ class TestMutationTools:
         plan_rename used to look the id up in `projection.functions` first, so a
         class id returned EntityNotFound before the class branch was reached.
         """
-        from coderadar._core import analyze
         from coderadar import CodeGraph
+        from coderadar._core import analyze
         target = tmp_path / "cls_mod.py"
         target.write_text(
             "class Base:\n"
@@ -1058,8 +1061,8 @@ class TestMutationTools:
 
     @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
     def test_rename_unknown_entity_kind_is_reported(self, tmp_path):
-        from coderadar._core import analyze
         from coderadar import CodeGraph
+        from coderadar._core import analyze
         (tmp_path / "empty_mod.py").write_text("x = 1\n", encoding="utf-8")
         analyze(str(tmp_path))
 
@@ -1076,8 +1079,8 @@ class TestMutationTools:
         cannot catch an index that has drifted from disk. Without the span
         check, planning here rewrites three bytes of `def caller():`.
         """
-        from coderadar._core import analyze
         from coderadar import CodeGraph
+        from coderadar._core import analyze
         target = tmp_path / "moved_mod.py"
         target.write_text(
             "def foo():\n    return 1\n\n\ndef caller():\n    return foo()\n",
@@ -1109,8 +1112,8 @@ class TestMutationTools:
     @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
     def test_rename_rejects_stale_definition(self, tmp_path):
         """A definition span that no longer holds the name fails the whole plan."""
-        from coderadar._core import analyze
         from coderadar import CodeGraph
+        from coderadar._core import analyze
         target = tmp_path / "shifted_mod.py"
         target.write_text("def foo():\n    return 1\n", encoding="utf-8")
         analyze(str(tmp_path))
@@ -1124,8 +1127,8 @@ class TestMutationTools:
 
     @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
     def test_apply_rolls_back_tainted_update(self, tmp_path):
+        from coderadar import CodeGraph, MutationEdit, MutationPlan
         from coderadar._core import analyze
-        from coderadar import CodeGraph, MutationPlan, MutationEdit
         target = tmp_path / "taint_mod.py"
         target.write_text("def foo():\n    return 1\n", encoding="utf-8")
         analyze(str(tmp_path))
@@ -1146,8 +1149,8 @@ class TestMutationTools:
         assert target.read_text(encoding="utf-8") == "def foo():\n    return 1\n"
 
     def test_format_mutation_plan_shows_diff(self):
+        from coderadar import MutationEdit, MutationPlan
         from coderadar.mcp.server import _format_mutation_plan
-        from coderadar import MutationPlan, MutationEdit
         plan = MutationPlan(
             id="test-123",
             tool="replace_entity_body",
@@ -1163,8 +1166,8 @@ class TestMutationTools:
         assert "Diff Preview" in result
 
     def test_format_mutation_applied_shows_result(self):
-        from coderadar.mcp.server import _format_mutation_applied
         from coderadar import MutationResult
+        from coderadar.mcp.server import _format_mutation_applied
         result_obj = MutationResult(
             status="Applied",
             files_written=["test.py"],
@@ -1179,8 +1182,8 @@ class TestMutationTools:
         # used to carry the header "## Mutation Applied" plus "Graph has been
         # updated" while the file was untouched. Header, state claims, and
         # status must all derive from one source now.
-        from coderadar.mcp.server import _format_mutation_applied
         from coderadar import MutationResult
+        from coderadar.mcp.server import _format_mutation_applied
         rejected = MutationResult(
             status="RejectedPolicy",
             files_written=[],
@@ -1197,8 +1200,8 @@ class TestMutationTools:
         assert "**Graph updated:** no" in out
 
     def test_format_mutation_stale_explains_recovery(self):
-        from coderadar.mcp.server import _format_mutation_applied
         from coderadar import MutationResult
+        from coderadar.mcp.server import _format_mutation_applied
         stale = MutationResult(status="RejectedStale", files_written=[], syntax_errors=[])
         out = _format_mutation_applied(stale)
         assert "Stale" in out
@@ -1263,8 +1266,8 @@ class TestStalenessBannerFires:
             from coderadar._core import analyze
         except ImportError:
             pytest.skip("Rust _core extension not built")
-        import os
         import time
+
         from coderadar.mcp.server import _get_stale_files
 
         target = tmp_path / "s.py"

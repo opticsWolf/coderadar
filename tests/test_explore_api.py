@@ -20,7 +20,8 @@ import pytest
 
 try:
     import coderadar
-    from coderadar._core import analyze as _analyze, search_entities
+    from coderadar._core import analyze as _analyze
+    from coderadar._core import search_entities
     _CORE = True
 except ImportError:  # pragma: no cover
     _CORE = False

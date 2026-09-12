@@ -52,6 +52,5 @@ class TestScaffoldGolden:
 
     def test_real_logic_is_not_flagged(self):
         findings = find_scaffolding(False, 500)
-        flagged_names = {f.get("label", "") for f in findings}
         assert not any("real_logic" in s for s in
                        [f["snippet"] for f in findings if f["kind"] == "placeholder-body"])

@@ -1,16 +1,16 @@
 """CodeRadar v3.6 — Agent Package"""
 from .graphrag import (
-    GraphRAGPipeline,
+    ContextStrategy,
     GraphRAGContextBuilder,
+    GraphRAGPipeline,
     GraphRAGResult,
     QueryPlanner,
-    ContextStrategy,
 )
 
 __all__ = [
-    "GraphRAGPipeline",
+    "ContextStrategy",
     "GraphRAGContextBuilder",
+    "GraphRAGPipeline",
     "GraphRAGResult",
     "QueryPlanner",
-    "ContextStrategy",
 ]

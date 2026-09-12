@@ -16,7 +16,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from coderadar.visualizers import (
     NothingToVisualize,
     generate_call_graph,
@@ -26,7 +25,8 @@ from coderadar.visualizers import (
 
 try:
     import coderadar
-    from coderadar._core import analyze as _analyze, search_entities
+    from coderadar._core import analyze as _analyze
+    from coderadar._core import search_entities
     _CORE = True
 except ImportError:  # pragma: no cover
     _CORE = False

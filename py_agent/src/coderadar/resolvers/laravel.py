@@ -16,10 +16,11 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+from coderadar.excludes import iter_project_files as _iter_files
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
-from coderadar.excludes import iter_project_files as _iter_files
 
 # ── Regex patterns ──────────────────────────────────────────────────────────
 
@@ -120,17 +121,13 @@ class LaravelResolver(FrameworkResolver):
 
     def claims_reference(self, name: str) -> bool:
         parts = name.rsplit(".", 1)[-1]
-        return (
-            parts.endswith("Controller")
-            or parts.endswith("Service")
-            or parts.endswith("Repository")
-            or parts.endswith("Provider")
-            or parts.endswith("Middleware")
+        return parts.endswith(
+            ("Controller", "Service", "Repository", "Provider", "Middleware")
         )
 
     def extract(self, file_path: str, source: str) -> FrameworkExtraction:
-        nodes: List[SyntheticNode] = []
-        edges: List[SyntheticEdge] = []
+        nodes: list[SyntheticNode] = []
+        edges: list[SyntheticEdge] = []
 
         if not file_path.endswith('.php'):
             return FrameworkExtraction(file_path=file_path)
@@ -227,8 +224,8 @@ class LaravelResolver(FrameworkResolver):
         return FrameworkExtraction(file_path=file_path, nodes=nodes, edges=edges)
 
     def resolve(
-        self, ref_name: str, candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        self, ref_name: str, candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         if not candidates:
             return None
         pref_dirs = _HANDLER_DIRS + _SERVICE_DIRS
@@ -246,7 +243,7 @@ class LaravelResolver(FrameworkResolver):
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
 
-def _parse_handler(expr: str) -> Optional[str]:
+def _parse_handler(expr: str) -> str | None:
     expr = expr.rstrip(',)] ')
 
     m = _CONTROLLER_ARRAY_RE.search(expr)
@@ -280,6 +277,6 @@ def _parse_handler(expr: str) -> Optional[str]:
     return None
 
 
-def _parse_class_ref(expr: str) -> Optional[str]:
+def _parse_class_ref(expr: str) -> str | None:
     m = _CLASS_REF_RE.search(expr)
     return m.group(1) if m else None

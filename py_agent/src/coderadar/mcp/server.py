@@ -18,15 +18,14 @@ Improvements adapted from CodeGraph (MIT License, https://github.com/colbymchenr
 from __future__ import annotations
 
 import functools
-import re
 import os
+import re
 from collections import deque
 from pathlib import Path
-from typing import Any, Literal, Optional
-
-from mcp.server import MCPServer
+from typing import Any, Literal
 
 import structlog
+from mcp.server import MCPServer
 
 logger = structlog.get_logger(__name__)
 
@@ -144,10 +143,10 @@ falling back to grep.
 # (P2-3): `set_project` records the switch against it, so the next launch
 # from the same directory can resume the chosen project. None in tests and
 # directly-constructed servers, where recording is skipped.
-_LAUNCH_CWD: Optional[Path] = None
+_LAUNCH_CWD: Path | None = None
 
 
-def set_launch_cwd(directory: Optional[Path]) -> None:
+def set_launch_cwd(directory: Path | None) -> None:
     """Record the launch directory for the lifetime of this process."""
     global _LAUNCH_CWD
     _LAUNCH_CWD = directory
@@ -204,10 +203,10 @@ def create_server(graph: Any) -> MCPServer:
     )
     def codegraph_explore(
         query: str = "",
-        symbols: Optional[list[str]] = None,
+        symbols: list[str] | None = None,
         direction: Literal["downstream", "upstream", "both"] = "both",
         max_files: int = 8,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Primary code exploration tool."""
         mismatch = _wrong_project(project_path)
@@ -235,7 +234,7 @@ def create_server(graph: Any) -> MCPServer:
     def codegraph_node(
         id: str,
         include_neighbors: bool = False,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Depth drill-down for a single entity."""
         mismatch = _wrong_project(project_path)
@@ -262,9 +261,9 @@ def create_server(graph: Any) -> MCPServer:
     )
     def codegraph_search(
         query: str,
-        kind: Optional[str] = None,
+        kind: str | None = None,
         top_k: int = 10,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Symbol discovery via keyword search."""
         mismatch = _wrong_project(project_path)
@@ -295,7 +294,7 @@ def create_server(graph: Any) -> MCPServer:
     def codegraph_affected(
         id: str,
         max_depth: int = 5,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Transitive impact analysis."""
         mismatch = _wrong_project(project_path)
@@ -325,7 +324,7 @@ def create_server(graph: Any) -> MCPServer:
     def coderadar_resolve(
         name: str,
         limit: int = 5,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Framework-aware reference resolution."""
         mismatch = _wrong_project(project_path)
@@ -353,7 +352,7 @@ def create_server(graph: Any) -> MCPServer:
     )
     def codegraph_query(
         query: str,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Execute a Pest graph query."""
         mismatch = _wrong_project(project_path)
@@ -383,7 +382,7 @@ def create_server(graph: Any) -> MCPServer:
     def codegraph_search_similar(
         query: str,
         top_k: int = 10,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Semantic similarity search."""
         mismatch = _wrong_project(project_path)
@@ -412,7 +411,7 @@ def create_server(graph: Any) -> MCPServer:
         },
     )
     def codegraph_compute_embeddings(
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Compute embeddings for semantic search."""
         mismatch = _wrong_project(project_path)
@@ -438,7 +437,7 @@ def create_server(graph: Any) -> MCPServer:
     )
     def codegraph_module_children(
         module_id: str,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """List module children."""
         mismatch = _wrong_project(project_path)
@@ -466,8 +465,8 @@ def create_server(graph: Any) -> MCPServer:
     def codegraph_as_of(
         timestamp: str,
         query: str = "",
-        symbols: Optional[list[str]] = None,
-        project_path: Optional[str] = None,
+        symbols: list[str] | None = None,
+        project_path: str | None = None,
     ) -> str:
         """Temporal graph query."""
         mismatch = _wrong_project(project_path)
@@ -497,9 +496,9 @@ def create_server(graph: Any) -> MCPServer:
     def codegraph_traverse(
         entity_id: str,
         direction: Literal["downstream", "upstream", "both"] = "both",
-        edge_kinds: Optional[list[str]] = None,
+        edge_kinds: list[str] | None = None,
         max_depth: int = 3,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Generic edge traversal."""
         mismatch = _wrong_project(project_path)
@@ -533,9 +532,9 @@ def create_server(graph: Any) -> MCPServer:
         },
     )
     def codegraph_get_smells(
-        entity_id: Optional[str] = None,
-        rule_id: Optional[str] = None,
-        project_path: Optional[str] = None,
+        entity_id: str | None = None,
+        rule_id: str | None = None,
+        project_path: str | None = None,
         strictness: str = "normal",
     ) -> str:
         """Detect architectural code smells."""
@@ -572,7 +571,7 @@ def create_server(graph: Any) -> MCPServer:
     )
     @requires_index
     def codegraph_dead_code(
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
         min_confidence: float = 0.6,
         include_test_reachable: bool = False,
         max_findings: int = 100,
@@ -605,7 +604,7 @@ def create_server(graph: Any) -> MCPServer:
     )
     @requires_index
     def codegraph_find_clones(
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
         min_lines: int = 10,
         min_similarity: float = 0.8,
         max_groups: int = 100,
@@ -638,7 +637,7 @@ def create_server(graph: Any) -> MCPServer:
     )
     @requires_index
     def codegraph_find_scaffolding(
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
         include_secrets: bool = False,
         max_findings: int = 100,
     ) -> str:
@@ -674,9 +673,9 @@ def create_server(graph: Any) -> MCPServer:
     def coderadar_replace_body(
         entity_id: str,
         new_body: str,
-        expected_hash: Optional[str] = None,
+        expected_hash: str | None = None,
         dry_run: bool = True,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Replace a function body."""
         mismatch = _wrong_project(project_path)
@@ -709,7 +708,7 @@ def create_server(graph: Any) -> MCPServer:
         new_signature: str,
         inject_defaults: bool = False,
         dry_run: bool = True,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Change a function signature."""
         mismatch = _wrong_project(project_path)
@@ -739,7 +738,7 @@ def create_server(graph: Any) -> MCPServer:
         entity_id: str,
         new_name: str,
         dry_run: bool = True,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Rename an entity."""
         mismatch = _wrong_project(project_path)
@@ -777,11 +776,11 @@ def create_server(graph: Any) -> MCPServer:
         kind: str,
         name: str,
         body: str,
-        decorators: Optional[list[str]] = None,
+        decorators: list[str] | None = None,
         anchor: str = "end",
-        signature: Optional[str] = None,
+        signature: str | None = None,
         dry_run: bool = True,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Create a new entity."""
         mismatch = _wrong_project(project_path)
@@ -811,7 +810,7 @@ def create_server(graph: Any) -> MCPServer:
     )
     def codegraph_reindex(
         with_embeddings: bool = False,
-        project_path: Optional[str] = None,
+        project_path: str | None = None,
     ) -> str:
         """Full reindex with optional embeddings."""
         mismatch = _wrong_project(project_path)
@@ -840,8 +839,8 @@ def create_server(graph: Any) -> MCPServer:
     )
     def codegraph_update_file(
         file_path: str,
-        content: Optional[str] = None,
-        project_path: Optional[str] = None,
+        content: str | None = None,
+        project_path: str | None = None,
     ) -> str:
         """Incrementally sync one file."""
         mismatch = _wrong_project(project_path)
@@ -958,8 +957,10 @@ def _format_stale_banner(stale_files: list[dict], referenced_paths: list[str]) -
         return ""
 
     lines = [
-        "⚠️ Some files referenced below were edited since the last index sync — "
-        "their codegraph entries may be stale:",
+        (
+            "⚠️ Some files referenced below were edited since the last index sync — "
+            "their codegraph entries may be stale:"
+        ),
     ]
     for s in relevant:
         lines.append(f"  - {s['path']}")
@@ -1152,7 +1153,7 @@ def _served_root() -> Path:
     return retry.resolved.path if retry is not None else Path.cwd().resolve()
 
 
-def _wrong_project(project_path: Optional[str]) -> Optional[str]:
+def _wrong_project(project_path: str | None) -> str | None:
     """Answer honestly when a tool is asked about a project we are not serving.
 
     Every tool takes an optional `project_path` because agents working across
@@ -1173,7 +1174,6 @@ def _wrong_project(project_path: Optional[str]) -> Optional[str]:
     if not project_path:
         return None
 
-    from coderadar.mcp import lazy
     from coderadar.mcp.roots import resolve_selector
 
     selected = resolve_selector(project_path)
@@ -1221,27 +1221,35 @@ def _no_index_message() -> str:
 
     resolved = retry.resolved
     lines = [
-        f"No code was indexed under `{resolved.path}`, which is where this "
-        f"server is serving from (chosen from: {resolved.source}).",
+        (
+            f"No code was indexed under `{resolved.path}`, which is where this "
+            f"server is serving from (chosen from: {resolved.source})."
+        ),
         "",
     ]
     if resolved.confirmed:
         lines += [
-            "That directory does carry a `.coderadar` marker, so it is very "
-            "likely the right project and simply has no indexed code yet.",
+            (
+                "That directory does carry a `.coderadar` marker, so it is very "
+                "likely the right project and simply has no indexed code yet."
+            ),
             "",
             "Run `codegraph_reindex` to index it now.",
         ]
     else:
         lines += [
-            "Nothing on disk confirmed that directory as a project root — no "
-            "`.coderadar/` or `.coderadar.toml` was found at or above it.",
+            (
+                "Nothing on disk confirmed that directory as a project root — no "
+                "`.coderadar/` or `.coderadar.toml` was found at or above it."
+            ),
             "",
-            "If that is the wrong project, call `codegraph_set_project` with "
-            "the right directory to switch this server there, restart with "
-            "`coderadar mcp serve --path <project root>`, or run "
-            "`coderadar init` in the right directory so it can be found "
-            "automatically.",
+            (
+                "If that is the wrong project, call `codegraph_set_project` with "
+                "the right directory to switch this server there, restart with "
+                "`coderadar mcp serve --path <project root>`, or run "
+                "`coderadar init` in the right directory so it can be found "
+                "automatically."
+            ),
             "",
             "If it is the right project, run `codegraph_reindex` to index it.",
         ]
@@ -1681,7 +1689,7 @@ def _affected(graph: Any, entity_id: str, max_depth: int) -> str:
     # keeps BFS order.
     centrality: dict[str, float] = {}
     try:
-        from coderadar._core import rank_by_centrality  # noqa: PLC0415
+        from coderadar._core import rank_by_centrality
 
         all_ids = [e.get("id", "") for group in tree.values() for e in group]
         if all_ids:
@@ -1765,7 +1773,7 @@ def _query_graph(graph: Any, query: str) -> str:
         if len(rows) > 30:
             lines.append(f"... and {len(rows) - 30} more")
         return "\n".join(lines)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return f"Query failed: {e}"
 
 
@@ -1794,7 +1802,7 @@ def _compute_embeddings(graph: Any) -> str:
             f"- **Errors:** {metrics.get('errors', 0)}\n\n"
             f"Semantic search (codegraph_search_similar) is now available."
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return f"Embedding generation failed: {e}\n\nEnsure fastembed is installed: pip install fastembed"
 
 
@@ -1803,6 +1811,7 @@ def _get_embedding_model():
     global _EMBED_MODEL
     if _EMBED_MODEL is None:
         from fastembed import TextEmbedding
+
         from coderadar.embedding import embedding_settings
         model_name, _dimension = embedding_settings()
         _EMBED_MODEL = TextEmbedding(model_name=model_name)
@@ -1817,14 +1826,14 @@ def _search_similar(graph: Any, query: str, top_k: int) -> str:
 
     # Try to embed the query using a cached fastembed model
     try:
-        embedding = list(_get_embedding_model().embed([query]))[0]
+        embedding = next(iter(_get_embedding_model().embed([query])))
     except ImportError:
         return (
             "Semantic search requires `fastembed` to be installed. "
             "Run: pip install fastembed\n"
             "Then run compute_embeddings() to index all entities."
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return f"Embedding failed: {e}"
 
     try:
@@ -1833,9 +1842,9 @@ def _search_similar(graph: Any, query: str, top_k: int) -> str:
     except RuntimeError:
         # No embeddings in index — try to auto-compute
         try:
-            metrics = graph.compute_embeddings()
+            graph.compute_embeddings()
             results = _ss(list(embedding), min(top_k, 20))
-        except Exception:
+        except Exception:  # noqa: BLE001 - auto-compute is best-effort, message covers it
             return (
                 "No embeddings found and auto-computation failed. "
                 "Run codegraph_compute_embeddings first, or "
@@ -1883,7 +1892,7 @@ def _module_children(graph: Any, module_id: str) -> str:
     try:
         from coderadar._core import module_children as _mc
         children = _mc(module_id)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return f"Module `{module_id}` not found or error: {e}"
 
     total = sum(len(children.get(k, [])) for k in ("classes", "functions", "imports", "constants"))
@@ -1934,7 +1943,7 @@ def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
 
     try:
         snapshot = graph.as_of(timestamp)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return f"Temporal query failed: {e}. Ensure Macrame snapshots are enabled."
 
     names = _parse_names(query, symbols)
@@ -1947,13 +1956,17 @@ def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
         lines = [
             f"## Snapshot at `{timestamp}`",
             "",
-            "Pass `symbols` to look entities up as they were at this "
-            "timestamp — for example "
-            f'codegraph_as_of(timestamp="{timestamp}", symbols=["User"]).',
+            (
+                "Pass `symbols` to look entities up as they were at this "
+                "timestamp — for example "
+                f'codegraph_as_of(timestamp="{timestamp}", symbols=["User"]).'
+            ),
             "",
-            "Only symbol lookup is reconstructed from the ledger. "
-            "`codegraph_query` and `codegraph_search` always run against the "
-            "current index.",
+            (
+                "Only symbol lookup is reconstructed from the ledger. "
+                "`codegraph_query` and `codegraph_search` always run against the "
+                "current index."
+            ),
         ]
         return "\n".join(lines)
 
@@ -1981,7 +1994,8 @@ def _find_clones(
 ) -> str:
     """Run clone detection and render groups ranked by size."""
     try:
-        from coderadar._core import find_clones as _find_clones_rust, graph_stats
+        from coderadar._core import find_clones as _find_clones_rust
+        from coderadar._core import graph_stats
         stats = graph_stats()
         if stats.get("functions", 0) == 0:
             return _no_index_message()
@@ -1994,9 +2008,10 @@ def _find_clones(
         groups = _find_clones_rust(min_lines, min_similarity, max_groups)
     except (ValueError, TypeError) as e:
         return f"Invalid request: {e}"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return f"Clone detection failed: {e}"
-    except BaseException as e:
+    except BaseException as e:  # noqa: BLE001 - PyO3 PanicException derives from BaseException (F1)
+
         # PyO3 PanicException derives from BaseException, not Exception —
         # without this the F1 LSH off-by-one panic escapes every handler
         # and wedges the stdio session with no reply. Surface it as an
@@ -2035,7 +2050,8 @@ def _find_clones(
 def _find_scaffolding(include_secrets: bool = False, max_findings: int = 100) -> str:
     """Run the scaffold scanner and render grouped findings."""
     try:
-        from coderadar._core import find_scaffolding as _find_scaffolding_rust, graph_stats
+        from coderadar._core import find_scaffolding as _find_scaffolding_rust
+        from coderadar._core import graph_stats
         stats = graph_stats()
         if stats.get("functions", 0) == 0:
             return _no_index_message()
@@ -2046,7 +2062,7 @@ def _find_scaffolding(include_secrets: bool = False, max_findings: int = 100) ->
 
     try:
         findings = _find_scaffolding_rust(include_secrets, max_findings)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return f"Scaffold scan failed: {e}"
 
     if not findings:
@@ -2089,7 +2105,8 @@ def _dead_code(
 ) -> str:
     """Run dead-code detection and render ranked, deletability-sorted findings."""
     try:
-        from coderadar._core import find_dead_code as _find_dead_code_rust, graph_stats
+        from coderadar._core import find_dead_code as _find_dead_code_rust
+        from coderadar._core import graph_stats
         stats = graph_stats()
         if stats.get("functions", 0) == 0:
             return _no_index_message()
@@ -2102,7 +2119,7 @@ def _dead_code(
         findings = _find_dead_code_rust(min_confidence, include_test_reachable, max_findings)
     except (ValueError, TypeError) as e:
         return f"Invalid request: {e}"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return f"Dead-code detection failed: {e}"
 
     if not findings:
@@ -2135,7 +2152,8 @@ def _get_smells(
 ) -> str:
     """Run the native smell engine and render findings as markdown."""
     try:
-        from coderadar._core import get_smells as _get_smells_rust, graph_stats
+        from coderadar._core import get_smells as _get_smells_rust
+        from coderadar._core import graph_stats
         stats = graph_stats()
         if stats.get("functions", 0) == 0 and stats.get("classes", 0) == 0:
             return _no_index_message()
@@ -2154,7 +2172,7 @@ def _get_smells(
         # Unknown strictness values are rejected loudly by the core — surface
         # them as-is rather than dressing them up as an engine failure.
         return f"Invalid request: {e}"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return f"Smell detection failed: {e}"
 
     if not findings:
@@ -2220,14 +2238,14 @@ def _traverse(
 
     try:
         results = graph.traverse(entity_id, depth, edge_kinds, macrame_direction)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return f"Traversal failed: {e}"
 
     # 2.3: surface silent truncation — count targets the walk could not follow.
     try:
         from coderadar._core import traverse_unresolved
         unresolved = traverse_unresolved(entity_id, depth, edge_kinds or [], macrame_direction)
-    except Exception:
+    except Exception:  # noqa: BLE001 - truncation count is best-effort, 0 means "unknown"
         unresolved = 0
 
     if not results:
@@ -2244,8 +2262,10 @@ def _traverse(
 
     lines = [
         f"## Traverse from `{entity.get('name', entity_id)}`",
-        f"Direction: {direction}, max depth: {depth}, "
-        f"edge kinds: {edge_kinds or 'all'}",
+        (
+            f"Direction: {direction}, max depth: {depth}, "
+            f"edge kinds: {edge_kinds or 'all'}"
+        ),
         f"Found {len(results)} reachable entities",
         "",
     ]
@@ -2327,7 +2347,7 @@ def _replace_body(
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
         result = graph.apply(plan)
         return _format_mutation_applied(result, plan.unverified_sites)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return _format_mutation_error(e)
 
 
@@ -2346,7 +2366,7 @@ def _update_signature(
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
         result = graph.apply(plan)
         return _format_mutation_applied(result, plan.unverified_sites)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return _format_mutation_error(e)
 
 
@@ -2360,7 +2380,7 @@ def _rename(graph: Any, entity_id: str, new_name: str, dry_run: bool) -> str:
             return _format_mutation_plan(plan) + "\n**To apply:** call again with `dry_run=False`."
         result = graph.apply(plan)
         return _format_mutation_applied(result, plan.unverified_sites)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return _format_mutation_error(e)
 
 
@@ -2452,7 +2472,7 @@ def _canonical_file_path(file_path: str) -> str:
             return '.' + os.sep + os.path.relpath(file_path, os.getcwd())
         except ValueError:
             return file_path
-    if file_path.startswith('./') or file_path.startswith('.\\'):
+    if file_path.startswith(('./', '.\\')):
         return file_path
     return '.' + os.sep + file_path
 
@@ -2487,7 +2507,7 @@ def _create_entity(
                     + "\n**To apply:** call again with `dry_run=False`.")
         result = graph.apply(plan)
         return note + _format_mutation_applied(result, plan.unverified_sites)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return _format_mutation_error(e)
 
 
@@ -2501,8 +2521,7 @@ def _format_mutation_plan(plan: Any) -> str:
         lines.append("")
         lines.append("### Diff Preview")
         lines.append("```diff")
-        for line in plan.diff_preview.split("\n")[:60]:
-            lines.append(line)
+        lines.extend(plan.diff_preview.split("\n")[:60])
         if len(plan.diff_preview.split("\n")) > 60:
             lines.append("...")
         lines.append("```")
@@ -2623,12 +2642,12 @@ def _reindex(graph: Any, with_embeddings: bool = False) -> str:
                 emb_metrics = graph.compute_embeddings()
                 lines.append(f"- **Embeddings generated:** {emb_metrics.get('generated', 0)}")
                 lines.append(f"- **Embeddings cached:** {emb_metrics.get('cached', 0)}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - diagnose reports, never raises on embeddings
                 lines.append(f"- **Embeddings:** failed — {e}")
         return "\n".join(lines)
     except ImportError:
         return "CodeRadar extension not available."
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return f"Reindex failed: {e}"
 
 
@@ -2671,7 +2690,7 @@ def _update_file(graph: Any, file_path: str, content: str | None) -> str:
             f"- **File:** `{file_path}`\n"
             f"- Graph refreshed from {'provided content' if content else 'disk'}.\n"
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
         return f"Update failed: {e}"
 
 
@@ -2764,8 +2783,7 @@ def _friendly_entity_id(entity_id: str) -> str:
     the stored form already uses forward slashes.
     """
     friendly = entity_id.replace('\\', '/')
-    if friendly.startswith('./'):
-        friendly = friendly[2:]
+    friendly = friendly.removeprefix('./')
     return friendly
 
 
@@ -2804,8 +2822,7 @@ def _canonical_entity_id(entity_id: str) -> str:
     # "{optional .<sep> prefix}{path in <sep>}::{name}", so normalise to a
     # slash base and try every {bare, prefixed} x {slash, backslash} combo.
     base = entity_id.replace('\\', '/')
-    if base.startswith('./'):
-        base = base[2:]
+    base = base.removeprefix('./')
     for sep, prefix in (('/', './'), ('\\', '.\\')):
         body = base.replace('/', sep)
         candidates.append(body)
@@ -2921,8 +2938,8 @@ def _resolve_ref(graph: Any, name: str, limit: int) -> str:
         return f"No handler found for route `{name}`. Try codegraph_search."
 
     # Framework-level reference resolution
-    from coderadar.resolvers.resolution import resolve_reference
     from coderadar.resolvers import ALL_RESOLVERS
+    from coderadar.resolvers.resolution import resolve_reference
     results = resolve_reference(name, _searcher, ALL_RESOLVERS, limit=limit)
 
     if not results:

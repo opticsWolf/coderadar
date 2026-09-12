@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .base import FrameworkExtraction, FrameworkResolver, SyntheticEdge, SyntheticNode
 
@@ -90,25 +90,17 @@ class RailsResolver(FrameworkResolver):
 
     def claims_reference(self, name: str) -> bool:
         parts = name.rsplit(".", 1)[-1]
-        return (
-            parts.endswith("Controller")
-            or parts.endswith("Model")
-            or parts.endswith("Record")
-        )
+        return parts.endswith(("Controller", "Model", "Record"))
 
     def extract(self, file_path: str, source: str) -> FrameworkExtraction:
-        nodes: List[SyntheticNode] = []
-        edges: List[SyntheticEdge] = []
+        nodes: list[SyntheticNode] = []
+        edges: list[SyntheticEdge] = []
 
         if not file_path.endswith('.rb'):
             return FrameworkExtraction(file_path=file_path)
 
         class_match = _CLASS_RE.search(source)
         class_name = class_match.group(1) if class_match else None
-        is_model = bool(
-            class_match
-            and ('ActiveRecord' in class_match.group(0) or 'ApplicationRecord' in class_match.group(0))
-        )
         is_controller = bool(
             class_match
             and 'ApplicationController' in class_match.group(0)
@@ -192,8 +184,8 @@ class RailsResolver(FrameworkResolver):
         return FrameworkExtraction(file_path=file_path, nodes=nodes, edges=edges)
 
     def resolve(
-        self, ref_name: str, candidates: List[Dict[str, Any]],
-    ) -> Optional[Dict[str, Any]]:
+        self, ref_name: str, candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         if not candidates:
             return None
         pref_dirs = _HANDLER_DIRS + _SERVICE_DIRS

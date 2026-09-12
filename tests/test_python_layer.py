@@ -16,14 +16,11 @@ Usage:
     pytest tests/ -v -k "test_config"
 """
 
-import os
 import sys
-import json
 import time
-import tempfile
-import textwrap
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from typing import ClassVar
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -73,7 +70,10 @@ class TestConfigLoading:
     def test_custom_config_override(self):
         """Pydantic model should accept field overrides."""
         from coderadar.config import (
-            CodeRadarConfig, ImportGraphConfig, ProjectConfig, ResolutionConfig
+            CodeRadarConfig,
+            ImportGraphConfig,
+            ProjectConfig,
+            ResolutionConfig,
         )
         cfg = CodeRadarConfig(
             project=ProjectConfig(roots=["src/", "lib/"]),
@@ -275,8 +275,9 @@ class TestEmbeddingDedup:
 
         # Both _get_cached AND _model_embed must be mocked to avoid
         # loading the real fastembed model.
-        with patch.object(dedup, "_get_cached", return_value=[0.1] * 896):
-            with patch.object(dedup, "_model_embed", return_value=[]):
+        with patch.object(dedup, "_get_cached", return_value=[0.1] * 896), patch.object(
+            dedup, "_model_embed", return_value=[]
+        ):
                 results = dedup.embed_batch([target], mock_db)
                 # cache hit → embedding not recomputed
                 assert results == [None]
@@ -290,8 +291,9 @@ class TestEmbeddingDedup:
 
         target = EmbedTarget("fn2", "def bar(): pass", "hash456", "function")
 
-        with patch.object(dedup, "_get_cached", return_value=None):
-            with patch.object(dedup, "_model_embed", return_value=[[0.5] * 896]):
+        with patch.object(dedup, "_get_cached", return_value=None), patch.object(
+            dedup, "_model_embed", return_value=[[0.5] * 896]
+        ):
                 results = dedup.embed_batch([target], mock_db)
                 assert len(results) == 1
                 assert results[0] is not None
@@ -305,6 +307,7 @@ class TestEmbeddingDedup:
         silently and permanently poisoned. It must fail loudly instead.
         """
         import builtins
+
         from coderadar.embedding.dedup import EmbeddingDedup, EmbeddingUnavailable
 
         dedup = EmbeddingDedup()
@@ -315,22 +318,24 @@ class TestEmbeddingDedup:
                 raise ImportError("No module named 'fastembed'")
             return real_import(name, *args, **kwargs)
 
-        with patch.object(builtins, "__import__", no_fastembed):
-            with pytest.raises(EmbeddingUnavailable):
+        with patch.object(builtins, "__import__", no_fastembed), pytest.raises(
+            EmbeddingUnavailable
+        ):
                 dedup._model_embed(["def foo(): pass"])
 
     def test_embed_batch_propagates_the_unavailable_model(self):
         """The failure must reach the caller, not be swallowed into a batch."""
         from coderadar.embedding.dedup import (
-            EmbeddingDedup, EmbedTarget, EmbeddingUnavailable,
+            EmbeddingDedup,
+            EmbeddingUnavailable,
+            EmbedTarget,
         )
         dedup = EmbeddingDedup()
         target = EmbedTarget("fn3", "def baz(): pass", "hash789", "function")
 
-        with patch.object(dedup, "_get_cached", return_value=None):
-            with patch.object(dedup, "_model_embed",
-                              side_effect=EmbeddingUnavailable("no model")):
-                with pytest.raises(EmbeddingUnavailable):
+        with patch.object(dedup, "_get_cached", return_value=None), patch.object(
+            dedup, "_model_embed", side_effect=EmbeddingUnavailable("no model")
+        ), pytest.raises(EmbeddingUnavailable):
                     dedup.embed_batch([target], MagicMock())
 
 
@@ -676,9 +681,9 @@ class TestCodeRadarAPI:
         """Looping set_embedding cloned the whole projection per entity."""
         pytest.importorskip("fastembed")
         try:
-            from coderadar._core import analyze
             import coderadar._core as core
             from coderadar import CodeGraph
+            from coderadar._core import analyze
         except ImportError:
             pytest.skip("Rust _core extension not built")
         from pathlib import Path
@@ -702,8 +707,8 @@ class TestCodeRadarAPI:
 
     def test_update_file_reports_failure(self):
         try:
-            from coderadar._core import analyze
             from coderadar import CodeGraph
+            from coderadar._core import analyze
         except ImportError:
             pytest.skip("Rust _core extension not built")
         from pathlib import Path
@@ -718,8 +723,8 @@ class TestCodeRadarAPI:
     def test_update_file_reports_a_recovered_parse(self, tmp_path):
         """The report used to be hardcoded clean, so this branch was dead."""
         try:
-            from coderadar._core import analyze
             from coderadar import CodeGraph
+            from coderadar._core import analyze
         except ImportError:
             pytest.skip("Rust _core extension not built")
         target = tmp_path / "recovered.py"
@@ -734,8 +739,8 @@ class TestCodeRadarAPI:
 
     def test_update_file_reports_real_timing_on_a_clean_parse(self, tmp_path):
         try:
-            from coderadar._core import analyze
             from coderadar import CodeGraph
+            from coderadar._core import analyze
         except ImportError:
             pytest.skip("Rust _core extension not built")
         target = tmp_path / "clean.py"
@@ -752,8 +757,8 @@ class TestCodeRadarAPI:
     def test_remove_file_drops_a_deleted_files_entities(self, tmp_path):
         """A deleted file used to live on in the graph until the next analyze."""
         try:
-            from coderadar._core import analyze, search_entities
             from coderadar import CodeGraph
+            from coderadar._core import analyze, search_entities
         except ImportError:
             pytest.skip("Rust _core extension not built")
         gone = tmp_path / "gone.py"
@@ -773,8 +778,8 @@ class TestCodeRadarAPI:
 
     def test_remove_file_reports_zero_for_a_file_that_was_never_indexed(self, tmp_path):
         try:
-            from coderadar._core import analyze
             from coderadar import CodeGraph
+            from coderadar._core import analyze
         except ImportError:
             pytest.skip("Rust _core extension not built")
         (tmp_path / "only.py").write_text("x = 1\n", encoding="utf-8")
@@ -790,7 +795,7 @@ class TestCodeRadarAPI:
 class TestPestQueries:
     """Verify all §7.2a example queries can be parsed (when Rust is built)."""
 
-    EXAMPLE_QUERIES = [
+    EXAMPLE_QUERIES: ClassVar[list[str]] = [
         'classes where inherits_from contains "BaseModel"',
         'functions where line_count > 50',
         'functions where caller_count == 0 and not name matches "^test_.*"',
@@ -809,15 +814,15 @@ class TestPestQueries:
     def test_query_parses(self, query):
         """Each example query should parse without error."""
         try:
-            from coderadar._core import query_graph
             import coderadar
+            from coderadar._core import query_graph  # noqa: F401 - availability probe
             # If Rust extension is built, try parsing
             graph = coderadar.CodeGraph()
-            results = graph.query(query)
+            graph.query(query)
             # Just verifying no exception
         except ImportError:
             pytest.skip("Rust extension not built")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - test must fail with message, not error
             pytest.fail(f"Query '{query}' failed: {e}")
 
 
@@ -929,7 +934,7 @@ class TestConfigReachesTheCore:
         assert report["ignored"] == []
 
     def test_the_value_is_readable_afterwards(self):
-        from coderadar._core import set_config, get_config
+        from coderadar._core import get_config, set_config
         set_config({"resolution": {"import_graph": {"max_import_depth": 9}}})
         assert get_config()["resolution"]["import_graph"]["max_import_depth"] == 9
 
@@ -949,7 +954,7 @@ class TestConfigReachesTheCore:
     def test_an_empty_config_restores_the_defaults(self):
         """set_config replaces, it does not merge — each call starts from
         GraphConfig::default(), so a removed key reverts."""
-        from coderadar._core import set_config, get_config
+        from coderadar._core import get_config, set_config
         set_config({"mutation": {"max_files_per_plan": 3}})
         assert get_config()["mutation"]["max_files_per_plan"] == 3
         set_config({})
@@ -968,7 +973,7 @@ class TestConfigReachesTheCore:
         assert "mutation" in str(exc.value)
 
     def test_lists_survive_the_crossing(self):
-        from coderadar._core import set_config, get_config
+        from coderadar._core import get_config, set_config
         set_config({"mutation": {"deny": ["vendor/", "/*.lock"]}})
         assert get_config()["mutation"]["deny"] == ["vendor/", "/*.lock"]
 
@@ -999,8 +1004,8 @@ class TestConfiguredMutationPolicy:
         )
 
     def test_configured_edit_limit_refuses_the_plan(self, tmp_path):
-        from coderadar._core import analyze, set_config
         from coderadar import CodeGraph
+        from coderadar._core import analyze, set_config
         target = tmp_path / "mod.py"
         target.write_text("value = 1\n", encoding="utf-8")
         analyze(str(tmp_path))
@@ -1012,8 +1017,8 @@ class TestConfiguredMutationPolicy:
 
     def test_the_same_plan_passes_the_gate_under_the_default_limit(self, tmp_path):
         """Proves the refusal above came from the config, not from the plan."""
-        from coderadar._core import analyze, set_config
         from coderadar import CodeGraph
+        from coderadar._core import analyze, set_config
         target = tmp_path / "mod.py"
         target.write_text("value = 1\n", encoding="utf-8")
         analyze(str(tmp_path))
@@ -1023,8 +1028,8 @@ class TestConfiguredMutationPolicy:
         assert result.status != "RejectedPolicy", result.status
 
     def test_disabling_mutation_refuses_everything(self, tmp_path):
-        from coderadar._core import analyze, set_config
         from coderadar import CodeGraph
+        from coderadar._core import analyze, set_config
         target = tmp_path / "mod.py"
         target.write_text("value = 1\n", encoding="utf-8")
         analyze(str(tmp_path))
@@ -1188,6 +1193,7 @@ class TestEmbeddingModelAgreement:
     def test_compute_embeddings_uses_the_configured_model(self):
         """Index-time takes its model from the same helper the search does."""
         from unittest.mock import MagicMock, patch
+
         import coderadar
         from coderadar.embedding import embedding_settings
         model, dimension = embedding_settings()
@@ -1211,6 +1217,7 @@ class TestWatcherIsOneClass:
 
     def test_module_watch_builds_the_live_watcher(self):
         from unittest.mock import MagicMock, patch
+
         import coderadar
 
         graph = MagicMock()
@@ -1235,6 +1242,7 @@ class TestWatcherIsOneClass:
     def test_batch_folds_into_one_report(self):
         """A batch touching three files yields one merged UpdateReport."""
         from unittest.mock import MagicMock
+
         import coderadar
 
         def report(quality, errors, applied, before, after):
@@ -1266,6 +1274,7 @@ class TestWatcherIsOneClass:
 
     def test_a_failing_file_clears_fully_applied(self):
         from unittest.mock import MagicMock
+
         import coderadar
 
         graph = MagicMock()
@@ -1362,7 +1371,6 @@ class TestAnalyzeReleasesTheGIL:
     def _largest_stall(work, tick=0.01):
         """Run `work`; return (longest ticker gap, wall time of the work)."""
         import threading
-        import time
 
         stop = threading.Event()
         gaps = []

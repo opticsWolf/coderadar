@@ -3,11 +3,13 @@
 Exercises the real protocol surface: initialize, tools/list, tools/call on a
 sample of read-only and mutation tools. Records protocol-level issues.
 """
-import asyncio, json, sys, time, os
+import asyncio
+import sys
+import time
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
+except Exception:  # noqa: BLE001, S110 - best-effort console setup for Windows pipes
     pass
 
 from mcp import ClientSession, StdioServerParameters
@@ -19,8 +21,7 @@ SERVER = [r"D:\User\Documents\Python\CodeRadar\.venv\Scripts\coderadar.exe", "mc
 async def main():
     t0 = time.time()
     params = StdioServerParameters(command=SERVER[0], args=SERVER[1:], cwd=r"D:\User\Documents\Python\CodeRadar")
-    async with stdio_client(params) as (read, write):
-        async with ClientSession(read, write) as session:
+    async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
             init = await session.initialize()
             print(f"[init] server={init.server_info.name} v{init.server_info.version}")
             tools = await session.list_tools()
@@ -47,7 +48,7 @@ async def main():
                     print(f"[call {tool_name}] {ms}ms -> {head}")
                     if "Error" in text[:200] or "not found" in text[:200].lower():
                         issues.append((tool_name, head))
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001 - probe records failure, never dies mid-run
                     ms = int((time.time()-t)*1000)
                     print(f"[call {tool_name}] {ms}ms EXCEPTION {type(e).__name__}: {str(e)[:200]}")
                     issues.append((tool_name, f"{type(e).__name__}: {e}"))
