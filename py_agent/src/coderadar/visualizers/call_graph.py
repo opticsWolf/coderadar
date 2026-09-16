@@ -22,7 +22,16 @@ def generate_call_graph(args: list, graph: Any | None = None) -> str:
     Returns:
         Mermaid flowchart source.
     """
-    func_name = args[0] if args else "main"
+    if args:
+        func_name = args[0]
+    else:
+        # Bare `visualize call-graph` used to assume a function named
+        # `main` exists; projects without one got "No call edges from
+        # `main`", which reads as an empty index rather than a missing
+        # argument. Keep `main` when it is really there, otherwise say
+        # what to pass (with an id from this index so it can be retried
+        # verbatim).
+        func_name = _default_entry_point(graph)
     direction = args[1] if len(args) > 1 else "out"
     max_depth = int(args[2]) if len(args) > 2 else 5
     min_confidence = float(args[3]) if len(args) > 3 else 0.7
@@ -70,9 +79,31 @@ def generate_call_graph(args: list, graph: Any | None = None) -> str:
             "No graph was provided to the call-graph renderer.")
     raise NothingToVisualize(
         f"No call edges found {'from' if direction == 'out' else 'to'} "
-        f"`{func_name}`. Either the index is empty (run `coderadar analyze` "
-        f"in this process first — the CLI does not yet load a stored graph) "
-        f"or that function neither calls nor is called by anything indexed."
+        f"`{func_name}`. Either the index is empty (run `coderadar init` "
+        f"or `coderadar analyze` in the project first) or that function "
+        f"neither calls nor is called by anything indexed."
+    )
+
+
+def _default_entry_point(graph: Any | None) -> str:
+    """The no-argument root for `visualize call-graph`."""
+    from . import NothingToVisualize
+
+    if graph is not None:
+        try:
+            from coderadar._core import search_entities
+            for cand in search_entities("main", 10):
+                if cand.get("name", "") == "main":
+                    return cand.get("id", "main")
+            first = search_entities("", 1, "function")
+            hint = first[0].get("id", "?") if first else "?"
+        except Exception:  # noqa: BLE001 - a hint is nice-to-have, not load-bearing
+            hint = "?"
+    else:
+        hint = "?"
+    raise NothingToVisualize(
+        "No function given and no `main` in the index — pass a function "
+        f"name or entity id (e.g. `{hint}`)."
     )
 
 

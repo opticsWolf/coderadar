@@ -113,9 +113,8 @@ def _dot_dependency_graph(args: list, graph: Any | None = None) -> str:
 
     if not edges:
         raise NothingToVisualize(
-            "No module dependencies in the index. Run `coderadar analyze` "
-            "in this process first — the CLI does not yet load a stored "
-            "graph."
+            "No module dependencies in the index. Run `coderadar init` or "
+            "`coderadar analyze` in the project first."
         )
 
     # Find SCCs and highlight cycles
@@ -224,8 +223,8 @@ def _dot_class_hierarchy(args: list, graph: Any | None = None) -> str:
 
     if len(lines) == 4:
         raise NothingToVisualize(
-            "No classes in the index. Run `coderadar analyze` in this "
-            "process first — the CLI does not yet load a stored graph."
+            "No classes in the index. Run `coderadar init` or "
+            "`coderadar analyze` in the project first."
         )
 
     lines.append("}")
@@ -304,13 +303,15 @@ def _dot_call_graph(args: list, graph: Any | None = None) -> str:
     reuses that walk so the two formats cannot disagree about the edges,
     and only the rendering differs.
     """
-    from .call_graph import _gather_fan_in, _gather_fan_out
+    from .call_graph import _default_entry_point, _gather_fan_in, _gather_fan_out
 
     if graph is None:
         raise NothingToVisualize(
             "No graph was provided to the call-graph renderer.")
 
-    func_name = args[0] if args else ""
+    # No arg: resolve a real `main` when the index has one, else the same
+    # actionable error the Mermaid renderer raises (formats must agree).
+    func_name = args[0] if args else _default_entry_point(graph)
     direction = args[1] if len(args) > 1 else "out"
     max_depth = int(args[2]) if len(args) > 2 else 5
 
@@ -338,8 +339,8 @@ def _dot_call_graph(args: list, graph: Any | None = None) -> str:
         raise NothingToVisualize(
             f"No call edges found {'from' if direction == 'out' else 'to'} "
             f"`{func_name}`. Either the index is empty (run `coderadar "
-            f"analyze` in this process first) or that function neither "
-            f"calls nor is called by anything indexed."
+            f"init` or `coderadar analyze` in the project first) or that "
+            f"function neither calls nor is called by anything indexed."
         )
 
     lines = [

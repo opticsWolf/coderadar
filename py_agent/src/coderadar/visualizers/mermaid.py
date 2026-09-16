@@ -92,8 +92,8 @@ def _mermaid_class_hierarchy(args: list[str],
                 f"Could not read the class hierarchy: {exc}") from exc
 
     raise NothingToVisualize(
-        "No classes in the index. Run `coderadar analyze` in this process "
-        "first — the CLI does not yet load a stored graph."
+        "No classes in the index. Run `coderadar init` or "
+        "`coderadar analyze` in the project first."
     )
 
 
@@ -128,8 +128,8 @@ def _mermaid_call_graph(args: list[str],
 
     raise NothingToVisualize(
         "No call edges found for that entity. Either the index is empty "
-        "(run `coderadar analyze` in this process first) or nothing indexed "
-        "calls it and it calls nothing indexed."
+        "(run `coderadar init` or `coderadar analyze` in the project "
+        "first) or nothing indexed calls it and it calls nothing indexed."
     )
 
 
@@ -166,28 +166,28 @@ def _mermaid_dependency_graph(args: list[str],
 
     if graph:
         try:
-            from coderadar._core import callees_of, search_entities
-            # Get all modules
-            modules = search_entities("module", 100)
-            module_names = {}
-            for m in modules:
-                module_names[m.get("id", "")] = m.get("name", m.get("id", "?"))
-
-            for mod_id in list(module_names.keys())[:50]:
-                safe = _safe_id(mod_id)
-                label = _truncated_label(module_names.get(mod_id, mod_id))
-                lines.append(f"    {safe}[\"{label}\"]")
-
-                # Show imports from this module
-                callees = callees_of(mod_id)
-                for callee in callees[:5]:
-                    callee_id = callee.get("id", "")
-                    if callee_id in module_names and callee_id != mod_id:
-                        lines.append(
-                            f"    {_safe_id(mod_id)} --> {_safe_id(callee_id)}"
-                        )
-
-            if len(module_names) > 0:
+            # Same resolved module→module edges the DOT renderer draws:
+            # `search_entities("module")` is a *text* search for the word
+            # "module", so it enumerated nothing unless a module was
+            # literally named that; and `callees_of(module)` follows CALLS,
+            # not IMPORTS. The shared helper reads the importer index via a
+            # depth-1 `imports` traversal instead.
+            from .graphviz_viz import _entities_of_kind, _extract_module_edges
+            modules = {m.get("id", ""): m.get("name", m.get("id", "?"))
+                       for m in _entities_of_kind("module")}
+            edges = _extract_module_edges(graph)
+            seen: set[str] = set()
+            for src, dst in edges:
+                seen.add(src)
+                seen.add(dst)
+            for mod_id in sorted(seen):
+                label = _truncated_label(modules.get(mod_id, mod_id))
+                lines.append(f"    {_safe_id(mod_id)}[\"{label}\"]")
+            for src, dst in edges:
+                lines.append(
+                    f"    {_safe_id(src)} --> {_safe_id(dst)}"
+                )
+            if seen:
                 return "\n".join(lines)
         except NothingToVisualize:
             raise
@@ -195,8 +195,8 @@ def _mermaid_dependency_graph(args: list[str],
             raise NothingToVisualize(f"Could not read the graph: {exc}") from exc
 
     raise NothingToVisualize(
-        "No module dependencies in the index. Run `coderadar analyze` in "
-        "this process first — the CLI does not yet load a stored graph."
+        "No module dependencies in the index. Run `coderadar init` or "
+        "`coderadar analyze` in the project first."
     )
 
 
