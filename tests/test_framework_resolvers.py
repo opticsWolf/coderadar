@@ -7,10 +7,10 @@ from Python source code.
 
 from pathlib import Path
 
+from coderadar.cli import _ledger_synthetic_edge_kind
 from coderadar.resolvers.django import DjangoResolver
 from coderadar.resolvers.fastapi import FastAPIResolver
 from coderadar.resolvers.flask import FlaskResolver
-from coderadar.cli import _ledger_synthetic_edge_kind
 
 
 def test_synthetic_edge_kind_is_namespaced_and_single_case():
