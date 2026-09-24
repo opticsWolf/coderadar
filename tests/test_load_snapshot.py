@@ -245,6 +245,80 @@ def test_revision_is_the_stage_0_3_cache_key(tmp_path):
     assert leg_c["stats"]["revision"] > 0
 
 
+STALE_RECONCILE_SCRIPT = r"""
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from coderadar._core import analyze
+
+root = Path(sys.argv[2])
+app = root / "app.py"
+app.write_text("import os\n\ndef run():\n    return os.name\n", encoding="utf-8")
+first = analyze(str(root), create_store=True)
+assert not first["extraction_failures"], first
+
+# A complete rescan after removing an import must retire its old v2 row.
+app.write_text("def run():\n    return 1\n", encoding="utf-8")
+second = analyze(str(root), create_store=True)
+assert not second["extraction_failures"], second
+
+# Tree-sitter can recover from malformed syntax while silently omitting an
+# entity. The file-level parse quality must prevent that row being retired.
+partial = root / "partial.py"
+partial.write_text("def keep_after_partial():\n    return 2\n", encoding="utf-8")
+broken = root / "broken.py"
+broken.write_text("def keep_after_read_error():\n    return 3\n", encoding="utf-8")
+third = analyze(str(root), create_store=True)
+assert not third["extraction_failures"], third
+partial.write_text("if :\n    pass\n", encoding="utf-8")
+fourth = analyze(str(root), create_store=True)
+assert not fourth["extraction_failures"], fourth
+
+# A later read failure is also not evidence that old file concepts were
+# deleted. Make the second source unreadable to UTF-8.
+broken.write_bytes(b"\xff")
+fifth = analyze(str(root), create_store=True)
+assert fifth["extraction_failures"], fifth
+print("reconciled")
+"""
+
+
+def test_full_analyze_retires_stale_v2_concepts_only_after_complete_scan(tmp_path):
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    proc = subprocess.run(
+        [sys.executable, "-c", STALE_RECONCILE_SCRIPT, str(SRC), str(proj)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "reconciled" in proc.stdout
+
+    con = sqlite3.connect(str(_default_db(proj)))
+    try:
+        app_imports = con.execute(
+            "SELECT retired FROM concepts "
+            "WHERE json_extract(content, '$.kind') = 'import' "
+            "AND json_extract(content, '$.file_path') LIKE '%app.py'"
+        ).fetchall()
+        assert app_imports, "first analyze should have persisted an import concept"
+        assert all(retired for (retired,) in app_imports), app_imports
+
+        for file_path in ("broken.py", "partial.py"):
+            retained_functions = con.execute(
+                "SELECT retired FROM concepts "
+                "WHERE json_extract(content, '$.kind') = 'function' "
+                "AND json_extract(content, '$.file_path') LIKE ?",
+                (f"%{file_path}",),
+            ).fetchall()
+            assert retained_functions, f"valid pre-failure function missing for {file_path}"
+            assert any(not retired for (retired,) in retained_functions), retained_functions
+    finally:
+        con.close()
+
+
 # ── v1 store rejection + fallback ────────────────────────────────────────
 def test_v1_store_is_a_hard_error(tmp_path):
     proj = _copy_fixture(tmp_path / "proj")

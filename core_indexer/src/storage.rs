@@ -59,6 +59,11 @@ pub const TS_OPEN: &str = "9999-12-31T00:00:00.000000Z";
 /// Indexed application metadata namespace carried in Macrame's `concepts.extra`.
 const CODERADAR_EXTRA_FILE_PATH: &str = "$.coderadar.file_path";
 
+const LIVE_IDS_BY_EXTRA_FILE_PATH_SQL: &str = "SELECT id FROM concepts WHERE retired = 0 \
+    AND json_extract(extra, '$.coderadar.file_path') = ?1";
+const LIVE_IDS_BY_ID_FILE_RANGE_SQL: &str = "SELECT id FROM concepts WHERE retired = 0 \
+    AND id >= ?1 AND id < ?2";
+
 /// Current UTC time as a canonical Macrame timestamp (no chrono dependency).
 /// Used as `valid_from` for concepts AND edges so the bitemporal ledger can
 /// distinguish *when* a fact was asserted (temporal traversal depends on it),
@@ -475,26 +480,75 @@ impl CodeGraphStore {
         self.retire_entities(&v1_ids)
     }
 
+    /// Retire canonical file concepts absent from a complete fresh projection.
+    ///
+    /// Full analyze calls this only after a successful project walk and a
+    /// successful v2 flush. Restricting candidates to recognized file-backed
+    /// concepts avoids touching unrelated ledger rows; `keep_ids` is the exact
+    /// set written from the new projection. This also removes stale v2 imports
+    /// whose line-based ids disappeared between indexing passes.
+    pub fn retire_stale_file_concepts(&self, keep_ids: &HashSet<String>) -> macrame::Result<usize> {
+        let stale_ids: Vec<String> = self
+            .live_concept_contents()?
+            .into_iter()
+            .filter(|(id, content)| {
+                if keep_ids.contains(id) {
+                    return false;
+                }
+                let Ok(attrs) = serde_json::from_str::<serde_json::Value>(content) else {
+                    return false;
+                };
+                if attrs
+                    .get(annotation::FILE_PATH)
+                    .and_then(|v| v.as_str())
+                    .is_none()
+                {
+                    return false;
+                }
+                matches!(
+                    classify_v2_concept(content),
+                    V2ConceptClass::Canonical(_) | V2ConceptClass::StandaloneField
+                )
+            })
+            .map(|(id, _)| id)
+            .collect();
+        Ok(self.retire_entities(&stale_ids)?.0)
+    }
+
     /// Live concept ids belonging to one exact source file.
     ///
-    /// The JSON expression matches the index asserted by `open`. The ID-prefix
-    /// arm also finds legacy rows whose `extra` predates CodeRadar's metadata.
+    /// Keep the indexed metadata lookup and legacy ID-prefix lookup separate:
+    /// combining them with `OR` makes SQLite scan the table because the prefix
+    /// expression is not indexable. The second query uses a primary-key range
+    /// over `{file_path}::`, so both paths stay bounded to indexed lookups.
     pub fn live_concept_ids_for_file(&self, file_path: &str) -> macrame::Result<Vec<String>> {
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         runtime().block_on(async {
+            let mut ids = HashSet::new();
             let mut rows = conn
-                .query(
-                    "SELECT id FROM concepts WHERE retired = 0 AND (\
-                     json_extract(extra, '$.coderadar.file_path') = ?1 OR \
-                     substr(id, 1, length(?1) + 2) = ?1 || '::') ORDER BY id",
-                    libsql::params![file_path],
-                )
+                .query(LIVE_IDS_BY_EXTRA_FILE_PATH_SQL, libsql::params![file_path])
                 .await
                 .map_err(macrame::DbError::Engine)?;
-            let mut out = Vec::new();
             while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
-                out.push(row.get::<String>(0).unwrap_or_default());
+                ids.insert(row.get::<String>(0).unwrap_or_default());
             }
+
+            // The final `:` in the lower bound is replaced with its next ASCII
+            // character. Under SQLite's BINARY text ordering this bounds every
+            // id beginning with `{file_path}::` without matching sibling paths
+            // such as `a.pyx` when looking up `a.py`.
+            let lower = format!("{file_path}::");
+            let upper = format!("{file_path}:;");
+            let mut rows = conn
+                .query(LIVE_IDS_BY_ID_FILE_RANGE_SQL, libsql::params![lower, upper])
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                ids.insert(row.get::<String>(0).unwrap_or_default());
+            }
+
+            let mut out: Vec<String> = ids.into_iter().collect();
+            out.sort();
             Ok(out)
         })
     }
@@ -2211,7 +2265,7 @@ mod tests {
     }
 
     #[test]
-    fn extra_file_metadata_is_queryable_through_the_registered_expression_index() {
+    fn exact_file_cleanup_queries_use_the_extra_and_id_indexes() {
         let dir = tempfile::tempdir().unwrap();
         let store = CodeGraphStore::open(dir.path().join("extra.db")).unwrap();
         let now = now_iso8601();
@@ -2231,6 +2285,7 @@ mod tests {
         store
             .upsert_concepts_bulk(&[
                 make("src/a.py::one", "src/a.py"),
+                make("src/a.pyx::sibling", "src/a.pyx"),
                 make("src/b.py::two", "src/b.py"),
                 ConceptUpsert::new("src/a.py::legacy", "legacy")
                     .content(r#"{"kind":"function"}"#)
@@ -2246,21 +2301,84 @@ mod tests {
         );
 
         let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let extra_sql = format!("EXPLAIN QUERY PLAN {LIVE_IDS_BY_EXTRA_FILE_PATH_SQL}");
         let mut rows = runtime()
-            .block_on(conn.query(
-                "EXPLAIN QUERY PLAN SELECT id FROM concepts WHERE json_extract(extra, '$.coderadar.file_path') = ?1",
-                libsql::params!["src/a.py"],
-            ))
+            .block_on(conn.query(&extra_sql, libsql::params!["src/a.py"]))
             .unwrap();
-        let mut used_extra_index = false;
+        let mut extra_plan = Vec::new();
         while let Some(row) = runtime().block_on(rows.next()).unwrap() {
-            let detail = row.get::<String>(3).unwrap_or_default();
-            used_extra_index |= detail.contains("idx_concepts_extra_");
+            extra_plan.push(row.get::<String>(3).unwrap_or_default());
         }
         assert!(
-            used_extra_index,
-            "file lookup should use the registered extra index"
+            extra_plan
+                .iter()
+                .any(|detail| detail.contains("idx_concepts_extra_coderadar_file_path")),
+            "metadata lookup should use the registered index; plan: {extra_plan:?}"
         );
+
+        let id_sql = format!("EXPLAIN QUERY PLAN {LIVE_IDS_BY_ID_FILE_RANGE_SQL}");
+        let mut rows = runtime()
+            .block_on(conn.query(&id_sql, libsql::params!["src/a.py::", "src/a.py:;"]))
+            .unwrap();
+        let mut id_plan = Vec::new();
+        while let Some(row) = runtime().block_on(rows.next()).unwrap() {
+            id_plan.push(row.get::<String>(3).unwrap_or_default());
+        }
+        assert!(
+            id_plan
+                .iter()
+                .any(|detail| detail.contains("id>?") && detail.contains("id<?")),
+            "legacy-prefix lookup should use a primary-key range; plan: {id_plan:?}"
+        );
+    }
+
+    #[test]
+    fn stale_file_concepts_are_retired_only_when_absent_from_the_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("stale.db")).unwrap();
+        let now = now_iso8601();
+        let make = |id: &str, kind: &str, file_path: &str| {
+            v2_upsert(
+                id,
+                id.rsplit("::").next().unwrap(),
+                serde_json::json!({
+                    "meta_version": 2,
+                    "kind": kind,
+                    "name": id,
+                    "file_path": file_path,
+                    "content_hash": "same-hash",
+                }),
+                &now,
+            )
+        };
+        store
+            .upsert_concepts_bulk(&[
+                make("src/a.py::module", "module", "src/a.py"),
+                make("src/a.py::import@19", "import", "src/a.py"),
+                ConceptUpsert::new("src/a.py::legacy_field", "legacy_field")
+                    .content(r#"{"kind":"field","file_path":"src/a.py"}"#)
+                    .valid_from(now.clone())
+                    .valid_to(TS_OPEN.to_string())
+                    .retired(false),
+                ConceptUpsert::new("external::custom", "custom")
+                    .content(r#"{"kind":"custom","file_path":"src/a.py"}"#)
+                    .valid_from(now)
+                    .valid_to(TS_OPEN.to_string())
+                    .retired(false),
+            ])
+            .unwrap();
+
+        let keep = HashSet::from(["src/a.py::module".to_string()]);
+        assert_eq!(store.retire_stale_file_concepts(&keep).unwrap(), 2);
+        assert_eq!(
+            store.live_concept_ids().unwrap(),
+            vec![
+                "external::custom".to_string(),
+                "src/a.py::module".to_string(),
+            ]
+        );
+        // Reconciliation is idempotent.
+        assert_eq!(store.retire_stale_file_concepts(&keep).unwrap(), 0);
     }
 
     fn seed(store: &CodeGraphStore) {

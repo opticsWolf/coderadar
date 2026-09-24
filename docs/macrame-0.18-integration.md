@@ -26,11 +26,12 @@ CodeRadar write also carries a small, namespaced object in `concepts.extra`:
 The `file_path` expression index is asserted on every store open with
 `register_extra_index("$.coderadar.file_path")`. This is a derived index, not
 an app-managed schema migration. `remove_file` first removes entities present
-in the live projection, then uses the indexed metadata (plus an ID-prefix
-fallback for legacy rows) to retire any still-live concepts left in the ledger
-by an interrupted or older indexing pass. Concept builders explicitly replace
-this namespace; maintenance upserts that omit `extra` do not clear it. The
-existing `content` metadata and cold-start format remain authoritative.
+in the live projection, then unions two indexed lookups: the exact metadata
+index and a primary-key ID range for legacy rows. This retires any still-live
+concepts left in the ledger by an interrupted or older indexing pass without
+forcing a full concepts-table scan. Concept builders explicitly replace this
+namespace; maintenance upserts that omit `extra` do not clear it. The existing
+`content` metadata and cold-start format remain authoritative.
 
 ### Edge kinds
 
@@ -50,8 +51,13 @@ Opening a database with macrame-db 0.18 advances its schema to v21. A 0.17
 binary cannot open that schema, and it cannot fold a concept log entry written
 with the 0.18 concept payload format. Do not roll back the native extension to
 0.17 after the 0.18 binary has written concepts. A 0.18 open of an existing
-0.17 store is automatic; a normal analyze then writes CodeRadar's `extra`
-metadata for the existing live concepts.
+0.17 store is automatic. A successful full analyze rewrites current projection
+concepts with CodeRadar's `extra` metadata and retires stale canonical
+file-backed concepts absent from that projection (for example, imports whose
+line-based ids changed). This reconciliation is skipped if the project walk,
+source reads, extraction, parse quality, or concept flush is incomplete; such a
+run is not safe evidence that absent rows are stale. Historical retired rows
+remain in the ledger as usual.
 
 ## Deliberately not adopted yet: `kv_store`
 

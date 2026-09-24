@@ -845,7 +845,7 @@ fn analyze(
 }
 
 fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> AnalyzeOutcome {
-    use crate::types::Language;
+    use crate::types::{Language, ParseQuality};
     use std::fs;
 
     let config = active_config();
@@ -901,6 +901,10 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
     // reported plain success.
     let mut failures: Vec<String> = Vec::new();
     let mut panicked_workers: usize = 0;
+    // Reconcile absent ledger concepts only after a complete, clean scan. A
+    // walk, file-read, extraction, worker, or recovered-parse failure must
+    // never make good concepts look stale merely because source was missed.
+    let mut reconciliation_safe = root_path.is_dir();
     let mut all_concepts: Vec<macrame::ConceptUpsert> = Vec::new();
 
     if root_path.is_dir() {
@@ -915,7 +919,14 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         for entry in project_walk(root, &config.project, extra_excludes) {
             match entry {
                 Ok(entry) => {
-                    if !entry.file_type().map_or(false, |ft| ft.is_file()) {
+                    let file_type = match entry.file_type() {
+                        Some(file_type) => file_type,
+                        None => {
+                            reconciliation_safe = false;
+                            continue;
+                        }
+                    };
+                    if !file_type.is_file() {
                         continue;
                     }
                     let path = entry.path();
@@ -931,26 +942,11 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                         if CodeGraph::ts_language(&language).is_none() {
                             continue;
                         }
-                        if let Ok(source) = fs::read_to_string(path) {
-                            // F14: mint the canonical id form at write time —
-                            // the walk's spelling embeds the root used (`.`
-                            // vs absolute), so it is normalized here.
-                            let canon = crate::graph::module_resolution::canonical_file_form(
-                                &path.to_string_lossy(),
-                            );
-                            tasks.push(FileTask {
-                                path: canon,
-                                source,
-                                language,
-                            });
-                        }
-                    } else {
-                        // Files without extension (Dockerfile, CMakeLists.txt)
-                        let language = Language::from_filename(&path.to_string_lossy());
-                        if language != Language::OtherTen
-                            && CodeGraph::ts_language(&language).is_some()
-                        {
-                            if let Ok(source) = fs::read_to_string(path) {
+                        match fs::read_to_string(path) {
+                            Ok(source) => {
+                                // F14: mint the canonical id form at write time —
+                                // the walk's spelling embeds the root used (`.`
+                                // vs absolute), so it is normalized here.
                                 let canon = crate::graph::module_resolution::canonical_file_form(
                                     &path.to_string_lossy(),
                                 );
@@ -960,10 +956,41 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                                     language,
                                 });
                             }
+                            Err(e) => {
+                                reconciliation_safe = false;
+                                failures.push(format!("{}: {e}", path.display()));
+                            }
+                        }
+                    } else {
+                        // Files without extension (Dockerfile, CMakeLists.txt)
+                        let language = Language::from_filename(&path.to_string_lossy());
+                        if language != Language::OtherTen
+                            && CodeGraph::ts_language(&language).is_some()
+                        {
+                            match fs::read_to_string(path) {
+                                Ok(source) => {
+                                    let canon =
+                                        crate::graph::module_resolution::canonical_file_form(
+                                            &path.to_string_lossy(),
+                                        );
+                                    tasks.push(FileTask {
+                                        path: canon,
+                                        source,
+                                        language,
+                                    });
+                                }
+                                Err(e) => {
+                                    reconciliation_safe = false;
+                                    failures.push(format!("{}: {e}", path.display()));
+                                }
+                            }
                         }
                     }
                 }
-                Err(_) => {} // permission errors etc.
+                Err(e) => {
+                    reconciliation_safe = false;
+                    failures.push(format!("project walk: {e}"));
+                }
             }
         }
 
@@ -1052,6 +1079,18 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                 let mut proj = (*graph.snapshot()).clone();
                 for chunk_results in all_results {
                     for (fragment, concepts) in chunk_results {
+                        // Tree-sitter can recover a partial projection from
+                        // malformed source without returning an extraction
+                        // error. Keep old ledger concepts until every file is
+                        // cleanly parsed; absence from a recovered AST is not
+                        // reliable evidence of deletion.
+                        if fragment
+                            .modules
+                            .values()
+                            .any(|module| module.parse_quality != ParseQuality::Clean)
+                        {
+                            reconciliation_safe = false;
+                        }
                         let entity_count = fragment.functions.len()
                             + fragment.classes.len()
                             + fragment.imports.len()
@@ -1106,6 +1145,8 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
     // building them).
     {
         let mut projection = (*graph.snapshot()).clone();
+        let mut current_concept_ids = HashSet::new();
+        let mut concept_flush_succeeded = true;
         // Dotted-name resolution (resolve_imports, resolve_all_calls) is O(1)
         // per lookup once this suffix index is built; without it the cascade
         // scans every module per import (v0.8 P1: 8.3s of the 46s benchmark).
@@ -1119,7 +1160,11 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         // Concept JSON v2 flush — post-cascade, pre-edge (FK order).
         if let Some(ref store) = graph.store {
             let v2 = crate::storage::build_v2_concepts_all(&projection);
-            let _ = store.upsert_concepts_bulk(&v2);
+            current_concept_ids = v2.iter().map(|concept| concept.id.clone()).collect();
+            if let Err(e) = store.upsert_concepts_bulk(&v2) {
+                concept_flush_succeeded = false;
+                eprintln!("[diag] v2 concept flush failed: {e:?}");
+            }
         }
         // Persist resolved edges to Macrame store
         if let Err(e) = graph.persist_edges(&projection) {
@@ -1163,6 +1208,19 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                     ),
                     Ok(_) => {}
                     Err(e) => eprintln!("[diag] non-canonical retraction failed: {e:?}"),
+                }
+                // Retire stale canonical rows (notably line-addressed imports)
+                // only when every source was walked/read/extracted and the v2
+                // projection flush succeeded. Otherwise missing data in this
+                // run is not evidence that a ledger concept was deleted.
+                if reconciliation_safe && failures.is_empty() && concept_flush_succeeded {
+                    match store.retire_stale_file_concepts(&current_concept_ids) {
+                        Ok(n) if n > 0 => eprintln!(
+                            "[coderadar] retired {n} stale file concept(s) absent from the fresh index"
+                        ),
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[diag] stale concept retraction failed: {e:?}"),
+                    }
                 }
                 // R2-2: edge retraction. The persist above is assert-only
                 // and the concept retractions only close edges of removed
