@@ -56,6 +56,9 @@ static DIAGNOSTIC_OPEN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Key lifespan timestamp — the Macrame open sentinel for "still true".
 pub const TS_OPEN: &str = "9999-12-31T00:00:00.000000Z";
 
+/// Indexed application metadata namespace carried in Macrame's `concepts.extra`.
+const CODERADAR_EXTRA_FILE_PATH: &str = "$.coderadar.file_path";
+
 /// Current UTC time as a canonical Macrame timestamp (no chrono dependency).
 /// Used as `valid_from` for concepts AND edges so the bitemporal ledger can
 /// distinguish *when* a fact was asserted (temporal traversal depends on it),
@@ -127,6 +130,10 @@ impl CodeGraphStore {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             runtime().block_on(Database::open_with_cadence(path, cadence))?
         };
+        // Exact-file lookups clean up stale ledger concepts that are absent
+        // from the in-memory projection. Re-assert on every open so restored
+        // database backups regain the derived index automatically.
+        runtime().block_on(db.register_extra_index(CODERADAR_EXTRA_FILE_PATH))?;
         Ok(Self { db })
     }
 
@@ -243,17 +250,17 @@ impl CodeGraphStore {
             .collect()
     }
 
-    /// Current `(title, content, retired)` per id, one chunked PK lookup.
+    /// Current `(title, content, extra, retired)` per id, one chunked PK lookup.
     fn fetch_current_states(
         &self,
         ids: &[String],
-    ) -> macrame::Result<HashMap<String, (String, String, bool)>> {
+    ) -> macrame::Result<HashMap<String, (String, String, String, bool)>> {
         let (_guard, conn) = self.open_diagnostic_conn()?;
         let mut out = HashMap::with_capacity(ids.len());
         for chunk in ids.chunks(500) {
             let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let sql = format!(
-                "SELECT id, title, content, retired FROM concepts WHERE id IN ({placeholders})"
+                "SELECT id, title, content, extra, retired FROM concepts WHERE id IN ({placeholders})"
             );
             let params: Vec<libsql::Value> = chunk
                 .iter()
@@ -271,7 +278,8 @@ impl CodeGraphStore {
                     (
                         row.get::<String>(1).unwrap_or_default(),
                         row.get::<String>(2).unwrap_or_default(),
-                        row.get::<i64>(3).unwrap_or(0) != 0,
+                        row.get::<String>(3).unwrap_or_else(|_| "{}".to_string()),
+                        row.get::<i64>(4).unwrap_or(0) != 0,
                     ),
                 );
             }
@@ -339,14 +347,14 @@ impl CodeGraphStore {
         let ts = now_iso8601();
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         runtime().block_on(async {
-            // Title and content are carried over: the upsert overwrites every
-            // column, so reading them back is what keeps the retired row a
-            // record of the entity rather than a blank tombstone.
+            // Title, content and extra are carried over: the upsert overwrites
+            // these columns, so the retired row remains a record of the entity
+            // rather than a blank tombstone.
             let mut concepts: Vec<ConceptUpsert> = Vec::new();
             for id in entity_ids {
                 let mut rows = conn
                     .query(
-                        "SELECT title, content, valid_from FROM concepts \
+                        "SELECT title, content, extra, valid_from FROM concepts \
                          WHERE id = ?1 AND retired = 0",
                         libsql::params![id.as_str()],
                     )
@@ -356,7 +364,8 @@ impl CodeGraphStore {
                     concepts.push(
                         ConceptUpsert::new(id.clone(), row.get::<String>(0).unwrap_or_default())
                             .content(row.get::<String>(1).unwrap_or_default())
-                            .valid_from(row.get::<String>(2).unwrap_or_else(|_| ts.clone()))
+                            .extra(row.get::<String>(2).unwrap_or_else(|_| "{}".to_string()))
+                            .valid_from(row.get::<String>(3).unwrap_or_else(|_| ts.clone()))
                             .valid_to(ts.clone())
                             .retired(true),
                     );
@@ -464,6 +473,30 @@ impl CodeGraphStore {
             .map(|(id, _)| id)
             .collect();
         self.retire_entities(&v1_ids)
+    }
+
+    /// Live concept ids belonging to one exact source file.
+    ///
+    /// The JSON expression matches the index asserted by `open`. The ID-prefix
+    /// arm also finds legacy rows whose `extra` predates CodeRadar's metadata.
+    pub fn live_concept_ids_for_file(&self, file_path: &str) -> macrame::Result<Vec<String>> {
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT id FROM concepts WHERE retired = 0 AND (\
+                     json_extract(extra, '$.coderadar.file_path') = ?1 OR \
+                     substr(id, 1, length(?1) + 2) = ?1 || '::') ORDER BY id",
+                    libsql::params![file_path],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok(out)
+        })
     }
 
     /// Ids of every concept the ledger still holds to be true.
@@ -679,17 +712,34 @@ impl CodeGraphStore {
 // ── Concept Builder ─────────────────────────────────────────────────────────
 
 /// Build a Macrame ConceptUpsert from a CodeRadar ExtractedUnit.
-/// Entity metadata is stored as JSON in the `content` field.
+/// Compact, queryable CodeRadar attributes carried beside canonical entity
+/// content. Keep the namespace application-specific so other users of the
+/// shared ledger can evolve their own attributes independently.
+fn coderadar_extra(content: &serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "coderadar": {
+            "format": 1,
+            "kind": content.get("kind").cloned().unwrap_or(serde_json::Value::Null),
+            "file_path": content.get("file_path").cloned().unwrap_or(serde_json::Value::Null),
+            "content_hash": content.get(annotation::CONTENT_HASH).cloned().unwrap_or(serde_json::Value::Null),
+        }
+    })
+}
+
+/// Entity metadata is stored canonically in `content`; the small subset needed
+/// for indexed maintenance queries is mirrored in Macrame 0.18's `extra`.
 pub fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> ConceptUpsert {
     let entity_id = unit.entity_id();
     let (title, _kind, metadata) = entity_meta(unit, file_path, language);
 
     let content = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".into());
+    let extra = coderadar_extra(&metadata).to_string();
 
     let valid_from = now_iso8601();
 
     ConceptUpsert::new(entity_id, title.to_string())
         .content(content)
+        .extra(extra)
         .valid_from(valid_from)
         .valid_to(TS_OPEN.to_string())
         .retired(false)
@@ -864,11 +914,23 @@ fn v2_common(
 /// or a stale envelope version (a v1 row can agree on all three yet still
 /// need the v2 upgrade rewrite — and any future meta_version bump must
 /// rewrite every row exactly once).
-fn concept_changed(concept: &ConceptUpsert, current: Option<&(String, String, bool)>) -> bool {
-    let Some((title, content, retired)) = current else {
+fn concept_changed(
+    concept: &ConceptUpsert,
+    current: Option<&(String, String, String, bool)>,
+) -> bool {
+    let Some((title, content, extra, retired)) = current else {
         return true;
     };
     if title != &concept.title || retired != &concept.retired {
+        return true;
+    }
+    // In Macrame 0.18, `None` means leave app attributes untouched. Compare
+    // only explicitly stated metadata so maintenance upserts stay non-erasing.
+    if concept
+        .extra
+        .as_ref()
+        .is_some_and(|expected| expected != extra)
+    {
         return true;
     }
     let cur: serde_json::Value = match serde_json::from_str(content) {
@@ -898,8 +960,10 @@ fn content_hash_of(content: &str) -> Option<String> {
 }
 
 fn v2_upsert(id: &str, title: &str, content: serde_json::Value, now: &str) -> ConceptUpsert {
+    let extra = coderadar_extra(&content).to_string();
     ConceptUpsert::new(id.to_string(), title.to_string())
         .content(content.to_string())
+        .extra(extra)
         .valid_from(now.to_string())
         .valid_to(TS_OPEN.to_string())
         .retired(false)
@@ -1946,6 +2010,11 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("@staticmethod"));
+        let extra: serde_json::Value =
+            serde_json::from_str(concept.extra.as_deref().unwrap()).unwrap();
+        assert_eq!(extra["coderadar"]["format"], 1);
+        assert_eq!(extra["coderadar"]["kind"], "function");
+        assert_eq!(extra["coderadar"]["file_path"], "test.py");
     }
 
     #[test]
@@ -2100,12 +2169,98 @@ mod tests {
         );
         assert_eq!(store.upsert_concepts_bulk(&[modern.clone()]).unwrap(), 1);
         assert_eq!(store.upsert_concepts_bulk(&[modern]).unwrap(), 0);
+
+        // App metadata drift is a real concept change even when the content
+        // hash agrees (e.g. a corrected canonical file path).
+        let metadata = |file_path: &str| {
+            v2_upsert(
+                "src/a.py::f",
+                "f",
+                serde_json::json!({
+                    "meta_version": 2,
+                    "kind": "function",
+                    "file_path": file_path,
+                    "content_hash": "stable",
+                }),
+                &now,
+            )
+        };
+        assert_eq!(
+            store.upsert_concepts_bulk(&[metadata("src/a.py")]).unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(&[metadata("src/renamed.py")])
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(&[metadata("src/renamed.py")])
+                .unwrap(),
+            0
+        );
+
         // Latest state still correct after all the skips: live concepts
         // present, the retired one folded out.
         let state = store.reconstruct(&now_iso8601()).unwrap();
         assert!(state.concepts.contains_key("f.py::foo"));
         assert!(state.concepts.contains_key("f.py::bar"));
         assert!(!state.concepts.contains_key("f.py::qux"));
+    }
+
+    #[test]
+    fn extra_file_metadata_is_queryable_through_the_registered_expression_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("extra.db")).unwrap();
+        let now = now_iso8601();
+        let make = |id: &str, file_path: &str| {
+            v2_upsert(
+                id,
+                id.rsplit("::").next().unwrap(),
+                serde_json::json!({
+                    "meta_version": 2,
+                    "kind": "function",
+                    "file_path": file_path,
+                    "content_hash": "same-hash",
+                }),
+                &now,
+            )
+        };
+        store
+            .upsert_concepts_bulk(&[
+                make("src/a.py::one", "src/a.py"),
+                make("src/b.py::two", "src/b.py"),
+                ConceptUpsert::new("src/a.py::legacy", "legacy")
+                    .content(r#"{"kind":"function"}"#)
+                    .valid_from(now.clone())
+                    .valid_to(TS_OPEN.to_string())
+                    .retired(false),
+            ])
+            .unwrap();
+
+        assert_eq!(
+            store.live_concept_ids_for_file("src/a.py").unwrap(),
+            vec!["src/a.py::legacy".to_string(), "src/a.py::one".to_string(),]
+        );
+
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let mut rows = runtime()
+            .block_on(conn.query(
+                "EXPLAIN QUERY PLAN SELECT id FROM concepts WHERE json_extract(extra, '$.coderadar.file_path') = ?1",
+                libsql::params!["src/a.py"],
+            ))
+            .unwrap();
+        let mut used_extra_index = false;
+        while let Some(row) = runtime().block_on(rows.next()).unwrap() {
+            let detail = row.get::<String>(3).unwrap_or_default();
+            used_extra_index |= detail.contains("idx_concepts_extra_");
+        }
+        assert!(
+            used_extra_index,
+            "file lookup should use the registered extra index"
+        );
     }
 
     fn seed(store: &CodeGraphStore) {

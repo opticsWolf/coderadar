@@ -528,10 +528,11 @@ fn synthetic_pairs_not_persisted_as_calls_and_stale_edges_retracted() {
             .map(|(_, _, k)| k)
             .collect()
     };
-    // Register strips the underscore (macrame kinds are [A-Z0-9]+).
+    // Macrame 0.18 preserves the caller's edge-kind spelling, including
+    // underscores, instead of collapsing distinct kinds at this boundary.
     assert_eq!(
         kinds_for(&run_id, &combine_id),
-        vec!["DEPENDSON".to_string()]
+        vec!["DEPENDS_ON".to_string()]
     );
     assert_eq!(kinds_for(&main_id, &run_id), vec!["CALLS".to_string()]);
 
@@ -556,7 +557,26 @@ fn synthetic_pairs_not_persisted_as_calls_and_stale_edges_retracted() {
     assert_eq!(retired, 1, "only the legacy synthetic-as-CALLS row closes");
     assert_eq!(
         kinds_for(&run_id, &combine_id),
-        vec!["DEPENDSON".to_string()]
+        vec!["DEPENDS_ON".to_string()]
     );
     assert_eq!(kinds_for(&main_id, &run_id), vec!["CALLS".to_string()]);
+}
+
+#[test]
+fn namespaced_synthetic_edge_kind_is_persisted_verbatim() {
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(&graph, "def handler(): pass\n", "views.py");
+    let source = "views.py::module";
+    let target = "views.py::handler";
+    graph
+        .register_synthetic_edge(source, target, "synthetic:django:handles")
+        .expect("register namespaced kind");
+
+    let store = graph.store.as_ref().unwrap();
+    let open = store
+        .open_edge_triples(&crate::storage::now_iso8601())
+        .expect("read open edges");
+    assert!(open
+        .iter()
+        .any(|(s, t, kind)| { s == source && t == target && kind == "synthetic:django:handles" }));
 }

@@ -316,19 +316,11 @@ impl CodeGraph {
         // Persist to Macrame if store attached. Re-registering a synthetic
         // edge that is already open is skipped (same fact), otherwise the
         // re-run would abort on the single-open guard and the error would be
-        // silently dropped below. Two boundary guards, both enforced here so
-        // no caller can trip them:
-        //
-        //  * macrame's edge-type validator accepts only `[A-Z0-9]+`, so an
-        //    underscore kind (`DEPENDS_ON`) would fail the whole
-        //    all-or-nothing batch and lose every edge in it. The underscore
-        //    is stripped at this boundary; the in-memory indices are
-        //    kind-agnostic, so nothing else changes.
-        //  * `links` has FKs to `concepts` on both endpoints, so edges whose
-        //    endpoints are not persisted concepts (e.g. `django:route:...`
-        //    route nodes) cannot be asserted; the batch drops the failing
-        //    write rather than failing the registration (best-effort, as
-        //    before).
+        // silently dropped below. Macrame 0.18 accepts namespaced kinds, so
+        // preserve the caller's semantic edge type rather than flattening it.
+        // `links` still has FKs to `concepts` on both endpoints, so edges whose
+        // endpoints are not persisted concepts (e.g. `django:route:...` route
+        // nodes) cannot be asserted; the batch drops those best-effort.
         if let Some(store) = self.store.as_ref() {
             let ts_now = crate::storage::now_iso8601();
             // Unreadable ledger → assert everything (the pre-existing
@@ -341,12 +333,11 @@ impl CodeGraph {
                 .collect();
             let batch: Vec<_> = edges
                 .iter()
-                .map(|(source_id, target_id, kind)| {
-                    let kind = kind.replace('_', "");
-                    (source_id.clone(), target_id.clone(), kind)
-                })
                 .filter(|(source_id, target_id, kind)| {
                     !open.contains(&edge_key(source_id, target_id, kind))
+                })
+                .map(|(source_id, target_id, kind)| {
+                    (source_id.clone(), target_id.clone(), kind.clone())
                 })
                 .map(|(source_id, target_id, kind)| {
                     macrame::graph::EdgeAssertion::new(

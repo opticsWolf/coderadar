@@ -1337,7 +1337,31 @@ fn remove_file(file_path: &str) -> PyResult<PyObject> {
         // F14: remove by the canonical form or the walk-form entry is
         // never found (forward-slash input vs `\` -joined stored ids).
         let canonical = crate::graph::module_resolution::canonical_file_form(file_path);
-        let removed = graph.remove_file(&canonical);
+        let mut removed = graph.remove_file(&canonical);
+        // The in-memory projection may have lost track of concepts written by
+        // an interrupted or older indexer. Use the indexed `extra.file_path`
+        // metadata to retire any such current rows as part of file deletion.
+        if let Some(store) = graph.store.as_ref() {
+            match store.live_concept_ids_for_file(&canonical) {
+                Ok(ledger_ids) => {
+                    let known: std::collections::HashSet<&str> =
+                        removed.iter().map(String::as_str).collect();
+                    let stale: Vec<String> = ledger_ids
+                        .into_iter()
+                        .filter(|id| !known.contains(id.as_str()))
+                        .collect();
+                    if !stale.is_empty() {
+                        match store.retire_entities(&stale) {
+                            Ok(_) => removed.extend(stale),
+                            Err(e) => eprintln!(
+                                "[diag] failed to retire stale concepts for {canonical}: {e:?}"
+                            ),
+                        }
+                    }
+                }
+                Err(e) => eprintln!("[diag] indexed concept lookup failed for {canonical}: {e:?}"),
+            }
+        }
         let dict = PyDict::new(py);
         dict.set_item("entities_removed", removed.len())?;
         dict.set_item("removed_ids", removed)?;

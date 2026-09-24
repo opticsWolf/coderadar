@@ -301,13 +301,17 @@ cold-start design in [`docs/v0.8-p1-cold-start-design.md`](docs/v0.8-p1-cold-sta
 - **Shell-friendly entity IDs (E7).** Stored IDs keep OS-native separators (FK stability);
   display renders forward slashes with the redundant `./` dropped, and every pasted variant
   resolves back to the stored key.
-- **macrame-db 0.17 (schema v19, auto-rungs v15→v19 on open).** Builders for the now-`#[non_exhaustive]`
-  `ConceptUpsert`, `Vec<EdgeBelief>` replay folds, distinct `BulkInterrupted`
-  reporting, and `Database::analyze()` planner statistics after the bulk flush.
-  Two perf fixes fell out: the ledger-revision stamp reads `MAX(seq_id)` instead
-  of a full `reconstruct` fold (1.7 s → 0.08 s per analyze on a large log), and
-  content-hash-gated upserts make no-op analyzes write zero rows (see
-  [`docs/macrame-0.15-upgrade-notes.md`](docs/macrame-0.15-upgrade-notes.md)).
+- **macrame-db 0.18 (schema v21, auto-rungs v15→v21 on open).** CodeRadar stores
+  compact namespaced metadata (`kind`, `file_path`, `content_hash`) in
+  `concepts.extra`, indexes the file path for precise stale-row cleanup, and
+  gives framework edges stable namespaced kinds such as
+  `synthetic:django:handles` instead of flattening their types. This is a
+  forward-only database upgrade: a 0.17 binary cannot open v21 or fold a
+  concept written by 0.18. Existing 0.17 concept content remains canonical and
+  is rewritten with `extra` on the next analyze. Existing no-op-write filtering
+  and the `MAX(seq_id)` ledger-revision stamp remain in place; see the
+  [integration notes](docs/macrame-0.18-integration.md) for the adopted fields
+  and the KV deferral.
 
 ## v0.8.1–v0.8.14 Highlights — the dogfood batch
 

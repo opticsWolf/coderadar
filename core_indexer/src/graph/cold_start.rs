@@ -208,7 +208,7 @@ fn restore_synthetic_edges(
     state: &MaterializedState,
     stats: &mut ColdStartStats,
 ) {
-    // Defensive (source, target, kind) triple dedup. macrame 0.15 enforces
+    // Defensive (source, target, kind) triple dedup. macrame 0.15+ enforces
     // a single open interval per triple, so duplicates are impossible in
     // practice; the guard stays cheap in case legacy rows ever appear.
     let mut seen: HashSet<(String, String, String)> = HashSet::new();
@@ -428,12 +428,12 @@ mod tests {
         for c in &concepts {
             map.insert(
                 c.id.clone(),
-                // macrame 0.17: NodeAttributes is #[non_exhaustive]
+                // macrame 0.17+: NodeAttributes is #[non_exhaustive]
                 // (embedding_model defaults None, as before).
                 NodeAttributes::new(c.id.clone(), c.title.clone(), c.content.clone()),
             );
         }
-        // macrame 0.17: MaterializedState is #[non_exhaustive] —
+        // macrame 0.17+: MaterializedState is #[non_exhaustive] —
         // assemble from empty(); fields stay pub and assignable.
         let mut state = MaterializedState::empty("2026-02-08T00:00:00.000000Z");
         state.seq_anchor = 42;

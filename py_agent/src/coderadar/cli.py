@@ -19,6 +19,11 @@ console = Console()
 err_console = Console(file=sys.stderr)
 
 
+def _ledger_synthetic_edge_kind(resolver_name: str, edge_kind: str) -> str:
+    """Return a stable, application-namespaced Macrame 0.18 edge kind."""
+    return f"synthetic:{resolver_name.strip().lower()}:{edge_kind.strip().lower()}"
+
+
 def _run_framework_extraction(project_root: Path) -> dict:
     """v3.6: Run framework resolvers on a project and return summary.
 
@@ -48,7 +53,11 @@ def _run_framework_extraction(project_root: Path) -> dict:
             results["routes"] += len(extraction.nodes)
             results["handlers"] += len(extraction.edges)
             synthetic_edges.extend(
-                (edge.source_id, edge.target_id, edge.kind.upper())
+                (
+                    edge.source_id,
+                    edge.target_id,
+                    _ledger_synthetic_edge_kind(resolver.name, edge.kind),
+                )
                 for edge in extraction.edges
             )
 
