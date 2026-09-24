@@ -1,4 +1,4 @@
-# CodeRadar v0.9.2
+# CodeRadar v0.9.4
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -6,6 +6,8 @@
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Languages](https://img.shields.io/badge/languages-41-brightgreen)]()
+
+[Homepage](https://github.com/opticsWolf/coderadar) · [Repository](https://github.com/opticsWolf/coderadar)
 
 **Live semantic graph of your codebase — incremental, queryable, LLM-writable.**
 
@@ -55,7 +57,7 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 1128 (369 Rust + 759 Python) |
+| **Tests** | 1139 passing (372 Rust + 767 Python; 1 Python skipped) |
 | **MCP Tools** | 22 — 17 `codegraph_*` (explore, search, node, affected, query, search_similar, compute_embeddings, module_children, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, reindex, update_file, set_project) + 5 `coderadar_*` (resolve, replace_body, update_signature, rename, create_entity) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
