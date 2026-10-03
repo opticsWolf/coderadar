@@ -14,12 +14,14 @@ v3.6 Architecture:
 
 from __future__ import annotations
 
+import functools
+
 #: Single version source (F11 fix): pyproject.toml is authoritative.
 #: `__version__` resolves from installed package metadata first (so an
 #: installed wheel/sdist reports its own version) and falls back to the
 #: release constant below, which MUST be kept in sync with pyproject.toml
 #: and Cargo.toml [workspace.package] on every bump.
-_FALLBACK_VERSION = "0.9.4"
+_FALLBACK_VERSION = "0.10.0"
 
 
 def _resolve_version() -> str:
@@ -130,12 +132,21 @@ class MutationPlan:
 
 @dataclass(frozen=True)
 class MutationEdit:
-    """A single byte-accurate edit to a file."""
+    """A single byte-accurate edit to a file.
+
+    ``line``/``col`` (1-indexed line, 0-indexed byte column) and their
+    ``end_*`` companions describe the same span as ``span_start``/``span_end``
+    in the form a reviewer reads (plan §5.4).
+    """
     file: str
     replacement: str
     expected_hash: str = ""
     span_start: int | None = None
     span_end: int | None = None
+    line: int | None = None
+    col: int | None = None
+    end_line: int | None = None
+    end_col: int | None = None
 
 
 @dataclass(frozen=True)
@@ -185,6 +196,10 @@ def _parse_plan_dict(result: dict, tool: str) -> MutationPlan:
             expected_hash=e.get("expected_hash", ""),
             span_start=e.get("span_start"),
             span_end=e.get("span_end"),
+            line=e.get("line"),
+            col=e.get("col"),
+            end_line=e.get("end_line"),
+            end_col=e.get("end_col"),
         ))
     return MutationPlan(
         id=result.get("id", ""),
@@ -195,6 +210,23 @@ def _parse_plan_dict(result: dict, tool: str) -> MutationPlan:
         unverified_sites=list(result.get("unverified_sites", []) or []),
         warnings=list(result.get("warnings", []) or []),
     )
+
+
+def _bound_to_loaded_project(fn):
+    """Refuse to answer about a project this handle was not created for.
+
+    The core keeps one global graph and `analyze` replaces it wholesale, so a
+    handle that outlives a re-index used to answer about the new tree without
+    a word (plan §5.5). The first call binds the handle; a later call against
+    a different root raises `StaleHandle`.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        self._check_root()
+        return fn(self, *args, **kwargs)
+
+    return wrapper
 
 
 class CodeGraph:
@@ -218,13 +250,53 @@ class CodeGraph:
         self._db_path = db_path or ".coderadar/store/coderadar.db"
         self._config: dict[str, Any] = {}
         self._macrame = None  # Macrame Database handle (lazy)
+        self._root: str | None = None  # bound on first use (plan §5.5)
+
+    def _check_root(self) -> None:
+        """Bind to the loaded project on first use; refuse a different one after."""
+        try:
+            from coderadar._core import indexed_root_py as _root
+            current = _root()
+        except (ImportError, RuntimeError):  # no extension / no graph: nothing to bind
+            return
+        if not current:
+            return
+        if self._root is None:
+            self._root = current
+        elif current != self._root:
+            raise StaleHandle(
+                f"This CodeGraph handle belongs to {self._root!r}, but the loaded "
+                f"graph is now {current!r} — call analyze() for the new project and "
+                f"use a fresh CodeGraph handle."
+            )
 
     # ── Query ──────────────────────────────────────────────────────────
 
+    @_bound_to_loaded_project
     def query(self, query_str: str) -> Iterator[dict[str, Any]]:
-        """Execute a Pest query against the in-memory ProjectedGraph.
+        """Execute a query against the in-memory graph; rows are dicts.
 
-        Returns an iterator over result rows (each row is a dict).
+        Shape: ``<entity> [select ...] [where ...] [group by ...]
+        [order by ...] [limit N]``, with entity one of ``modules``,
+        ``classes``, ``functions``, ``methods``, ``constants``, ``entities``,
+        ``imports``, ``calls``, ``fields``.
+
+        Operators: ``==``, ``!=``, ``<``, ``<=``, ``>``, ``>=``,
+        ``contains``, ``matches`` (regex), ``starts_with``, ``ends_with``,
+        ``in``; combine predicates with ``and``, ``or``, ``not``.
+
+        Every row carries ``id``, ``file_path``, ``kind`` and ``parent_id``
+        whatever ``select`` narrows to, so a row can be passed straight to
+        :meth:`callers_of` or ``plan_rename``. An unknown field raises
+        ``ValueError`` listing what the entity does have — it is never a
+        silent empty result.
+
+        Example::
+
+            for cls in graph.query("classes where inherits_from contains 'BaseModel'"):
+                print(cls["id"], cls["name"])
+
+        Full field reference: ``docs/query-language.md``.
         """
         try:
             from coderadar._core import query_graph as _query_graph
@@ -236,6 +308,7 @@ class CodeGraph:
         except ImportError:
             return
 
+    @_bound_to_loaded_project
     def explore(
         self,
         start_id: str,
@@ -318,6 +391,7 @@ class CodeGraph:
 
     # ── Macrame Operations ────────────────────────────────────────────
 
+    @_bound_to_loaded_project
     def traverse(
         self,
         start_id: str,
@@ -333,21 +407,44 @@ class CodeGraph:
         """Return a point-in-time snapshot via Macrame's reconstruct(ts)."""
         return Snapshot(self, timestamp)
 
+    @_bound_to_loaded_project
     def find(self, entity_id: str) -> dict[str, Any] | None:
-        """Look up an entity by ID."""
+        """Look up an entity by ID.
+
+        Accepts the canonical form (``pkg/mod.py::Class.method``), the
+        legacy spellings (absolute, backslashes, leading ``./``), and a
+        dotted qualified name (``pkg.mod.Class.method`` — the spelling a
+        traceback uses) when a module prefix matches.
+        """
         from .query import MacrameQuery
         return MacrameQuery(self).find(entity_id)
 
+    @_bound_to_loaded_project
     def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
         """Find callers via reverse call index."""
         from .query import MacrameQuery
         return MacrameQuery(self).callers_of(entity_id)
 
+    @_bound_to_loaded_project
     def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
         """Find callees via forward call index."""
         from .query import MacrameQuery
         return MacrameQuery(self).callees_of(entity_id)
 
+    @_bound_to_loaded_project
+    def call_sites(self, entity_id: str) -> list[dict[str, Any]] | None:
+        """Every call site extracted from a function, with the resolver's verdict.
+
+        Rows are ``{name, path, line, col, status, target, reason}`` in source
+        order; ``status`` is one of function / method / constructor / builtin /
+        external / unresolved / pending. ``None`` when ``entity_id`` is not a
+        function. Unlike ``callees_of`` this shows the calls that did *not*
+        become edges.
+        """
+        from coderadar._core import call_sites
+        return call_sites(entity_id)
+
+    @_bound_to_loaded_project
     def search_similar(
         self, query_embedding: list[float], top_k: int = 10,
     ) -> list[dict[str, Any]]:
@@ -441,6 +538,7 @@ class CodeGraph:
 
     # ── Update ─────────────────────────────────────────────────────────
 
+    @_bound_to_loaded_project
     def update_file(self, file_path: str, content: str | None = None,
                     force: bool = False) -> UpdateReport:
         """Update the graph after a file change.
@@ -455,15 +553,22 @@ class CodeGraph:
             if isinstance(result, dict):
                 return UpdateReport(
                     affected_files=result.get("affected_files") or [file_path],
-                    changed_symbols=[],
-                    new_unresolved_references=[],
-                    newly_resolved_references=[],
+                    changed_symbols=[
+                        SymbolChange(
+                            kind=s["kind"], operation=s["operation"],
+                            qualified_name=s["id"], file=s["id"].split("::")[0],
+                            line=int(s["line"]),
+                        )
+                        for s in result.get("changed_symbols", [])
+                    ],
+                    new_unresolved_references=list(result.get("new_unresolved", [])),
+                    newly_resolved_references=list(result.get("newly_resolved", [])),
                     elapsed_ms=float(result.get("elapsed_ms", 0.0)),
                     parse_quality=str(result.get("parse_quality", "Clean")),
                     parse_errors=int(result.get("parse_errors", 0)),
                     fully_applied=bool(result.get("fully_applied", True)),
-                    epoch_before=0,
-                    epoch_after=1,
+                    epoch_before=int(result.get("epoch_before", 0)),
+                    epoch_after=int(result.get("epoch_after", 0)),
                 )
         except ImportError:
             # Nothing parsed anything, so "Clean" and fully_applied=True were
@@ -474,14 +579,14 @@ class CodeGraph:
                 elapsed_ms=0.0,
                 parse_quality="Error: the coderadar._core extension is not built",
                 parse_errors=1,
-                fully_applied=False, epoch_before=0, epoch_after=1,
+                fully_applied=False, epoch_before=0, epoch_after=0,
             )
         except RuntimeError as e:
             return UpdateReport(
                 affected_files=[file_path], changed_symbols=[],
                 new_unresolved_references=[], newly_resolved_references=[],
                 elapsed_ms=0.0, parse_quality=f"Error: {e}", parse_errors=1,
-                fully_applied=False, epoch_before=0, epoch_after=1,
+                fully_applied=False, epoch_before=0, epoch_after=0,
             )
 
         # Fallback (unreachable in practice)
@@ -489,9 +594,10 @@ class CodeGraph:
             affected_files=[file_path], changed_symbols=[],
             new_unresolved_references=[], newly_resolved_references=[],
             elapsed_ms=0.0, parse_quality="Clean", parse_errors=0,
-            fully_applied=False, epoch_before=0, epoch_after=1,
+            fully_applied=False, epoch_before=0, epoch_after=0,
         )
 
+    @_bound_to_loaded_project
     def remove_file(self, file_path: str) -> int:
         """Drop a deleted file's entities from the graph.
 
@@ -533,6 +639,7 @@ class CodeGraph:
 
     # ── Mutation ───────────────────────────────────────────────────────
 
+    @_bound_to_loaded_project
     def plan_body_replacement(
         self,
         entity_id: str,
@@ -556,6 +663,7 @@ class CodeGraph:
             affected_files=[], diff_preview="", unverified_sites=[], warnings=[],
         )
 
+    @_bound_to_loaded_project
     def plan_signature_update(
         self,
         entity_id: str,
@@ -578,6 +686,7 @@ class CodeGraph:
             affected_files=[], diff_preview="", unverified_sites=[], warnings=[],
         )
 
+    @_bound_to_loaded_project
     def plan_rename(
         self,
         entity_id: str,
@@ -598,6 +707,7 @@ class CodeGraph:
             affected_files=[], diff_preview="", unverified_sites=[], warnings=[],
         )
 
+    @_bound_to_loaded_project
     def plan_create_entity(
         self,
         target_file: str,
@@ -618,6 +728,7 @@ class CodeGraph:
             affected_files=[], diff_preview="", unverified_sites=[], warnings=[],
         )
 
+    @_bound_to_loaded_project
     def apply(self, plan: MutationPlan) -> MutationResult:
         """Apply a mutation plan atomically.
 
@@ -698,6 +809,7 @@ class CodeGraph:
 
     # ── Stats / Debug ──────────────────────────────────────────────────
 
+    @_bound_to_loaded_project
     def stats(self) -> dict[str, Any]:
         """Return counts, parse quality summary, memory usage."""
         try:
@@ -730,7 +842,11 @@ class Snapshot:
         return self._timestamp
 
     def query(self, query_str: str) -> Iterator[dict[str, Any]]:
-        """Execute a Pest query against the reconstructed snapshot."""
+        """Execute a query against the reconstructed snapshot.
+
+        Same language and row shape as :meth:`CodeGraph.query` — see
+        ``docs/query-language.md``.
+        """
         # Macrame reconstruct(ts) + ProjectedGraph from that point
         return self._graph.query(query_str)
 
@@ -858,6 +974,7 @@ def _apply_star_exports(root: str) -> None:
     derived, in-memory state and the ledger does not persist them).
     """
     try:
+        import os
         import pathlib
 
         from coderadar._core import set_module_star_exports_bulk
@@ -885,9 +1002,16 @@ def _apply_star_exports(root: str) -> None:
             names = extract_all_exports(source)
             if not names:
                 continue
+            # Canonical ids are root-relative with forward slashes and no
+            # dot prefix (plan 5.1). The other spellings are kept as
+            # fallbacks for stores written before the migration; the Rust
+            # side canonicalizes whatever it gets.
             candidates = {f"{py_file}::module"}
             try:
-                candidates.add(f"{py_file.relative_to(root_path)}::module")
+                rel = py_file.relative_to(root_path)
+                candidates.add(f"{rel.as_posix()}::module")
+                candidates.add(f".{os.sep}{rel}::module")
+                candidates.add(f"./{rel.as_posix()}::module")
             except ValueError:
                 pass
             candidates.add(f"{py_file.resolve()}::module")

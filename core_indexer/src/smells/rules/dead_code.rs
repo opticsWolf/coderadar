@@ -6,6 +6,8 @@
 
 use std::collections::HashMap;
 
+use crate::graph::deadcode::DeadKind;
+use crate::scoring::Tier;
 use crate::smells::rule::SmellRule;
 use crate::smells::types::{EvalContext, Finding, Scope, Severity};
 
@@ -23,19 +25,31 @@ impl SmellRule for DeadCode {
     }
 
     fn evaluate(&self, ctx: &EvalContext) -> Option<Finding> {
-        let reachable = ctx.analyses.reachable?;
-        if reachable.contains(ctx.entity_id) {
-            return None;
-        }
+        let found = ctx.analyses.dead?.get(ctx.entity_id)?;
+        let severity = match found.tier {
+            Tier::Certain | Tier::High => Severity::High,
+            Tier::Medium => Severity::Medium,
+            Tier::Low | Tier::Speculative => Severity::Info,
+        };
         Some(Finding {
             rule_id: self.id().into(),
             entity_id: ctx.entity_id.into(),
-            severity: Severity::High,
+            severity,
             message: format!(
-                "'{}' is unreachable from any entry point — verify with `affected` before removing",
-                ctx.entity_name
+                "'{}' is {} — verify with `affected` before removing",
+                ctx.entity_name,
+                match found.kind {
+                    DeadKind::Unreachable => "unreachable from any entry point",
+                    DeadKind::TransitivelyDead => "only called from dead code",
+                    DeadKind::TestOnly => "only used by tests",
+                    DeadKind::RtaDead => "live only through a never-constructed class",
+                }
             ),
-            signals: HashMap::from([("reachable".to_string(), 0.0)]),
+            signals: HashMap::from([
+                ("reachable".to_string(), 0.0),
+                ("score".to_string(), found.score as f64),
+                ("removable_lines".to_string(), found.removable_lines as f64),
+            ]),
         })
     }
 }

@@ -54,6 +54,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(traverse, m)?)?;
     m.add_function(wrap_pyfunction!(traverse_unresolved, m)?)?;
     m.add_function(wrap_pyfunction!(unresolved_targets, m)?)?;
+    m.add_function(wrap_pyfunction!(call_sites, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entity, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -105,22 +106,9 @@ pub(crate) static INDEXED_ROOT: std::sync::LazyLock<RwLock<Option<std::path::Pat
 /// read, the process working directory stands in.
 pub(crate) fn indexed_root() -> std::path::PathBuf {
     if let Some(root) = INDEXED_ROOT.read().clone() {
-        return strip_verbatim_prefix(root);
+        return crate::fs::strip_verbatim_prefix(root);
     }
     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-}
-
-/// `std::fs::canonicalize` returns verbatim paths on Windows (`\\?\D:\…`),
-/// which defeat `starts_with`/`strip_prefix` against regular paths.
-pub(crate) fn strip_verbatim_prefix(p: std::path::PathBuf) -> std::path::PathBuf {
-    let s = p.to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        return std::path::PathBuf::from(format!(r"\\{rest}"));
-    }
-    if let Some(rest) = s.strip_prefix(r"\\?\") {
-        return std::path::PathBuf::from(rest);
-    }
-    p
 }
 
 /// The configuration every consumer in this process reads.
@@ -280,6 +268,7 @@ fn function_to_dict(py: Python<'_>, f: &Function) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
     dict.set_item("id", &f.id)?;
     dict.set_item("name", &f.name)?;
+    dict.set_item("references", &f.resolved_refs)?;
     dict.set_item(
         "kind",
         match f.kind {
@@ -817,6 +806,13 @@ struct AnalyzeOutcome {
     panicked_workers: usize,
 }
 
+/// Index a project from source and make it the loaded graph.
+///
+/// Walks `root` (honouring built-in excludes, `.gitignore`, `[project] exclude`
+/// and the one-shot `exclude` patterns), parses and resolves every file with
+/// the GIL released, and returns `{files_indexed, total_entities, failures,
+/// panicked_workers}`. `create_store=True` also creates `.coderadar/store/`;
+/// only `coderadar init` should pass it.
 #[pyfunction]
 #[pyo3(signature = (root, create_store = false, exclude = None))]
 fn analyze(
@@ -1277,6 +1273,24 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
 
 // ── query_graph() ──────────────────────────────────────────────────────────
 
+/// Run a query against the loaded graph and return a list of row dicts.
+///
+/// Shape: `<entity> [select ...] [where ...] [group by ...] [order by ...]
+/// [limit N]`, with entity one of `modules | classes | functions | methods |
+/// constants | entities | imports | calls | fields`, e.g.
+/// `methods where is_async == true order by line desc limit 10`.
+///
+/// Operators: `==`, `!=`, `<`, `<=`, `>`, `>=`, `contains`, `matches`
+/// (regex), `starts_with`, `ends_with`, `in`; predicates combine with `and`,
+/// `or`, `not`. Every row carries `id`, `file_path`, `kind` and `parent_id`
+/// whatever `select` narrows to, so a hit can be fed straight into
+/// `callers_of` / `plan_rename`.
+///
+/// Unknown fields are rejected with the available list rather than silently
+/// matching nothing. Raises `ValueError` on a parse error.
+///
+/// Full field reference: `docs/query-language.md` (generated from the
+/// grammar and schema, so it cannot drift).
 #[pyfunction]
 fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {
     with_graph(|_graph, snap| {
@@ -1294,6 +1308,9 @@ mod git_bindings {
     use pyo3::prelude::*;
     use pyo3::types::PyDict;
 
+    /// `{"clean": bool}` — `git status` semantics: modified and untracked
+    /// files make the tree dirty, ignored files never do. Reports clean when
+    /// git cannot tell.
     #[pyfunction]
     pub fn git_worktree_clean(py: Python<'_>, repo_path: &str) -> PyResult<PyObject> {
         let clean = crate::fs::git::is_worktree_clean(repo_path).unwrap_or(true);
@@ -1302,6 +1319,8 @@ mod git_bindings {
         Ok(dict.into())
     }
 
+    /// Blame for one file as run-length rows `{line, count, author, commit}`:
+    /// `count` consecutive lines starting at `line` share an author and commit.
     #[pyfunction]
     pub fn git_blame(py: Python<'_>, repo_path: &str, file_path: &str) -> PyResult<Vec<PyObject>> {
         match crate::fs::git::blame_file(repo_path, file_path) {
@@ -1326,6 +1345,9 @@ mod git_bindings {
         }
     }
 
+    /// Repo-relative paths changed between two committed revisions (any
+    /// rev syntax: HEAD~1, branch, tag, oid). `new_oid=None` means HEAD.
+    /// Raises `RuntimeError` on an unknown revision.
     #[pyfunction]
     pub fn git_changed_files(
         _py: Python<'_>,
@@ -1347,6 +1369,15 @@ mod git_bindings {
 
 // ── update_file() ──────────────────────────────────────────────────────────
 
+/// Re-index one file after it changed (`content=None` reads it from disk;
+/// otherwise `content` is parsed instead, so an unsaved buffer can be indexed).
+///
+/// Returns `{fully_applied, entities_added, entities_removed, affected_files,
+/// parse_quality, parse_errors, elapsed_ms, changed_symbols, new_unresolved,
+/// newly_resolved, epoch_before, epoch_after}`. `changed_symbols` lists the
+/// functions and classes of this file that were added, removed or changed
+/// (`signature_changed` / `body_changed`); `new_unresolved` / `newly_resolved`
+/// list `{entity_id, target}` call targets that appeared or went away.
 #[pyfunction]
 fn update_file(
     py: Python<'_>,
@@ -1383,6 +1414,35 @@ fn update_file(
     dict.set_item("parse_quality", quality)?;
     dict.set_item("parse_errors", outcome.parse_errors)?;
     dict.set_item("elapsed_ms", outcome.elapsed_ms)?;
+    let symbols: Vec<PyObject> = outcome
+        .changed_symbols
+        .iter()
+        .map(|s| {
+            let d = PyDict::new(py);
+            let _ = d.set_item("kind", s.kind);
+            let _ = d.set_item("operation", s.operation);
+            let _ = d.set_item("id", &s.id);
+            let _ = d.set_item("name", &s.name);
+            let _ = d.set_item("line", s.line);
+            d.into()
+        })
+        .collect();
+    dict.set_item("changed_symbols", symbols)?;
+    let refs = |pairs: &[(String, String)]| -> Vec<PyObject> {
+        pairs
+            .iter()
+            .map(|(id, target)| {
+                let d = PyDict::new(py);
+                let _ = d.set_item("entity_id", id);
+                let _ = d.set_item("target", target);
+                d.into()
+            })
+            .collect()
+    };
+    dict.set_item("new_unresolved", refs(&outcome.new_unresolved))?;
+    dict.set_item("newly_resolved", refs(&outcome.newly_resolved))?;
+    dict.set_item("epoch_before", outcome.epoch_before)?;
+    dict.set_item("epoch_after", outcome.epoch_after)?;
     Ok(dict.into())
 }
 
@@ -1466,6 +1526,71 @@ fn canonical_lookup_id(entity_id: &str) -> String {
     }
 }
 
+/// Resolve a dotted qualified name to an entity id (plan §5.2).
+///
+/// `lace.dock_manager.DockManager.save_state` — the spelling every Python
+/// traceback, import and stack frame uses — used to miss silently. The
+/// longest module prefix wins: with `lace/dock_manager.py` in the graph it
+/// resolves to `lace/dock_manager.py::DockManager.save_state`; a mixed
+/// `lace.dock_manager::DockManager.save_state` works too.
+///
+/// `None` when no module prefix matches or the remaining symbol does not
+/// exist — callers turn that into "did you mean" candidates.
+fn resolve_qualified_name(projection: &ProjectedGraph, name: &str) -> Option<String> {
+    use crate::graph::find_module_by_dotted_name;
+
+    let (module_id, symbol) = match name.split_once("::") {
+        Some((head, tail)) => (
+            find_module_by_dotted_name(projection, head, "")?,
+            tail.to_string(),
+        ),
+        None => {
+            let segments: Vec<&str> = name.split('.').collect();
+            // A bare name is not a qualified name.
+            if segments.len() < 2 {
+                return None;
+            }
+            // Longest prefix first: the whole name may itself be a module
+            // (`pkg.model`), in which case there is no symbol left over.
+            let mut found = None;
+            for len in (1..=segments.len()).rev() {
+                let dotted = segments[..len].join(".");
+                if let Some(id) = find_module_by_dotted_name(projection, &dotted, "") {
+                    found = Some((id, segments[len..].join(".")));
+                    break;
+                }
+            }
+            found?
+        }
+    };
+
+    let file_head = module_id
+        .rsplit_once("::")
+        .map(|(head, _)| head.to_string())?;
+    if symbol.is_empty() {
+        return Some(module_id);
+    }
+    let candidate = format!("{file_head}::{symbol}");
+    if entity_exists(projection, &candidate) {
+        return Some(candidate);
+    }
+    // `pkg.mod.Outer.Inner` — the class segment may itself be dotted, so try
+    // dropping leading segments of the symbol before giving up.
+    let mut parts: Vec<&str> = symbol.split('.').collect();
+    while parts.len() > 1 {
+        parts.remove(0);
+        let candidate = format!("{file_head}::{}", parts.join("."));
+        if entity_exists(projection, &candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Plan replacing a function/method body. Returns a mutation-plan dict
+/// (`id`, `tool`, `edits`, `diff_preview`, `unverified_sites`, ...). Nothing is
+/// written until the plan goes through `apply_mutation`; `expected_hash`
+/// rejects the plan if the body changed since it was read.
 #[pyfunction]
 fn plan_body_replacement(
     entity_id: &str,
@@ -1490,6 +1615,10 @@ fn plan_body_replacement(
     })
 }
 
+/// Plan changing a function's signature and updating its call sites
+/// (`call_site_values` supplies values for new parameters; `inject_defaults`
+/// fills them from defaults). Returns a mutation-plan dict; nothing is written
+/// until `apply_mutation`.
 #[pyfunction]
 fn plan_signature_update(
     entity_id: &str,
@@ -1516,6 +1645,10 @@ fn plan_signature_update(
     })
 }
 
+/// Plan renaming a symbol and its resolved references. Call sites the resolver
+/// cannot prove are returned in `unverified_sites` for manual review instead
+/// of being edited. Returns a mutation-plan dict; nothing is written until
+/// `apply_mutation`.
 #[pyfunction]
 fn plan_rename(
     entity_id: &str,
@@ -1540,6 +1673,8 @@ fn plan_rename(
     })
 }
 
+/// Plan inserting `code` after `anchor` in `target_file`. Returns a
+/// mutation-plan dict; nothing is written until `apply_mutation`.
 #[pyfunction]
 fn plan_create_entity(
     target_file: &str,
@@ -1557,6 +1692,9 @@ fn plan_create_entity(
     })
 }
 
+/// Apply a mutation plan (the JSON form of a plan dict) atomically: every
+/// edit's `expected_hash` is checked first, and a write that leaves a file
+/// unparseable is rolled back.
 #[pyfunction]
 fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
@@ -1656,15 +1794,29 @@ fn plan_to_dict(py: Python<'_>, plan: &mutation::MutationPlan) -> PyResult<PyObj
         })
         .collect();
     dict.set_item("unverified_sites", unverified)?;
-    // Serialize edits as list of {file, span_start, span_end, replacement, expected_hash}
+    // Serialize edits as list of {file, span_start, span_end, line, col,
+    // end_line, end_col, replacement, expected_hash}. The line/column
+    // companions exist because byte offsets are unreadable in a review
+    // (plan §5.4) — consumers had to re-read the file and count newlines.
+    let mut edit_sources: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
     let edits: Vec<PyObject> = plan
         .edits
         .iter()
         .map(|e| {
+            let source = edit_sources.entry(e.file.clone()).or_insert_with(|| {
+                crate::graph::module_resolution::read_project_file(&e.file).into_bytes()
+            });
+            let (line, col) = crate::types::line_col_at(source, e.span.start);
+            let (end_line, end_col) = crate::types::line_col_at(source, e.span.end);
             let ed = PyDict::new(py);
             let _ = ed.set_item("file", &e.file);
             let _ = ed.set_item("span_start", e.span.start);
             let _ = ed.set_item("span_end", e.span.end);
+            let _ = ed.set_item("line", line);
+            let _ = ed.set_item("col", col);
+            let _ = ed.set_item("end_line", end_line);
+            let _ = ed.set_item("end_col", end_col);
             let _ = ed.set_item("replacement", &e.replacement);
             let _ = ed.set_item("expected_hash", &e.expected_hash);
             ed.into()
@@ -2004,7 +2156,17 @@ fn get_config(py: Python<'_>) -> PyResult<PyObject> {
 fn lookup_entity(py: Python<'_>, entity_id: &str) -> PyResult<Option<PyObject>> {
     // R2-16: existence checks accept any id spelling too.
     let entity_id = canonical_lookup_id(entity_id);
-    with_graph(|_graph, snap| Ok(entity_ref_to_dict(py, &entity_id, snap)))
+    with_graph(|_graph, snap| {
+        if let Some(found) = entity_ref_to_dict(py, &entity_id, snap) {
+            return Ok(Some(found));
+        }
+        // §5.2: a dotted qualified name (`pkg.mod.Class.method`) is what
+        // tracebacks and imports use; resolve it rather than returning None.
+        match resolve_qualified_name(snap, &entity_id) {
+            Some(resolved) => Ok(entity_ref_to_dict(py, &resolved, snap)),
+            None => Ok(None),
+        }
+    })
 }
 
 /// Search tokens from a free-text query: whitespace-split, surrounding
@@ -2361,6 +2523,10 @@ fn normalize_edge_kinds(edge_kinds: &[String]) -> Vec<String> {
     v
 }
 
+/// Breadth-first walk from `start_id` over `edge_kinds` (empty = all kinds:
+/// calls, imports, extends, overrides). `direction` is `in`/`upstream`,
+/// `out`/`downstream` or `both`; `as_of` reads the graph as it was at a past
+/// timestamp. Returns one dict per reached node.
 #[pyfunction]
 #[pyo3(signature = (start_id, max_depth, edge_kinds, direction, as_of=None))]
 fn traverse(
@@ -2533,12 +2699,45 @@ fn subgraph_bfs(
     out
 }
 
-/// Count unresolved outgoing targets across the traversal from `start_id`.
-/// Mirrors `traverse` (same BFS, direction/kinds normalization) but returns
-/// the number of targets the walk could NOT follow — surfaces silent
+/// Every call site extracted from one function and how the resolver classified
+/// it: a list of `{name, path, line, col, status, target, reason}` dicts, in
+/// source order. `status` is `function | method | constructor | builtin |
+/// external | unresolved | pending`; `target` is the bound entity id (or the
+/// name, for builtin/external); `reason` is set for `unresolved`. Returns
+/// `None` for an unknown entity. This is the ground for "was the call
+/// extracted at all" — `unresolved_targets` only lists the failures.
+#[pyfunction]
+fn call_sites(py: Python<'_>, entity_id: &str) -> PyResult<Option<Vec<PyObject>>> {
+    with_graph(|_graph, snap| {
+        let entity_id = canonical_entity_id(entity_id);
+        let Some(sites) = crate::graph::CodeGraph::list_call_sites(snap, &entity_id) else {
+            return Ok(None);
+        };
+        Ok(Some(
+            sites
+                .iter()
+                .map(|s| {
+                    let d = PyDict::new(py);
+                    let _ = d.set_item("name", &s.name);
+                    let _ = d.set_item("path", &s.path);
+                    let _ = d.set_item("line", s.line);
+                    let _ = d.set_item("col", s.col);
+                    let _ = d.set_item("status", s.status);
+                    let _ = d.set_item("target", &s.target);
+                    let _ = d.set_item("reason", &s.reason);
+                    d.into()
+                })
+                .collect(),
+        ))
+    })
+}
+
 /// Names behind the `traverse_unresolved` count (R2-12): the unresolved
 /// call-target spellings for one function, so `diagnose --unresolved`
 /// shows WHICH targets the graph cannot follow.
+///
+/// Returns a sorted, de-duplicated list; `[]` when the entity is unknown or
+/// every call resolved.
 #[pyfunction]
 fn unresolved_targets(entity_id: &str) -> PyResult<Vec<String>> {
     with_graph(|_graph, snap| {
@@ -2548,16 +2747,23 @@ fn unresolved_targets(entity_id: &str) -> PyResult<Vec<String>> {
     })
 }
 
+/// Count unresolved outgoing targets across the traversal from `start_id`.
+/// Mirrors `traverse` (same BFS, direction/kinds normalization) but returns
+/// the number of targets the walk could NOT follow — surfaces silent
 /// truncation (plan 2.3) without changing the `traverse` contract.
+///
+/// `edge_kinds=None` (or an empty list) means every kind, as for `traverse`.
+/// `direction` is `in`/`upstream`, `out`/`downstream` or `both`.
 #[pyfunction]
-#[pyo3(signature = (start_id, max_depth, edge_kinds, direction))]
+#[pyo3(signature = (start_id, max_depth, edge_kinds=None, direction="out"))]
 fn traverse_unresolved(
     py: Python<'_>,
     start_id: &str,
     max_depth: usize,
-    edge_kinds: Vec<String>,
+    edge_kinds: Option<Vec<String>>,
     direction: &str,
 ) -> PyResult<usize> {
+    let edge_kinds = edge_kinds.unwrap_or_default();
     let (up, down) = match direction.trim().to_ascii_lowercase().as_str() {
         "in" | "upstream" => (true, false),
         "out" | "downstream" => (false, true),
@@ -2599,7 +2805,13 @@ fn traverse_unresolved(
     })
 }
 
-/// Get graph statistics.
+/// Entity counts plus provenance of the loaded graph.
+///
+/// `revision` is the **ledger** revision the graph was materialized from. It is
+/// `None` for an `analyze()` without a store (`create_store=False`): such a graph
+/// is fresh from source and has no ledger, which says nothing about git.
+/// `indexed_at` is Unix seconds of the last commit (0.0 = never) and
+/// `indexed_root` the directory the graph was built from.
 #[pyfunction]
 fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
     with_graph(|graph, snap| {
@@ -2626,10 +2838,7 @@ fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
         // look exactly like fresh ones.
         dict.set_item(
             "indexed_root",
-            INDEXED_ROOT
-                .read()
-                .clone()
-                .map(|p| p.to_string_lossy().into_owned()),
+            indexed_root().to_string_lossy().into_owned(),
         )?;
         Ok(dict.into())
     })
@@ -2776,6 +2985,7 @@ fn find_dead_code(
         let snap_owned: Arc<ProjectedGraph> = snap.clone();
         let options = crate::graph::deadcode::DeadCodeOptions {
             include_test_only: include_test_reachable,
+            root: INDEXED_ROOT.read().clone(),
         };
         let findings =
             py.allow_threads(move || crate::graph::deadcode::detect_dead(&snap_owned, options));
@@ -2791,6 +3001,11 @@ fn find_dead_code(
             dict.set_item("tier", f.tier.as_str())?;
             dict.set_item("score", f.score)?;
             dict.set_item("removable_lines", f.removable_lines)?;
+            // §2.6: reasons travel with the finding, so a 0.9 is checkable.
+            dict.set_item("evidence", f.evidence.clone())?;
+            if let Some(dist) = f.nearest_root_distance {
+                dict.set_item("nearest_root_distance", dist as u32)?;
+            }
             if let Some(name) = entity_name_of(&f.entity_id, &snap) {
                 dict.set_item("entity_name", name)?;
             }
@@ -2883,16 +3098,33 @@ fn find_clones(
             dict.set_item("clone_type", g.clone_type.as_str())?;
             dict.set_item("similarity", g.similarity)?;
             dict.set_item("confidence_tier", g.confidence_tier.as_str())?;
+            // `reason` is null for ordinary clones; "literal-table" says the
+            // shape matched but the bodies are key/value tables (§6.3).
+            dict.set_item("reason", g.reason)?;
 
+            // One read per file: instances repeat files, and the source is
+            // only needed to turn the byte span into a line range (§5.4).
+            let mut sources: std::collections::HashMap<String, Vec<u8>> =
+                std::collections::HashMap::new();
             let instances: Vec<PyObject> = g
                 .instances
                 .iter()
                 .map(|inst| {
+                    let source = sources.entry(inst.file.clone()).or_insert_with(|| {
+                        crate::graph::module_resolution::read_project_file(&inst.file).into_bytes()
+                    });
+                    let (start_line, start_col) =
+                        crate::types::line_col_at(source, inst.span.start);
+                    let (end_line, end_col) = crate::types::line_col_at(source, inst.span.end);
                     let d = PyDict::new(py);
                     let _ = d.set_item("entity_id", &inst.entity_id);
                     let _ = d.set_item("file", &inst.file);
                     let _ = d.set_item("span_start", inst.span.start);
                     let _ = d.set_item("span_end", inst.span.end);
+                    let _ = d.set_item("start_line", start_line);
+                    let _ = d.set_item("start_col", start_col);
+                    let _ = d.set_item("end_line", end_line);
+                    let _ = d.set_item("end_col", end_col);
                     d.into()
                 })
                 .collect();
@@ -2920,17 +3152,13 @@ fn find_scaffolding(
     let root: PathBuf = INDEXED_ROOT.read().clone().ok_or_else(|| {
         pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
     })?;
-    // Strip the Windows \?\ verbatim prefix for display consistency.
-    let root_str = root
-        .to_string_lossy()
-        .trim_start_matches(r"\?\ ")
-        .to_string();
+    let root = crate::fs::strip_verbatim_prefix(root);
 
     let cfg = crate::scaffold::ScaffoldConfig {
         include_secrets,
         ..Default::default()
     };
-    let mut findings = py.allow_threads(|| crate::scaffold::scan_path(Path::new(&root_str), &cfg));
+    let mut findings = py.allow_threads(|| crate::scaffold::scan_path(&root, &cfg));
 
     // Placeholder bodies ride the resolved projection when it is loaded;
     // a cold/no graph degrades to file-walk signals only (honest subset).
@@ -2976,7 +3204,9 @@ fn find_scaffolding(
         {
             let dict = PyDict::new(py);
             dict.set_item("kind", f.kind.as_str())?;
-            dict.set_item("file", f.file.to_string_lossy().as_ref())?;
+            // Root-relative, forward slashes — the same spelling every other
+            // finding type uses (plan §5.3).
+            dict.set_item("file", crate::fs::display_path(&root, &f.file))?;
             dict.set_item("line", f.line as u32)?;
             dict.set_item("label", &f.label)?;
             dict.set_item("snippet", &f.snippet)?;
@@ -3116,6 +3346,34 @@ pub(crate) fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
 // ledger instead of re-analyzing. `export_snapshot` is gone — the ledger
 // itself is the snapshot; there is no separate export surface.
 
+/// Live ids spelled the pre-plan-5.1 way (dot prefix or native backslashes).
+///
+/// A store holding them cannot be loaded honestly: ids are canonical
+/// (forward slashes, no dot prefix) since the migration, so every id lookup
+/// would miss while search and queries kept working — a half-broken graph.
+/// The caller re-analyzes instead, which re-keys the store.
+fn legacy_spelled_concept_ids(
+    store: &crate::storage::CodeGraphStore,
+) -> macrame::Result<Vec<String>> {
+    Ok(store
+        .live_concept_ids()?
+        .into_iter()
+        .filter(|id| is_legacy_spelled_id(id))
+        .collect())
+}
+
+/// Whether a concept id's file head is a pre-plan-5.1 spelling.
+///
+/// One rule, shared with the re-index migration
+/// ([`crate::retire_noncanonical_concepts`]): the head is not the canonical
+/// form — dot-prefixed (`./x.py`, `.\x.py`), backslashed (`.\pkg\x.py`),
+/// absolute (`D:\proj\x.py`, `/home/proj/x.py`). Name-like heads
+/// (`external::len`, `Date::now`) are canonical and never flagged.
+fn is_legacy_spelled_id(id: &str) -> bool {
+    let head = id.split("::").next().unwrap_or("");
+    !head.is_empty() && !crate::graph::module_resolution::is_canonical_file_head(head)
+}
+
 /// Cold-start a project from the Macrame ledger (v0.8 P1).
 ///
 /// Reads the ledger snapshot (`reconstruct(now)`), parses the concept
@@ -3152,6 +3410,18 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
                     "failed to open Macrame store {db}: {e:?}"
                 ))
             })?;
+            let legacy = legacy_spelled_concept_ids(&store).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to inspect Macrame store {db}: {e:?}"
+                ))
+            })?;
+            if !legacy.is_empty() {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "store {db} predates the 0.10 canonical id format: {} live id(s)                      are spelled with a dot prefix or native separators (e.g. {:?}).                      Re-analyze to migrate it — `coderadar analyze` (cold start does                      this automatically), or `coderadar store-repair` to inspect it.",
+                    legacy.len(),
+                    legacy.first().cloned().unwrap_or_default(),
+                )));
+            }
             let now = now_iso8601();
             let state = store.reconstruct(&now).map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -3225,7 +3495,7 @@ fn store_repair(py: Python<'_>, db_path: &str) -> PyResult<PyObject> {
     use crate::storage::{classify_v2_concept, CodeGraphStore, V2ConceptClass};
     let db = db_path.to_string();
     let outcome = py.allow_threads(
-        move || -> std::result::Result<(usize, usize, usize, usize), String> {
+        move || -> std::result::Result<(usize, usize, usize, usize, usize), String> {
             let store = CodeGraphStore::open(&db).map_err(|e| format!("{e:?}"))?;
             let live = store
                 .live_concept_contents()
@@ -3240,17 +3510,24 @@ fn store_repair(py: Python<'_>, db_path: &str) -> PyResult<PyObject> {
                 }
             }
             let (retired, edges) = store.retire_v1_leftovers().map_err(|e| format!("{e:?}"))?;
-            Ok((v1, unreadable, retired, edges))
+            let legacy_ids = legacy_spelled_concept_ids(&store)
+                .map_err(|e| format!("{e:?}"))?
+                .len();
+            Ok((v1, unreadable, retired, edges, legacy_ids))
         },
     );
-    let (v1_live, unreadable_live, v1_retired, edges_retired) = outcome.map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("store repair failed for {db_path}: {e}"))
-    })?;
+    let (v1_live, unreadable_live, v1_retired, edges_retired, legacy_live) =
+        outcome.map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "store repair failed for {db_path}: {e}"
+            ))
+        })?;
     let dict = PyDict::new(py);
     dict.set_item("v1_found", v1_live)?;
     dict.set_item("v1_retired", v1_retired)?;
     dict.set_item("edges_retired", edges_retired)?;
     dict.set_item("unreadable_live", unreadable_live)?;
+    dict.set_item("legacy_ids", legacy_live)?;
     Ok(dict.into())
 }
 
@@ -3513,15 +3790,16 @@ fn module_children(py: Python<'_>, module_id: &str) -> PyResult<PyObject> {
     })
 }
 
-/// Set a module's `__all__` star-export names list.
+/// Drop every stored embedding for the entities of one file (called before
+/// re-embedding it). Returns `{"ok": True}`; raises `RuntimeError` when no
+/// graph is loaded.
 #[pyfunction]
-fn clear_embeddings_for_file(file_path: &str) -> PyResult<PyObject> {
+fn clear_embeddings_for_file(py: Python<'_>, file_path: &str) -> PyResult<PyObject> {
     let mut guard = GLOBAL_GRAPH.write();
     let graph = guard
         .as_mut()
         .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("No graph loaded"))?;
     graph.clear_embeddings_for_file(file_path);
-    let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
     dict.set_item("ok", true)?;
     Ok(dict.into())
@@ -3582,11 +3860,27 @@ mod tests {
     }
 
     #[test]
+    /// Plan 5.1: only the two spellings the old canonical form minted count
+    /// as migration candidates — a name-like head or an outside-root path is
+    /// odd, not legacy, and must not trigger a re-analyze.
+    #[test]
+    fn legacy_spelled_ids_are_the_noncanonical_heads() {
+        assert!(is_legacy_spelled_id(r".\pkg\x.py::f"));
+        assert!(is_legacy_spelled_id("./pkg/x.py::f"));
+        assert!(is_legacy_spelled_id(r".\x.py::module"));
+        assert!(!is_legacy_spelled_id("pkg/x.py::f"));
+        assert!(!is_legacy_spelled_id("external::len"));
+        assert!(!is_legacy_spelled_id("Date::now"));
+        assert!(!is_legacy_spelled_id("main"));
+        assert!(is_legacy_spelled_id(r"D:\outside\x.py::f"));
+        assert!(is_legacy_spelled_id("/outside/x.py::f"));
+    }
+
+    #[test]
     fn canonical_lookup_id_matrix() {
         // R2-16: file-backed heads converge to canonical form; names and
         // pseudo-targets pass through untouched (no global-root dependence
         // in the passthrough legs, so these hold under parallel tests).
-        let sep = std::path::MAIN_SEPARATOR;
         assert_eq!(
             canonical_lookup_id("external::combine"),
             "external::combine"
@@ -3594,12 +3888,11 @@ mod tests {
         assert_eq!(canonical_lookup_id("external::len"), "external::len");
         assert_eq!(canonical_lookup_id("Date::now"), "Date::now");
         assert_eq!(canonical_lookup_id("main"), "main");
-        assert_eq!(
-            canonical_lookup_id("main.py::main"),
-            format!(".{sep}main.py::main")
-        );
-        let canon = format!(".{sep}main.py::main");
-        assert_eq!(canonical_lookup_id(&canon), canon);
+        assert_eq!(canonical_lookup_id("main.py::main"), "main.py::main");
+        // Legacy spellings from stores written before the plan-5.1 migration
+        // still resolve to the canonical id.
+        assert_eq!(canonical_lookup_id(".\\main.py::main"), "main.py::main");
+        assert_eq!(canonical_lookup_id("./main.py::main"), "main.py::main");
     }
 
     #[test]
@@ -3870,6 +4163,9 @@ mod tests {
             resolved_calls: vec![],
             decorators: vec![],
             setter_of: None,
+            bindings: Vec::new(),
+            refs: Vec::new(),
+            resolved_refs: Vec::new(),
             line: 1,
             exit_line: 2,
             docstring: None,

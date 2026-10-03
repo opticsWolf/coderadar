@@ -22,6 +22,49 @@ use crate::types::*;
 
 use super::{hash_span, node_quality};
 
+/// The callee of a Python `call` node as an `UnresolvedRef` (`Foo()`,
+/// `mod.make()`); `None` for any other expression.
+fn call_ref(node: Node, src: &str) -> Option<UnresolvedRef> {
+    if node.kind() != "call" {
+        return None;
+    }
+    let text = |n: Node| n.utf8_text(src.as_bytes()).unwrap_or("").to_string();
+    let f = node.child_by_field_name("function")?;
+    let (name, path, name_node) = match f.kind() {
+        "identifier" => (text(f), vec![], f),
+        "attribute" => (
+            text(f.child_by_field_name("attribute")?),
+            crate::extract::walker::receiver_segments(f.child_by_field_name("object"), src),
+            f.child_by_field_name("attribute")?,
+        ),
+        _ => return None,
+    };
+    Some(UnresolvedRef {
+        name,
+        path,
+        line: node.start_position().row + 1,
+        col: node.start_position().column,
+        name_span: node_span(name_node),
+    })
+}
+
+/// A bare name or attribute chain (`desk`, `desk.manager`, `make().win`) as
+/// receiver segments; `None` for any other expression.
+fn expr_path(node: Node, src: &str) -> Option<Vec<String>> {
+    match node.kind() {
+        "identifier" => Some(vec![node.utf8_text(src.as_bytes()).ok()?.to_string()]),
+        "attribute" => {
+            let segs = crate::extract::walker::receiver_segments(Some(node), src);
+            let clean = |s: &String| {
+                (s.starts_with("<call:") && s.ends_with('>'))
+                    || s.chars().all(|c| c.is_alphanumeric() || c == '_')
+            };
+            segs.iter().all(clean).then_some(segs)
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum EmittedKind {
     Module,
@@ -43,8 +86,8 @@ pub struct CursorExtractor<'a> {
     units: Vec<ExtractedUnit>,
     /// byte-range stack for nesting context
     frames: Vec<Frame>,
-    /// fn-ref candidates: (func_unit_idx, name, line, col)
-    fn_ref_candidates: Vec<(usize, String, usize, usize)>,
+    /// fn-ref candidates: (func_unit_idx, reference)
+    fn_ref_candidates: Vec<(usize, UnresolvedRef)>,
     /// Track current function index for call attribution
     current_function_idx: Option<usize>,
     /// Track current class index for field attribution
@@ -240,6 +283,7 @@ impl<'a> CursorExtractor<'a> {
                 }
             }
             Tag::Field => self.emit_field(node),
+            Tag::Return => self.emit_return_binding(node),
             Tag::Decorator
             | Tag::ClassBase
             | Tag::FunctionParam
@@ -306,11 +350,154 @@ impl<'a> CursorExtractor<'a> {
         });
     }
 
+    /// Record type evidence from an assignment inside a function body:
+    /// `m = Manager()`, `m: Manager = ...`, `self.ser = Serializer()`.
+    fn emit_binding(&mut self, node: Node) {
+        let Some(idx) = self.current_function_idx else {
+            return;
+        };
+        if node.kind() != "assignment" {
+            return;
+        }
+        let src = self.source;
+        let text = |n: Node| n.utf8_text(src.as_bytes()).unwrap_or("").to_string();
+        let Some(left) = node.child_by_field_name("left") else {
+            return;
+        };
+        let target = match left.kind() {
+            "identifier" => vec![text(left)],
+            "attribute" => {
+                let segs = crate::extract::walker::receiver_segments(Some(left), src);
+                if segs.len() == 2 && segs[0] == "self" {
+                    segs
+                } else {
+                    return;
+                }
+            }
+            _ => return,
+        };
+        let annotation = node.child_by_field_name("type").map(text);
+        let right = node.child_by_field_name("right");
+        let rhs = right.and_then(|r| call_ref(r, src));
+        let expr = right.and_then(|r| expr_path(r, src));
+        if rhs.is_none() && expr.is_none() && annotation.is_none() {
+            return;
+        }
+        if let Some(ExtractedUnit::Function(f)) = self.units.get_mut(idx) {
+            f.bindings.push(Binding {
+                target,
+                rhs,
+                expr,
+                annotation,
+            });
+        }
+    }
+
+    /// `return Foo()` / `return local.attr` / `yield value`: evidence for what
+    /// the function evaluates to (a pytest fixture's value, a factory's result).
+    fn emit_return_binding(&mut self, node: Node) {
+        let Some(idx) = self.current_function_idx else {
+            return;
+        };
+        let src = self.source;
+        let Some(value) = node.named_child(0) else {
+            return;
+        };
+        let rhs = call_ref(value, src);
+        let expr = expr_path(value, src);
+        // `return None` is "no value", not a competing type; any other
+        // expression the typer cannot read is recorded as unknown evidence.
+        if value.kind() == "none" {
+            return;
+        }
+        let target = if node.kind() == "yield" {
+            "<yield>"
+        } else {
+            "<return>"
+        };
+        if let Some(ExtractedUnit::Function(f)) = self.units.get_mut(idx) {
+            f.bindings.push(Binding {
+                target: vec![target.to_string()],
+                rhs,
+                expr,
+                annotation: None,
+            });
+        }
+    }
+
+    /// A module-level constant: a top-level `NAME = ...` or `name: T = ...`.
+    /// Only `UPPER_CASE` names or annotated ones count, so loop variables and
+    /// scratch module code stay out of the entity set.
+    fn emit_constant(&mut self, node: Node) {
+        if node.kind() != "assignment" {
+            return;
+        }
+        // Direct child of the module (`x = 1` statement), not nested in a
+        // block, comprehension or class.
+        let top_level = node.parent().is_some_and(|p| {
+            p.kind() == "module"
+                || (p.kind() == "expression_statement"
+                    && p.parent().is_some_and(|m| m.kind() == "module"))
+        });
+        if !top_level {
+            return;
+        }
+        let Some(name_node) = node.child_by_field_name("left") else {
+            return;
+        };
+        if name_node.kind() != "identifier" {
+            return;
+        }
+        let src = self.source;
+        let text = |n: Node| n.utf8_text(src.as_bytes()).unwrap_or("").to_string();
+        let name = text(name_node);
+        let annotation = node.child_by_field_name("type").map(text);
+        let upper = name.chars().any(|c| c.is_ascii_uppercase())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+        if name.is_empty() || !(upper || annotation.is_some()) {
+            return;
+        }
+        let default_value = node.child_by_field_name("right").map(|r| {
+            let t = text(r);
+            if t.len() > 200 {
+                let cut = (0..=200)
+                    .rev()
+                    .find(|&i| t.is_char_boundary(i))
+                    .unwrap_or(0);
+                format!("{}…", &t[..cut])
+            } else {
+                t
+            }
+        });
+        self.units.push(ExtractedUnit::Constant(ExtractedConstant {
+            id: make_entity_id(self.file_path, &name),
+            name,
+            annotation,
+            source: SourceType::Impl,
+            default_value,
+            span: ByteSpan {
+                start: node.start_byte(),
+                end: node.end_byte(),
+            },
+            name_span: ByteSpan {
+                start: name_node.start_byte(),
+                end: name_node.end_byte(),
+            },
+        }));
+    }
+
     /// Capture a class-level field (e.g. `x = 1` or `x: int = 1` in a class
     /// body). Module-level assignments (no enclosing class) and local
     /// assignments inside methods (enclosing function frame) are skipped.
     fn emit_field(&mut self, node: Node) {
-        if self.current_class_idx.is_none() || self.current_function_idx.is_some() {
+        if self.current_function_idx.is_some() {
+            self.emit_binding(node);
+            return;
+        }
+        if self.current_class_idx.is_none() {
+            self.emit_constant(node);
             return;
         }
         let Some(name_node) = node
@@ -319,6 +506,10 @@ impl<'a> CursorExtractor<'a> {
         else {
             return;
         };
+        // `a.b = ...` in a class body is not a field of the class.
+        if name_node.kind() == "attribute" {
+            return;
+        }
         let name = name_node
             .utf8_text(self.source.as_bytes())
             .unwrap_or("")
@@ -339,13 +530,19 @@ impl<'a> CursorExtractor<'a> {
             end: name_node.end_byte(),
         };
 
+        let default_value = node
+            .child_by_field_name("right")
+            .or_else(|| node.child_by_field_name("value"))
+            .and_then(|v| v.utf8_text(self.source.as_bytes()).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let idx = self.current_class_idx.unwrap();
         if let Some(ExtractedUnit::Class(ref mut class)) = self.units.get_mut(idx) {
             class.fields.push(ExtractedField {
                 name,
                 annotation,
                 source: SourceType::Impl,
-                default_value: None,
+                default_value,
                 is_class_var: true,
                 span,
                 name_span,
@@ -429,6 +626,8 @@ impl<'a> CursorExtractor<'a> {
             parameters: params,
             return_type,
             calls: Vec::new(),
+            bindings: Vec::new(),
+            refs: Vec::new(),
             decorators,
             docstring,
             kind,
@@ -536,21 +735,19 @@ impl<'a> CursorExtractor<'a> {
             return;
         }
 
-        for (func_idx, name, line, col) in &self.fn_ref_candidates {
-            if self.fn_names.contains(name) {
-                if let Some(ExtractedUnit::Function(ref mut func)) = self.units.get_mut(*func_idx) {
-                    let already_present = func
-                        .calls
-                        .iter()
-                        .any(|c| c.name == *name && c.line == *line && c.col == *col);
-                    if !already_present {
-                        func.calls.push(UnresolvedRef {
-                            name: name.clone(),
-                            path: vec![],
-                            line: *line,
-                            col: *col,
-                        });
-                    }
+        for (func_idx, r) in &self.fn_ref_candidates {
+            // A bare name must be something this file defines or imports;
+            // an attribute reference is left to the resolver to type.
+            if r.path.is_empty() && !self.fn_names.contains(&r.name) {
+                continue;
+            }
+            if let Some(ExtractedUnit::Function(ref mut func)) = self.units.get_mut(*func_idx) {
+                let seen = func
+                    .refs
+                    .iter()
+                    .any(|x| x.name == r.name && x.line == r.line && x.col == r.col);
+                if !seen {
+                    func.refs.push(r.clone());
                 }
             }
         }
@@ -607,145 +804,105 @@ fn emit_docstring_node(node: Node, source: &str) -> Option<(usize, String, usize
     }
 }
 
-/// Scan a function's subtree for fn-ref patterns.
+/// A function-valued reference: a bare name or (Python) a dotted receiver
+/// path ending in a name. `None` for any other expression.
+fn ref_of(node: Node, source: &str) -> Option<UnresolvedRef> {
+    let (name, path, name_node) = if is_identifier_kind(node.kind()) {
+        (
+            node.utf8_text(source.as_bytes()).ok()?.to_string(),
+            vec![],
+            node,
+        )
+    } else if node.kind() == "attribute" {
+        let name_node = node.child_by_field_name("attribute")?;
+        let name = name_node.utf8_text(source.as_bytes()).ok()?.to_string();
+        let path =
+            crate::extract::walker::receiver_segments(node.child_by_field_name("object"), source);
+        (name, path, name_node)
+    } else {
+        return None;
+    };
+    if name.is_empty() || is_stoplisted(&name) {
+        return None;
+    }
+    Some(UnresolvedRef {
+        name,
+        path,
+        line: node.start_position().row + 1,
+        col: node.start_position().column,
+        name_span: node_span(name_node),
+    })
+}
+
+/// Byte range of a tree-sitter node.
+fn node_span(node: Node) -> ByteSpan {
+    ByteSpan {
+        start: node.start_byte(),
+        end: node.end_byte(),
+    }
+}
+
+/// Scan a function's subtree for function-as-value sites: call arguments,
+/// keyword arguments, dict/list/tuple/set elements, assignment right-hand
+/// sides and returned values.
 fn scan_subtree_for_fn_ref(
     node: Node,
     source: &str,
     func_idx: usize,
-    candidates: &mut Vec<(usize, String, usize, usize)>,
+    candidates: &mut Vec<(usize, UnresolvedRef)>,
 ) {
     let kind = node.kind();
+    let mut take = |n: Option<Node>| {
+        if let Some(r) = n.and_then(|n| ref_of(n, source)) {
+            candidates.push((func_idx, r));
+        }
+    };
 
-    // Assignment RHS: `x = handler`
-    if matches!(
-        kind,
-        "assignment" | "assignment_expression" | "variable_declarator" | "let_declaration"
-    ) {
-        let rhs = node
-            .child_by_field_name("right")
-            .or_else(|| node.child_by_field_name("value"))
-            .or_else(|| node.child_by_field_name("init"));
-        if let Some(rhs_node) = rhs {
-            if let Some(name) = extract_ref_name(rhs_node, source) {
-                if !name.is_empty() && !is_stoplisted(&name) {
-                    let line = rhs_node.start_position().row + 1;
-                    let col = rhs_node.start_position().column as usize;
-                    candidates.push((func_idx, name, line, col));
-                }
+    match kind {
+        // `x = handler`
+        "assignment" | "assignment_expression" | "variable_declarator" | "let_declaration" => {
+            take(
+                node.child_by_field_name("right")
+                    .or_else(|| node.child_by_field_name("value"))
+                    .or_else(|| node.child_by_field_name("init")),
+            );
+        }
+        // `return handler`
+        "return_statement" | "return" | "return_expression" | "control_transfer_statement" => {
+            for i in 0..node.child_count() {
+                take(node.child(i as u32));
             }
         }
-    }
-
-    // Return value: `return handler`
-    if matches!(
-        kind,
-        "return_statement" | "return" | "return_expression" | "control_transfer_statement"
-    ) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                if is_identifier_kind(child.kind()) {
-                    if let Ok(name) = child.utf8_text(source.as_bytes()) {
-                        if !name.is_empty() && !is_stoplisted(name) {
-                            let line = child.start_position().row + 1;
-                            let col = child.start_position().column as usize;
-                            candidates.push((func_idx, name.to_string(), line, col));
-                        }
-                    }
-                }
+        // `on=handler`, `{"k": handler}`
+        "keyword_argument" | "pair" => take(node.child_by_field_name("value")),
+        // `def f(on_orphan=_leave)`: a default value is a value binding.
+        "default_parameter" | "typed_default_parameter" => take(node.child_by_field_name("value")),
+        // `alive or _parent_is_alive`: both operands are values.
+        "boolean_operator" => {
+            for i in 0..node.named_child_count() {
+                take(node.named_child(i as u32));
             }
         }
-    }
-
-    // Keyword argument: `on=handler`
-    if kind == "keyword_argument" || kind == "pair" {
-        let val = node.child_by_field_name("value");
-        if let Some(val_node) = val {
-            if is_identifier_kind(val_node.kind()) {
-                if let Ok(name) = val_node.utf8_text(source.as_bytes()) {
-                    if !name.is_empty() && !is_stoplisted(name) {
-                        let line = val_node.start_position().row + 1;
-                        let col = val_node.start_position().column as usize;
-                        candidates.push((func_idx, name.to_string(), line, col));
-                    }
-                }
+        // `a if cond else b`: consequence and alternative are values, the
+        // condition is not.
+        "conditional_expression" => {
+            take(node.child_by_field_name("consequence"));
+            take(node.child_by_field_name("alternative"));
+        }
+        // `f(handler, self.method)`, `[a, b]`, `{a, b}`, `(a, b)`
+        "argument_list" | "arguments" | "call_suffix" | "list" | "list_literal" | "set"
+        | "tuple" | "expression_list" => {
+            for i in 0..node.named_child_count() {
+                take(node.named_child(i as u32));
             }
         }
-    }
-
-    // Argument list identifiers
-    if kind == "argument_list" || kind == "arguments" || kind == "call_suffix" {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                if is_identifier_kind(child.kind()) {
-                    if let Ok(name) = child.utf8_text(source.as_bytes()) {
-                        if !name.is_empty() && !is_stoplisted(name) {
-                            let line = child.start_position().row + 1;
-                            let col = child.start_position().column as usize;
-                            candidates.push((func_idx, name.to_string(), line, col));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Dict/list literal values
-    if kind == "dictionary" || kind == "dict" || kind == "list" || kind == "list_literal" {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                if child.kind() == "pair" {
-                    if let Some(val) = child.child_by_field_name("value") {
-                        if is_identifier_kind(val.kind()) {
-                            if let Ok(name) = val.utf8_text(source.as_bytes()) {
-                                if !name.is_empty() && !is_stoplisted(name) {
-                                    let line = val.start_position().row + 1;
-                                    let col = val.start_position().column as usize;
-                                    candidates.push((func_idx, name.to_string(), line, col));
-                                }
-                            }
-                        }
-                    }
-                } else if is_identifier_kind(child.kind()) {
-                    if let Ok(name) = child.utf8_text(source.as_bytes()) {
-                        if !name.is_empty() && !is_stoplisted(name) {
-                            let line = child.start_position().row + 1;
-                            let col = child.start_position().column as usize;
-                            candidates.push((func_idx, name.to_string(), line, col));
-                        }
-                    }
-                }
-            }
-        }
+        _ => {}
     }
 
     // Recurse into children
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         scan_subtree_for_fn_ref(child, source, func_idx, candidates);
-    }
-}
-
-/// Extract a reference name from a node (identifier or dotted access).
-fn extract_ref_name(node: Node, source: &str) -> Option<String> {
-    let kind = node.kind();
-    if is_identifier_kind(kind) {
-        node.utf8_text(source.as_bytes())
-            .ok()
-            .map(|s| s.to_string())
-    } else if kind == "attribute" {
-        node.child_by_field_name("attribute")
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-            .map(|s| s.to_string())
-    } else if kind == "field_expression" {
-        node.child_by_field_name("field")
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-            .map(|s| s.to_string())
-    } else if kind == "member_expression" {
-        node.child_by_field_name("property")
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-            .map(|s| s.to_string())
-    } else {
-        None
     }
 }
 
@@ -761,4 +918,96 @@ fn is_identifier_kind(kind: &str) -> bool {
             | "field_identifier"
             | "shorthand_property_identifier"
     )
+}
+
+#[cfg(test)]
+mod call_name_span_tests {
+    use super::*;
+
+    fn python_tree(src: &str) -> tree_sitter::Tree {
+        let lang = crate::graph::CodeGraph::ts_language(&crate::types::Language::Python)
+            .expect("python grammar");
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&lang).unwrap();
+        parser.parse(src, None).expect("parse")
+    }
+
+    fn first_node_of_kind<'t>(
+        node: tree_sitter::Node<'t>,
+        kind: &str,
+    ) -> Option<tree_sitter::Node<'t>> {
+        if node.kind() == kind {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = first_node_of_kind(child, kind) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The plan §4.1 blocker: `col` points at the receiver (`self.`), so a
+    /// rename has no way to address just the method name. `name_span` is that
+    /// address — verified against the source here, because an off-by-N span
+    /// would rewrite the wrong bytes.
+    #[test]
+    fn attribute_call_records_the_method_name_span() {
+        let src = "def f(self):\n    return self.save_state(1)\n";
+        let tree = python_tree(src);
+        let call = first_node_of_kind(tree.root_node(), "call").expect("call");
+        let reference = call_ref(call, src).expect("attribute calls are extracted");
+
+        assert_eq!(reference.name, "save_state");
+        assert_eq!(reference.path, vec!["self".to_string()]);
+        assert_eq!(
+            &src.as_bytes()[reference.name_span.start..reference.name_span.end],
+            b"save_state"
+        );
+        // The whole-call position is a different place in the line.
+        assert!(
+            reference.name_span.start > reference.col,
+            "the call column points at the receiver, not the name"
+        );
+    }
+
+    #[test]
+    fn bare_call_name_span_covers_the_name() {
+        let src = "def f():\n    return greet(1)\n";
+        let tree = python_tree(src);
+        let call = first_node_of_kind(tree.root_node(), "call").expect("call");
+        let reference = call_ref(call, src).expect("bare calls are extracted");
+
+        assert_eq!(reference.name, "greet");
+        assert!(reference.path.is_empty());
+        assert_eq!(
+            &src.as_bytes()[reference.name_span.start..reference.name_span.end],
+            b"greet"
+        );
+    }
+
+    /// Function-as-value references (`map(save_state, xs)`) are renamed too,
+    /// so they need the same address.
+    #[test]
+    fn function_as_value_records_the_name_span() {
+        let src = "def f(xs):\n    return map(save_state, xs)\n";
+        let tree = python_tree(src);
+        let attribute = first_node_of_kind(tree.root_node(), "identifier").expect("identifier");
+        let _ = attribute; // the first identifier is the function name `f`
+        let reference = ref_of(
+            first_node_of_kind(tree.root_node(), "argument_list")
+                .expect("argument_list")
+                .named_child(0)
+                .expect("first argument"),
+            src,
+        )
+        .expect("a bare name is a function-valued reference");
+
+        assert_eq!(reference.name, "save_state");
+        assert_eq!(
+            &src.as_bytes()[reference.name_span.start..reference.name_span.end],
+            b"save_state"
+        );
+    }
 }

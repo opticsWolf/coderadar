@@ -1,0 +1,33 @@
+{
+  "corpus": "py_agent/src",
+  "note": "Hand-labelled once during the 0.10 precision work. `alive` entries were all High findings at some point and were verified reachable (public API, registration decorator, aliased or function-local import, value reference). `dead` entries were verified to have no call site anywhere in the corpus. Precision is a gate; the finding budget may shrink, never grow.",
+  "alive": [
+    "coderadar/__init__.py::CodeGraph.query",
+    "coderadar/__init__.py::CodeGraph.update_file",
+    "coderadar/__init__.py::watch",
+    "coderadar/__init__.py::_resolve_version",
+    "coderadar/mcp/lifecycle.py::install",
+    "coderadar/mcp/lifecycle.py::make_middleware",
+    "coderadar/mcp/lifecycle.py::_leave",
+    "coderadar/mcp/lifecycle.py::_parent_is_alive",
+    "coderadar/mcp/server.py::codegraph_search",
+    "coderadar/mcp/server.py::requires_index",
+    "coderadar/mcp/server.py::serve",
+    "coderadar/mcp/startup.py::_env_seconds",
+    "coderadar/excludes.py::set_indexed_root",
+    "coderadar/excludes.py::resolve_entity_path",
+    "coderadar/query/executor.py::search_text",
+    "coderadar/lsp/pool.py::LSPPool.shutdown",
+    "coderadar/mcp/lazy.py::_index_is_empty",
+    "coderadar/mcp/lazy.py::LazyRootRetry.should_ask",
+    "coderadar/mutation/tool_router.py::ToolRouter.route"
+  ],
+  "dead": [
+    "coderadar/query/cache.py::QueryCache.invalidate",
+    "coderadar/query/cache.py::QueryCache.prune_expired"
+  ],
+  "budget": {
+    "high_medium_findings": 2,
+    "findings": 121
+  }
+}

@@ -37,6 +37,33 @@ class TestClonesGolden:
                 out[name] = g["clone_type"]
         return out, groups
 
+    def test_groups_expose_a_reason_field(self):
+        """Plan §6.3: a group says *why* it is worth a look (`literal-table`)
+        instead of being silently suppressed; ordinary groups carry null."""
+        _, groups = self._groups(min_lines=4)
+        assert groups
+        for g in groups:
+            assert "reason" in g, g
+            assert g["reason"] in (None, "literal-table"), g
+
+    def test_instances_carry_line_companions_for_the_byte_span(self):
+        """Plan 5.4: a clone instance names the lines it covers, so a
+        reviewer never has to convert byte offsets by hand."""
+        _, groups = self._groups(min_lines=4)
+        instances = [inst for g in groups for inst in g["instances"]]
+        assert instances, groups
+        for inst in instances:
+            source = (FIXTURE / inst["file"]).read_bytes()
+            body = source[inst["span_start"]:inst["span_end"]]
+            assert body, inst
+            # The reported start line is where the body's first byte sits...
+            before = source[:inst["span_start"]]
+            assert inst["start_line"] == before.count(b"\n") + 1, inst
+            # ...and the end line is the line of the last byte.
+            through = source[:inst["span_end"]]
+            assert inst["end_line"] == through.count(b"\n") + 1, inst
+            assert inst["end_line"] >= inst["start_line"]
+
     def test_identical_bodies_are_type1(self):
         mapping, _ = self._groups(min_lines=4)
         assert mapping.get("clone_a") == "type-1"

@@ -1,4 +1,4 @@
-# CodeRadar v0.9.4
+# CodeRadar v0.10.0
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -57,7 +57,7 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 1139 passing (372 Rust + 767 Python; 1 Python skipped) |
+| **Tests** | 1319 passing (413 Rust + 906 Python; 1 Python skipped) |
 | **MCP Tools** | 22 — 17 `codegraph_*` (explore, search, node, affected, query, search_similar, compute_embeddings, module_children, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, reindex, update_file, set_project) + 5 `coderadar_*` (resolve, replace_body, update_signature, rename, create_entity) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
@@ -139,13 +139,18 @@ for finding in get_smells(rule_id="god-class"):
 
 ### Entity IDs
 
-Stored ids are canonical root-relative form: `.<relative-path>::<Qualified.name>`
-with native separators (`.\src\auth.py::validate_user` on Windows,
-`./src/auth.py::validate_user` elsewhere) — minted at write time by every
-path: analyze, `update_file`, and the store migration, so `analyze(".")`
-and `analyze(<abs-root>)` produce identical keys. Pasted variants (absolute
-paths, forward slashes, missing `./` prefix) resolve back to the stored key
-at every tool boundary, but prefer the canonical form in scripts.
+Stored ids are canonical root-relative form: `<relative-path>::<Qualified.name>`
+with forward slashes and no `./` prefix
+(`src/auth.py::validate_user`) — one spelling on every platform, so ids
+saved in a snapshot, baseline or CI artefact on one OS resolve on another.
+The form is minted at write time by every path (analyze, `update_file`, the
+store migration), so `analyze(".")` and `analyze(<abs-root>)` produce
+identical keys. Pasted variants (absolute paths, backslashes, a leading
+`./`) still resolve at every tool boundary, but prefer the canonical form in
+scripts. A store written before 0.10 spells ids the old way
+(`.\src\auth.py::validate_user`); `load` refuses it rather than serving a
+half-broken graph, and the next analyze re-keys it (`coderadar store-repair`
+reports the count).
 
 ## MCP Server
 
@@ -179,17 +184,18 @@ not assume the cwd is the project:
   awaiting one during `initialize` deadlocks, so it is asked lazily on the
   first tool call — once, and only if nothing on disk confirmed the root.
 - **Entity-id grammar.** Every tool speaks one id shape:
-  `.<relative-path>::<Qualified.name>` — dot-prefix, project-root-relative,
-  native separators (`.\app\helpers.py::combine`; methods as
+  `<relative-path>::<Qualified.name>` — project-root-relative, forward
+  slashes, no dot prefix (`app/helpers.py::combine`; methods as
   `File::Class.member`, modules as `File::module`). Read paths also accept
-  absolute paths, forward slashes, and a missing dot-prefix; `external::name`
-  marks a callee outside the index (it resolves nothing further). Search
-  `kind` is one of `function | class | type_alias | constant | module |
-  import`; smell `strictness` is `strict | normal | loose` — anything else
-  errors instead of returning empty.
+  absolute paths, backslashes, and a leading `./`, and a dotted qualified
+  name (`app.helpers.combine`) resolves when a module prefix matches;
+  `external::name` marks a callee outside the index (it resolves nothing
+  further). Search `kind` is one of `function | class | type_alias |
+  constant | module | import`; smell `strictness` is `strict | normal |
+  loose` — anything else errors instead of returning empty.
 - **Same directory as the index.** The process moves onto the resolved root
   before indexing, because entity ids are canonical root-relative form
-  (`.\src\auth.py::validate_user`) and every read helper — Rust or Python
+  (`src/auth.py::validate_user`) and every read helper — Rust or Python
   — resolves them against the recorded indexed root, never the cwd.
 - **Fast handshake.** Indexing runs on a background thread; a tool call that
   arrives early waits, then reports elapsed seconds rather than answering from
@@ -269,6 +275,67 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 | **React Router** | JSX/TSX | `package.json` | JSX `<Route>` declarations, v6 data router objects, `<Link>`/`<NavLink>` navigation tracking |
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
+
+## v0.10.0 Highlights — precision
+
+The 0.10 release is one theme: **findings you can act on**. Every phase was
+measured against a corpus before and after, and the numbers are guarded by
+CI ([docs/precision-benchmark.md](docs/precision-benchmark.md)).
+
+| | before | after |
+|---|---|---|
+| Dead-code findings on this repo (449 functions) | 269 (60 %), 93 High | 121 (27 %), 2 High |
+| Extraction recall (call sites inside functions) | ~85 % | 99.97 % |
+| In-repo resolution rate (dogfood corpus) | 21.1 % | 23.0 % |
+| Resolution precision / recall | 100 % / 100 % | 100 % / 100 % |
+
+**Extraction & resolution (§1).** Attribute calls on `self`, typed locals and
+constructor results resolve to real edges instead of `external`; weak
+evidence (fixture-typed receivers, ambiguous chains) is weighted ×0.8 and
+never reported as "live for sure". Relative imports, aliases
+(`from x import a as b`), function-local imports and module-level
+initializers all produce edges now — each was a real missing-edge bug found
+by dogfooding.
+
+**Dead code (§2).** Overrides of external bases (Qt, Django, `unittest`,
+`abc`) and `Protocol` members are entry points; framework packs (pytest, Qt,
+click) are table-driven and opt-in; `pyproject.toml` scripts and `__all__`
+name callable API. Findings carry `evidence` and `nearest_root_distance`, so
+a 0.9 is checkable. `rta-dead` stays Speculative-only — it never claims High.
+
+**Library surface.** A package façade's public functions and public-class
+methods, a module a package re-exports (`import coderadar.lsp`), and any
+definition used as a decorator are roots. Findings that could go either way
+(value references, untyped receivers) are reported at the weakest tier with
+the reason, instead of claiming 0.9 or being silently dropped.
+
+**Query language (§3).** Keyword-prefixed identifiers parse; unknown fields
+and values fail with a human-readable message and a "did you mean";
+`methods`, `constants`, `entities`, `starts_with`/`ends_with` and row
+identity are queryable; `docs/query-language.md` is generated from the
+schema and drift-checked.
+
+**Mutation follow-through (§4).** Renaming a method rewrites attribute call
+sites and cascades base/override renames; unresolved sites are reported as
+`unverified_sites` instead of being silently skipped.
+
+**API ergonomics (§5).** Dotted qualified names (`pkg.mod.Class.method`),
+canonical forward-slash ids on every platform, line/column companions next
+to byte spans, a stale-handle guard that refuses to answer about a project
+the handle was not created for, and a store migration path for pre-0.10 id
+spellings (`coderadar store-repair`, cold start re-analyzes automatically).
+
+**Noise (§6).** Secret detection requires a value that looks like a
+credential (entropy or character-class mixing) and redacts the value, not
+the keyword; nested functions are not clone pairs; dict-literal tables are
+flagged `literal-table` instead of silently dropped; `long-parameter-list`
+counts positional-or-keyword parameters only, so Qt-style keyword-only
+constructors stop firing.
+
+> **Upgrading from 0.9.x:** stores written by 0.9.x use the old id spelling
+> (`./pkg/mod.py::x`). `load` refuses them with the migration hint;
+> `coderadar analyze` (or a cold start, which does it automatically)
+> re-keys the store. See [§5.1](docs/v0.10-precision-plan.md).
 
 ## v0.8 Feature Highlights — ledger-backed cold start + agent UX
 

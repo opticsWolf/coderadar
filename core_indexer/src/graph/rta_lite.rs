@@ -54,6 +54,33 @@ pub fn instantiated_classes(graph: &ProjectedGraph) -> HashSet<String> {
             }
         }
     }
+    // Class-level field defaults construct at class-definition time
+    // (`session_interface: SessionInterface = SecureCookieSessionInterface()`
+    // builds the instance before any `__init__` runs; bare class-name
+    // defaults (`= DefaultJSONProvider`) mark class-valued attrs whose call
+    // sites construct). Both only ADD classes here — the safe direction.
+    for c in graph.classes.values() {
+        for fld in &c.fields {
+            let Some(dv) = &fld.default_value else {
+                continue;
+            };
+            // `Sub()`, `_ProxyIOp(operator.iadd)` or a bare
+            // `DefaultJSONProvider`: the leading dotted identifier is the
+            // class being constructed (or held for later construction).
+            let head = dv.trim().split('(').next().unwrap_or("").trim();
+            if head.is_empty()
+                || !head
+                    .chars()
+                    .all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.')
+            {
+                continue;
+            }
+            let name = head.rsplit('.').next().unwrap_or(head);
+            if let Some(class_id) = by_name.get(name) {
+                out.insert((*class_id).clone());
+            }
+        }
+    }
     out
 }
 
@@ -105,9 +132,18 @@ pub fn uninstantiated_overrides(
     out
 }
 
-/// BFS over DIRECT call edges only — same as `compute_reachable` minus the
-/// virtual-dispatch extension.
+/// BFS over direct call edges, plus dispatch hops into classes that ARE
+/// instantiated — same as `compute_reachable` minus the speculative part of
+/// the virtual-dispatch extension.
+///
+/// The distinction matters (0.10 §2.5 re-run, flask `SessionInterface`): a
+/// dispatch hop from a base method into an override whose class is built
+/// somewhere in the root is real execution — the override runs, and whatever
+/// it calls directly is live too. Only hops into NEVER-instantiated classes
+/// are the speculation RTA exists to prune, and those stay out of this set so
+/// their overrides remain candidates.
 pub fn direct_call_reachable(graph: &ProjectedGraph, roots: &HashSet<String>) -> HashSet<String> {
+    let instantiated = instantiated_classes(graph);
     let mut seen = roots.clone();
     let mut queue = std::collections::VecDeque::from_iter(roots.iter().cloned());
     while let Some(current) = queue.pop_front() {
@@ -115,6 +151,18 @@ pub fn direct_call_reachable(graph: &ProjectedGraph, roots: &HashSet<String>) ->
             for callee in callees {
                 if seen.insert(callee.clone()) {
                     queue.push_back(callee.clone());
+                }
+            }
+        }
+        if let Some(subs) = graph.overridden_by.get(&current) {
+            for sub in subs {
+                let sub_is_built = graph
+                    .functions
+                    .get(sub)
+                    .and_then(|f| f.parent_class.as_deref())
+                    .is_some_and(|c| instantiated.contains(c));
+                if sub_is_built && seen.insert(sub.clone()) {
+                    queue.push_back(sub.clone());
                 }
             }
         }
@@ -240,6 +288,62 @@ mod tests {
         let live = crate::graph::deadcode::reachability::compute_reachable(&g, &roots());
         let cands = uninstantiated_overrides(&g, &live.reachable, &direct);
         assert!(cands.is_empty(), "direct calls are stronger evidence");
+    }
+
+    /// main -> Base.run (direct); Base.run overridden by Sub.run; Sub.run
+    /// calls Base.helper (an MRO-resolved direct edge). Whether Base.helper
+    /// counts as directly reachable depends on Sub being instantiated: the
+    /// dispatch hop into an instantiated class is real execution (flask
+    /// `SessionInterface.get_cookie_*`), the hop into an unbuilt one is the
+    /// speculation RTA prunes.
+    fn fixture_with_instantiated_sub(built: bool) -> ProjectedGraph {
+        let mut g = crate::smells::engine::tests::empty_graph();
+        for (id, class) in [
+            ("m.py::main", None),
+            ("m.py::Base.run", Some("m.py::Base")),
+            ("m.py::Sub.run", Some("m.py::Sub")),
+            ("m.py::Base.helper", Some("m.py::Base")),
+        ] {
+            let mut f = method_func(id, class);
+            if built && id == "m.py::main" {
+                f.resolved_calls = vec![ResolvedCall::Constructor("m.py::Sub".into())];
+            }
+            g.functions.insert(id.to_string(), Arc::new(f));
+        }
+        let edge = |g: &mut ProjectedGraph, caller: &str, callee: &str| {
+            g.callees_by_caller
+                .entry(caller.into())
+                .or_default()
+                .insert(callee.into());
+            g.callers_by_callee
+                .entry(callee.into())
+                .or_default()
+                .insert(caller.into());
+        };
+        edge(&mut g, "m.py::main", "m.py::Base.run");
+        edge(&mut g, "m.py::Sub.run", "m.py::Base.helper");
+        g.overridden_by
+            .entry("m.py::Base.run".into())
+            .or_default()
+            .insert("m.py::Sub.run".into());
+        g
+    }
+
+    #[test]
+    fn dispatch_hop_into_instantiated_class_makes_callees_direct() {
+        let built = fixture_with_instantiated_sub(true);
+        let direct = direct_call_reachable(&built, &roots());
+        assert!(
+            direct.contains("m.py::Base.helper"),
+            "an instantiated override's direct callees are live: {direct:?}"
+        );
+
+        let unbuilt = fixture_with_instantiated_sub(false);
+        let direct = direct_call_reachable(&unbuilt, &roots());
+        assert!(
+            !direct.contains("m.py::Base.helper"),
+            "an unbuilt class's override stays speculation: {direct:?}"
+        );
     }
 
     #[test]

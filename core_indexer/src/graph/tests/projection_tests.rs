@@ -199,27 +199,27 @@ fn test_update_file_skips_unchanged_functions() {
     assert_eq!((added, removed), (0, 0), "nothing changed, nothing to do");
 }
 
-/// A bare-spelled seed (index_file form) converges to canonical on the
+/// A legacy-spelled seed (pre-5.1 dot prefix) converges to canonical on the
 /// first update: stale spellings removed, canonical inserted — once.
 #[test]
-fn test_update_file_converges_bare_ids_to_canonical_f14() {
+fn test_update_file_converges_legacy_ids_to_canonical() {
     let source = "def f():\n    return 1\n";
     let graph = CodeGraph::new(GraphConfig::default());
     graph
-        .index_file(source, "same.py", &Language::Python)
+        .index_file(source, "./same.py", &Language::Python)
         .unwrap();
-    assert!(graph.snapshot().functions.contains_key("same.py::f"));
+    assert!(graph.snapshot().functions.contains_key("./same.py::f"));
 
     let outcome = graph.update_file("same.py", Some(source), None).unwrap();
     let snap = graph.snapshot();
     assert!(snap.functions.contains_key(&canon_id("same.py", "f")));
     assert!(
-        !snap.functions.contains_key("same.py::f"),
+        !snap.functions.contains_key("./same.py::f"),
         "stale spelling must not survive beside the canonical one"
     );
-    // One-time migration noise: the bare function AND bare module are
-    // removed, the canonical pair inserted (module inserts don't bump
-    // `added`, so the counters read (1, 2) — asserted loosely).
+    // One-time migration noise: the legacy function AND module are removed,
+    // the canonical pair inserted (module inserts don't bump `added`, so the
+    // counters read (1, 2) — asserted loosely).
     assert!(outcome.entities_added >= 1);
     assert!(outcome.entities_removed >= 1);
 
@@ -523,4 +523,140 @@ fn repeated_updates_do_not_duplicate_import_membership() {
             "duplicate import membership after updates: {id}"
         );
     }
+}
+
+// ── §2.5: class-level field defaults are construction evidence ──────────────
+
+/// A class-body default `session_interface: Base = Sub()` constructs the
+/// instance at class-definition time — the class must count as instantiated
+/// even though no *function body* contains the call, and `type[X]`
+/// annotations with a concrete default dispatch constructions through the
+/// default (`provider: type[Base] = Base` → `self.provider()` constructs).
+#[test]
+fn class_defaults_construct_and_class_valued_attrs_call_through() {
+    let proj = snapshot_from(&[(
+        "class Base:\n    def serve(self):\n        return 1\n\n\
+         class Sub(Base):\n    def serve(self):\n        return 2\n\n\
+         class Flask:\n    session_interface: Base = Sub()\n    provider: type[Base] = Base\n\n    def choose(self):\n        return self.provider()\n\n    def run(self):\n        print(self.session_interface.serve())\n",
+        "app.py",
+    )]);
+
+    let instantiated = crate::graph::rta_lite::instantiated_classes(&proj);
+    assert!(
+        instantiated.contains("app.py::Sub"),
+        "a class-body `= Sub()` default must record construction; got {instantiated:?}"
+    );
+    assert!(
+        instantiated.contains("app.py::Base"),
+        "the class-valued `provider` default names Base as the constructed class"
+    );
+
+    // `self.provider()` resolves to Constructor(Base), not an unknown method.
+    let choose = proj.functions.get(&fn_id_of(&proj, "choose")).unwrap();
+    assert!(
+        choose
+            .resolved_calls
+            .contains(&crate::types::ResolvedCall::Constructor(
+                "app.py::Base".into()
+            )),
+        "self.provider() with `provider: type[Base] = Base` must be a constructor edge; got {:?}",
+        choose.resolved_calls
+    );
+
+    // `self.session_interface.serve()` — receiver typed through the
+    // annotated class field — stays a direct method edge.
+    let run = proj.functions.get(&fn_id_of(&proj, "run")).unwrap();
+    assert!(
+        run.resolved_calls
+            .contains(&crate::types::ResolvedCall::Function(
+                "app.py::Base.serve".into()
+            )),
+        "serve must resolve through the annotated field; got {:?}",
+        run.resolved_calls
+    );
+
+    // And `Sub.serve` is NOT rta-dead: Sub is constructed in the class body.
+    let findings = crate::graph::deadcode::detect_dead(&proj, Default::default());
+    assert!(
+        !findings.iter().any(|f| f.entity_id == "app.py::Sub.serve"
+            && f.kind == crate::graph::deadcode::DeadKind::RtaDead),
+        "Sub is instantiated; its override must not be rta-dead: {:?}",
+        findings
+            .iter()
+            .filter(|f| f.entity_id.ends_with("::serve"))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn receiver_typed_through_imported_annotation_and_single_subclass_override() {
+    let base_src = concat!(
+        "class SessionInterface:
+",
+        "    def get_cookie_name(self, app):
+",
+        "        return \"x\"
+",
+        "
+",
+        "
+",
+        "class SecureSessionInterface(SessionInterface):
+",
+        "    def save_session(self, app, session, response):
+",
+        "        return 1
+",
+    );
+    let app_src = concat!(
+        "from base import SessionInterface
+",
+        "
+",
+        "
+",
+        "class Flask:
+",
+        "    session_interface: SessionInterface = SecureSessionInterface()
+",
+        "
+",
+        "    def process_response(self, app, response):
+",
+        "        self.session_interface.save_session(app, response, app)
+",
+        "
+",
+        "    def read_name(self, app):
+",
+        "        return self.session_interface.get_cookie_name(app)
+",
+    );
+    let proj = snapshot_from(&[(base_src, "base.py"), (app_src, "app.py")]);
+
+    // `save_session` exists only on the subclass; the receiver's declared type
+    // is the imported base. Single-subclass dispatch must bind to the override.
+    let process_response = proj
+        .functions
+        .get(&fn_id_of(&proj, "process_response"))
+        .unwrap();
+    assert!(
+        process_response.resolved_calls.contains(
+            &crate::types::ResolvedCall::Function("base.py::SecureSessionInterface.save_session".into())
+        ),
+        "declared-type receiver with a single overriding subclass must bind to the override; got {:?}",
+        process_response.resolved_calls
+    );
+
+    // A method on the declared base itself binds directly.
+    let read_name = proj.functions.get(&fn_id_of(&proj, "read_name")).unwrap();
+    assert!(
+        read_name
+            .resolved_calls
+            .contains(&crate::types::ResolvedCall::Function(
+                "base.py::SessionInterface.get_cookie_name".into()
+            )),
+        "base-typed receiver must bind the base method; got {:?}",
+        read_name.resolved_calls
+    );
 }

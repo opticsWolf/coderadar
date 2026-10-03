@@ -86,8 +86,11 @@ impl<'a> EvalContext<'a> {
 /// cheap runs skip expensive analyses.
 #[derive(Clone, Copy, Default)]
 pub struct GraphAnalyses<'a> {
-    /// EntityIds reachable from any production entry point (Stage 1).
-    pub reachable: Option<&'a std::collections::HashSet<crate::types::EntityId>>,
+    /// Dead-code findings keyed by entity (one source of truth shared with
+    /// `find_dead_code`; test-only liveness already excluded).
+    pub dead: Option<
+        &'a std::collections::HashMap<crate::types::EntityId, crate::graph::deadcode::DeadFinding>,
+    >,
     /// Entry points detected for the current run (Stage 1).
     pub entry_points: Option<&'a std::collections::HashSet<crate::types::EntityId>>,
     /// PageRank-style centrality scores, normalized 0..=1 (Stage 5).

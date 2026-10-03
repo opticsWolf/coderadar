@@ -25,6 +25,11 @@ pub enum EntityType {
     Modules,
     Classes,
     Functions,
+    /// `functions where kind == 'method'` — the plan §3.4 alias.
+    Methods,
+    Constants,
+    /// Every name-bearing kind: modules, classes, functions, constants.
+    Entities,
     Imports,
     Calls,
     Fields,
@@ -81,6 +86,8 @@ pub enum CompOp {
     Greater,
     Contains,
     Matches,
+    StartsWith,
+    EndsWith,
     In,
 }
 
@@ -99,7 +106,7 @@ pub enum OrderDir {
 /// Parse a query string using the Pest grammar.
 pub fn parse_query(query_str: &str) -> Result<ParsedQuery, String> {
     let mut pairs =
-        QueryParser::parse(Rule::query, query_str).map_err(|e| format!("Parse error: {:?}", e))?;
+        QueryParser::parse(Rule::query, query_str).map_err(|e| format_parse_error(&e))?;
 
     // The first (and only) top-level pair is the full query
     let query_pair = pairs.next().ok_or("Empty parse result")?;
@@ -144,14 +151,92 @@ pub fn parse_query(query_str: &str) -> Result<ParsedQuery, String> {
         }
     }
 
-    Ok(ParsedQuery {
+    let parsed = ParsedQuery {
         entity,
         select,
         where_clause,
         group_by,
         order_by,
         limit,
-    })
+    };
+    // §3.2: unknown fields are a compile-time error, not an empty result.
+    crate::query::schema::validate_query(&parsed)?;
+    Ok(parsed)
+}
+
+/// Turn a Pest parse error into something a user can act on (plan §3.5).
+///
+/// Pest's default `Debug` output is a struct dump —
+/// `ParsingError { positives: [atom], negatives: [] }` — which tells a user
+/// nothing. Rule names are mapped to what they mean in the language, with the
+/// offending line and a caret under the failure column.
+fn format_parse_error(err: &pest::error::Error<Rule>) -> String {
+    use pest::error::{ErrorVariant, LineColLocation};
+    let (line_no, col) = match err.line_col {
+        LineColLocation::Pos(pos) => pos,
+        LineColLocation::Span(start, _) => start,
+    };
+    let expected = match &err.variant {
+        ErrorVariant::ParsingError {
+            positives,
+            negatives,
+        } => {
+            let mut hints: Vec<&str> = positives.iter().map(|r| rule_hint(*r)).collect();
+            hints.sort_unstable();
+            hints.dedup();
+            let mut msg = if hints.is_empty() {
+                "unexpected input".to_string()
+            } else {
+                format!("expected {}", join_hints(&hints))
+            };
+            let neg: Vec<&str> = negatives
+                .iter()
+                .map(|r| rule_hint(*r))
+                .filter(|h| !h.is_empty())
+                .collect();
+            if !neg.is_empty() {
+                msg.push_str(&format!(" (not {})", join_hints(&neg)));
+            }
+            msg
+        }
+        ErrorVariant::CustomError { message } => message.clone(),
+    };
+    let snippet = err.line().trim_end();
+    let caret = format!("{}^", " ".repeat(col.saturating_sub(1)));
+    format!("Parse error at line {line_no}, column {col}: {expected}\n  {snippet}\n  {caret}")
+}
+
+/// What a grammar rule means to someone writing a query.
+fn rule_hint(rule: Rule) -> &'static str {
+    match rule {
+        Rule::comp_op => {
+            "a comparison operator (==, !=, <, <=, >, >=, contains, matches, starts_with, ends_with, in)"
+        }
+        Rule::atom | Rule::predicate => "a field comparison, `not`, or a parenthesized condition",
+        Rule::operand | Rule::value => {
+            "a field name or a value (string, number, true/false, null, list)"
+        }
+        Rule::identifier | Rule::path => "a field name",
+        Rule::entity => {
+            "an entity kind (modules, classes, functions, methods, constants, entities, imports, calls, fields)"
+        }
+        Rule::select_item | Rule::select_clause => "a field name or an aggregate",
+        Rule::agg_expr => "an aggregate such as count(*) as n",
+        Rule::order_by_clause => "`order by <field> [asc|desc]`",
+        Rule::group_by_clause => "`group by <field>`",
+        Rule::limit_clause => "`limit <number>`",
+        Rule::EOI => "the end of the query",
+        _ => "a valid query clause",
+    }
+}
+
+fn join_hints(hints: &[&str]) -> String {
+    match hints {
+        [] => String::new(),
+        [one] => one.to_string(),
+        [a, b] => format!("{a} or {b}"),
+        [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
+    }
 }
 
 fn parse_entity_type(pair: Pair<Rule>) -> EntityType {
@@ -159,6 +244,9 @@ fn parse_entity_type(pair: Pair<Rule>) -> EntityType {
         "modules" => EntityType::Modules,
         "classes" => EntityType::Classes,
         "functions" => EntityType::Functions,
+        "methods" => EntityType::Methods,
+        "constants" => EntityType::Constants,
+        "entities" => EntityType::Entities,
         "imports" => EntityType::Imports,
         "calls" => EntityType::Calls,
         "fields" => EntityType::Fields,
@@ -174,10 +262,12 @@ fn parse_select_clause(pair: Pair<Rule>) -> Vec<SelectItem> {
             match inner.as_rule() {
                 Rule::agg_expr => {
                     // agg_expr = agg_func "(" (path | "*") ")" "as" identifier
-                    // Pest only produces pairs for rule refs, not literals.
-                    // Inner pairs: [agg_func, path_or_star, identifier]
-                    // But "*" literal may or may not produce a pair.
-                    // Conservative: collect all, find path/star and alias.
+                    // Pest only produces pairs for rule refs, not literals, so
+                    // `count(*)` yields just [agg_func, identifier] — reading
+                    // the argument off the pair list made it the string
+                    // "count". The source text between the parens is the
+                    // source of truth.
+                    let text = inner.as_str();
                     let parts: Vec<_> = inner.into_inner().collect();
                     let func_part = &parts[0];
                     let agg_func = match func_part.as_str() {
@@ -188,18 +278,17 @@ fn parse_select_clause(pair: Pair<Rule>) -> Vec<SelectItem> {
                         "max" => AggFunc::Max,
                         _ => AggFunc::Count,
                     };
-                    // Second-to-last is the path/star, last is the alias identifier
-                    let n = parts.len();
-                    if n >= 2 {
-                        let arg = parts[n - 2].as_str().to_string();
-                        let alias = parts[n - 1].as_str().to_string();
-                        SelectItem::Aggregate {
-                            func: agg_func,
-                            path: arg,
-                            alias,
-                        }
-                    } else {
-                        SelectItem::Path(String::new())
+                    let alias = parts
+                        .last()
+                        .map(|p| p.as_str().to_string())
+                        .unwrap_or_default();
+                    let open = text.find('(').map(|i| i + 1).unwrap_or(0);
+                    let close = text.rfind(')').unwrap_or(text.len());
+                    let arg = text[open.min(close)..close].trim().to_string();
+                    SelectItem::Aggregate {
+                        func: agg_func,
+                        path: arg,
+                        alias,
                     }
                 }
                 Rule::path => SelectItem::Path(inner.as_str().to_string()),
@@ -317,6 +406,8 @@ fn parse_comp_op(pair: Pair<Rule>) -> CompOp {
         ">" => CompOp::Greater,
         "contains" => CompOp::Contains,
         "matches" => CompOp::Matches,
+        "starts_with" => CompOp::StartsWith,
+        "ends_with" => CompOp::EndsWith,
         "in" => CompOp::In,
         _ => CompOp::Eq,
     }
@@ -416,20 +507,38 @@ mod tests {
             "no direction means ascending"
         );
 
-        let dotted = parse_query("functions order by module.name desc")
+        let desc = parse_query("functions order by line desc")
             .unwrap()
             .order_by
             .unwrap();
-        assert_eq!(dotted.path, "module.name");
-        assert_eq!(dotted.direction, OrderDir::Desc);
+        assert_eq!(desc.path, "line");
+        assert_eq!(desc.direction, OrderDir::Desc);
+    }
+
+    #[test]
+    fn test_dotted_unknown_paths_are_rejected() {
+        // `module.name` used to parse and silently evaluate to Null on
+        // `functions` (no nested field resolution exists) — §3.2 makes it an
+        // error instead of an empty result.
+        let err = parse_query("functions order by module.name desc").unwrap_err();
+        assert!(err.contains("unknown field 'module.name'"), "{err}");
     }
 
     #[test]
     fn test_parse_with_select() {
-        let q = parse_query("functions select name, count(*) as cnt group by module.name").unwrap();
+        let q = parse_query("functions select name, count(*) as cnt group by kind").unwrap();
         assert!(!q.select.is_empty());
         assert!(!q.group_by.is_empty());
-        assert_eq!(q.group_by[0], "module.name");
+        assert_eq!(q.group_by[0], "kind");
+        // `count(*)` must aggregate everything — not the field named "count".
+        match &q.select[1] {
+            SelectItem::Aggregate { func, path, alias } => {
+                assert!(matches!(func, AggFunc::Count));
+                assert_eq!(path, "*");
+                assert_eq!(alias, "cnt");
+            }
+            other => panic!("expected an aggregate, got {other:?}"),
+        }
     }
 
     #[test]
@@ -544,6 +653,25 @@ mod tests {
     fn test_parse_derived_call() {
         let q = parse_query("functions where has_method(\"__init__\") == true").unwrap();
         assert!(q.where_clause.is_some());
+    }
+
+    #[test]
+    fn parse_errors_are_human_readable() {
+        // §3.5: no more `ParsingError { positives: [atom], negatives: [] }`.
+        let err = parse_query("functions where name").unwrap_err();
+        assert!(err.starts_with("Parse error at line 1, column "), "{err}");
+        assert!(
+            err.contains("expected a comparison operator"),
+            "the failure is a missing operator: {err}"
+        );
+        assert!(err.contains("functions where name"), "snippet shown: {err}");
+        assert!(err.contains('^'), "caret marks the column: {err}");
+        assert!(!err.contains("ParsingError"), "no raw Pest structs: {err}");
+
+        // A bad entity kind names the kinds that would work.
+        let err = parse_query("functionz where name == 1").unwrap_err();
+        assert!(err.contains("expected an entity kind"), "{err}");
+        assert!(err.contains("classes"), "{err}");
     }
 
     // ── CompOp Parsing ───────────────────────────────────────────────

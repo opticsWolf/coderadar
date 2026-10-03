@@ -64,6 +64,11 @@ pub struct CloneGroup {
     pub similarity: f64,
     pub instances: Vec<CloneInstance>,
     pub confidence_tier: Tier,
+    /// Why this group is worth a second look before refactoring — visible
+    /// rather than silently suppressed (plan §6.3). Currently
+    /// `"literal-table"`: every instance is mostly literals, so identical
+    /// *shape* does not imply duplicated logic.
+    pub reason: Option<&'static str>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -91,6 +96,49 @@ struct Fp {
     norm_hash: u64,
     sig: MinHash,
     shingles: std::collections::HashSet<u64>,
+    /// Share of normalized tokens that are string/number literals.
+    literal_density: f64,
+}
+
+/// Above this share of literal tokens a body is a *table*: dict/list literals
+/// mapping keys to values. Distinct tables look identical after identifier
+/// normalization (plan §6.3), so shape alone must not make them clones.
+const LITERAL_TABLE_DENSITY: f64 = 0.5;
+
+/// Whether two fingerprints are a parent/child pair: same file, one body
+/// span strictly containing the other.
+///
+/// A parent's body text contains its nested function's, so shingle
+/// similarity sees them as near-copies — `gallery._spin` and its inner
+/// `draw` were reported as a clone pair (plan §6.2). Nesting is
+/// composition, not duplication. Layers A and B cannot produce such a pair
+/// (equal bodies cannot nest), so this guards the similarity layer.
+fn nested(a: &Fp, b: &Fp) -> bool {
+    if a.file != b.file {
+        return false;
+    }
+    (a.span.start <= b.span.start && b.span.end <= a.span.end)
+        || (b.span.start <= a.span.start && a.span.end <= b.span.end)
+}
+
+/// Share of normalized tokens that are string/number literals (plan §6.3).
+fn literal_density(norm: &[u32]) -> f64 {
+    if norm.is_empty() {
+        return 0.0;
+    }
+    let literals = norm
+        .iter()
+        .filter(|t| **t == tokens::TOK_STR || **t == tokens::TOK_NUM)
+        .count();
+    literals as f64 / norm.len() as f64
+}
+
+/// Whether every member of a group is a literal table.
+fn all_literal_tables(fps: &[Fp], members: &[usize]) -> bool {
+    !members.is_empty()
+        && members
+            .iter()
+            .all(|&i| fps[i].literal_density >= LITERAL_TABLE_DENSITY)
 }
 
 /// Verification threshold (plan §11.1): candidate pairs at or above this
@@ -135,6 +183,7 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
             Arc<MinHash>,
             Arc<std::collections::HashSet<u64>>,
             Arc<Option<apted::LabeledTree>>,
+            f64,
         ),
     > = HashMap::new();
     let mut fps: Vec<Fp> = Vec::new();
@@ -160,22 +209,24 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
             .copied()
             .unwrap_or(Language::Python);
 
-        let (raw_hash, norm_hash, sig, shingle_set, struct_tree) = match memo.get(&f.content_hash) {
-            Some(hit) => hit.clone(),
-            None => {
-                let raw = tokenize_body(body, lang, Mode::Raw);
-                let norm = tokenize_body(body, lang, Mode::Normalized);
-                let rh = xxh_tokens(&raw);
-                let nh = xxh_tokens(&norm);
-                let shingle_set: std::collections::HashSet<u64> =
-                    tokens::shingles(&norm, SHINGLE_K).collect();
-                let sig = MinHash::of(shingle_set.iter().copied());
-                let t = Arc::new(apted::structural_tree(src, lang, f.body_span));
-                let hit = (rh, nh, Arc::new(sig), Arc::new(shingle_set), t);
-                memo.insert(f.content_hash, hit.clone());
-                hit
-            }
-        };
+        let (raw_hash, norm_hash, sig, shingle_set, struct_tree, literal_density) =
+            match memo.get(&f.content_hash) {
+                Some(hit) => hit.clone(),
+                None => {
+                    let raw = tokenize_body(body, lang, Mode::Raw);
+                    let norm = tokenize_body(body, lang, Mode::Normalized);
+                    let rh = xxh_tokens(&raw);
+                    let nh = xxh_tokens(&norm);
+                    let shingle_set: std::collections::HashSet<u64> =
+                        tokens::shingles(&norm, SHINGLE_K).collect();
+                    let sig = MinHash::of(shingle_set.iter().copied());
+                    let t = Arc::new(apted::structural_tree(src, lang, f.body_span));
+                    let density = literal_density(&norm);
+                    let hit = (rh, nh, Arc::new(sig), Arc::new(shingle_set), t, density);
+                    memo.insert(f.content_hash, hit.clone());
+                    hit
+                }
+            };
 
         trees.insert(id.clone(), Arc::clone(&struct_tree));
 
@@ -188,6 +239,7 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
             norm_hash,
             sig: (*sig).clone(),
             shingles: (*shingle_set).clone(),
+            literal_density,
         });
     }
 
@@ -266,8 +318,14 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
         let (Some(&ia), Some(&ib)) = (pool.get(a as usize), pool.get(b as usize)) else {
             continue;
         };
+        // A literal table only pairs with a table that is the *same* table
+        // (identical after identifier normalization): distinct key/value
+        // maps share their shape, which is not duplicated logic (§6.3).
+        let table_pair = fps[ia].literal_density >= LITERAL_TABLE_DENSITY
+            && fps[ib].literal_density >= LITERAL_TABLE_DENSITY;
         let sim = jaccard(&fps[ia].shingles, &fps[ib].shingles);
-        if sim >= options.min_similarity {
+        let literal_ok = !table_pair || fps[ia].norm_hash == fps[ib].norm_hash;
+        if sim >= options.min_similarity && literal_ok && !nested(&fps[ia], &fps[ib]) {
             // Stage 6.1 verification: strong shingle candidates must also
             // survive ordered TED. Unverifiable trees (no parser / over cap)
             // fall back to trusting the shingles — never guess.
@@ -317,6 +375,9 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
         let mut pairs = 0usize;
         for x in 0..members.len() {
             for y in x + 1..members.len() {
+                if nested(&fps[members[x]], &fps[members[y]]) {
+                    continue; // composition, not duplication
+                }
                 let ja = jaccard(&fps[members[x]].shingles, &fps[members[y]].shingles);
                 let score = if ja >= TED_VERIFY_FLOOR {
                     match (
@@ -369,6 +430,9 @@ fn build_group(ty: CloneType, similarity: f64, fps: &[Fp], members: &[usize]) ->
         clone_type: ty,
         similarity,
         confidence_tier: tier_of(clone_confidence(similarity, min_lines)),
+        // Visible, not silently suppressed: a group of data tables is a real
+        // finding with a different remedy (shared data, not shared logic).
+        reason: all_literal_tables(fps, members).then_some("literal-table"),
         instances: members
             .iter()
             .map(|&i| CloneInstance {
@@ -627,6 +691,142 @@ def unrelated(q):
         );
     }
 
+    #[test]
+    fn nested_functions_are_not_a_clone_pair() {
+        // Plan §6.2: `gallery._spin` and its inner `draw` were reported as a
+        // clone pair — a parent's body text contains the child's, so shingle
+        // similarity sees near-copies. Nesting is composition.
+        let src = "def outer(n):
+    total = 0
+    def inner(k):
+        acc = k * 2
+        acc += k * 3
+        return acc
+    for i in range(n):
+        total += inner(i)
+    return total
+";
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("nested.py");
+        std::fs::write(&src_path, src).unwrap();
+
+        let mut g = crate::smells::engine::tests::empty_graph();
+        let mut module = mk_module("nested.py::module", &src_path);
+        module.language = Language::Python;
+        g.modules
+            .insert("nested.py::module".into(), Arc::new(module));
+
+        // The inner span sits inside the outer one, as extraction records it.
+        let outer_start = src.find(":\n").unwrap() + 2;
+        let inner_start = src.find("def inner").unwrap();
+        let inner_end = src.find("\n    for i in").unwrap();
+        for (name, span) in [
+            (
+                "outer",
+                ByteSpan {
+                    start: outer_start,
+                    end: src.len(),
+                },
+            ),
+            (
+                "inner",
+                ByteSpan {
+                    start: inner_start,
+                    end: inner_end,
+                },
+            ),
+        ] {
+            let mut f = func_fp(name);
+            f.body_span = span;
+            f.content_hash = xxhash_rust::xxh3::xxh3_64(name.as_bytes());
+            g.functions
+                .insert(format!("nested.py::{name}"), Arc::new(f));
+        }
+
+        let groups = detect_clones(
+            &g,
+            CloneOptions {
+                min_lines: 3,
+                min_similarity: 0.5,
+            },
+        );
+        assert!(
+            groups.is_empty(),
+            "a function and its nested child are not clones: {groups:?}"
+        );
+    }
+
+    #[test]
+    fn distinct_literal_tables_are_not_clones_but_identical_ones_are() {
+        // Plan §6.3: two dict-literal tables with different keys share their
+        // *shape* after identifier normalization — that is data, not
+        // duplicated logic. Identical tables are still a real finding, and
+        // say why.
+        let src = "THEME_A = {\n    \"bg\": \"#101010\",\n    \"fg\": \"#e0e0e0\",\n    \"accent\": \"#4f9\",\n    \"border\": \"#333\",\n}\n\nTHEME_B = {\n    \"bg\": \"#ffffff\",\n    \"fg\": \"#000000\",\n    \"accent\": \"#06c\",\n    \"border\": \"#ccc\",\n}\n\nTHEME_C = {\n    \"bg\": \"#101010\",\n    \"fg\": \"#e0e0e0\",\n    \"accent\": \"#4f9\",\n    \"border\": \"#333\",\n}\n";
+        let dir = tempfile::tempdir().unwrap();
+        let src_path = dir.path().join("themes.py");
+        std::fs::write(&src_path, src).unwrap();
+
+        let mut g = crate::smells::engine::tests::empty_graph();
+        let mut module = mk_module("themes.py::module", &src_path);
+        module.language = Language::Python;
+        g.modules
+            .insert("themes.py::module".into(), Arc::new(module));
+
+        let span_of = |name: &str| {
+            let start = src.find(name).unwrap();
+            let open = src[start..].find('{').map(|r| start + r + 1).unwrap();
+            let end = src[open..].find('}').map(|r| open + r).unwrap();
+            ByteSpan { start: open, end }
+        };
+        for name in ["THEME_A", "THEME_B", "THEME_C"] {
+            let mut f = func_fp(name);
+            f.id = format!("themes.py::{name}");
+            f.parent_module = "themes.py::module".into();
+            f.body_span = span_of(name);
+            f.line = 1;
+            f.exit_line = 6;
+            f.content_hash = xxhash_rust::xxh3::xxh3_64(name.as_bytes());
+            g.functions
+                .insert(format!("themes.py::{name}"), Arc::new(f));
+        }
+
+        let groups = detect_clones(
+            &g,
+            CloneOptions {
+                min_lines: 4,
+                min_similarity: 0.6,
+            },
+        );
+        let members_of = |groups: &[CloneGroup]| -> Vec<Vec<String>> {
+            groups
+                .iter()
+                .map(|grp| {
+                    let mut names: Vec<String> = grp
+                        .instances
+                        .iter()
+                        .map(|i| i.entity_id.rsplit("::").next().unwrap().to_string())
+                        .collect();
+                    names.sort();
+                    names
+                })
+                .collect()
+        };
+        let found = members_of(&groups);
+        assert!(
+            !found.iter().any(|m| m == &["THEME_A", "THEME_B"]),
+            "different tables must not pair on shape alone: {found:?}"
+        );
+        let identical = groups
+            .iter()
+            .find(|grp| {
+                let names = members_of(std::slice::from_ref(grp));
+                names.first().map(|m| m == &["THEME_A", "THEME_C"]) == Some(true)
+            })
+            .expect("identical tables still group");
+        assert_eq!(identical.reason, Some("literal-table"));
+    }
+
     fn func_fp(name: &str) -> Function {
         Function {
             id: format!("dup.py::{name}"),
@@ -639,6 +839,9 @@ def unrelated(q):
             resolved_calls: vec![],
             decorators: vec![],
             setter_of: None,
+            bindings: Vec::new(),
+            refs: Vec::new(),
+            resolved_refs: Vec::new(),
             line: 1,
             exit_line: 5,
             docstring: None,

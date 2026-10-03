@@ -698,12 +698,12 @@ fn test_fn_ref_assignment_callback() {
     let register = snap.functions.values().find(|f| f.name == "register");
     assert!(register.is_some(), "should have register function");
     let register = register.unwrap();
-    let has_handle_click_ref = register.calls.iter().any(|c| c.name == "handle_click");
+    let has_handle_click_ref = register.refs.iter().any(|c| c.name == "handle_click");
     assert!(
         has_handle_click_ref,
-        "register should have fn-ref to handle_click; calls={:?}",
+        "register should have fn-ref to handle_click; refs={:?}",
         register
-            .calls
+            .refs
             .iter()
             .map(|c| c.name.clone())
             .collect::<Vec<_>>()
@@ -721,10 +721,10 @@ fn test_fn_ref_return_value() {
     assert!(get_handler.is_some(), "should have get_handler function");
     let get_handler = get_handler.unwrap();
     assert!(
-        get_handler.calls.iter().any(|c| c.name == "greeter"),
-        "get_handler should have fn-ref to greeter; calls={:?}",
+        get_handler.refs.iter().any(|c| c.name == "greeter"),
+        "get_handler should have fn-ref to greeter; refs={:?}",
         get_handler
-            .calls
+            .refs
             .iter()
             .map(|c| c.name.clone())
             .collect::<Vec<_>>()
@@ -742,9 +742,9 @@ fn test_fn_ref_no_false_positives() {
     assert!(foo.is_some(), "should have foo function");
     let foo = foo.unwrap();
     assert!(
-        foo.calls.is_empty(),
+        foo.refs.is_empty(),
         "foo should have no fn-ref calls; got {:?}",
-        foo.calls.iter().map(|c| c.name.clone()).collect::<Vec<_>>()
+        foo.refs.iter().map(|c| c.name.clone()).collect::<Vec<_>>()
     );
 }
 #[test]
@@ -760,10 +760,10 @@ fn test_fn_ref_argument_list() {
     assert!(setup.is_some(), "should have setup function");
     let setup = setup.unwrap();
     assert!(
-        setup.calls.iter().any(|c| c.name == "handler"),
-        "setup should have fn-ref to handler via argument; calls={:?}",
+        setup.refs.iter().any(|c| c.name == "handler"),
+        "setup should have fn-ref to handler via argument; refs={:?}",
         setup
-            .calls
+            .refs
             .iter()
             .map(|c| c.name.clone())
             .collect::<Vec<_>>()
@@ -784,10 +784,10 @@ fn test_fn_ref_dict_values() {
     assert!(make_reg.is_some(), "should have make_registry function");
     let make_reg = make_reg.unwrap();
     assert!(
-        make_reg.calls.iter().any(|c| c.name == "handler"),
-        "make_registry should have fn-ref to handler from dict value; calls={:?}",
+        make_reg.refs.iter().any(|c| c.name == "handler"),
+        "make_registry should have fn-ref to handler from dict value; refs={:?}",
         make_reg
-            .calls
+            .refs
             .iter()
             .map(|c| c.name.clone())
             .collect::<Vec<_>>()
@@ -809,13 +809,13 @@ fn test_literal_receiver_skipped() {
     let foo = foo.unwrap();
     // Calls on string/integer literals should be filtered — no path entries for them
     let has_literal_receiver = foo
-        .calls
+        .refs
         .iter()
         .any(|c| c.path.iter().any(|p| p == "'hello'" || p == "42"));
     assert!(
         !has_literal_receiver,
-        "literal receivers should be filtered; calls={:?}",
-        foo.calls
+        "literal receivers should be filtered; refs={:?}",
+        foo.refs
             .iter()
             .map(|c| format!("{:?}::{}", c.path, c.name))
             .collect::<Vec<_>>()
@@ -917,10 +917,10 @@ fn test_fn_ref_cross_file_import() {
     assert!(register.is_some(), "should have register function");
     let register = register.unwrap();
     assert!(
-        register.calls.iter().any(|c| c.name == "handle_click"),
-        "register should have fn-ref to imported handle_click; calls={:?}",
+        register.refs.iter().any(|c| c.name == "handle_click"),
+        "register should have fn-ref to imported handle_click; refs={:?}",
         register
-            .calls
+            .refs
             .iter()
             .map(|c| c.name.clone())
             .collect::<Vec<_>>()

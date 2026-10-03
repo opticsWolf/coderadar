@@ -337,11 +337,18 @@ def create_server(graph: Any) -> MCPServer:
 
     @mcp.tool(
         description=(
-            "Execute a structured Pest graph query against the indexed codebase. "
-            "Supports: 'functions where name contains X', 'classes where inherits_from "
-            "contains Y', 'imports where module contains Z', 'entities where kind = function'. "
-            "Returns matched entities with metadata. Use for precise structural queries "
-            "that go beyond keyword search."
+            "Execute a structured graph query against the indexed codebase. "
+            "Shape: '<entity> [select ...] [where ...] [group by ...] [order by ...] "
+            "[limit N]'. Entities: modules, classes, functions, methods, constants, "
+            "entities, imports, calls, fields. Operators: ==, !=, <, <=, >, >=, "
+            "contains, matches (regex), starts_with, ends_with, in — combined with "
+            "and/or/not. Examples: 'classes where inherits_from contains \"BaseModel\"', "
+            "'methods where is_async == true', 'functions where name starts_with \"test_\"', "
+            "'functions where caller_count == 0 and not name matches \"^test_\"'. "
+            "Every row carries id, file_path, kind and parent_id, so a hit can be "
+            "fed to codegraph_callers / codegraph_plan_rename. Unknown fields are "
+            "rejected with the available list instead of returning nothing. "
+            "Full field reference: docs/query-language.md."
         ),
         annotations={
             "read_only_hint": True,
@@ -1374,12 +1381,13 @@ NO_EXTENSION_MESSAGE = (
 #: takes an entity id, so agents stop guessing spellings. The copy/paste
 #: source is always a previous tool result; this is the shape to expect.
 _ENTITY_ID_GRAMMAR = (
-    "Entity ids look like `.\\path\\to\\file.py::Qualified.name` "
-    "(dot-prefix, project-root-relative, native separators; methods as "
+    "Entity ids look like `path/to/file.py::Qualified.name` "
+    "(project-root-relative, forward slashes, no `./` prefix; methods as "
     "`File::Class.member`, modules as `File::module`). Absolute paths, "
-    "forward slashes, and a missing dot-prefix are also accepted. "
-    "`external::name` marks a callee outside the index (not an entity — "
-    "it resolves nothing further)."
+    "backslashes, and a leading `./` are also accepted, and a dotted "
+    "qualified name (`app.helpers.combine`) resolves when its module prefix "
+    "matches. `external::name` marks a callee outside the index (not an "
+    "entity — it resolves nothing further)."
 )
 
 
@@ -1491,10 +1499,7 @@ def _node_detail(graph: Any, entity_id: str, include_neighbors: bool) -> str:
     """Get full entity details."""
     entity = _find_entity(graph, entity_id)
     if not entity:
-        return (
-            f"Entity `{entity_id}` not found. "
-            "Try codegraph_search to locate it."
-        )
+        return _not_found_message(graph, entity_id)
 
     # Staleness check for this entity's file
     stale_banner = ""
@@ -1637,7 +1642,7 @@ def _affected(graph: Any, entity_id: str, max_depth: int) -> str:
     """Transitive impact analysis."""
     entity = _find_entity(graph, entity_id)
     if not entity:
-        return f"Entity `{entity_id}` not found. Try codegraph_search."
+        return _not_found_message(graph, entity_id)
 
     # Staleness check for this entity's file
     stale_banner = ""
@@ -1732,10 +1737,13 @@ def _query_graph(graph: Any, query: str) -> str:
     # An empty query is a usage error regardless of graph state, so prompt
     # for it before touching the (possibly unloaded) in-memory graph.
     if not query.strip():
-        return "Please provide a Pest query. Examples:\n" \
-               "  - functions where name contains 'test'\n" \
+        return "Please provide a query. Examples:\n" \
                "  - classes where inherits_from contains 'BaseModel'\n" \
-               "  - imports where module contains 'os'"
+               "  - methods where is_async == true\n" \
+               "  - functions where name starts_with 'test_'\n" \
+               "  - imports where import_kind == 'from'\n" \
+               "Entities: modules, classes, functions, methods, constants, entities, " \
+               "imports, calls, fields. Full field reference: docs/query-language.md"
 
     try:
         from coderadar._core import graph_stats
@@ -2036,14 +2044,22 @@ def _find_clones(
             f"{g['confidence_tier']}"
         )
         for inst in g["instances"]:
+            # Lines first: a reviewer reads line numbers, not byte offsets
+            # (plan §5.4). The span stays for anything that slices.
             lines.append(
-                f"- `{inst['entity_id']}` ({inst['file']} @ bytes "
+                f"- `{inst['entity_id']}` ({inst['file']} @ lines "
+                f"{inst['start_line']}-{inst['end_line']}, bytes "
                 f"{inst['span_start']}..{inst['span_end']})"
             )
         lines.append("")
     lines.append(
         "Consider extracting shared logic; verify each pair with `explore` before refactoring."
     )
+    if any(g.get("reason") == "literal-table" for g in groups):
+        lines.append(
+            "`literal-table` groups are key/value data that happens to share a "
+            "shape — a shared data source is usually the fix, not shared logic."
+        )
     return "\n".join(lines)
 
 
@@ -2229,7 +2245,7 @@ def _traverse(
 
     entity = _find_entity(graph, entity_id)
     if not entity:
-        return f"Entity `{entity_id}` not found. Try codegraph_search."
+        return _not_found_message(graph, entity_id)
     entity_id = _canonical_entity_id(entity_id)
 
     depth = min(max_depth, 10)
@@ -2775,12 +2791,11 @@ def _render_relationships(
 def _friendly_entity_id(entity_id: str) -> str:
     """Present a stored entity ID in a shell-friendly form.
 
-    Stored IDs are ``.<sep>path::{name}`` with OS-native separators, which are
-    awkward to copy into a shell (where a backslash is an escape character).
-    This converts backslashes to forward slashes and drops the redundant
-    ``./`` / ``.\\`` prefix, so a stored ``.\\path\\to\\file.rs::name`` becomes
-    ``path/to/file.rs::name``. It is idempotent and a no-op on POSIX, where
-    the stored form already uses forward slashes.
+    Stored IDs are already shell-friendly since plan 5.1
+    (``path/to/file.py::name``); this stays as the presenter for ids that
+    arrive from an older store or a hand-written script — it converts
+    backslashes to forward slashes and drops the redundant ``./`` / ``.\\``
+    prefix. It is idempotent and a no-op on the canonical form.
     """
     friendly = entity_id.replace('\\', '/')
     friendly = friendly.removeprefix('./')
@@ -2857,6 +2872,37 @@ def _find_entity(graph: Any, entity_id: str) -> dict | None:
         return lookup_entity(_canonical_entity_id(entity_id))
     except (ImportError, RuntimeError):
         return None
+
+
+def _not_found_message(graph: Any, entity_id: str) -> str:
+    """A miss with candidates instead of a bare `not found` (plan §5.2).
+
+    The core already resolves dotted qualified names
+    (`pkg.mod.Class.method`); when even that misses, the last segment is
+    usually enough to find what the caller meant. A name that exists nowhere
+    is rare, and the agent's next move is a search anyway.
+    """
+    hint = entity_id.split("::")[-1].rsplit(".", 1)[-1]
+    # `search_entities` matches exact/prefix/contains, so a typo finds
+    # nothing at full length: `rendr` needs the probe shortened to `ren`
+    # before `render` shows up.
+    candidates: list[dict] = []
+    for length in range(len(hint), 2, -1):
+        candidates = [
+            hit
+            for hit in _text_search(graph, hint[:length], 5)
+            if hit.get("name") and hit.get("id") != entity_id
+        ]
+        if candidates:
+            break
+    lines = [f"Entity `{entity_id}` not found."]
+    if candidates:
+        lines.append("Did you mean:")
+        for hit in candidates[:3]:
+            lines.append(f"- `{hit.get('name')}` — `{hit.get('id')}`")
+    else:
+        lines.append("Try codegraph_search to locate it.")
+    return "\n".join(lines)
 
 
 def _text_search(graph: Any, query: str, top_k: int, kind: str | None = None) -> list[dict]:

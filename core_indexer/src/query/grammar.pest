@@ -4,9 +4,14 @@
 WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
 COMMENT    = _{ "--" ~ (!"\n" ~ ANY)* }
 
-keyword = { "where" | "group" | "by" | "order" | "asc" | "desc" | "limit"
-          | "and" | "or" | "not" | "true" | "false" | "null"
-          | "select" | "as" | "in" | "contains" | "matches" }
+// The trailing boundary guard is what makes `!keyword` usable in
+// `identifier`: without it any identifier STARTING with a keyword is
+// rejected (`inherits_from`, `index`, `order_id`, `notes`, `selected`, …).
+keyword = @{ ("where" | "group" | "by" | "order" | "asc" | "desc" | "limit"
+           | "and" | "or" | "not" | "true" | "false" | "null"
+           | "select" | "as" | "in" | "contains" | "matches"
+           | "starts_with" | "ends_with")
+           ~ !(ASCII_ALPHANUMERIC | "_") }
 
 identifier = @{ !keyword ~ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
 path       = @{ identifier ~ ("." ~ identifier)* }
@@ -20,7 +25,8 @@ value  = { string | number | bool | null | list }
 
 derived_call = { identifier ~ "(" ~ value ~ ("," ~ value)* ~ ")" }
 operand      = { derived_call | path | value }
-comp_op      = { "==" | "!=" | "<=" | ">=" | "<" | ">" | "contains" | "matches" | "in" }
+comp_op      = { "==" | "!=" | "<=" | ">=" | "<" | ">" | "starts_with" | "ends_with"
+               | "contains" | "matches" | "in" }
 predicate    = { operand ~ comp_op ~ operand }
 
 not_atom = { "not" ~ atom }
@@ -41,7 +47,8 @@ order_dir       = { "asc" | "desc" }
 order_by_clause = { "order" ~ "by" ~ path ~ order_dir? }
 limit_clause    = { "limit" ~ number }
 
-entity = { "modules" | "classes" | "functions" | "imports" | "calls" | "fields" }
+entity = { "modules" | "classes" | "functions" | "methods" | "constants" | "entities"
+         | "imports" | "calls" | "fields" }
 
 query = { SOI ~ entity ~ select_clause? ~ where_clause? ~ group_by_clause?
           ~ order_by_clause? ~ limit_clause? ~ EOI }

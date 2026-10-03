@@ -85,6 +85,7 @@ fn capture_name_to_tag(name: &str) -> Option<Tag> {
         "decorator" => Some(Tag::Decorator),
         "docstring" => Some(Tag::Docstring),
         "field" => Some(Tag::Field),
+        "return.stmt" => Some(Tag::Return),
         "export" | "export.function" | "export.class" | "export.module" => Some(Tag::Export),
         _ => None,
     }

@@ -41,6 +41,7 @@ pub mod inheritance;
 
 pub mod traversal;
 
+pub mod receiver_types;
 pub mod resolve_calls;
 
 pub mod persistence;
@@ -50,6 +51,8 @@ pub mod embeddings;
 pub mod indexing;
 
 pub mod projection_ops;
+
+pub mod update_diff;
 
 pub mod cold_start;
 
@@ -78,6 +81,11 @@ pub struct CodeGraph {
 
     /// Unix seconds of the last committed projection. See `commit_projection`.
     pub indexed_at: RwLock<f64>,
+
+    /// Number of projections committed since this graph object was created.
+    /// Process-local and monotonic — a cheap "did anything change between
+    /// these two points" token for `UpdateReport.epoch_before/after`.
+    epoch: std::sync::atomic::AtomicU64,
 }
 
 impl CodeGraph {
@@ -96,6 +104,7 @@ impl CodeGraph {
             imports_by_importer: HashMap::new(),
             callers_by_callee: HashMap::new(),
             callees_by_caller: HashMap::new(),
+            call_evidence: HashMap::new(),
             subclasses: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
@@ -111,6 +120,7 @@ impl CodeGraph {
             resolution_cache: RwLock::new(ResolutionCache::new()),
             config,
             indexed_at: RwLock::new(0.0),
+            epoch: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -122,6 +132,8 @@ impl CodeGraph {
     /// Atomically swap the projection with a new version (caller holds write lock).
     pub fn commit_projection(&self, new_projection: ProjectedGraph) {
         *self.projection.write() = Arc::new(new_projection);
+        self.epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Unix seconds of the last commit. `graph_stats()` hands this to the
         // MCP layer, whose staleness banner compares it against file mtimes;
         // it used to read a key named "epoch" that nothing ever set, so every
@@ -130,6 +142,11 @@ impl CodeGraph {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0);
+    }
+
+    /// Count of projections committed by this process (see the `epoch` field).
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Unix seconds of the last `commit_projection`, or 0.0 before the first.

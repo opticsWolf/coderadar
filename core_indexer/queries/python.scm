@@ -17,9 +17,9 @@
 (call
   function: (identifier) @call.name) @call
 
+; Any receiver: `m.f()`, `self.a.f()`, `mod.sub.f()`, `g().f()`.
 (call
   function: (attribute
-    object: (identifier) @call.receiver
     attribute: (identifier) @call.method)) @call
 
 ;; ── Imports ─────────────────────────────────────────────────────────
@@ -32,10 +32,20 @@
 
 (decorator) @decorator
 
+;; ── Returns (return-type evidence) ──────────────────────────────────
+
+(return_statement) @return.stmt
+
+(yield) @return.stmt
+
 ;; ── Assignments ─────────────────────────────────────────────────────
 
 (assignment
   left: (identifier) @field.name) @field
+
+; `self.x = ...` — instance attributes; only used as type evidence.
+(assignment
+  left: (attribute) @field.attr) @field
 
 ;; ── Docstrings ──────────────────────────────────────────────────────
 

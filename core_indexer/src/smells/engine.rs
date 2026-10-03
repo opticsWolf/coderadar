@@ -66,12 +66,24 @@ impl SmellEngine {
         // Whole-graph analyses, computed once per run and shared by every
         // rule (Stage 0.2). Reachability + entry points feed the dead-code
         // rule (Stage 1); harmonic centrality feeds triage signals (Stage 5).
-        let entries = crate::graph::deadcode::entry_points::detect_entry_points(graph);
-        let reach =
-            crate::graph::deadcode::reachability::compute_reachable(graph, &entries.production);
+        // The root comes from the process-global the analyze pipeline set:
+        // test-path walking and pyproject entry points need it (plan §2.4).
+        let root = crate::INDEXED_ROOT.read().clone();
+        let entries =
+            crate::graph::deadcode::entry_points::detect_entry_points(graph, root.as_deref());
+        let dead: HashMap<_, _> = crate::graph::deadcode::detect_dead(
+            graph,
+            crate::graph::deadcode::DeadCodeOptions {
+                include_test_only: false,
+                root,
+            },
+        )
+        .into_iter()
+        .map(|f| (f.entity_id.clone(), f))
+        .collect();
         let centrality = crate::graph::centrality::harmonic_centrality(graph, 3);
         let analyses = GraphAnalyses {
-            reachable: Some(&reach.reachable),
+            dead: Some(&dead),
             entry_points: Some(&entries.production),
             centrality: Some(&centrality),
         };
@@ -183,6 +195,16 @@ pub fn metrics_for_function(f: &Function) -> HashMap<String, f64> {
         (f.exit_line.saturating_sub(f.line) + 1) as f64,
     );
     m.insert("param_count".to_string(), f.parameters.len() as f64);
+    // Positional-or-keyword parameters only (plan §6.4): `*, a=1, b=2` is
+    // the *remedy* for a long parameter list, not an instance of it, and
+    // `*args`/`**kwargs` are one slot each however many values they carry.
+    m.insert(
+        "positional_param_count".to_string(),
+        f.parameters
+            .iter()
+            .filter(|p| !p.is_keyword_only && !p.is_varargs && !p.is_kwargs)
+            .count() as f64,
+    );
     m.insert("cyclomatic".to_string(), f.metrics.cyclomatic as f64);
     m.insert("nesting_depth".to_string(), f.metrics.nesting_depth as f64);
     m.insert("return_count".to_string(), f.metrics.return_count as f64);
@@ -303,6 +325,7 @@ pub(crate) mod tests {
             imports_by_importer: HashMap::new(),
             callers_by_callee: HashMap::new(),
             callees_by_caller: HashMap::new(),
+            call_evidence: HashMap::new(),
             subclasses: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
@@ -382,6 +405,42 @@ pub(crate) mod tests {
             .expect("5 params triggers");
         assert_eq!(f.rule_id, "long-parameter-list");
         assert_eq!(f.severity, Severity::Info);
+    }
+
+    #[test]
+    fn keyword_only_parameters_are_the_remedy_not_the_smell() {
+        // Plan §6.4: `def __init__(self, parent=None, *, a=…, b=…, c=…)`
+        // counted 5+ and fired on every Qt-style constructor. Only
+        // positional-or-keyword parameters count.
+        let g = empty_graph();
+        let rule = crate::smells::rules::long_parameter_list::LongParameterList::default();
+
+        let keyword_only = HashMap::from([
+            ("param_count".to_string(), 7.0),
+            ("positional_param_count".to_string(), 2.0),
+        ]);
+        assert!(
+            rule.evaluate(&ctx(&g, "a", "__init__", &keyword_only))
+                .is_none(),
+            "keyword-only defaults are the fix for a long parameter list"
+        );
+
+        let long_positional = HashMap::from([
+            ("param_count".to_string(), 8.0),
+            ("positional_param_count".to_string(), 6.0),
+        ]);
+        let f = rule
+            .evaluate(&ctx(&g, "a", "build", &long_positional))
+            .expect("6 positional params still trigger");
+        assert_eq!(f.severity, Severity::Medium);
+        // The message says both numbers, so the reader knows the shape.
+        assert!(
+            f.message.contains("6 positional parameters"),
+            "{}",
+            f.message
+        );
+        assert!(f.message.contains("8 total"), "{}", f.message);
+        assert_eq!(f.signals["total_param_count"], 8.0);
     }
 
     #[test]

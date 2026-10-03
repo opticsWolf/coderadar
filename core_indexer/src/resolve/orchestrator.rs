@@ -294,7 +294,11 @@ impl ResolutionOrchestrator {
                 // self.method / cls.method / module.func / Class.method
                 let prefix = &call.path[0];
 
-                if prefix == "self" || prefix == "cls" || prefix == "this" {
+                if prefix == "self"
+                    || prefix == "cls"
+                    || prefix == "this"
+                    || prefix.starts_with('<')
+                {
                     // Method call on self/cls/this — deferred to MRO walk
                     ResolvedCall::Unresolved {
                         reason: UnresolvedReason::TypeInferenceRequired,
@@ -653,6 +657,7 @@ mod tests {
             path: vec![],
             line: 1,
             col: 0,
+            name_span: Default::default(),
         };
         let result = orchestrator.resolve_single_call(&call, &import_graph);
         assert!(matches!(result, ResolvedCall::Builtin(s) if s == "print"));
@@ -667,6 +672,7 @@ mod tests {
             path: vec![],
             line: 42,
             col: 4,
+            name_span: Default::default(),
         };
         let result = orchestrator.resolve_single_call(&call, &import_graph);
         assert!(matches!(result, ResolvedCall::External(s) if s == "unknown_secret_sauce"));

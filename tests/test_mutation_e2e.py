@@ -266,3 +266,180 @@ class TestTextualCallSiteBackstop:
         assert ":14`" in out, out
         # Dry run changed nothing.
         assert "def greet(name):" in _app(project)
+
+HIERARCHY = '''class Base:
+    def save(self, value):
+        return value
+
+    def run(self):
+        return self.save(1)
+
+
+class Child(Base):
+    def save(self, value):
+        return value + 1
+
+
+def exercise():
+    child = Child()
+    return child.save(2)
+'''
+
+
+@pytest.fixture
+def hierarchy(tmp_path):
+    """A two-level override family with a `self.` call site."""
+    (tmp_path / "app.py").write_text(HIERARCHY, encoding="utf-8")
+    previous = Path(os.getcwd())
+    os.chdir(tmp_path)
+    try:
+        _analyze(".")
+        yield tmp_path
+    finally:
+        os.chdir(previous)
+
+
+def _method_id(qualified: str) -> str:
+    """`Base.save` → its entity id (search_entities matches on the simple name)."""
+    from coderadar._core import search_entities
+
+    name = qualified.rsplit(".", 1)[-1]
+    for hit in search_entities(name, 50):
+        if hit.get("id", "").endswith(f"::{qualified}"):
+            return hit["id"]
+    raise AssertionError(f"{qualified} is not in the index")
+
+
+class TestMethodCallRename:
+    """§4.1 — a *resolved* attribute call is a real edit, not a review note."""
+
+    def test_self_method_call_is_rewritten(self, hierarchy):
+        from coderadar.mcp.server import _rename
+
+        out = _rename(coderadar.CodeGraph(), _method_id("Base.save"), "store", False)
+
+        after = _app(hierarchy)
+        assert "Mutation failed" not in out, out
+        assert "def store(self, value):" in after
+        # The receiver `self.` was resolved, so the plan rewrites the name
+        # in place instead of asking for manual review.
+        assert "return self.store(1)" in after, after
+        assert "child.store(2)" in after, after
+
+    def test_a_resolved_method_call_is_not_an_unverified_site(self, hierarchy):
+        graph = coderadar.CodeGraph()
+        plan = graph.plan_rename(_method_id("Base.save"), "store", dry_run=True)
+
+        snippets = [site["snippet"] for site in plan.unverified_sites]
+        assert not any("self.save" in snippet for snippet in snippets), snippets
+
+        # The edit targets exactly the name inside `self.save(1)`.
+        source = (hierarchy / "app.py").read_bytes()
+        name_offset = source.index(b"self.save(1)") + len(b"self.")
+        target = next(
+            (e for e in plan.edits if e.span_start == name_offset), None
+        )
+        assert target is not None, plan.edits
+        assert target.replacement == "store"
+
+        # Plan 5.4: the same span in the form a reviewer reads — the byte
+        # offset alone required re-reading the file and counting newlines.
+        line_no = source[:name_offset].count(b"\n") + 1
+        col = name_offset - (source.rfind(b"\n", 0, name_offset) + 1)
+        assert target.line == line_no, (target, line_no)
+        assert target.col == col, (target, col)
+        assert target.end_line == line_no
+        assert target.end_col == col + len("save")
+        assert "save" in source[target.span_start:target.span_end].decode()
+
+    def test_renaming_a_base_renames_the_override_family(self, hierarchy):
+        from coderadar.mcp.server import _rename
+
+        out = _rename(coderadar.CodeGraph(), _method_id("Base.save"), "store", True)
+
+        assert "Warnings" in out, out
+        assert "overridden" in out, out
+        assert "Child.save" in out, out
+
+        _rename(coderadar.CodeGraph(), _method_id("Base.save"), "store", False)
+        after = _app(hierarchy)
+        assert after.count("def store(self, value):") == 2, after
+        assert "def save(" not in after, after
+
+    def test_renaming_an_override_warns_that_the_base_is_untouched(self, hierarchy):
+        from coderadar.mcp.server import _rename
+
+        out = _rename(coderadar.CodeGraph(), _method_id("Child.save"), "store", True)
+
+        assert "overrides" in out, out
+        assert "NOT renamed" in out, out
+
+        _rename(coderadar.CodeGraph(), _method_id("Child.save"), "store", False)
+        after = _app(hierarchy)
+        assert "def store(self, value):" in after
+        assert "def save(self, value):" in after, "the base method must survive"
+
+
+FIXTURE_APP = """class Manager:
+    def save_state(self):
+        return 1
+"""
+
+FIXTURE_CONFTEST = """import pytest
+
+from app import Manager
+
+
+@pytest.fixture
+def make_manager():
+    return Manager()
+"""
+
+FIXTURE_TEST = """def test_save(make_manager):
+    make_manager.save_state()
+"""
+
+
+@pytest.fixture
+def fixture_project(tmp_path):
+    """A pytest fixture-typed receiver — the weakest evidence there is."""
+    (tmp_path / "app.py").write_text(FIXTURE_APP, encoding="utf-8")
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "conftest.py").write_text(FIXTURE_CONFTEST, encoding="utf-8")
+    (tests_dir / "test_weak.py").write_text(FIXTURE_TEST, encoding="utf-8")
+    previous = Path(os.getcwd())
+    os.chdir(tmp_path)
+    try:
+        _analyze(".")
+        yield tmp_path
+    finally:
+        os.chdir(previous)
+
+
+class TestWeakEvidenceCalls:
+    """§4.1 — fixture-inferred receivers go to review, not into the file."""
+
+    def test_a_fixture_typed_call_is_reported_for_review(self, fixture_project):
+        graph = coderadar.CodeGraph()
+        plan = graph.plan_rename(_method_id("Manager.save_state"), "store", dry_run=True)
+
+        sites = {site["snippet"]: site["reason"] for site in plan.unverified_sites}
+        assert "make_manager.save_state" in sites, sites
+        assert "fixture" in sites["make_manager.save_state"], sites
+
+        # The definition is still renamed — only the guessed call waits.
+        assert any(edit.replacement == "store" for edit in plan.edits), plan.edits
+
+    def test_applying_leaves_the_fixture_call_untouched(self, fixture_project):
+        from coderadar.mcp.server import _rename
+
+        out = _rename(
+            coderadar.CodeGraph(), _method_id("Manager.save_state"), "store", False
+        )
+
+        assert "Mutation failed" not in out, out
+        app = (fixture_project / "app.py").read_text(encoding="utf-8")
+        test_file = (fixture_project / "tests" / "test_weak.py").read_text(encoding="utf-8")
+        assert "def store(self):" in app
+        assert "make_manager.save_state()" in test_file, "a guess must not be applied"

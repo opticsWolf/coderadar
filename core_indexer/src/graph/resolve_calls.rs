@@ -3,10 +3,7 @@ use super::CodeGraph;
 use super::ImportGraph;
 use crate::types::*;
 
-/// `class id → [(method name, method id)]`, in the order the projection's
-/// function map yields them — the same order the scans it replaces saw, so
-/// first-wins name resolution is unchanged.
-type MethodsByClass = std::collections::HashMap<EntityId, Vec<(String, String)>>;
+use super::receiver_types::MethodsByClass;
 
 impl CodeGraph {
     /// Run the resolution cascade on all functions, or scoped to a single file.
@@ -14,6 +11,59 @@ impl CodeGraph {
     /// in that file — used by `update_file` for O(changed) instead of O(all).
     pub fn resolve_all_calls(&self, projection: &mut ProjectedGraph) {
         self.resolve_calls_scoped(projection, None);
+    }
+
+    /// Resolve every function's `refs` (callbacks passed as values) to the
+    /// functions they name, storing the result on `resolved_refs`. These are
+    /// deliberately not call edges; dead-code treats them as liveness.
+    fn resolve_refs_scoped(&self, projection: &mut ProjectedGraph, scope_file: Option<&str>) {
+        let mut methods_by_class: MethodsByClass = std::collections::HashMap::new();
+        for (id, f) in projection.functions.iter() {
+            if let Some(class_id) = &f.parent_class {
+                methods_by_class
+                    .entry(class_id.clone())
+                    .or_default()
+                    .push((f.name.clone(), id.clone()));
+            }
+        }
+        let types = super::receiver_types::TypeCtx {
+            projection,
+            methods_by_class: &methods_by_class,
+        };
+        let mut updates: Vec<(EntityId, Vec<EntityId>)> = Vec::new();
+        for (id, f) in projection.functions.iter() {
+            if let Some(fp) = scope_file {
+                let path = f
+                    .parent_module
+                    .rsplit_once("::")
+                    .map_or(f.parent_module.as_str(), |(p, _)| p);
+                if path != fp {
+                    continue;
+                }
+            }
+            if f.refs.is_empty() && f.resolved_refs.is_empty() {
+                continue;
+            }
+            let mut targets: Vec<EntityId> = f
+                .refs
+                .iter()
+                .filter_map(|r| types.resolve_ref(id, &r.path, &r.name))
+                .collect();
+            targets.sort();
+            targets.dedup();
+            if targets != f.resolved_refs {
+                updates.push((id.clone(), targets));
+            }
+        }
+        for (id, targets) in updates {
+            if let Some(arc) = projection.functions.get(&id) {
+                let mut updated = (**arc).clone();
+                updated.resolved_refs = targets;
+                projection
+                    .functions
+                    .insert(id, std::sync::Arc::new(updated));
+            }
+        }
     }
 
     /// Pure resolution of a single function's calls — all data passed as parameters.
@@ -28,13 +78,19 @@ impl CodeGraph {
         func_id: &str,
         calls: &[crate::types::UnresolvedRef],
         sibling_funcs: &std::collections::HashMap<String, String>,
-        import_targets: &std::collections::HashMap<String, String>,
+        import_targets: &std::collections::HashMap<String, (String, String)>,
         methods_by_class: &MethodsByClass,
         projection: &ProjectedGraph,
         import_graph: &ImportGraph,
         orchestrator: &mut crate::resolve::orchestrator::ResolutionOrchestrator,
-    ) -> (Vec<crate::types::ResolvedCall>, Vec<(String, String)>) {
+    ) -> (
+        Vec<crate::types::ResolvedCall>,
+        Vec<(String, String)>,
+        Vec<((String, String), crate::types::ReceiverEvidence)>,
+    ) {
         let mut edge_pairs = Vec::new();
+        let mut evidence_pairs: Vec<((String, String), crate::types::ReceiverEvidence)> =
+            Vec::new();
 
         // MRO-aware method lookup: per-function
         let my_parent_class = projection
@@ -70,30 +126,104 @@ impl CodeGraph {
 
         let resolved = orchestrator.resolve_calls(calls, func_id, import_graph);
 
+        let parent_module = projection
+            .functions
+            .get(func_id)
+            .map(|f| f.parent_module.clone())
+            .unwrap_or_default();
+        // Receiver typing lives in `receiver_types`; these are thin shims.
+        let types = super::receiver_types::TypeCtx {
+            projection,
+            methods_by_class,
+        };
+        let class_named = |name: &str| types.class_in_scope(&parent_module, name);
+        let method_of = |class_id: &str, name: &str| types.method_of(class_id, name);
+
         let resolved: Vec<_> = resolved
             .into_iter()
             .map(|rc| {
                 if let crate::types::ResolvedCall::Unresolved { reason, raw } = &rc {
-                    if matches!(
-                        reason,
-                        crate::types::UnresolvedReason::TypeInferenceRequired
-                    ) {
+                    // The enclosing class's own MRO answers `self.m()` / `cls.m()`
+                    // and nothing else: `self.attr.m()` or `obj.m()` must not bind
+                    // to a same-named method of the caller's class.
+                    let on_self = matches!(raw.path.as_slice(), [p] if p == "self" || p == "cls");
+                    if on_self
+                        && matches!(
+                            reason,
+                            crate::types::UnresolvedReason::TypeInferenceRequired
+                        )
+                    {
                         if let Some(target_id) = mro_methods.get(&raw.name) {
                             return crate::types::ResolvedCall::Function(target_id.clone());
                         }
                     }
+                    // `var.m()`, `self.attr.m()`, `f().m()`: type the receiver.
+                    if !raw.path.is_empty() {
+                        match types.resolve_call_value(func_id, &raw.path, &raw.name) {
+                            Some(crate::types::CallTarget::Method(mid, ev)) => {
+                                evidence_pairs.push(((mid.clone(), func_id.to_string()), ev));
+                                return crate::types::ResolvedCall::Function(mid);
+                            }
+                            // Class-valued attribute: constructs the class held
+                            // in the attribute.
+                            Some(crate::types::CallTarget::Ctor(cid)) => {
+                                return crate::types::ResolvedCall::Constructor(cid);
+                            }
+                            None => {}
+                        }
+                    }
+                    // `mod.f()` / `pkg.sub.f()` where the dotted prefix names an
+                    // imported module: look `f` up inside that module.
+                    if !on_self
+                        && !raw.path.is_empty()
+                        && !raw.path.iter().any(|s| s.starts_with('<'))
+                    {
+                        let dotted = raw.path.join(".");
+                        if let Some(mid) =
+                            find_module_by_dotted_name(projection, &dotted, &parent_module)
+                        {
+                            if let Some(id) = find_symbol_in_module(projection, &mid, &raw.name) {
+                                return if projection.classes.contains_key(&id) {
+                                    crate::types::ResolvedCall::Constructor(id)
+                                } else {
+                                    crate::types::ResolvedCall::Function(id)
+                                };
+                            }
+                        }
+                    }
                     return rc;
+                }
+                // `ClassName.method()`: the orchestrator guesses a class from
+                // the capital letter and synthesises "Class::method", which is
+                // not an entity id. Look the class up; never invent an id.
+                if let crate::types::ResolvedCall::Method {
+                    receiver: crate::types::ReceiverShape::ClassRef(prefix),
+                    method,
+                } = &rc
+                {
+                    let name = method.rsplit("::").next().unwrap_or(method);
+                    let bound = class_named(prefix).and_then(|cid| method_of(&cid, name));
+                    return match bound {
+                        Some(mid) => crate::types::ResolvedCall::Function(mid),
+                        None => crate::types::ResolvedCall::External(format!("{prefix}.{name}")),
+                    };
                 }
                 if let crate::types::ResolvedCall::External(name) = &rc {
                     if let Some(target_id) = sibling_funcs.get(name.as_str()) {
                         return crate::types::ResolvedCall::Function(target_id.clone());
                     }
-                    if let Some(target_mod_id) = import_targets.get(name.as_str()) {
+                    // (module id, original name): `from x import a as b` binds
+                    // `b`, but the symbol in `x` is still called `a`.
+                    if let Some((target_mod_id, original)) = import_targets.get(name.as_str()) {
+                        let symbol = if original.is_empty() { name } else { original };
                         if let Some(imported_func_id) =
-                            find_symbol_in_module(projection, target_mod_id, name)
+                            find_symbol_in_module(projection, target_mod_id, symbol)
                         {
                             return crate::types::ResolvedCall::Function(imported_func_id);
                         }
+                    }
+                    if let Some(cid) = class_named(name) {
+                        return crate::types::ResolvedCall::Constructor(cid);
                     }
                     if let Some(target_id) = mro_methods.get(name.as_str()) {
                         return crate::types::ResolvedCall::Function(target_id.clone());
@@ -111,9 +241,15 @@ impl CodeGraph {
         // Build edge pairs (applied later by caller)
         for rc in &resolved {
             match rc {
-                crate::types::ResolvedCall::Function(target_id)
-                | crate::types::ResolvedCall::Constructor(target_id) => {
+                crate::types::ResolvedCall::Function(target_id) => {
                     edge_pairs.push((func_id.to_string(), target_id.clone()));
+                }
+                // Instantiation runs `__init__` when the class (or a base)
+                // defines one; otherwise the edge lands on the class itself.
+                crate::types::ResolvedCall::Constructor(class_id) => {
+                    let target =
+                        method_of(class_id, "__init__").unwrap_or_else(|| class_id.clone());
+                    edge_pairs.push((func_id.to_string(), target));
                 }
                 crate::types::ResolvedCall::Method { method, .. } => {
                     edge_pairs.push((func_id.to_string(), method.clone()));
@@ -127,7 +263,7 @@ impl CodeGraph {
             }
         }
 
-        (resolved, edge_pairs)
+        (resolved, edge_pairs, evidence_pairs)
     }
 
     /// Resolve calls scoped to a single file (or all if None).
@@ -137,6 +273,8 @@ impl CodeGraph {
         scope_file: Option<&str>,
     ) {
         use crate::resolve::orchestrator::ResolutionOrchestrator;
+
+        self.resolve_refs_scoped(projection, scope_file);
 
         let mut orchestrator = ResolutionOrchestrator::with_config(&self.config.import_graph);
         // v0.5: Use the shared import graph (edges built during insert_extracted)
@@ -290,7 +428,7 @@ impl CodeGraph {
         // (avoids 501×501 HashMap clones in the single-file 500-varargs case).
         type ModuleLookups = (
             std::sync::Arc<std::collections::HashMap<String, String>>,
-            std::sync::Arc<std::collections::HashMap<String, String>>,
+            std::sync::Arc<std::collections::HashMap<String, (String, String)>>,
         );
         type WorkItem = (String, Vec<crate::types::UnresolvedRef>, ModuleLookups);
 
@@ -310,24 +448,69 @@ impl CodeGraph {
                             crate::types::ImportKind::FromImport {
                                 module: src_mod,
                                 names,
+                            }
+                            | crate::types::ImportKind::RelativeImport {
+                                module: Some(src_mod),
+                                names,
+                                ..
                             } => {
                                 let target_mod_id =
                                     find_module_by_dotted_name(projection, src_mod, parent_module);
-                                for (name, _alias) in names {
+                                for (name, alias) in names {
                                     if let Some(ref tgt_id) = target_mod_id {
-                                        import_targets_map.insert(name.clone(), tgt_id.clone());
+                                        // The *local* binding is what a call site
+                                        // uses: `from x import a as b` calls `b`.
+                                        let local = alias.as_deref().unwrap_or(name.as_str());
+                                        import_targets_map.insert(
+                                            local.to_string(),
+                                            (tgt_id.clone(), name.clone()),
+                                        );
+                                    }
+                                }
+                            }
+                            // `from . import x`: the names live in the package
+                            // itself, which `parent_module` already names.
+                            crate::types::ImportKind::RelativeImport {
+                                module: None,
+                                names,
+                                ..
+                            } => {
+                                let pkg = parent_module
+                                    .rsplit_once("::")
+                                    .map(|(p, _)| p)
+                                    .unwrap_or(parent_module.as_str());
+                                let pkg_dir = pkg.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                                let target_mod_id = find_module_by_dotted_name(
+                                    projection,
+                                    &format!("{pkg_dir}/__init__.py"),
+                                    parent_module,
+                                );
+                                if let Some(tgt_id) = target_mod_id {
+                                    for (name, alias) in names {
+                                        let local = alias.as_deref().unwrap_or(name.as_str());
+                                        import_targets_map.insert(
+                                            local.to_string(),
+                                            (tgt_id.clone(), name.clone()),
+                                        );
                                     }
                                 }
                             }
                             crate::types::ImportKind::ModuleImport {
                                 module: src_mod,
-                                alias: _,
+                                alias,
                             } => {
                                 if let Some(tgt_id) =
                                     find_module_by_dotted_name(projection, src_mod, parent_module)
                                 {
-                                    let short_name = src_mod.rsplit('.').next().unwrap_or(src_mod);
-                                    import_targets_map.insert(short_name.to_string(), tgt_id);
+                                    // `import numpy as np` binds `np`, not
+                                    // `numpy`; the short name is the fallback.
+                                    let local = alias.clone().unwrap_or_else(|| {
+                                        src_mod.rsplit('.').next().unwrap_or(src_mod).to_string()
+                                    });
+                                    // `mod.f()` resolves `f` inside `mod`; the
+                                    // empty second slot means "look up the name
+                                    // being called".
+                                    import_targets_map.insert(local, (tgt_id, String::new()));
                                 }
                             }
                             crate::types::ImportKind::StarImport { module: src_mod } => {
@@ -337,8 +520,10 @@ impl CodeGraph {
                                     if let Some(tgt_module) = projection.modules.get(&tgt_id) {
                                         if let Some(ref exports) = tgt_module.star_exports {
                                             for name in exports {
-                                                import_targets_map
-                                                    .insert(name.clone(), tgt_id.clone());
+                                                import_targets_map.insert(
+                                                    name.clone(),
+                                                    (tgt_id.clone(), name.clone()),
+                                                );
                                             }
                                         }
                                     }
@@ -368,6 +553,7 @@ impl CodeGraph {
             String,
             Vec<crate::types::ResolvedCall>,
             Vec<(String, String)>,
+            Vec<((String, String), crate::types::ReceiverEvidence)>,
         );
         let results: Vec<ResolveResult>;
 
@@ -398,7 +584,7 @@ impl CodeGraph {
                         let mut local = Vec::new();
                         let mut orch = ResolutionOrchestrator::with_config(import_cfg);
                         for (fid, calls, lkp) in &chunk_owned {
-                            let (rc, ep) = Self::resolve_one_function(
+                            let (rc, ep, ev) = Self::resolve_one_function(
                                 fid,
                                 calls,
                                 &lkp.0,
@@ -408,7 +594,7 @@ impl CodeGraph {
                                 import_graph,
                                 &mut orch,
                             );
-                            local.push((fid.clone(), rc, ep));
+                            local.push((fid.clone(), rc, ep, ev));
                         }
                         results_ref.lock().unwrap().extend(local);
                     });
@@ -420,7 +606,7 @@ impl CodeGraph {
             // Small work set — sequential (avoid thread overhead)
             let mut results_vec = Vec::new();
             for (fid, calls, lkp) in &all_work {
-                let (rc, ep) = Self::resolve_one_function(
+                let (rc, ep, ev) = Self::resolve_one_function(
                     fid,
                     calls,
                     &lkp.0,
@@ -430,13 +616,13 @@ impl CodeGraph {
                     import_graph_ref,
                     &mut orchestrator,
                 );
-                results_vec.push((fid.clone(), rc, ep));
+                results_vec.push((fid.clone(), rc, ep, ev));
             }
             results = results_vec;
         }
 
         // Phase C: Apply results to projection (sequential)
-        for (func_id, resolved, edge_pairs) in &results {
+        for (func_id, resolved, edge_pairs, evidence_pairs) in &results {
             if let Some(func_arc) = projection.functions.get(func_id.as_str()) {
                 if func_arc.resolved_calls != *resolved {
                     let mut updated = (**func_arc).clone();
@@ -458,6 +644,13 @@ impl CodeGraph {
                     .entry(target.clone())
                     .or_default()
                     .insert(source.clone());
+            }
+            // Receiver-typing provenance for the §2.4 weighting. Scoped runs
+            // re-resolve only the changed file's functions, so their entries
+            // override the previous tags for the same (callee, caller) pairs;
+            // pairs whose caller is gone vanish with the caller index.
+            for (key, ev) in evidence_pairs {
+                projection.call_evidence.insert(key.clone(), ev.clone());
             }
         }
     }

@@ -47,21 +47,21 @@ fn test_codegraph_callers_of_empty() {
 fn new_expression_calls_are_extracted_per_language() {
     // R2-3: `new Store()` produced zero targets in every language -- no
     // .scm captured new/object-creation expressions. Each leg indexes a
-    // minimal constructor call and asserts the resolved edge (same-file
-    // and cross-file names fall back to `external::`, which is the honest
-    // answer until constructor-target resolution exists).
+    // minimal constructor call and asserts the resolved edge: a class defined
+    // in the same file resolves to that class; an unknown name falls back to
+    // `external::`.
     let cases: &[(&str, &str, &str, &str)] = &[
         (
             "store.ts",
             "export class Store {}\nexport function makeStore() { return new Store(); }\n",
             "makeStore",
-            "external::Store",
+            "store.ts::Store",
         ),
         (
             "make.js",
             "class Store {}\nfunction makeStore() { return new Store(); }\n",
             "makeStore",
-            "external::Store",
+            "make.js::Store",
         ),
         (
             "A.java",
@@ -79,7 +79,7 @@ fn new_expression_calls_are_extracted_per_language() {
             "m.cpp",
             "class Store {};\nStore* m() { return new Store(); }\n",
             "m",
-            "external::Store",
+            "m.cpp::Store",
         ),
     ];
     for (file, src, caller_name, want) in cases {
@@ -173,4 +173,18 @@ fn reexport_cycle_terminates() {
             .any(|c| c.contains("mod_a") || c.contains("mod_b")),
         "cyclic re-export with no definition resolves nowhere, got {callees:?}"
     );
+}
+
+#[test]
+fn module_level_constants_are_extracted() {
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(
+        &graph,
+        "LIMIT = 3\nx: int = 2\nlower = 1\nclass K:\n    INSIDE = 1\n",
+        "m.py",
+    );
+    let snap = graph.snapshot();
+    let mut names: Vec<_> = snap.constants.values().map(|c| c.name.clone()).collect();
+    names.sort();
+    assert_eq!(names, vec!["LIMIT", "x"]);
 }

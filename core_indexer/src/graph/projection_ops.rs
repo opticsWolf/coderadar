@@ -58,13 +58,21 @@ impl CodeGraph {
 
         if module_ids.is_empty() {
             // Fallback: entity IDs start with file_path, find them by prefix
-            // scan. R2-4: ids are canonical (`.\x.py::f`) since F14, so the
+            // scan. R2-4: ids are canonical (`x/y.py::f`) since F14, so the
             // bare normalized prefix never matches -- try the canonical form
-            // too, or this whole branch silently keeps everything. Collect
-            // across ALL entity maps (functions/classes alone left
-            // constants, aliases, imports and the module itself behind).
+            // too, or this whole branch silently keeps everything. The legacy
+            // dot-prefixed spellings are included so a store written before
+            // the migration still converges on the first update. Collect
+            // across ALL entity maps (functions/classes alone left constants,
+            // aliases, imports and the module itself behind).
             let canon = super::module_resolution::canonical_file_form(file_path);
-            let prefixes = [format!("{}::", lookup), format!("{}::", canon)];
+            let legacy = lookup.trim_start_matches("./").trim_start_matches(".\\");
+            let prefixes = [
+                format!("{}::", lookup),
+                format!("{}::", canon),
+                format!("./{}::", legacy),
+                format!(".\\{}::", legacy.replace('/', "\\")),
+            ];
             let matches = |id: &str| prefixes.iter().any(|p| id.starts_with(p.as_str()));
             for (func_id, _) in projection.functions.iter() {
                 if matches(func_id) && !removed.contains(func_id) {
@@ -787,7 +795,9 @@ impl CodeGraph {
         );
 
         // Phase 3: Diff old vs new entities, only update what changed
-        let mut projection = (*self.snapshot()).clone();
+        let before = self.snapshot();
+        let epoch_before = self.epoch();
+        let mut projection = (*before).clone();
         let (new_count, removed_count) =
             self.apply_diff_update(&mut projection, &units, file_path, &lang);
         // Keep the dotted-name fast path in sync (cheap; module set is
@@ -836,7 +846,14 @@ impl CodeGraph {
 
         // Phase 5: (concepts already persisted in Phase 4b, before edges)
 
+        let diff = super::update_diff::diff_file(&before, &snap, file_path);
+
         Ok(UpdateOutcome {
+            changed_symbols: diff.symbols,
+            new_unresolved: diff.new_unresolved,
+            newly_resolved: diff.newly_resolved,
+            epoch_before,
+            epoch_after: self.epoch(),
             entities_added: new_count,
             entities_removed: removed_count,
             affected_files,

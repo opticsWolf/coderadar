@@ -135,6 +135,12 @@ pub struct ByteSpan {
     pub end: usize, // exclusive
 }
 
+impl Default for ByteSpan {
+    fn default() -> Self {
+        Self { start: 0, end: 0 }
+    }
+}
+
 impl ByteSpan {
     pub fn len(&self) -> usize {
         self.end.saturating_sub(self.start)
@@ -142,6 +148,26 @@ impl ByteSpan {
     pub fn is_empty(&self) -> bool {
         self.start == self.end
     }
+}
+
+/// 1-indexed line and 0-indexed byte column of `offset` in `source`
+/// (plan §5.4).
+///
+/// Spans are byte offsets; every consumer that wanted to show a position had
+/// to re-read the file and count newlines — error-prone on CRLF files and
+/// pointless when the caller already holds the bytes. Byte-based and
+/// clamped, so a stale or out-of-range span yields a position rather than a
+/// panic.
+pub fn line_col_at(source: &[u8], offset: usize) -> (usize, usize) {
+    let offset = offset.min(source.len());
+    let upto = &source[..offset];
+    let line = upto.iter().filter(|b| **b == b'\n').count() + 1;
+    let line_start = upto
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    (line, offset - line_start)
 }
 
 /// Slice a source string by a ByteSpan, verifying UTF-8 char boundaries.
@@ -790,6 +816,28 @@ pub struct UnresolvedRef {
     pub path: Vec<String>,
     pub line: usize,
     pub col: usize,
+    /// Byte range of the *name* itself: `save_state` in `self.save_state(x)`.
+    /// `line`/`col` point at the start of the whole call, which cannot be
+    /// used to rewrite an attribute call in place (plan §4.1). Empty for
+    /// snapshots written before the field existed — consumers must treat an
+    /// empty span as "no name position known", not as offset zero.
+    #[serde(default)]
+    pub name_span: ByteSpan,
+}
+
+/// Evidence for the type of a name inside one function: `m = Manager()`,
+/// `self.ser: Serializer = ...`, `x = make()`. Flow-insensitive; the resolver
+/// turns `rhs` / `annotation` into a class when it needs a receiver's type.
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub struct Binding {
+    /// `["m"]` for a local, `["self", "ser"]` for an instance attribute.
+    pub target: Vec<String>,
+    /// The call on the right-hand side (`Manager()`, `models.make()`).
+    pub rhs: Option<UnresolvedRef>,
+    /// A bare name / attribute chain on the right (`desk.manager`), as segments.
+    pub expr: Option<Vec<String>>,
+    /// Declared type, verbatim (`Optional[Manager]`).
+    pub annotation: Option<String>,
 }
 
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
@@ -901,7 +949,12 @@ pub struct Function {
     pub parameters: Vec<Parameter>,
     pub return_type: Option<String>,
     pub calls: Vec<UnresolvedRef>,
+    pub bindings: Vec<Binding>,
+    /// Function-valued references (callbacks, dispatch tables): `connect(self.f)`.
+    pub refs: Vec<UnresolvedRef>,
     pub resolved_calls: Vec<ResolvedCall>,
+    /// Entities `refs` resolved to (never `calls` edges: callers stay honest).
+    pub resolved_refs: Vec<EntityId>,
     pub decorators: Vec<String>,
     pub setter_of: Option<EntityId>,
     pub line: usize,
@@ -1038,6 +1091,9 @@ pub struct ExtractedFunction {
     pub parameters: Vec<Parameter>,
     pub return_type: Option<String>,
     pub calls: Vec<UnresolvedRef>,
+    pub bindings: Vec<Binding>,
+    /// Function-valued references (callbacks, dispatch tables): `connect(self.f)`.
+    pub refs: Vec<UnresolvedRef>,
     pub decorators: Vec<String>,
     pub docstring: Option<String>,
     pub kind: FunctionKind,
@@ -1070,6 +1126,30 @@ pub struct UpdateOutcome {
     pub parse_quality: ParseQuality,
     pub parse_errors: usize,
     pub elapsed_ms: f64,
+    /// Functions and classes of the file that were added, removed or changed,
+    /// diffed between the projection before and after the update.
+    pub changed_symbols: Vec<SymbolChange>,
+    /// Unresolved/external call targets `(function id, target)` that exist
+    /// after the update and did not before.
+    pub new_unresolved: Vec<(EntityId, String)>,
+    /// Targets that were unresolved/external before the update and no longer
+    /// are (their function may also have been removed).
+    pub newly_resolved: Vec<(EntityId, String)>,
+    /// `CodeGraph::epoch()` immediately before and after the commit.
+    pub epoch_before: u64,
+    pub epoch_after: u64,
+}
+
+/// One entity of the updated file that differs before vs after the update.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SymbolChange {
+    /// `"function"` or `"class"` (imports and constants carry no line).
+    pub kind: &'static str,
+    /// `"added"`, `"removed"`, `"signature_changed"` or `"body_changed"`.
+    pub operation: &'static str,
+    pub id: EntityId,
+    pub name: String,
+    pub line: usize,
 }
 
 // ── Extracted → projected construction ─────────────────────────────────────
@@ -1100,6 +1180,9 @@ impl Function {
             parameters: f.parameters.clone(),
             return_type: f.return_type.clone(),
             calls: f.calls.clone(),
+            bindings: f.bindings.clone(),
+            refs: f.refs.clone(),
+            resolved_refs: vec![],
             resolved_calls: vec![],
             decorators: f.decorators.clone(),
             setter_of: None,
@@ -1236,6 +1319,7 @@ pub enum Tag {
     Decorator,
     Docstring,
     Field,
+    Return, // Python: `return <call>` — return-type evidence
     Impl,   // Rust: impl_item — container, not an entity
     Export, // TS/JS: export statement
 }
@@ -1297,6 +1381,55 @@ pub struct AmbiguousBase {
     pub candidates: Vec<EntityId>,
 }
 
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub enum ReceiverEvidence {
+    /// Constructor binding in the same scope: `m = Manager()` (§1.2).
+    ConstructorLocal,
+    /// Parameter/attribute annotation: `def f(m: Manager)`.
+    Annotation,
+    /// The caller's own MRO answered: `self.method()` / `cls.method()`.
+    SelfAttr,
+    /// A resolved callee's return annotation / `return Ctor()` typed the
+    /// call-receiver: `make_desk().m()`.
+    Return,
+    /// pytest fixture by parameter name — weak inference, weighable (§2.4).
+    Fixture,
+    /// Sources disagreed mid-chain. Weak, like fixture.
+    Ambiguous,
+}
+
+impl ReceiverEvidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReceiverEvidence::ConstructorLocal => "ctor-local",
+            ReceiverEvidence::Annotation => "annotation",
+            ReceiverEvidence::SelfAttr => "self-attr",
+            ReceiverEvidence::Return => "return",
+            ReceiverEvidence::Fixture => "fixture",
+            ReceiverEvidence::Ambiguous => "ambiguous",
+        }
+    }
+
+    /// Weak evidence (plan §2.4): liveness resting on these alone is never
+    /// "live for sure" — a finding kept alive only by such edges scores
+    /// ×0.8.
+    pub fn is_weak(&self) -> bool {
+        matches!(
+            self,
+            ReceiverEvidence::Fixture | ReceiverEvidence::Ambiguous
+        )
+    }
+}
+
+/// What a receiver-typed call `path.name(...)` resolves to: a method on the
+/// receiver's class, or a construction when the attribute is class-valued
+/// (`self.provider(...)` where `provider = DefaultJSONProvider`).
+#[derive(Clone, Debug)]
+pub enum CallTarget {
+    Method(EntityId, ReceiverEvidence),
+    Ctor(EntityId),
+}
+
 #[derive(Clone)]
 pub struct ProjectedGraph {
     pub modules: HashMap<EntityId, Arc<Module>>,
@@ -1322,6 +1455,12 @@ pub struct ProjectedGraph {
     pub imports_by_importer: HashMap<EntityId, BTreeSet<EntityId>>,
     pub callers_by_callee: HashMap<EntityId, BTreeSet<EntityId>>,
     pub callees_by_caller: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Receiver-typing provenance (plan §1.2 step 3, §2.4): 	`(callee -> caller)`
+    /// → how the call edge was inferred. In-memory only — the ledger persists
+    /// `resolved_calls`, not inference provenance — so a cold start loses the
+    /// tags and the §2.4 weighting then degrades to "strong" (no ×0.8). Never
+    /// tagged edges (plain `name()` calls) count as strong.
+    pub call_evidence: HashMap<(EntityId, EntityId), ReceiverEvidence>,
     pub subclasses: HashMap<EntityId, BTreeSet<EntityId>>,
     pub overridden_by: HashMap<EntityId, BTreeSet<EntityId>>,
     /// Forward override index: override method → (single) base method it
@@ -1446,6 +1585,24 @@ mod tests {
     fn test_slice_span_out_of_bounds() {
         let span = ByteSpan { start: 0, end: 10 };
         assert!(slice_span("hi", span).is_err());
+    }
+
+    #[test]
+    fn line_col_at_counts_lines_and_columns_from_bytes() {
+        let src = b"one\ntwo\nthree";
+        assert_eq!(line_col_at(src, 0), (1, 0));
+        assert_eq!(line_col_at(src, 3), (1, 3)); // the newline itself
+        assert_eq!(line_col_at(src, 4), (2, 0));
+        assert_eq!(line_col_at(src, 8), (3, 0));
+        assert_eq!(line_col_at(src, 13), (3, 5)); // end of the last line
+                                                  // Out of range clamps to the end rather than panicking: a stale span
+                                                  // must still render a position.
+        assert_eq!(line_col_at(src, 999), (3, 5));
+        // CRLF: the `\r` is part of the previous line, so columns on the
+        // next line start after the pair.
+        let crlf = b"a\r\nb";
+        assert_eq!(line_col_at(crlf, 3), (2, 0));
+        assert_eq!(line_col_at(crlf, 2), (1, 2));
     }
 
     #[test]

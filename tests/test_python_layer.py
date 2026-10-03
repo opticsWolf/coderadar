@@ -793,33 +793,36 @@ class TestCodeRadarAPI:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestPestQueries:
-    """Verify all §7.2a example queries can be parsed (when Rust is built)."""
+    """The query examples must parse AND execute — `graph.query()` is a
+    generator, so calling it alone never ran the parser."""
 
     EXAMPLE_QUERIES: ClassVar[list[str]] = [
         'classes where inherits_from contains "BaseModel"',
-        'functions where line_count > 50',
-        'functions where caller_count == 0 and not name matches "^test_.*"',
-        'classes where method_count > 20 order by method_count desc limit 25',
-        'functions where module.name == "app.services" and is_async == true',
-        'classes where has_method("__init__") == true and has_method("__eq__") == false',
-        'classes select module.name, count(*) as class_count, avg(method_count) as avg_methods group by module.name order by class_count desc limit 20',
-        'calls where unresolved_reason == "TypeInferenceRequired"',
+        'methods where is_async == true',
+        'functions where line_count > 50 order by line_count desc limit 10',
+        'functions where caller_count == 0 and not name matches "^test_"',
+        'functions where name starts_with "test_"',
         'functions where decorators contains "deprecated"',
-        'imports where kind == "StarImport"',
-        'functions where kind == "Property" and has_setter == false',
-        'functions where overrides_of("BaseService.handle") == true',
+        'functions where kind == "property"',
+        'functions where is_override == true',
+        'classes where is_abstract == true',
+        'classes where has_method("__init__") == true and has_method("__eq__") == false',
+        'classes select is_abstract, count(*) as n group by is_abstract order by n desc limit 20',
+        'constants where name == "VERSION"',
+        'imports where import_kind == "from"',
+        'calls where target_kind == "external"',
+        'entities where name contains "Session"',
+        'modules where path ends_with "app.py"',
     ]
 
     @pytest.mark.parametrize("query", EXAMPLE_QUERIES)
     def test_query_parses(self, query):
-        """Each example query should parse without error."""
+        """Each example query should parse and execute without error."""
         try:
             import coderadar
             from coderadar._core import query_graph  # noqa: F401 - availability probe
-            # If Rust extension is built, try parsing
             graph = coderadar.CodeGraph()
-            graph.query(query)
-            # Just verifying no exception
+            list(graph.query(query))
         except ImportError:
             pytest.skip("Rust extension not built")
         except Exception as e:  # noqa: BLE001 - test must fail with message, not error
@@ -882,7 +885,10 @@ class TestQueryExecution:
 
     def test_select_projects_and_the_predicate_field_may_be_absent(self, indexed):
         rows = list(indexed.query('functions select name where name == "gamma"'))
-        assert rows and all(set(r) == {"name"} for r in rows), rows
+        # Identity fields ride along whatever `select` narrows to (§3.3).
+        assert rows and all(
+            set(r) == {"name", "id", "file_path", "kind", "parent_id"} for r in rows
+        ), rows
 
     def test_limit_stops_the_scan_without_changing_the_shape(self, indexed):
         assert len(list(indexed.query("functions limit 2"))) == 2
@@ -896,7 +902,7 @@ class TestQueryExecution:
     def test_a_derived_call_predicate_still_sees_its_fields(self, indexed):
         """`contains(...)` reads fields the predicate never names, so the
         executor has to fall back to building all of them."""
-        rows = list(indexed.query('imports where kind contains "Module"'))
+        rows = list(indexed.query('imports where import_kind == "module"'))
         assert rows, "the os import should match"
 
     def test_unmatched_predicate_returns_no_rows(self, indexed):

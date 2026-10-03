@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "coderadar-rs"
-version = "0.9.4"
+version = "0.10.0"
 description = "Live semantic graph of your codebase — incremental, queryable, LLM-writable"
 
 # The architecture is defined by spec v3.3 (see specs/CodeRadar v3.3 Consolidated.md).
@@ -46,6 +46,7 @@ dev = [
     "hypothesis>=6.0",
     "mypy>=1.0",
     "ruff==0.16.5",
+    "jedi>=0.19",
 ]
 visualizers = [
     "graphviz>=0.20",
@@ -71,6 +72,7 @@ line-length = 100
 exclude = [
     "tests/fixtures/**",
     "tests/cr_edit_tests/r2proj/**",
+    "tests/precision/fixtures/**",
 ]
 
 [tool.pytest.ini_options]
@@ -78,4 +80,9 @@ testpaths = ["tests"]
 pythonpath = ["py_agent/src"]
 markers = [
     "slow: performance / benchmark tests that generate synthetic projects",
+]
+
+[dependency-groups]
+dev = [
+    "pytest-xdist>=3.8.0",
 ]
