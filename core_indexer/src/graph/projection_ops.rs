@@ -787,7 +787,9 @@ impl CodeGraph {
         );
 
         // Phase 3: Diff old vs new entities, only update what changed
-        let mut projection = (*self.snapshot()).clone();
+        let before = self.snapshot();
+        let epoch_before = self.epoch();
+        let mut projection = (*before).clone();
         let (new_count, removed_count) =
             self.apply_diff_update(&mut projection, &units, file_path, &lang);
         // Keep the dotted-name fast path in sync (cheap; module set is
@@ -836,7 +838,14 @@ impl CodeGraph {
 
         // Phase 5: (concepts already persisted in Phase 4b, before edges)
 
+        let diff = super::update_diff::diff_file(&before, &snap, file_path);
+
         Ok(UpdateOutcome {
+            changed_symbols: diff.symbols,
+            new_unresolved: diff.new_unresolved,
+            newly_resolved: diff.newly_resolved,
+            epoch_before,
+            epoch_after: self.epoch(),
             entities_added: new_count,
             entities_removed: removed_count,
             affected_files,

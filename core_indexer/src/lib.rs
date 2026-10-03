@@ -817,6 +817,13 @@ struct AnalyzeOutcome {
     panicked_workers: usize,
 }
 
+/// Index a project from source and make it the loaded graph.
+///
+/// Walks `root` (honouring built-in excludes, `.gitignore`, `[project] exclude`
+/// and the one-shot `exclude` patterns), parses and resolves every file with
+/// the GIL released, and returns `{files_indexed, total_entities, failures,
+/// panicked_workers}`. `create_store=True` also creates `.coderadar/store/`;
+/// only `coderadar init` should pass it.
 #[pyfunction]
 #[pyo3(signature = (root, create_store = false, exclude = None))]
 fn analyze(
@@ -1277,6 +1284,12 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
 
 // ── query_graph() ──────────────────────────────────────────────────────────
 
+/// Run a Pest query against the loaded graph and return a list of row dicts.
+///
+/// Shape: `<entity> [select ...] [where ...] [group by ...] [order by ...]
+/// [limit N]`, with entity one of `modules | classes | functions | imports |
+/// calls | fields`, e.g. `functions where line_count > 100 order by line_count
+/// desc limit 10`. Raises `ValueError` on a parse error.
 #[pyfunction]
 fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {
     with_graph(|_graph, snap| {
@@ -1294,6 +1307,9 @@ mod git_bindings {
     use pyo3::prelude::*;
     use pyo3::types::PyDict;
 
+    /// `{"clean": bool}` — `git status` semantics: modified and untracked
+    /// files make the tree dirty, ignored files never do. Reports clean when
+    /// git cannot tell.
     #[pyfunction]
     pub fn git_worktree_clean(py: Python<'_>, repo_path: &str) -> PyResult<PyObject> {
         let clean = crate::fs::git::is_worktree_clean(repo_path).unwrap_or(true);
@@ -1302,6 +1318,8 @@ mod git_bindings {
         Ok(dict.into())
     }
 
+    /// Blame for one file as run-length rows `{line, count, author, commit}`:
+    /// `count` consecutive lines starting at `line` share an author and commit.
     #[pyfunction]
     pub fn git_blame(py: Python<'_>, repo_path: &str, file_path: &str) -> PyResult<Vec<PyObject>> {
         match crate::fs::git::blame_file(repo_path, file_path) {
@@ -1326,6 +1344,9 @@ mod git_bindings {
         }
     }
 
+    /// Repo-relative paths changed between two committed revisions (any
+    /// rev syntax: HEAD~1, branch, tag, oid). `new_oid=None` means HEAD.
+    /// Raises `RuntimeError` on an unknown revision.
     #[pyfunction]
     pub fn git_changed_files(
         _py: Python<'_>,
@@ -1347,6 +1368,15 @@ mod git_bindings {
 
 // ── update_file() ──────────────────────────────────────────────────────────
 
+/// Re-index one file after it changed (`content=None` reads it from disk;
+/// otherwise `content` is parsed instead, so an unsaved buffer can be indexed).
+///
+/// Returns `{fully_applied, entities_added, entities_removed, affected_files,
+/// parse_quality, parse_errors, elapsed_ms, changed_symbols, new_unresolved,
+/// newly_resolved, epoch_before, epoch_after}`. `changed_symbols` lists the
+/// functions and classes of this file that were added, removed or changed
+/// (`signature_changed` / `body_changed`); `new_unresolved` / `newly_resolved`
+/// list `{entity_id, target}` call targets that appeared or went away.
 #[pyfunction]
 fn update_file(
     py: Python<'_>,
@@ -1383,6 +1413,35 @@ fn update_file(
     dict.set_item("parse_quality", quality)?;
     dict.set_item("parse_errors", outcome.parse_errors)?;
     dict.set_item("elapsed_ms", outcome.elapsed_ms)?;
+    let symbols: Vec<PyObject> = outcome
+        .changed_symbols
+        .iter()
+        .map(|s| {
+            let d = PyDict::new(py);
+            let _ = d.set_item("kind", s.kind);
+            let _ = d.set_item("operation", s.operation);
+            let _ = d.set_item("id", &s.id);
+            let _ = d.set_item("name", &s.name);
+            let _ = d.set_item("line", s.line);
+            d.into()
+        })
+        .collect();
+    dict.set_item("changed_symbols", symbols)?;
+    let refs = |pairs: &[(String, String)]| -> Vec<PyObject> {
+        pairs
+            .iter()
+            .map(|(id, target)| {
+                let d = PyDict::new(py);
+                let _ = d.set_item("entity_id", id);
+                let _ = d.set_item("target", target);
+                d.into()
+            })
+            .collect()
+    };
+    dict.set_item("new_unresolved", refs(&outcome.new_unresolved))?;
+    dict.set_item("newly_resolved", refs(&outcome.newly_resolved))?;
+    dict.set_item("epoch_before", outcome.epoch_before)?;
+    dict.set_item("epoch_after", outcome.epoch_after)?;
     Ok(dict.into())
 }
 
@@ -1466,6 +1525,10 @@ fn canonical_lookup_id(entity_id: &str) -> String {
     }
 }
 
+/// Plan replacing a function/method body. Returns a mutation-plan dict
+/// (`id`, `tool`, `edits`, `diff_preview`, `unverified_sites`, ...). Nothing is
+/// written until the plan goes through `apply_mutation`; `expected_hash`
+/// rejects the plan if the body changed since it was read.
 #[pyfunction]
 fn plan_body_replacement(
     entity_id: &str,
@@ -1490,6 +1553,10 @@ fn plan_body_replacement(
     })
 }
 
+/// Plan changing a function's signature and updating its call sites
+/// (`call_site_values` supplies values for new parameters; `inject_defaults`
+/// fills them from defaults). Returns a mutation-plan dict; nothing is written
+/// until `apply_mutation`.
 #[pyfunction]
 fn plan_signature_update(
     entity_id: &str,
@@ -1516,6 +1583,10 @@ fn plan_signature_update(
     })
 }
 
+/// Plan renaming a symbol and its resolved references. Call sites the resolver
+/// cannot prove are returned in `unverified_sites` for manual review instead
+/// of being edited. Returns a mutation-plan dict; nothing is written until
+/// `apply_mutation`.
 #[pyfunction]
 fn plan_rename(
     entity_id: &str,
@@ -1540,6 +1611,8 @@ fn plan_rename(
     })
 }
 
+/// Plan inserting `code` after `anchor` in `target_file`. Returns a
+/// mutation-plan dict; nothing is written until `apply_mutation`.
 #[pyfunction]
 fn plan_create_entity(
     target_file: &str,
@@ -1557,6 +1630,9 @@ fn plan_create_entity(
     })
 }
 
+/// Apply a mutation plan (the JSON form of a plan dict) atomically: every
+/// edit's `expected_hash` is checked first, and a write that leaves a file
+/// unparseable is rolled back.
 #[pyfunction]
 fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
@@ -2361,6 +2437,10 @@ fn normalize_edge_kinds(edge_kinds: &[String]) -> Vec<String> {
     v
 }
 
+/// Breadth-first walk from `start_id` over `edge_kinds` (empty = all kinds:
+/// calls, imports, extends, overrides). `direction` is `in`/`upstream`,
+/// `out`/`downstream` or `both`; `as_of` reads the graph as it was at a past
+/// timestamp. Returns one dict per reached node.
 #[pyfunction]
 #[pyo3(signature = (start_id, max_depth, edge_kinds, direction, as_of=None))]
 fn traverse(
@@ -2533,12 +2613,12 @@ fn subgraph_bfs(
     out
 }
 
-/// Count unresolved outgoing targets across the traversal from `start_id`.
-/// Mirrors `traverse` (same BFS, direction/kinds normalization) but returns
-/// the number of targets the walk could NOT follow — surfaces silent
 /// Names behind the `traverse_unresolved` count (R2-12): the unresolved
 /// call-target spellings for one function, so `diagnose --unresolved`
 /// shows WHICH targets the graph cannot follow.
+///
+/// Returns a sorted, de-duplicated list; `[]` when the entity is unknown or
+/// every call resolved.
 #[pyfunction]
 fn unresolved_targets(entity_id: &str) -> PyResult<Vec<String>> {
     with_graph(|_graph, snap| {
@@ -2548,16 +2628,23 @@ fn unresolved_targets(entity_id: &str) -> PyResult<Vec<String>> {
     })
 }
 
+/// Count unresolved outgoing targets across the traversal from `start_id`.
+/// Mirrors `traverse` (same BFS, direction/kinds normalization) but returns
+/// the number of targets the walk could NOT follow — surfaces silent
 /// truncation (plan 2.3) without changing the `traverse` contract.
+///
+/// `edge_kinds=None` (or an empty list) means every kind, as for `traverse`.
+/// `direction` is `in`/`upstream`, `out`/`downstream` or `both`.
 #[pyfunction]
-#[pyo3(signature = (start_id, max_depth, edge_kinds, direction))]
+#[pyo3(signature = (start_id, max_depth, edge_kinds=None, direction="out"))]
 fn traverse_unresolved(
     py: Python<'_>,
     start_id: &str,
     max_depth: usize,
-    edge_kinds: Vec<String>,
+    edge_kinds: Option<Vec<String>>,
     direction: &str,
 ) -> PyResult<usize> {
+    let edge_kinds = edge_kinds.unwrap_or_default();
     let (up, down) = match direction.trim().to_ascii_lowercase().as_str() {
         "in" | "upstream" => (true, false),
         "out" | "downstream" => (false, true),
@@ -2599,7 +2686,13 @@ fn traverse_unresolved(
     })
 }
 
-/// Get graph statistics.
+/// Entity counts plus provenance of the loaded graph.
+///
+/// `revision` is the **ledger** revision the graph was materialized from. It is
+/// `None` for an `analyze()` without a store (`create_store=False`): such a graph
+/// is fresh from source and has no ledger, which says nothing about git.
+/// `indexed_at` is Unix seconds of the last commit (0.0 = never) and
+/// `indexed_root` the directory the graph was built from.
 #[pyfunction]
 fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
     with_graph(|graph, snap| {
@@ -3513,15 +3606,16 @@ fn module_children(py: Python<'_>, module_id: &str) -> PyResult<PyObject> {
     })
 }
 
-/// Set a module's `__all__` star-export names list.
+/// Drop every stored embedding for the entities of one file (called before
+/// re-embedding it). Returns `{"ok": True}`; raises `RuntimeError` when no
+/// graph is loaded.
 #[pyfunction]
-fn clear_embeddings_for_file(file_path: &str) -> PyResult<PyObject> {
+fn clear_embeddings_for_file(py: Python<'_>, file_path: &str) -> PyResult<PyObject> {
     let mut guard = GLOBAL_GRAPH.write();
     let graph = guard
         .as_mut()
         .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("No graph loaded"))?;
     graph.clear_embeddings_for_file(file_path);
-    let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
     dict.set_item("ok", true)?;
     Ok(dict.into())

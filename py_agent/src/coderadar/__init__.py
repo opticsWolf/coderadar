@@ -455,15 +455,22 @@ class CodeGraph:
             if isinstance(result, dict):
                 return UpdateReport(
                     affected_files=result.get("affected_files") or [file_path],
-                    changed_symbols=[],
-                    new_unresolved_references=[],
-                    newly_resolved_references=[],
+                    changed_symbols=[
+                        SymbolChange(
+                            kind=s["kind"], operation=s["operation"],
+                            qualified_name=s["id"], file=s["id"].split("::")[0],
+                            line=int(s["line"]),
+                        )
+                        for s in result.get("changed_symbols", [])
+                    ],
+                    new_unresolved_references=list(result.get("new_unresolved", [])),
+                    newly_resolved_references=list(result.get("newly_resolved", [])),
                     elapsed_ms=float(result.get("elapsed_ms", 0.0)),
                     parse_quality=str(result.get("parse_quality", "Clean")),
                     parse_errors=int(result.get("parse_errors", 0)),
                     fully_applied=bool(result.get("fully_applied", True)),
-                    epoch_before=0,
-                    epoch_after=1,
+                    epoch_before=int(result.get("epoch_before", 0)),
+                    epoch_after=int(result.get("epoch_after", 0)),
                 )
         except ImportError:
             # Nothing parsed anything, so "Clean" and fully_applied=True were
@@ -474,14 +481,14 @@ class CodeGraph:
                 elapsed_ms=0.0,
                 parse_quality="Error: the coderadar._core extension is not built",
                 parse_errors=1,
-                fully_applied=False, epoch_before=0, epoch_after=1,
+                fully_applied=False, epoch_before=0, epoch_after=0,
             )
         except RuntimeError as e:
             return UpdateReport(
                 affected_files=[file_path], changed_symbols=[],
                 new_unresolved_references=[], newly_resolved_references=[],
                 elapsed_ms=0.0, parse_quality=f"Error: {e}", parse_errors=1,
-                fully_applied=False, epoch_before=0, epoch_after=1,
+                fully_applied=False, epoch_before=0, epoch_after=0,
             )
 
         # Fallback (unreachable in practice)
@@ -489,7 +496,7 @@ class CodeGraph:
             affected_files=[file_path], changed_symbols=[],
             new_unresolved_references=[], newly_resolved_references=[],
             elapsed_ms=0.0, parse_quality="Clean", parse_errors=0,
-            fully_applied=False, epoch_before=0, epoch_after=1,
+            fully_applied=False, epoch_before=0, epoch_after=0,
         )
 
     def remove_file(self, file_path: str) -> int:

@@ -1070,6 +1070,30 @@ pub struct UpdateOutcome {
     pub parse_quality: ParseQuality,
     pub parse_errors: usize,
     pub elapsed_ms: f64,
+    /// Functions and classes of the file that were added, removed or changed,
+    /// diffed between the projection before and after the update.
+    pub changed_symbols: Vec<SymbolChange>,
+    /// Unresolved/external call targets `(function id, target)` that exist
+    /// after the update and did not before.
+    pub new_unresolved: Vec<(EntityId, String)>,
+    /// Targets that were unresolved/external before the update and no longer
+    /// are (their function may also have been removed).
+    pub newly_resolved: Vec<(EntityId, String)>,
+    /// `CodeGraph::epoch()` immediately before and after the commit.
+    pub epoch_before: u64,
+    pub epoch_after: u64,
+}
+
+/// One entity of the updated file that differs before vs after the update.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SymbolChange {
+    /// `"function"` or `"class"` (imports and constants carry no line).
+    pub kind: &'static str,
+    /// `"added"`, `"removed"`, `"signature_changed"` or `"body_changed"`.
+    pub operation: &'static str,
+    pub id: EntityId,
+    pub name: String,
+    pub line: usize,
 }
 
 // ── Extracted → projected construction ─────────────────────────────────────
