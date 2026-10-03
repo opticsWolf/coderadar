@@ -2044,8 +2044,11 @@ def _find_clones(
             f"{g['confidence_tier']}"
         )
         for inst in g["instances"]:
+            # Lines first: a reviewer reads line numbers, not byte offsets
+            # (plan §5.4). The span stays for anything that slices.
             lines.append(
-                f"- `{inst['entity_id']}` ({inst['file']} @ bytes "
+                f"- `{inst['entity_id']}` ({inst['file']} @ lines "
+                f"{inst['start_line']}-{inst['end_line']}, bytes "
                 f"{inst['span_start']}..{inst['span_end']})"
             )
         lines.append("")

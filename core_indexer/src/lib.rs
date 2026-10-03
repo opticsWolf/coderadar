@@ -1794,15 +1794,29 @@ fn plan_to_dict(py: Python<'_>, plan: &mutation::MutationPlan) -> PyResult<PyObj
         })
         .collect();
     dict.set_item("unverified_sites", unverified)?;
-    // Serialize edits as list of {file, span_start, span_end, replacement, expected_hash}
+    // Serialize edits as list of {file, span_start, span_end, line, col,
+    // end_line, end_col, replacement, expected_hash}. The line/column
+    // companions exist because byte offsets are unreadable in a review
+    // (plan §5.4) — consumers had to re-read the file and count newlines.
+    let mut edit_sources: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
     let edits: Vec<PyObject> = plan
         .edits
         .iter()
         .map(|e| {
+            let source = edit_sources.entry(e.file.clone()).or_insert_with(|| {
+                crate::graph::module_resolution::read_project_file(&e.file).into_bytes()
+            });
+            let (line, col) = crate::types::line_col_at(source, e.span.start);
+            let (end_line, end_col) = crate::types::line_col_at(source, e.span.end);
             let ed = PyDict::new(py);
             let _ = ed.set_item("file", &e.file);
             let _ = ed.set_item("span_start", e.span.start);
             let _ = ed.set_item("span_end", e.span.end);
+            let _ = ed.set_item("line", line);
+            let _ = ed.set_item("col", col);
+            let _ = ed.set_item("end_line", end_line);
+            let _ = ed.set_item("end_col", end_col);
             let _ = ed.set_item("replacement", &e.replacement);
             let _ = ed.set_item("expected_hash", &e.expected_hash);
             ed.into()
@@ -3085,15 +3099,29 @@ fn find_clones(
             dict.set_item("similarity", g.similarity)?;
             dict.set_item("confidence_tier", g.confidence_tier.as_str())?;
 
+            // One read per file: instances repeat files, and the source is
+            // only needed to turn the byte span into a line range (§5.4).
+            let mut sources: std::collections::HashMap<String, Vec<u8>> =
+                std::collections::HashMap::new();
             let instances: Vec<PyObject> = g
                 .instances
                 .iter()
                 .map(|inst| {
+                    let source = sources.entry(inst.file.clone()).or_insert_with(|| {
+                        crate::graph::module_resolution::read_project_file(&inst.file).into_bytes()
+                    });
+                    let (start_line, start_col) =
+                        crate::types::line_col_at(source, inst.span.start);
+                    let (end_line, end_col) = crate::types::line_col_at(source, inst.span.end);
                     let d = PyDict::new(py);
                     let _ = d.set_item("entity_id", &inst.entity_id);
                     let _ = d.set_item("file", &inst.file);
                     let _ = d.set_item("span_start", inst.span.start);
                     let _ = d.set_item("span_end", inst.span.end);
+                    let _ = d.set_item("start_line", start_line);
+                    let _ = d.set_item("start_col", start_col);
+                    let _ = d.set_item("end_line", end_line);
+                    let _ = d.set_item("end_col", end_col);
                     d.into()
                 })
                 .collect();

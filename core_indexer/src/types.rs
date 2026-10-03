@@ -150,6 +150,26 @@ impl ByteSpan {
     }
 }
 
+/// 1-indexed line and 0-indexed byte column of `offset` in `source`
+/// (plan §5.4).
+///
+/// Spans are byte offsets; every consumer that wanted to show a position had
+/// to re-read the file and count newlines — error-prone on CRLF files and
+/// pointless when the caller already holds the bytes. Byte-based and
+/// clamped, so a stale or out-of-range span yields a position rather than a
+/// panic.
+pub fn line_col_at(source: &[u8], offset: usize) -> (usize, usize) {
+    let offset = offset.min(source.len());
+    let upto = &source[..offset];
+    let line = upto.iter().filter(|b| **b == b'\n').count() + 1;
+    let line_start = upto
+        .iter()
+        .rposition(|b| *b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    (line, offset - line_start)
+}
+
 /// Slice a source string by a ByteSpan, verifying UTF-8 char boundaries.
 pub fn slice_span<'a>(source: &'a str, span: ByteSpan) -> Result<&'a str, SpanError> {
     if span.start > source.len() || span.end > source.len() {
@@ -1565,6 +1585,24 @@ mod tests {
     fn test_slice_span_out_of_bounds() {
         let span = ByteSpan { start: 0, end: 10 };
         assert!(slice_span("hi", span).is_err());
+    }
+
+    #[test]
+    fn line_col_at_counts_lines_and_columns_from_bytes() {
+        let src = b"one\ntwo\nthree";
+        assert_eq!(line_col_at(src, 0), (1, 0));
+        assert_eq!(line_col_at(src, 3), (1, 3)); // the newline itself
+        assert_eq!(line_col_at(src, 4), (2, 0));
+        assert_eq!(line_col_at(src, 8), (3, 0));
+        assert_eq!(line_col_at(src, 13), (3, 5)); // end of the last line
+                                                  // Out of range clamps to the end rather than panicking: a stale span
+                                                  // must still render a position.
+        assert_eq!(line_col_at(src, 999), (3, 5));
+        // CRLF: the `\r` is part of the previous line, so columns on the
+        // next line start after the pair.
+        let crlf = b"a\r\nb";
+        assert_eq!(line_col_at(crlf, 3), (2, 0));
+        assert_eq!(line_col_at(crlf, 2), (1, 2));
     }
 
     #[test]

@@ -336,10 +336,21 @@ class TestMethodCallRename:
         # The edit targets exactly the name inside `self.save(1)`.
         source = (hierarchy / "app.py").read_bytes()
         name_offset = source.index(b"self.save(1)") + len(b"self.")
-        assert any(
-            edit.span_start == name_offset and edit.replacement == "store"
-            for edit in plan.edits
-        ), plan.edits
+        target = next(
+            (e for e in plan.edits if e.span_start == name_offset), None
+        )
+        assert target is not None, plan.edits
+        assert target.replacement == "store"
+
+        # Plan 5.4: the same span in the form a reviewer reads — the byte
+        # offset alone required re-reading the file and counting newlines.
+        line_no = source[:name_offset].count(b"\n") + 1
+        col = name_offset - (source.rfind(b"\n", 0, name_offset) + 1)
+        assert target.line == line_no, (target, line_no)
+        assert target.col == col, (target, col)
+        assert target.end_line == line_no
+        assert target.end_col == col + len("save")
+        assert "save" in source[target.span_start:target.span_end].decode()
 
     def test_renaming_a_base_renames_the_override_family(self, hierarchy):
         from coderadar.mcp.server import _rename

@@ -132,12 +132,21 @@ class MutationPlan:
 
 @dataclass(frozen=True)
 class MutationEdit:
-    """A single byte-accurate edit to a file."""
+    """A single byte-accurate edit to a file.
+
+    ``line``/``col`` (1-indexed line, 0-indexed byte column) and their
+    ``end_*`` companions describe the same span as ``span_start``/``span_end``
+    in the form a reviewer reads (plan §5.4).
+    """
     file: str
     replacement: str
     expected_hash: str = ""
     span_start: int | None = None
     span_end: int | None = None
+    line: int | None = None
+    col: int | None = None
+    end_line: int | None = None
+    end_col: int | None = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +196,10 @@ def _parse_plan_dict(result: dict, tool: str) -> MutationPlan:
             expected_hash=e.get("expected_hash", ""),
             span_start=e.get("span_start"),
             span_end=e.get("span_end"),
+            line=e.get("line"),
+            col=e.get("col"),
+            end_line=e.get("end_line"),
+            end_col=e.get("end_col"),
         ))
     return MutationPlan(
         id=result.get("id", ""),
