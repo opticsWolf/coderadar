@@ -210,8 +210,9 @@ def _ensure_graph(path: str = "."):
 def main():
     """CodeRadar — live semantic graph of your codebase.
 
-    Maintains an incrementally updatable graph of code structure,
-    enabling LLMs and developers to query, visualize, and safely rewrite code.
+    Indexes symbols and call edges incrementally so agents and developers can
+    query, explore and safely rewrite code. `coderadar mcp serve` exposes the
+    same graph to MCP clients.
     """
 
 
@@ -403,7 +404,7 @@ def update(file: str, content: str | None):
 @click.option("--format", "fmt", type=click.Choice(["table", "json"]),
               default="table", help="Output format (json for machine readers).")
 def query(query_string: str, fmt: str):
-    """Execute a Pest query; pretty-print results."""
+    """Run a graph query (same language as MCP codegraph_query; see docs/query-language.md)."""
     graph = _ensure_graph()
     results = list(graph.query(query_string))
 
@@ -446,11 +447,15 @@ def query(query_string: str, fmt: str):
 @main.command()
 @click.argument("start_id")
 @click.option("--depth", default=3, help="Maximum traversal depth")
-@click.option("--edges", default="CALLS", help="Edge types (comma-separated)")
+@click.option("--edges", default="calls",
+              help="Edge kinds, comma-separated: calls, imports, inherits (alias extends), "
+              "overrides")
 @click.option("--direction", default="both",
-              type=click.Choice(["in", "out", "both"]))
+              type=click.Choice(["upstream", "downstream", "both", "in", "out"]),
+              help="upstream = callers, downstream = callees (in/out are aliases)")
 def traverse(start_id: str, depth: int, edges: str, direction: str):
-    """Traverse the graph from start_id via Macrame."""
+    """Traverse the graph from START_ID (MCP: codegraph_traverse)."""
+    direction = {"upstream": "in", "downstream": "out"}.get(direction, direction)
     from .query import MacrameQuery
 
     graph = _ensure_graph()
@@ -484,7 +489,7 @@ def traverse(start_id: str, depth: int, edges: str, direction: str):
 @main.command()
 @click.argument("entity_id")
 def callers(entity_id: str):
-    """List callers of an entity."""
+    """List direct callers of ENTITY_ID (transitive: MCP codegraph_affected)."""
     from .query import MacrameQuery
 
     graph = _ensure_graph()
@@ -517,7 +522,7 @@ def callers(entity_id: str):
 @main.command()
 @click.argument("entity_id")
 def callees(entity_id: str):
-    """List callees called by an entity."""
+    """List direct callees of ENTITY_ID."""
     from .query import MacrameQuery
 
     graph = _ensure_graph()
@@ -595,7 +600,7 @@ def shell():
 @click.option("--root", default=None,
               help="Project root used with analyze (entity ids are path-keyed)")
 def load_snapshot(snapshot: str, root: str | None):
-    """Cold-start the in-memory graph from a Macrame ledger file (v0.8 P1)."""
+    """Cold-start the in-memory graph from a Macrame ledger file."""
     import coderadar
     try:
         graph = coderadar.load(snapshot, root)
@@ -613,11 +618,9 @@ def load_snapshot(snapshot: str, root: str | None):
 @click.option("--exclude", "excludes", multiple=True,
               help="One-shot exclusion pattern (gitignore syntax), repeatable.")
 def rebuild(path: str, full: bool, excludes: tuple):
-    """Re-index the project from scratch.
-
-    This printed "Rebuilding..." and returned — a command that reported
-    success for work it never started.
-    """
+    """Re-index the project from scratch."""
+    # This used to print "Rebuilding..." and return — success reported for
+    # work it never started.
     import coderadar
 
     _activate(path)
@@ -639,7 +642,7 @@ def rebuild(path: str, full: bool, excludes: tuple):
               help="Delete the store file outright instead of repairing "
               "(last resort: unreadable rows cannot be retired, only dropped).")
 def store_repair(db_path: str, delete: bool):
-    """Report load-blocking rows and retire what is safely retireable (F6).
+    """Report load-blocking rows and retire what is safely retireable.
 
     Prints live v1-leftover and unreadable counts, retires the v1 rows so
     the next cold load succeeds — an instant fix without reindexing.
@@ -916,11 +919,9 @@ def _render(viz_type, fmt, arg_list, graph,
 @click.option("--unresolved", is_flag=True, help="Show all unresolved references")
 @click.option("--low-confidence", is_flag=True, help="List edges below min_confidence")
 def diagnose(unresolved: bool, low_confidence: bool):
-    """Show unresolved references or ambiguous edges.
-
-    Both flags used to print a header and no rows, which reads as a clean
-    bill of health rather than a report that was never written.
-    """
+    """Show unresolved references or ambiguous edges."""
+    # Both flags used to print a header and no rows, which reads as a clean
+    # bill of health rather than a report that was never written.
     from coderadar._core import index_edge_stats, search_entities
 
     if not unresolved and not low_confidence:
@@ -967,12 +968,9 @@ def diagnose(unresolved: bool, low_confidence: bool):
 
 @main.command()
 def status():
-    """Report what is indexed here, and how stale it is.
-
-    This printed "CodeRadar is running" unconditionally — a health check
-    that could not fail, and that said nothing about the project it was run
-    in.
-    """
+    """Report what is indexed here, and how stale it is."""
+    # This used to print "CodeRadar is running" unconditionally — a health
+    # check that could not fail.
     import time
     from pathlib import Path
 
@@ -1020,10 +1018,11 @@ def mcp():
 def serve(project_path: str | None):
     """Start the CodeRadar MCP server over stdio.
 
-    Connect an MCP client (Claude Code, Cursor, etc.) to this server to get
-    code intelligence over the indexed project — 19 tools covering search,
-    exploration, structural and temporal queries, code smells, and the
-    plan/review/apply mutation pipeline.
+    Connect an MCP client (Claude Code, Cursor, etc.) to get the
+    codegraph_* / coderadar_* tools over the indexed project: explore,
+    search, structural and temporal queries, smells, dead code, clones, and
+    the dry-run/apply mutation pipeline. The server's instructions tell the
+    agent how to use them.
 
     With no --path, the project root is found by walking up from the cwd
     looking for a .coderadar marker, and the client's declared roots are

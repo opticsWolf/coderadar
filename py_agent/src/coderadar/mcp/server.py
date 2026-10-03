@@ -50,91 +50,55 @@ POINTER_HEADER = "**Not shown above — explore these names for their source**"
 
 SERVER_INSTRUCTIONS = """# CodeRadar — live semantic graph of your codebase
 
-CodeRadar is a pre-computed knowledge graph of every symbol, edge, and file
-in the workspace — cached intelligence for thousands of parse/trace decisions
-you'd otherwise re-derive by reading files. Indexes 18 languages (Python,
-TypeScript, JavaScript, Rust, Go, Java, C, C++, Ruby, PHP, C#, Kotlin, Swift,
-Scala, Lua, Elixir, Zig, R); reads are sub-millisecond. Reach for it BEFORE
-and while writing or editing code — not just for questions: one call returns
-the verbatim source PLUS who calls it and what it affects, so you edit with
-the blast radius in view.
+A pre-built graph of every symbol, call edge and file in the workspace
+(41 languages). Use it before and while editing, not only for questions: one
+call returns verbatim source plus who calls it and what it affects.
 
-## Primary tool: codegraph_explore
+## Start with codegraph_explore
 
-Call `codegraph_explore` for ANY structural or flow question. It returns
-verbatim, line-numbered source of the relevant symbols grouped by file —
-the same shape `Read` gives you, safe to `Edit` from — PLUS the call paths
-between them and a blast-radius summary.
+Any structural or flow question — "how does X work?", "the flow from X to
+Y", reading a symbol before editing it — is one `codegraph_explore` call
+naming the symbol(s). It returns line-numbered source grouped by file (safe
+to Edit from), the call paths between the symbols and a blast-radius summary.
+Need more? Call it again with more specific names.
 
-ONE call usually answers the whole question. CodeRadar IS the pre-built search
-index — running your own grep + read loop repeats work already done and costs
-more for the same answer.
+## Other read tools
 
-## How to query
+- `codegraph_search` — find symbols by keyword when you don't know the name
+- `codegraph_search_similar` — semantic search (embeddings via `codegraph_compute_embeddings`, computed on first use)
+- `codegraph_node` — one entity's details and neighbours; `codegraph_module_children` — a module's contents
+- `codegraph_affected` — transitive callers (blast radius), centrality-ranked
+- `codegraph_traverse` — any edge kind, upstream or downstream
+- `codegraph_query` — structured queries, e.g. `functions where caller_count == 0` (docs/query-language.md)
+- `codegraph_as_of` — the graph at a past timestamp
+- `coderadar_resolve` — framework references: routes (`/users/:id`), `*Model` / `*View` names
+- `codegraph_get_smells`, `codegraph_dead_code`, `codegraph_find_clones`, `codegraph_find_scaffolding` — quality findings. Dead code is ranked evidence, not proof: check `codegraph_affected` before deleting.
 
-- **"How does X work?" / architecture / bug / "what is X"** → `codegraph_explore` with the symbol name(s)
-- **"The flow from X to Y"** → `codegraph_explore` with both endpoints
-- **Reading/editing a specific symbol** → name it in `codegraph_explore`, get line-numbered source back
-- **Need more?** Call `codegraph_explore` again with more specific names
+## Editing
 
-## Other tools
-
-- `codegraph_node` — full details for an entity identified via explore
-- `codegraph_search` — find symbols by keyword when you don't know the exact name
-- `codegraph_affected` — transitive impact: "what calls this, all the way up?" (centrality-ranked)
-- `coderadar_resolve` — framework-aware reference resolution: "what handles /users/:id?", "where is UserService?", "what model is UserModel?"
-- `codegraph_query` — structured Pest graph queries ("functions where name contains 'test'")
-- `codegraph_search_similar` — semantic/embedding search across all entity types
-- `codegraph_compute_embeddings` — generate embedding vectors for semantic search
-- `codegraph_module_children` — list classes/functions/imports in a module
-- `codegraph_as_of` — query the graph at a past timestamp ("what did X look like at commit Y?")
-- `codegraph_traverse` — generic edge traversal with direction and depth control
-- `codegraph_get_smells` — detect architectural code smells (god-class, long-method, long-parameter-list, deep-nesting, data-class, high-cyclomatic-complexity, brain-method, excessive-returns, too-many-fields)
-- `codegraph_dead_code` — find functions unreachable from any entry point, ranked by deletability (kind incl. rta-dead for uninstantiated-override dispatch liveness, tier, confidence, removable lines)
-- `codegraph_find_clones` — token-level clone detection (Types 1-3): identical bodies, renamed bodies, near-duplicates above a similarity floor
-- `codegraph_find_scaffolding` — AI-scaffolding debt: phase/step markers, TODO density, placeholder bodies, temp-file names; opt-in redacted secret detection
-
-## Mutation pipeline (LLM-writable code)
-
-After editing code, use the mutation pipeline to keep the graph in sync:
-
-1. `coderadar_replace_body` — replace a function body
-2. `coderadar_update_signature` — change a function signature (with call-site cascade)
-3. `coderadar_rename` — rename an entity and all references
-4. `coderadar_create_entity` — create a new entity in a file
-
-**Always dry-run first, review the diff, then apply with dry_run=False.**
-
-## Keeping the graph fresh
-
-- `codegraph_update_file` — after editing a single file via Read/Edit, sync just that file
-- `codegraph_reindex` — after batch edits, full guaranteed-fresh reindex
+`coderadar_replace_body`, `coderadar_update_signature`, `coderadar_rename`
+and `coderadar_create_entity` edit the file and the graph together. They
+dry-run by default: review the diff, then apply with dry_run=False.
+After editing with Read/Edit instead, sync with `codegraph_update_file` (one
+file) or `codegraph_reindex` (many files).
 
 ## Anti-patterns
 
-- **Trust codegraph's results — don't re-verify them with grep.** They come from a full AST parse; re-checking with grep is slower, less accurate, and wastes context.
-- **Don't grep or Read first** to find indexed code — ONE explore call returns source together.
-- **Don't reconstruct a flow by hand** — name the endpoints and explore surfaces the path.
-- **When a file is flagged "⚠ changed on disk after index sync"**, Read those specific files for accurate content. Every file NOT flagged is fresh — still trust codegraph.
-- **If a project isn't indexed**, stop calling codegraph tools for that project and use built-in tools. Indexing is the user's decision — mention `coderadar init` if it comes up, but don't run it yourself.
+- **Don't re-verify results with grep.** They come from a full parse.
+- **Don't grep or Read first** to find indexed code, and don't reconstruct a flow by hand: name the endpoints and explore.
+- **Files flagged "⚠ changed on disk after index sync"** are stale: Read those. Every other file is fresh.
+- **No index for a project?** Use built-in tools. Indexing is the user's decision: mention `coderadar init`, don't run it.
+- **"Indexing in progress" is not an error.** Retry in a few seconds rather than falling back to grep.
 
 ## One project at a time
 
-This server serves a single project at a time — the one named in the "no
-index" and "wrong project" messages. Every tool takes an optional
-`project_path`; pass it when you want to be told, rather than quietly
-answered from the wrong one. A `project_path` inside the served project (a
-file, a subdirectory, or the root itself) is accepted; another project is
-refused with the reason.
+The server serves one project. Every tool takes an optional `project_path`:
+a path inside the served project is accepted, another project is refused
+with the reason. `codegraph_set_project` switches wholesale (config re-read,
+background re-index, earlier event ids invalid).
 
-To work on a different project, call `codegraph_set_project` with any path
-inside it — this server switches there, re-reads that project's config and
-re-indexes in the background. Switching is wholesale: after it, earlier
-event ids from the previous project are no longer valid.
-
-If a tool reports that indexing is still in progress, that is not an error —
-the first index walks every source file. Retry in a few seconds rather than
-falling back to grep.
+The same graph is available from the shell: `coderadar status`, `query`,
+`traverse`, `callers`, `callees`.
 """
 
 
@@ -279,8 +243,7 @@ def create_server(graph: Any) -> MCPServer:
             "Find all entities transitively affected by a given entity — the "
             "blast radius. Traverses upstream through callers to show the full "
             "dependency tree, ordered within each depth by harmonic centrality "
-            "(Stage 5 triage: the top entry per group is what actually matters; "
-            "the three most-depended-on ids carry a star marker). "
+            "(the three most-depended-on ids carry a star marker). "
             "Use this before editing to understand the impact."
             " " + _ENTITY_ID_GRAMMAR
         ),
@@ -346,7 +309,7 @@ def create_server(graph: Any) -> MCPServer:
             "'methods where is_async == true', 'functions where name starts_with \"test_\"', "
             "'functions where caller_count == 0 and not name matches \"^test_\"'. "
             "Every row carries id, file_path, kind and parent_id, so a hit can be "
-            "fed to codegraph_callers / codegraph_plan_rename. Unknown fields are "
+            "fed to codegraph_affected / coderadar_rename. Unknown fields are "
             "rejected with the available list instead of returning nothing. "
             "Full field reference: docs/query-language.md."
         ),
@@ -488,8 +451,8 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Traverse the graph from a starting entity along specified edge kinds. "
             "Direction: 'downstream' (callees), 'upstream' (callers), 'both'. "
-            "Edge kinds: 'calls', 'imports', 'inherits', 'overrides', 'handles', "
-            "'declares', 'references', 'navigation'. Returns a tree of linked entities. "
+            "Edge kinds: 'calls', 'imports', 'inherits' (alias 'extends'), 'overrides'; "
+            "default all. Returns a tree of linked entities. "
             "Use for custom flow analysis beyond explore/affected."
             " " + _ENTITY_ID_GRAMMAR
         ),
@@ -523,7 +486,8 @@ def create_server(graph: Any) -> MCPServer:
             "(exact match) and/or rule_id (one of: god-class, long-method, "
             "long-parameter-list, deep-nesting, data-class, "
             "high-cyclomatic-complexity, brain-method, excessive-returns, "
-            "too-many-fields). Each finding carries a severity, a human message, "
+            "too-many-fields, dead-code, dead-branch, intra-dead-statements). "
+            "Each finding carries a severity, a human message, "
             "and the metric signals (WMC, CBO, LOC, cyclomatic, nesting_depth, "
             "param_count, field_count, return_count, max_method_cyclomatic) that "
             "triggered it. strictness selects the threshold profile: 'strict' "
@@ -556,18 +520,18 @@ def create_server(graph: Any) -> MCPServer:
     @mcp.tool(
         description=(
             "Find dead code: functions unreachable from any entry point "
-            "(the mirror image of affected/blast-radius). Entry points include "
-            "mains, framework-decorated handlers (routes/CLIs), dunder protocol "
-            "methods, public API of unimported modules, and test functions; "
-            "virtual-dispatch overrides extend liveness so overridden methods "
-            "are never falsely flagged. Each finding carries kind "
-            "(unreachable | transitively-dead | test-only | rta-dead), tier, "
-            "confidence score and removable line count, ranked "
-            "most-safely-deletable first. rta-dead (Stage 6.3) marks overrides "
-            "whose ONLY liveness is virtual dispatch on a class never "
-            "constructed in the indexed root — weakest evidence, verify "
-            "external construction before removing. Always verify with "
-            "affected() before removing anything."
+            "(the mirror image of codegraph_affected). Entry points: mains, "
+            "framework handlers (routes, CLIs, pytest, Qt slots), dunder methods, "
+            "overrides of external bases (e.g. Qt paintEvent), Protocol/ABC "
+            "members, __all__ and package exports, project scripts, and tests. "
+            "Calls, callbacks passed as values and virtual dispatch all extend "
+            "liveness. Each finding carries kind (unreachable | "
+            "transitively-dead | test-only | rta-dead), tier, confidence, "
+            "removable lines and the evidence behind it, ranked "
+            "most-safely-deletable first. rta-dead is the weakest kind: the "
+            "method lives only through dispatch on a class never constructed "
+            "in the indexed root. Verify with codegraph_affected before "
+            "removing anything."
         ),
         annotations={
             "read_only_hint": True,
@@ -2160,6 +2124,11 @@ def _dead_code(
             f"- **{name}** (`{f['entity_id']}`) — {f['kind']}, "
             f"{f['tier']} ({f['score']:.2f}), ~{f['removable_lines']} lines{loc_str}"
         )
+        why = list(f.get("evidence") or [])
+        if f.get("nearest_root_distance") is not None:
+            why.append(f"{f['nearest_root_distance']} hop(s) from a live root")
+        if why:
+            lines.append(f"  - why: {'; '.join(why)}")
     return "\n".join(lines)
 
 

@@ -104,9 +104,14 @@ class TestMCPCreation:
         assert "x" not in result
         assert "User" in result
 
-    def test_instructions_mention_18_languages(self):
+    def test_instructions_language_count_matches_readme(self):
+        import re
+        from pathlib import Path
+
         from coderadar.mcp.server import SERVER_INSTRUCTIONS
-        assert "18 languages" in SERVER_INSTRUCTIONS
+        readme = (Path(__file__).parent.parent / "README.md").read_text(encoding="utf-8")
+        count = re.search(r"Languages indexed\*\* \| (\d+)", readme).group(1)
+        assert f"{count} languages" in SERVER_INSTRUCTIONS
 
     def test_instructions_include_staleness_guidance(self):
         from coderadar.mcp.server import SERVER_INSTRUCTIONS
