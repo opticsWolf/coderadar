@@ -13,6 +13,54 @@ impl CodeGraph {
         self.resolve_calls_scoped(projection, None);
     }
 
+    /// Resolve every function's `refs` (callbacks passed as values) to the
+    /// functions they name, storing the result on `resolved_refs`. These are
+    /// deliberately not call edges; dead-code treats them as liveness.
+    fn resolve_refs_scoped(&self, projection: &mut ProjectedGraph, scope_file: Option<&str>) {
+        let mut methods_by_class: MethodsByClass = std::collections::HashMap::new();
+        for (id, f) in projection.functions.iter() {
+            if let Some(class_id) = &f.parent_class {
+                methods_by_class
+                    .entry(class_id.clone())
+                    .or_default()
+                    .push((f.name.clone(), id.clone()));
+            }
+        }
+        let types = super::receiver_types::TypeCtx {
+            projection,
+            methods_by_class: &methods_by_class,
+        };
+        let mut updates: Vec<(EntityId, Vec<EntityId>)> = Vec::new();
+        for (id, f) in projection.functions.iter() {
+            if let Some(fp) = scope_file {
+                let path = f.parent_module.rsplit_once("::").map_or(f.parent_module.as_str(), |(p, _)| p);
+                if path != fp {
+                    continue;
+                }
+            }
+            if f.refs.is_empty() && f.resolved_refs.is_empty() {
+                continue;
+            }
+            let mut targets: Vec<EntityId> = f
+                .refs
+                .iter()
+                .filter_map(|r| types.resolve_ref(id, &r.path, &r.name))
+                .collect();
+            targets.sort();
+            targets.dedup();
+            if targets != f.resolved_refs {
+                updates.push((id.clone(), targets));
+            }
+        }
+        for (id, targets) in updates {
+            if let Some(arc) = projection.functions.get(&id) {
+                let mut updated = (**arc).clone();
+                updated.resolved_refs = targets;
+                projection.functions.insert(id, std::sync::Arc::new(updated));
+            }
+        }
+    }
+
     /// Pure resolution of a single function's calls — all data passed as parameters.
     /// Returns (resolved_calls, edge_pairs) without mutating the projection.
     /// The projection is read-only during resolution; edge pairs are applied
@@ -199,6 +247,8 @@ impl CodeGraph {
         scope_file: Option<&str>,
     ) {
         use crate::resolve::orchestrator::ResolutionOrchestrator;
+
+        self.resolve_refs_scoped(projection, scope_file);
 
         let mut orchestrator = ResolutionOrchestrator::with_config(&self.config.import_graph);
         // v0.5: Use the shared import graph (edges built during insert_extracted)

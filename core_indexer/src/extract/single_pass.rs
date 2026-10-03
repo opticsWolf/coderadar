@@ -84,8 +84,8 @@ pub struct CursorExtractor<'a> {
     units: Vec<ExtractedUnit>,
     /// byte-range stack for nesting context
     frames: Vec<Frame>,
-    /// fn-ref candidates: (func_unit_idx, name, line, col)
-    fn_ref_candidates: Vec<(usize, String, usize, usize)>,
+    /// fn-ref candidates: (func_unit_idx, reference)
+    fn_ref_candidates: Vec<(usize, UnresolvedRef)>,
     /// Track current function index for call attribution
     current_function_idx: Option<usize>,
     /// Track current class index for field attribution
@@ -406,6 +406,54 @@ impl<'a> CursorExtractor<'a> {
         }
     }
 
+    /// A module-level constant: a top-level `NAME = ...` or `name: T = ...`.
+    /// Only `UPPER_CASE` names or annotated ones count, so loop variables and
+    /// scratch module code stay out of the entity set.
+    fn emit_constant(&mut self, node: Node) {
+        if node.kind() != "assignment" {
+            return;
+        }
+        // Direct child of the module (`x = 1` statement), not nested in a
+        // block, comprehension or class.
+        let top_level = node
+            .parent()
+            .is_some_and(|p| p.kind() == "module" || (p.kind() == "expression_statement" && p.parent().is_some_and(|m| m.kind() == "module")));
+        if !top_level {
+            return;
+        }
+        let Some(name_node) = node.child_by_field_name("left") else { return };
+        if name_node.kind() != "identifier" {
+            return;
+        }
+        let src = self.source;
+        let text = |n: Node| n.utf8_text(src.as_bytes()).unwrap_or("").to_string();
+        let name = text(name_node);
+        let annotation = node.child_by_field_name("type").map(text);
+        let upper = name.chars().any(|c| c.is_ascii_uppercase())
+            && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+        if name.is_empty() || !(upper || annotation.is_some()) {
+            return;
+        }
+        let default_value = node.child_by_field_name("right").map(|r| {
+            let t = text(r);
+            if t.len() > 200 {
+                let cut = (0..=200).rev().find(|&i| t.is_char_boundary(i)).unwrap_or(0);
+                format!("{}…", &t[..cut])
+            } else {
+                t
+            }
+        });
+        self.units.push(ExtractedUnit::Constant(ExtractedConstant {
+            id: make_entity_id(self.file_path, &name),
+            name,
+            annotation,
+            source: SourceType::Impl,
+            default_value,
+            span: ByteSpan { start: node.start_byte(), end: node.end_byte() },
+            name_span: ByteSpan { start: name_node.start_byte(), end: name_node.end_byte() },
+        }));
+    }
+
     /// Capture a class-level field (e.g. `x = 1` or `x: int = 1` in a class
     /// body). Module-level assignments (no enclosing class) and local
     /// assignments inside methods (enclosing function frame) are skipped.
@@ -415,6 +463,7 @@ impl<'a> CursorExtractor<'a> {
             return;
         }
         if self.current_class_idx.is_none() {
+            self.emit_constant(node);
             return;
         }
         let Some(name_node) = node
@@ -538,6 +587,7 @@ impl<'a> CursorExtractor<'a> {
             return_type,
             calls: Vec::new(),
             bindings: Vec::new(),
+            refs: Vec::new(),
             decorators,
             docstring,
             kind,
@@ -645,21 +695,19 @@ impl<'a> CursorExtractor<'a> {
             return;
         }
 
-        for (func_idx, name, line, col) in &self.fn_ref_candidates {
-            if self.fn_names.contains(name) {
-                if let Some(ExtractedUnit::Function(ref mut func)) = self.units.get_mut(*func_idx) {
-                    let already_present = func
-                        .calls
-                        .iter()
-                        .any(|c| c.name == *name && c.line == *line && c.col == *col);
-                    if !already_present {
-                        func.calls.push(UnresolvedRef {
-                            name: name.clone(),
-                            path: vec![],
-                            line: *line,
-                            col: *col,
-                        });
-                    }
+        for (func_idx, r) in &self.fn_ref_candidates {
+            // A bare name must be something this file defines or imports;
+            // an attribute reference is left to the resolver to type.
+            if r.path.is_empty() && !self.fn_names.contains(&r.name) {
+                continue;
+            }
+            if let Some(ExtractedUnit::Function(ref mut func)) = self.units.get_mut(*func_idx) {
+                let seen = func
+                    .refs
+                    .iter()
+                    .any(|x| x.name == r.name && x.line == r.line && x.col == r.col);
+                if !seen {
+                    func.refs.push(r.clone());
                 }
             }
         }
@@ -716,115 +764,74 @@ fn emit_docstring_node(node: Node, source: &str) -> Option<(usize, String, usize
     }
 }
 
-/// Scan a function's subtree for fn-ref patterns.
+/// A function-valued reference: a bare name or (Python) a dotted receiver
+/// path ending in a name. `None` for any other expression.
+fn ref_of(node: Node, source: &str) -> Option<UnresolvedRef> {
+    let (name, path) = if is_identifier_kind(node.kind()) {
+        (node.utf8_text(source.as_bytes()).ok()?.to_string(), vec![])
+    } else if node.kind() == "attribute" {
+        let name = node
+            .child_by_field_name("attribute")?
+            .utf8_text(source.as_bytes())
+            .ok()?
+            .to_string();
+        let path = crate::extract::walker::receiver_segments(node.child_by_field_name("object"), source);
+        (name, path)
+    } else {
+        return None;
+    };
+    if name.is_empty() || is_stoplisted(&name) {
+        return None;
+    }
+    Some(UnresolvedRef {
+        name,
+        path,
+        line: node.start_position().row + 1,
+        col: node.start_position().column,
+    })
+}
+
+/// Scan a function's subtree for function-as-value sites: call arguments,
+/// keyword arguments, dict/list/tuple/set elements, assignment right-hand
+/// sides and returned values.
 fn scan_subtree_for_fn_ref(
     node: Node,
     source: &str,
     func_idx: usize,
-    candidates: &mut Vec<(usize, String, usize, usize)>,
+    candidates: &mut Vec<(usize, UnresolvedRef)>,
 ) {
     let kind = node.kind();
+    let mut take = |n: Option<Node>| {
+        if let Some(r) = n.and_then(|n| ref_of(n, source)) {
+            candidates.push((func_idx, r));
+        }
+    };
 
-    // Assignment RHS: `x = handler`
-    if matches!(
-        kind,
-        "assignment" | "assignment_expression" | "variable_declarator" | "let_declaration"
-    ) {
-        let rhs = node
-            .child_by_field_name("right")
-            .or_else(|| node.child_by_field_name("value"))
-            .or_else(|| node.child_by_field_name("init"));
-        if let Some(rhs_node) = rhs {
-            if let Some(name) = extract_ref_name(rhs_node, source) {
-                if !name.is_empty() && !is_stoplisted(&name) {
-                    let line = rhs_node.start_position().row + 1;
-                    let col = rhs_node.start_position().column as usize;
-                    candidates.push((func_idx, name, line, col));
-                }
+    match kind {
+        // `x = handler`
+        "assignment" | "assignment_expression" | "variable_declarator" | "let_declaration" => {
+            take(
+                node.child_by_field_name("right")
+                    .or_else(|| node.child_by_field_name("value"))
+                    .or_else(|| node.child_by_field_name("init")),
+            );
+        }
+        // `return handler`
+        "return_statement" | "return" | "return_expression" | "control_transfer_statement" => {
+            for i in 0..node.child_count() {
+                take(node.child(i as u32));
             }
         }
-    }
-
-    // Return value: `return handler`
-    if matches!(
-        kind,
-        "return_statement" | "return" | "return_expression" | "control_transfer_statement"
-    ) {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                if is_identifier_kind(child.kind()) {
-                    if let Ok(name) = child.utf8_text(source.as_bytes()) {
-                        if !name.is_empty() && !is_stoplisted(name) {
-                            let line = child.start_position().row + 1;
-                            let col = child.start_position().column as usize;
-                            candidates.push((func_idx, name.to_string(), line, col));
-                        }
-                    }
-                }
+        // `on=handler`, `{"k": handler}`
+        "keyword_argument" | "pair" => take(node.child_by_field_name("value")),
+        // `f(handler, self.method)`, `[a, b]`, `{a, b}`, `(a, b)`
+        "argument_list" | "arguments" | "call_suffix" | "list" | "list_literal" | "set" | "tuple"
+        | "expression_list" => {
+            for i in 0..node.named_child_count() {
+                take(node.named_child(i as u32));
             }
         }
-    }
-
-    // Keyword argument: `on=handler`
-    if kind == "keyword_argument" || kind == "pair" {
-        let val = node.child_by_field_name("value");
-        if let Some(val_node) = val {
-            if is_identifier_kind(val_node.kind()) {
-                if let Ok(name) = val_node.utf8_text(source.as_bytes()) {
-                    if !name.is_empty() && !is_stoplisted(name) {
-                        let line = val_node.start_position().row + 1;
-                        let col = val_node.start_position().column as usize;
-                        candidates.push((func_idx, name.to_string(), line, col));
-                    }
-                }
-            }
-        }
-    }
-
-    // Argument list identifiers
-    if kind == "argument_list" || kind == "arguments" || kind == "call_suffix" {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                if is_identifier_kind(child.kind()) {
-                    if let Ok(name) = child.utf8_text(source.as_bytes()) {
-                        if !name.is_empty() && !is_stoplisted(name) {
-                            let line = child.start_position().row + 1;
-                            let col = child.start_position().column as usize;
-                            candidates.push((func_idx, name.to_string(), line, col));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Dict/list literal values
-    if kind == "dictionary" || kind == "dict" || kind == "list" || kind == "list_literal" {
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i as u32) {
-                if child.kind() == "pair" {
-                    if let Some(val) = child.child_by_field_name("value") {
-                        if is_identifier_kind(val.kind()) {
-                            if let Ok(name) = val.utf8_text(source.as_bytes()) {
-                                if !name.is_empty() && !is_stoplisted(name) {
-                                    let line = val.start_position().row + 1;
-                                    let col = val.start_position().column as usize;
-                                    candidates.push((func_idx, name.to_string(), line, col));
-                                }
-                            }
-                        }
-                    }
-                } else if is_identifier_kind(child.kind()) {
-                    if let Ok(name) = child.utf8_text(source.as_bytes()) {
-                        if !name.is_empty() && !is_stoplisted(name) {
-                            let line = child.start_position().row + 1;
-                            let col = child.start_position().column as usize;
-                            candidates.push((func_idx, name.to_string(), line, col));
-                        }
-                    }
-                }
-            }
-        }
+        _ => {}
     }
 
     // Recurse into children

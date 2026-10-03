@@ -640,6 +640,8 @@ def unrelated(q):
             decorators: vec![],
             setter_of: None,
             bindings: Vec::new(),
+            refs: Vec::new(),
+            resolved_refs: Vec::new(),
             line: 1,
             exit_line: 5,
             docstring: None,

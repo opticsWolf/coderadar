@@ -38,6 +38,15 @@ pub fn compute_reachable(graph: &ProjectedGraph, roots: &HashSet<EntityId>) -> R
                 }
             }
         }
+        // Callbacks: a live function that passes `self.f` / `f` as a value
+        // keeps `f` alive (Qt slots, dispatch tables, `sorted(key=f)`).
+        if let Some(f) = graph.functions.get(&current) {
+            for target in &f.resolved_refs {
+                if seen.insert(target.clone()) {
+                    queue.push_back(target.clone());
+                }
+            }
+        }
         // Virtual dispatch: a call to a base method can reach any override.
         if let Some(subs) = graph.overridden_by.get(&current) {
             for sub in subs {

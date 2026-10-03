@@ -321,3 +321,82 @@ def test_pytest_fixture_parameters_are_typed(tmp_path, monkeypatch):
         site = _site(rel + "::" + fn, "add")
         assert site["target"] == add, (fn, site)
     assert _site(rel + "::test_d", "add")["status"] == "unresolved"
+
+
+# -- 1.6 constants -----------------------------------------------------------
+
+def test_module_constants_are_extracted(tmp_path, monkeypatch):
+    _project(tmp_path, monkeypatch, {"m.py": '''\
+        import os
+
+        LIMIT = 3
+        DEFAULT_NAME: str = "x"
+        typed: int = 4
+        lower = 5
+        for i in range(3):
+            LOOP_ONLY = i
+
+
+        class K:
+            CLASS_LEVEL = 1
+
+            def f(self):
+                LOCAL_CONST = 2
+
+
+        AFTER_CLASS = 9
+    '''})
+    kids = _core.module_children(os.path.join(".", "m.py") + "::module")
+    names = {c["name"] for c in kids["constants"]}
+    assert names == {"LIMIT", "DEFAULT_NAME", "typed", "AFTER_CLASS"}
+
+
+# -- 1.7 function references -------------------------------------------------
+
+def test_callbacks_keep_functions_alive_without_becoming_callers(tmp_path, monkeypatch):
+    graph = _project(tmp_path, monkeypatch, {"m.py": '''\
+        def on_done():
+            return 1
+
+
+        def key_fn(x):
+            return x
+
+
+        def table_handler():
+            return 2
+
+
+        def _truly_dead():
+            return 3
+
+
+        class Panel:
+            def __init__(self, button):
+                button.clicked.connect(self._on_click)
+                self.items = sorted([], key=key_fn)
+                self.table = {"a": table_handler}
+                self.after = on_done
+
+            def _on_click(self):
+                return 4
+
+            def unused_slot(self):
+                return 5
+
+
+        def main():
+            Panel(None)
+
+
+        if __name__ == "__main__":
+            main()
+    '''})
+    dead = {d["entity_id"] for d in _core.find_dead_code(0.0, False, 100)}
+    ref = lambda n: os.path.join(".", "m.py") + "::" + n
+    for live in ("on_done", "key_fn", "table_handler", "Panel._on_click"):
+        assert ref(live) not in dead, live
+    assert ref("_truly_dead") in dead
+    assert ref("Panel.unused_slot") in dead
+    # A reference is not a call: the callee has no callers.
+    assert graph.callers_of(ref("Panel._on_click")) == []

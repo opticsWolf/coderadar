@@ -129,6 +129,12 @@ pub struct EntryPoints {
 /// 4. public top-level API of modules nobody imports (library surface).
 pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
     let mut production = HashSet::new();
+    // Functions some other function passes around as a value (callbacks).
+    let referenced: HashSet<&EntityId> = graph
+        .functions
+        .values()
+        .flat_map(|f| f.resolved_refs.iter())
+        .collect();
     let mut test_only = HashSet::new();
     // Module source cache for the Rust-`pub` rule (step 5): each .rs
     // module reads once per detection run.
@@ -200,7 +206,7 @@ pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
                 .callers_by_callee
                 .get(id)
                 .is_some_and(|c| !c.is_empty());
-            if !has_callers {
+            if !has_callers && !referenced.contains(id) {
                 test_only.insert(id.clone());
                 continue;
             }

@@ -174,3 +174,17 @@ fn reexport_cycle_terminates() {
         "cyclic re-export with no definition resolves nowhere, got {callees:?}"
     );
 }
+
+#[test]
+fn module_level_constants_are_extracted() {
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(
+        &graph,
+        "LIMIT = 3\nx: int = 2\nlower = 1\nclass K:\n    INSIDE = 1\n",
+        "m.py",
+    );
+    let snap = graph.snapshot();
+    let mut names: Vec<_> = snap.constants.values().map(|c| c.name.clone()).collect();
+    names.sort();
+    assert_eq!(names, vec!["LIMIT", "x"]);
+}

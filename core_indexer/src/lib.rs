@@ -281,6 +281,7 @@ fn function_to_dict(py: Python<'_>, f: &Function) -> PyResult<PyObject> {
     let dict = PyDict::new(py);
     dict.set_item("id", &f.id)?;
     dict.set_item("name", &f.name)?;
+    dict.set_item("references", &f.resolved_refs)?;
     dict.set_item(
         "kind",
         match f.kind {
@@ -3999,6 +4000,8 @@ mod tests {
             decorators: vec![],
             setter_of: None,
             bindings: Vec::new(),
+            refs: Vec::new(),
+            resolved_refs: Vec::new(),
             line: 1,
             exit_line: 2,
             docstring: None,

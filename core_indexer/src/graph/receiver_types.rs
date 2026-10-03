@@ -274,6 +274,51 @@ impl<'a> TypeCtx<'a> {
         Some(t)
     }
 
+    /// The function a *reference* `path.name` (a callback passed as a value,
+    /// not called) made inside function `fid` points at.
+    pub fn resolve_ref(&self, fid: &str, path: &[String], name: &str) -> Option<EntityId> {
+        let f = self.func(fid)?;
+        let is_plain_callable = |id: &str| {
+            self.func(id).is_some_and(|g| {
+                !g.decorators.iter().any(|d| d.contains("property") || d.contains(".setter"))
+            })
+        };
+        let target = if path.is_empty() {
+            // A parameter or local of that name shadows any function.
+            let shadows = |g: &Function| {
+                g.parameters.iter().any(|p| p.name == name)
+                    || g.bindings.iter().any(|b| b.target.len() == 1 && b.target[0] == name)
+            };
+            if shadows(f) {
+                return None;
+            }
+            // ...including those of the functions this one is nested in.
+            let mut outer = f.id.as_str();
+            while let Some((head, _)) = outer.rsplit_once('.') {
+                if self.func(head).is_some_and(shadows) {
+                    return None;
+                }
+                outer = head;
+            }
+            let nested = format!("{}.{}", f.id, name);
+            if self.projection.functions.contains_key(&nested) {
+                Some(nested)
+            } else {
+                find_symbol_in_module(self.projection, &f.parent_module, name)
+                    .filter(|id| self.func(id).is_some_and(|g| g.parent_class.is_none()))
+            }
+        } else if let Some(t) = self.type_of_path(f, path, 0) {
+            self.method_of(&t, name)
+        } else if let Some(c) = self.class_of_ref(&f.parent_module, &path[..path.len() - 1], &path[path.len() - 1]) {
+            self.method_of(&c, name)
+        } else {
+            find_module_by_dotted_name(self.projection, &path.join("."), &f.parent_module)
+                .and_then(|m| find_symbol_in_module(self.projection, &m, name))
+                .filter(|id| self.func(id).is_some_and(|g| g.parent_class.is_none()))
+        };
+        target.filter(|id| is_plain_callable(id) && id != fid)
+    }
+
     /// The method a call `path.name(...)` made inside function `fid` binds to.
     pub fn resolve_method_call(&self, fid: &str, path: &[String], name: &str) -> Option<EntityId> {
         let f = self.func(fid)?;

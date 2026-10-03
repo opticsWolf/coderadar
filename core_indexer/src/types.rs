@@ -917,7 +917,11 @@ pub struct Function {
     pub return_type: Option<String>,
     pub calls: Vec<UnresolvedRef>,
     pub bindings: Vec<Binding>,
+    /// Function-valued references (callbacks, dispatch tables): `connect(self.f)`.
+    pub refs: Vec<UnresolvedRef>,
     pub resolved_calls: Vec<ResolvedCall>,
+    /// Entities `refs` resolved to (never `calls` edges: callers stay honest).
+    pub resolved_refs: Vec<EntityId>,
     pub decorators: Vec<String>,
     pub setter_of: Option<EntityId>,
     pub line: usize,
@@ -1055,6 +1059,8 @@ pub struct ExtractedFunction {
     pub return_type: Option<String>,
     pub calls: Vec<UnresolvedRef>,
     pub bindings: Vec<Binding>,
+    /// Function-valued references (callbacks, dispatch tables): `connect(self.f)`.
+    pub refs: Vec<UnresolvedRef>,
     pub decorators: Vec<String>,
     pub docstring: Option<String>,
     pub kind: FunctionKind,
@@ -1142,6 +1148,8 @@ impl Function {
             return_type: f.return_type.clone(),
             calls: f.calls.clone(),
             bindings: f.bindings.clone(),
+            refs: f.refs.clone(),
+            resolved_refs: vec![],
             resolved_calls: vec![],
             decorators: f.decorators.clone(),
             setter_of: None,
