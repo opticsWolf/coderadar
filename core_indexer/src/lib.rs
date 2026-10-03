@@ -2920,6 +2920,11 @@ fn find_dead_code(
             dict.set_item("tier", f.tier.as_str())?;
             dict.set_item("score", f.score)?;
             dict.set_item("removable_lines", f.removable_lines)?;
+            // §2.6: reasons travel with the finding, so a 0.9 is checkable.
+            dict.set_item("evidence", f.evidence.clone())?;
+            if let Some(dist) = f.nearest_root_distance {
+                dict.set_item("nearest_root_distance", dist as u32)?;
+            }
             if let Some(name) = entity_name_of(&f.entity_id, &snap) {
                 dict.set_item("entity_name", name)?;
             }

@@ -78,6 +78,49 @@ def test_smell_carries_score_signal(project):
     assert sig["score"] > 0 and sig["removable_lines"] > 80
 
 
+# ── §2.6 — every finding explains itself ─────────────────────────────────
+
+
+def test_evidence_travels_with_the_finding(project):
+    by_name = {f["entity_name"]: f for f in find_dead_code(0.0, False, 1000)}
+    ev = by_name["_tiny_dead"]["evidence"]
+    assert "no inbound callers" in ev
+    assert "private name" in ev
+
+
+def test_transitive_dead_carries_chain_distance(tmp_path):
+    (tmp_path / "app.py").write_text(
+        "def _orphan():\n"
+        "    return _child()\n\n\n"
+        "def _child():\n"
+        "    return 1\n\n\n"
+        "def main():\n"
+        "    return 1\n",
+        encoding="utf-8",
+    )
+    analyze(str(tmp_path))
+    by_name = {f["entity_name"]: f for f in find_dead_code(0.0, False, 1000)}
+    child = by_name["_child"]
+    assert child["kind"] == "transitively-dead"
+    assert "all 1 caller(s) are themselves dead" in child["evidence"]
+    assert child["nearest_root_distance"] == 1
+    # mid-chain entries: one more dead hop between the chain head and _child.
+    assert "nearest_root_distance" not in by_name["_orphan"]
+
+
+def test_rta_dead_carries_class_evidence(tmp_path):
+    (tmp_path / "qt_app.py").write_text(EXTERNAL_SRC, encoding="utf-8")
+    analyze(str(tmp_path))
+    findings = [
+        f for f in find_dead_code(0.0, False, 1000)
+        if f["entity_id"].endswith("Derived.eventFilter")
+    ]
+    assert findings, "Derived.eventFilter should be rta-dead"
+    ev = findings[0]["evidence"]
+    assert "live only through virtual dispatch" in ev
+    assert any("never instantiated" in e for e in ev)
+
+
 # ── §2.3 — overrides of external bases are entry points ─────────────────
 
 EXTERNAL_SRC = '''

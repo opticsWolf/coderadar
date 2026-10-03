@@ -70,6 +70,15 @@ pub struct DeadFinding {
     pub score: f32,
     /// Lines removable if this entity goes away — drives ranking/severity.
     pub removable_lines: usize,
+    /// Why this is believed dead — entry-point rejections the ladder made
+    /// plus the isolation fact itself (plan v0.10 §2.6). Machine-oriented
+    /// short phrases; a finding is trustworthy — or obviously-wrong — only
+    /// when its reasons travel with it.
+    pub evidence: Vec<String>,
+    /// `TransitivelyDead` only: caller hops up to the head of the dead chain
+    /// (a function with no callers at all). Tells a reviewer how deep a dead
+    /// island they are wading into; `None` elsewhere or on a caller cycle.
+    pub nearest_root_distance: Option<usize>,
 }
 
 /// Options for a detection run.
@@ -133,6 +142,12 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
             ParseQuality::Tainted => 0.5,
         };
         let score = combine(&[kind.isolation(), quality]);
+        let evidence = base_evidence(graph, id, f, kind);
+        let nearest_root_distance = if matches!(kind, DeadKind::TransitivelyDead) {
+            distance_to_dead_chain_head(graph, id)
+        } else {
+            None
+        };
 
         out.push(DeadFinding {
             entity_id: id.clone(),
@@ -140,6 +155,8 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
             tier: tier_of(score),
             score,
             removable_lines: f.exit_line.saturating_sub(f.line).saturating_add(1),
+            evidence,
+            nearest_root_distance,
         });
     }
 
@@ -167,12 +184,23 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
             ParseQuality::Tainted => 0.5,
         };
         let score = combine(&[DeadKind::RtaDead.isolation(), quality]);
+        let class_evidence = cand
+            .class_id
+            .as_deref()
+            .and_then(|cid| graph.classes.get(cid))
+            .map(|c| format!("class '{}' is never instantiated", c.name))
+            .unwrap_or_else(|| "defining class is never instantiated".to_string());
         out.push(DeadFinding {
             entity_id: cand.entity_id.clone(),
             kind: DeadKind::RtaDead,
             tier: tier_of(score),
             score,
             removable_lines: f.exit_line.saturating_sub(f.line).saturating_add(1),
+            evidence: vec![
+                "live only through virtual dispatch".to_string(),
+                class_evidence,
+            ],
+            nearest_root_distance: None,
         });
     }
 
@@ -183,6 +211,106 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
             .then(b.removable_lines.cmp(&a.removable_lines))
     });
     out
+}
+
+/// Entry-point rejections plus the isolation fact, for one finding (§2.6).
+///
+/// Every item answers a question the ladder asked — bounded and cheap, no
+/// second pass over the graph. Order is-by-question: what protects callers,
+/// then what protects this definition, then what protects the module.
+fn base_evidence(
+    graph: &ProjectedGraph,
+    id: &str,
+    f: &crate::types::Function,
+    kind: DeadKind,
+) -> Vec<String> {
+    let mut ev = Vec::new();
+    match kind {
+        DeadKind::Unreachable => ev.push("no inbound callers".to_string()),
+        DeadKind::TransitivelyDead => {
+            let n = graph
+                .callers_by_callee
+                .get(id)
+                .map(|c| c.len())
+                .unwrap_or(0);
+            ev.push(format!("all {n} caller(s) are themselves dead"));
+        }
+        DeadKind::TestOnly => ev.push("only reachable from test code".to_string()),
+        DeadKind::RtaDead => {} // RTA loop writes its own two items
+    }
+
+    // Method-specific §2.3 rejections: why external dispatch does not rescue
+    // this definition.
+    if let Some(cls) = f
+        .parent_class
+        .as_ref()
+        .and_then(|cid| graph.classes.get(cid))
+    {
+        let has_external_base = cls
+            .mro
+            .iter()
+            .any(|n| matches!(n, crate::types::MroNode::External { .. }));
+        if !has_external_base {
+            ev.push("class has external base: none".to_string());
+        } else if f.name.starts_with('_') {
+            ev.push("private method of a framework subclass: not a dispatch target".to_string());
+        } else {
+            ev.push("override of a visible in-repo method".to_string());
+        }
+    }
+
+    if f.name.starts_with('_') {
+        ev.push("private name".to_string());
+    }
+
+    // Module-level gates: __all__ and the never-imported heuristic.
+    if let Some(m) = graph.modules.get(&f.parent_module) {
+        if let Some(names) = m.star_exports.as_ref() {
+            if !names.contains(&f.name) {
+                ev.push("not in __all__".to_string());
+            }
+        }
+    }
+    ev
+}
+
+/// Caller hops from a `TransitivelyDead` node up to the head of its dead
+/// chain — the first function with no callers of its own (§2.6). A cycle
+/// among callers returns `None` rather than looping.
+fn distance_to_dead_chain_head(graph: &ProjectedGraph, id: &str) -> Option<usize> {
+    const MAX_HOPS: usize = 64;
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    seen.insert(id);
+    let mut frontier = vec![id.to_string()];
+    for depth in 1..=MAX_HOPS {
+        let mut next = Vec::new();
+        for current in &frontier {
+            let callers = graph
+                .callers_by_callee
+                .get(current.as_str())
+                .map(|c| c.iter())
+                .into_iter()
+                .flatten();
+            for caller in callers {
+                if !seen.insert(caller.as_str()) {
+                    continue;
+                }
+                let has_callers = graph
+                    .callers_by_callee
+                    .get(caller.as_str())
+                    .is_some_and(|c| !c.is_empty());
+                if !has_callers {
+                    return Some(depth);
+                }
+                next.push(caller.clone());
+            }
+        }
+        if next.is_empty() {
+            return None;
+        }
+        frontier = next;
+    }
+    None
 }
 
 #[cfg(test)]
