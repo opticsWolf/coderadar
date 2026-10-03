@@ -14,6 +14,8 @@ v3.6 Architecture:
 
 from __future__ import annotations
 
+import functools
+
 #: Single version source (F11 fix): pyproject.toml is authoritative.
 #: `__version__` resolves from installed package metadata first (so an
 #: installed wheel/sdist reports its own version) and falls back to the
@@ -197,6 +199,23 @@ def _parse_plan_dict(result: dict, tool: str) -> MutationPlan:
     )
 
 
+def _bound_to_loaded_project(fn):
+    """Refuse to answer about a project this handle was not created for.
+
+    The core keeps one global graph and `analyze` replaces it wholesale, so a
+    handle that outlives a re-index used to answer about the new tree without
+    a word (plan §5.5). The first call binds the handle; a later call against
+    a different root raises `StaleHandle`.
+    """
+
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        self._check_root()
+        return fn(self, *args, **kwargs)
+
+    return wrapper
+
+
 class CodeGraph:
     """Python-facing graph handle backed by Macrame bitemporal ledger.
 
@@ -218,9 +237,29 @@ class CodeGraph:
         self._db_path = db_path or ".coderadar/store/coderadar.db"
         self._config: dict[str, Any] = {}
         self._macrame = None  # Macrame Database handle (lazy)
+        self._root: str | None = None  # bound on first use (plan §5.5)
+
+    def _check_root(self) -> None:
+        """Bind to the loaded project on first use; refuse a different one after."""
+        try:
+            from coderadar._core import indexed_root_py as _root
+            current = _root()
+        except (ImportError, RuntimeError):  # no extension / no graph: nothing to bind
+            return
+        if not current:
+            return
+        if self._root is None:
+            self._root = current
+        elif current != self._root:
+            raise StaleHandle(
+                f"This CodeGraph handle belongs to {self._root!r}, but the loaded "
+                f"graph is now {current!r} — call analyze() for the new project and "
+                f"use a fresh CodeGraph handle."
+            )
 
     # ── Query ──────────────────────────────────────────────────────────
 
+    @_bound_to_loaded_project
     def query(self, query_str: str) -> Iterator[dict[str, Any]]:
         """Execute a query against the in-memory graph; rows are dicts.
 
@@ -256,6 +295,7 @@ class CodeGraph:
         except ImportError:
             return
 
+    @_bound_to_loaded_project
     def explore(
         self,
         start_id: str,
@@ -338,6 +378,7 @@ class CodeGraph:
 
     # ── Macrame Operations ────────────────────────────────────────────
 
+    @_bound_to_loaded_project
     def traverse(
         self,
         start_id: str,
@@ -353,21 +394,31 @@ class CodeGraph:
         """Return a point-in-time snapshot via Macrame's reconstruct(ts)."""
         return Snapshot(self, timestamp)
 
+    @_bound_to_loaded_project
     def find(self, entity_id: str) -> dict[str, Any] | None:
-        """Look up an entity by ID."""
+        """Look up an entity by ID.
+
+        Accepts the canonical form (``pkg/mod.py::Class.method``), the
+        legacy spellings (absolute, backslashes, leading ``./``), and a
+        dotted qualified name (``pkg.mod.Class.method`` — the spelling a
+        traceback uses) when a module prefix matches.
+        """
         from .query import MacrameQuery
         return MacrameQuery(self).find(entity_id)
 
+    @_bound_to_loaded_project
     def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
         """Find callers via reverse call index."""
         from .query import MacrameQuery
         return MacrameQuery(self).callers_of(entity_id)
 
+    @_bound_to_loaded_project
     def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
         """Find callees via forward call index."""
         from .query import MacrameQuery
         return MacrameQuery(self).callees_of(entity_id)
 
+    @_bound_to_loaded_project
     def call_sites(self, entity_id: str) -> list[dict[str, Any]] | None:
         """Every call site extracted from a function, with the resolver's verdict.
 
@@ -380,6 +431,7 @@ class CodeGraph:
         from coderadar._core import call_sites
         return call_sites(entity_id)
 
+    @_bound_to_loaded_project
     def search_similar(
         self, query_embedding: list[float], top_k: int = 10,
     ) -> list[dict[str, Any]]:
@@ -473,6 +525,7 @@ class CodeGraph:
 
     # ── Update ─────────────────────────────────────────────────────────
 
+    @_bound_to_loaded_project
     def update_file(self, file_path: str, content: str | None = None,
                     force: bool = False) -> UpdateReport:
         """Update the graph after a file change.
@@ -531,6 +584,7 @@ class CodeGraph:
             fully_applied=False, epoch_before=0, epoch_after=0,
         )
 
+    @_bound_to_loaded_project
     def remove_file(self, file_path: str) -> int:
         """Drop a deleted file's entities from the graph.
 
@@ -572,6 +626,7 @@ class CodeGraph:
 
     # ── Mutation ───────────────────────────────────────────────────────
 
+    @_bound_to_loaded_project
     def plan_body_replacement(
         self,
         entity_id: str,
@@ -595,6 +650,7 @@ class CodeGraph:
             affected_files=[], diff_preview="", unverified_sites=[], warnings=[],
         )
 
+    @_bound_to_loaded_project
     def plan_signature_update(
         self,
         entity_id: str,
@@ -617,6 +673,7 @@ class CodeGraph:
             affected_files=[], diff_preview="", unverified_sites=[], warnings=[],
         )
 
+    @_bound_to_loaded_project
     def plan_rename(
         self,
         entity_id: str,
@@ -637,6 +694,7 @@ class CodeGraph:
             affected_files=[], diff_preview="", unverified_sites=[], warnings=[],
         )
 
+    @_bound_to_loaded_project
     def plan_create_entity(
         self,
         target_file: str,
@@ -657,6 +715,7 @@ class CodeGraph:
             affected_files=[], diff_preview="", unverified_sites=[], warnings=[],
         )
 
+    @_bound_to_loaded_project
     def apply(self, plan: MutationPlan) -> MutationResult:
         """Apply a mutation plan atomically.
 
@@ -737,6 +796,7 @@ class CodeGraph:
 
     # ── Stats / Debug ──────────────────────────────────────────────────
 
+    @_bound_to_loaded_project
     def stats(self) -> dict[str, Any]:
         """Return counts, parse quality summary, memory usage."""
         try:
@@ -929,14 +989,14 @@ def _apply_star_exports(root: str) -> None:
             names = extract_all_exports(source)
             if not names:
                 continue
+            # Canonical ids are root-relative with forward slashes and no
+            # dot prefix (plan 5.1). The other spellings are kept as
+            # fallbacks for stores written before the migration; the Rust
+            # side canonicalizes whatever it gets.
             candidates = {f"{py_file}::module"}
             try:
                 rel = py_file.relative_to(root_path)
-                candidates.add(f"{rel}::module")
-                # The Rust walker's canonical id form is root-relative with a
-                # leading dot-segment (`\tm.py` native separators) — see
-                # `core_indexer/src/fs` F14 note. Offer that form too, or the
-                # apply call silently matches nothing.
+                candidates.add(f"{rel.as_posix()}::module")
                 candidates.add(f".{os.sep}{rel}::module")
                 candidates.add(f"./{rel.as_posix()}::module")
             except ValueError:

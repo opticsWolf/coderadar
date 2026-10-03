@@ -199,27 +199,27 @@ fn test_update_file_skips_unchanged_functions() {
     assert_eq!((added, removed), (0, 0), "nothing changed, nothing to do");
 }
 
-/// A bare-spelled seed (index_file form) converges to canonical on the
+/// A legacy-spelled seed (pre-5.1 dot prefix) converges to canonical on the
 /// first update: stale spellings removed, canonical inserted — once.
 #[test]
-fn test_update_file_converges_bare_ids_to_canonical_f14() {
+fn test_update_file_converges_legacy_ids_to_canonical() {
     let source = "def f():\n    return 1\n";
     let graph = CodeGraph::new(GraphConfig::default());
     graph
-        .index_file(source, "same.py", &Language::Python)
+        .index_file(source, "./same.py", &Language::Python)
         .unwrap();
-    assert!(graph.snapshot().functions.contains_key("same.py::f"));
+    assert!(graph.snapshot().functions.contains_key("./same.py::f"));
 
     let outcome = graph.update_file("same.py", Some(source), None).unwrap();
     let snap = graph.snapshot();
     assert!(snap.functions.contains_key(&canon_id("same.py", "f")));
     assert!(
-        !snap.functions.contains_key("same.py::f"),
+        !snap.functions.contains_key("./same.py::f"),
         "stale spelling must not survive beside the canonical one"
     );
-    // One-time migration noise: the bare function AND bare module are
-    // removed, the canonical pair inserted (module inserts don't bump
-    // `added`, so the counters read (1, 2) — asserted loosely).
+    // One-time migration noise: the legacy function AND module are removed,
+    // the canonical pair inserted (module inserts don't bump `added`, so the
+    // counters read (1, 2) — asserted loosely).
     assert!(outcome.entities_added >= 1);
     assert!(outcome.entities_removed >= 1);
 

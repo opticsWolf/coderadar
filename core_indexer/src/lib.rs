@@ -106,22 +106,9 @@ pub(crate) static INDEXED_ROOT: std::sync::LazyLock<RwLock<Option<std::path::Pat
 /// read, the process working directory stands in.
 pub(crate) fn indexed_root() -> std::path::PathBuf {
     if let Some(root) = INDEXED_ROOT.read().clone() {
-        return strip_verbatim_prefix(root);
+        return crate::fs::strip_verbatim_prefix(root);
     }
     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-}
-
-/// `std::fs::canonicalize` returns verbatim paths on Windows (`\\?\D:\…`),
-/// which defeat `starts_with`/`strip_prefix` against regular paths.
-pub(crate) fn strip_verbatim_prefix(p: std::path::PathBuf) -> std::path::PathBuf {
-    let s = p.to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        return std::path::PathBuf::from(format!(r"\\{rest}"));
-    }
-    if let Some(rest) = s.strip_prefix(r"\\?\") {
-        return std::path::PathBuf::from(rest);
-    }
-    p
 }
 
 /// The configuration every consumer in this process reads.
@@ -1539,6 +1526,67 @@ fn canonical_lookup_id(entity_id: &str) -> String {
     }
 }
 
+/// Resolve a dotted qualified name to an entity id (plan §5.2).
+///
+/// `lace.dock_manager.DockManager.save_state` — the spelling every Python
+/// traceback, import and stack frame uses — used to miss silently. The
+/// longest module prefix wins: with `lace/dock_manager.py` in the graph it
+/// resolves to `lace/dock_manager.py::DockManager.save_state`; a mixed
+/// `lace.dock_manager::DockManager.save_state` works too.
+///
+/// `None` when no module prefix matches or the remaining symbol does not
+/// exist — callers turn that into "did you mean" candidates.
+fn resolve_qualified_name(projection: &ProjectedGraph, name: &str) -> Option<String> {
+    use crate::graph::find_module_by_dotted_name;
+
+    let (module_id, symbol) = match name.split_once("::") {
+        Some((head, tail)) => (
+            find_module_by_dotted_name(projection, head, "")?,
+            tail.to_string(),
+        ),
+        None => {
+            let segments: Vec<&str> = name.split('.').collect();
+            // A bare name is not a qualified name.
+            if segments.len() < 2 {
+                return None;
+            }
+            // Longest prefix first: the whole name may itself be a module
+            // (`pkg.model`), in which case there is no symbol left over.
+            let mut found = None;
+            for len in (1..=segments.len()).rev() {
+                let dotted = segments[..len].join(".");
+                if let Some(id) = find_module_by_dotted_name(projection, &dotted, "") {
+                    found = Some((id, segments[len..].join(".")));
+                    break;
+                }
+            }
+            found?
+        }
+    };
+
+    let file_head = module_id
+        .rsplit_once("::")
+        .map(|(head, _)| head.to_string())?;
+    if symbol.is_empty() {
+        return Some(module_id);
+    }
+    let candidate = format!("{file_head}::{symbol}");
+    if entity_exists(projection, &candidate) {
+        return Some(candidate);
+    }
+    // `pkg.mod.Outer.Inner` — the class segment may itself be dotted, so try
+    // dropping leading segments of the symbol before giving up.
+    let mut parts: Vec<&str> = symbol.split('.').collect();
+    while parts.len() > 1 {
+        parts.remove(0);
+        let candidate = format!("{file_head}::{}", parts.join("."));
+        if entity_exists(projection, &candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// Plan replacing a function/method body. Returns a mutation-plan dict
 /// (`id`, `tool`, `edits`, `diff_preview`, `unverified_sites`, ...). Nothing is
 /// written until the plan goes through `apply_mutation`; `expected_hash`
@@ -2094,7 +2142,17 @@ fn get_config(py: Python<'_>) -> PyResult<PyObject> {
 fn lookup_entity(py: Python<'_>, entity_id: &str) -> PyResult<Option<PyObject>> {
     // R2-16: existence checks accept any id spelling too.
     let entity_id = canonical_lookup_id(entity_id);
-    with_graph(|_graph, snap| Ok(entity_ref_to_dict(py, &entity_id, snap)))
+    with_graph(|_graph, snap| {
+        if let Some(found) = entity_ref_to_dict(py, &entity_id, snap) {
+            return Ok(Some(found));
+        }
+        // §5.2: a dotted qualified name (`pkg.mod.Class.method`) is what
+        // tracebacks and imports use; resolve it rather than returning None.
+        match resolve_qualified_name(snap, &entity_id) {
+            Some(resolved) => Ok(entity_ref_to_dict(py, &resolved, snap)),
+            None => Ok(None),
+        }
+    })
 }
 
 /// Search tokens from a free-text query: whitespace-split, surrounding
@@ -2766,10 +2824,7 @@ fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
         // look exactly like fresh ones.
         dict.set_item(
             "indexed_root",
-            INDEXED_ROOT
-                .read()
-                .clone()
-                .map(|p| p.to_string_lossy().into_owned()),
+            indexed_root().to_string_lossy().into_owned(),
         )?;
         Ok(dict.into())
     })
@@ -3066,17 +3121,13 @@ fn find_scaffolding(
     let root: PathBuf = INDEXED_ROOT.read().clone().ok_or_else(|| {
         pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
     })?;
-    // Strip the Windows \?\ verbatim prefix for display consistency.
-    let root_str = root
-        .to_string_lossy()
-        .trim_start_matches(r"\?\ ")
-        .to_string();
+    let root = crate::fs::strip_verbatim_prefix(root);
 
     let cfg = crate::scaffold::ScaffoldConfig {
         include_secrets,
         ..Default::default()
     };
-    let mut findings = py.allow_threads(|| crate::scaffold::scan_path(Path::new(&root_str), &cfg));
+    let mut findings = py.allow_threads(|| crate::scaffold::scan_path(&root, &cfg));
 
     // Placeholder bodies ride the resolved projection when it is loaded;
     // a cold/no graph degrades to file-walk signals only (honest subset).
@@ -3122,7 +3173,9 @@ fn find_scaffolding(
         {
             let dict = PyDict::new(py);
             dict.set_item("kind", f.kind.as_str())?;
-            dict.set_item("file", f.file.to_string_lossy().as_ref())?;
+            // Root-relative, forward slashes — the same spelling every other
+            // finding type uses (plan §5.3).
+            dict.set_item("file", crate::fs::display_path(&root, &f.file))?;
             dict.set_item("line", f.line as u32)?;
             dict.set_item("label", &f.label)?;
             dict.set_item("snippet", &f.snippet)?;
@@ -3262,6 +3315,34 @@ pub(crate) fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
 // ledger instead of re-analyzing. `export_snapshot` is gone — the ledger
 // itself is the snapshot; there is no separate export surface.
 
+/// Live ids spelled the pre-plan-5.1 way (dot prefix or native backslashes).
+///
+/// A store holding them cannot be loaded honestly: ids are canonical
+/// (forward slashes, no dot prefix) since the migration, so every id lookup
+/// would miss while search and queries kept working — a half-broken graph.
+/// The caller re-analyzes instead, which re-keys the store.
+fn legacy_spelled_concept_ids(
+    store: &crate::storage::CodeGraphStore,
+) -> macrame::Result<Vec<String>> {
+    Ok(store
+        .live_concept_ids()?
+        .into_iter()
+        .filter(|id| is_legacy_spelled_id(id))
+        .collect())
+}
+
+/// Whether a concept id's file head is a pre-plan-5.1 spelling.
+///
+/// One rule, shared with the re-index migration
+/// ([`crate::retire_noncanonical_concepts`]): the head is not the canonical
+/// form — dot-prefixed (`./x.py`, `.\x.py`), backslashed (`.\pkg\x.py`),
+/// absolute (`D:\proj\x.py`, `/home/proj/x.py`). Name-like heads
+/// (`external::len`, `Date::now`) are canonical and never flagged.
+fn is_legacy_spelled_id(id: &str) -> bool {
+    let head = id.split("::").next().unwrap_or("");
+    !head.is_empty() && !crate::graph::module_resolution::is_canonical_file_head(head)
+}
+
 /// Cold-start a project from the Macrame ledger (v0.8 P1).
 ///
 /// Reads the ledger snapshot (`reconstruct(now)`), parses the concept
@@ -3298,6 +3379,18 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
                     "failed to open Macrame store {db}: {e:?}"
                 ))
             })?;
+            let legacy = legacy_spelled_concept_ids(&store).map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "failed to inspect Macrame store {db}: {e:?}"
+                ))
+            })?;
+            if !legacy.is_empty() {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "store {db} predates the 0.10 canonical id format: {} live id(s)                      are spelled with a dot prefix or native separators (e.g. {:?}).                      Re-analyze to migrate it — `coderadar analyze` (cold start does                      this automatically), or `coderadar store-repair` to inspect it.",
+                    legacy.len(),
+                    legacy.first().cloned().unwrap_or_default(),
+                )));
+            }
             let now = now_iso8601();
             let state = store.reconstruct(&now).map_err(|e| {
                 pyo3::exceptions::PyRuntimeError::new_err(format!(
@@ -3371,7 +3464,7 @@ fn store_repair(py: Python<'_>, db_path: &str) -> PyResult<PyObject> {
     use crate::storage::{classify_v2_concept, CodeGraphStore, V2ConceptClass};
     let db = db_path.to_string();
     let outcome = py.allow_threads(
-        move || -> std::result::Result<(usize, usize, usize, usize), String> {
+        move || -> std::result::Result<(usize, usize, usize, usize, usize), String> {
             let store = CodeGraphStore::open(&db).map_err(|e| format!("{e:?}"))?;
             let live = store
                 .live_concept_contents()
@@ -3386,17 +3479,24 @@ fn store_repair(py: Python<'_>, db_path: &str) -> PyResult<PyObject> {
                 }
             }
             let (retired, edges) = store.retire_v1_leftovers().map_err(|e| format!("{e:?}"))?;
-            Ok((v1, unreadable, retired, edges))
+            let legacy_ids = legacy_spelled_concept_ids(&store)
+                .map_err(|e| format!("{e:?}"))?
+                .len();
+            Ok((v1, unreadable, retired, edges, legacy_ids))
         },
     );
-    let (v1_live, unreadable_live, v1_retired, edges_retired) = outcome.map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("store repair failed for {db_path}: {e}"))
-    })?;
+    let (v1_live, unreadable_live, v1_retired, edges_retired, legacy_live) =
+        outcome.map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "store repair failed for {db_path}: {e}"
+            ))
+        })?;
     let dict = PyDict::new(py);
     dict.set_item("v1_found", v1_live)?;
     dict.set_item("v1_retired", v1_retired)?;
     dict.set_item("edges_retired", edges_retired)?;
     dict.set_item("unreadable_live", unreadable_live)?;
+    dict.set_item("legacy_ids", legacy_live)?;
     Ok(dict.into())
 }
 
@@ -3729,11 +3829,27 @@ mod tests {
     }
 
     #[test]
+    /// Plan 5.1: only the two spellings the old canonical form minted count
+    /// as migration candidates — a name-like head or an outside-root path is
+    /// odd, not legacy, and must not trigger a re-analyze.
+    #[test]
+    fn legacy_spelled_ids_are_the_noncanonical_heads() {
+        assert!(is_legacy_spelled_id(r".\pkg\x.py::f"));
+        assert!(is_legacy_spelled_id("./pkg/x.py::f"));
+        assert!(is_legacy_spelled_id(r".\x.py::module"));
+        assert!(!is_legacy_spelled_id("pkg/x.py::f"));
+        assert!(!is_legacy_spelled_id("external::len"));
+        assert!(!is_legacy_spelled_id("Date::now"));
+        assert!(!is_legacy_spelled_id("main"));
+        assert!(is_legacy_spelled_id(r"D:\outside\x.py::f"));
+        assert!(is_legacy_spelled_id("/outside/x.py::f"));
+    }
+
+    #[test]
     fn canonical_lookup_id_matrix() {
         // R2-16: file-backed heads converge to canonical form; names and
         // pseudo-targets pass through untouched (no global-root dependence
         // in the passthrough legs, so these hold under parallel tests).
-        let sep = std::path::MAIN_SEPARATOR;
         assert_eq!(
             canonical_lookup_id("external::combine"),
             "external::combine"
@@ -3741,12 +3857,11 @@ mod tests {
         assert_eq!(canonical_lookup_id("external::len"), "external::len");
         assert_eq!(canonical_lookup_id("Date::now"), "Date::now");
         assert_eq!(canonical_lookup_id("main"), "main");
-        assert_eq!(
-            canonical_lookup_id("main.py::main"),
-            format!(".{sep}main.py::main")
-        );
-        let canon = format!(".{sep}main.py::main");
-        assert_eq!(canonical_lookup_id(&canon), canon);
+        assert_eq!(canonical_lookup_id("main.py::main"), "main.py::main");
+        // Legacy spellings from stores written before the plan-5.1 migration
+        // still resolve to the canonical id.
+        assert_eq!(canonical_lookup_id(".\\main.py::main"), "main.py::main");
+        assert_eq!(canonical_lookup_id("./main.py::main"), "main.py::main");
     }
 
     #[test]

@@ -139,13 +139,18 @@ for finding in get_smells(rule_id="god-class"):
 
 ### Entity IDs
 
-Stored ids are canonical root-relative form: `.<relative-path>::<Qualified.name>`
-with native separators (`.\src\auth.py::validate_user` on Windows,
-`./src/auth.py::validate_user` elsewhere) — minted at write time by every
-path: analyze, `update_file`, and the store migration, so `analyze(".")`
-and `analyze(<abs-root>)` produce identical keys. Pasted variants (absolute
-paths, forward slashes, missing `./` prefix) resolve back to the stored key
-at every tool boundary, but prefer the canonical form in scripts.
+Stored ids are canonical root-relative form: `<relative-path>::<Qualified.name>`
+with forward slashes and no `./` prefix
+(`src/auth.py::validate_user`) — one spelling on every platform, so ids
+saved in a snapshot, baseline or CI artefact on one OS resolve on another.
+The form is minted at write time by every path (analyze, `update_file`, the
+store migration), so `analyze(".")` and `analyze(<abs-root>)` produce
+identical keys. Pasted variants (absolute paths, backslashes, a leading
+`./`) still resolve at every tool boundary, but prefer the canonical form in
+scripts. A store written before 0.10 spells ids the old way
+(`.\src\auth.py::validate_user`); `load` refuses it rather than serving a
+half-broken graph, and the next analyze re-keys it (`coderadar store-repair`
+reports the count).
 
 ## MCP Server
 
@@ -179,17 +184,18 @@ not assume the cwd is the project:
   awaiting one during `initialize` deadlocks, so it is asked lazily on the
   first tool call — once, and only if nothing on disk confirmed the root.
 - **Entity-id grammar.** Every tool speaks one id shape:
-  `.<relative-path>::<Qualified.name>` — dot-prefix, project-root-relative,
-  native separators (`.\app\helpers.py::combine`; methods as
+  `<relative-path>::<Qualified.name>` — project-root-relative, forward
+  slashes, no dot prefix (`app/helpers.py::combine`; methods as
   `File::Class.member`, modules as `File::module`). Read paths also accept
-  absolute paths, forward slashes, and a missing dot-prefix; `external::name`
-  marks a callee outside the index (it resolves nothing further). Search
-  `kind` is one of `function | class | type_alias | constant | module |
-  import`; smell `strictness` is `strict | normal | loose` — anything else
-  errors instead of returning empty.
+  absolute paths, backslashes, and a leading `./`, and a dotted qualified
+  name (`app.helpers.combine`) resolves when a module prefix matches;
+  `external::name` marks a callee outside the index (it resolves nothing
+  further). Search `kind` is one of `function | class | type_alias |
+  constant | module | import`; smell `strictness` is `strict | normal |
+  loose` — anything else errors instead of returning empty.
 - **Same directory as the index.** The process moves onto the resolved root
   before indexing, because entity ids are canonical root-relative form
-  (`.\src\auth.py::validate_user`) and every read helper — Rust or Python
+  (`src/auth.py::validate_user`) and every read helper — Rust or Python
   — resolves them against the recorded indexed root, never the cwd.
 - **Fast handshake.** Indexing runs on a background thread; a tool call that
   arrives early waits, then reports elapsed seconds rather than answering from

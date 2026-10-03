@@ -77,19 +77,15 @@ impl CodeGraph {
     /// Clear embedding vectors for all entities in a file.
     /// Called after mutation to invalidate stale embeddings.
     pub fn clear_embeddings_for_file(&self, file_path: &str) {
-        let normalized = file_path
-            .replace('/', std::path::MAIN_SEPARATOR_STR)
-            .replace('\\', std::path::MAIN_SEPARATOR_STR);
-        // Try both with and without ./ prefix (cross-platform path variance)
-        let module_id_a = format!("{}::module", normalized);
-        let module_id_b = format!(
-            ".{}{}::module",
-            std::path::MAIN_SEPARATOR_STR,
-            normalized
-                .trim_start_matches('.')
-                .trim_start_matches(std::path::MAIN_SEPARATOR)
-        );
-        let module_id_c = format!("./{}::module", normalized.replace("\\", "/"));
+        // Canonical ids are forward-slash root-relative (§5.1); the dot-prefixed
+        // and backslashed spellings are kept as lookup fallbacks for stores
+        // written before the migration.
+        let canonical = super::module_resolution::canonical_file_form(file_path);
+        let normalized = file_path.replace('\\', "/").replace('/', "/");
+        let normalized = normalized.trim_start_matches("./").to_string();
+        let module_id_a = format!("{canonical}::module");
+        let module_id_b = format!("./{normalized}::module");
+        let module_id_c = format!(".\\{}::module", normalized.replace('/', "\\"));
         let candidates = [&module_id_a, &module_id_b, &module_id_c];
         let mut projection = (*self.snapshot()).clone();
         for candidate in &candidates {
@@ -146,6 +142,10 @@ impl CodeGraph {
         let mut projection = (*self.snapshot()).clone();
         let mut applied = 0usize;
         for (module_id, names) in entries {
+            // Accept any spelling the caller has (absolute, native
+            // separators, legacy dot prefix): ids are canonical since the
+            // plan-5.1 migration and callers should not have to know.
+            let module_id = crate::canonical_lookup_id(&module_id);
             if let Some(module) = projection.modules.get_mut(&module_id) {
                 Arc::make_mut(module).star_exports = Some(names);
                 applied += 1;

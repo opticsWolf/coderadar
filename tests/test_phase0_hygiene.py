@@ -84,7 +84,8 @@ def project(tmp_path, monkeypatch):
 
 
 def _fid(name):
-    return os.path.join(".", "mod.py") + "::" + name
+    # Canonical ids: root-relative, forward slashes, no dot prefix (plan 5.1).
+    return "mod.py::" + name
 
 
 # -- 0.2 / 0.3 ---------------------------------------------------------------
@@ -122,7 +123,7 @@ def test_added_function_is_reported(project):
     added = [(s.kind, s.operation, s.qualified_name) for s in report.changed_symbols]
     assert ("function", "added", _fid("fresh")) in added
     assert all(op == "added" for _, op, _ in added), added
-    assert all(s.file == os.path.join(".", "mod.py") for s in report.changed_symbols)
+    assert all(s.file == "mod.py" for s in report.changed_symbols)
 
 
 def test_removed_function_is_reported(project):

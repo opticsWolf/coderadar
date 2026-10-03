@@ -36,7 +36,9 @@ def _sites(func_id):
 
 
 def _fid(file, qualname):
-    return os.path.join(".", file) + "::" + qualname
+    # Canonical ids are forward-slash root-relative with no dot prefix
+    # (plan 5.1).
+    return file.replace(os.sep, "/") + "::" + qualname
 
 
 def _site(func_id, name, line=None):
@@ -314,8 +316,8 @@ def test_pytest_fixture_parameters_are_typed(tmp_path, monkeypatch):
     ''').encode())
     monkeypatch.chdir(tmp_path)
     coderadar.analyze(str(tmp_path))
-    rel = os.path.join(".", "tests", "test_x.py")
-    add = os.path.join(".", "dock.py") + "::DockManager.add"
+    rel = "tests/test_x.py"
+    add = "dock.py::DockManager.add"
     for fn in ("test_a", "test_b", "test_c"):
         site = _site(rel + "::" + fn, "add")
         assert site["target"] == add, (fn, site)
@@ -345,7 +347,7 @@ def test_module_constants_are_extracted(tmp_path, monkeypatch):
 
         AFTER_CLASS = 9
     '''})
-    kids = _core.module_children(os.path.join(".", "m.py") + "::module")
+    kids = _core.module_children("m.py::module")
     names = {c["name"] for c in kids["constants"]}
     assert names == {"LIMIT", "DEFAULT_NAME", "typed", "AFTER_CLASS"}
 
@@ -392,7 +394,7 @@ def test_callbacks_keep_functions_alive_without_becoming_callers(tmp_path, monke
             main()
     '''})
     dead = {d["entity_id"] for d in _core.find_dead_code(0.0, False, 100)}
-    ref = lambda n: os.path.join(".", "m.py") + "::" + n
+    ref = lambda n: "m.py::" + n
     for live in ("on_done", "key_fn", "table_handler", "Panel._on_click"):
         assert ref(live) not in dead, live
     assert ref("_truly_dead") in dead

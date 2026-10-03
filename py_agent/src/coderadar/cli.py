@@ -665,9 +665,19 @@ def store_repair(db_path: str, delete: bool):
     console.print(f"  v1 leftovers retired: {rep.get('v1_retired', 0)}")
     console.print(f"  edges retired:        {rep.get('edges_retired', 0)}")
     console.print(f"  unreadable rows:      {rep.get('unreadable_live', 0)}")
+    legacy = rep.get("legacy_ids", 0)
+    if legacy:
+        console.print(f"  pre-0.10 id spellings: {legacy}")
     if rep.get('unreadable_live', 0):
         console.print("[yellow]Unreadable rows cannot be retired — if cold load still "
                         "fails, re-run with --delete.[/yellow]")
+    elif legacy:
+        console.print(
+            f"[yellow]{legacy} concept id(s) predate the 0.10 canonical form "
+            "(forward slashes, no './' prefix) — the store will not load until "
+            "re-analyzed. Run `coderadar analyze` (or let cold start do it) to "
+            "re-key them.[/yellow]"
+        )
     elif not rep.get('v1_found', 0):
         console.print("[green]OK[/green]  Store is clean — nothing to retire.")
     else:

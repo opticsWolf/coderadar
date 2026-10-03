@@ -86,6 +86,44 @@ def _open_concepts(db: Path):
         con.close()
 
 
+def _rekey_store_to_legacy_ids(db: Path) -> None:
+    """Rewrite live concept ids to the pre-0.10 spelling (plan 5.1).
+
+    A 0.9.4 store spelled every id with a dot prefix and native separators
+    (``.\\pkg\\x.py::f``); the content JSON carries its own copy of the id
+    and path. Rewriting both reproduces one, and the macrame monotonic
+    trigger requires a strictly increasing ``recorded_at`` per update.
+    """
+    import datetime
+
+    fmt = "%Y-%m-%dT%H:%M:%S.%fZ"
+    con = sqlite3.connect(str(db))
+    try:
+        con.execute("PRAGMA foreign_keys = OFF")
+        rows = con.execute(
+            "SELECT id, content, recorded_at FROM concepts WHERE retired = 0"
+        ).fetchall()
+        assert rows, "no open concepts in store"
+        base = max(datetime.datetime.strptime(ra, fmt) for *_, ra in rows)  # noqa: DTZ007
+        for i, (cid, content, _) in enumerate(rows):
+            head, sep, tail = cid.partition("::")
+            legacy_head = "." + os.sep + head.replace("/", os.sep)
+            legacy_id = legacy_head + (sep + tail if sep else "")
+            data = json.loads(content)
+            data["id"] = legacy_id
+            if "path" in data:
+                data["path"] = legacy_head
+            ts = (base + datetime.timedelta(microseconds=i + 1)).strftime(fmt)
+            con.execute(
+                "UPDATE concepts SET id = ?, content = ?, recorded_at = ? "
+                "WHERE id = ?",
+                (legacy_id, json.dumps(data), ts, cid),
+            )
+        con.commit()
+    finally:
+        con.close()
+
+
 # ── Subprocess leg script ─────────────────────────────────────────────────
 LEG_SCRIPT = r"""
 import json, sys
@@ -528,3 +566,64 @@ def test_store_db_path_absolute_config(tmp_path):
     (tmp_path / ".coderadar.toml").write_text(
         f"[database]\npath = {str(other)!r}\n", encoding="utf-8")
     assert _cli._store_db_path(tmp_path) == other
+
+
+def test_pre_010_id_store_is_refused_with_the_migration_path(tmp_path):
+    """Plan 5.1: ids are canonical (forward slashes, no './'). A store that
+    still holds the old spellings cannot answer id lookups, so `load` says so
+    instead of serving a half-broken graph."""
+    proj = _copy_fixture(tmp_path / "proj")
+    coderadar.analyze(str(proj), create_store=True)
+    db = _default_db(proj)
+    _rekey_store_to_legacy_ids(db)
+    with pytest.raises(RuntimeError, match="canonical id format"):
+        coderadar.load(str(db), str(proj))
+
+
+LEGACY_FALLBACK_SCRIPT = r"""
+import json, os, sqlite3, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+proj = Path(sys.argv[2]); db = proj / ".coderadar" / "store" / "coderadar.db"
+import datetime
+fmt = "%Y-%m-%dT%H:%M:%S.%fZ"
+con = sqlite3.connect(str(db))
+con.execute("PRAGMA foreign_keys = OFF")
+rows = con.execute(
+    "SELECT id, content, recorded_at FROM concepts WHERE retired = 0").fetchall()
+base = max(datetime.datetime.strptime(ra, fmt) for *_, ra in rows)
+for i, (cid, content, _) in enumerate(rows):
+    head, sep, tail = cid.partition("::")
+    legacy_head = "." + os.sep + head.replace("/", os.sep)
+    data = json.loads(content)
+    data["id"] = legacy_head + (sep + tail if sep else "")
+    if "path" in data:
+        data["path"] = legacy_head
+    ts = (base + datetime.timedelta(microseconds=i + 1)).strftime(fmt)
+    con.execute("UPDATE concepts SET id = ?, content = ?, recorded_at = ? "
+                "WHERE id = ?", (data["id"], json.dumps(data), ts, cid))
+con.commit(); con.close()
+
+from coderadar.cli import _ensure_graph
+from coderadar._core import graph_stats, search_entities
+_ensure_graph(str(proj))
+stats = graph_stats()
+assert stats["modules"] == 7, stats
+ids = [e["id"] for e in search_entities("", 1000, "function")]
+assert ids, ids
+assert all(not i.startswith(".") and "\\" not in i for i in ids), ids
+print("OK")
+"""
+
+
+def test_cold_start_rekeys_a_pre_010_store(tmp_path):
+    """The upgrade path: a store from 0.9.4 fails to load, the fallback
+    analyze re-keys it, and every id comes back canonical."""
+    proj = _copy_fixture(tmp_path / "proj")
+    _run_leg("A", proj, tmp_path / "init.json")
+    proc = subprocess.run(
+        [sys.executable, "-c", LEGACY_FALLBACK_SCRIPT, str(SRC), str(proj)],
+        capture_output=True, text=True, timeout=600, check=False,
+    )
+    assert proc.returncode == 0, (proc.stdout, proc.stderr)
+    assert "OK" in proc.stdout
