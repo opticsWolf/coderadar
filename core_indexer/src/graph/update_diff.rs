@@ -33,21 +33,26 @@ pub fn diff_file(old: &ProjectedGraph, new: &ProjectedGraph, file_path: &str) ->
     let mut out = FileDiff::default();
 
     // Functions: keyed by normalized id so OS separators cannot fake a change.
-    let funcs = |g: &ProjectedGraph| -> std::collections::BTreeMap<String, (EntityId, usize, u64, u64)> {
-        g.functions
-            .iter()
-            .filter(|(id, _)| in_file(id, &prefix))
-            .map(|(id, f)| {
-                (
-                    normalize_path_str(id),
-                    (id.clone(), f.line, f.signature_hash, f.body_hash),
-                )
-            })
-            .collect()
-    };
+    let funcs =
+        |g: &ProjectedGraph| -> std::collections::BTreeMap<String, (EntityId, usize, u64, u64)> {
+            g.functions
+                .iter()
+                .filter(|(id, _)| in_file(id, &prefix))
+                .map(|(id, f)| {
+                    (
+                        normalize_path_str(id),
+                        (id.clone(), f.line, f.signature_hash, f.body_hash),
+                    )
+                })
+                .collect()
+        };
     let (old_f, new_f) = (funcs(old), funcs(new));
     for (key, (id, line, sig, body)) in &new_f {
-        let name = new.functions.get(id).map(|f| f.name.clone()).unwrap_or_default();
+        let name = new
+            .functions
+            .get(id)
+            .map(|f| f.name.clone())
+            .unwrap_or_default();
         match old_f.get(key) {
             None => out.symbols.push(SymbolChange {
                 kind: "function",
@@ -75,7 +80,11 @@ pub fn diff_file(old: &ProjectedGraph, new: &ProjectedGraph, file_path: &str) ->
     }
     for (key, (id, line, _, _)) in &old_f {
         if !new_f.contains_key(key) {
-            let name = old.functions.get(id).map(|f| f.name.clone()).unwrap_or_default();
+            let name = old
+                .functions
+                .get(id)
+                .map(|f| f.name.clone())
+                .unwrap_or_default();
             out.symbols.push(SymbolChange {
                 kind: "function",
                 operation: "removed",
@@ -87,16 +96,21 @@ pub fn diff_file(old: &ProjectedGraph, new: &ProjectedGraph, file_path: &str) ->
     }
 
     // Classes carry one content hash (no separate signature).
-    let classes = |g: &ProjectedGraph| -> std::collections::BTreeMap<String, (EntityId, usize, u64)> {
-        g.classes
-            .iter()
-            .filter(|(id, _)| in_file(id, &prefix))
-            .map(|(id, c)| (normalize_path_str(id), (id.clone(), c.line, c.content_hash)))
-            .collect()
-    };
+    let classes =
+        |g: &ProjectedGraph| -> std::collections::BTreeMap<String, (EntityId, usize, u64)> {
+            g.classes
+                .iter()
+                .filter(|(id, _)| in_file(id, &prefix))
+                .map(|(id, c)| (normalize_path_str(id), (id.clone(), c.line, c.content_hash)))
+                .collect()
+        };
     let (old_c, new_c) = (classes(old), classes(new));
     for (key, (id, line, hash)) in &new_c {
-        let name = new.classes.get(id).map(|c| c.name.clone()).unwrap_or_default();
+        let name = new
+            .classes
+            .get(id)
+            .map(|c| c.name.clone())
+            .unwrap_or_default();
         let operation = match old_c.get(key) {
             None => "added",
             Some((_, _, old_hash)) if old_hash != hash => "body_changed",
@@ -112,7 +126,11 @@ pub fn diff_file(old: &ProjectedGraph, new: &ProjectedGraph, file_path: &str) ->
     }
     for (key, (id, line, _)) in &old_c {
         if !new_c.contains_key(key) {
-            let name = old.classes.get(id).map(|c| c.name.clone()).unwrap_or_default();
+            let name = old
+                .classes
+                .get(id)
+                .map(|c| c.name.clone())
+                .unwrap_or_default();
             out.symbols.push(SymbolChange {
                 kind: "class",
                 operation: "removed",
@@ -139,6 +157,7 @@ pub fn diff_file(old: &ProjectedGraph, new: &ProjectedGraph, file_path: &str) ->
     out.new_unresolved = new_t.difference(&old_t).cloned().collect();
     out.newly_resolved = old_t.difference(&new_t).cloned().collect();
 
-    out.symbols.sort_by(|a, b| (a.line, &a.id).cmp(&(b.line, &b.id)));
+    out.symbols
+        .sort_by(|a, b| (a.line, &a.id).cmp(&(b.line, &b.id)));
     out
 }

@@ -294,7 +294,10 @@ impl ResolutionOrchestrator {
                 // self.method / cls.method / module.func / Class.method
                 let prefix = &call.path[0];
 
-                if prefix == "self" || prefix == "cls" || prefix == "this" || prefix.starts_with('<')
+                if prefix == "self"
+                    || prefix == "cls"
+                    || prefix == "this"
+                    || prefix.starts_with('<')
                 {
                     // Method call on self/cls/this — deferred to MRO walk
                     ResolvedCall::Unresolved {

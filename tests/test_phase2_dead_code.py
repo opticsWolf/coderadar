@@ -76,3 +76,81 @@ def test_smell_carries_score_signal(project):
     by_name = {f["entity_id"].rsplit("::", 1)[-1]: f for f in get_smells(None, "dead-code")}
     sig = by_name["_big_dead"]["signals"]
     assert sig["score"] > 0 and sig["removable_lines"] > 80
+
+
+# ── §2.3 — overrides of external bases are entry points ─────────────────
+
+EXTERNAL_SRC = '''
+from PySide6.QtWidgets import QWidget
+from typing import Protocol
+
+
+class DockWidget(QWidget):
+    def eventFilter(self, obj, event):
+        return False
+
+    def _dead_helper(self):
+        return 1
+
+
+class MenuTarget(Protocol):
+    def menu_target(self) -> str:
+        ...
+
+
+class Base(QWidget):
+    def eventFilter(self, obj, event):
+        return False
+
+
+class Derived(Base):
+    def eventFilter(self, obj, event):
+        return False
+'''
+
+
+def test_external_overrides_are_not_dead(tmp_path):
+    (tmp_path / "qt_app.py").write_text(EXTERNAL_SRC, encoding="utf-8")
+    analyze(str(tmp_path))
+    # entity_name is the bare method name, so key on the qualified id tail.
+    found = {f["entity_id"].rsplit("::", 1)[-1]: f for f in find_dead_code(0.0, False, 1000)}
+    # Virtual dispatch from outside the indexed root keeps these live.
+    for dispatched in ("DockWidget.eventFilter", "Base.eventFilter", "MenuTarget.menu_target"):
+        assert dispatched not in found, f"{dispatched} wrongly flagged dead"
+    # A private helper of a framework subclass is never a dispatch target.
+    assert "DockWidget._dead_helper" in found
+    # The outermost in-repo override of the external base is the dispatch
+    # target; the derived one is live only via never-instantiated dispatch.
+    assert found["Derived.eventFilter"]["kind"] == "rta-dead"
+
+
+ABC_SRC = '''
+from abc import ABC, abstractmethod
+
+
+class Shape(ABC):
+    @abstractmethod
+    def area(self):
+        ...
+
+    def describe(self):
+        return "shape"
+
+
+class Plain:
+    def _orphan(self):
+        return 1
+'''
+
+
+def test_abstract_declarations_are_not_dead(tmp_path):
+    (tmp_path / "shapes.py").write_text(ABC_SRC, encoding="utf-8")
+    analyze(str(tmp_path))
+    found = {f["entity_id"].rsplit("::", 1)[-1] for f in find_dead_code(0.0, False, 1000)}
+    assert "Shape.area" not in found
+    # ABC subclasses an external base, so its public members are dispatch
+    # candidates too (plan §2.3) — `describe` is not flagged.
+    assert "Shape.describe" not in found
+    # A plain class with no external base is not protected: `_orphan` stays
+    # a real finding.
+    assert "Plain._orphan" in found

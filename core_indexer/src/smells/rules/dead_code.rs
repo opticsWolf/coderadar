@@ -6,8 +6,8 @@
 
 use std::collections::HashMap;
 
-use crate::scoring::Tier;
 use crate::graph::deadcode::DeadKind;
+use crate::scoring::Tier;
 use crate::smells::rule::SmellRule;
 use crate::smells::types::{EvalContext, Finding, Scope, Severity};
 

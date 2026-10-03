@@ -53,10 +53,15 @@ impl<'a> TypeCtx<'a> {
                 .and_then(|ms| ms.iter().find(|(n, _)| n == name).map(|(_, id)| id.clone()))
         };
         find(class_id).or_else(|| {
-            self.projection.classes.get(class_id)?.mro.iter().find_map(|node| match node {
-                MroNode::Class(cid) => find(cid),
-                _ => None,
-            })
+            self.projection
+                .classes
+                .get(class_id)?
+                .mro
+                .iter()
+                .find_map(|node| match node {
+                    MroNode::Class(cid) => find(cid),
+                    _ => None,
+                })
         })
     }
 
@@ -79,11 +84,18 @@ impl<'a> TypeCtx<'a> {
     /// `Foo`, `"Foo"`, `Optional[Foo]`, `Foo | None`, `pkg.Foo`.
     pub fn class_of_annotation(&self, ann: &str, scope: &str) -> Option<EntityId> {
         let mut a = ann.trim().trim_matches(|c| c == '"' || c == '\'').trim();
-        if let Some(inner) = a.strip_prefix("Optional[").and_then(|s| s.strip_suffix(']')) {
+        if let Some(inner) = a
+            .strip_prefix("Optional[")
+            .and_then(|s| s.strip_suffix(']'))
+        {
             a = inner.trim();
         }
         let a = a.split('|').map(str::trim).find(|p| *p != "None")?;
-        if a.is_empty() || !a.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+        if a.is_empty()
+            || !a
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        {
             return None;
         }
         let (path, name) = split_dotted(a);
@@ -93,7 +105,11 @@ impl<'a> TypeCtx<'a> {
     /// The class a binding's right-hand side (or annotation) evaluates to,
     /// read inside function `f`.
     fn type_of_binding(&self, f: &Function, b: &Binding, d: usize) -> Option<EntityId> {
-        if let Some(c) = b.annotation.as_deref().and_then(|a| self.class_of_annotation(a, &f.parent_module)) {
+        if let Some(c) = b
+            .annotation
+            .as_deref()
+            .and_then(|a| self.class_of_annotation(a, &f.parent_module))
+        {
             return Some(c);
         }
         if let Some(r) = &b.rhs {
@@ -130,7 +146,8 @@ impl<'a> TypeCtx<'a> {
         let fid = if path.is_empty() {
             find_symbol_in_module(self.projection, &f.parent_module, name)?
         } else {
-            let mid = find_module_by_dotted_name(self.projection, &path.join("."), &f.parent_module)?;
+            let mid =
+                find_module_by_dotted_name(self.projection, &path.join("."), &f.parent_module)?;
             find_symbol_in_module(self.projection, &mid, name)?
         };
         let callee = self.func(&fid)?;
@@ -164,7 +181,9 @@ impl<'a> TypeCtx<'a> {
     }
 
     fn is_untyped_param(&self, f: &Function, name: &str) -> bool {
-        f.parameters.iter().any(|p| p.name == name && p.annotation.is_none())
+        f.parameters
+            .iter()
+            .any(|p| p.name == name && p.annotation.is_none())
     }
 
     fn value_bindings<'b>(&self, fx: &'b Function) -> impl Iterator<Item = &'b Binding> {
@@ -176,10 +195,17 @@ impl<'a> TypeCtx<'a> {
     /// The pytest fixture `name` visible from `f`: its own module, then
     /// `conftest.py` in the same and each parent directory.
     fn fixture(&self, f: &Function, name: &str) -> Option<&'a Function> {
-        let is_fixture = |g: &Function| g.name == name && g.parent_class.is_none() && g.decorators.iter().any(|d| d.contains("fixture"));
+        let is_fixture = |g: &Function| {
+            g.name == name
+                && g.parent_class.is_none()
+                && g.decorators.iter().any(|d| d.contains("fixture"))
+        };
         let in_module = |module_id: &str| -> Option<&'a Function> {
             let m = self.projection.modules.get(module_id)?;
-            m.functions.iter().filter_map(|id| self.func(id)).find(|g| is_fixture(g))
+            m.functions
+                .iter()
+                .filter_map(|id| self.func(id))
+                .find(|g| is_fixture(g))
         };
         if let Some(g) = in_module(&f.parent_module) {
             return Some(g);
@@ -209,13 +235,20 @@ impl<'a> TypeCtx<'a> {
                 found.push(self.class_of_annotation(a, &f.parent_module));
             }
         }
-        for b in f.bindings.iter().filter(|b| b.target.len() == 1 && b.target[0] == name) {
+        for b in f
+            .bindings
+            .iter()
+            .filter(|b| b.target.len() == 1 && b.target[0] == name)
+        {
             found.push(self.type_of_binding(f, b, d));
         }
         if found.is_empty() && self.is_untyped_param(f, name) {
             // A fixture's value: every `return` / `yield` in it must agree.
             let fx = self.fixture(f, name)?;
-            found = self.value_bindings(fx).map(|b| self.type_of_binding(fx, b, d)).collect();
+            found = self
+                .value_bindings(fx)
+                .map(|b| self.type_of_binding(fx, b, d))
+                .collect();
         }
         unique(found)
     }
@@ -245,7 +278,11 @@ impl<'a> TypeCtx<'a> {
             }
             for (_, fid) in self.methods_by_class.get(cid).into_iter().flatten() {
                 let Some(m) = self.func(fid) else { continue };
-                for b in m.bindings.iter().filter(|b| b.target.len() == 2 && b.target[1] == attr) {
+                for b in m
+                    .bindings
+                    .iter()
+                    .filter(|b| b.target.len() == 2 && b.target[1] == attr)
+                {
                     found.push(self.type_of_binding(m, b, d));
                 }
             }
@@ -262,7 +299,10 @@ impl<'a> TypeCtx<'a> {
         let first = path.first()?;
         let mut t = if first == "self" || first == "cls" {
             f.parent_class.clone()?
-        } else if let Some(call) = first.strip_prefix("<call:").and_then(|s| s.strip_suffix('>')) {
+        } else if let Some(call) = first
+            .strip_prefix("<call:")
+            .and_then(|s| s.strip_suffix('>'))
+        {
             let (p, n) = split_dotted(call);
             self.call_result(f, &p, n, d + 1)?
         } else {
@@ -280,14 +320,18 @@ impl<'a> TypeCtx<'a> {
         let f = self.func(fid)?;
         let is_plain_callable = |id: &str| {
             self.func(id).is_some_and(|g| {
-                !g.decorators.iter().any(|d| d.contains("property") || d.contains(".setter"))
+                !g.decorators
+                    .iter()
+                    .any(|d| d.contains("property") || d.contains(".setter"))
             })
         };
         let target = if path.is_empty() {
             // A parameter or local of that name shadows any function.
             let shadows = |g: &Function| {
                 g.parameters.iter().any(|p| p.name == name)
-                    || g.bindings.iter().any(|b| b.target.len() == 1 && b.target[0] == name)
+                    || g.bindings
+                        .iter()
+                        .any(|b| b.target.len() == 1 && b.target[0] == name)
             };
             if shadows(f) {
                 return None;
@@ -309,7 +353,11 @@ impl<'a> TypeCtx<'a> {
             }
         } else if let Some(t) = self.type_of_path(f, path, 0) {
             self.method_of(&t, name)
-        } else if let Some(c) = self.class_of_ref(&f.parent_module, &path[..path.len() - 1], &path[path.len() - 1]) {
+        } else if let Some(c) = self.class_of_ref(
+            &f.parent_module,
+            &path[..path.len() - 1],
+            &path[path.len() - 1],
+        ) {
             self.method_of(&c, name)
         } else {
             find_module_by_dotted_name(self.projection, &path.join("."), &f.parent_module)

@@ -33,7 +33,10 @@ impl CodeGraph {
         let mut updates: Vec<(EntityId, Vec<EntityId>)> = Vec::new();
         for (id, f) in projection.functions.iter() {
             if let Some(fp) = scope_file {
-                let path = f.parent_module.rsplit_once("::").map_or(f.parent_module.as_str(), |(p, _)| p);
+                let path = f
+                    .parent_module
+                    .rsplit_once("::")
+                    .map_or(f.parent_module.as_str(), |(p, _)| p);
                 if path != fp {
                     continue;
                 }
@@ -56,7 +59,9 @@ impl CodeGraph {
             if let Some(arc) = projection.functions.get(&id) {
                 let mut updated = (**arc).clone();
                 updated.resolved_refs = targets;
-                projection.functions.insert(id, std::sync::Arc::new(updated));
+                projection
+                    .functions
+                    .insert(id, std::sync::Arc::new(updated));
             }
         }
     }
@@ -148,18 +153,21 @@ impl CodeGraph {
                     }
                     // `var.m()`, `self.attr.m()`, `f().m()`: type the receiver.
                     if !raw.path.is_empty() {
-                        if let Some(mid) =
-                            types.resolve_method_call(func_id, &raw.path, &raw.name)
+                        if let Some(mid) = types.resolve_method_call(func_id, &raw.path, &raw.name)
                         {
                             return crate::types::ResolvedCall::Function(mid);
                         }
                     }
                     // `mod.f()` / `pkg.sub.f()` where the dotted prefix names an
                     // imported module: look `f` up inside that module.
-                    if !on_self && !raw.path.is_empty() && !raw.path.iter().any(|s| s.starts_with('<'))
+                    if !on_self
+                        && !raw.path.is_empty()
+                        && !raw.path.iter().any(|s| s.starts_with('<'))
                     {
                         let dotted = raw.path.join(".");
-                        if let Some(mid) = find_module_by_dotted_name(projection, &dotted, &parent_module) {
+                        if let Some(mid) =
+                            find_module_by_dotted_name(projection, &dotted, &parent_module)
+                        {
                             if let Some(id) = find_symbol_in_module(projection, &mid, &raw.name) {
                                 return if projection.classes.contains_key(&id) {
                                     crate::types::ResolvedCall::Constructor(id)
@@ -222,7 +230,8 @@ impl CodeGraph {
                 // Instantiation runs `__init__` when the class (or a base)
                 // defines one; otherwise the edge lands on the class itself.
                 crate::types::ResolvedCall::Constructor(class_id) => {
-                    let target = method_of(class_id, "__init__").unwrap_or_else(|| class_id.clone());
+                    let target =
+                        method_of(class_id, "__init__").unwrap_or_else(|| class_id.clone());
                     edge_pairs.push((func_id.to_string(), target));
                 }
                 crate::types::ResolvedCall::Method { method, .. } => {

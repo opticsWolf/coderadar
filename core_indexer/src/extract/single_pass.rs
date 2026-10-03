@@ -351,13 +351,17 @@ impl<'a> CursorExtractor<'a> {
     /// Record type evidence from an assignment inside a function body:
     /// `m = Manager()`, `m: Manager = ...`, `self.ser = Serializer()`.
     fn emit_binding(&mut self, node: Node) {
-        let Some(idx) = self.current_function_idx else { return };
+        let Some(idx) = self.current_function_idx else {
+            return;
+        };
         if node.kind() != "assignment" {
             return;
         }
         let src = self.source;
         let text = |n: Node| n.utf8_text(src.as_bytes()).unwrap_or("").to_string();
-        let Some(left) = node.child_by_field_name("left") else { return };
+        let Some(left) = node.child_by_field_name("left") else {
+            return;
+        };
         let target = match left.kind() {
             "identifier" => vec![text(left)],
             "attribute" => {
@@ -378,16 +382,25 @@ impl<'a> CursorExtractor<'a> {
             return;
         }
         if let Some(ExtractedUnit::Function(f)) = self.units.get_mut(idx) {
-            f.bindings.push(Binding { target, rhs, expr, annotation });
+            f.bindings.push(Binding {
+                target,
+                rhs,
+                expr,
+                annotation,
+            });
         }
     }
 
     /// `return Foo()` / `return local.attr` / `yield value`: evidence for what
     /// the function evaluates to (a pytest fixture's value, a factory's result).
     fn emit_return_binding(&mut self, node: Node) {
-        let Some(idx) = self.current_function_idx else { return };
+        let Some(idx) = self.current_function_idx else {
+            return;
+        };
         let src = self.source;
-        let Some(value) = node.named_child(0) else { return };
+        let Some(value) = node.named_child(0) else {
+            return;
+        };
         let rhs = call_ref(value, src);
         let expr = expr_path(value, src);
         // `return None` is "no value", not a competing type; any other
@@ -395,7 +408,11 @@ impl<'a> CursorExtractor<'a> {
         if value.kind() == "none" {
             return;
         }
-        let target = if node.kind() == "yield" { "<yield>" } else { "<return>" };
+        let target = if node.kind() == "yield" {
+            "<yield>"
+        } else {
+            "<return>"
+        };
         if let Some(ExtractedUnit::Function(f)) = self.units.get_mut(idx) {
             f.bindings.push(Binding {
                 target: vec![target.to_string()],
@@ -415,13 +432,17 @@ impl<'a> CursorExtractor<'a> {
         }
         // Direct child of the module (`x = 1` statement), not nested in a
         // block, comprehension or class.
-        let top_level = node
-            .parent()
-            .is_some_and(|p| p.kind() == "module" || (p.kind() == "expression_statement" && p.parent().is_some_and(|m| m.kind() == "module")));
+        let top_level = node.parent().is_some_and(|p| {
+            p.kind() == "module"
+                || (p.kind() == "expression_statement"
+                    && p.parent().is_some_and(|m| m.kind() == "module"))
+        });
         if !top_level {
             return;
         }
-        let Some(name_node) = node.child_by_field_name("left") else { return };
+        let Some(name_node) = node.child_by_field_name("left") else {
+            return;
+        };
         if name_node.kind() != "identifier" {
             return;
         }
@@ -430,14 +451,19 @@ impl<'a> CursorExtractor<'a> {
         let name = text(name_node);
         let annotation = node.child_by_field_name("type").map(text);
         let upper = name.chars().any(|c| c.is_ascii_uppercase())
-            && name.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+            && name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
         if name.is_empty() || !(upper || annotation.is_some()) {
             return;
         }
         let default_value = node.child_by_field_name("right").map(|r| {
             let t = text(r);
             if t.len() > 200 {
-                let cut = (0..=200).rev().find(|&i| t.is_char_boundary(i)).unwrap_or(0);
+                let cut = (0..=200)
+                    .rev()
+                    .find(|&i| t.is_char_boundary(i))
+                    .unwrap_or(0);
                 format!("{}…", &t[..cut])
             } else {
                 t
@@ -449,8 +475,14 @@ impl<'a> CursorExtractor<'a> {
             annotation,
             source: SourceType::Impl,
             default_value,
-            span: ByteSpan { start: node.start_byte(), end: node.end_byte() },
-            name_span: ByteSpan { start: name_node.start_byte(), end: name_node.end_byte() },
+            span: ByteSpan {
+                start: node.start_byte(),
+                end: node.end_byte(),
+            },
+            name_span: ByteSpan {
+                start: name_node.start_byte(),
+                end: name_node.end_byte(),
+            },
         }));
     }
 
@@ -775,7 +807,8 @@ fn ref_of(node: Node, source: &str) -> Option<UnresolvedRef> {
             .utf8_text(source.as_bytes())
             .ok()?
             .to_string();
-        let path = crate::extract::walker::receiver_segments(node.child_by_field_name("object"), source);
+        let path =
+            crate::extract::walker::receiver_segments(node.child_by_field_name("object"), source);
         (name, path)
     } else {
         return None;
@@ -825,8 +858,8 @@ fn scan_subtree_for_fn_ref(
         // `on=handler`, `{"k": handler}`
         "keyword_argument" | "pair" => take(node.child_by_field_name("value")),
         // `f(handler, self.method)`, `[a, b]`, `{a, b}`, `(a, b)`
-        "argument_list" | "arguments" | "call_suffix" | "list" | "list_literal" | "set" | "tuple"
-        | "expression_list" => {
+        "argument_list" | "arguments" | "call_suffix" | "list" | "list_literal" | "set"
+        | "tuple" | "expression_list" => {
             for i in 0..node.named_child_count() {
                 take(node.named_child(i as u32));
             }

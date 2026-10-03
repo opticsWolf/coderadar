@@ -80,3 +80,8 @@ pythonpath = ["py_agent/src"]
 markers = [
     "slow: performance / benchmark tests that generate synthetic projects",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest-xdist>=3.8.0",
+]

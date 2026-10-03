@@ -588,11 +588,18 @@ pub(crate) fn receiver_segments(node: Option<Node>, source: &str) -> Vec<String>
         "identifier" => vec![text(n)],
         "attribute" => {
             let mut head = receiver_segments(n.child_by_field_name("object"), source);
-            head.push(n.child_by_field_name("attribute").map(text).unwrap_or_default());
+            head.push(
+                n.child_by_field_name("attribute")
+                    .map(text)
+                    .unwrap_or_default(),
+            );
             head
         }
         "call" => {
-            let callee = n.child_by_field_name("function").map(text).unwrap_or_default();
+            let callee = n
+                .child_by_field_name("function")
+                .map(text)
+                .unwrap_or_default();
             vec![format!("<call:{callee}>")]
         }
         _ => vec![text(n)],

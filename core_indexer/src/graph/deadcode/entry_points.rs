@@ -10,7 +10,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::types::{EntityId, FunctionKind, ProjectedGraph};
+use crate::types::{EntityId, FunctionKind, MroNode, ProjectedGraph};
 
 /// Decorators that mark a function as invoked by a framework/runtime, so an
 /// absent in-repo caller does NOT mean dead. One flat table; extend via this
@@ -126,6 +126,10 @@ pub struct EntryPoints {
 /// 1. conventional mains (free functions),
 /// 2. decorator-driven framework entries (production vs test tables),
 /// 3. dunder protocol methods (invoked by the runtime),
+/// 3c. overrides of external bases — virtual dispatch from code outside the
+///     indexed root (Qt `eventFilter`, Django `View.get`, `TestCase.setUp`),
+/// 3d. interface declarations — `typing.Protocol` members and
+///     `@abstractmethod` declarations are contract, not deletable code,
 /// 4. public top-level API of modules nobody imports (library surface).
 pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
     let mut production = HashSet::new();
@@ -155,6 +159,19 @@ pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
         .filter(|(_, users)| !users.is_empty())
         .map(|(mid, _)| mid)
         .collect();
+    // Method names defined per in-repo class (plan §2.3): the dispatch-target
+    // check asks whether any class below this one in the MRO defines the same
+    // name, i.e. whether the override targets something we can see.
+    let mut methods_by_class: std::collections::HashMap<&EntityId, HashSet<&str>> =
+        std::collections::HashMap::new();
+    for f in graph.functions.values() {
+        if let Some(cid) = f.parent_class.as_ref() {
+            methods_by_class
+                .entry(cid)
+                .or_default()
+                .insert(f.name.as_str());
+        }
+    }
 
     for (id, f) in &graph.functions {
         let in_tests = test_modules.contains(&f.parent_module);
@@ -196,6 +213,66 @@ pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
                 production.insert(id.clone());
             }
             continue;
+        }
+
+        // 3c/3d apply to methods only; the class carries the evidence.
+        if let Some(cls) = f
+            .parent_class
+            .as_ref()
+            .and_then(|cid| graph.classes.get(cid))
+        {
+            // 3c. Overrides of external bases (plan §2.3): the class's MRO
+            //     contains a base outside the indexed root, so the runtime
+            //     dispatches public methods from code we cannot see. Root a
+            //     public method — unless an in-repo class below in the MRO
+            //     defines the same name; then that visible override is the
+            //     dispatch target, and this method needs real callers (or
+            //     RTA) to be live. Private names are never dispatch targets
+            //     (external frameworks invoke documented public API), so a
+            //     dead private helper of a framework subclass is still
+            //     reported — rooting it would erase real findings.
+            let external_bases: Vec<&str> = cls
+                .mro
+                .iter()
+                .filter_map(|n| match n {
+                    MroNode::External { name } => Some(name.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let public_name = !f.name.starts_with('_');
+            if !external_bases.is_empty() && public_name {
+                let visible_override = cls.mro.iter().skip(1).any(|n| match n {
+                    MroNode::Class(cid) => methods_by_class
+                        .get(cid)
+                        .is_some_and(|names| names.contains(f.name.as_str())),
+                    MroNode::External { .. } => false,
+                });
+                if !visible_override {
+                    if in_tests {
+                        test_only.insert(id.clone());
+                    } else {
+                        production.insert(id.clone());
+                    }
+                    continue;
+                }
+            }
+
+            // 3d. Interface declarations (plan §2.3): `typing.Protocol`
+            //     members define an interface consumers implement elsewhere;
+            //     `@abstractmethod` (plain or `@abc.abstractmethod`) declares
+            //     a contract its subclasses fulfill. Neither is deletable
+            //     code.
+            let is_protocol_member = external_bases.contains(&"Protocol");
+            let is_abstract_decl = matches!(f.kind, FunctionKind::AbstractMethod)
+                || f.decorators.iter().any(|d| d.contains("abstractmethod"));
+            if is_protocol_member || is_abstract_decl {
+                if in_tests {
+                    test_only.insert(id.clone());
+                } else {
+                    production.insert(id.clone());
+                }
+                continue;
+            }
         }
 
         // 3b. Functions inside test modules with no inbound callers are test
