@@ -315,6 +315,7 @@ pub(crate) mod tests {
             imports_by_importer: HashMap::new(),
             callers_by_callee: HashMap::new(),
             callees_by_caller: HashMap::new(),
+            call_evidence: HashMap::new(),
             subclasses: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),

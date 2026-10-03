@@ -83,8 +83,14 @@ impl CodeGraph {
         projection: &ProjectedGraph,
         import_graph: &ImportGraph,
         orchestrator: &mut crate::resolve::orchestrator::ResolutionOrchestrator,
-    ) -> (Vec<crate::types::ResolvedCall>, Vec<(String, String)>) {
+    ) -> (
+        Vec<crate::types::ResolvedCall>,
+        Vec<(String, String)>,
+        Vec<((String, String), crate::types::ReceiverEvidence)>,
+    ) {
         let mut edge_pairs = Vec::new();
+        let mut evidence_pairs: Vec<((String, String), crate::types::ReceiverEvidence)> =
+            Vec::new();
 
         // MRO-aware method lookup: per-function
         let my_parent_class = projection
@@ -153,9 +159,17 @@ impl CodeGraph {
                     }
                     // `var.m()`, `self.attr.m()`, `f().m()`: type the receiver.
                     if !raw.path.is_empty() {
-                        if let Some(mid) = types.resolve_method_call(func_id, &raw.path, &raw.name)
-                        {
-                            return crate::types::ResolvedCall::Function(mid);
+                        match types.resolve_call_value(func_id, &raw.path, &raw.name) {
+                            Some(crate::types::CallTarget::Method(mid, ev)) => {
+                                evidence_pairs.push(((mid.clone(), func_id.to_string()), ev));
+                                return crate::types::ResolvedCall::Function(mid);
+                            }
+                            // Class-valued attribute: constructs the class held
+                            // in the attribute.
+                            Some(crate::types::CallTarget::Ctor(cid)) => {
+                                return crate::types::ResolvedCall::Constructor(cid);
+                            }
+                            None => {}
                         }
                     }
                     // `mod.f()` / `pkg.sub.f()` where the dotted prefix names an
@@ -246,7 +260,7 @@ impl CodeGraph {
             }
         }
 
-        (resolved, edge_pairs)
+        (resolved, edge_pairs, evidence_pairs)
     }
 
     /// Resolve calls scoped to a single file (or all if None).
@@ -489,6 +503,7 @@ impl CodeGraph {
             String,
             Vec<crate::types::ResolvedCall>,
             Vec<(String, String)>,
+            Vec<((String, String), crate::types::ReceiverEvidence)>,
         );
         let results: Vec<ResolveResult>;
 
@@ -519,7 +534,7 @@ impl CodeGraph {
                         let mut local = Vec::new();
                         let mut orch = ResolutionOrchestrator::with_config(import_cfg);
                         for (fid, calls, lkp) in &chunk_owned {
-                            let (rc, ep) = Self::resolve_one_function(
+                            let (rc, ep, ev) = Self::resolve_one_function(
                                 fid,
                                 calls,
                                 &lkp.0,
@@ -529,7 +544,7 @@ impl CodeGraph {
                                 import_graph,
                                 &mut orch,
                             );
-                            local.push((fid.clone(), rc, ep));
+                            local.push((fid.clone(), rc, ep, ev));
                         }
                         results_ref.lock().unwrap().extend(local);
                     });
@@ -541,7 +556,7 @@ impl CodeGraph {
             // Small work set — sequential (avoid thread overhead)
             let mut results_vec = Vec::new();
             for (fid, calls, lkp) in &all_work {
-                let (rc, ep) = Self::resolve_one_function(
+                let (rc, ep, ev) = Self::resolve_one_function(
                     fid,
                     calls,
                     &lkp.0,
@@ -551,13 +566,13 @@ impl CodeGraph {
                     import_graph_ref,
                     &mut orchestrator,
                 );
-                results_vec.push((fid.clone(), rc, ep));
+                results_vec.push((fid.clone(), rc, ep, ev));
             }
             results = results_vec;
         }
 
         // Phase C: Apply results to projection (sequential)
-        for (func_id, resolved, edge_pairs) in &results {
+        for (func_id, resolved, edge_pairs, evidence_pairs) in &results {
             if let Some(func_arc) = projection.functions.get(func_id.as_str()) {
                 if func_arc.resolved_calls != *resolved {
                     let mut updated = (**func_arc).clone();
@@ -579,6 +594,13 @@ impl CodeGraph {
                     .entry(target.clone())
                     .or_default()
                     .insert(source.clone());
+            }
+            // Receiver-typing provenance for the §2.4 weighting. Scoped runs
+            // re-resolve only the changed file's functions, so their entries
+            // override the previous tags for the same (callee, caller) pairs;
+            // pairs whose caller is gone vanish with the caller index.
+            for (key, ev) in evidence_pairs {
+                projection.call_evidence.insert(key.clone(), ev.clone());
             }
         }
     }

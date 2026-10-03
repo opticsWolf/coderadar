@@ -528,13 +528,19 @@ impl<'a> CursorExtractor<'a> {
             end: name_node.end_byte(),
         };
 
+        let default_value = node
+            .child_by_field_name("right")
+            .or_else(|| node.child_by_field_name("value"))
+            .and_then(|v| v.utf8_text(self.source.as_bytes()).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let idx = self.current_class_idx.unwrap();
         if let Some(ExtractedUnit::Class(ref mut class)) = self.units.get_mut(idx) {
             class.fields.push(ExtractedField {
                 name,
                 annotation,
                 source: SourceType::Impl,
-                default_value: None,
+                default_value,
                 is_class_var: true,
                 span,
                 name_span,

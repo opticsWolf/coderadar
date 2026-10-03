@@ -216,11 +216,17 @@ def dangling_targets(root: Path) -> list[str]:
 
 
 def format_report(name: str, m: dict) -> str:
-    lines = [f"{name}: {m['calls']} calls, extraction recall {m['extraction_recall']:.1%}, "
-             f"in-repo rate {m['in_repo_rate']:.1%}"]
+    lines = [
+        (
+            f"{name}: {m['calls']} calls, extraction recall {m['extraction_recall']:.1%}, "
+            f"in-repo rate {m['in_repo_rate']:.1%}"
+        )
+    ]
     for s, v in m["by_shape"].items():
         lines.append(f"  {s:8} {v['found']:5}/{v['total']:<5}")
     if m["annotated"]:
-        lines.append(f"  annotated {m['annotated']}: precision {m['resolution_precision']:.1%}, "
-                     f"recall {m['resolution_recall']:.1%}")
+        lines.append(
+            f"  annotated {m['annotated']}: precision {m['resolution_precision']:.1%}, "
+            f"recall {m['resolution_recall']:.1%}"
+        )
     return "\n".join(lines)

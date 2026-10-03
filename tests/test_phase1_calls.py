@@ -12,9 +12,8 @@ from __future__ import annotations
 import os
 import textwrap
 
-import pytest
-
 import coderadar
+import pytest
 
 try:
     from coderadar import _core

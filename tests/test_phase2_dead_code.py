@@ -121,6 +121,51 @@ def test_rta_dead_carries_class_evidence(tmp_path):
     assert any("never instantiated" in e for e in ev)
 
 
+def test_weak_fixture_edges_score_lower_than_strong_ones(tmp_path):
+    (tmp_path / "app.py").write_text(
+        "class Manager:\n"
+        "    def save_state(self):\n"
+        "        return 1\n\n"
+        "    def unaffected(self):\n"
+        "        return 2\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "conftest.py").write_text(
+        "import pytest\n\n"
+        "from app import Manager\n\n\n"
+        "@pytest.fixture\n"
+        "def make_manager():\n"
+        "    return Manager()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_weak.py").write_text(
+        "def test_save(make_manager):\n"
+        "    make_manager.save_state()\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "tests" / "test_strong.py").write_text(
+        "from app import Manager\n\n\n"
+        "def test_strong():\n"
+        "    m = Manager()\n"
+        "    assert m.unaffected() is not None\n",
+        encoding="utf-8",
+    )
+    analyze(str(tmp_path))
+    by_name = {f["entity_id"].rsplit("::", 1)[-1]: f for f in find_dead_code(0.0, True, 1000)}
+    # The fixture-typed edge is the ONLY evidence for save_state: reported,
+    # but never "live for sure" — score ×0.8 of the TestOnly base.
+    weak = by_name["Manager.save_state"]
+    assert weak["kind"] == "test-only"
+    assert any("inferred receiver types" in e for e in weak["evidence"])
+    assert weak["score"] == pytest.approx(0.5 * 1.0 * 0.8)
+    # Same position reached through a constructor-typed edge stays at the
+    # normal TestOnly score.
+    strong = by_name["Manager.unaffected"]
+    assert strong["score"] == pytest.approx(0.5 * 1.0)
+    assert not any("inferred receiver types" in e for e in strong["evidence"])
+
+
 # ── §2.3 — overrides of external bases are entry points ─────────────────
 
 EXTERNAL_SRC = '''

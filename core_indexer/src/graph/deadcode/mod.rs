@@ -142,11 +142,37 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
             ParseQuality::Tainted => 0.5,
         };
         let score = combine(&[kind.isolation(), quality]);
-        let evidence = base_evidence(graph, id, f, kind);
+        let mut evidence = base_evidence(graph, id, f, kind);
         let nearest_root_distance = if matches!(kind, DeadKind::TransitivelyDead) {
             distance_to_dead_chain_head(graph, id)
         } else {
             None
+        };
+
+        // Plan §2.4 weighting: a finding kept alive ONLY through weakly
+        // inferred receiver edges (pytest fixture / ambiguous chains) is not
+        // "live for sure" — report it, at ×0.8 of its evidence score. Edges
+        // without a tag (plain `name()` calls) stay strong.
+        let score = if matches!(kind, DeadKind::TestOnly) {
+            let all_weak = graph
+                .callers_by_callee
+                .get(id)
+                .map(|c| !c.is_empty())
+                .unwrap_or(false)
+                && graph.callers_by_callee[id].iter().all(|caller| {
+                    graph
+                        .call_evidence
+                        .get(&(id.clone(), caller.clone()))
+                        .is_some_and(|ev| ev.clone().is_weak())
+                });
+            if all_weak {
+                evidence.push("kept alive only by inferred receiver types (fixture)".to_string());
+                score * 0.8
+            } else {
+                score
+            }
+        } else {
+            score
         };
 
         out.push(DeadFinding {

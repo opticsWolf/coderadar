@@ -81,13 +81,16 @@ impl<'a> TypeCtx<'a> {
         self.projection.classes.contains_key(&id).then_some(id)
     }
 
-    /// `Foo`, `"Foo"`, `Optional[Foo]`, `Foo | None`, `pkg.Foo`.
+    /// `Foo`, `"Foo"`, `Optional[Foo]`, `type[Foo]`, `Foo | None`, `pkg.Foo`.
     pub fn class_of_annotation(&self, ann: &str, scope: &str) -> Option<EntityId> {
         let mut a = ann.trim().trim_matches(|c| c == '"' || c == '\'').trim();
         if let Some(inner) = a
             .strip_prefix("Optional[")
             .and_then(|s| s.strip_suffix(']'))
         {
+            a = inner.trim();
+        }
+        if let Some(inner) = a.strip_prefix("type[").and_then(|s| s.strip_suffix(']')) {
             a = inner.trim();
         }
         let a = a.split('|').map(str::trim).find(|p| *p != "None")?;
@@ -99,6 +102,9 @@ impl<'a> TypeCtx<'a> {
             return None;
         }
         let (path, name) = split_dotted(a);
+        // `class_of_ref` reads definitions AND re-export chains
+        // (`find_symbol_in_module` follows `from X import Name`), so
+        // imported annotations resolve without a separate lookup.
         self.class_of_ref(scope, &path, name)
     }
 
@@ -255,7 +261,10 @@ impl<'a> TypeCtx<'a> {
 
     /// Type of `self.<attr>` (or `obj.<attr>`) on a class: assignments in its
     /// methods and annotated class-level fields, each read in the scope of the
-    /// module that wrote it.
+    /// module that wrote it. A `type[X]` annotation is the static contract;
+    /// when the field's default is a concrete class name the default wins
+    /// (flask: `json_provider_class: type[JSONProvider] = DefaultJSONProvider`
+    /// dispatches constructions through `DefaultJSONProvider`, not the base).
     fn attr_type(&self, class_id: &str, attr: &str, d: usize) -> Option<EntityId> {
         if d > MAX_DEPTH {
             return None;
@@ -271,8 +280,24 @@ impl<'a> TypeCtx<'a> {
         for cid in &scan {
             if let Some(c) = self.projection.classes.get(cid) {
                 for fld in c.fields.iter().filter(|f| f.name == attr) {
+                    let type_shaped = fld
+                        .annotation
+                        .as_deref()
+                        .is_some_and(|a| a.trim_start().starts_with("type["));
+                    if type_shaped {
+                        let default = fld
+                            .default_value
+                            .as_deref()
+                            .and_then(|v| self.class_of_default(v, &c.parent_module));
+                        if default.is_some() {
+                            found.push(default);
+                            continue;
+                        }
+                    }
                     if let Some(a) = fld.annotation.as_deref() {
                         found.push(self.class_of_annotation(a, &c.parent_module));
+                    } else if let Some(dv) = fld.default_value.as_deref() {
+                        found.push(self.class_of_default(dv, &c.parent_module));
                     }
                 }
             }
@@ -288,6 +313,25 @@ impl<'a> TypeCtx<'a> {
             }
         }
         unique(found)
+    }
+
+    /// The class a field default types as: a bare/dotted identifier naming a
+    /// class (`DefaultJSONProvider` — the attr holds the class itself) or a
+    /// call of one (`Sub()` — the attr holds an INSTANCE of it). Either way
+    /// the class's methods answer for `attr.method()`, so both forms type as
+    /// the named class; a computed expression is unknown.
+    fn class_of_default(&self, text: &str, scope: &str) -> Option<EntityId> {
+        let t = text.trim();
+        let t = t.strip_suffix("()").unwrap_or(t).trim();
+        if t.is_empty()
+            || !t
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '.')
+        {
+            return None;
+        }
+        let (path, name) = split_dotted(t);
+        self.class_of_ref(scope, &path, name)
     }
 
     /// Type of a receiver path read inside `f`: `["self","ser"]`, `["m"]`,
@@ -368,9 +412,90 @@ impl<'a> TypeCtx<'a> {
     }
 
     /// The method a call `path.name(...)` made inside function `fid` binds to.
+    /// Kept for the direct call-edge path; the value path (with evidence and
+    /// construction fallback) is `resolve_call_value`.
     pub fn resolve_method_call(&self, fid: &str, path: &[String], name: &str) -> Option<EntityId> {
+        self.resolve_call_value(fid, path, name)
+            .and_then(|t| match t {
+                crate::types::CallTarget::Method(m, _) => Some(m),
+                crate::types::CallTarget::Ctor(_) => None,
+            })
+    }
+
+    /// A call `path.name(...)` either resolves to a method (`Method`, with
+    /// receiver evidence, plan v0.10 §1.2 step 3 / §2.4) or to a class
+    /// construction (`Ctor`) when the receiver attribute is class-valued:
+    /// `self.json_provider_class(self)` where `json_provider_class:
+    /// type[JSONProvider] = DefaultJSONProvider` constructs the default.
+    /// Class-valued-attr constructions only ever SUPPRESS RTA findings
+    /// (conservative: a wrong construction costs a finding, never creates
+    /// one). Evidence: the first segment decides — `self`/`cls` = the
+    /// caller's own MRO (self-attr); `<call:…>` = the callee's return; a
+    /// single identifier = binding (ctor-local), annotated parameter
+    /// (annotation), or pytest fixture when there is no binding and no
+    /// annotation; longer chains follow their first segment. Inference
+    /// sources are strong; only the fixture fallback is weak.
+    pub fn resolve_call_value(
+        &self,
+        fid: &str,
+        path: &[String],
+        name: &str,
+    ) -> Option<crate::types::CallTarget> {
+        use crate::types::CallTarget;
         let f = self.func(fid)?;
-        let t = self.type_of_path(f, path, 0)?;
-        self.method_of(&t, name)
+        let first = path.first()?;
+        let evidence = if first == "self" || first == "cls" {
+            ReceiverEvidence::SelfAttr
+        } else if first.starts_with("<call:") {
+            ReceiverEvidence::Return
+        } else if path.len() > 1 {
+            ReceiverEvidence::Annotation
+        } else {
+            let has_binding = f
+                .bindings
+                .iter()
+                .any(|b| b.target.len() == 1 && b.target[0] == *first);
+            let annotated_param = f
+                .parameters
+                .iter()
+                .any(|p| p.name == *first && p.annotation.is_some());
+            if has_binding {
+                ReceiverEvidence::ConstructorLocal
+            } else if annotated_param {
+                ReceiverEvidence::Annotation
+            } else if self.is_untyped_param(f, first) && self.fixture(f, first).is_some() {
+                ReceiverEvidence::Fixture
+            } else {
+                ReceiverEvidence::Annotation
+            }
+        };
+        let t = self.type_of_path(f, path, 0);
+        let t = t?;
+        if let Some(m) = self.method_of(&t, name) {
+            return Some(CallTarget::Method(m, evidence));
+        }
+        // The declared type doesn't define `name`, but exactly one subclass
+        // does: virtual dispatch lands there (the 0.10 §2.5 re-run — flask's
+        // `session_interface.save_session` is declared as the base type and
+        // only the subclass override exists). Several defining subclasses
+        // stay unresolved; liveness already extends via `overridden_by`.
+        let mut hits: Vec<EntityId> = self
+            .projection
+            .subclasses
+            .get(&t)
+            .into_iter()
+            .flatten()
+            .filter_map(|sub| self.method_of(sub, name))
+            .collect();
+        if hits.len() == 1 {
+            return Some(CallTarget::Method(hits.remove(0), evidence));
+        }
+        // Class-valued attribute holding a class: calling it constructs.
+        let c = self.attr_type(&t, name, 1);
+        let c = c?;
+        self.projection
+            .classes
+            .contains_key(&c)
+            .then_some(CallTarget::Ctor(c))
     }
 }

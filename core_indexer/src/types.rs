@@ -1348,6 +1348,55 @@ pub struct AmbiguousBase {
     pub candidates: Vec<EntityId>,
 }
 
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub enum ReceiverEvidence {
+    /// Constructor binding in the same scope: `m = Manager()` (§1.2).
+    ConstructorLocal,
+    /// Parameter/attribute annotation: `def f(m: Manager)`.
+    Annotation,
+    /// The caller's own MRO answered: `self.method()` / `cls.method()`.
+    SelfAttr,
+    /// A resolved callee's return annotation / `return Ctor()` typed the
+    /// call-receiver: `make_desk().m()`.
+    Return,
+    /// pytest fixture by parameter name — weak inference, weighable (§2.4).
+    Fixture,
+    /// Sources disagreed mid-chain. Weak, like fixture.
+    Ambiguous,
+}
+
+impl ReceiverEvidence {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ReceiverEvidence::ConstructorLocal => "ctor-local",
+            ReceiverEvidence::Annotation => "annotation",
+            ReceiverEvidence::SelfAttr => "self-attr",
+            ReceiverEvidence::Return => "return",
+            ReceiverEvidence::Fixture => "fixture",
+            ReceiverEvidence::Ambiguous => "ambiguous",
+        }
+    }
+
+    /// Weak evidence (plan §2.4): liveness resting on these alone is never
+    /// "live for sure" — a finding kept alive only by such edges scores
+    /// ×0.8.
+    pub fn is_weak(self) -> bool {
+        matches!(
+            self,
+            ReceiverEvidence::Fixture | ReceiverEvidence::Ambiguous
+        )
+    }
+}
+
+/// What a receiver-typed call `path.name(...)` resolves to: a method on the
+/// receiver's class, or a construction when the attribute is class-valued
+/// (`self.provider(...)` where `provider = DefaultJSONProvider`).
+#[derive(Clone, Debug)]
+pub enum CallTarget {
+    Method(EntityId, ReceiverEvidence),
+    Ctor(EntityId),
+}
+
 #[derive(Clone)]
 pub struct ProjectedGraph {
     pub modules: HashMap<EntityId, Arc<Module>>,
@@ -1373,6 +1422,12 @@ pub struct ProjectedGraph {
     pub imports_by_importer: HashMap<EntityId, BTreeSet<EntityId>>,
     pub callers_by_callee: HashMap<EntityId, BTreeSet<EntityId>>,
     pub callees_by_caller: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Receiver-typing provenance (plan §1.2 step 3, §2.4): 	`(callee -> caller)`
+    /// → how the call edge was inferred. In-memory only — the ledger persists
+    /// `resolved_calls`, not inference provenance — so a cold start loses the
+    /// tags and the §2.4 weighting then degrades to "strong" (no ×0.8). Never
+    /// tagged edges (plain `name()` calls) count as strong.
+    pub call_evidence: HashMap<(EntityId, EntityId), ReceiverEvidence>,
     pub subclasses: HashMap<EntityId, BTreeSet<EntityId>>,
     pub overridden_by: HashMap<EntityId, BTreeSet<EntityId>>,
     /// Forward override index: override method → (single) base method it

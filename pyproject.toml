@@ -72,6 +72,7 @@ line-length = 100
 exclude = [
     "tests/fixtures/**",
     "tests/cr_edit_tests/r2proj/**",
+    "tests/precision/fixtures/**",
 ]
 
 [tool.pytest.ini_options]
