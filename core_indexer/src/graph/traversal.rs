@@ -1,6 +1,23 @@
 use super::CodeGraph;
 use crate::types::*;
 
+/// One extracted call site and the resolver's verdict on it.
+#[derive(Clone, Debug)]
+pub(crate) struct CallSiteInfo {
+    pub name: String,
+    /// Receiver segments as extracted (`self.x.m()` -> `["self.x"]` today).
+    pub path: Vec<String>,
+    pub line: usize,
+    pub col: usize,
+    /// `function | method | constructor | builtin | external | unresolved |
+    /// pending` (pending = resolution has not run for this function).
+    pub status: &'static str,
+    /// Entity id (or name, for builtin/external) the call was bound to.
+    pub target: Option<String>,
+    /// `UnresolvedReason` for `unresolved` calls.
+    pub reason: Option<String>,
+}
+
 impl CodeGraph {
     // ── Traversal core (pure Rust, GIL-free, unit-testable) ──────────────
     // The lib.rs `traverse` pyfunction is a thin wrapper that validates args,
@@ -105,6 +122,40 @@ impl CodeGraph {
             }
         }
         out
+    }
+
+    /// Every call site extracted from a function, paired with how the
+    /// resolver classified it. `None` when the id is not a function. Unlike
+    /// `list_unresolved_targets` this includes resolved and builtin calls, so
+    /// "was this call extracted at all?" has an answer.
+    pub(crate) fn list_call_sites(snap: &ProjectedGraph, id: &str) -> Option<Vec<CallSiteInfo>> {
+        use crate::types::ResolvedCall as R;
+        let f = snap.functions.get(id)?;
+        let mut out = Vec::with_capacity(f.calls.len());
+        for (i, call) in f.calls.iter().enumerate() {
+            // `resolved_calls` is parallel to `calls` once resolution has run.
+            let (status, target, reason) = match f.resolved_calls.get(i) {
+                None => ("pending", None, None),
+                Some(R::Function(t)) => ("function", Some(t.clone()), None),
+                Some(R::Method { method, .. }) => ("method", Some(method.clone()), None),
+                Some(R::Constructor(t)) => ("constructor", Some(t.clone()), None),
+                Some(R::Builtin(n)) => ("builtin", Some(n.clone()), None),
+                Some(R::External(n)) => ("external", Some(n.clone()), None),
+                Some(R::Unresolved { reason, .. }) => {
+                    ("unresolved", None, Some(format!("{reason:?}")))
+                }
+            };
+            out.push(CallSiteInfo {
+                name: call.name.clone(),
+                path: call.path.clone(),
+                line: call.line,
+                col: call.col,
+                status,
+                target,
+                reason,
+            });
+        }
+        Some(out)
     }
 
     /// Names of the outgoing call targets the traversal cannot follow for

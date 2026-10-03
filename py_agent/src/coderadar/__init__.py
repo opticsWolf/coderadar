@@ -348,6 +348,18 @@ class CodeGraph:
         from .query import MacrameQuery
         return MacrameQuery(self).callees_of(entity_id)
 
+    def call_sites(self, entity_id: str) -> list[dict[str, Any]] | None:
+        """Every call site extracted from a function, with the resolver's verdict.
+
+        Rows are ``{name, path, line, col, status, target, reason}`` in source
+        order; ``status`` is one of function / method / constructor / builtin /
+        external / unresolved / pending. ``None`` when ``entity_id`` is not a
+        function. Unlike ``callees_of`` this shows the calls that did *not*
+        become edges.
+        """
+        from coderadar._core import call_sites
+        return call_sites(entity_id)
+
     def search_similar(
         self, query_embedding: list[float], top_k: int = 10,
     ) -> list[dict[str, Any]]:

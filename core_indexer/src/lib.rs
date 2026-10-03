@@ -54,6 +54,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(traverse, m)?)?;
     m.add_function(wrap_pyfunction!(traverse_unresolved, m)?)?;
     m.add_function(wrap_pyfunction!(unresolved_targets, m)?)?;
+    m.add_function(wrap_pyfunction!(call_sites, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entity, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -2611,6 +2612,39 @@ fn subgraph_bfs(
         }
     }
     out
+}
+
+/// Every call site extracted from one function and how the resolver classified
+/// it: a list of `{name, path, line, col, status, target, reason}` dicts, in
+/// source order. `status` is `function | method | constructor | builtin |
+/// external | unresolved | pending`; `target` is the bound entity id (or the
+/// name, for builtin/external); `reason` is set for `unresolved`. Returns
+/// `None` for an unknown entity. This is the ground for "was the call
+/// extracted at all" — `unresolved_targets` only lists the failures.
+#[pyfunction]
+fn call_sites(py: Python<'_>, entity_id: &str) -> PyResult<Option<Vec<PyObject>>> {
+    with_graph(|_graph, snap| {
+        let entity_id = canonical_entity_id(entity_id);
+        let Some(sites) = crate::graph::CodeGraph::list_call_sites(snap, &entity_id) else {
+            return Ok(None);
+        };
+        Ok(Some(
+            sites
+                .iter()
+                .map(|s| {
+                    let d = PyDict::new(py);
+                    let _ = d.set_item("name", &s.name);
+                    let _ = d.set_item("path", &s.path);
+                    let _ = d.set_item("line", s.line);
+                    let _ = d.set_item("col", s.col);
+                    let _ = d.set_item("status", s.status);
+                    let _ = d.set_item("target", &s.target);
+                    let _ = d.set_item("reason", &s.reason);
+                    d.into()
+                })
+                .collect(),
+        ))
+    })
 }
 
 /// Names behind the `traverse_unresolved` count (R2-12): the unresolved
