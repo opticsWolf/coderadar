@@ -135,6 +135,12 @@ pub struct ByteSpan {
     pub end: usize, // exclusive
 }
 
+impl Default for ByteSpan {
+    fn default() -> Self {
+        Self { start: 0, end: 0 }
+    }
+}
+
 impl ByteSpan {
     pub fn len(&self) -> usize {
         self.end.saturating_sub(self.start)
@@ -790,6 +796,13 @@ pub struct UnresolvedRef {
     pub path: Vec<String>,
     pub line: usize,
     pub col: usize,
+    /// Byte range of the *name* itself: `save_state` in `self.save_state(x)`.
+    /// `line`/`col` point at the start of the whole call, which cannot be
+    /// used to rewrite an attribute call in place (plan §4.1). Empty for
+    /// snapshots written before the field existed — consumers must treat an
+    /// empty span as "no name position known", not as offset zero.
+    #[serde(default)]
+    pub name_span: ByteSpan,
 }
 
 /// Evidence for the type of a name inside one function: `m = Manager()`,
@@ -1380,7 +1393,7 @@ impl ReceiverEvidence {
     /// Weak evidence (plan §2.4): liveness resting on these alone is never
     /// "live for sure" — a finding kept alive only by such edges scores
     /// ×0.8.
-    pub fn is_weak(self) -> bool {
+    pub fn is_weak(&self) -> bool {
         matches!(
             self,
             ReceiverEvidence::Fixture | ReceiverEvidence::Ambiguous

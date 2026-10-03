@@ -254,6 +254,38 @@ fn push_textual_backstop(
     }
 }
 
+/// Every method that overrides `method_id`, transitively (§4.2).
+///
+/// `overridden_by` is base → overrides; walking it from the renamed method
+/// collects the subclass overrides at every depth. Renaming a base without
+/// them leaves the subclasses overriding a name that no longer exists, and
+/// the `overrides` edge detaches silently.
+fn collect_override_family(projection: &ProjectedGraph, method_id: &str) -> Vec<String> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut stack = vec![method_id.to_string()];
+    let mut out: Vec<String> = Vec::new();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        if let Some(children) = projection.overridden_by.get(id.as_str()) {
+            for child in children {
+                if !seen.contains(child) {
+                    out.push(child.clone());
+                    stack.push(child.clone());
+                }
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// `pkg/mod.py::Class.method` → `Class.method`, for messages.
+fn short_entity_name(id: &str) -> String {
+    id.rsplit("::").next().unwrap_or(id).to_string()
+}
+
 /// xxh3_64 hex digest of a byte slice (used for stale-write rejection).
 fn span_hash(bytes: &[u8]) -> String {
     format!("{:016x}", xxhash_rust::xxh3::xxh3_64(bytes))
@@ -1040,26 +1072,15 @@ impl MutationEngine {
         affected: &mut Vec<String>,
         unverified: &mut Vec<UnverifiedSite>,
     ) {
-        let verified = line_col_to_byte(source, line, col)
-            .map(|start| ByteSpan {
-                start,
-                end: (start + name.len()).min(source.len()),
-            })
-            .filter(|span| span_holds_name(source, *span, name));
-
-        match verified {
-            Some(span) => {
-                edits.push(MutationEdit {
-                    file: file.to_string(),
-                    span,
-                    replacement: new_name.to_string(),
-                    expected_hash: hash_span(source, span),
-                });
-                if !affected.iter().any(|f| f == file) {
-                    affected.push(file.to_string());
-                }
+        let span = line_col_to_byte(source, line, col).map(|start| ByteSpan {
+            start,
+            end: (start + name.len()).min(source.len()),
+        });
+        match span {
+            Some(span) if span_holds_name(source, span, name) => {
+                Self::push_span_edit(source, file, span, name, new_name, edits, affected)
             }
-            None => unverified.push(UnverifiedSite {
+            _ => unverified.push(UnverifiedSite {
                 file: file.to_string(),
                 line: line as u32,
                 snippet: name.to_string(),
@@ -1069,6 +1090,34 @@ impl MutationEngine {
                     name, line, col
                 ),
             }),
+        }
+    }
+
+    /// Turn an already-located name span into an edit.
+    ///
+    /// The caller has established that the span is this name; a span that no
+    /// longer matches is a stale index, not something to overwrite.
+    #[allow(clippy::too_many_arguments)]
+    fn push_span_edit(
+        source: &[u8],
+        file: &str,
+        span: ByteSpan,
+        name: &str,
+        new_name: &str,
+        edits: &mut Vec<MutationEdit>,
+        affected: &mut Vec<String>,
+    ) {
+        if !span_holds_name(source, span, name) {
+            return;
+        }
+        edits.push(MutationEdit {
+            file: file.to_string(),
+            span,
+            replacement: new_name.to_string(),
+            expected_hash: hash_span(source, span),
+        });
+        if !affected.iter().any(|f| f == file) {
+            affected.push(file.to_string());
         }
     }
 
@@ -1105,20 +1154,32 @@ impl MutationEngine {
             let caller_source = read_project_file(&caller_file).into_bytes();
 
             for (i, rc) in caller_fn.resolved_calls.iter().enumerate() {
-                let targets_entity = match rc {
+                let matched_target = match rc {
                     ResolvedCall::Function(id)
                     | ResolvedCall::Method { method: id, .. }
-                    | ResolvedCall::Constructor(id) => targets.iter().any(|t| t == id),
-                    _ => false,
+                    | ResolvedCall::Constructor(id) => {
+                        targets.iter().any(|t| t == id).then_some(id.as_str())
+                    }
+                    _ => None,
                 };
-                if !targets_entity {
+                let Some(target_id) = matched_target else {
                     continue;
-                }
+                };
 
                 // resolved_calls is parallel to calls — use index i
                 let Some(call) = caller_fn.calls.get(i) else {
                     continue;
                 };
+
+                // §4.1: a receiver inferred from a pytest fixture name (or
+                // from sources that disagreed mid-chain) is a guess, so the
+                // edit goes to review instead of straight into the file.
+                // Strong evidence — constructor bindings, annotations,
+                // self/cls, return types — is proof enough to rewrite.
+                let weak_evidence = projection
+                    .call_evidence
+                    .get(&(target_id.to_string(), caller_id.clone()))
+                    .is_some_and(|evidence| evidence.is_weak());
 
                 if call.path.is_empty() {
                     Self::push_reference_edit(
@@ -1132,13 +1193,40 @@ impl MutationEngine {
                         affected,
                         unverified,
                     );
-                } else {
-                    // Method/attribute call `obj.foo()` — needs manual review
+                } else if weak_evidence {
                     unverified.push(UnverifiedSite {
                         file: caller_file.clone(),
                         line: call.line as u32,
                         snippet: format!("{}.{}", call.path.join("."), call.name),
-                        reason: "Method/attribute call-site rename needs manual review".into(),
+                        reason: "Receiver type inferred from a fixture/ambiguous binding — \
+                                 confirm this call site before renaming"
+                            .into(),
+                    });
+                } else if span_holds_name(&caller_source, call.name_span, &call.name) {
+                    // `obj.foo()` / `self.foo()`: the resolver proved the
+                    // target (receiver typing, self/cls, return type), so
+                    // the rename is a real edit — just the name, whose span
+                    // the extractor recorded separately from the call's
+                    // start (§1.1/§4.1).
+                    Self::push_span_edit(
+                        &caller_source,
+                        &caller_file,
+                        call.name_span,
+                        &call.name,
+                        new_name,
+                        edits,
+                        affected,
+                    );
+                } else {
+                    // No name position (or the file moved under the index):
+                    // still report it rather than silently skipping.
+                    unverified.push(UnverifiedSite {
+                        file: caller_file.clone(),
+                        line: call.line as u32,
+                        snippet: format!("{}.{}", call.path.join("."), call.name),
+                        reason: "Resolved method/attribute call-site, but the index has no \
+                                 name span for it — reindex to rename it automatically"
+                            .into(),
                     });
                 }
             }
@@ -1468,6 +1556,74 @@ impl MutationEngine {
             &mut unverified,
         )?;
 
+        // 2c. Override family (§4.2). `save_state` may exist on five
+        //     unrelated classes, but the ones in *this* hierarchy are one
+        //     operation: rename them together and say so.
+        let mut warnings: Vec<String> = Vec::new();
+        let family = collect_override_family(projection, entity_id);
+        if !family.is_empty() {
+            warnings.push(format!(
+                "`{}` is overridden {} level(s) deep — the overriding method(s) {} are renamed too",
+                fn_entity.name,
+                family.len(),
+                family
+                    .iter()
+                    .map(|id| format!("`{}`", short_entity_name(id)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            for member_id in &family {
+                let Some(member) = projection.functions.get(member_id.as_str()) else {
+                    continue;
+                };
+                let member_file = module_file_path(projection, &member.parent_module);
+                let member_source = read_project_file(&member_file).into_bytes();
+                if !span_holds_name(&member_source, member.name_span, &member.name) {
+                    warnings.push(format!(
+                        "`{}` was not renamed — its name span no longer matches disk; reindex and retry",
+                        short_entity_name(member_id)
+                    ));
+                    continue;
+                }
+                Self::push_span_edit(
+                    &member_source,
+                    &member_file,
+                    member.name_span,
+                    &member.name,
+                    new_name,
+                    &mut edits,
+                    &mut affected,
+                );
+                let _ = self.collect_call_site_edits(
+                    std::slice::from_ref(member_id),
+                    new_name,
+                    projection,
+                    &mut edits,
+                    &mut affected,
+                    &mut unverified,
+                )?;
+                let _ = self.collect_import_binding_edits(
+                    member_id,
+                    &member.name,
+                    new_name,
+                    projection,
+                    &mut edits,
+                    &mut affected,
+                    &mut unverified,
+                )?;
+            }
+        }
+        // A method that is itself an override: renaming only it detaches it
+        // from the base's family, so the base and its other overrides are
+        // left alone — deliberately, and out loud.
+        if let Some(base_id) = projection.overrides_base.get(entity_id) {
+            warnings.push(format!(
+                "`{}` overrides `{}`; the base method and its other overrides are NOT renamed —                  rename the base method to move the whole family",
+                fn_entity.name,
+                short_entity_name(base_id)
+            ));
+        }
+
         // 3. String-literal occurrences (only if include_strings=true)
         if include_strings {
             unverified.push(UnverifiedSite {
@@ -1501,6 +1657,16 @@ impl MutationEngine {
             String::new()
         };
 
+        // The family walk can reach the same span twice (an override and the
+        // base share importers); one edit per span.
+        edits.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then(a.span.start.cmp(&b.span.start))
+                .then(a.span.end.cmp(&b.span.end))
+        });
+        edits.dedup_by(|a, b| a.file == b.file && a.span == b.span);
+
         self.gate_plan_policy(MutationPlan {
             id: ulid::Ulid::new().to_string(),
             tool: "rename_symbol".to_string(),
@@ -1508,7 +1674,7 @@ impl MutationEngine {
             affected_files: affected,
             diff_preview: preview,
             unverified_sites: unverified,
-            warnings: Vec::new(),
+            warnings,
         })
     }
 

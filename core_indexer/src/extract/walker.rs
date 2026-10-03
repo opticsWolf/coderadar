@@ -514,6 +514,7 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
                 path: vec![],
                 line: id.start_position().row + 1,
                 col: id.start_position().column as usize,
+                name_span: node_span(id),
             })
         })
         .collect()
@@ -581,6 +582,14 @@ pub fn extract_go_receiver_type(node: Node, source: &str) -> Option<String> {
 /// `["a", "b", "c"]`. A receiver that is itself a call (`f().m()`, `a.f().m()`)
 /// becomes one `"<call:f>"` / `"<call:a.f>"` segment so the resolver can tell
 /// "result of a call" from a name. Anything else stays one text segment.
+/// Byte range of a tree-sitter node, for `UnresolvedRef::name_span`.
+pub(crate) fn node_span(node: Node) -> ByteSpan {
+    ByteSpan {
+        start: node.start_byte(),
+        end: node.end_byte(),
+    }
+}
+
 pub(crate) fn receiver_segments(node: Option<Node>, source: &str) -> Vec<String> {
     let Some(n) = node else { return vec![] };
     let text = |x: Node| x.utf8_text(source.as_bytes()).unwrap_or("").to_string();
@@ -625,8 +634,8 @@ pub fn emit_call_for_node(
     let col = node.start_position().column as u32;
 
     if node.kind() == "method_invocation" {
-        let method_name = node
-            .child_by_field_name("name")
+        let name_node = node.child_by_field_name("name");
+        let method_name = name_node
             .and_then(|n| n.utf8_text(source.as_bytes()).ok())
             .unwrap_or("")
             .to_string();
@@ -645,6 +654,7 @@ pub fn emit_call_for_node(
             path,
             line,
             col: col as usize,
+            name_span: name_node.map(node_span).unwrap_or_default(),
         });
         return;
     }
@@ -670,6 +680,7 @@ pub fn emit_call_for_node(
                     path: vec![],
                     line,
                     col: col as usize,
+                    name_span: node_span(n),
                 });
             }
         }
@@ -712,8 +723,8 @@ pub fn emit_call_for_node(
             } else {
                 "operand"
             };
-            let method = n
-                .child_by_field_name(method_field)
+            let method_node = n.child_by_field_name(method_field);
+            let method = method_node
                 .and_then(|c| c.utf8_text(source.as_bytes()).ok())
                 .unwrap_or("")
                 .to_string();
@@ -744,6 +755,7 @@ pub fn emit_call_for_node(
                     path,
                     line,
                     col: col as usize,
+                    name_span: method_node.map(node_span).unwrap_or_default(),
                 });
             }
         }
@@ -762,6 +774,7 @@ pub fn emit_call_for_node(
                                 path: vec![],
                                 line,
                                 col: col as usize,
+                                name_span: node_span(parent),
                             });
                         }
                     }

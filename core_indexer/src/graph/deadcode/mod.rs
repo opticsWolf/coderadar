@@ -163,7 +163,7 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
                     graph
                         .call_evidence
                         .get(&(id.clone(), caller.clone()))
-                        .is_some_and(|ev| ev.clone().is_weak())
+                        .is_some_and(|ev| ev.is_weak())
                 });
             if all_weak {
                 evidence.push("kept alive only by inferred receiver types (fixture)".to_string());

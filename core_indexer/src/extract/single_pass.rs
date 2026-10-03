@@ -30,11 +30,12 @@ fn call_ref(node: Node, src: &str) -> Option<UnresolvedRef> {
     }
     let text = |n: Node| n.utf8_text(src.as_bytes()).unwrap_or("").to_string();
     let f = node.child_by_field_name("function")?;
-    let (name, path) = match f.kind() {
-        "identifier" => (text(f), vec![]),
+    let (name, path, name_node) = match f.kind() {
+        "identifier" => (text(f), vec![], f),
         "attribute" => (
             text(f.child_by_field_name("attribute")?),
             crate::extract::walker::receiver_segments(f.child_by_field_name("object"), src),
+            f.child_by_field_name("attribute")?,
         ),
         _ => return None,
     };
@@ -43,6 +44,7 @@ fn call_ref(node: Node, src: &str) -> Option<UnresolvedRef> {
         path,
         line: node.start_position().row + 1,
         col: node.start_position().column,
+        name_span: node_span(name_node),
     })
 }
 
@@ -805,17 +807,18 @@ fn emit_docstring_node(node: Node, source: &str) -> Option<(usize, String, usize
 /// A function-valued reference: a bare name or (Python) a dotted receiver
 /// path ending in a name. `None` for any other expression.
 fn ref_of(node: Node, source: &str) -> Option<UnresolvedRef> {
-    let (name, path) = if is_identifier_kind(node.kind()) {
-        (node.utf8_text(source.as_bytes()).ok()?.to_string(), vec![])
+    let (name, path, name_node) = if is_identifier_kind(node.kind()) {
+        (
+            node.utf8_text(source.as_bytes()).ok()?.to_string(),
+            vec![],
+            node,
+        )
     } else if node.kind() == "attribute" {
-        let name = node
-            .child_by_field_name("attribute")?
-            .utf8_text(source.as_bytes())
-            .ok()?
-            .to_string();
+        let name_node = node.child_by_field_name("attribute")?;
+        let name = name_node.utf8_text(source.as_bytes()).ok()?.to_string();
         let path =
             crate::extract::walker::receiver_segments(node.child_by_field_name("object"), source);
-        (name, path)
+        (name, path, name_node)
     } else {
         return None;
     };
@@ -827,7 +830,16 @@ fn ref_of(node: Node, source: &str) -> Option<UnresolvedRef> {
         path,
         line: node.start_position().row + 1,
         col: node.start_position().column,
+        name_span: node_span(name_node),
     })
+}
+
+/// Byte range of a tree-sitter node.
+fn node_span(node: Node) -> ByteSpan {
+    ByteSpan {
+        start: node.start_byte(),
+        end: node.end_byte(),
+    }
 }
 
 /// Scan a function's subtree for function-as-value sites: call arguments,
@@ -892,4 +904,96 @@ fn is_identifier_kind(kind: &str) -> bool {
             | "field_identifier"
             | "shorthand_property_identifier"
     )
+}
+
+#[cfg(test)]
+mod call_name_span_tests {
+    use super::*;
+
+    fn python_tree(src: &str) -> tree_sitter::Tree {
+        let lang = crate::graph::CodeGraph::ts_language(&crate::types::Language::Python)
+            .expect("python grammar");
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&lang).unwrap();
+        parser.parse(src, None).expect("parse")
+    }
+
+    fn first_node_of_kind<'t>(
+        node: tree_sitter::Node<'t>,
+        kind: &str,
+    ) -> Option<tree_sitter::Node<'t>> {
+        if node.kind() == kind {
+            return Some(node);
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if let Some(found) = first_node_of_kind(child, kind) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The plan §4.1 blocker: `col` points at the receiver (`self.`), so a
+    /// rename has no way to address just the method name. `name_span` is that
+    /// address — verified against the source here, because an off-by-N span
+    /// would rewrite the wrong bytes.
+    #[test]
+    fn attribute_call_records_the_method_name_span() {
+        let src = "def f(self):\n    return self.save_state(1)\n";
+        let tree = python_tree(src);
+        let call = first_node_of_kind(tree.root_node(), "call").expect("call");
+        let reference = call_ref(call, src).expect("attribute calls are extracted");
+
+        assert_eq!(reference.name, "save_state");
+        assert_eq!(reference.path, vec!["self".to_string()]);
+        assert_eq!(
+            &src.as_bytes()[reference.name_span.start..reference.name_span.end],
+            b"save_state"
+        );
+        // The whole-call position is a different place in the line.
+        assert!(
+            reference.name_span.start > reference.col,
+            "the call column points at the receiver, not the name"
+        );
+    }
+
+    #[test]
+    fn bare_call_name_span_covers_the_name() {
+        let src = "def f():\n    return greet(1)\n";
+        let tree = python_tree(src);
+        let call = first_node_of_kind(tree.root_node(), "call").expect("call");
+        let reference = call_ref(call, src).expect("bare calls are extracted");
+
+        assert_eq!(reference.name, "greet");
+        assert!(reference.path.is_empty());
+        assert_eq!(
+            &src.as_bytes()[reference.name_span.start..reference.name_span.end],
+            b"greet"
+        );
+    }
+
+    /// Function-as-value references (`map(save_state, xs)`) are renamed too,
+    /// so they need the same address.
+    #[test]
+    fn function_as_value_records_the_name_span() {
+        let src = "def f(xs):\n    return map(save_state, xs)\n";
+        let tree = python_tree(src);
+        let attribute = first_node_of_kind(tree.root_node(), "identifier").expect("identifier");
+        let _ = attribute; // the first identifier is the function name `f`
+        let reference = ref_of(
+            first_node_of_kind(tree.root_node(), "argument_list")
+                .expect("argument_list")
+                .named_child(0)
+                .expect("first argument"),
+            src,
+        )
+        .expect("a bare name is a function-valued reference");
+
+        assert_eq!(reference.name, "save_state");
+        assert_eq!(
+            &src.as_bytes()[reference.name_span.start..reference.name_span.end],
+            b"save_state"
+        );
+    }
 }
