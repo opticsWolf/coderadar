@@ -17,9 +17,9 @@
 (call
   function: (identifier) @call.name) @call
 
+; Any receiver: `m.f()`, `self.a.f()`, `mod.sub.f()`, `g().f()`.
 (call
   function: (attribute
-    object: (identifier) @call.receiver
     attribute: (identifier) @call.method)) @call
 
 ;; ── Imports ─────────────────────────────────────────────────────────

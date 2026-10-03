@@ -69,13 +69,24 @@ def _callee_name(func: ast.expr) -> str | None:
 def _calls_in_functions(tree: ast.AST):
     """Yield (name, shape, line) for every call lexically inside a def."""
     def walk(node, in_def):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # Decorators, defaults and annotations run in the enclosing scope.
+            for part in (*node.decorator_list, node.args, node.returns):
+                if part is not None:
+                    yield from visit(part, in_def)
+            for stmt in node.body:
+                yield from visit(stmt, True)
+            return
         for child in ast.iter_child_nodes(node):
-            entering = isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-            if isinstance(child, ast.Call) and in_def:
-                shape, line = _shape(child.func)
-                yield _callee_name(child.func), shape, line
-            yield from walk(child, in_def or entering)
-    yield from walk(tree, False)
+            yield from visit(child, in_def)
+
+    def visit(node, in_def):
+        if isinstance(node, ast.Call) and in_def:
+            shape, line = _shape(node.func)
+            yield _callee_name(node.func), shape, line
+        yield from walk(node, in_def)
+
+    yield from visit(tree, False)
 
 
 def _function_ids(file_rel: str) -> list[str]:
@@ -140,6 +151,10 @@ def measure(root: Path) -> dict:
                 by_line[s["line"]].append(s)
             for line, want in expected.items():
                 cands = by_line.get(line, [])
+                if want not in ("external", "builtin"):
+                    # Several calls can share a line; judge the one named in the arrow.
+                    leaf = want.rsplit(".", 1)[-1]
+                    cands = [s for s in cands if s["name"] == leaf] or cands
                 ok_site = next((s for s in cands if _matches(s, want)), None)
                 if ok_site is not None:
                     res["tp"] += 1
@@ -180,6 +195,24 @@ def _matches(site: dict, want: str) -> bool:
     if site["status"] not in _RESOLVED or not site["target"]:
         return False
     return site["target"].split("::", 1)[-1] == want
+
+
+def dangling_targets(root: Path) -> list[str]:
+    """Resolved call targets that name no entity in the index (must be empty)."""
+    root = Path(root).resolve()
+    with _cwd(root):
+        graph = coderadar.analyze(str(root))
+        mods = [m["path"] for m in graph.query("modules")]
+        known, sites = set(), []
+        for rel in mods:
+            kids = _core.module_children(f"{rel}::module") or {}
+            known.update(f["id"] for f in kids.get("functions", []))
+            known.update(c["id"] for c in kids.get("classes", []))
+            known.add(f"{rel}::module")
+            for fid in _function_ids(rel):
+                sites.extend((fid, s) for s in _core.call_sites(fid) or [])
+    return [f"{fid} -> {s['target']}" for fid, s in sites
+            if s["status"] in _RESOLVED and s["target"] not in known]
 
 
 def format_report(name: str, m: dict) -> str:

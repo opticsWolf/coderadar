@@ -577,6 +577,31 @@ pub fn extract_go_receiver_type(node: Node, source: &str) -> Option<String> {
     })
 }
 
+/// Python receiver as segments: `self.ser` -> `["self", "ser"]`, `a.b.c` ->
+/// `["a", "b", "c"]`. A receiver that is itself a call (`f().m()`, `a.f().m()`)
+/// becomes one `"<call:f>"` / `"<call:a.f>"` segment so the resolver can tell
+/// "result of a call" from a name. Anything else stays one text segment.
+fn receiver_segments(node: Option<Node>, source: &str) -> Vec<String> {
+    let Some(n) = node else { return vec![] };
+    let text = |x: Node| x.utf8_text(source.as_bytes()).unwrap_or("").to_string();
+    match n.kind() {
+        "identifier" => vec![text(n)],
+        "attribute" => {
+            let mut head = receiver_segments(n.child_by_field_name("object"), source);
+            if head.iter().any(|s| s.starts_with('<')) {
+                return vec![text(n)];
+            }
+            head.push(n.child_by_field_name("attribute").map(text).unwrap_or_default());
+            head
+        }
+        "call" => {
+            let callee = n.child_by_field_name("function").map(text).unwrap_or_default();
+            vec![format!("<call:{callee}>")]
+        }
+        _ => vec![text(n)],
+    }
+}
+
 /// Emit a captured call node, recording it in the current function's call list.
 pub fn emit_call_for_node(
     node: Node,
@@ -688,8 +713,8 @@ pub fn emit_call_for_node(
                 .and_then(|c| c.utf8_text(source.as_bytes()).ok())
                 .unwrap_or("")
                 .to_string();
-            let object = n
-                .child_by_field_name(object_field)
+            let object_node = n.child_by_field_name(object_field);
+            let object = object_node
                 .and_then(|c| {
                     if is_literal_receiver(c.kind()) {
                         return None;
@@ -699,8 +724,14 @@ pub fn emit_call_for_node(
                 .unwrap_or("")
                 .to_string();
             if !is_stoplisted(&method) {
-                let path = if object.is_empty() {
+                let call_receiver =
+                    n.kind() == "attribute" && object_node.map_or(false, |c| c.kind() == "call");
+                let path = if call_receiver {
+                    receiver_segments(object_node, source)
+                } else if object.is_empty() {
                     vec![]
+                } else if n.kind() == "attribute" {
+                    receiver_segments(object_node, source)
                 } else {
                     vec![object]
                 };

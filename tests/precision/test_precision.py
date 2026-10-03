@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from .harness import format_report, measure
+from .harness import dangling_targets, format_report, measure
 
 try:
     from coderadar import _core
@@ -36,6 +36,11 @@ METRICS = ("extraction_recall", "in_repo_rate", "resolution_precision", "resolut
 
 def _load() -> dict:
     return json.loads(BASELINE.read_text("utf-8")) if BASELINE.exists() else {}
+
+
+@pytest.mark.parametrize("corpus", sorted(CORPORA))
+def test_no_dangling_edge_targets(corpus):
+    assert dangling_targets(CORPORA[corpus]) == []
 
 
 @pytest.mark.parametrize("corpus", sorted(CORPORA))

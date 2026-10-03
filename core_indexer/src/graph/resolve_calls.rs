@@ -70,19 +70,88 @@ impl CodeGraph {
 
         let resolved = orchestrator.resolve_calls(calls, func_id, import_graph);
 
+        // A class named in this function's module or imported into it.
+        let parent_module = projection
+            .functions
+            .get(func_id)
+            .map(|f| f.parent_module.clone())
+            .unwrap_or_default();
+        let class_named = |name: &str| -> Option<EntityId> {
+            if let Some(m) = projection.modules.get(&parent_module) {
+                for cid in &m.classes {
+                    if projection.classes.get(cid).map_or(false, |c| c.name == name) {
+                        return Some(cid.clone());
+                    }
+                }
+            }
+            let tgt = import_targets.get(name)?;
+            let id = find_symbol_in_module(projection, tgt, name)?;
+            projection.classes.contains_key(&id).then_some(id)
+        };
+        // `name` on `class_id` or anything in its MRO.
+        let method_of = |class_id: &str, name: &str| -> Option<EntityId> {
+            let find = |cid: &str| {
+                methods_by_class
+                    .get(cid)
+                    .and_then(|ms| ms.iter().find(|(n, _)| n == name).map(|(_, id)| id.clone()))
+            };
+            find(class_id).or_else(|| {
+                projection.classes.get(class_id)?.mro.iter().find_map(|node| match node {
+                    MroNode::Class(cid) => find(cid),
+                    _ => None,
+                })
+            })
+        };
+
         let resolved: Vec<_> = resolved
             .into_iter()
             .map(|rc| {
                 if let crate::types::ResolvedCall::Unresolved { reason, raw } = &rc {
-                    if matches!(
-                        reason,
-                        crate::types::UnresolvedReason::TypeInferenceRequired
-                    ) {
+                    // The enclosing class's own MRO answers `self.m()` / `cls.m()`
+                    // and nothing else: `self.attr.m()` or `obj.m()` must not bind
+                    // to a same-named method of the caller's class.
+                    let on_self = matches!(raw.path.as_slice(), [p] if p == "self" || p == "cls");
+                    if on_self
+                        && matches!(
+                            reason,
+                            crate::types::UnresolvedReason::TypeInferenceRequired
+                        )
+                    {
                         if let Some(target_id) = mro_methods.get(&raw.name) {
                             return crate::types::ResolvedCall::Function(target_id.clone());
                         }
                     }
+                    // `mod.f()` / `pkg.sub.f()` where the dotted prefix names an
+                    // imported module: look `f` up inside that module.
+                    if !on_self && !raw.path.is_empty() && !raw.path.iter().any(|s| s.starts_with('<'))
+                    {
+                        let dotted = raw.path.join(".");
+                        if let Some(mid) = find_module_by_dotted_name(projection, &dotted, &parent_module) {
+                            if let Some(id) = find_symbol_in_module(projection, &mid, &raw.name) {
+                                return if projection.classes.contains_key(&id) {
+                                    crate::types::ResolvedCall::Constructor(id)
+                                } else {
+                                    crate::types::ResolvedCall::Function(id)
+                                };
+                            }
+                        }
+                    }
                     return rc;
+                }
+                // `ClassName.method()`: the orchestrator guesses a class from
+                // the capital letter and synthesises "Class::method", which is
+                // not an entity id. Look the class up; never invent an id.
+                if let crate::types::ResolvedCall::Method {
+                    receiver: crate::types::ReceiverShape::ClassRef(prefix),
+                    method,
+                } = &rc
+                {
+                    let name = method.rsplit("::").next().unwrap_or(method);
+                    let bound = class_named(prefix).and_then(|cid| method_of(&cid, name));
+                    return match bound {
+                        Some(mid) => crate::types::ResolvedCall::Function(mid),
+                        None => crate::types::ResolvedCall::External(format!("{prefix}.{name}")),
+                    };
                 }
                 if let crate::types::ResolvedCall::External(name) = &rc {
                     if let Some(target_id) = sibling_funcs.get(name.as_str()) {
@@ -94,6 +163,9 @@ impl CodeGraph {
                         {
                             return crate::types::ResolvedCall::Function(imported_func_id);
                         }
+                    }
+                    if let Some(cid) = class_named(name) {
+                        return crate::types::ResolvedCall::Constructor(cid);
                     }
                     if let Some(target_id) = mro_methods.get(name.as_str()) {
                         return crate::types::ResolvedCall::Function(target_id.clone());
@@ -111,9 +183,14 @@ impl CodeGraph {
         // Build edge pairs (applied later by caller)
         for rc in &resolved {
             match rc {
-                crate::types::ResolvedCall::Function(target_id)
-                | crate::types::ResolvedCall::Constructor(target_id) => {
+                crate::types::ResolvedCall::Function(target_id) => {
                     edge_pairs.push((func_id.to_string(), target_id.clone()));
+                }
+                // Instantiation runs `__init__` when the class (or a base)
+                // defines one; otherwise the edge lands on the class itself.
+                crate::types::ResolvedCall::Constructor(class_id) => {
+                    let target = method_of(class_id, "__init__").unwrap_or_else(|| class_id.clone());
+                    edge_pairs.push((func_id.to_string(), target));
                 }
                 crate::types::ResolvedCall::Method { method, .. } => {
                     edge_pairs.push((func_id.to_string(), method.clone()));
