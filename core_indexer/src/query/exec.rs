@@ -250,29 +250,43 @@ fn function_kind_label(kind: &FunctionKind) -> &'static str {
     }
 }
 
-/// Attach the row-identity fields (plan §3.3) after SELECT projection, so
-/// every row can be located and fed back into `callers_of` / `plan_rename`
-/// even when the query narrowed the projection.
-fn with_identity(
-    mut fields: HashMap<String, QueryValue>,
+/// The row-identity fields (plan §3.3) for one entity, as name/value pairs.
+///
+/// Computed once per entity so the *same* values feed the predicate probe,
+/// the output row and the post-projection merge. Attaching them only after
+/// projection made them selectable but not filterable: `functions where
+/// file_path == 'x'` and `where id contains 'y'` matched nothing, because
+/// the probe never saw them.
+fn identity_pairs(
     id: &str,
     file_path: &str,
     kind: &str,
     parent_id: Option<&str>,
+) -> Vec<(&'static str, QueryValue)> {
+    vec![
+        ("id", QueryValue::String(id.to_string())),
+        ("file_path", QueryValue::String(file_path.to_string())),
+        ("kind", QueryValue::String(kind.to_string())),
+        (
+            "parent_id",
+            match parent_id {
+                Some(p) => QueryValue::String(p.to_string()),
+                None => QueryValue::Null,
+            },
+        ),
+    ]
+}
+
+/// Attach the identity pairs to a field map, so every row can be located and
+/// fed back into `callers_of` / `plan_rename` even when the query narrowed
+/// the projection.
+fn with_identity(
+    mut fields: HashMap<String, QueryValue>,
+    ident: &[(&'static str, QueryValue)],
 ) -> HashMap<String, QueryValue> {
-    fields.insert("id".to_string(), QueryValue::String(id.to_string()));
-    fields.insert(
-        "file_path".to_string(),
-        QueryValue::String(file_path.to_string()),
-    );
-    fields.insert("kind".to_string(), QueryValue::String(kind.to_string()));
-    fields.insert(
-        "parent_id".to_string(),
-        match parent_id {
-            Some(p) => QueryValue::String(p.to_string()),
-            None => QueryValue::Null,
-        },
-    );
+    for (key, value) in ident {
+        fields.insert((*key).to_string(), value.clone());
+    }
     fields
 }
 
@@ -460,13 +474,17 @@ fn aggregate_group(
 
     // A group is not an entity: it has no id to hand to `callers_of`. The
     // `kind` slot is shared with the identity kind, so a `group by kind`
-    // keeps the grouped value — that is the answer the user asked for.
-    fields.insert("id".to_string(), QueryValue::Null);
-    fields.insert("file_path".to_string(), QueryValue::Null);
+    // keeps the grouped value — that is the answer the user asked for. An
+    // identity field that IS a group key keeps its value too: `group by
+    // file_path` must show the path it grouped on, not a null.
+    for key in ["id", "file_path", "parent_id"] {
+        if !query.group_by.iter().any(|path| path == key) {
+            fields.insert(key.to_string(), QueryValue::Null);
+        }
+    }
     fields
         .entry("kind".to_string())
         .or_insert_with(|| QueryValue::String("group".to_string()));
-    fields.insert("parent_id".to_string(), QueryValue::Null);
     QueryRow { fields }
 }
 
@@ -484,20 +502,19 @@ fn scan_functions(
         if methods_only && fn_val.parent_class.is_none() {
             continue;
         }
-        if let Some(pred) = &query.where_clause {
-            let probe = function_fields(fn_val, snapshot, &probe_want);
-            if !evaluate_predicate(pred, &probe) {
-                continue;
-            }
-        }
-        let fields = function_fields(fn_val, snapshot, &output_want);
-        let fields = with_identity(
-            fields,
+        let ident = identity_pairs(
             &fn_val.id,
             &file_path_of(snapshot, &fn_val.parent_module),
             function_kind_label(&fn_val.kind),
             fn_val.parent_class.as_deref(),
         );
+        if let Some(pred) = &query.where_clause {
+            let probe = with_identity(function_fields(fn_val, snapshot, &probe_want), &ident);
+            if !evaluate_predicate(pred, &probe) {
+                continue;
+            }
+        }
+        let fields = with_identity(function_fields(fn_val, snapshot, &output_want), &ident);
         rows.push(QueryRow { fields });
         if reached(&rows, cap) {
             break;
@@ -664,19 +681,19 @@ fn scan_classes(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow>
     let mut rows = Vec::new();
 
     for (_id, cls) in snapshot.classes.iter() {
-        if let Some(pred) = &query.where_clause {
-            if !evaluate_predicate(pred, &class_fields(cls, snapshot, &probe_want)) {
-                continue;
-            }
-        }
-        let fields = class_fields(cls, snapshot, &output_want);
-        let fields = with_identity(
-            fields,
+        let ident = identity_pairs(
             &cls.id,
             &file_path_of(snapshot, &cls.parent_module),
             "class",
             cls.parent_class.as_deref(),
         );
+        if let Some(pred) = &query.where_clause {
+            let probe = with_identity(class_fields(cls, snapshot, &probe_want), &ident);
+            if !evaluate_predicate(pred, &probe) {
+                continue;
+            }
+        }
+        let fields = with_identity(class_fields(cls, snapshot, &output_want), &ident);
         rows.push(QueryRow { fields });
         if reached(&rows, cap) {
             break;
@@ -787,19 +804,19 @@ fn scan_modules(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow>
     let mut rows = Vec::new();
 
     for (_id, module) in snapshot.modules.iter() {
-        if let Some(pred) = &query.where_clause {
-            if !evaluate_predicate(pred, &module_fields(module, &probe_want)) {
-                continue;
-            }
-        }
-        let fields = module_fields(module, &output_want);
-        let fields = with_identity(
-            fields,
+        let ident = identity_pairs(
             &module.id,
             &module.path.to_string_lossy().replace('\\', "/"),
             "module",
             None,
         );
+        if let Some(pred) = &query.where_clause {
+            let probe = with_identity(module_fields(module, &probe_want), &ident);
+            if !evaluate_predicate(pred, &probe) {
+                continue;
+            }
+        }
+        let fields = with_identity(module_fields(module, &output_want), &ident);
         rows.push(QueryRow { fields });
         if reached(&rows, cap) {
             break;
@@ -815,19 +832,19 @@ fn scan_constants(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRo
     let mut rows = Vec::new();
 
     for (_id, constant) in snapshot.constants.iter() {
-        if let Some(pred) = &query.where_clause {
-            if !evaluate_predicate(pred, &constant_fields(constant, &probe_want)) {
-                continue;
-            }
-        }
-        let fields = constant_fields(constant, &output_want);
-        let fields = with_identity(
-            fields,
+        let ident = identity_pairs(
             &constant.id,
             &file_from_entity_id(&constant.id),
             "constant",
             None,
         );
+        if let Some(pred) = &query.where_clause {
+            let probe = with_identity(constant_fields(constant, &probe_want), &ident);
+            if !evaluate_predicate(pred, &probe) {
+                continue;
+            }
+        }
+        let fields = with_identity(constant_fields(constant, &output_want), &ident);
         rows.push(QueryRow { fields });
         if reached(&rows, cap) {
             break;
@@ -913,19 +930,14 @@ fn scan_imports(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow>
     let mut rows = Vec::new();
 
     for (_id, import) in snapshot.imports.iter() {
+        let ident = identity_pairs(&import.id, &file_from_entity_id(&import.id), "import", None);
         if let Some(pred) = &query.where_clause {
-            if !evaluate_predicate(pred, &import_fields(import, &probe_want)) {
+            let probe = with_identity(import_fields(import, &probe_want), &ident);
+            if !evaluate_predicate(pred, &probe) {
                 continue;
             }
         }
-        let fields = import_fields(import, &output_want);
-        let fields = with_identity(
-            fields,
-            &import.id,
-            &file_from_entity_id(&import.id),
-            "import",
-            None,
-        );
+        let fields = with_identity(import_fields(import, &output_want), &ident);
         rows.push(QueryRow { fields });
         if reached(&rows, cap) {
             break;
@@ -1081,17 +1093,9 @@ fn scan_calls(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
     // Produce one row per call edge from the callers_by_callee reverse index
     for (source_id, callees) in snapshot.callees_by_caller.iter() {
         for target_id in callees.iter() {
-            if let Some(pred) = &query.where_clause {
-                let probe = call_fields(source_id, target_id, snapshot, &probe_want);
-                if !evaluate_predicate(pred, &probe) {
-                    continue;
-                }
-            }
-            let fields = call_fields(source_id, target_id, snapshot, &output_want);
             // A call row has no single entity id of its own: its key is the
             // (caller, callee) pair.
-            let fields = with_identity(
-                fields,
+            let ident = identity_pairs(
                 &format!("{source_id}->{target_id}"),
                 &snapshot
                     .functions
@@ -1100,6 +1104,19 @@ fn scan_calls(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
                     .unwrap_or_default(),
                 "call",
                 Some(source_id),
+            );
+            if let Some(pred) = &query.where_clause {
+                let probe = with_identity(
+                    call_fields(source_id, target_id, snapshot, &probe_want),
+                    &ident,
+                );
+                if !evaluate_predicate(pred, &probe) {
+                    continue;
+                }
+            }
+            let fields = with_identity(
+                call_fields(source_id, target_id, snapshot, &output_want),
+                &ident,
             );
             rows.push(QueryRow { fields });
             if reached(&rows, cap) {
@@ -1156,19 +1173,19 @@ fn scan_fields(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> 
     // Fields live on classes — iterate classes and emit each field as a row
     for (_class_id, cls) in snapshot.classes.iter() {
         for field in cls.fields.iter() {
-            if let Some(pred) = &query.where_clause {
-                if !evaluate_predicate(pred, &field_fields(field, cls, &probe_want)) {
-                    continue;
-                }
-            }
-            let fields = field_fields(field, cls, &output_want);
-            let fields = with_identity(
-                fields,
+            let ident = identity_pairs(
                 &format!("{}::{}", cls.id, field.name),
                 &file_path_of(snapshot, &cls.parent_module),
                 "field",
                 Some(&cls.id),
             );
+            if let Some(pred) = &query.where_clause {
+                let probe = with_identity(field_fields(field, cls, &probe_want), &ident);
+                if !evaluate_predicate(pred, &probe) {
+                    continue;
+                }
+            }
+            let fields = with_identity(field_fields(field, cls, &output_want), &ident);
             rows.push(QueryRow { fields });
             if reached(&rows, cap) {
                 return rows;
@@ -1514,6 +1531,29 @@ mod group_by_tests {
         // A group is not an entity — no id to feed back into the API.
         assert_eq!(rows[0].fields["id"], QueryValue::Null);
         assert_eq!(rows[0].fields["kind"], QueryValue::String("group".into()));
+    }
+
+    #[test]
+    fn grouping_by_an_identity_field_keeps_that_field() {
+        // `group by file_path` must show the path it grouped on: the group's
+        // identity is nulled out only for fields that are not group keys.
+        let mut rows = vec![row("a", "function", 1), row("b", "method", 2)];
+        rows[0]
+            .fields
+            .insert("file_path".into(), QueryValue::String("a.py".into()));
+        rows[1]
+            .fields
+            .insert("file_path".into(), QueryValue::String("b.py".into()));
+        let query =
+            parse_query("functions select file_path, count(*) as n group by file_path").unwrap();
+        let out = apply_group_by(rows, &query);
+        assert_eq!(out.len(), 2);
+        let paths: Vec<String> = out
+            .iter()
+            .map(|r| value_to_string(&r.fields["file_path"]))
+            .collect();
+        assert_eq!(paths, vec!["a.py".to_string(), "b.py".to_string()]);
+        assert!(out.iter().all(|r| r.fields["id"] == QueryValue::Null));
     }
 
     #[test]

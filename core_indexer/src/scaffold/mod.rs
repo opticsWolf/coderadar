@@ -178,17 +178,16 @@ pub fn scan_path(root: &Path, cfg: &ScaffoldConfig) -> Vec<ScaffoldFinding> {
             }
 
             if cfg.include_secrets {
-                for pat in secrets::patterns() {
-                    if let Some(m) = pat.regex.find(line) {
-                        out.push(ScaffoldFinding {
-                            kind: ScaffoldKind::Secret,
-                            file: path.to_path_buf(),
-                            line: line_no + 1,
-                            label: pat.name.to_string(),
-                            snippet: secrets::redact(m.as_str()),
-                        });
-                        break; // one secret finding per line
-                    }
+                // One secret finding per line; `scan_line` decides what is a
+                // secret and what is merely a keyword-shaped assignment.
+                if let Some(hit) = secrets::scan_line(line) {
+                    out.push(ScaffoldFinding {
+                        kind: ScaffoldKind::Secret,
+                        file: path.to_path_buf(),
+                        line: line_no + 1,
+                        label: hit.label,
+                        snippet: hit.snippet,
+                    });
                 }
             }
         }
@@ -305,7 +304,7 @@ pub fn scan_placeholder_bodies(graph: &ProjectedGraph) -> (Vec<ScaffoldFinding>,
 #[cfg(test)]
 mod tests {
     use super::*;
-    use secrets::redact;
+    use secrets::{looks_like_a_secret, redact};
 
     #[test]
     fn glob_shapes_match_expected_names() {
@@ -384,6 +383,59 @@ mod tests {
         assert!(!findings
             .iter()
             .any(|f| f.snippet.contains("AKIAABCDEFGHIJKLMNOP")));
+    }
+
+    #[test]
+    fn keyword_assignments_to_names_are_not_secrets() {
+        // Plan 6.1: the generic rule flagged `token="close_btn_color"` (a
+        // theme token) in source, tests and markdown. A name is not a secret.
+        assert!(!looks_like_a_secret("close_btn_color"));
+        assert!(!looks_like_a_secret("my-api-key-name"));
+        assert!(!looks_like_a_secret("app.config.token"));
+        assert!(!looks_like_a_secret("short"));
+        assert!(looks_like_a_secret("a1b2c3d4e5f6g7h8"));
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("theme.py"),
+            "token = \"close_btn_color\"
+api_key = \"app.config.token\"
+",
+        )
+        .unwrap();
+        let cfg = ScaffoldConfig {
+            include_secrets: true,
+            ..Default::default()
+        };
+        let findings = scan_path(dir.path(), &cfg);
+        assert!(
+            !findings.iter().any(|f| f.kind == ScaffoldKind::Secret),
+            "theme token names must not be reported as secrets: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn generic_secret_reports_the_key_name_and_redacts_only_the_value() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.py"),
+            "token = \"a1b2c3d4e5f6g7h8\"
+",
+        )
+        .unwrap();
+        let cfg = ScaffoldConfig {
+            include_secrets: true,
+            ..Default::default()
+        };
+        let findings = scan_path(dir.path(), &cfg);
+        let secret = findings
+            .iter()
+            .find(|f| f.kind == ScaffoldKind::Secret)
+            .expect("generic secret");
+        // The keyword is context, not secret: it stays in both fields.
+        assert_eq!(secret.label, "hardcoded_credential (token)");
+        assert_eq!(secret.snippet, "token=\"a1b2c3d4***\"");
+        assert!(!secret.snippet.contains("e5f6g7h8"));
     }
 
     #[test]

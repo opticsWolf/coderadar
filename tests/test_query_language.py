@@ -113,6 +113,47 @@ def test_identity_survives_a_narrow_select(graph):
     assert rows and set(rows[0]) == {"name", *IDENTITY}, rows
 
 
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        "file_path == 'app.py'",
+        "file_path contains 'app'",
+        "id contains 'app.py::' and kind == 'function'",
+        "parent_id != null",
+    ],
+)
+def test_identity_fields_are_filterable(graph, predicate):
+    """Identity fields are row data, not decoration: a predicate on them must
+    match (they used to be attached after the WHERE probe ran, so
+    `where file_path == …` silently returned nothing)."""
+    rows = list(graph.query(f"functions where {predicate}"))
+    assert rows, predicate
+    for row in rows:
+        assert "app" in row["file_path"], row
+
+
+def test_identity_fields_are_groupable_and_orderable(graph):
+    rows = list(
+        graph.query("functions select file_path, count(*) as n group by file_path")
+    )
+    assert rows
+    assert {r["file_path"] for r in rows} >= {"app.py"}
+    ordered = list(graph.query("functions order by file_path desc"))
+    paths = [r["file_path"] for r in ordered]
+    assert paths == sorted(paths, reverse=True), paths
+
+
+def test_identity_kind_is_the_row_kind(graph):
+    """`kind` on a row is the identity kind — the same label `methods` and
+    `functions` select on, not a second private enum."""
+    kinds = {r["kind"] for r in graph.query("functions")}
+    assert kinds <= {"function", "method", "static", "classmethod", "property"}, kinds
+    method_kinds = {r["kind"] for r in graph.query("methods")}
+    assert method_kinds, "the fixture has methods"
+    assert method_kinds <= kinds, (method_kinds, kinds)
+    assert "function" not in method_kinds or method_kinds == {"function"}
+
+
 def test_row_id_can_be_fed_back_into_the_api(graph):
     """The point of §3.3: a query hit is usable as an entity id."""
     rows = list(graph.query("functions where name == 'build'"))

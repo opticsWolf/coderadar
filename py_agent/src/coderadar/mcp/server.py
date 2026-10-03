@@ -2055,6 +2055,11 @@ def _find_clones(
     lines.append(
         "Consider extracting shared logic; verify each pair with `explore` before refactoring."
     )
+    if any(g.get("reason") == "literal-table" for g in groups):
+        lines.append(
+            "`literal-table` groups are key/value data that happens to share a "
+            "shape — a shared data source is usually the fix, not shared logic."
+        )
     return "\n".join(lines)
 
 

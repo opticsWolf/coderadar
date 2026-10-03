@@ -37,6 +37,15 @@ class TestClonesGolden:
                 out[name] = g["clone_type"]
         return out, groups
 
+    def test_groups_expose_a_reason_field(self):
+        """Plan §6.3: a group says *why* it is worth a look (`literal-table`)
+        instead of being silently suppressed; ordinary groups carry null."""
+        _, groups = self._groups(min_lines=4)
+        assert groups
+        for g in groups:
+            assert "reason" in g, g
+            assert g["reason"] in (None, "literal-table"), g
+
     def test_instances_carry_line_companions_for_the_byte_span(self):
         """Plan 5.4: a clone instance names the lines it covers, so a
         reviewer never has to convert byte offsets by hand."""

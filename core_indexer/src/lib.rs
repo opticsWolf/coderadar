@@ -3098,6 +3098,9 @@ fn find_clones(
             dict.set_item("clone_type", g.clone_type.as_str())?;
             dict.set_item("similarity", g.similarity)?;
             dict.set_item("confidence_tier", g.confidence_tier.as_str())?;
+            // `reason` is null for ordinary clones; "literal-table" says the
+            // shape matched but the bodies are key/value tables (§6.3).
+            dict.set_item("reason", g.reason)?;
 
             // One read per file: instances repeat files, and the source is
             // only needed to turn the byte span into a line range (§5.4).

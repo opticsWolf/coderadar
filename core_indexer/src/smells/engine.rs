@@ -195,6 +195,16 @@ pub fn metrics_for_function(f: &Function) -> HashMap<String, f64> {
         (f.exit_line.saturating_sub(f.line) + 1) as f64,
     );
     m.insert("param_count".to_string(), f.parameters.len() as f64);
+    // Positional-or-keyword parameters only (plan §6.4): `*, a=1, b=2` is
+    // the *remedy* for a long parameter list, not an instance of it, and
+    // `*args`/`**kwargs` are one slot each however many values they carry.
+    m.insert(
+        "positional_param_count".to_string(),
+        f.parameters
+            .iter()
+            .filter(|p| !p.is_keyword_only && !p.is_varargs && !p.is_kwargs)
+            .count() as f64,
+    );
     m.insert("cyclomatic".to_string(), f.metrics.cyclomatic as f64);
     m.insert("nesting_depth".to_string(), f.metrics.nesting_depth as f64);
     m.insert("return_count".to_string(), f.metrics.return_count as f64);
@@ -395,6 +405,42 @@ pub(crate) mod tests {
             .expect("5 params triggers");
         assert_eq!(f.rule_id, "long-parameter-list");
         assert_eq!(f.severity, Severity::Info);
+    }
+
+    #[test]
+    fn keyword_only_parameters_are_the_remedy_not_the_smell() {
+        // Plan §6.4: `def __init__(self, parent=None, *, a=…, b=…, c=…)`
+        // counted 5+ and fired on every Qt-style constructor. Only
+        // positional-or-keyword parameters count.
+        let g = empty_graph();
+        let rule = crate::smells::rules::long_parameter_list::LongParameterList::default();
+
+        let keyword_only = HashMap::from([
+            ("param_count".to_string(), 7.0),
+            ("positional_param_count".to_string(), 2.0),
+        ]);
+        assert!(
+            rule.evaluate(&ctx(&g, "a", "__init__", &keyword_only))
+                .is_none(),
+            "keyword-only defaults are the fix for a long parameter list"
+        );
+
+        let long_positional = HashMap::from([
+            ("param_count".to_string(), 8.0),
+            ("positional_param_count".to_string(), 6.0),
+        ]);
+        let f = rule
+            .evaluate(&ctx(&g, "a", "build", &long_positional))
+            .expect("6 positional params still trigger");
+        assert_eq!(f.severity, Severity::Medium);
+        // The message says both numbers, so the reader knows the shape.
+        assert!(
+            f.message.contains("6 positional parameters"),
+            "{}",
+            f.message
+        );
+        assert!(f.message.contains("8 total"), "{}", f.message);
+        assert_eq!(f.signals["total_param_count"], 8.0);
     }
 
     #[test]
