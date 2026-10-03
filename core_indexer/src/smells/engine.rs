@@ -67,11 +67,16 @@ impl SmellEngine {
         // rule (Stage 0.2). Reachability + entry points feed the dead-code
         // rule (Stage 1); harmonic centrality feeds triage signals (Stage 5).
         let entries = crate::graph::deadcode::entry_points::detect_entry_points(graph);
-        let reach =
-            crate::graph::deadcode::reachability::compute_reachable(graph, &entries.production);
+        let dead: HashMap<_, _> = crate::graph::deadcode::detect_dead(
+            graph,
+            crate::graph::deadcode::DeadCodeOptions::default(),
+        )
+        .into_iter()
+        .map(|f| (f.entity_id.clone(), f))
+        .collect();
         let centrality = crate::graph::centrality::harmonic_centrality(graph, 3);
         let analyses = GraphAnalyses {
-            reachable: Some(&reach.reachable),
+            dead: Some(&dead),
             entry_points: Some(&entries.production),
             centrality: Some(&centrality),
         };

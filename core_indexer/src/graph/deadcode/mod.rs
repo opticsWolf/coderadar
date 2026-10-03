@@ -9,7 +9,7 @@
 //   * TransitivelyDead— has callers, but every caller is itself dead
 //   * Unreachable     — zero inbound call edges at all
 //
-// Confidence combines isolation strength × size × parse quality through
+// Confidence combines isolation strength × parse quality through
 // `scoring::combine` so tiers stay consistent with every other derived
 // analysis (Stage 0.1).
 
@@ -119,14 +119,15 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
             continue;
         }
 
-        // Evidence combination: isolation × size × parse quality.
-        let size_boost = ((f.body_span.len() as f32 / 200.0).min(1.0)).max(0.3);
+        // Evidence combination: isolation × parse quality. Size is impact,
+        // not probability of being dead, so it ranks (removable_lines) but
+        // never scores.
         let quality = match f.parse_quality {
             ParseQuality::Clean => 1.0,
             ParseQuality::Partial | ParseQuality::Deferred => 0.8,
             ParseQuality::Tainted => 0.5,
         };
-        let score = combine(&[kind.isolation(), size_boost, quality]);
+        let score = combine(&[kind.isolation(), quality]);
 
         out.push(DeadFinding {
             entity_id: id.clone(),
@@ -155,13 +156,12 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
         let Some(f) = graph.functions.get(&cand.entity_id) else {
             continue;
         };
-        let size_boost = ((f.body_span.len() as f32 / 200.0).min(1.0)).max(0.3);
         let quality = match f.parse_quality {
             ParseQuality::Clean => 1.0,
             ParseQuality::Partial | ParseQuality::Deferred => 0.8,
             ParseQuality::Tainted => 0.5,
         };
-        let score = combine(&[DeadKind::RtaDead.isolation(), size_boost, quality]);
+        let score = combine(&[DeadKind::RtaDead.isolation(), quality]);
         out.push(DeadFinding {
             entity_id: cand.entity_id.clone(),
             kind: DeadKind::RtaDead,

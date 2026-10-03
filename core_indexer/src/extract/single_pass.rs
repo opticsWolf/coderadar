@@ -841,30 +841,6 @@ fn scan_subtree_for_fn_ref(
     }
 }
 
-/// Extract a reference name from a node (identifier or dotted access).
-fn extract_ref_name(node: Node, source: &str) -> Option<String> {
-    let kind = node.kind();
-    if is_identifier_kind(kind) {
-        node.utf8_text(source.as_bytes())
-            .ok()
-            .map(|s| s.to_string())
-    } else if kind == "attribute" {
-        node.child_by_field_name("attribute")
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-            .map(|s| s.to_string())
-    } else if kind == "field_expression" {
-        node.child_by_field_name("field")
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-            .map(|s| s.to_string())
-    } else if kind == "member_expression" {
-        node.child_by_field_name("property")
-            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
-            .map(|s| s.to_string())
-    } else {
-        None
-    }
-}
-
 /// Check if a node kind is an identifier-like node.
 fn is_identifier_kind(kind: &str) -> bool {
     matches!(

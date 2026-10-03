@@ -46,6 +46,7 @@ dev = [
     "hypothesis>=6.0",
     "mypy>=1.0",
     "ruff==0.16.5",
+    "jedi>=0.19",
 ]
 visualizers = [
     "graphviz>=0.20",
