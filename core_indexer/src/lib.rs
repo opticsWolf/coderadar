@@ -3998,6 +3998,7 @@ mod tests {
             resolved_calls: vec![],
             decorators: vec![],
             setter_of: None,
+            bindings: Vec::new(),
             line: 1,
             exit_line: 2,
             docstring: None,

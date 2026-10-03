@@ -22,6 +22,30 @@ use crate::types::*;
 
 use super::{hash_span, node_quality};
 
+/// The callee of a Python `call` node as an `UnresolvedRef` (`Foo()`,
+/// `mod.make()`); `None` for any other expression.
+fn call_ref(node: Node, src: &str) -> Option<UnresolvedRef> {
+    if node.kind() != "call" {
+        return None;
+    }
+    let text = |n: Node| n.utf8_text(src.as_bytes()).unwrap_or("").to_string();
+    let f = node.child_by_field_name("function")?;
+    let (name, path) = match f.kind() {
+        "identifier" => (text(f), vec![]),
+        "attribute" => (
+            text(f.child_by_field_name("attribute")?),
+            crate::extract::walker::receiver_segments(f.child_by_field_name("object"), src),
+        ),
+        _ => return None,
+    };
+    Some(UnresolvedRef {
+        name,
+        path,
+        line: node.start_position().row + 1,
+        col: node.start_position().column,
+    })
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum EmittedKind {
     Module,
@@ -240,6 +264,7 @@ impl<'a> CursorExtractor<'a> {
                 }
             }
             Tag::Field => self.emit_field(node),
+            Tag::Return => self.emit_return_binding(node),
             Tag::Decorator
             | Tag::ClassBase
             | Tag::FunctionParam
@@ -306,11 +331,61 @@ impl<'a> CursorExtractor<'a> {
         });
     }
 
+    /// Record type evidence from an assignment inside a function body:
+    /// `m = Manager()`, `m: Manager = ...`, `self.ser = Serializer()`.
+    fn emit_binding(&mut self, node: Node) {
+        let Some(idx) = self.current_function_idx else { return };
+        if node.kind() != "assignment" {
+            return;
+        }
+        let src = self.source;
+        let text = |n: Node| n.utf8_text(src.as_bytes()).unwrap_or("").to_string();
+        let Some(left) = node.child_by_field_name("left") else { return };
+        let target = match left.kind() {
+            "identifier" => vec![text(left)],
+            "attribute" => {
+                let segs = crate::extract::walker::receiver_segments(Some(left), src);
+                if segs.len() == 2 && segs[0] == "self" {
+                    segs
+                } else {
+                    return;
+                }
+            }
+            _ => return,
+        };
+        let annotation = node.child_by_field_name("type").map(text);
+        let rhs = node.child_by_field_name("right").and_then(|r| call_ref(r, src));
+        if rhs.is_none() && annotation.is_none() {
+            return;
+        }
+        if let Some(ExtractedUnit::Function(f)) = self.units.get_mut(idx) {
+            f.bindings.push(Binding { target, rhs, annotation });
+        }
+    }
+
+    /// `return Foo()` / `return make()`: evidence for the function's return type.
+    fn emit_return_binding(&mut self, node: Node) {
+        let Some(idx) = self.current_function_idx else { return };
+        let src = self.source;
+        let Some(rhs) = node.named_child(0).and_then(|c| call_ref(c, src)) else { return };
+        if let Some(ExtractedUnit::Function(f)) = self.units.get_mut(idx) {
+            f.bindings.push(Binding {
+                target: vec!["<return>".to_string()],
+                rhs: Some(rhs),
+                annotation: None,
+            });
+        }
+    }
+
     /// Capture a class-level field (e.g. `x = 1` or `x: int = 1` in a class
     /// body). Module-level assignments (no enclosing class) and local
     /// assignments inside methods (enclosing function frame) are skipped.
     fn emit_field(&mut self, node: Node) {
-        if self.current_class_idx.is_none() || self.current_function_idx.is_some() {
+        if self.current_function_idx.is_some() {
+            self.emit_binding(node);
+            return;
+        }
+        if self.current_class_idx.is_none() {
             return;
         }
         let Some(name_node) = node
@@ -319,6 +394,10 @@ impl<'a> CursorExtractor<'a> {
         else {
             return;
         };
+        // `a.b = ...` in a class body is not a field of the class.
+        if name_node.kind() == "attribute" {
+            return;
+        }
         let name = name_node
             .utf8_text(self.source.as_bytes())
             .unwrap_or("")
@@ -429,6 +508,7 @@ impl<'a> CursorExtractor<'a> {
             parameters: params,
             return_type,
             calls: Vec::new(),
+            bindings: Vec::new(),
             decorators,
             docstring,
             kind,

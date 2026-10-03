@@ -103,6 +103,144 @@ impl CodeGraph {
             })
         };
 
+        // ── Receiver typing (plan 1.2) ───────────────────────────────────
+        // Flow-insensitive, one hop: constructor assignments, annotations
+        // and return annotations. Anything ambiguous yields `None`.
+        // All the evidence must agree on one class: a single piece that names
+        // no class (`x = other()`, `x: int`) makes the whole name unknown.
+        let unique = |v: Vec<Option<EntityId>>| -> Option<EntityId> {
+            let mut v = v.into_iter().collect::<Option<Vec<_>>>()?;
+            v.sort();
+            v.dedup();
+            (v.len() == 1).then(|| v.remove(0))
+        };
+        // Every name below is looked up in a `scope` module: an annotation or
+        // constructor reads in the scope of the function that wrote it, not
+        // of the caller.
+        let class_in_scope = |scope: &str, name: &str| -> Option<EntityId> {
+            if scope == parent_module {
+                return class_named(name);
+            }
+            let id = find_symbol_in_module(projection, scope, name)?;
+            projection.classes.contains_key(&id).then_some(id)
+        };
+        // `Foo` or `pkg.Foo` -> class id.
+        let class_of_ref = |scope: &str, path: &[String], name: &str| -> Option<EntityId> {
+            if path.is_empty() {
+                return class_in_scope(scope, name);
+            }
+            let mid = find_module_by_dotted_name(projection, &path.join("."), scope)?;
+            let id = find_symbol_in_module(projection, &mid, name)?;
+            projection.classes.contains_key(&id).then_some(id)
+        };
+        // `Foo`, `"Foo"`, `Optional[Foo]`, `Foo | None`, `pkg.Foo` -> class id.
+        let class_of_annotation = |ann: &str, scope: &str| -> Option<EntityId> {
+            let mut a = ann.trim().trim_matches(|c| c == '"' || c == '\'').trim();
+            if let Some(inner) = a.strip_prefix("Optional[").and_then(|s| s.strip_suffix(']')) {
+                a = inner.trim();
+            }
+            let a = a.split('|').map(str::trim).find(|p| *p != "None")?;
+            if a.is_empty() || !a.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') {
+                return None;
+            }
+            let (path, name) = match a.rsplit_once('.') {
+                Some((p, n)) => (p.split('.').map(String::from).collect::<Vec<_>>(), n),
+                None => (vec![], a),
+            };
+            class_of_ref(scope, &path, name)
+        };
+        // What `name(...)` / `path.name(...)` produces: the class itself, or
+        // what the function's return annotation / `return Ctor()` names.
+        let class_of_call = |scope: &str, path: &[String], name: &str| -> Option<EntityId> {
+            if let Some(c) = class_of_ref(scope, path, name) {
+                return Some(c);
+            }
+            let fid = if path.is_empty() {
+                find_symbol_in_module(projection, scope, name)?
+            } else {
+                let mid = find_module_by_dotted_name(projection, &path.join("."), scope)?;
+                find_symbol_in_module(projection, &mid, name)?
+            };
+            let f = projection.functions.get(&fid)?;
+            if let Some(c) = f.return_type.as_deref().and_then(|a| class_of_annotation(a, &f.parent_module)) {
+                return Some(c);
+            }
+            // One hop only: `return Ctor()`, never a chain of factories.
+            unique(
+                f.bindings
+                    .iter()
+                    .filter(|b| b.target.len() == 1 && b.target[0] == "<return>")
+                    .filter_map(|b| b.rhs.as_ref())
+                    .map(|r| class_of_ref(&f.parent_module, &r.path, &r.name))
+                    .collect(),
+            )
+        };
+        let class_of_binding = |b: &Binding, scope: &str| -> Option<EntityId> {
+            if let Some(c) = b.annotation.as_deref().and_then(|a| class_of_annotation(a, scope)) {
+                return Some(c);
+            }
+            let r = b.rhs.as_ref()?;
+            class_of_call(scope, &r.path, &r.name)
+        };
+        let this_func = projection.functions.get(func_id);
+        let local_type = |name: &str| -> Option<EntityId> {
+            let f = this_func?;
+            let mut found = Vec::new();
+            for p in f.parameters.iter().filter(|p| p.name == name && p.annotation.is_some()) {
+                found.push(p.annotation.as_deref().and_then(|a| class_of_annotation(a, &parent_module)));
+            }
+            for b in f.bindings.iter().filter(|b| b.target.len() == 1 && b.target[0] == name) {
+                found.push(class_of_binding(b, &parent_module));
+            }
+            unique(found)
+        };
+        // Type of `self.<attr>` on a class: bindings in its methods and
+        // annotated class-level fields, each read in its own module's scope.
+        let attr_type = |class_id: &str, attr: &str| -> Option<EntityId> {
+            let mut scan = vec![class_id.to_string()];
+            if let Some(c) = projection.classes.get(class_id) {
+                scan.extend(c.mro.iter().filter_map(|n| match n {
+                    MroNode::Class(cid) => Some(cid.clone()),
+                    _ => None,
+                }));
+            }
+            let mut found = Vec::new();
+            for cid in &scan {
+                if let Some(c) = projection.classes.get(cid) {
+                    for fld in c.fields.iter().filter(|f| f.name == attr && f.annotation.is_some()) {
+                        found.push(
+                            fld.annotation.as_deref().and_then(|a| class_of_annotation(a, &c.parent_module)),
+                        );
+                    }
+                }
+                for (_, fid) in methods_by_class.get(cid).into_iter().flatten() {
+                    let Some(f) = projection.functions.get(fid) else { continue };
+                    for b in f.bindings.iter().filter(|b| b.target.len() == 2 && b.target[1] == attr) {
+                        found.push(class_of_binding(b, &f.parent_module));
+                    }
+                }
+            }
+            unique(found)
+        };
+        let type_of_path = |path: &[String]| -> Option<EntityId> {
+            let first = path.first()?;
+            let mut t = if first == "self" || first == "cls" {
+                my_parent_class.clone()?
+            } else if let Some(call) = first.strip_prefix("<call:").and_then(|s| s.strip_suffix('>')) {
+                let (p, n) = match call.rsplit_once('.') {
+                    Some((p, n)) => (p.split('.').map(String::from).collect::<Vec<_>>(), n),
+                    None => (vec![], call),
+                };
+                class_of_call(&parent_module, &p, n)?
+            } else {
+                local_type(first)?
+            };
+            for seg in &path[1..] {
+                t = attr_type(&t, seg)?;
+            }
+            Some(t)
+        };
+
         let resolved: Vec<_> = resolved
             .into_iter()
             .map(|rc| {
@@ -119,6 +257,14 @@ impl CodeGraph {
                     {
                         if let Some(target_id) = mro_methods.get(&raw.name) {
                             return crate::types::ResolvedCall::Function(target_id.clone());
+                        }
+                    }
+                    // `var.m()`, `self.attr.m()`, `f().m()`: type the receiver.
+                    if !raw.path.is_empty() {
+                        if let Some(mid) =
+                            type_of_path(&raw.path).and_then(|t| method_of(&t, &raw.name))
+                        {
+                            return crate::types::ResolvedCall::Function(mid);
                         }
                     }
                     // `mod.f()` / `pkg.sub.f()` where the dotted prefix names an

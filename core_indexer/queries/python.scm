@@ -32,10 +32,18 @@
 
 (decorator) @decorator
 
+;; ── Returns (return-type evidence) ──────────────────────────────────
+
+(return_statement (call)) @return.stmt
+
 ;; ── Assignments ─────────────────────────────────────────────────────
 
 (assignment
   left: (identifier) @field.name) @field
+
+; `self.x = ...` — instance attributes; only used as type evidence.
+(assignment
+  left: (attribute) @field.attr) @field
 
 ;; ── Docstrings ──────────────────────────────────────────────────────
 

@@ -581,7 +581,7 @@ pub fn extract_go_receiver_type(node: Node, source: &str) -> Option<String> {
 /// `["a", "b", "c"]`. A receiver that is itself a call (`f().m()`, `a.f().m()`)
 /// becomes one `"<call:f>"` / `"<call:a.f>"` segment so the resolver can tell
 /// "result of a call" from a name. Anything else stays one text segment.
-fn receiver_segments(node: Option<Node>, source: &str) -> Vec<String> {
+pub(crate) fn receiver_segments(node: Option<Node>, source: &str) -> Vec<String> {
     let Some(n) = node else { return vec![] };
     let text = |x: Node| x.utf8_text(source.as_bytes()).unwrap_or("").to_string();
     match n.kind() {

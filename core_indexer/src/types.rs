@@ -792,6 +792,19 @@ pub struct UnresolvedRef {
     pub col: usize,
 }
 
+/// Evidence for the type of a name inside one function: `m = Manager()`,
+/// `self.ser: Serializer = ...`, `x = make()`. Flow-insensitive; the resolver
+/// turns `rhs` / `annotation` into a class when it needs a receiver's type.
+#[derive(Clone, Eq, PartialEq, Hash, Debug)]
+pub struct Binding {
+    /// `["m"]` for a local, `["self", "ser"]` for an instance attribute.
+    pub target: Vec<String>,
+    /// The call on the right-hand side (`Manager()`, `models.make()`).
+    pub rhs: Option<UnresolvedRef>,
+    /// Declared type, verbatim (`Optional[Manager]`).
+    pub annotation: Option<String>,
+}
+
 #[derive(Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
 pub enum ResolvedCall {
     Function(EntityId),
@@ -901,6 +914,7 @@ pub struct Function {
     pub parameters: Vec<Parameter>,
     pub return_type: Option<String>,
     pub calls: Vec<UnresolvedRef>,
+    pub bindings: Vec<Binding>,
     pub resolved_calls: Vec<ResolvedCall>,
     pub decorators: Vec<String>,
     pub setter_of: Option<EntityId>,
@@ -1038,6 +1052,7 @@ pub struct ExtractedFunction {
     pub parameters: Vec<Parameter>,
     pub return_type: Option<String>,
     pub calls: Vec<UnresolvedRef>,
+    pub bindings: Vec<Binding>,
     pub decorators: Vec<String>,
     pub docstring: Option<String>,
     pub kind: FunctionKind,
@@ -1124,6 +1139,7 @@ impl Function {
             parameters: f.parameters.clone(),
             return_type: f.return_type.clone(),
             calls: f.calls.clone(),
+            bindings: f.bindings.clone(),
             resolved_calls: vec![],
             decorators: f.decorators.clone(),
             setter_of: None,
@@ -1260,6 +1276,7 @@ pub enum Tag {
     Decorator,
     Docstring,
     Field,
+    Return, // Python: `return <call>` — return-type evidence
     Impl,   // Rust: impl_item — container, not an entity
     Export, // TS/JS: export statement
 }

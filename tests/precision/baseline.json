@@ -1,13 +1,13 @@
 {
   "fixtures": {
     "extraction_recall": 1.0,
-    "in_repo_rate": 0.5333,
+    "in_repo_rate": 0.7667,
     "resolution_precision": 1.0,
-    "resolution_recall": 0.6957
+    "resolution_recall": 1.0
   },
   "self": {
     "extraction_recall": 0.9997,
-    "in_repo_rate": 0.1654,
+    "in_repo_rate": 0.172,
     "resolution_precision": 1.0,
     "resolution_recall": 1.0
   }
