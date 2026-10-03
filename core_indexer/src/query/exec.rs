@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 use pyo3::prelude::*;
 
-use crate::query::grammar::{CompOp, EntityType, Operand, ParsedQuery, Predicate, SelectItem};
+use crate::query::grammar::{
+    AggFunc, CompOp, EntityType, Operand, ParsedQuery, Predicate, SelectItem,
+};
+use crate::query::schema::IDENTITY_FIELDS;
 use crate::types::ProjectedGraph;
 use crate::types::*;
 
@@ -17,7 +20,7 @@ pub struct QueryRow {
     pub fields: HashMap<String, QueryValue>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum QueryValue {
     String(String),
     Int(i64),
@@ -197,15 +200,6 @@ macro_rules! put {
     };
 }
 
-/// Apply the SELECT projection to a surviving row.
-fn finish(fields: HashMap<String, QueryValue>, query: &ParsedQuery) -> HashMap<String, QueryValue> {
-    if query.select.is_empty() {
-        fields
-    } else {
-        project_fields(&fields, &query.select)
-    }
-}
-
 /// How many rows a scan may stop after.
 ///
 /// Only when nothing downstream needs to see the rows it would discard:
@@ -223,19 +217,91 @@ fn reached(rows: &[QueryRow], cap: Option<usize>) -> bool {
     matches!(cap, Some(cap) if rows.len() >= cap)
 }
 
+/// The file path an entity's module resolves to (identity field `file_path`).
+fn file_path_of(snapshot: &ProjectedGraph, module_id: &str) -> String {
+    snapshot
+        .modules
+        .get(module_id)
+        .map(|m| m.path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_default()
+}
+
+/// The file path encoded in an entity id (``.\src\mod.py::name`` →
+/// `src/mod.py`). Used where the entity has no module link (imports).
+fn file_from_entity_id(id: &str) -> String {
+    let file = id.split("::").next().unwrap_or("");
+    file.trim_start_matches('.')
+        .trim_start_matches(['\\', '/'])
+        .replace('\\', "/")
+}
+
+fn function_kind_label(kind: &FunctionKind) -> &'static str {
+    match kind {
+        FunctionKind::Free => "function",
+        FunctionKind::Method => "method",
+        FunctionKind::StaticMethod => "static",
+        FunctionKind::ClassMethod => "classmethod",
+        FunctionKind::Property => "property",
+        FunctionKind::PropertySetter => "property_setter",
+        FunctionKind::PropertyDeleter => "property_deleter",
+        FunctionKind::CachedProperty => "cached_property",
+        FunctionKind::AbstractMethod => "abstract",
+        FunctionKind::DataclassSynthesized { .. } => "dataclass_synthesized",
+    }
+}
+
+/// Attach the row-identity fields (plan §3.3) after SELECT projection, so
+/// every row can be located and fed back into `callers_of` / `plan_rename`
+/// even when the query narrowed the projection.
+fn with_identity(
+    mut fields: HashMap<String, QueryValue>,
+    id: &str,
+    file_path: &str,
+    kind: &str,
+    parent_id: Option<&str>,
+) -> HashMap<String, QueryValue> {
+    fields.insert("id".to_string(), QueryValue::String(id.to_string()));
+    fields.insert(
+        "file_path".to_string(),
+        QueryValue::String(file_path.to_string()),
+    );
+    fields.insert("kind".to_string(), QueryValue::String(kind.to_string()));
+    fields.insert(
+        "parent_id".to_string(),
+        match parent_id {
+            Some(p) => QueryValue::String(p.to_string()),
+            None => QueryValue::Null,
+        },
+    );
+    fields
+}
+
 /// Execute a parsed query against a snapshot.
 pub fn execute_query(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
     let rows = match query.entity {
-        EntityType::Functions => scan_functions(snapshot, query),
+        EntityType::Functions => scan_functions(snapshot, query, false),
+        // `methods` is every function defined on a class, whatever its
+        // method kind (plan §3.4).
+        EntityType::Methods => scan_functions(snapshot, query, true),
         EntityType::Classes => scan_classes(snapshot, query),
         EntityType::Modules => scan_modules(snapshot, query),
+        EntityType::Constants => scan_constants(snapshot, query),
+        // `entities` unions the name-bearing kinds.
+        EntityType::Entities => {
+            let mut rows = scan_modules(snapshot, query);
+            rows.extend(scan_classes(snapshot, query));
+            rows.extend(scan_functions(snapshot, query, false));
+            rows.extend(scan_constants(snapshot, query));
+            rows
+        }
         EntityType::Imports => scan_imports(snapshot, query),
         EntityType::Calls => scan_calls(snapshot, query),
         EntityType::Fields => scan_fields(snapshot, query),
     };
 
-    // Apply ordering if specified
-    let mut result = rows;
+    // Grouping folds rows before ordering: ORDER BY may name an aggregate
+    // alias, which only exists once the groups are computed.
+    let mut result = apply_group_by(rows, query);
     if let Some(order) = &query.order_by {
         apply_order(&mut result, order);
     }
@@ -245,16 +311,179 @@ pub fn execute_query(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<Quer
         result.truncate(limit as usize);
     }
 
+    // Projection runs last so grouping can see the columns it aggregates
+    // over. Identity fields (and GROUP BY keys) survive whatever `select`
+    // narrows to — they are the row's key (§3.3).
+    if !query.select.is_empty() {
+        for row in &mut result {
+            let keep: Vec<(String, QueryValue)> = IDENTITY_FIELDS
+                .iter()
+                .map(|s| s.name)
+                .chain(query.group_by.iter().map(|p| p.as_str()))
+                .filter_map(|k| row.fields.get(k).map(|v| (k.to_string(), v.clone())))
+                .collect();
+            let mut projected = project_fields(&row.fields, &query.select);
+            for (key, value) in keep {
+                projected.insert(key, value);
+            }
+            row.fields = projected;
+        }
+    }
+
     result
 }
 
-fn scan_functions(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
+/// Fold rows into groups and compute SELECT aggregates.
+///
+/// Aggregates used to be stubbed to a literal `0` — `count(*)` looked like a
+/// real answer. With no GROUP BY every row forms one group, so
+/// `select count(*) as n` returns a single row.
+fn apply_group_by(rows: Vec<QueryRow>, query: &ParsedQuery) -> Vec<QueryRow> {
+    let aggregates: Vec<&SelectItem> = query
+        .select
+        .iter()
+        .filter(|item| matches!(item, SelectItem::Aggregate { .. }))
+        .collect();
+    if aggregates.is_empty() && query.group_by.is_empty() {
+        return rows;
+    }
+
+    // First-seen order keeps ungrouped output stable instead of
+    // HashMap-random.
+    let mut groups: Vec<(Vec<String>, Vec<QueryRow>)> = Vec::new();
+    let mut index: std::collections::HashMap<Vec<String>, usize> = std::collections::HashMap::new();
+    for row in rows {
+        let key: Vec<String> = query
+            .group_by
+            .iter()
+            .map(|path| value_to_string(row.fields.get(path).unwrap_or(&QueryValue::Null)))
+            .collect();
+        match index.get(&key) {
+            Some(&i) => groups[i].1.push(row),
+            None => {
+                index.insert(key.clone(), groups.len());
+                groups.push((key, vec![row]));
+            }
+        }
+    }
+
+    groups
+        .into_iter()
+        .map(|(_, group)| aggregate_group(&group, query, &aggregates))
+        .collect()
+}
+
+fn aggregate_group(
+    group: &[QueryRow],
+    query: &ParsedQuery,
+    aggregates: &[&SelectItem],
+) -> QueryRow {
+    let first = &group[0];
+    let mut fields: HashMap<String, QueryValue> = HashMap::new();
+
+    // Group keys and any non-aggregate SELECT paths come from a
+    // representative row; SQL would reject the latter when it is neither
+    // grouped nor aggregated, but this is a graph query, not a database.
+    for path in &query.group_by {
+        if let Some(value) = first.fields.get(path) {
+            fields.insert(path.clone(), value.clone());
+        }
+    }
+    if query.select.is_empty() {
+        for (key, value) in &first.fields {
+            fields.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    } else {
+        for item in &query.select {
+            if let SelectItem::Path(path) = item {
+                if let Some(value) = first.fields.get(path) {
+                    fields.insert(path.clone(), value.clone());
+                }
+            }
+        }
+    }
+
+    for item in aggregates {
+        let SelectItem::Aggregate { func, path, alias } = item else {
+            continue;
+        };
+        let value = if path == "*" {
+            QueryValue::Int(group.len() as i64)
+        } else {
+            let present: Vec<&QueryValue> = group
+                .iter()
+                .filter_map(|row| row.fields.get(path))
+                .filter(|value| !matches!(value, QueryValue::Null))
+                .collect();
+            let numbers: Vec<f64> = present
+                .iter()
+                .filter_map(|value| match value {
+                    QueryValue::Int(n) => Some(*n as f64),
+                    QueryValue::Float(f) => Some(*f),
+                    _ => None,
+                })
+                .collect();
+            match func {
+                AggFunc::Count => QueryValue::Int(present.len() as i64),
+                AggFunc::Sum => match numbers.iter().sum::<f64>() {
+                    total if numbers.is_empty() => {
+                        let _ = total;
+                        QueryValue::Null
+                    }
+                    total => QueryValue::Float(total),
+                },
+                AggFunc::Avg => {
+                    if numbers.is_empty() {
+                        QueryValue::Null
+                    } else {
+                        QueryValue::Float(numbers.iter().sum::<f64>() / numbers.len() as f64)
+                    }
+                }
+                AggFunc::Min => match numbers.iter().copied().reduce(f64::min) {
+                    Some(min) => QueryValue::Float(min),
+                    None => present
+                        .first()
+                        .map(|v| (*v).clone())
+                        .unwrap_or(QueryValue::Null),
+                },
+                AggFunc::Max => match numbers.iter().copied().reduce(f64::max) {
+                    Some(max) => QueryValue::Float(max),
+                    None => present
+                        .last()
+                        .map(|v| (*v).clone())
+                        .unwrap_or(QueryValue::Null),
+                },
+            }
+        };
+        fields.insert(alias.clone(), value);
+    }
+
+    // A group is not an entity: it has no id to hand to `callers_of`. The
+    // `kind` slot is shared with the identity kind, so a `group by kind`
+    // keeps the grouped value — that is the answer the user asked for.
+    fields.insert("id".to_string(), QueryValue::Null);
+    fields.insert("file_path".to_string(), QueryValue::Null);
+    fields
+        .entry("kind".to_string())
+        .or_insert_with(|| QueryValue::String("group".to_string()));
+    fields.insert("parent_id".to_string(), QueryValue::Null);
+    QueryRow { fields }
+}
+
+fn scan_functions(
+    snapshot: &ProjectedGraph,
+    query: &ParsedQuery,
+    methods_only: bool,
+) -> Vec<QueryRow> {
     let probe_want = FieldSet::for_predicate(query.where_clause.as_ref());
     let output_want = FieldSet::for_output(query);
     let cap = pushdown_limit(query);
     let mut rows = Vec::new();
 
     for (_id, fn_val) in snapshot.functions.iter() {
+        if methods_only && fn_val.parent_class.is_none() {
+            continue;
+        }
         if let Some(pred) = &query.where_clause {
             let probe = function_fields(fn_val, snapshot, &probe_want);
             if !evaluate_predicate(pred, &probe) {
@@ -262,9 +491,14 @@ fn scan_functions(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRo
             }
         }
         let fields = function_fields(fn_val, snapshot, &output_want);
-        rows.push(QueryRow {
-            fields: finish(fields, query),
-        });
+        let fields = with_identity(
+            fields,
+            &fn_val.id,
+            &file_path_of(snapshot, &fn_val.parent_module),
+            function_kind_label(&fn_val.kind),
+            fn_val.parent_class.as_deref(),
+        );
+        rows.push(QueryRow { fields });
         if reached(&rows, cap) {
             break;
         }
@@ -385,6 +619,37 @@ fn function_fields(
         "parameter_count",
         QueryValue::Int(fn_val.parameters.len() as i64)
     );
+    // Plan §3.4: the fields downstream tools kept re-deriving.
+    put!(
+        fields,
+        want,
+        "kind",
+        QueryValue::String(function_kind_label(&fn_val.kind).to_string())
+    );
+    put!(
+        fields,
+        want,
+        "parent_class",
+        QueryValue::String(fn_val.parent_class.clone().unwrap_or_default())
+    );
+    put!(
+        fields,
+        want,
+        "is_override",
+        QueryValue::Bool(snapshot.overrides_base.contains_key(fn_val.id.as_str()))
+    );
+    put!(
+        fields,
+        want,
+        "complexity",
+        QueryValue::Int(fn_val.metrics.cyclomatic as i64)
+    );
+    put!(
+        fields,
+        want,
+        "docstring",
+        QueryValue::String(fn_val.docstring.clone().unwrap_or_default())
+    );
     if let Some(ref rt) = fn_val.return_type {
         put!(fields, want, "return_type", QueryValue::String(rt.clone()));
     }
@@ -400,14 +665,19 @@ fn scan_classes(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow>
 
     for (_id, cls) in snapshot.classes.iter() {
         if let Some(pred) = &query.where_clause {
-            if !evaluate_predicate(pred, &class_fields(cls, &probe_want)) {
+            if !evaluate_predicate(pred, &class_fields(cls, snapshot, &probe_want)) {
                 continue;
             }
         }
-        let fields = class_fields(cls, &output_want);
-        rows.push(QueryRow {
-            fields: finish(fields, query),
-        });
+        let fields = class_fields(cls, snapshot, &output_want);
+        let fields = with_identity(
+            fields,
+            &cls.id,
+            &file_path_of(snapshot, &cls.parent_module),
+            "class",
+            cls.parent_class.as_deref(),
+        );
+        rows.push(QueryRow { fields });
         if reached(&rows, cap) {
             break;
         }
@@ -415,7 +685,11 @@ fn scan_classes(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow>
     rows
 }
 
-fn class_fields(cls: &Class, want: &FieldSet) -> HashMap<String, QueryValue> {
+fn class_fields(
+    cls: &Class,
+    snapshot: &ProjectedGraph,
+    want: &FieldSet,
+) -> HashMap<String, QueryValue> {
     let mut fields = HashMap::new();
     if want.is_empty() {
         return fields;
@@ -439,6 +713,70 @@ fn class_fields(cls: &Class, want: &FieldSet) -> HashMap<String, QueryValue> {
                 .collect()
         )
     );
+    // Plan §3.4: inheritance surface and class facts.
+    put!(
+        fields,
+        want,
+        "bases",
+        QueryValue::List(
+            cls.bases
+                .iter()
+                .map(|b| {
+                    QueryValue::String(if b.path.is_empty() {
+                        b.name.clone()
+                    } else {
+                        format!("{}.{}", b.path.join("."), b.name)
+                    })
+                })
+                .collect()
+        )
+    );
+    put!(
+        fields,
+        want,
+        "base_ids",
+        QueryValue::List(
+            cls.resolved_bases
+                .iter()
+                .map(|id| QueryValue::String(id.clone()))
+                .collect()
+        )
+    );
+    // Transitive ancestors from the MRO — in-repo ids plus external base
+    // names, so `inherits_from contains 'BaseModel'` works for libraries.
+    // The MRO starts with the class itself (Python semantics); ancestors
+    // must not, or every class would "inherit from" itself.
+    put!(
+        fields,
+        want,
+        "inherits_from",
+        QueryValue::List(
+            cls.mro
+                .iter()
+                .filter(|node| !matches!(node, MroNode::Class(id) if id == &cls.id))
+                .map(|node| match node {
+                    MroNode::Class(id) => QueryValue::String(id.clone()),
+                    MroNode::External { name } => QueryValue::String(name.clone()),
+                })
+                .collect()
+        )
+    );
+    let is_abstract = matches!(
+        cls.effective,
+        EffectiveClass::Abstract | EffectiveClass::Protocol
+    ) || cls.methods.iter().any(|mid| {
+        snapshot
+            .functions
+            .get(mid)
+            .is_some_and(|f| matches!(f.kind, FunctionKind::AbstractMethod))
+    });
+    put!(fields, want, "is_abstract", QueryValue::Bool(is_abstract));
+    put!(
+        fields,
+        want,
+        "docstring",
+        QueryValue::String(cls.docstring.clone().unwrap_or_default())
+    );
     fields
 }
 
@@ -455,14 +793,73 @@ fn scan_modules(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow>
             }
         }
         let fields = module_fields(module, &output_want);
-        rows.push(QueryRow {
-            fields: finish(fields, query),
-        });
+        let fields = with_identity(
+            fields,
+            &module.id,
+            &module.path.to_string_lossy().replace('\\', "/"),
+            "module",
+            None,
+        );
+        rows.push(QueryRow { fields });
         if reached(&rows, cap) {
             break;
         }
     }
     rows
+}
+
+fn scan_constants(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
+    let probe_want = FieldSet::for_predicate(query.where_clause.as_ref());
+    let output_want = FieldSet::for_output(query);
+    let cap = pushdown_limit(query);
+    let mut rows = Vec::new();
+
+    for (_id, constant) in snapshot.constants.iter() {
+        if let Some(pred) = &query.where_clause {
+            if !evaluate_predicate(pred, &constant_fields(constant, &probe_want)) {
+                continue;
+            }
+        }
+        let fields = constant_fields(constant, &output_want);
+        let fields = with_identity(
+            fields,
+            &constant.id,
+            &file_from_entity_id(&constant.id),
+            "constant",
+            None,
+        );
+        rows.push(QueryRow { fields });
+        if reached(&rows, cap) {
+            break;
+        }
+    }
+    rows
+}
+
+fn constant_fields(constant: &Constant, want: &FieldSet) -> HashMap<String, QueryValue> {
+    let mut fields = HashMap::new();
+    if want.is_empty() {
+        return fields;
+    }
+    put!(
+        fields,
+        want,
+        "name",
+        QueryValue::String(constant.name.clone())
+    );
+    put!(
+        fields,
+        want,
+        "value",
+        QueryValue::String(constant.default_value.clone().unwrap_or_default())
+    );
+    put!(
+        fields,
+        want,
+        "annotation",
+        QueryValue::String(constant.annotation.clone().unwrap_or_default())
+    );
+    fields
 }
 
 fn module_fields(module: &Module, want: &FieldSet) -> HashMap<String, QueryValue> {
@@ -522,9 +919,14 @@ fn scan_imports(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow>
             }
         }
         let fields = import_fields(import, &output_want);
-        rows.push(QueryRow {
-            fields: finish(fields, query),
-        });
+        let fields = with_identity(
+            fields,
+            &import.id,
+            &file_from_entity_id(&import.id),
+            "import",
+            None,
+        );
+        rows.push(QueryRow { fields });
         if reached(&rows, cap) {
             break;
         }
@@ -538,11 +940,22 @@ fn import_fields(import: &Import, want: &FieldSet) -> HashMap<String, QueryValue
         return fields;
     }
     put!(fields, want, "raw", QueryValue::String(import.raw.clone()));
+    // `kind` is the row-identity kind ("import"); the import's own flavour
+    // lives in `import_kind` so `imports where kind == 'import'` stays true.
     put!(
         fields,
         want,
-        "kind",
-        QueryValue::String(format!("{:?}", import.kind))
+        "import_kind",
+        QueryValue::String(
+            match &import.kind {
+                ImportKind::ModuleImport { .. } => "module",
+                ImportKind::FromImport { .. } => "from",
+                ImportKind::RelativeImport { .. } => "relative",
+                ImportKind::StarImport { .. } => "star",
+                ImportKind::Side { .. } => "side",
+            }
+            .to_string()
+        )
     );
     put!(fields, want, "line", QueryValue::Int(import.line as i64));
     put!(
@@ -675,9 +1088,20 @@ fn scan_calls(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> {
                 }
             }
             let fields = call_fields(source_id, target_id, snapshot, &output_want);
-            rows.push(QueryRow {
-                fields: finish(fields, query),
-            });
+            // A call row has no single entity id of its own: its key is the
+            // (caller, callee) pair.
+            let fields = with_identity(
+                fields,
+                &format!("{source_id}->{target_id}"),
+                &snapshot
+                    .functions
+                    .get(source_id)
+                    .map(|f| file_path_of(snapshot, &f.parent_module))
+                    .unwrap_or_default(),
+                "call",
+                Some(source_id),
+            );
+            rows.push(QueryRow { fields });
             if reached(&rows, cap) {
                 return rows;
             }
@@ -738,9 +1162,14 @@ fn scan_fields(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> 
                 }
             }
             let fields = field_fields(field, cls, &output_want);
-            rows.push(QueryRow {
-                fields: finish(fields, query),
-            });
+            let fields = with_identity(
+                fields,
+                &format!("{}::{}", cls.id, field.name),
+                &file_path_of(snapshot, &cls.parent_module),
+                "field",
+                Some(&cls.id),
+            );
+            rows.push(QueryRow { fields });
             if reached(&rows, cap) {
                 return rows;
             }
@@ -912,6 +1341,23 @@ fn compare_values(op: &CompOp, left: &QueryValue, right: &QueryValue) -> bool {
                 // Simple regex matching
                 l.contains(r)
             }
+            CompOp::StartsWith => l.starts_with(r.as_str()),
+            CompOp::EndsWith => l.ends_with(r.as_str()),
+            _ => false,
+        },
+        // `inherits_from contains 'BaseModel'`: list membership by substring,
+        // matching the string `contains` semantics.
+        (QueryValue::List(items), QueryValue::String(r)) => match op {
+            CompOp::Contains => items
+                .iter()
+                .any(|item| value_to_string(item).contains(r.as_str())),
+            CompOp::Eq => items.iter().any(|item| value_to_string(item) == *r),
+            CompOp::NotEq => !items.iter().any(|item| value_to_string(item) == *r),
+            _ => false,
+        },
+        // `'x' in decorators`.
+        (QueryValue::String(l), QueryValue::List(items)) => match op {
+            CompOp::In => items.iter().any(|item| value_to_string(item) == *l),
             _ => false,
         },
         (QueryValue::Int(l), QueryValue::Int(r)) => match op {
@@ -960,8 +1406,11 @@ fn project_fields(
                 path: _,
                 alias,
             } => {
-                // Aggregates computed during group-by phase
-                result.insert(alias.clone(), QueryValue::Int(0));
+                // Already computed by `apply_group_by` — projection must not
+                // overwrite it (it used to insert a literal 0 here).
+                if let Some(val) = fields.get(alias) {
+                    result.insert(alias.clone(), val.clone());
+                }
             }
         }
     }
@@ -1040,5 +1489,82 @@ impl QueryIterator {
             check_interval: 64,
             items_since_check: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod group_by_tests {
+    use super::*;
+    use crate::query::grammar::parse_query;
+
+    fn row(name: &str, kind: &str, line: i64) -> QueryRow {
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), QueryValue::String(name.to_string()));
+        fields.insert("kind".to_string(), QueryValue::String(kind.to_string()));
+        fields.insert("line".to_string(), QueryValue::Int(line));
+        QueryRow { fields }
+    }
+
+    #[test]
+    fn count_star_counts_rows_instead_of_returning_zero() {
+        let query = parse_query("functions select count(*) as n").unwrap();
+        let rows = apply_group_by(vec![row("a", "function", 1), row("b", "method", 2)], &query);
+        assert_eq!(rows.len(), 1, "no GROUP BY means one group");
+        assert_eq!(rows[0].fields["n"], QueryValue::Int(2));
+        // A group is not an entity — no id to feed back into the API.
+        assert_eq!(rows[0].fields["id"], QueryValue::Null);
+        assert_eq!(rows[0].fields["kind"], QueryValue::String("group".into()));
+    }
+
+    #[test]
+    fn group_by_splits_rows_and_aggregates_per_group() {
+        let query = parse_query("functions select kind, avg(line) as mean group by kind").unwrap();
+        let rows = apply_group_by(
+            vec![
+                row("a", "function", 10),
+                row("b", "function", 20),
+                row("c", "method", 5),
+            ],
+            &query,
+        );
+        assert_eq!(rows.len(), 2, "one row per distinct kind");
+        let mut by_kind: HashMap<String, QueryValue> = HashMap::new();
+        for r in &rows {
+            // The identity `kind` slot carries the grouped value here, not
+            // the literal "group".
+            let kind = value_to_string(&r.fields["kind"]);
+            by_kind.insert(kind, r.fields["mean"].clone());
+        }
+        assert_eq!(by_kind["function"], QueryValue::Float(15.0));
+        assert_eq!(by_kind["method"], QueryValue::Float(5.0));
+    }
+
+    #[test]
+    fn grouping_by_another_field_still_marks_the_row_as_a_group() {
+        let query = parse_query("functions select avg(line) as mean group by name").unwrap();
+        let rows = apply_group_by(vec![row("a", "function", 10)], &query);
+        assert_eq!(rows[0].fields["kind"], QueryValue::String("group".into()));
+    }
+
+    #[test]
+    fn count_of_a_column_skips_missing_values() {
+        let query = parse_query("functions select count(line) as n").unwrap();
+        let mut no_line = row("a", "function", 1);
+        no_line.fields.remove("line");
+        let rows = apply_group_by(vec![no_line, row("b", "function", 2)], &query);
+        assert_eq!(rows[0].fields["n"], QueryValue::Int(1));
+    }
+
+    #[test]
+    fn projection_does_not_clobber_computed_aggregates() {
+        // `project_fields` used to insert a literal 0 for every aggregate,
+        // overwriting what the grouping had just computed.
+        let query = parse_query("functions select count(*) as n group by kind").unwrap();
+        let rows = apply_group_by(
+            vec![row("a", "function", 1), row("b", "function", 2)],
+            &query,
+        );
+        let projected = project_fields(&rows[0].fields, &query.select);
+        assert_eq!(projected["n"], QueryValue::Int(2));
     }
 }

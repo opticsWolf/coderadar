@@ -222,9 +222,29 @@ class CodeGraph:
     # ── Query ──────────────────────────────────────────────────────────
 
     def query(self, query_str: str) -> Iterator[dict[str, Any]]:
-        """Execute a Pest query against the in-memory ProjectedGraph.
+        """Execute a query against the in-memory graph; rows are dicts.
 
-        Returns an iterator over result rows (each row is a dict).
+        Shape: ``<entity> [select ...] [where ...] [group by ...]
+        [order by ...] [limit N]``, with entity one of ``modules``,
+        ``classes``, ``functions``, ``methods``, ``constants``, ``entities``,
+        ``imports``, ``calls``, ``fields``.
+
+        Operators: ``==``, ``!=``, ``<``, ``<=``, ``>``, ``>=``,
+        ``contains``, ``matches`` (regex), ``starts_with``, ``ends_with``,
+        ``in``; combine predicates with ``and``, ``or``, ``not``.
+
+        Every row carries ``id``, ``file_path``, ``kind`` and ``parent_id``
+        whatever ``select`` narrows to, so a row can be passed straight to
+        :meth:`callers_of` or ``plan_rename``. An unknown field raises
+        ``ValueError`` listing what the entity does have — it is never a
+        silent empty result.
+
+        Example::
+
+            for cls in graph.query("classes where inherits_from contains 'BaseModel'"):
+                print(cls["id"], cls["name"])
+
+        Full field reference: ``docs/query-language.md``.
         """
         try:
             from coderadar._core import query_graph as _query_graph
@@ -749,7 +769,11 @@ class Snapshot:
         return self._timestamp
 
     def query(self, query_str: str) -> Iterator[dict[str, Any]]:
-        """Execute a Pest query against the reconstructed snapshot."""
+        """Execute a query against the reconstructed snapshot.
+
+        Same language and row shape as :meth:`CodeGraph.query` — see
+        ``docs/query-language.md``.
+        """
         # Macrame reconstruct(ts) + ProjectedGraph from that point
         return self._graph.query(query_str)
 

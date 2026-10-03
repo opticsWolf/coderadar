@@ -1286,12 +1286,24 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
 
 // ── query_graph() ──────────────────────────────────────────────────────────
 
-/// Run a Pest query against the loaded graph and return a list of row dicts.
+/// Run a query against the loaded graph and return a list of row dicts.
 ///
 /// Shape: `<entity> [select ...] [where ...] [group by ...] [order by ...]
-/// [limit N]`, with entity one of `modules | classes | functions | imports |
-/// calls | fields`, e.g. `functions where line_count > 100 order by line_count
-/// desc limit 10`. Raises `ValueError` on a parse error.
+/// [limit N]`, with entity one of `modules | classes | functions | methods |
+/// constants | entities | imports | calls | fields`, e.g.
+/// `methods where is_async == true order by line desc limit 10`.
+///
+/// Operators: `==`, `!=`, `<`, `<=`, `>`, `>=`, `contains`, `matches`
+/// (regex), `starts_with`, `ends_with`, `in`; predicates combine with `and`,
+/// `or`, `not`. Every row carries `id`, `file_path`, `kind` and `parent_id`
+/// whatever `select` narrows to, so a hit can be fed straight into
+/// `callers_of` / `plan_rename`.
+///
+/// Unknown fields are rejected with the available list rather than silently
+/// matching nothing. Raises `ValueError` on a parse error.
+///
+/// Full field reference: `docs/query-language.md` (generated from the
+/// grammar and schema, so it cannot drift).
 #[pyfunction]
 fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {
     with_graph(|_graph, snap| {

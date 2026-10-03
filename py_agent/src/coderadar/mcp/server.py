@@ -337,11 +337,18 @@ def create_server(graph: Any) -> MCPServer:
 
     @mcp.tool(
         description=(
-            "Execute a structured Pest graph query against the indexed codebase. "
-            "Supports: 'functions where name contains X', 'classes where inherits_from "
-            "contains Y', 'imports where module contains Z', 'entities where kind = function'. "
-            "Returns matched entities with metadata. Use for precise structural queries "
-            "that go beyond keyword search."
+            "Execute a structured graph query against the indexed codebase. "
+            "Shape: '<entity> [select ...] [where ...] [group by ...] [order by ...] "
+            "[limit N]'. Entities: modules, classes, functions, methods, constants, "
+            "entities, imports, calls, fields. Operators: ==, !=, <, <=, >, >=, "
+            "contains, matches (regex), starts_with, ends_with, in — combined with "
+            "and/or/not. Examples: 'classes where inherits_from contains \"BaseModel\"', "
+            "'methods where is_async == true', 'functions where name starts_with \"test_\"', "
+            "'functions where caller_count == 0 and not name matches \"^test_\"'. "
+            "Every row carries id, file_path, kind and parent_id, so a hit can be "
+            "fed to codegraph_callers / codegraph_plan_rename. Unknown fields are "
+            "rejected with the available list instead of returning nothing. "
+            "Full field reference: docs/query-language.md."
         ),
         annotations={
             "read_only_hint": True,
@@ -1732,10 +1739,13 @@ def _query_graph(graph: Any, query: str) -> str:
     # An empty query is a usage error regardless of graph state, so prompt
     # for it before touching the (possibly unloaded) in-memory graph.
     if not query.strip():
-        return "Please provide a Pest query. Examples:\n" \
-               "  - functions where name contains 'test'\n" \
+        return "Please provide a query. Examples:\n" \
                "  - classes where inherits_from contains 'BaseModel'\n" \
-               "  - imports where module contains 'os'"
+               "  - methods where is_async == true\n" \
+               "  - functions where name starts_with 'test_'\n" \
+               "  - imports where import_kind == 'from'\n" \
+               "Entities: modules, classes, functions, methods, constants, entities, " \
+               "imports, calls, fields. Full field reference: docs/query-language.md"
 
     try:
         from coderadar._core import graph_stats
