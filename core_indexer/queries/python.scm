@@ -34,7 +34,9 @@
 
 ;; ── Returns (return-type evidence) ──────────────────────────────────
 
-(return_statement (call)) @return.stmt
+(return_statement) @return.stmt
+
+(yield) @return.stmt
 
 ;; ── Assignments ─────────────────────────────────────────────────────
 

@@ -588,9 +588,6 @@ pub(crate) fn receiver_segments(node: Option<Node>, source: &str) -> Vec<String>
         "identifier" => vec![text(n)],
         "attribute" => {
             let mut head = receiver_segments(n.child_by_field_name("object"), source);
-            if head.iter().any(|s| s.starts_with('<')) {
-                return vec![text(n)];
-            }
             head.push(n.child_by_field_name("attribute").map(text).unwrap_or_default());
             head
         }

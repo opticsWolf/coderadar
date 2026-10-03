@@ -41,6 +41,7 @@ pub mod inheritance;
 
 pub mod traversal;
 
+pub mod receiver_types;
 pub mod resolve_calls;
 
 pub mod persistence;

@@ -46,6 +46,23 @@ fn call_ref(node: Node, src: &str) -> Option<UnresolvedRef> {
     })
 }
 
+/// A bare name or attribute chain (`desk`, `desk.manager`, `make().win`) as
+/// receiver segments; `None` for any other expression.
+fn expr_path(node: Node, src: &str) -> Option<Vec<String>> {
+    match node.kind() {
+        "identifier" => Some(vec![node.utf8_text(src.as_bytes()).ok()?.to_string()]),
+        "attribute" => {
+            let segs = crate::extract::walker::receiver_segments(Some(node), src);
+            let clean = |s: &String| {
+                (s.starts_with("<call:") && s.ends_with('>'))
+                    || s.chars().all(|c| c.is_alphanumeric() || c == '_')
+            };
+            segs.iter().all(clean).then_some(segs)
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum EmittedKind {
     Module,
@@ -354,24 +371,36 @@ impl<'a> CursorExtractor<'a> {
             _ => return,
         };
         let annotation = node.child_by_field_name("type").map(text);
-        let rhs = node.child_by_field_name("right").and_then(|r| call_ref(r, src));
-        if rhs.is_none() && annotation.is_none() {
+        let right = node.child_by_field_name("right");
+        let rhs = right.and_then(|r| call_ref(r, src));
+        let expr = right.and_then(|r| expr_path(r, src));
+        if rhs.is_none() && expr.is_none() && annotation.is_none() {
             return;
         }
         if let Some(ExtractedUnit::Function(f)) = self.units.get_mut(idx) {
-            f.bindings.push(Binding { target, rhs, annotation });
+            f.bindings.push(Binding { target, rhs, expr, annotation });
         }
     }
 
-    /// `return Foo()` / `return make()`: evidence for the function's return type.
+    /// `return Foo()` / `return local.attr` / `yield value`: evidence for what
+    /// the function evaluates to (a pytest fixture's value, a factory's result).
     fn emit_return_binding(&mut self, node: Node) {
         let Some(idx) = self.current_function_idx else { return };
         let src = self.source;
-        let Some(rhs) = node.named_child(0).and_then(|c| call_ref(c, src)) else { return };
+        let Some(value) = node.named_child(0) else { return };
+        let rhs = call_ref(value, src);
+        let expr = expr_path(value, src);
+        // `return None` is "no value", not a competing type; any other
+        // expression the typer cannot read is recorded as unknown evidence.
+        if value.kind() == "none" {
+            return;
+        }
+        let target = if node.kind() == "yield" { "<yield>" } else { "<return>" };
         if let Some(ExtractedUnit::Function(f)) = self.units.get_mut(idx) {
             f.bindings.push(Binding {
-                target: vec!["<return>".to_string()],
-                rhs: Some(rhs),
+                target: vec![target.to_string()],
+                rhs,
+                expr,
                 annotation: None,
             });
         }

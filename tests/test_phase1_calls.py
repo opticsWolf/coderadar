@@ -259,3 +259,65 @@ def test_attribute_type_comes_from_the_defining_module(tmp_path, monkeypatch):
         ''',
     })
     assert _target(_fid("m.py", "use"), "serialize") == "Serializer.serialize"
+
+
+def test_pytest_fixture_parameters_are_typed(tmp_path, monkeypatch):
+    """`manager` -> fixture -> `make_desk()` (a fixture returning a callable)
+    -> `Desk` -> `desk.manager` -> DockManager, across conftest.py."""
+    sub = tmp_path / "tests"
+    sub.mkdir()
+    (tmp_path / "dock.py").write_bytes(b"class DockManager:\n    def add(self):\n        return 1\n")
+    (sub / "conftest.py").write_bytes(textwrap.dedent('''\
+        import pytest
+        from dock import DockManager
+
+
+        class Desk:
+            def __init__(self):
+                self.manager = DockManager()
+
+
+        @pytest.fixture
+        def make_desk():
+            def make(width: int = 1) -> Desk:
+                return Desk()
+            yield make
+
+
+        @pytest.fixture
+        def plain():
+            return DockManager()
+    ''').encode())
+    (sub / "test_x.py").write_bytes(textwrap.dedent('''\
+        import pytest
+
+
+        @pytest.fixture
+        def manager(make_desk):
+            desk = make_desk(800)
+            return desk.manager
+
+
+        def test_a(manager):
+            manager.add()
+
+
+        def test_b(plain):
+            plain.add()
+
+
+        def test_c(make_desk):
+            make_desk().manager.add()
+
+
+        def test_d(unknown_fixture):
+            unknown_fixture.add()
+    ''').encode())
+    monkeypatch.chdir(tmp_path)
+    coderadar.analyze(str(tmp_path))
+    rel = os.path.join(".", "tests", "test_x.py")
+    add = os.path.join(".", "dock.py") + "::DockManager.add"
+    for fn in ("test_a", "test_b", "test_c"):
+        site = _site(rel + "::" + fn, "add")
+        assert site["target"] == add, (fn, site)
+    assert _site(rel + "::test_d", "add")["status"] == "unresolved"

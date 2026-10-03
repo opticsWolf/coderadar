@@ -801,6 +801,8 @@ pub struct Binding {
     pub target: Vec<String>,
     /// The call on the right-hand side (`Manager()`, `models.make()`).
     pub rhs: Option<UnresolvedRef>,
+    /// A bare name / attribute chain on the right (`desk.manager`), as segments.
+    pub expr: Option<Vec<String>>,
     /// Declared type, verbatim (`Optional[Manager]`).
     pub annotation: Option<String>,
 }
