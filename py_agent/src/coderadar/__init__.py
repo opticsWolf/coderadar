@@ -21,7 +21,7 @@ import functools
 #: installed wheel/sdist reports its own version) and falls back to the
 #: release constant below, which MUST be kept in sync with pyproject.toml
 #: and Cargo.toml [workspace.package] on every bump.
-_FALLBACK_VERSION = "0.9.4"
+_FALLBACK_VERSION = "0.10.0"
 
 
 def _resolve_version() -> str:
