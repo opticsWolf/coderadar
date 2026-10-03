@@ -78,7 +78,7 @@ impl CodeGraph {
         func_id: &str,
         calls: &[crate::types::UnresolvedRef],
         sibling_funcs: &std::collections::HashMap<String, String>,
-        import_targets: &std::collections::HashMap<String, String>,
+        import_targets: &std::collections::HashMap<String, (String, String)>,
         methods_by_class: &MethodsByClass,
         projection: &ProjectedGraph,
         import_graph: &ImportGraph,
@@ -212,9 +212,12 @@ impl CodeGraph {
                     if let Some(target_id) = sibling_funcs.get(name.as_str()) {
                         return crate::types::ResolvedCall::Function(target_id.clone());
                     }
-                    if let Some(target_mod_id) = import_targets.get(name.as_str()) {
+                    // (module id, original name): `from x import a as b` binds
+                    // `b`, but the symbol in `x` is still called `a`.
+                    if let Some((target_mod_id, original)) = import_targets.get(name.as_str()) {
+                        let symbol = if original.is_empty() { name } else { original };
                         if let Some(imported_func_id) =
-                            find_symbol_in_module(projection, target_mod_id, name)
+                            find_symbol_in_module(projection, target_mod_id, symbol)
                         {
                             return crate::types::ResolvedCall::Function(imported_func_id);
                         }
@@ -425,7 +428,7 @@ impl CodeGraph {
         // (avoids 501×501 HashMap clones in the single-file 500-varargs case).
         type ModuleLookups = (
             std::sync::Arc<std::collections::HashMap<String, String>>,
-            std::sync::Arc<std::collections::HashMap<String, String>>,
+            std::sync::Arc<std::collections::HashMap<String, (String, String)>>,
         );
         type WorkItem = (String, Vec<crate::types::UnresolvedRef>, ModuleLookups);
 
@@ -445,24 +448,69 @@ impl CodeGraph {
                             crate::types::ImportKind::FromImport {
                                 module: src_mod,
                                 names,
+                            }
+                            | crate::types::ImportKind::RelativeImport {
+                                module: Some(src_mod),
+                                names,
+                                ..
                             } => {
                                 let target_mod_id =
                                     find_module_by_dotted_name(projection, src_mod, parent_module);
-                                for (name, _alias) in names {
+                                for (name, alias) in names {
                                     if let Some(ref tgt_id) = target_mod_id {
-                                        import_targets_map.insert(name.clone(), tgt_id.clone());
+                                        // The *local* binding is what a call site
+                                        // uses: `from x import a as b` calls `b`.
+                                        let local = alias.as_deref().unwrap_or(name.as_str());
+                                        import_targets_map.insert(
+                                            local.to_string(),
+                                            (tgt_id.clone(), name.clone()),
+                                        );
+                                    }
+                                }
+                            }
+                            // `from . import x`: the names live in the package
+                            // itself, which `parent_module` already names.
+                            crate::types::ImportKind::RelativeImport {
+                                module: None,
+                                names,
+                                ..
+                            } => {
+                                let pkg = parent_module
+                                    .rsplit_once("::")
+                                    .map(|(p, _)| p)
+                                    .unwrap_or(parent_module.as_str());
+                                let pkg_dir = pkg.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+                                let target_mod_id = find_module_by_dotted_name(
+                                    projection,
+                                    &format!("{pkg_dir}/__init__.py"),
+                                    parent_module,
+                                );
+                                if let Some(tgt_id) = target_mod_id {
+                                    for (name, alias) in names {
+                                        let local = alias.as_deref().unwrap_or(name.as_str());
+                                        import_targets_map.insert(
+                                            local.to_string(),
+                                            (tgt_id.clone(), name.clone()),
+                                        );
                                     }
                                 }
                             }
                             crate::types::ImportKind::ModuleImport {
                                 module: src_mod,
-                                alias: _,
+                                alias,
                             } => {
                                 if let Some(tgt_id) =
                                     find_module_by_dotted_name(projection, src_mod, parent_module)
                                 {
-                                    let short_name = src_mod.rsplit('.').next().unwrap_or(src_mod);
-                                    import_targets_map.insert(short_name.to_string(), tgt_id);
+                                    // `import numpy as np` binds `np`, not
+                                    // `numpy`; the short name is the fallback.
+                                    let local = alias.clone().unwrap_or_else(|| {
+                                        src_mod.rsplit('.').next().unwrap_or(src_mod).to_string()
+                                    });
+                                    // `mod.f()` resolves `f` inside `mod`; the
+                                    // empty second slot means "look up the name
+                                    // being called".
+                                    import_targets_map.insert(local, (tgt_id, String::new()));
                                 }
                             }
                             crate::types::ImportKind::StarImport { module: src_mod } => {
@@ -472,8 +520,10 @@ impl CodeGraph {
                                     if let Some(tgt_module) = projection.modules.get(&tgt_id) {
                                         if let Some(ref exports) = tgt_module.star_exports {
                                             for name in exports {
-                                                import_targets_map
-                                                    .insert(name.clone(), tgt_id.clone());
+                                                import_targets_map.insert(
+                                                    name.clone(),
+                                                    (tgt_id.clone(), name.clone()),
+                                                );
                                             }
                                         }
                                     }

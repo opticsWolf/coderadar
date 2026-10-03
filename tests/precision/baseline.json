@@ -7,7 +7,7 @@
   },
   "self": {
     "extraction_recall": 0.9997,
-    "in_repo_rate": 0.2111,
+    "in_repo_rate": 0.2302,
     "resolution_precision": 1.0,
     "resolution_recall": 1.0
   }

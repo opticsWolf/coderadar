@@ -875,6 +875,20 @@ fn scan_subtree_for_fn_ref(
         }
         // `on=handler`, `{"k": handler}`
         "keyword_argument" | "pair" => take(node.child_by_field_name("value")),
+        // `def f(on_orphan=_leave)`: a default value is a value binding.
+        "default_parameter" | "typed_default_parameter" => take(node.child_by_field_name("value")),
+        // `alive or _parent_is_alive`: both operands are values.
+        "boolean_operator" => {
+            for i in 0..node.named_child_count() {
+                take(node.named_child(i as u32));
+            }
+        }
+        // `a if cond else b`: consequence and alternative are values, the
+        // condition is not.
+        "conditional_expression" => {
+            take(node.child_by_field_name("consequence"));
+            take(node.child_by_field_name("alternative"));
+        }
         // `f(handler, self.method)`, `[a, b]`, `{a, b}`, `(a, b)`
         "argument_list" | "arguments" | "call_suffix" | "list" | "list_literal" | "set"
         | "tuple" | "expression_list" => {

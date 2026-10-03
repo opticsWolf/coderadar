@@ -7,8 +7,8 @@
 // `matches!` trees — that is precisely how fossil's `collect_defs` grew to
 // cyclomatic 28+ and became a brain-method generator.
 
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use crate::graph::module_resolution::{find_module_by_dotted_name, find_symbol_in_module};
 use crate::types::{EntityId, FunctionKind, MroNode, ProjectedGraph};
@@ -19,6 +19,13 @@ use crate::types::{EntityId, FunctionKind, MroNode, ProjectedGraph};
 ///
 /// Patterns are matched with `contains` against the raw decorator text so
 /// `@app.route`, `@router.get("/x")` and bare `@get` all hit.
+///
+/// On top of the table, `is_registration_decorator` treats *any* decorator
+/// that is an attribute call (`@obj.tool(...)`, `@server.list_tools()`) as
+/// registration: a receiver method taking the function as its argument is
+/// how plugin/tool/route registries are written in every framework we have
+/// seen, and no table can enumerate them all (dogfooding CodeRadar on its
+/// own MCP server flagged all 24 `@mcp.tool(...)` handlers as unreachable).
 pub const ENTRY_DECORATORS: &[&str] = &[
     // Web frameworks (Flask/FastAPI/Starlette/Sanic/...)
     "app.route",
@@ -112,8 +119,87 @@ fn decorator_matches(decorators: &[String], table: &[&str]) -> bool {
     })
 }
 
+/// `@obj.method(...)` / `@obj.method(...)` with arguments: a call on an
+/// attribute receiver. `@lru_cache()` and `@property` are attribute
+/// *references* or bare names, so they stay out; a decorator applied by an
+/// object that we cannot see is registration by construction.
+fn is_registration_decorator(decorators: &[String]) -> bool {
+    decorators.iter().any(|d| {
+        let d = d.trim_start_matches('@').trim();
+        let Some(open) = d.find('(') else {
+            return false;
+        };
+        let head = &d[..open];
+        // Receiver + attribute: `mcp.tool`, `app.route`, `server.list_tools`.
+        head.contains('.') && !head.contains(' ') && !head.contains('"')
+    })
+}
+
 fn is_public(name: &str) -> bool {
     !name.starts_with('_')
+}
+
+const TRIPLE_DOUBLE: &str = "\"\"\"";
+const TRIPLE_SINGLE: &str = "'''";
+
+/// Names called from module-level code: `__version__ = _resolve_version()`,
+/// `_TIMEOUT = _env_seconds("X")` (plain or inside a module-level `try:`).
+/// Module bodies run at import, but no function frame owns them, so the call
+/// graph never sees the edge and a one-shot initializer looked dead. Def and
+/// class bodies are skipped by indentation; files are cached per module.
+fn module_level_calls<'a>(
+    path: &str,
+    cache: &'a mut HashMap<PathBuf, HashSet<String>>,
+) -> &'a HashSet<String> {
+    cache.entry(PathBuf::from(path)).or_insert_with(|| {
+        let mut names = HashSet::new();
+        // F14 follow-up: canonical module paths resolve via the indexed root.
+        let text = crate::graph::module_resolution::read_project_file(path);
+        let mut body_indent: Option<usize> = None;
+        // Multi-line strings (module docstrings) are prose, not statements:
+        // "Dead: `_orphan` (no callers)" must not read as a call to `_orphan`.
+        let mut in_doc = false;
+        for line in text.lines() {
+            let triples = line.matches(TRIPLE_DOUBLE).count() + line.matches(TRIPLE_SINGLE).count();
+            let was_in_doc = in_doc;
+            if triples % 2 == 1 {
+                in_doc = !in_doc;
+            }
+            if was_in_doc || triples > 0 {
+                continue;
+            }
+            let trimmed = line.trim_start();
+            let indent = line.len() - trimmed.len();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if let Some(bound) = body_indent {
+                if indent > bound {
+                    continue; // inside a def/class body
+                }
+                body_indent = None;
+            }
+            if trimmed.starts_with("def ")
+                || trimmed.starts_with("async def ")
+                || trimmed.starts_with("class ")
+            {
+                body_indent = Some(indent);
+                continue;
+            }
+            let Some(open) = trimmed.find('(') else {
+                continue;
+            };
+            let head = trimmed[..open].trim_end();
+            let name = head
+                .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+                .unwrap_or("");
+            if !name.is_empty() {
+                names.insert(name.to_string());
+            }
+        }
+        names
+    })
 }
 
 /// Entities considered live roots without requiring an inbound call edge,
@@ -121,6 +207,12 @@ fn is_public(name: &str) -> bool {
 pub struct EntryPoints {
     pub production: HashSet<EntityId>,
     pub test_only: HashSet<EntityId>,
+    /// Findings whose liveness could go either way, with the reason. They
+    /// stay visible at the weakest tier instead of claiming 0.9 (plan §7.2:
+    /// a number nobody can trust is worse than no number): the receiver
+    /// types we resolve do not reach every call, or the function escapes as
+    /// a value.
+    pub weak_surface: HashMap<EntityId, &'static str>,
 }
 
 /// Detect entry points. Cheapest-first ladder:
@@ -141,6 +233,21 @@ pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> Entry
         .flat_map(|f| f.resolved_refs.iter())
         .collect();
     let mut test_only = HashSet::new();
+    let mut weak_surface: HashMap<EntityId, &'static str> = HashMap::new();
+    // Names used as decorators anywhere in the repo: the definition is called
+    // by the decoration machinery at import time, which the call graph does
+    // not model. Dogfooding CodeRadar on itself flagged `requires_index`,
+    // applied 24 times, as High unreachable.
+    let decorator_names: HashSet<&str> = graph
+        .functions
+        .values()
+        .flat_map(|f| f.decorators.iter())
+        .map(|d| {
+            let d = d.trim_start_matches('@');
+            let head = d.split('(').next().unwrap_or(d);
+            head.rsplit('.').next().unwrap_or(head)
+        })
+        .collect();
     // Module source cache for the Rust-`pub` rule (step 5): each .rs
     // module reads once per detection run.
     let mut rust_lines: std::collections::HashMap<EntityId, Vec<String>> =
@@ -160,6 +267,43 @@ pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> Entry
         .filter(|(_, users)| !users.is_empty())
         .map(|(mid, _)| mid)
         .collect();
+    // Package surface: modules a package re-exports through its `__init__.py`
+    // when nothing outside imports that package either. `coderadar.lsp`
+    // re-exports `coderadar.lsp.pool`, and `import coderadar.lsp` is a
+    // documented way in — so the pool's public surface is API, not dead
+    // code. Fixed point over the import graph: a façade nothing imports makes
+    // everything it re-exports surface, transitively.
+    let is_facade = |id: &EntityId| {
+        graph
+            .modules
+            .get(id)
+            .is_some_and(|m| m.path.file_name() == Some(std::ffi::OsStr::new("__init__.py")))
+    };
+    let mut package_surface: HashSet<&EntityId> = graph
+        .modules
+        .keys()
+        .filter(|id| is_facade(id) && !imported.contains(id))
+        .collect();
+    loop {
+        let mut grew = false;
+        for (mid, importers) in &graph.importers {
+            if package_surface.contains(mid) || is_facade(mid) {
+                continue;
+            }
+            // Imported only from modules that are themselves package surface.
+            if !importers.is_empty() && importers.iter().all(|imp| package_surface.contains(imp)) {
+                grew |= package_surface.insert(mid);
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    // A module nothing imports is surface by definition (step 4's existing
+    // rule), so fold that in and every later check reads one set.
+    let unimported_or_surface =
+        |id: &EntityId| !imported.contains(id) || package_surface.contains(id);
+
     // Method names defined per in-repo class (plan §2.3): the dispatch-target
     // check asks whether any class below this one in the MRO defines the same
     // name, i.e. whether the override targets something we can see.
@@ -196,6 +340,8 @@ pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> Entry
     // Extended test-path classification per module (ancestors up to root).
     let mut module_under_test: std::collections::HashMap<&EntityId, bool> =
         std::collections::HashMap::new();
+    // Module source cache for step 4b (one read per module, not per function).
+    let mut module_level_cache: HashMap<PathBuf, HashSet<String>> = HashMap::new();
 
     for (id, f) in &graph.functions {
         let in_tests = test_modules.contains(&f.parent_module);
@@ -226,6 +372,18 @@ pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> Entry
 
         // 2. Framework decorators — production table wins, then test table.
         if decorator_matches(&f.decorators, ENTRY_DECORATORS) {
+            production.insert(id.clone());
+            continue;
+        }
+        // 2b. Unlisted registration decorators (`@mcp.tool(...)`): a
+        //     receiver method taking the function is a registry.
+        if is_registration_decorator(&f.decorators) {
+            production.insert(id.clone());
+            continue;
+        }
+        // 2c. A definition used as a decorator somewhere is invoked by the
+        //     decoration machinery, not by a call site we can see.
+        if decorator_names.contains(f.name.as_str()) {
             production.insert(id.clone());
             continue;
         }
@@ -308,6 +466,37 @@ pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> Entry
                 }
                 continue;
             }
+
+            // 3f. Library surface of a package façade (plan §2.4/§7):
+            //     `pkg/__init__.py` exists to be imported by name, so a
+            //     public method of a public class defined there is called by
+            //     consumers — the same argument step 4 makes for module-level
+            //     functions of never-imported modules, which does not cover
+            //     methods at all. Dogfooding CodeRadar on itself reported
+            //     `CodeGraph.query`, `update_file`, … as High unreachable;
+            //     every one of them is the documented API.
+            let class_public = cls.name.chars().next().is_some_and(|c| c != '_');
+            let module_is_facade = graph
+                .modules
+                .get(&f.parent_module)
+                .is_some_and(|m| m.path.file_name() == Some(std::ffi::OsStr::new("__init__.py")));
+            if class_public && public_name && module_is_facade && !under_test {
+                production.insert(id.clone());
+                continue;
+            }
+
+            // 3g. Weak surface: a public method of an instantiated public
+            //     class. The receiver may be an untyped attribute
+            //     (`self._executor.search_text(...)`) that resolution cannot
+            //     follow, so "no callers" is not 0.9 evidence. The class
+            //     itself proves instances exist, which is what separates this
+            //     from the rta-dead case (never instantiated at all).
+            if class_public && public_name && !under_test {
+                weak_surface.insert(
+                    id.clone(),
+                    "public method of an instantiated class (receiver unresolved)",
+                );
+            }
         }
 
         // 3e. Framework packs (plan §2.4, table-driven, opt-in by detection):
@@ -357,9 +546,51 @@ pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> Entry
         //    is allowed to call it even though nothing in-repo does. A module
         //    under a test path (extended, §2.4) is not production surface.
         if !under_test
-            && !imported.contains(&f.parent_module)
+            && unimported_or_surface(&f.parent_module)
             && f.parent_class.is_none()
             && is_public(&f.name)
+        {
+            production.insert(id.clone());
+            continue;
+        }
+
+        // 4c. Public methods of a public class in a module a package
+        //     re-exports: `LSPPool.shutdown` is called by anyone who does
+        //     `import coderadar.lsp`. Only the façade-reachable case — an
+        //     unimported module's class is a different question, which is
+        //     exactly what the rta-dead pass exists to answer.
+        let public_method_of_public_class = f
+            .parent_class
+            .as_ref()
+            .is_some_and(|cid| graph.classes.get(cid).is_some_and(|c| is_public(&c.name)));
+        if !under_test
+            && package_surface.contains(&f.parent_module)
+            && public_method_of_public_class
+            && is_public(&f.name)
+        {
+            production.insert(id.clone());
+            continue;
+        }
+
+        // 4a. The same argument for a package façade that IS imported:
+        //     `coderadar/__init__.py` exists to be imported by name, so its
+        //     module-level public functions are the package's API
+        //     (`coderadar.watch(...)`), not dead code.
+        let module_is_facade = graph
+            .modules
+            .get(&f.parent_module)
+            .is_some_and(|m| m.path.file_name() == Some(std::ffi::OsStr::new("__init__.py")));
+        if !under_test && f.parent_class.is_none() && is_public(&f.name) && module_is_facade {
+            production.insert(id.clone());
+            continue;
+        }
+
+        // 4b. Called from module-level code (import-time initializers).
+        if f.parent_class.is_none()
+            && graph.modules.get(&f.parent_module).is_some_and(|m| {
+                module_level_calls(&m.path.to_string_lossy(), &mut module_level_cache)
+                    .contains(&f.name)
+            })
         {
             production.insert(id.clone());
             continue;
@@ -415,9 +646,62 @@ pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> Entry
         }
     }
 
+    // Only classes the root itself constructs qualify: a class built solely
+    // by external code is a different question (rta-dead).
+    let constructed = crate::graph::rta_lite::instantiated_classes(graph);
+    weak_surface.retain(|id, reason| {
+        let Some(f) = graph.functions.get(id) else {
+            return false;
+        };
+        match f.parent_class.as_ref() {
+            // Value references and unresolved receiver calls need no class.
+            None => true,
+            Some(cid) => {
+                *reason == "used as a value; may be called through that value"
+                    || *reason == "named by an unresolved receiver call site"
+                    || constructed.contains(cid)
+            }
+        }
+    });
+
+    // Values that escape: a function handed around (`handlers = [cb]`,
+    // `self._check = _index_is_empty`) is called through that value, which
+    // the call graph cannot follow. Reported at the weakest tier instead of
+    // 0.9-dead.
+    for id in referenced.iter() {
+        if graph.functions.contains_key(id.as_str()) {
+            weak_surface
+                .entry((*id).clone())
+                .or_insert("used as a value; may be called through that value");
+        }
+    }
+    // An unresolved `x.foo()` / `self.foo()` call site names a method we
+    // could not bind; any method called `foo` may be its target. Same
+    // reasoning as the rta-dead pass, one step weaker: the receiver is
+    // unknown, not the class.
+    let unresolved_receiver_calls: HashSet<&str> = graph
+        .functions
+        .values()
+        .flat_map(|f| f.resolved_calls.iter())
+        .filter_map(|rc| match rc {
+            crate::types::ResolvedCall::Unresolved { raw, .. } if !raw.path.is_empty() => {
+                Some(raw.name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    for (id, f) in &graph.functions {
+        if f.parent_class.is_some() && unresolved_receiver_calls.contains(f.name.as_str()) {
+            weak_surface
+                .entry(id.clone())
+                .or_insert("named by an unresolved receiver call site");
+        }
+    }
+
     EntryPoints {
         production,
         test_only,
+        weak_surface,
     }
 }
 

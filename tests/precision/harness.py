@@ -215,6 +215,51 @@ def dangling_targets(root: Path) -> list[str]:
             if s["status"] in _RESOLVED and s["target"] not in known]
 
 
+# ── Dead-code precision (§7.2, fourth metric) ─────────────────────────────
+#
+# "Dead-code precision = sample 50 High+Medium findings, hand-labelled once,
+# stored as a golden file." The sample below is that golden: every `alive`
+# entry was a High finding at some point during the 0.10 work and was
+# verified by hand to be reachable (public API, registration decorator,
+# aliased import, value reference); every `dead` entry was verified to have
+# no call site anywhere in the corpus. Precision is a gate, recall is a
+# ratchet — the finding budget may shrink, never grow.
+
+_HIGH_MEDIUM = {"High", "Medium"}
+
+
+def dead_code_report(root: Path, golden: dict) -> dict:
+    root = Path(root).resolve()
+    with _cwd(root):
+        coderadar.analyze(str(root))
+        findings = _core.find_dead_code(0.0, False, 2000)
+
+    strong = {f["entity_id"] for f in findings if f["tier"] in _HIGH_MEDIUM}
+    reported = {f["entity_id"] for f in findings}
+    false_positives = [e for e in golden["alive"] if e in strong]
+    missed = [e for e in golden["dead"] if e not in reported]
+    labelled = len(golden["alive"]) + len(golden["dead"])
+    return {
+        "findings": len(findings),
+        "high_medium_findings": len(strong),
+        "labelled": labelled,
+        "precision": (labelled - len(false_positives)) / labelled if labelled else 1.0,
+        "recall": (len(golden["dead"]) - len(missed)) / len(golden["dead"])
+        if golden["dead"]
+        else 1.0,
+        "false_positives": false_positives,
+        "missed": missed,
+    }
+
+
+def format_dead_report(name: str, m: dict) -> str:
+    return (
+        f"{name}: {m['findings']} dead-code findings, "
+        f"{m['high_medium_findings']} High+Medium, "
+        f"labelled precision {m['precision']:.1%}, recall {m['recall']:.1%}"
+    )
+
+
 def format_report(name: str, m: dict) -> str:
     lines = [
         (

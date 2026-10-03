@@ -101,11 +101,17 @@ impl Default for DeadCodeOptions {
     }
 }
 
+/// Ceiling for a finding whose liveness could go either way: an unresolvable
+/// receiver on an instantiated class. Keeps it in the report (Low) instead of
+/// either silencing it or claiming High.
+const WEAK_SURFACE_CAP: f32 = 0.45;
+
 /// Detect dead functions over the resolved projection.
 pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<DeadFinding> {
     let EntryPoints {
         production,
         test_only,
+        weak_surface,
     } = entry_points::detect_entry_points(graph, options.root.as_deref());
 
     let live_prod = compute_reachable(graph, &production);
@@ -173,6 +179,18 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
             }
         } else {
             score
+        };
+
+        // §7.2 weak surface: the class is instantiated here, so an untyped
+        // receiver we could not resolve may call this. Reported, at the
+        // weakest tier — a wrong 0.9 costs more than a missing 0.9.
+        let (score, evidence) = match weak_surface.get(id) {
+            Some(reason) if matches!(kind, DeadKind::Unreachable | DeadKind::TransitivelyDead) => {
+                let mut evidence = evidence;
+                evidence.push((*reason).to_string());
+                (score.min(WEAK_SURFACE_CAP), evidence)
+            }
+            _ => (score, evidence),
         };
 
         out.push(DeadFinding {
@@ -565,6 +583,206 @@ pub(crate) mod tests {
         let out = detect_dead(&g, DeadCodeOptions::default());
         assert!(!out.iter().any(|f| f.entity_id == "lib.rs::find_things"));
         assert!(!out.iter().any(|f| f.entity_id == "bridge.rs::Engine.apply"));
+    }
+
+    /// Dogfood findings (Phase 7): every rule below was added because
+    /// CodeRadar reported a real false positive on its own source tree.
+    #[test]
+    fn registration_decorators_and_decorator_definitions_are_roots() {
+        use super::entry_points::detect_entry_points;
+        let mut g = fixture();
+        // `@mcp.tool(...)`: an unlisted registration decorator (24 MCP tools
+        // were reported unreachable before this rule).
+        let mut tool = func(
+            "srv.py::codegraph_search",
+            "codegraph_search",
+            "srv.py::module",
+        );
+        tool.decorators = vec!["@mcp.tool(description=\"find symbols\")".into()];
+        // A definition used as a decorator is called by the decoration
+        // machinery: `@requires_index` applied 24 times.
+        let mut decorator = func("srv.py::requires_index", "requires_index", "srv.py::module");
+        decorator.decorators = vec![];
+        let mut guarded = func("srv.py::codegraph_node", "codegraph_node", "srv.py::module");
+        guarded.decorators = vec!["@requires_index".into()];
+        for f in [tool, decorator, guarded] {
+            g.functions.insert(f.id.clone(), std::sync::Arc::new(f));
+        }
+        g.modules.insert(
+            "srv.py::module".into(),
+            std::sync::Arc::new(mk_module("srv.py::module")),
+        );
+        let eps = detect_entry_points(&g, None);
+        assert!(eps.production.contains("srv.py::codegraph_search"));
+        assert!(eps.production.contains("srv.py::requires_index"));
+        assert!(eps.production.contains("srv.py::codegraph_node"));
+        // `@lru_cache` is a bare attribute reference, not a registration
+        // call. Private, so the unimported-module export rule cannot root it
+        // either: the decorator is the only question left.
+        let mut plain = func("srv.py::_memoized", "_memoized", "srv.py::module");
+        plain.decorators = vec!["@functools.lru_cache".into()];
+        g.functions
+            .insert(plain.id.clone(), std::sync::Arc::new(plain));
+        let eps = detect_entry_points(&g, None);
+        assert!(!eps.production.contains("srv.py::_memoized"));
+    }
+
+    #[test]
+    fn package_facade_surface_is_a_root() {
+        use super::entry_points::detect_entry_points;
+        let mut g = fixture();
+        // `pkg/__init__.py` exists to be imported: `coderadar.watch(...)` and
+        // `CodeGraph.query` are the documented API even though nothing in-repo
+        // calls them.
+        let mut m = mk_module("pkg/__init__.py::module");
+        m.path = PathBuf::from("pkg/__init__.py");
+        m.functions = vec!["pkg/__init__.py::watch".into()];
+        m.classes = vec!["pkg/__init__.py::CodeGraph".into()];
+        g.modules
+            .insert("pkg/__init__.py::module".into(), std::sync::Arc::new(m));
+        let mut watch = func("pkg/__init__.py::watch", "watch", "pkg/__init__.py::module");
+        g.functions
+            .insert(watch.id.clone(), std::sync::Arc::new(watch));
+        let cls = crate::types::Class {
+            id: "pkg/__init__.py::CodeGraph".into(),
+            name: "CodeGraph".into(),
+            grammar_kind: "class_definition".into(),
+            parent_module: "pkg/__init__.py::module".into(),
+            parent_class: None,
+            bases: vec![],
+            resolved_bases: vec![],
+            mro: vec![],
+            mro_error: false,
+            methods: vec![],
+            fields: vec![],
+            source: SourceType::Impl,
+            decorators: vec![],
+            effective: crate::types::EffectiveClass::Plain,
+            is_type_checking_only: false,
+            line: 1,
+            exit_line: 2,
+            docstring: None,
+            parse_quality: ParseQuality::Clean,
+            content_hash: 0,
+            span: ByteSpan { start: 0, end: 10 },
+            name_span: ByteSpan { start: 6, end: 15 },
+            body_span: ByteSpan { start: 10, end: 10 },
+            decorators_span: None,
+            embedding: EmbeddingVec::default(),
+        };
+        g.classes.insert(cls.id.clone(), std::sync::Arc::new(cls));
+        let mut query = func(
+            "pkg/__init__.py::CodeGraph.query",
+            "query",
+            "pkg/__init__.py::module",
+        );
+        query.parent_class = Some("pkg/__init__.py::CodeGraph".into());
+        let mut helper = func(
+            "pkg/__init__.py::CodeGraph._helper",
+            "_helper",
+            "pkg/__init__.py::module",
+        );
+        helper.parent_class = Some("pkg/__init__.py::CodeGraph".into());
+        for f in [query, helper] {
+            g.functions.insert(f.id.clone(), std::sync::Arc::new(f));
+        }
+        let eps = detect_entry_points(&g, None);
+        assert!(eps.production.contains("pkg/__init__.py::watch"));
+        assert!(eps.production.contains("pkg/__init__.py::CodeGraph.query"));
+        // Private helpers of a public class are still reported.
+        assert!(!eps
+            .production
+            .contains("pkg/__init__.py::CodeGraph._helper"));
+    }
+
+    #[test]
+    fn module_level_calls_root_import_time_initializers() {
+        use super::entry_points::detect_entry_points;
+        let mut g = fixture();
+        let dir = tempfile::tempdir().unwrap();
+        let py = dir.path().join("ver.py");
+        std::fs::write(
+            &py,
+            "\"\"\"Dead: `_orphan` (no callers) is prose, not a call.\"\"\"
+
+
+"
+            .to_string()
+                + "__version__ = _resolve_version()
+
+
+" + "def _resolve_version():
+    return \"1.0\"
+
+
+" + "def _orphan():
+    return 1
+",
+        )
+        .unwrap();
+        let mut m = mk_module("ver.py::module");
+        m.path = py.canonicalize().unwrap();
+        m.functions = vec!["ver.py::_resolve_version".into(), "ver.py::_orphan".into()];
+        g.modules
+            .insert("ver.py::module".into(), std::sync::Arc::new(m));
+        for name in ["_resolve_version", "_orphan"] {
+            let f = func(&format!("ver.py::{name}"), name, "ver.py::module");
+            g.functions.insert(f.id.clone(), std::sync::Arc::new(f));
+        }
+        // `disk_path_for` takes absolute paths as-is, so no global root here.
+        let eps = detect_entry_points(&g, None);
+        assert!(eps.production.contains("ver.py::_resolve_version"));
+        assert!(!eps.production.contains("ver.py::_orphan"));
+    }
+
+    #[test]
+    fn value_references_and_unresolved_receivers_cap_at_low() {
+        // A function handed around (`self._check = _index_is_empty`) or named
+        // by a receiver we could not resolve (`self._fire()`) is not
+        // 0.9-dead. It stays in the report, at the weakest tier.
+        let mut g = fixture();
+        let mut referenced = func(
+            "lazy.py::_index_is_empty",
+            "_index_is_empty",
+            "lazy.py::module",
+        );
+        referenced.parent_class = Some("lazy.py::Retry".into());
+        g.functions
+            .insert(referenced.id.clone(), std::sync::Arc::new(referenced));
+        let mut unresolved = func("life.py::_fire", "_fire", "life.py::module");
+        unresolved.parent_class = Some("life.py::Watchdog".into());
+        unresolved.resolved_calls = vec![crate::types::ResolvedCall::Unresolved {
+            reason: crate::types::UnresolvedReason::TypeInferenceRequired,
+            raw: crate::types::UnresolvedRef {
+                name: "_fire".into(),
+                path: vec!["self".into()],
+                line: 1,
+                col: 0,
+                name_span: ByteSpan { start: 0, end: 5 },
+            },
+        }];
+        g.functions
+            .insert(unresolved.id.clone(), std::sync::Arc::new(unresolved));
+        let mut caller = func("life.py::check_once", "check_once", "life.py::module");
+        caller.resolved_refs = vec!["lazy.py::_index_is_empty".into()];
+        g.functions
+            .insert(caller.id.clone(), std::sync::Arc::new(caller));
+        g.modules.insert(
+            "lazy.py::module".into(),
+            std::sync::Arc::new(mk_module("lazy.py::module")),
+        );
+        g.modules.insert(
+            "life.py::module".into(),
+            std::sync::Arc::new(mk_module("life.py::module")),
+        );
+        let out = detect_dead(&g, DeadCodeOptions::default());
+        for id in ["lazy.py::_index_is_empty", "life.py::_fire"] {
+            let f = out
+                .iter()
+                .find(|f| f.entity_id == id)
+                .unwrap_or_else(|| panic!("{id} must stay in the report"));
+            assert_eq!(f.tier, Tier::Low, "{id} must not claim 0.9");
+        }
     }
 
     #[test]
