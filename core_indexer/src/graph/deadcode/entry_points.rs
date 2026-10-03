@@ -10,6 +10,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::graph::module_resolution::{find_module_by_dotted_name, find_symbol_in_module};
 use crate::types::{EntityId, FunctionKind, MroNode, ProjectedGraph};
 
 /// Decorators that mark a function as invoked by a framework/runtime, so an
@@ -131,7 +132,7 @@ pub struct EntryPoints {
 /// 3d. interface declarations — `typing.Protocol` members and
 ///     `@abstractmethod` declarations are contract, not deletable code,
 /// 4. public top-level API of modules nobody imports (library surface).
-pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
+pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> EntryPoints {
     let mut production = HashSet::new();
     // Functions some other function passes around as a value (callbacks).
     let referenced: HashSet<&EntityId> = graph
@@ -173,8 +174,42 @@ pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
         }
     }
 
+    // Framework packs (plan §2.4) — table-driven, opt-in by detection. A
+    // project that never imports pytest gets no pytest semantics.
+    let mut packs = Packs::default();
+    for imp in graph.imports.values() {
+        if !packs.pytest && imp.raw.contains("pytest") {
+            packs.pytest = true;
+        }
+        if !packs.qt && (imp.raw.contains("PySide") || imp.raw.contains("PyQt")) {
+            packs.qt = true;
+        }
+    }
+    if !packs.pytest {
+        // A project uses pytest when a conftest.py exists even if no visible
+        // import does (plugin autoload).
+        packs.pytest = graph
+            .modules
+            .values()
+            .any(|m| m.path.file_name() == Some(std::ffi::OsStr::new("conftest.py")));
+    }
+    // Extended test-path classification per module (ancestors up to root).
+    let mut module_under_test: std::collections::HashMap<&EntityId, bool> =
+        std::collections::HashMap::new();
+
     for (id, f) in &graph.functions {
         let in_tests = test_modules.contains(&f.parent_module);
+        // Extended test-path classification for the packs (plan §2.4):
+        // ancestors up to the analyzed root, not the immediate parent only.
+        let under_test = *module_under_test
+            .entry(&f.parent_module)
+            .or_insert_with(|| {
+                graph
+                    .modules
+                    .get(&f.parent_module)
+                    .map(|m| is_test_path_in_root(&m.path, root))
+                    .unwrap_or(in_tests)
+            });
 
         // 1. Conventional mains — free functions only.
         if f.parent_class.is_none()
@@ -275,10 +310,39 @@ pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
             }
         }
 
+        // 3e. Framework packs (plan §2.4, table-driven, opt-in by detection):
+        //     a project that never imports pytest gets no pytest semantics.
+        if packs.pytest {
+            // `test_*` anywhere under a test path — including nested helper
+            // trees the immediate-parent rule missed — is discovered by name.
+            // conftest hooks (`pytest_configure`, …) are called by the runner.
+            let is_conftest = graph
+                .modules
+                .get(&f.parent_module)
+                .is_some_and(|m| m.path.file_name() == Some(std::ffi::OsStr::new("conftest.py")));
+            if (under_test && f.name.starts_with("test_"))
+                || (is_conftest && f.name.starts_with("pytest_"))
+            {
+                test_only.insert(id.clone());
+                continue;
+            }
+        }
+        // Qt pack: `.connect(...)` targets are already live through the
+        // §1.7 reference edges in reachability; `@Slot` needs its own root.
+        if packs.qt && f.decorators.iter().any(|d| d.contains("Slot")) {
+            if under_test {
+                test_only.insert(id.clone());
+            } else {
+                production.insert(id.clone());
+            }
+            continue;
+        }
+
         // 3b. Functions inside test modules with no inbound callers are test
         //     roots: the framework discovers them by name, so "nobody calls
-        //     this" is normal for them rather than evidence of death.
-        if in_tests {
+        //     this" is normal for them rather than evidence of death. The
+        //     extended classification covers nested test trees too.
+        if in_tests || under_test {
             let has_callers = graph
                 .callers_by_callee
                 .get(id)
@@ -290,8 +354,9 @@ pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
         }
 
         // 4. Public API of never-imported, non-test modules: the outside world
-        //    is allowed to call it even though nothing in-repo does.
-        if !in_tests
+        //    is allowed to call it even though nothing in-repo does. A module
+        //    under a test path (extended, §2.4) is not production surface.
+        if !under_test
             && !imported.contains(&f.parent_module)
             && f.parent_class.is_none()
             && is_public(&f.name)
@@ -312,10 +377,127 @@ pub fn detect_entry_points(graph: &ProjectedGraph) -> EntryPoints {
         }
     }
 
+    // Entry-point pack (plan §2.4): pyproject.toml [project.scripts] and
+    // [project.entry-points.*] name callables the packaging ecosystem
+    // invokes — invisible to the call graph by construction.
+    if let Some(root) = root {
+        if let Ok(text) = std::fs::read_to_string(root.join("pyproject.toml")) {
+            for (dotted, attr) in parse_project_entry_points(&text) {
+                let Some(mid) = find_module_by_dotted_name(graph, &dotted, "") else {
+                    continue;
+                };
+                if let Some(fid) = find_symbol_in_module(graph, &mid, &attr) {
+                    production.insert(fid);
+                }
+            }
+        }
+    }
+
+    // `__all__` pack (plan §2.4): a listed name is the module's public API
+    // even when the module IS imported — step 4 only protects never-imported
+    // modules. (star_exports only exists when export analysis ran in-process;
+    // cold starts degrade to the step-4 behaviour.)
+    for (mid, m) in &graph.modules {
+        let Some(names) = m.star_exports.as_ref() else {
+            continue;
+        };
+        let under_test = *module_under_test
+            .entry(mid)
+            .or_insert_with(|| is_test_path_in_root(&m.path, root));
+        for name in names {
+            if let Some(fid) = find_symbol_in_module(graph, mid, name) {
+                if under_test {
+                    test_only.insert(fid);
+                } else {
+                    production.insert(fid);
+                }
+            }
+        }
+    }
+
     EntryPoints {
         production,
         test_only,
     }
+}
+
+/// Which framework packs a project opted into, by detection.
+#[derive(Default)]
+struct Packs {
+    pytest: bool,
+    qt: bool,
+}
+
+/// Is `path` inside a test tree, walking ancestors up to — never past — the
+/// analyzed root (plan §2.4 note)? The immediate-parent rule of
+/// [`is_test_path`] missed helper modules nested in test trees
+/// (`tests/visual/corner_harness.py`); walking past the root would instead
+/// classify unrelated sibling trees as tests. Module paths are treated as
+/// root-relative (the walker's own form); `.`/`..` components are skipped,
+/// and a `..` anywhere falls back to the strict immediate-parent rule.
+fn is_test_path_in_root(path: &Path, root: Option<&Path>) -> bool {
+    if is_test_path(path) {
+        return true;
+    }
+    let Some(root) = root else {
+        return false;
+    };
+    let rel = if path.is_absolute() {
+        match path.strip_prefix(root) {
+            Ok(r) => r,
+            Err(_) => return false, // outside the analyzed root — no opinion
+        }
+    } else {
+        path
+    };
+    let comps: Vec<std::path::Component<'_>> = rel
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect();
+    if comps
+        .iter()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        // Would escape above the root; the strict rule is all we know.
+        return is_test_path(path);
+    }
+    // Every directory component except the file name itself.
+    for c in comps.iter().take(comps.len().saturating_sub(1)) {
+        let name = c.as_os_str().to_string_lossy().to_lowercase();
+        if name == "tests" || name == "test" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Minimal `[project.scripts]` / `[project.entry-points.*]` extraction from
+/// pyproject.toml text — `name = "module:attr"` pairs. No TOML dependency:
+/// sections and string values are regular enough for this one shape, and a
+/// malformed file simply roots nothing.
+fn parse_project_entry_points(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut in_section = false;
+    for line in text.lines() {
+        let l = line.trim();
+        if l.starts_with('[') {
+            in_section = l == "[project.scripts]" || l.starts_with("[project.entry-points");
+            continue;
+        }
+        if !in_section || l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        let Some((_, target)) = l.split_once('=') else {
+            continue;
+        };
+        let target = target.trim().trim_matches('"').trim_matches('\'');
+        if let Some((module, attr)) = target.rsplit_once(':') {
+            if !module.is_empty() && !attr.is_empty() {
+                out.push((module.to_string(), attr.to_string()));
+            }
+        }
+    }
+    out
 }
 
 fn is_ident_byte(b: u8) -> bool {

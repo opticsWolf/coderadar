@@ -73,16 +73,21 @@ pub struct DeadFinding {
 }
 
 /// Options for a detection run.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct DeadCodeOptions {
     /// Report functions that are live only from test code.
     pub include_test_only: bool,
+    /// The analyzed root (plan §2.4): test-path detection walks ancestors up
+    /// to — never past — this directory, and `pyproject.toml` entry points
+    /// are read from it. `None` keeps the immediate-parent rule only.
+    pub root: Option<std::path::PathBuf>,
 }
 
 impl Default for DeadCodeOptions {
     fn default() -> Self {
         Self {
             include_test_only: false,
+            root: None,
         }
     }
 }
@@ -92,7 +97,7 @@ pub fn detect_dead(graph: &ProjectedGraph, options: DeadCodeOptions) -> Vec<Dead
     let EntryPoints {
         production,
         test_only,
-    } = entry_points::detect_entry_points(graph);
+    } = entry_points::detect_entry_points(graph, options.root.as_deref());
 
     let live_prod = compute_reachable(graph, &production);
     // Second pass: seed with test entries too, to classify test-only liveness.
@@ -287,6 +292,7 @@ pub(crate) mod tests {
             &g,
             DeadCodeOptions {
                 include_test_only: true,
+                root: None,
             },
         );
 
@@ -349,7 +355,7 @@ pub(crate) mod tests {
             "api.py::module".into(),
             std::sync::Arc::new(mk_module("api.py::module")),
         );
-        let eps = detect_entry_points(&g);
+        let eps = detect_entry_points(&g, None);
         assert!(eps.production.contains("app.py::main"));
         assert!(eps.production.contains("api.py::index"));
         assert!(!eps.production.contains("app.py::d"));
@@ -395,7 +401,7 @@ pub(crate) mod tests {
         moduled.decorators = vec!["#[pymodule]".into()];
         g.functions
             .insert("lib.rs::core_init".into(), std::sync::Arc::new(moduled));
-        let eps = detect_entry_points(&g);
+        let eps = detect_entry_points(&g, None);
         assert!(eps.production.contains("lib.rs::find_things"));
         assert!(eps.production.contains("lib.rs::core_init"));
         assert!(eps.production.contains("bridge.rs::Engine.apply"));
@@ -425,7 +431,7 @@ pub(crate) mod tests {
             .entry("cli.py::module".into())
             .or_default()
             .insert("y".into());
-        let eps = detect_entry_points(&g);
+        let eps = detect_entry_points(&g, None);
         assert!(eps.production.contains("cli.py::serve"));
     }
 

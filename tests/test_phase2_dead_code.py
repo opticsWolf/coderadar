@@ -154,3 +154,92 @@ def test_abstract_declarations_are_not_dead(tmp_path):
     # A plain class with no external base is not protected: `_orphan` stays
     # a real finding.
     assert "Plain._orphan" in found
+
+
+# ── §2.4 — framework packs (table-driven, opt-in by detection) ──────────
+
+
+def test_pytest_pack_covers_nested_test_trees(tmp_path):
+    (tmp_path / "tests" / "visual").mkdir(parents=True)
+    (tmp_path / "app.py").write_text("def run():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "tests" / "conftest.py").write_text(
+        "import pytest\n\n\ndef pytest_configure(config):\n    pass\n", encoding="utf-8"
+    )
+    (tmp_path / "tests" / "visual" / "corner_harness.py").write_text(
+        "def build_harness():\n    return 1\n", encoding="utf-8"
+    )
+    (tmp_path / "tests" / "visual" / "test_corner.py").write_text(
+        "import corner_harness\n\n\ndef test_corner():\n"
+        "    assert corner_harness.build_harness()\n",
+        encoding="utf-8",
+    )
+    analyze(str(tmp_path))
+
+    def _kinds():
+        out = {}
+        for f in find_dead_code(0.0, True, 1000):
+            # file arrives as `.\tests\visual\corner_harness.py`-style
+            out[(f["file"].replace("\\", "/").lstrip("./"),
+                 f["entity_id"].rsplit("::", 1)[-1])] = f["kind"]
+        return out
+
+    kinds = _kinds()
+    # A helper nested in a test tree is test code, not production: its caller
+    # is a test, so liveness is test-only even though the caller is live.
+    assert kinds.get(("tests/visual/corner_harness.py", "build_harness")) == "test-only"
+    # A conftest hook is a test root the runner discovers by name.
+    assert kinds.get(("tests/conftest.py", "pytest_configure")) == "test-only"
+    # A public helper in app.py still counts as production surface.
+    assert ("app.py", "run") not in kinds
+
+
+def test_qt_slot_pack(tmp_path):
+    (tmp_path / "w.py").write_text(
+        "from PySide6.QtWidgets import QWidget\n"
+        "from PySide6.QtCore import Slot\n\n\n"
+        "class W(QWidget):\n"
+        "    @Slot()\n"
+        "    def reload(self):\n"
+        "        return 1\n\n"
+        "    def _plain_dead(self):\n"
+        "        return 1\n",
+        encoding="utf-8",
+    )
+    analyze(str(tmp_path))
+    found = {f["entity_id"].rsplit("::", 1)[-1] for f in find_dead_code(0.0, False, 1000)}
+    assert "W.reload" not in found
+    # Public methods of a framework subclass are dispatch candidates (§2.3);
+    # a PRIVATE one is never dispatched and stays a finding.
+    assert "W._plain_dead" in found
+
+
+def test_pyproject_entry_points_are_roots(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        "[project.scripts]\nmycli = \"myapp.cli:main\"\n", encoding="utf-8"
+    )
+    (tmp_path / "myapp").mkdir()
+    (tmp_path / "myapp" / "cli.py").write_text(
+        "def main():\n    return 1\n\n\ndef _aux():\n    return 2\n", encoding="utf-8"
+    )
+    analyze(str(tmp_path))
+    found = {f["entity_id"].rsplit("::", 1)[-1] for f in find_dead_code(0.0, False, 1000)}
+    assert "main" not in found
+    assert "_aux" in found
+
+
+def test_all_names_are_public_api(tmp_path):
+    (tmp_path / "mymod.py").write_text(
+        '__all__ = ["api"]\n\n\ndef api():\n    return 1\n\n\ndef _secret():\n    return 2\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "user.py").write_text("from mymod import api\n", encoding="utf-8")
+    # The `__all__` pack reads star exports, which the Python analyze wrapper
+    # applies; the bare Rust analyze leaves them unset.
+    from coderadar import analyze as analyze_py
+
+    analyze_py(str(tmp_path))
+    found = {f["entity_id"].rsplit("::", 1)[-1] for f in find_dead_code(0.0, False, 1000)}
+    # `user.py` imports mymod, so step 4 (never-imported modules) does not
+    # protect it; the `__all__` pack does.
+    assert "api" not in found
+    assert "_secret" in found

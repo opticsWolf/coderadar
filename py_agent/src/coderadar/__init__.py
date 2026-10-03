@@ -877,6 +877,7 @@ def _apply_star_exports(root: str) -> None:
     derived, in-memory state and the ledger does not persist them).
     """
     try:
+        import os
         import pathlib
 
         from coderadar._core import set_module_star_exports_bulk
@@ -906,7 +907,14 @@ def _apply_star_exports(root: str) -> None:
                 continue
             candidates = {f"{py_file}::module"}
             try:
-                candidates.add(f"{py_file.relative_to(root_path)}::module")
+                rel = py_file.relative_to(root_path)
+                candidates.add(f"{rel}::module")
+                # The Rust walker's canonical id form is root-relative with a
+                # leading dot-segment (`\tm.py` native separators) — see
+                # `core_indexer/src/fs` F14 note. Offer that form too, or the
+                # apply call silently matches nothing.
+                candidates.add(f".{os.sep}{rel}::module")
+                candidates.add(f"./{rel.as_posix()}::module")
             except ValueError:
                 pass
             candidates.add(f"{py_file.resolve()}::module")

@@ -66,10 +66,17 @@ impl SmellEngine {
         // Whole-graph analyses, computed once per run and shared by every
         // rule (Stage 0.2). Reachability + entry points feed the dead-code
         // rule (Stage 1); harmonic centrality feeds triage signals (Stage 5).
-        let entries = crate::graph::deadcode::entry_points::detect_entry_points(graph);
+        // The root comes from the process-global the analyze pipeline set:
+        // test-path walking and pyproject entry points need it (plan §2.4).
+        let root = crate::INDEXED_ROOT.read().clone();
+        let entries =
+            crate::graph::deadcode::entry_points::detect_entry_points(graph, root.as_deref());
         let dead: HashMap<_, _> = crate::graph::deadcode::detect_dead(
             graph,
-            crate::graph::deadcode::DeadCodeOptions::default(),
+            crate::graph::deadcode::DeadCodeOptions {
+                include_test_only: false,
+                root,
+            },
         )
         .into_iter()
         .map(|f| (f.entity_id.clone(), f))

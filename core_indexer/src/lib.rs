@@ -2904,6 +2904,7 @@ fn find_dead_code(
         let snap_owned: Arc<ProjectedGraph> = snap.clone();
         let options = crate::graph::deadcode::DeadCodeOptions {
             include_test_only: include_test_reachable,
+            root: INDEXED_ROOT.read().clone(),
         };
         let findings =
             py.allow_threads(move || crate::graph::deadcode::detect_dead(&snap_owned, options));
