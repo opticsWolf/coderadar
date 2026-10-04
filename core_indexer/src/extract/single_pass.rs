@@ -851,10 +851,69 @@ fn scan_subtree_for_fn_ref(
     func_idx: usize,
     candidates: &mut Vec<(usize, UnresolvedRef)>,
 ) {
+    let mut found = Vec::new();
+    value_refs(node, source, &mut found);
+    candidates.extend(found.into_iter().map(|r| (func_idx, r)));
+
+    // Recurse into children
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        scan_subtree_for_fn_ref(child, source, func_idx, candidates);
+    }
+}
+
+/// Calls, function-valued references and attribute reads of Python
+/// module-level code: statements, class bodies and decorators, which run at
+/// import. Function bodies are left to their own functions; their attribute
+/// reads are still collected (a `@property` is used by reading it anywhere).
+/// Returns (uses, sorted attribute names).
+pub(crate) fn module_scope_uses(root: Node, source: &str) -> (Vec<UnresolvedRef>, Vec<String>) {
+    fn walk(
+        node: Node,
+        source: &str,
+        in_fn: bool,
+        uses: &mut Vec<UnresolvedRef>,
+        attrs: &mut HashSet<String>,
+    ) {
+        if node.kind() == "attribute" {
+            if let Some(a) = node
+                .child_by_field_name("attribute")
+                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            {
+                attrs.insert(a.to_string());
+            }
+        }
+        let in_fn = in_fn || node.kind() == "function_definition";
+        if !in_fn {
+            uses.extend(call_ref(node, source));
+            value_refs(node, source, uses);
+            // `@register` (bare decorator): the decorator itself is applied.
+            if node.kind() == "decorator" {
+                uses.extend(node.named_child(0).and_then(|n| ref_of(n, source)));
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, source, in_fn, uses, attrs);
+        }
+    }
+    let mut uses = Vec::new();
+    let mut attrs = HashSet::new();
+    walk(root, source, false, &mut uses, &mut attrs);
+    uses.retain(|r| !r.name.is_empty());
+    let mut attrs: Vec<String> = attrs.into_iter().collect();
+    attrs.sort();
+    (uses, attrs)
+}
+
+/// Function-as-value sites directly at `node` (not recursive): call
+/// arguments, keyword arguments, dict/list/tuple/set elements, assignment
+/// right-hand sides and returned values.
+fn value_refs(node: Node, source: &str, out: &mut Vec<UnresolvedRef>) {
     let kind = node.kind();
     let mut take = |n: Option<Node>| {
         if let Some(r) = n.and_then(|n| ref_of(n, source)) {
-            candidates.push((func_idx, r));
+            out.push(r);
         }
     };
 
@@ -897,12 +956,6 @@ fn scan_subtree_for_fn_ref(
             }
         }
         _ => {}
-    }
-
-    // Recurse into children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        scan_subtree_for_fn_ref(child, source, func_idx, candidates);
     }
 }
 

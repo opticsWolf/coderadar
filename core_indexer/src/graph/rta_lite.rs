@@ -54,6 +54,14 @@ pub fn instantiated_classes(graph: &ProjectedGraph) -> HashSet<String> {
             }
         }
     }
+    // Module-level code (`app = App()`, `REGISTRY = {"x": Handler}`).
+    for m in graph.modules.values() {
+        for r in &m.uses {
+            if let Some(class_id) = by_name.get(r.name.as_str()) {
+                out.insert((*class_id).clone());
+            }
+        }
+    }
     // Class-level field defaults construct at class-definition time
     // (`session_interface: SessionInterface = SecureCookieSessionInterface()`
     // builds the instance before any `__init__` runs; bare class-name

@@ -676,6 +676,9 @@ impl CodeGraph {
                         package: None,
                         exports: vec![],
                         star_exports: None,
+                        uses: m.uses.clone(),
+                        resolved_uses: Vec::new(),
+                        attr_reads: m.attr_reads.clone(),
                         classes: member_ids.get("c").cloned().unwrap_or_default(),
                         functions: member_ids.get("f").cloned().unwrap_or_default(),
                         imports: member_ids.get("i").cloned().unwrap_or_default(),
@@ -887,12 +890,16 @@ impl CodeGraph {
         // is recorded as Partial rather than reported clean.
         let mut module_quality = ParseQuality::Clean;
         let mut module_content_hash = 0u64;
+        let mut module_uses: Vec<crate::types::UnresolvedRef> = Vec::new();
+        let mut module_attr_reads: Vec<String> = Vec::new();
 
         for unit in units {
             match unit {
                 ExtractedUnit::Module(m) => {
                     module_quality = m.parse_quality;
                     module_content_hash = m.content_hash;
+                    module_uses = m.uses.clone();
+                    module_attr_reads = m.attr_reads.clone();
                 }
                 ExtractedUnit::Class(c) => {
                     let class = Class::from_extracted(
@@ -1026,6 +1033,9 @@ impl CodeGraph {
             package: None,
             exports: vec![],
             star_exports: None,
+            uses: module_uses,
+            resolved_uses: Vec::new(),
+            attr_reads: module_attr_reads,
             classes: module_classes,
             functions: module_functions,
             imports: module_imports,

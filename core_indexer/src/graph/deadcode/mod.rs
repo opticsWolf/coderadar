@@ -696,40 +696,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn module_level_calls_root_import_time_initializers() {
+    fn module_level_uses_root_import_time_initializers() {
         use super::entry_points::detect_entry_points;
         let mut g = fixture();
-        let dir = tempfile::tempdir().unwrap();
-        let py = dir.path().join("ver.py");
-        std::fs::write(
-            &py,
-            "\"\"\"Dead: `_orphan` (no callers) is prose, not a call.\"\"\"
-
-
-"
-            .to_string()
-                + "__version__ = _resolve_version()
-
-
-" + "def _resolve_version():
-    return \"1.0\"
-
-
-" + "def _orphan():
-    return 1
-",
-        )
-        .unwrap();
+        // `__version__ = _resolve_version()` at module scope: the extractor
+        // records the use and resolution binds it.
         let mut m = mk_module("ver.py::module");
-        m.path = py.canonicalize().unwrap();
         m.functions = vec!["ver.py::_resolve_version".into(), "ver.py::_orphan".into()];
+        m.resolved_uses = vec!["ver.py::_resolve_version".into()];
         g.modules
             .insert("ver.py::module".into(), std::sync::Arc::new(m));
         for name in ["_resolve_version", "_orphan"] {
             let f = func(&format!("ver.py::{name}"), name, "ver.py::module");
             g.functions.insert(f.id.clone(), std::sync::Arc::new(f));
         }
-        // `disk_path_for` takes absolute paths as-is, so no global root here.
         let eps = detect_entry_points(&g, None);
         assert!(eps.production.contains("ver.py::_resolve_version"));
         assert!(!eps.production.contains("ver.py::_orphan"));
@@ -816,6 +796,9 @@ pub(crate) mod tests {
             package: None,
             exports: vec![],
             star_exports: None,
+            uses: Vec::new(),
+            resolved_uses: Vec::new(),
+            attr_reads: Vec::new(),
             classes: vec![],
             functions: vec![],
             imports: vec![],

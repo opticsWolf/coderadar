@@ -1035,6 +1035,17 @@ fn module_content(m: &Module) -> serde_json::Value {
     v["imports"] = serde_json::json!(&m.imports);
     v["constants"] = serde_json::json!(&m.constants);
     v["type_aliases"] = serde_json::json!(&m.type_aliases);
+    // Module-scope liveness (dead-code roots, RTA, property reads). Written
+    // only when present: most modules have none, and loads default them.
+    if !m.uses.is_empty() {
+        v["uses"] = serde_json::json!(&m.uses);
+    }
+    if !m.resolved_uses.is_empty() {
+        v["resolved_uses"] = serde_json::json!(&m.resolved_uses);
+    }
+    if !m.attr_reads.is_empty() {
+        v["attr_reads"] = serde_json::json!(&m.attr_reads);
+    }
     v
 }
 
@@ -1096,6 +1107,10 @@ fn function_content(f: &Function) -> serde_json::Value {
     // Post-resolution state: the ONLY call data the ledger keeps. Cold
     // start rebuilds the call indices from this (see cold_start).
     v["resolved_calls"] = serde_json::json!(&f.resolved_calls);
+    // Callback and template-method liveness, kept for the same reason.
+    if !f.resolved_refs.is_empty() {
+        v["resolved_refs"] = serde_json::json!(&f.resolved_refs);
+    }
     v
 }
 
@@ -1353,6 +1368,9 @@ fn parse_v2_module(id: &str, v: &serde_json::Value) -> std::result::Result<Modul
         package: None,
         exports: vec![],
         star_exports: None,
+        uses: deser_or_default(v, "uses"),
+        resolved_uses: str_list(v, "resolved_uses"),
+        attr_reads: str_list(v, "attr_reads"),
         classes: str_list(v, "classes"),
         functions: str_list(v, "functions"),
         imports: str_list(v, "imports"),
@@ -1423,7 +1441,7 @@ fn parse_v2_function(id: &str, v: &serde_json::Value) -> std::result::Result<Fun
         setter_of: None,
         bindings: Vec::new(),
         refs: Vec::new(),
-        resolved_refs: Vec::new(),
+        resolved_refs: str_list(v, "resolved_refs"),
         line: req_u64(v, "line", id)? as usize,
         exit_line: req_u64(v, "exit_line", id)? as usize,
         docstring: opt_str(v, "docstring"),
@@ -1529,6 +1547,9 @@ mod concept_v2_tests {
             package: None,
             exports: vec![],
             star_exports: None,
+            uses: Vec::new(),
+            resolved_uses: Vec::new(),
+            attr_reads: Vec::new(),
             classes: vec!["pkg/alpha.py::Alpha".into()],
             functions: vec!["pkg/alpha.py::helper".into()],
             imports: vec!["pkg/alpha.py::import os".into()],
@@ -1688,7 +1709,9 @@ mod concept_v2_tests {
 
     #[test]
     fn module_roundtrip() {
-        let m = sample_module();
+        let mut m = sample_module();
+        m.resolved_uses = vec!["pkg/alpha.py::helper".into()];
+        m.attr_reads = vec!["enabled".into(), "name".into()];
         let json = module_content(&m).to_string();
         match parse_v2_concept(&m.id, &json).unwrap() {
             V2Entity::Module(got) => {
@@ -1704,6 +1727,9 @@ mod concept_v2_tests {
                 assert_eq!(got.imports, m.imports);
                 assert_eq!(got.constants, m.constants);
                 assert_eq!(got.type_aliases, m.type_aliases);
+                // Module-scope liveness survives a cold start.
+                assert_eq!(got.resolved_uses, m.resolved_uses);
+                assert_eq!(got.attr_reads, m.attr_reads);
             }
             other => panic!("expected Module, got {other:?}"),
         }
@@ -1744,7 +1770,8 @@ mod concept_v2_tests {
 
     #[test]
     fn function_roundtrip_preserves_resolved_calls() {
-        let f = sample_function();
+        let mut f = sample_function();
+        f.resolved_refs = vec!["pkg/alpha.py::callback".into()];
         let json = function_content(&f).to_string();
         match parse_v2_concept(&f.id, &json).unwrap() {
             V2Entity::Function(got) => {
@@ -1755,6 +1782,7 @@ mod concept_v2_tests {
                 assert_eq!(got.kind, f.kind);
                 assert_eq!(got.resolved_calls, f.resolved_calls);
                 assert!(got.calls.is_empty(), "raw call sites are not persisted");
+                assert_eq!(got.resolved_refs, f.resolved_refs);
                 assert_eq!(got.is_async, f.is_async);
                 assert_eq!(got.is_generator, f.is_generator);
                 assert_eq!(got.source, f.source);

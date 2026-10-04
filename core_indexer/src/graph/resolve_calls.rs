@@ -30,18 +30,31 @@ impl CodeGraph {
             projection,
             methods_by_class: &methods_by_class,
         };
-        let mut updates: Vec<(EntityId, Vec<EntityId>)> = Vec::new();
-        for (id, f) in projection.functions.iter() {
-            if let Some(fp) = scope_file {
-                let path = f
-                    .parent_module
-                    .rsplit_once("::")
-                    .map_or(f.parent_module.as_str(), |(p, _)| p);
-                if path != fp {
-                    continue;
+        let in_scope = |module_id: &str| {
+            scope_file
+                .is_none_or(|fp| module_id.rsplit_once("::").map_or(module_id, |(p, _)| p) == fp)
+        };
+        // Every class below `class_id`, transitively.
+        let descendants = |class_id: &str| {
+            let mut seen = std::collections::BTreeSet::new();
+            let mut stack = vec![class_id.to_string()];
+            while let Some(c) = stack.pop() {
+                for sub in projection.subclasses.get(&c).into_iter().flatten() {
+                    if seen.insert(sub.clone()) {
+                        stack.push(sub.clone());
+                    }
                 }
             }
-            if f.refs.is_empty() && f.resolved_refs.is_empty() {
+            seen
+        };
+        let mut updates: Vec<(EntityId, Vec<EntityId>)> = Vec::new();
+        for (id, f) in projection.functions.iter() {
+            if !in_scope(&f.parent_module) {
+                continue;
+            }
+            // Nothing raw to resolve (a cold start restores only the
+            // resolved side): keep what is there.
+            if f.refs.is_empty() && f.calls.is_empty() {
                 continue;
             }
             let mut targets: Vec<EntityId> = f
@@ -49,10 +62,45 @@ impl CodeGraph {
                 .iter()
                 .filter_map(|r| types.resolve_ref(id, &r.path, &r.name))
                 .collect();
+            // Template methods: a mixin's `self.m()` that its own MRO cannot
+            // answer dispatches to the subclasses that define `m`.
+            if let Some(class_id) = &f.parent_class {
+                for c in &f.calls {
+                    let on_self = matches!(c.path.as_slice(), [p] if p == "self" || p == "cls");
+                    if !on_self || types.method_of(class_id, &c.name).is_some() {
+                        continue;
+                    }
+                    for sub in descendants(class_id) {
+                        if let Some(ms) = methods_by_class.get(&sub) {
+                            targets.extend(
+                                ms.iter()
+                                    .filter(|(n, _)| *n == c.name)
+                                    .map(|(_, mid)| mid.clone()),
+                            );
+                        }
+                    }
+                }
+            }
             targets.sort();
             targets.dedup();
             if targets != f.resolved_refs {
                 updates.push((id.clone(), targets));
+            }
+        }
+        let mut module_updates: Vec<(EntityId, Vec<EntityId>)> = Vec::new();
+        for (mid, m) in projection.modules.iter() {
+            if m.uses.is_empty() || !in_scope(mid) {
+                continue;
+            }
+            let mut targets: Vec<EntityId> = m
+                .uses
+                .iter()
+                .filter_map(|r| types.resolve_module_use(mid, &r.path, &r.name))
+                .collect();
+            targets.sort();
+            targets.dedup();
+            if targets != m.resolved_uses {
+                module_updates.push((mid.clone(), targets));
             }
         }
         for (id, targets) in updates {
@@ -62,6 +110,13 @@ impl CodeGraph {
                 projection
                     .functions
                     .insert(id, std::sync::Arc::new(updated));
+            }
+        }
+        for (id, targets) in module_updates {
+            if let Some(arc) = projection.modules.get(&id) {
+                let mut updated = (**arc).clone();
+                updated.resolved_uses = targets;
+                projection.modules.insert(id, std::sync::Arc::new(updated));
             }
         }
     }
@@ -139,6 +194,44 @@ impl CodeGraph {
         let class_named = |name: &str| types.class_in_scope(&parent_module, name);
         let method_of = |class_id: &str, name: &str| types.method_of(class_id, name);
 
+        // Python resolves a bare name lexically: the enclosing functions'
+        // locals (nested defs; a parameter or assignment shadows), then the
+        // module's own names and imports. Methods are never in that chain,
+        // so `apply_fix()` inside `Model.apply_fix` is the imported function.
+        let is_python = projection
+            .modules
+            .get(&parent_module)
+            .is_some_and(|m| matches!(m.language, Language::Python));
+        let python_bare = |name: &str| -> Option<crate::types::ResolvedCall> {
+            let shadows = |g: &Function| {
+                g.parameters.iter().any(|p| p.name == name)
+                    || g.bindings
+                        .iter()
+                        .any(|b| b.target.len() == 1 && b.target[0] == name)
+            };
+            let mut outer = func_id;
+            while let Some(f) = projection.functions.get(outer) {
+                let nested = format!("{outer}.{name}");
+                if projection.functions.contains_key(&nested) {
+                    return Some(crate::types::ResolvedCall::Function(nested));
+                }
+                if shadows(f) {
+                    // A local value: whatever it holds, it is not resolvable.
+                    return Some(crate::types::ResolvedCall::External(name.to_string()));
+                }
+                match outer.rsplit_once('.') {
+                    Some((head, _)) => outer = head,
+                    None => break,
+                }
+            }
+            let id = find_symbol_in_module(projection, &parent_module, name)?;
+            Some(if projection.classes.contains_key(&id) {
+                crate::types::ResolvedCall::Constructor(id)
+            } else {
+                crate::types::ResolvedCall::Function(id)
+            })
+        };
+
         let resolved: Vec<_> = resolved
             .into_iter()
             .map(|rc| {
@@ -208,7 +301,32 @@ impl CodeGraph {
                         None => crate::types::ResolvedCall::External(format!("{prefix}.{name}")),
                     };
                 }
+                if is_python {
+                    if let crate::types::ResolvedCall::External(name)
+                    | crate::types::ResolvedCall::Builtin(name) = &rc
+                    {
+                        if let Some(bound) = python_bare(name) {
+                            return bound;
+                        }
+                        if matches!(rc, crate::types::ResolvedCall::Builtin(_)) {
+                            return rc;
+                        }
+                    }
+                }
                 if let crate::types::ResolvedCall::External(name) = &rc {
+                    if is_python {
+                        // Only the import alias map is left to try: Python
+                        // never binds a bare name to a method.
+                        if let Some((target_mod_id, original)) = import_targets.get(name.as_str()) {
+                            let symbol = if original.is_empty() { name } else { original };
+                            if let Some(imported_func_id) =
+                                find_symbol_in_module(projection, target_mod_id, symbol)
+                            {
+                                return crate::types::ResolvedCall::Function(imported_func_id);
+                            }
+                        }
+                        return rc;
+                    }
                     if let Some(target_id) = sibling_funcs.get(name.as_str()) {
                         return crate::types::ResolvedCall::Function(target_id.clone());
                     }

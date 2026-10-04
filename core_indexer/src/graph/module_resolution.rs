@@ -292,10 +292,15 @@ fn find_symbol_in_module_guarded(
         return None;
     }
     let module = projection.modules.get(module_id)?;
-    // 1. Direct definitions (unchanged precedence).
+    // 1. Direct definitions. Methods and nested functions are not module
+    // names: `module.functions` lists them, but `import x` cannot see them.
     for func_id in &module.functions {
         if let Some(func) = projection.functions.get(func_id) {
-            if func.name == symbol_name {
+            let nested = func
+                .id
+                .rsplit_once('.')
+                .is_some_and(|(head, _)| projection.functions.contains_key(head));
+            if func.name == symbol_name && func.parent_class.is_none() && !nested {
                 return Some(func.id.clone());
             }
         }

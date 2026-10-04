@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::graph::module_resolution::{find_module_by_dotted_name, find_symbol_in_module};
-use crate::types::{EntityId, FunctionKind, MroNode, ProjectedGraph};
+use crate::types::{EntityId, FunctionKind, Language, MroNode, ProjectedGraph};
 
 /// Decorators that mark a function as invoked by a framework/runtime, so an
 /// absent in-repo caller does NOT mean dead. One flat table; extend via this
@@ -318,6 +318,58 @@ pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> Entry
         }
     }
 
+    // Attribute names read anywhere: a property is used by `x.name`, which
+    // is no call.
+    let attr_reads: HashSet<&str> = graph
+        .modules
+        .values()
+        .flat_map(|m| m.attr_reads.iter().map(String::as_str))
+        .collect();
+    // `class -> name -> method`, for asking which definition an MRO picks.
+    let mut method_ids: HashMap<&EntityId, HashMap<&str, &EntityId>> = HashMap::new();
+    for (fid, f) in &graph.functions {
+        if let Some(cid) = f.parent_class.as_ref() {
+            method_ids
+                .entry(cid)
+                .or_default()
+                .entry(f.name.as_str())
+                .or_insert(fid);
+        }
+    }
+    // Is `fid` (named `name`, on `class_id`) what some subclass with an
+    // external base dispatches to? A mixin's `closeEvent` overrides the
+    // framework's for every widget class that mixes it in first.
+    let mixed_into_external = |class_id: &EntityId, name: &str, fid: &EntityId| {
+        let mut seen: HashSet<&EntityId> = HashSet::new();
+        let mut stack = vec![class_id];
+        while let Some(c) = stack.pop() {
+            for sub in graph.subclasses.get(c).into_iter().flatten() {
+                if !seen.insert(sub) {
+                    continue;
+                }
+                stack.push(sub);
+                let Some(d) = graph.classes.get(sub) else {
+                    continue;
+                };
+                if !d.mro.iter().any(|n| matches!(n, MroNode::External { .. })) {
+                    continue;
+                }
+                let lookup =
+                    |cid: &EntityId| method_ids.get(cid).and_then(|ms| ms.get(name).copied());
+                let picked = lookup(sub).or_else(|| {
+                    d.mro.iter().find_map(|n| match n {
+                        MroNode::Class(cid) => lookup(cid),
+                        _ => None,
+                    })
+                });
+                if picked == Some(fid) {
+                    return true;
+                }
+            }
+        }
+        false
+    };
+
     // Framework packs (plan §2.4) — table-driven, opt-in by detection. A
     // project that never imports pytest gets no pytest semantics.
     let mut packs = Packs::default();
@@ -448,6 +500,36 @@ pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> Entry
                     }
                     continue;
                 }
+            }
+
+            // 3c'. Mixins: the same dispatch, reached through a subclass that
+            //      combines this class with an external base.
+            if public_name && mixed_into_external(&cls.id, &f.name, id) {
+                if in_tests {
+                    test_only.insert(id.clone());
+                } else {
+                    production.insert(id.clone());
+                }
+                continue;
+            }
+
+            // 3c''. Properties are read, not called: `x.name` anywhere keeps
+            //       `@property def name` (and its setter/deleter) alive.
+            let is_property = f.decorators.iter().any(|d| {
+                let d = d.trim_start_matches('@');
+                d == "property"
+                    || d.ends_with("cached_property")
+                    || d.ends_with(".setter")
+                    || d.ends_with(".getter")
+                    || d.ends_with(".deleter")
+            });
+            if is_property && attr_reads.contains(f.name.as_str()) {
+                if in_tests {
+                    test_only.insert(id.clone());
+                } else {
+                    production.insert(id.clone());
+                }
+                continue;
             }
 
             // 3d. Interface declarations (plan §2.3): `typing.Protocol`
@@ -586,10 +668,14 @@ pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> Entry
         }
 
         // 4b. Called from module-level code (import-time initializers).
+        //     Python modules carry their module-scope uses from the syntax
+        //     tree (rooted after this loop); other languages keep the
+        //     line-based scan.
         if f.parent_class.is_none()
             && graph.modules.get(&f.parent_module).is_some_and(|m| {
-                module_level_calls(&m.path.to_string_lossy(), &mut module_level_cache)
-                    .contains(&f.name)
+                !matches!(m.language, Language::Python)
+                    && module_level_calls(&m.path.to_string_lossy(), &mut module_level_cache)
+                        .contains(&f.name)
             })
         {
             production.insert(id.clone());
@@ -642,6 +728,25 @@ pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> Entry
                 } else {
                     production.insert(fid);
                 }
+            }
+        }
+    }
+
+    // Module-scope uses (Python): statements, class bodies and decorators run
+    // at import, so whatever they call or hold is live — dispatch tables,
+    // `qInstallMessageHandler(_handler)`, `AfterValidator(_check)`.
+    for (mid, m) in &graph.modules {
+        if m.resolved_uses.is_empty() {
+            continue;
+        }
+        let under_test = *module_under_test
+            .entry(mid)
+            .or_insert_with(|| is_test_path_in_root(&m.path, root));
+        for fid in &m.resolved_uses {
+            if under_test {
+                test_only.insert(fid.clone());
+            } else {
+                production.insert(fid.clone());
             }
         }
     }

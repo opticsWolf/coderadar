@@ -887,6 +887,15 @@ pub struct Module {
     pub package: Option<EntityId>,
     pub exports: Vec<Export>,
     pub star_exports: Option<Vec<String>>,
+    /// Calls and function-valued references made by module-level code
+    /// (statements, class bodies, decorators): it runs at import, so
+    /// what it uses is live. Python only.
+    pub uses: Vec<UnresolvedRef>,
+    /// `uses` resolved to in-repo functions (dead-code roots).
+    pub resolved_uses: Vec<EntityId>,
+    /// Attribute names read anywhere in the module (`x.name`), sorted:
+    /// a `@property` is used by reading it, never by calling it.
+    pub attr_reads: Vec<String>,
     pub classes: Vec<EntityId>,
     pub functions: Vec<EntityId>,
     pub imports: Vec<EntityId>,
@@ -1055,6 +1064,8 @@ pub struct ExtractedModule {
     pub language: Language,
     pub parse_quality: ParseQuality,
     pub content_hash: u64,
+    pub uses: Vec<UnresolvedRef>,
+    pub attr_reads: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
