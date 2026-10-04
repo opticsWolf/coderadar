@@ -20,12 +20,13 @@ from __future__ import annotations
 import functools
 import os
 import re
-from collections import deque
 from pathlib import Path
 from typing import Any, Literal
 
 import structlog
 from mcp.server import MCPServer
+
+from coderadar import ops, render
 
 logger = structlog.get_logger(__name__)
 
@@ -1390,6 +1391,31 @@ def requires_index(func):
     return wrapper
 
 
+
+def _op_message(e: ops.OpError, failed: str | None = None) -> str:
+    """Word an ops error for an agent. `failed` names the analysis for
+    engine failures ("Dead-code detection failed: …"); analyses also
+    prefix argument errors with "Invalid request:"."""
+    if isinstance(e, ops.NoExtension):
+        return NO_EXTENSION_MESSAGE
+    if isinstance(e, ops.NoIndex):
+        return _no_index_message()
+    if isinstance(e, ops.NotFound):
+        return e.detail or render.not_found(e.entity_id, e.candidates)
+    if isinstance(e, ops.InvalidRequest):
+        return f"Invalid request: {e}" if failed else str(e)
+    return f"{failed or 'Request failed'}: {e}"
+
+
+def _stale_prefix(entity: dict) -> str:
+    """The "changed on disk" banner for an entity's file, or ""."""
+    fp = entity.get("file_path", "")
+    if fp:
+        stale = _get_stale_files([fp])
+        if stale:
+            return _format_stale_banner(stale, [fp]) + "\n"
+    return ""
+
 @requires_index
 def _explore(
     graph: Any, query: str, symbols: list[str],
@@ -1461,237 +1487,36 @@ def _explore(
 @requires_index
 def _node_detail(graph: Any, entity_id: str, include_neighbors: bool) -> str:
     """Get full entity details."""
-    entity = _find_entity(graph, entity_id)
-    if not entity:
-        return _not_found_message(graph, entity_id)
-
-    # Staleness check for this entity's file
-    stale_banner = ""
-    fp = entity.get("file_path", "")
-    if fp:
-        stale_files = _get_stale_files([fp])
-        if stale_files:
-            stale_banner = _format_stale_banner(stale_files, [fp])
-
-    lines: list[str] = []
-    if stale_banner:
-        lines.append(stale_banner)
-
-    lines.extend([
-        f"## {entity.get('name', '?')}",
-        "",
-        f"- **ID:** `{_friendly_entity_id(entity.get('id', '?'))}`",
-        f"- **Kind:** {entity.get('kind', '?')}",
-        f"- **File:** `{entity.get('file_path', '?')}`",
-    ])
-
-    start = entity.get("start_line")
-    end = entity.get("end_line")
-    if start and end:
-        lines.append(f"- **Lines:** {start}–{end} ({end - start + 1} lines)")
-
-    docstring = entity.get("docstring")
-    if docstring:
-        lines.append(f"\n```\n{docstring}\n```")
-
-    signature = entity.get("signature")
-    if signature:
-        lines.append(f"\n**Signature:** `{signature}`")
-
-    decorators = entity.get("decorators", [])
-    if decorators:
-        lines.append(f"\n**Decorators:** {', '.join(f'`{d}`' for d in decorators)}")
-
-    grammar_kind = entity.get("grammar_kind")
-    if grammar_kind:
-        lines.append(f"\n**Grammar kind:** `{grammar_kind}`")
-
-    if include_neighbors:
-        callers = _get_callers(graph, entity_id)
-        callees = _get_callees(graph, entity_id)
-        if callers:
-            lines.append(f"\n## Callers ({len(callers)})")
-            for c in callers[:15]:
-                lines.append(f"- `{c.get('name', c.get('id', '?'))}` ({c.get('kind', '?')})")
-        if callees:
-            lines.append(f"\n## Callees ({len(callees)})")
-            for c in callees[:15]:
-                lines.append(f"- `{c.get('name', c.get('id', '?'))}` ({c.get('kind', '?')})")
-
-    return "\n".join(lines)
+    try:
+        entity = ops.node(entity_id, include_neighbors)
+    except ops.OpError as e:
+        return _op_message(e)
+    return _stale_prefix(entity) + render.node(entity)
 
 
 def _search_miss_message(query: str, kind: str | None) -> str:
-    """A miss that tells the agent what was actually tried.
-
-    The old message ("Try broader terms") made an empty result look like the
-    index was missing the thing, when the truth is "no indexed name,
-    signature or docstring contains any of these tokens" — the agent kept
-    retrying variations instead of switching tools (field session: three
-    multi-word queries, all structurally empty).
-    """
-    tokens = [t for t in re.split(r"\s+", query.strip()) if t]
-    out = [
-        "No results found for '" + query + "'"
-        + (f" (kind: {kind})" if kind else "")
-        + "."
-    ]
-    if len(tokens) >= 2:
-        shown = ", ".join(f"`{t}`" for t in tokens[:8])
-        out.append(
-            f"Tokens are matched independently (OR) — none of {shown} occurs "
-            "in any indexed entity's name, signature or docstring."
-        )
-        out.append("Try a single token by itself, one that you expect as an identifier.")
-    else:
-        out.append(
-            "The token was matched against entity names, function signatures "
-            "and docstrings and hit nothing."
-        )
-    out.append(
-        "Escape hatches: `codegraph_search_similar` (semantic, embedding-based) "
-        "or `codegraph_explore` with explicit `symbols` for known names."
-    )
-    return "\n".join(out)
+    """A miss that tells the agent what was actually tried (see render)."""
+    return render.search_miss(query, kind)
 
 
 @requires_index
 def _search(graph: Any, query: str, kind: str | None, top_k: int) -> str:
     """Keyword search for symbols."""
-    if not query.strip():
-        return "Please provide a query to search for."
-
-    # Issue 5: refuse unknown kinds like Rust search_entities does — a
-    # garbage kind otherwise reads as "no results".
-    if kind and kind.lower() not in (
-        "function", "class", "type_alias", "constant", "module", "import"
-    ):
-        return (f"Unknown kind `{kind}` (expected: function | class | "
-                f"type_alias | constant | module | import).")
-
-    results = _text_search(graph, query, min(top_k, 20))
-    if kind:
-        # kind filtering now happens in Rust search_entities via the kind param
-        results = [r for r in results if r.get("kind") == kind or r.get("entity_type") == kind]
-
-    if not results:
-        return _search_miss_message(query, kind)
-
-    lines = [f"## Search: `{query}`", f"Found {len(results)} result(s)", ""]
-    for i, entity in enumerate(results[:top_k], 1):
-        name = entity.get("name", "?")
-        ek = entity.get("kind", "?")
-        eid = _friendly_entity_id(entity.get("id", "?"))
-        fp = entity.get("file_path", "?")
-        sl = entity.get("start_line")
-
-        lines.append(f"### {i}. `{name}` ({ek})")
-        lines.append(f"- **ID:** `{eid}`")
-        lines.append(f"- **File:** `{fp}`")
-        if sl:
-            lines.append(f"- **Line:** {sl}")
-        doc = entity.get("docstring")
-        if doc:
-            lines.append(f"- **Docstring:** {doc[:200]}{'...' if len(doc) > 200 else ''}")
-        sig = entity.get("signature")
-        if sig:
-            lines.append(f"- **Signature:** `{sig}`")
-        lines.append("")
-
-    return "\n".join(lines)
+    try:
+        results = ops.search(query, kind, top_k)
+    except ops.OpError as e:
+        return _op_message(e)
+    return render.search(query, kind, results)
 
 
 @requires_index
 def _affected(graph: Any, entity_id: str, max_depth: int) -> str:
     """Transitive impact analysis."""
-    entity = _find_entity(graph, entity_id)
-    if not entity:
-        return _not_found_message(graph, entity_id)
-
-    # Staleness check for this entity's file
-    stale_banner = ""
-    fp = entity.get("file_path", "")
-    if fp:
-        stale_files = _get_stale_files([fp])
-        if stale_files:
-            stale_banner = _format_stale_banner(stale_files, [fp])
-
-    # BFS upstream
-    tree: dict[int, list[dict]] = {}
-    visited = {entity_id}
-    queue: deque[tuple[str, int]] = deque([(entity_id, 0)])
-
-    while queue:
-        current_id, depth = queue.popleft()
-        if depth >= min(max_depth, 20):
-            continue
-        callers = _get_callers(graph, current_id)
-        for caller in callers:
-            cid = caller.get("id", "")
-            if cid and cid not in visited:
-                visited.add(cid)
-                tree.setdefault(depth + 1, []).append(caller)
-                queue.append((cid, depth + 1))
-
-    entity_name = entity.get("name", "?")
-    total = sum(len(v) for v in tree.values())
-
-    lines: list[str] = []
-    if stale_banner:
-        lines.append(stale_banner)
-
-    lines.extend([
-        f"## Affected by `{entity_name}`",
-        "",
-        f"Transitive impact for `{entity_id}` (max depth: {max_depth})",
-        f"**Total dependents:** {total}",
-        "",
-    ])
-
-    if total == 0:
-        lines.append("No dependents found. Nothing calls this entity.")
-        return "\n".join(lines)
-
-    # Stage 5 triage ranking (plan §10 consumer 2): within each depth,
-    # order by harmonic centrality so the top of each group is what actually
-    # matters. Best-effort — an extension predating rank_by_centrality just
-    # keeps BFS order.
-    centrality: dict[str, float] = {}
     try:
-        from coderadar._core import rank_by_centrality
-
-        all_ids = [e.get("id", "") for group in tree.values() for e in group]
-        if all_ids:
-            centrality = dict(rank_by_centrality(all_ids))
-    except ImportError:
-        pass
-    central_ids = {
-        eid
-        for eid, score in sorted(centrality.items(), key=lambda kv: kv[1], reverse=True)[:3]
-        if score > 0
-    }
-
-    for depth in sorted(tree.keys()):
-        entities = tree[depth]
-        if centrality:
-            entities = sorted(
-                entities,
-                key=lambda e: centrality.get(e.get("id", ""), 0.0),
-                reverse=True,
-            )
-        indent = "  " * depth
-        lines.append(f"**Depth {depth}** ({len(entities)}):")
-        for e in entities[:20]:
-            n = e.get("name", "?")
-            k = e.get("kind", "?")
-            ei = _friendly_entity_id(e.get("id", "?"))
-            mark = " ⭐" if ei in central_ids else ""
-            lines.append(f"{indent}- `{n}` ({k}) — `{ei}`{mark}")
-        if len(entities) > 20:
-            lines.append(f"{indent}  ... and {len(entities) - 20} more")
-        lines.append("")
-
-    return "\n".join(lines)
+        result = ops.affected(entity_id, max_depth)
+    except ops.OpError as e:
+        return _op_message(e)
+    return _stale_prefix(result["entity"]) + render.affected(entity_id, result)
 
 
 # ── New Tool Implementations (v0.5.9) ─────────────────────────────────
@@ -1844,46 +1669,10 @@ def _search_similar(graph: Any, query: str, top_k: int) -> str:
 def _module_children(graph: Any, module_id: str) -> str:
     """List children of a module."""
     try:
-        from coderadar._core import graph_stats
-        if graph_stats().get("modules", 0) == 0:
-            return _no_index_message()
-    except ImportError:
-        return NO_EXTENSION_MESSAGE
-    except RuntimeError:
-        # No graph loaded. Reporting that as a missing extension sent the
-        # agent off to rebuild the wheel for something `coderadar init`
-        # fixes — these were the last copies of the per-tool guard that
-        # `requires_index` replaced everywhere else.
-        return _no_index_message()
-
-    if not module_id.strip():
-        return "Please provide a module ID (e.g. 'src/main.py::module')."
-
-    module_id = _canonical_entity_id(module_id)
-
-    try:
-        from coderadar._core import module_children as _mc
-        children = _mc(module_id)
-    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
-        return f"Module `{module_id}` not found or error: {e}"
-
-    total = sum(len(children.get(k, [])) for k in ("classes", "functions", "imports", "constants"))
-    lines = [f"## Module: `{module_id}`", f"{total} children", ""]
-
-    for category in ("classes", "functions", "imports", "constants"):
-        items = children.get(category, [])
-        if not items:
-            continue
-        lines.append(f"### {category.title()} ({len(items)})")
-        for item in items:
-            name = item.get("name", item.get("id", "?"))
-            item_id = item.get("id", "")
-            line_no = item.get("line", item.get("start_line", ""))
-            extra = f" (line {line_no})" if line_no else ""
-            lines.append(f"- `{name}`{extra} — `{item_id}`")
-        lines.append("")
-
-    return "\n".join(lines)
+        result = ops.module_children(module_id)
+    except ops.OpError as e:
+        return _op_message(e)
+    return render.module_children(result)
 
 
 def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
@@ -1966,115 +1755,25 @@ def _find_clones(
 ) -> str:
     """Run clone detection and render groups ranked by size."""
     try:
-        from coderadar._core import find_clones as _find_clones_rust
-        from coderadar._core import graph_stats
-        stats = graph_stats()
-        if stats.get("functions", 0) == 0:
-            return _no_index_message()
-    except ImportError:
-        return NO_EXTENSION_MESSAGE
-    except RuntimeError:
-        return _no_index_message()
-
-    try:
-        groups = _find_clones_rust(min_lines, min_similarity, max_groups)
-    except (ValueError, TypeError) as e:
-        return f"Invalid request: {e}"
-    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
-        return f"Clone detection failed: {e}"
-    except BaseException as e:  # noqa: BLE001 - PyO3 PanicException derives from BaseException (F1)
-
-        # PyO3 PanicException derives from BaseException, not Exception —
-        # without this the F1 LSH off-by-one panic escapes every handler
-        # and wedges the stdio session with no reply. Surface it as an
-        # error until the Rust-side catch_unwind lands (plan item 1).
-        return (
-            "Clone detection failed: engine panic "
-            f"({type(e).__name__}: {e}). This is a known defect (F1); "
-            "the session is still alive — retry with different parameters "
-            "or skip clone detection for now."
-        )
-
-    if not groups:
-        return (
-            f"No clone groups found at >= {min_similarity:.2f} similarity and "
-            f">= {min_lines} lines. Clean result — not an indexing failure."
-        )
-
-    lines = [f"## Clone Groups — {len(groups)} group(s)", ""]
-    for gi, g in enumerate(groups, 1):
-        lines.append(
-            f"### Group {gi} — {g['clone_type']}, similarity {g['similarity']:.2f}, "
-            f"{g['confidence_tier']}"
-        )
-        for inst in g["instances"]:
-            # Lines first: a reviewer reads line numbers, not byte offsets
-            # (plan §5.4). The span stays for anything that slices.
-            lines.append(
-                f"- `{inst['entity_id']}` ({inst['file']} @ lines "
-                f"{inst['start_line']}-{inst['end_line']}, bytes "
-                f"{inst['span_start']}..{inst['span_end']})"
-            )
-        lines.append("")
-    lines.append(
-        "Consider extracting shared logic; verify each pair with `explore` before refactoring."
-    )
-    if any(g.get("reason") == "literal-table" for g in groups):
-        lines.append(
-            "`literal-table` groups are key/value data that happens to share a "
-            "shape — a shared data source is usually the fix, not shared logic."
-        )
-    return "\n".join(lines)
+        groups = ops.find_clones(min_lines, min_similarity, max_groups)
+    except ops.EngineError as e:
+        msg = f"Clone detection failed: {e}"
+        if str(e).startswith("engine panic"):
+            msg += (". The session is still alive — retry with different "
+                    "parameters or skip clone detection for now.")
+        return msg
+    except ops.OpError as e:
+        return _op_message(e)
+    return render.find_clones(groups, min_lines, min_similarity)
 
 
 def _find_scaffolding(include_secrets: bool = False, max_findings: int = 100) -> str:
     """Run the scaffold scanner and render grouped findings."""
     try:
-        from coderadar._core import find_scaffolding as _find_scaffolding_rust
-        from coderadar._core import graph_stats
-        stats = graph_stats()
-        if stats.get("functions", 0) == 0:
-            return _no_index_message()
-    except ImportError:
-        return NO_EXTENSION_MESSAGE
-    except RuntimeError as e:
-        return f"Scaffold scan failed: {e}"
-
-    try:
-        findings = _find_scaffolding_rust(include_secrets, max_findings)
-    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
-        return f"Scaffold scan failed: {e}"
-
-    if not findings:
-        return (
-            "No AI scaffolding signals found"
-            + (" (secrets included)" if include_secrets else "")
-            + ". Clean result — not an indexing failure."
-        )
-
-    by_kind: dict[str, list] = {}
-    for f in findings:
-        by_kind.setdefault(f["kind"], []).append(f)
-
-    order = ["placeholder-body", "secret", "comment-marker", "temp-file"]
-    # F13: the trailing scan-stats row is a footer, not a finding.
-    stats_rows = by_kind.pop("scan-stats", [])
-    n_findings = sum(len(by_kind.get(k, [])) for k in order)
-    lines = [f"## Scaffolding Signals — {n_findings} finding(s)", ""]
-    for kind in order:
-        items = by_kind.get(kind, [])
-        if not items:
-            continue
-        lines.append(f"### {kind.replace('-', ' ').title()} ({len(items)})")
-        for it in items[:25]:
-            loc = f"{it['file']}:{it['line']}" if it["line"] else str(it["file"])
-            lines.append(f"- `{loc}` — {it['label']}: {it['snippet']}")
-        if len(items) > 25:
-            lines.append(f"- … and {len(items) - 25} more")
-        lines.append("")
-    for s in stats_rows:
-        lines.append(f"_{s['label']}_")
-    return "\n".join(lines)
+        findings = ops.find_scaffolding(include_secrets, max_findings)
+    except ops.OpError as e:
+        return _op_message(e, "Scaffold scan failed")
+    return render.find_scaffolding(findings, include_secrets)
 
 
 def _dead_code(
@@ -2085,51 +1784,10 @@ def _dead_code(
 ) -> str:
     """Run dead-code detection and render ranked, deletability-sorted findings."""
     try:
-        from coderadar._core import find_dead_code as _find_dead_code_rust
-        from coderadar._core import graph_stats
-        stats = graph_stats()
-        if stats.get("functions", 0) == 0:
-            return _no_index_message()
-    except ImportError:
-        return NO_EXTENSION_MESSAGE
-    except RuntimeError:
-        return _no_index_message()
-
-    try:
-        findings = _find_dead_code_rust(min_confidence, include_test_reachable, max_findings)
-    except (ValueError, TypeError) as e:
-        return f"Invalid request: {e}"
-    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
-        return f"Dead-code detection failed: {e}"
-
-    if not findings:
-        return (
-            "No dead code found at or above confidence "
-            f"{min_confidence:.2f}. This is a clean result for the current "
-            "index — not an indexing failure."
-        )
-
-    lines = [
-        f"## Dead Code — {len(findings)} finding(s) at confidence >= {min_confidence:.2f}",
-        "",
-        "Ranked most-safely-deletable first. Verify each with `affected` before removal.",
-        "",
-    ]
-    for f in findings:
-        name = f.get("entity_name", "?")
-        loc = f.get("file", "?")
-        line = f.get("line", 0)
-        loc_str = f" — `{loc}:{line}`" if line else (f" — `{loc}`" if loc != "?" else "")
-        lines.append(
-            f"- **{name}** (`{f['entity_id']}`) — {f['kind']}, "
-            f"{f['tier']} ({f['score']:.2f}), ~{f['removable_lines']} lines{loc_str}"
-        )
-        why = list(f.get("evidence") or [])
-        if f.get("nearest_root_distance") is not None:
-            why.append(f"{f['nearest_root_distance']} hop(s) from a live root")
-        if why:
-            lines.append(f"  - why: {'; '.join(why)}")
-    return "\n".join(lines)
+        findings = ops.dead_code(min_confidence, include_test_reachable, max_findings)
+    except ops.OpError as e:
+        return _op_message(e, "Dead-code detection failed")
+    return render.dead_code(findings, min_confidence)
 
 
 def _get_smells(
@@ -2137,51 +1795,10 @@ def _get_smells(
 ) -> str:
     """Run the native smell engine and render findings as markdown."""
     try:
-        from coderadar._core import get_smells as _get_smells_rust
-        from coderadar._core import graph_stats
-        stats = graph_stats()
-        if stats.get("functions", 0) == 0 and stats.get("classes", 0) == 0:
-            return _no_index_message()
-    except ImportError:
-        return NO_EXTENSION_MESSAGE
-    except RuntimeError:
-        # No graph loaded. Reporting that as a missing extension sent the
-        # agent off to rebuild the wheel for something `coderadar init`
-        # fixes — these were the last copies of the per-tool guard that
-        # `requires_index` replaced everywhere else.
-        return _no_index_message()
-
-    try:
-        findings = _get_smells_rust(entity_id, rule_id, strictness)
-    except (ValueError, TypeError) as e:
-        # Unknown strictness values are rejected loudly by the core — surface
-        # them as-is rather than dressing them up as an engine failure.
-        return f"Invalid request: {e}"
-    except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
-        return f"Smell detection failed: {e}"
-
-    if not findings:
-        scope = []
-        if entity_id:
-            scope.append(f"entity `{entity_id}`")
-        if rule_id:
-            scope.append(f"rule={rule_id}")
-        suffix = f" for {' and '.join(scope)}" if scope else ""
-        return f"## Code smells\n\nNo findings{suffix}."
-
-    lines = ["## Code smells", f"Found {len(findings)} finding(s)", ""]
-    for f in findings:
-        sev = f.get("severity", "?")
-        name = f.get("entity_name") or f.get("entity_id", "?")
-        lines.append(
-            f"- **[{sev}]** `{f.get('rule_id', '?')}` — "
-            f"{name}: {f.get('message', '')}"
-        )
-        signals = f.get("signals") or {}
-        if signals:
-            sig = ", ".join(f"{k}={v:g}" for k, v in signals.items())
-            lines.append(f"  - signals: {sig}")
-    return "\n".join(lines)
+        findings = ops.get_smells(entity_id, rule_id, strictness)
+    except ops.OpError as e:
+        return _op_message(e, "Smell detection failed")
+    return render.get_smells(findings, entity_id, rule_id)
 
 
 def _traverse(
@@ -2758,225 +2375,49 @@ def _render_relationships(
 
 
 def _friendly_entity_id(entity_id: str) -> str:
-    """Present a stored entity ID in a shell-friendly form.
-
-    Stored IDs are already shell-friendly since plan 5.1
-    (``path/to/file.py::name``); this stays as the presenter for ids that
-    arrive from an older store or a hand-written script — it converts
-    backslashes to forward slashes and drops the redundant ``./`` / ``.\\``
-    prefix. It is idempotent and a no-op on the canonical form.
-    """
-    friendly = entity_id.replace('\\', '/')
-    friendly = friendly.removeprefix('./')
-    return friendly
+    """Shell-friendly entity id (see `coderadar.ops.friendly_entity_id`)."""
+    return ops.friendly_entity_id(entity_id)
 
 
 def _canonical_entity_id(entity_id: str) -> str:
-    """Resolve an entity ID to its canonical in-graph form.
-
-    The graph is always walked as `.` from the project root — the server
-    chdir's onto the resolved root at startup — so in-graph ids always carry
-    that same relative prefix. What varies is what the *agent* sends: an
-    absolute path it read off a tool result, a slash-vs-backslash variant, or
-    the shell-friendly form ``codegraph_search`` now displays. All of those
-    are normalised here to the stored ``.<sep>path::{name}`` key — no stored
-    key or FK reference is changed.
-    """
-    try:
-        from coderadar._core import lookup_entity
-    except ImportError:
-        return entity_id
-    if lookup_entity(entity_id):
-        return entity_id
-
-    import os
-
-    candidates: list[str] = []
-
-    # Absolute → relative (with ./ prefix and bare)
-    if os.path.isabs(entity_id):
-        try:
-            rel = os.path.relpath(entity_id, os.getcwd())
-            candidates.append('.' + os.sep + rel)
-            candidates.append(rel)
-        except ValueError:
-            pass
-
-    # Friendly / separator-variant forms. The stored key is
-    # "{optional .<sep> prefix}{path in <sep>}::{name}", so normalise to a
-    # slash base and try every {bare, prefixed} x {slash, backslash} combo.
-    base = entity_id.replace('\\', '/')
-    base = base.removeprefix('./')
-    for sep, prefix in (('/', './'), ('\\', '.\\')):
-        body = base.replace('/', sep)
-        candidates.append(body)
-        candidates.append(prefix + body)
-
-    for c in candidates:
-        if c and lookup_entity(c):
-            return c
-    return entity_id
+    """Stored entity id for any accepted spelling (see `coderadar.ops`)."""
+    return ops.canonical_entity_id(entity_id)
 
 
 def _display_file(d: dict) -> str:
-    """Best-effort file for an entity dict — never '?' when derivable (F8 fix).
-
-    Rust bindings disagree on the key (`file_path` vs `file` vs `path`),
-    and Pest query rows may carry neither; the entity id always embeds the
-    path as `<path>::<name>`, so derive from there as a last resort.
-    """
-    for _k in ("file_path", "file", "path"):
-        _v = d.get(_k)
-        if _v:
-            return str(_v)
-    _eid = str(d.get("id", d.get("entity_id", "")))
-    if "::" in _eid:
-        return _eid.split("::")[0]
-    return "?"
+    """Best-effort file for an entity dict (see `coderadar.ops.display_file`)."""
+    return ops.display_file(d)
 
 
 def _find_entity(graph: Any, entity_id: str) -> dict | None:
-    try:
-        from coderadar._core import lookup_entity
-        return lookup_entity(_canonical_entity_id(entity_id))
-    except (ImportError, RuntimeError):
-        return None
+    return ops.find_entity(entity_id)
 
 
 def _not_found_message(graph: Any, entity_id: str) -> str:
-    """A miss with candidates instead of a bare `not found` (plan §5.2).
-
-    The core already resolves dotted qualified names
-    (`pkg.mod.Class.method`); when even that misses, the last segment is
-    usually enough to find what the caller meant. A name that exists nowhere
-    is rare, and the agent's next move is a search anyway.
-    """
-    hint = entity_id.split("::")[-1].rsplit(".", 1)[-1]
-    # `search_entities` matches exact/prefix/contains, so a typo finds
-    # nothing at full length: `rendr` needs the probe shortened to `ren`
-    # before `render` shows up.
-    candidates: list[dict] = []
-    for length in range(len(hint), 2, -1):
-        candidates = [
-            hit
-            for hit in _text_search(graph, hint[:length], 5)
-            if hit.get("name") and hit.get("id") != entity_id
-        ]
-        if candidates:
-            break
-    lines = [f"Entity `{entity_id}` not found."]
-    if candidates:
-        lines.append("Did you mean:")
-        for hit in candidates[:3]:
-            lines.append(f"- `{hit.get('name')}` — `{hit.get('id')}`")
-    else:
-        lines.append("Try codegraph_search to locate it.")
-    return "\n".join(lines)
+    """A miss with candidates instead of a bare `not found` (plan §5.2)."""
+    return render.not_found(entity_id, ops.suggest_entities(entity_id))
 
 
 def _text_search(graph: Any, query: str, top_k: int, kind: str | None = None) -> list[dict]:
-    try:
-        from coderadar._core import search_entities
-        return search_entities(query, top_k, kind) or []
-    except ImportError:
-        return []
+    return ops._text_search(query, top_k, kind)
 
 
 def _get_callers(graph: Any, entity_id: str) -> list[dict]:
-    try:
-        from coderadar._core import callers_of
-        return callers_of(entity_id) or []
-    except ImportError:
-        return []
+    return ops._callers(entity_id)
 
 
 def _get_callees(graph: Any, entity_id: str) -> list[dict]:
-    try:
-        from coderadar._core import callees_of
-        return callees_of(entity_id) or []
-    except ImportError:
-        return []
+    return ops._callees(entity_id)
 
 
 # ── Query-Time Resolution (F.8 Phase 2) ────────────────────────────────────
 
 
 def _resolve_ref(graph: Any, name: str, limit: int) -> str:
-    """Framework-aware reference resolution.
-
-    Uses framework resolvers at query time to answer:
-    - "What handles /users/:id?"
-    - "Where is UserService defined?"
-    - "What model is UserModel?"
-    """
+    """Framework-aware reference resolution: routes (`/users/:id`), service,
+    model and view names."""
     try:
-        from coderadar._core import graph_stats
-        if graph_stats().get("modules", 0) == 0:
-            return _no_index_message()
-    except ImportError:
-        return NO_EXTENSION_MESSAGE
-    except RuntimeError:
-        # No graph loaded. Reporting that as a missing extension sent the
-        # agent off to rebuild the wheel for something `coderadar init`
-        # fixes — these were the last copies of the per-tool guard that
-        # `requires_index` replaced everywhere else.
-        return _no_index_message()
-
-    if not name.strip():
-        return "Please provide a name or path to resolve."
-
-    # Searcher callback for framework resolvers
-    def _searcher(n: str, lim: int) -> list[dict]:
-        return _text_search(graph, n, lim)
-
-    # Route-style paths get special handling
-    results: list[dict] = []
-    if name.startswith("/"):
-        from coderadar.resolvers.resolution import resolve_route
-        results = resolve_route(name, _searcher, limit=limit)
-        if results:
-            lines = [f"## Route Resolution: `{name}`", f"Found {len(results)} handler(s)", ""]
-            for i, r in enumerate(results, 1):
-                rname = r.get("name", "?")
-                rkind = r.get("kind", "?")
-                rid = _friendly_entity_id(r.get("id", "?"))
-                rfile = r.get("file_path", "?")
-                conf = r.get("confidence", 0)
-                lines.append(f"### {i}. `{rname}` ({rkind}) — confidence {conf:.2f}")
-                lines.append(f"- **ID:** `{rid}`")
-                lines.append(f"- **File:** `{rfile}`")
-                route = r.get("route")
-                if route:
-                    lines.append(f"- **Route:** `{route.get('name', '?')}`")
-                lines.append("")
-            return "\n".join(lines)
-        return f"No handler found for route `{name}`. Try codegraph_search."
-
-    # Framework-level reference resolution
-    from coderadar.resolvers import ALL_RESOLVERS
-    from coderadar.resolvers.resolution import resolve_reference
-    results = resolve_reference(name, _searcher, ALL_RESOLVERS, limit=limit)
-
-    if not results:
-        return (
-            f"No framework resolver claimed `{name}`. "
-            f"Try codegraph_search for a broader search."
-        )
-
-    lines = [f"## Reference Resolution: `{name}`", f"Found {len(results)} result(s)", ""]
-    for i, r in enumerate(results, 1):
-        rname = r.get("name", "?")
-        rkind = r.get("kind", "?")
-        rid = _friendly_entity_id(r.get("id", "?"))
-        rfile = r.get("file_path", "?")
-        conf = r.get("confidence", 0)
-        resolved_by = r.get("resolved_by", "unknown")
-        lines.append(f"### {i}. `{rname}` ({rkind}) — {resolved_by} (confidence {conf:.2f})")
-        lines.append(f"- **ID:** `{rid}`")
-        lines.append(f"- **File:** `{rfile}`")
-        sig = r.get("signature")
-        if sig:
-            lines.append(f"- **Signature:** `{sig}`")
-        lines.append("")
-
-    return "\n".join(lines)
+        result = ops.resolve(name, limit)
+    except ops.OpError as e:
+        return _op_message(e)
+    return render.resolve(result)

@@ -444,6 +444,81 @@ class CodeGraph:
         from coderadar._core import call_sites
         return call_sites(entity_id)
 
+    # ── Shared operations (coderadar.ops; MCP and CLI expose the same) ──
+    # Names are the MCP tool names without their prefix. Errors raise
+    # coderadar.ops.OpError subclasses: NoIndex, InvalidRequest, NotFound
+    # (with .candidates), EngineError.
+
+    @_bound_to_loaded_project
+    def node(self, entity_id: str, include_neighbors: bool = False) -> dict[str, Any]:
+        """One entity's full record (MCP ``codegraph_node``); with
+        `include_neighbors`, plus ``callers`` and ``callees`` lists."""
+        from . import ops
+        return ops.node(entity_id, include_neighbors)
+
+    @_bound_to_loaded_project
+    def search(self, query: str, kind: str | None = None,
+               top_k: int = 10) -> list[dict[str, Any]]:
+        """Keyword search over names, signatures and docstrings (MCP
+        ``codegraph_search``). `kind`: function | class | type_alias |
+        constant | module | import."""
+        from . import ops
+        return ops.search(query, kind, top_k)
+
+    @_bound_to_loaded_project
+    def affected(self, entity_id: str, max_depth: int = 5) -> dict[str, Any]:
+        """Transitive callers, centrality-ranked per depth (MCP
+        ``codegraph_affected``): ``{entity, max_depth, depths, central_ids}``."""
+        from . import ops
+        return ops.affected(entity_id, max_depth)
+
+    @_bound_to_loaded_project
+    def module_children(self, module_id: str) -> dict[str, Any]:
+        """A module's classes, functions, imports and constants (MCP
+        ``codegraph_module_children``)."""
+        from . import ops
+        return ops.module_children(module_id)
+
+    @_bound_to_loaded_project
+    def resolve(self, name: str, limit: int = 5) -> dict[str, Any]:
+        """Framework-aware resolution of a route (``/users/:id``) or a
+        service / model / view name (MCP ``coderadar_resolve``)."""
+        from . import ops
+        return ops.resolve(name, limit)
+
+    @_bound_to_loaded_project
+    def dead_code(self, min_confidence: float = 0.6, include_test_reachable: bool = False,
+                  max_findings: int = 100) -> list[dict[str, Any]]:
+        """Dead-code findings, most safely deletable first (MCP
+        ``codegraph_dead_code``). Ranked evidence, not proof: check
+        :meth:`affected` before deleting."""
+        from . import ops
+        return ops.dead_code(min_confidence, include_test_reachable, max_findings)
+
+    @_bound_to_loaded_project
+    def get_smells(self, entity_id: str | None = None, rule_id: str | None = None,
+                   strictness: str = "normal") -> list[dict[str, Any]]:
+        """Code-smell findings (MCP ``codegraph_get_smells``); `strictness`
+        is strict | normal | loose."""
+        from . import ops
+        return ops.get_smells(entity_id, rule_id, strictness)
+
+    @_bound_to_loaded_project
+    def find_clones(self, min_lines: int = 10, min_similarity: float = 0.8,
+                    max_groups: int = 100) -> list[dict[str, Any]]:
+        """Clone groups, Types 1-3, largest first (MCP ``codegraph_find_clones``)."""
+        from . import ops
+        return ops.find_clones(min_lines, min_similarity, max_groups)
+
+    @_bound_to_loaded_project
+    def find_scaffolding(self, include_secrets: bool = False,
+                         max_findings: int = 100) -> list[dict[str, Any]]:
+        """Scaffolding debt: markers, placeholder bodies, temp files, opt-in
+        redacted secrets (MCP ``codegraph_find_scaffolding``). The last row
+        (``kind == "scan-stats"``) is a coverage footer."""
+        from . import ops
+        return ops.find_scaffolding(include_secrets, max_findings)
+
     @_bound_to_loaded_project
     def search_similar(
         self, query_embedding: list[float], top_k: int = 10,
