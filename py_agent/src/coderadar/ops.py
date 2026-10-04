@@ -16,21 +16,34 @@ served root, the CLI through the directory it runs in.
 from __future__ import annotations
 
 import os
+import re
 from collections import deque
+from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 __all__ = [
+    "OPERATIONS",
     "SEARCH_KINDS",
+    "TRAVERSE_DIRECTIONS",
     "EngineError",
     "InvalidRequest",
+    "MissingDependency",
+    "MutationFailed",
+    "NoEmbeddings",
     "NoExtension",
     "NoIndex",
     "NotFound",
     "OpError",
     "affected",
+    "as_of",
     "canonical_entity_id",
+    "canonical_file_path",
+    "compute_embeddings",
+    "create_entity",
     "dead_code",
     "display_file",
+    "explore",
     "find_clones",
     "find_entity",
     "find_scaffolding",
@@ -38,10 +51,38 @@ __all__ = [
     "get_smells",
     "module_children",
     "node",
+    "normalize_query_spelling",
+    "parse_names",
+    "query",
+    "read_source",
+    "reindex",
+    "rename",
+    "render_entity_code",
+    "replace_body",
     "resolve",
+    "resolve_names",
     "search",
+    "search_similar",
+    "stale_files",
+    "status",
     "suggest_entities",
+    "traverse",
+    "update_file",
+    "update_signature",
 ]
+
+#: Every shared operation, by its one name. The MCP tool is
+#: ``coderadar_<op>``, the CLI command ``<op>`` with hyphens, the
+#: `CodeGraph` method ``<op>``. `set_project` has no function here: the MCP
+#: server switches projects, the CLI takes ``-C``, and a `CodeGraph` is
+#: bound to the project it was loaded for.
+OPERATIONS = (
+    "explore", "node", "search", "affected", "resolve", "query",
+    "search_similar", "compute_embeddings", "module_children", "as_of",
+    "traverse", "get_smells", "dead_code", "find_clones", "find_scaffolding",
+    "replace_body", "update_signature", "rename", "create_entity",
+    "reindex", "update_file", "status", "set_project",
+)
 
 
 # ── Errors ────────────────────────────────────────────────────────────────
@@ -79,6 +120,18 @@ class NotFound(OpError):
 
 class EngineError(OpError):
     """The native engine failed (or panicked) while answering."""
+
+
+class MissingDependency(OpError):
+    """An optional dependency the operation needs is not installed."""
+
+
+class NoEmbeddings(OpError):
+    """Semantic search found no embeddings and could not compute them."""
+
+
+class MutationFailed(OpError):
+    """An edit could not be planned or applied; nothing was written."""
 
 
 def _require_index(*kinds: str) -> None:
@@ -367,6 +420,409 @@ def resolve(name: str, limit: int = 5) -> dict:
             "results": resolve_reference(name, searcher, ALL_RESOLVERS, limit=limit) or []}
 
 
+# ── Explore ───────────────────────────────────────────────────────────────
+# Language spelling normalization adapted from CodeGraph's
+# normalizeQuerySpelling (MIT License, https://github.com/colbymchenry/codegraph)
+
+_ERLANG_ARITY_RE = re.compile(r'\b([A-Za-z_][\w@]*)/(\d{1,3})\b')
+_ERLANG_MODULE_RE = re.compile(
+    r'(^|[\s,()[\]])(?!(?:kind|lang|language|path|name):)'
+    r'([A-Za-z_][\w@]*):([A-Za-z_][\w@]*)(?=$|[\s,()\]])'
+)
+
+
+def normalize_query_spelling(query: str) -> str:
+    """Normalize language-native query spellings into index-compatible forms.
+
+    Transforms so agent queries using language-native notation match the index:
+      - Elixir/Erlang arity: ``fn/3`` → ``fn``
+      - Elixir/Erlang module: ``mod:fn`` → ``mod.fn``
+
+    Safe cross-language: Lua ``t:m`` maps to ``t.m``, and no other supported
+    language uses a bare single-colon identifier pair.
+    """
+    # Strip arity tails: fn/3 → fn
+    query = _ERLANG_ARITY_RE.sub(r'\1', query)
+    # Module:function → module.function (preserving kind:/lang: prefixes)
+    query = _ERLANG_MODULE_RE.sub(r'\1\2.\3', query)
+    return query
+
+
+def parse_names(query: str, symbols: Sequence[str] | None = None) -> list[str]:
+    """Parse query string or explicit symbols into candidate names.
+
+    Applies language spelling normalization so agent queries using
+    language-native notation match the index.
+    """
+    if symbols:
+        return [s.strip() for s in symbols if s.strip()]
+    if not query.strip():
+        return []
+    # Normalize language spellings: Elixir fn/3→fn, mod:fn→mod.fn
+    query = normalize_query_spelling(query)
+    parts = re.split(r'[,;\s]+', query)
+    return [p.strip() for p in parts if p.strip() and len(p.strip()) > 1]
+
+
+def resolve_names(names: Sequence[str]) -> list[dict]:
+    """Resolve names to entities: an exact id/name first, else the top
+    three search hits for it."""
+    results: list[dict] = []
+    seen: set[str] = set()
+    for name in names:
+        entity = find_entity(name)
+        if entity and entity.get("id") not in seen:
+            results.append(entity)
+            seen.add(entity["id"])
+            continue
+        for c in _text_search(name, 3):
+            if c.get("id") not in seen:
+                results.append(c)
+                seen.add(c["id"])
+    return results
+
+
+def read_source(entity: dict) -> str | None:
+    """Read line-numbered source for an entity from disk."""
+    file_path = entity.get("file_path")
+    start_line = entity.get("start_line", 1)
+    end_line = entity.get("end_line", start_line)
+    if not file_path or not start_line:
+        return None
+    # F14: entity paths are canonical root-relative ids — resolve against
+    # the indexed root, not the CWD.
+    try:
+        from coderadar.excludes import resolve_entity_path as _resolve
+        file_path = _resolve(file_path)
+    except ImportError:
+        pass
+    try:
+        with open(file_path, encoding="utf-8", errors="replace") as f:
+            all_lines = f.readlines()
+    except OSError:
+        return None
+    si = max(0, start_line - 1)
+    ei = min(len(all_lines), end_line)
+    return "".join(f"{i + 1}\t{all_lines[i]}" for i in range(si, ei))
+
+
+def stale_files(file_paths: Sequence[str]) -> list[dict]:
+    """The given files modified on disk since the graph was last synced.
+
+    Returns ``[{"path", "mtime"}, ...]``; empty when nothing is loaded.
+    """
+    stale: list[dict] = []
+    try:
+        from coderadar._core import graph_stats
+        # The core sets `indexed_at` at each commit_projection.
+        indexed_at = graph_stats().get("indexed_at", 0.0)
+    except (ImportError, RuntimeError):
+        # RuntimeError: no graph loaded yet — nothing to be stale against.
+        return stale
+    if not indexed_at:
+        return stale
+    for fp in file_paths:
+        try:
+            mtime = os.path.getmtime(fp)
+            if mtime > indexed_at:
+                stale.append({"path": fp, "mtime": mtime})
+        except OSError:
+            pass
+    return stale
+
+
+def explore(query: str = "", symbols: Sequence[str] | None = None,
+            direction: str = "both", max_files: int = 8) -> dict:
+    """Source and call paths for the named symbols, in one answer.
+
+    `query` is symbol names or a question (split on whitespace, commas and
+    semicolons); `symbols` names them explicitly instead. Each name resolves
+    exactly, else to its top search hits.
+
+    Returns ``{"names", "files": [{"file_path", "entities"}], "relationships",
+    "stale_files"}``: up to `max_files` files, each entity carrying its
+    line-numbered ``source``; relationships are ``{"kind": "caller" |
+    "callee", "entity_id", "entity_name", "other_id", "other_name"}`` (five
+    per direction per entity); ``stale_files`` lists referenced files edited
+    since the last sync.
+    """
+    _require_index()
+    names = parse_names(query, symbols)
+    if not names:
+        raise InvalidRequest("Please provide symbol names or a question to explore.")
+    resolved = resolve_names(names)
+    if not resolved:
+        raise NotFound(" ".join(names))
+
+    by_file: dict[str, list[dict]] = {}
+    for entity in resolved:
+        by_file.setdefault(entity.get("file_path", "unknown"), []).append(entity)
+    files = [
+        {"file_path": fp, "entities": [dict(e, source=read_source(e)) for e in ents]}
+        for fp, ents in list(by_file.items())[:max_files]
+    ]
+
+    relationships: list[dict] = []
+    for entity in resolved:
+        eid = entity["id"]
+        name = entity.get("name", eid)
+        if direction in ("upstream", "both"):
+            for c in _callers(eid)[:5]:
+                relationships.append({
+                    "kind": "caller", "entity_id": eid, "entity_name": name,
+                    "other_id": c.get("id"), "other_name": c.get("name", c.get("id", "?")),
+                })
+        if direction in ("downstream", "both"):
+            for c in _callees(eid)[:5]:
+                relationships.append({
+                    "kind": "callee", "entity_id": eid, "entity_name": name,
+                    "other_id": c.get("id"), "other_name": c.get("name", c.get("id", "?")),
+                })
+
+    return {
+        "names": names,
+        "files": files,
+        "relationships": relationships,
+        "stale_files": stale_files(list(by_file)),
+    }
+
+
+# ── Traverse / query ──────────────────────────────────────────────────────
+
+TRAVERSE_DIRECTIONS = ("downstream", "upstream", "both")
+_DIRECTION_ALIASES = {"out": "downstream", "in": "upstream"}
+_TO_CORE_DIRECTION = {"downstream": "out", "upstream": "in", "both": "both"}
+
+
+def traverse(entity_id: str, direction: str = "both",
+             edge_kinds: Sequence[str] | None = None, max_depth: int = 3) -> dict:
+    """Breadth-first walk from `entity_id` along any edge kinds.
+
+    `direction` is ``downstream`` (callees, imports, bases), ``upstream``
+    (callers, importers, subclasses) or ``both``; ``out`` / ``in`` are
+    accepted as aliases. `edge_kinds` is any of ``calls``, ``imports``,
+    ``inherits`` (alias ``extends``), ``overrides``; None means all. Depth
+    is capped at 10.
+
+    Returns ``{"entity", "entity_id", "direction", "max_depth",
+    "edge_kinds", "results", "unresolved"}``; ``results`` are entity rows
+    with ``depth`` and ``edge_type``, ``unresolved`` counts targets the walk
+    could not follow.
+    """
+    _require_index()
+    if not entity_id.strip():
+        raise InvalidRequest("Please provide an entity ID to traverse from.")
+    direction = _DIRECTION_ALIASES.get(direction, direction)
+    if direction not in TRAVERSE_DIRECTIONS:
+        raise InvalidRequest(
+            f"Unknown direction `{direction}` (expected: {' | '.join(TRAVERSE_DIRECTIONS)}).")
+    entity = _entity_or_raise(entity_id)
+    entity_id = canonical_entity_id(entity_id)
+    kinds = list(edge_kinds) if edge_kinds else None
+    depth = min(max_depth, 10)
+    core_direction = _TO_CORE_DIRECTION[direction]
+
+    from coderadar._core import traverse as _traverse
+    try:
+        raw = _traverse(entity_id, depth, kinds or [], core_direction, None)
+    except ValueError as e:  # unknown edge kinds
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+
+    # 2.3: surface silent truncation — count targets the walk could not follow.
+    try:
+        from coderadar._core import traverse_unresolved
+        unresolved = traverse_unresolved(entity_id, depth, kinds or [], core_direction)
+    except Exception:  # noqa: BLE001 - truncation count is best-effort, 0 means "unknown"
+        unresolved = 0
+
+    return {
+        "entity": entity,
+        "entity_id": entity_id,
+        "direction": direction,
+        "max_depth": depth,
+        "edge_kinds": kinds,
+        "results": raw if isinstance(raw, list) else [],
+        "unresolved": unresolved,
+    }
+
+
+def query(query: str) -> list[dict]:
+    """Run a graph query: ``<entity> [select ...] [where ...] [group by ...]
+    [order by ...] [limit N]`` (see docs/query-language.md). Every row
+    carries ``id``, ``file_path``, ``kind`` and ``parent_id``. A malformed
+    query or unknown field raises InvalidRequest naming the problem."""
+    if not query.strip():
+        raise InvalidRequest("Please provide a query.")
+    _require_index()
+    from coderadar._core import query_graph
+    try:
+        return list(query_graph(query))
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+
+
+# ── Embeddings ────────────────────────────────────────────────────────────
+
+# Cached fastembed model for semantic search (lazy-loaded, reused across queries)
+_EMBED_MODEL = None
+
+
+def _embedding_model():
+    """Lazily load and cache the fastembed model (avoid reload per query)."""
+    global _EMBED_MODEL
+    if _EMBED_MODEL is None:
+        from fastembed import TextEmbedding
+
+        from coderadar.embedding import embedding_settings
+        model_name, _dimension = embedding_settings()
+        _EMBED_MODEL = TextEmbedding(model_name=model_name)
+    return _EMBED_MODEL
+
+
+def compute_embeddings(model_name: str | None = None, batch_size: int = 32) -> dict[str, int]:
+    """Compute and store embeddings for all indexable entities.
+
+    Uses fastembed locally; unchanged entities are skipped by content hash.
+    `model_name` None takes the configured model, which is also what the
+    search path loads — a mismatch there silently breaks similarity.
+
+    Returns ``{"generated", "cached", "total", "errors"}``.
+    """
+    _require_index()
+    from .embedding import (
+        EmbeddingDedup,
+        EmbedTarget,
+        compute_content_hash,
+        embedding_settings,
+    )
+
+    configured_model, dimension = embedding_settings()
+    dedup = EmbeddingDedup(model_name=model_name or configured_model,
+                           dimension=dimension, batch_size=batch_size)
+    targets: list[EmbedTarget] = []
+
+    try:
+        from coderadar._core import search_entities
+        # Collect all embeddable entities across all kinds
+        for kind in ("function", "class", "module", "import", "constant", "type_alias"):
+            for entity in search_entities("", 10_000, kind):
+                entity_id = entity.get("id", "")
+                if not entity_id:
+                    continue
+                body = entity.get("signature", "") or entity.get("name", "") or ""
+                targets.append(EmbedTarget(
+                    entity_id=entity_id,
+                    body=body,
+                    content_hash=compute_content_hash(body.encode()),
+                    kind=kind,
+                ))
+    except ImportError:
+        return {"generated": 0, "cached": 0, "total": 0, "errors": 1}
+
+    results = dedup.embed_batch(targets, db=None)
+    cached = 0
+    try:
+        from coderadar._core import set_embeddings_bulk
+    except ImportError:
+        return {"generated": 0, "cached": 0, "total": len(targets), "errors": 1}
+
+    # One call, one projection clone. Looping set_embedding cloned the
+    # whole ProjectedGraph per entity — O(N²) on a project of any size.
+    entries = []
+    for target, vec in zip(targets, results):
+        if vec is None:
+            cached += 1
+            continue
+        entries.append((target.id, list(vec), target.content_hash))
+
+    try:
+        report = set_embeddings_bulk(entries)
+    except RuntimeError:
+        return {"generated": 0, "cached": cached,
+                "total": len(targets), "errors": len(entries)}
+
+    return {"generated": int(report.get("applied", 0)), "cached": cached,
+            "total": len(targets), "errors": len(report.get("missing", []))}
+
+
+def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
+    """Semantic search: entities whose embedding is nearest the query.
+
+    `query` is natural language (embedded locally with fastembed; at most
+    20 results, and embeddings are computed on first use) or a ready
+    embedding vector. Results carry ``similarity``, ``name``, ``kind`` and
+    the file.
+    """
+    from coderadar._core import search_similar as _ss
+    if not isinstance(query, str):
+        return _ss(list(query), top_k)
+
+    _require_index()
+    if not query.strip():
+        raise InvalidRequest("Please provide a natural-language query for semantic search.")
+    try:
+        embedding = list(next(iter(_embedding_model().embed([query]))))
+    except ImportError:
+        raise MissingDependency("fastembed") from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(f"Embedding failed: {e}") from None
+
+    try:
+        return _ss(embedding, min(top_k, 20))
+    except RuntimeError:
+        # No embeddings in the index yet — compute them once and retry.
+        try:
+            compute_embeddings()
+            return _ss(embedding, min(top_k, 20))
+        except Exception:  # noqa: BLE001 - auto-compute is best-effort, NoEmbeddings covers it
+            raise NoEmbeddings("no embeddings found and computing them failed") from None
+
+
+# ── Temporal ──────────────────────────────────────────────────────────────
+
+def _graph():
+    import coderadar
+    return coderadar.CodeGraph()
+
+
+def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
+          *, graph: Any = None) -> dict:
+    """Look symbols up as they were at an ISO 8601 `timestamp`.
+
+    Returns ``{"timestamp", "names", "entities": {name: entity | None}}``.
+    Only symbol lookup is reconstructed; query and search always run
+    against the current index.
+    """
+    _require_index()
+    if not timestamp:
+        raise InvalidRequest(
+            "Please provide an ISO 8601 timestamp (e.g. '2025-01-15T10:00:00Z').")
+    # R2-10: garbage used to sail through into a snapshot template that
+    # echoed it back with no complaint (only "" was validated).
+    from datetime import datetime
+    try:
+        datetime.fromisoformat(timestamp)
+    except ValueError:
+        raise InvalidRequest(
+            f"Invalid timestamp {timestamp!r}: expected ISO 8601 "
+            f"(e.g. '2025-01-15T10:00:00Z').") from None
+    try:
+        snapshot = (graph or _graph()).as_of(timestamp)
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    names = parse_names(query, symbols)
+    find = getattr(snapshot, "find", None)
+    return {
+        "timestamp": timestamp,
+        "names": names,
+        "entities": {name: (find(name) if find else None) for name in names},
+    }
+
+
 # ── Analyses ──────────────────────────────────────────────────────────────
 
 def _run_engine(fn, *args):
@@ -438,3 +894,268 @@ def find_scaffolding(include_secrets: bool = False, max_findings: int = 100) -> 
     _require_index("functions")
     from coderadar._core import find_scaffolding as _find_scaffolding
     return _run_engine(_find_scaffolding, include_secrets, max_findings)
+
+
+# ── Edits ─────────────────────────────────────────────────────────────────
+# Each edit plans first; with dry_run=False the plan is applied, which
+# writes the file and updates the graph together. The result is
+# ``{"plan": MutationPlan, "result": MutationResult | None, "note": str}``;
+# ``result`` is None for a dry run. Any failure raises MutationFailed with
+# the engine's message — nothing was written.
+
+def _edit(plan_fn, dry_run: bool, graph: Any, note: str = "") -> dict:
+    try:
+        plan = plan_fn()
+        result = None if dry_run else graph.apply(plan)
+    except OpError:
+        raise
+    except Exception as e:  # noqa: BLE001 - surfaced as MutationFailed
+        raise MutationFailed(str(e)) from None
+    return {"plan": plan, "result": result, "note": note}
+
+
+def replace_body(entity_id: str, new_body: str, expected_hash: str | None = None,
+                 dry_run: bool = True, *, graph: Any = None) -> dict:
+    """Replace a function/method body (not its signature or decorators).
+
+    The replacement is re-based to the body's column, so it may be passed
+    unindented or copied verbatim. `expected_hash` refuses the edit when
+    the current body no longer matches.
+    """
+    _require_index()
+    g = graph or _graph()
+    return _edit(lambda: g.plan_replace_body(
+        canonical_entity_id(entity_id), new_body, expected_hash, dry_run=True), dry_run, g)
+
+
+def update_signature(entity_id: str, new_signature: str, inject_defaults: bool = False,
+                     dry_run: bool = True, *, graph: Any = None) -> dict:
+    """Change a function/method signature. The definition is rewritten;
+    call sites come back as ``plan.unverified_sites`` for manual review."""
+    _require_index()
+    g = graph or _graph()
+    return _edit(lambda: g.plan_update_signature(
+        canonical_entity_id(entity_id), new_signature,
+        inject_defaults=inject_defaults, dry_run=True), dry_run, g)
+
+
+def rename(entity_id: str, new_name: str, dry_run: bool = True, *, graph: Any = None) -> dict:
+    """Rename an entity at its definition and every reference."""
+    _require_index()
+    g = graph or _graph()
+    return _edit(lambda: g.plan_rename(
+        canonical_entity_id(entity_id), new_name, dry_run=True), dry_run, g)
+
+
+def render_entity_code(
+    language: str, kind: str, name: str, body: str, decorators: Sequence[str] | None,
+    signature: str = "",
+) -> str:
+    """Render a source snippet for a new entity using language-aware syntax.
+
+    `signature`, when given, is the complete function/method header to write
+    verbatim (`fn f(a: T) -> U`, `def f(self) -> None`, …). The renderer only
+    adds the language's body delimiter (the Python colon, the C-style braces,
+    Ruby's `end`) so the agent can express full Rust/typed signatures that the
+    name-only rendering never could (field session: `create_entity` could not
+    express `fn sync_status_text(store: &Store) -> String`).
+    """
+    lang = (language or "").lower()
+    kind_norm = (kind or "function").lower()
+    body = (body or "").rstrip("\n")
+    dec = "\n".join(decorators or [])
+    dec_block = (dec + "\n") if dec else ""
+    sig = (signature or "").strip()
+
+    def indent(text: str, spaces: int = 4) -> str:
+        pad = " " * spaces
+        return "\n".join((pad + line) if line.strip() else line for line in text.split("\n"))
+
+    if kind_norm in ("function", "method", "fn"):
+        if sig:
+            if lang in ("python", "py"):
+                header = sig if sig.endswith(":") else sig + ":"
+                inner = indent(body) or "    pass"
+                return f"{dec_block}{header}\n{inner}\n"
+            if lang in ("ruby", "rb"):
+                return f"{dec_block}{sig}\n{body}\nend\n"
+            # C-style block languages: rust, go, js/ts, java, csharp, php, …
+            return f"{dec_block}{sig} {{\n{body}\n}}\n"
+        if lang in ("python", "py"):
+            return f"{dec_block}def {name}():\n{indent(body)}\n"
+        if lang in ("rust", "rs"):
+            return f"{dec_block}pub fn {name}() {{\n{body}\n}}\n"
+        if lang == "go":
+            return f"{dec_block}func {name}() {{\n{body}\n}}\n"
+        if lang in ("javascript", "typescript", "js", "ts", "jsx", "tsx"):
+            return f"{dec_block}function {name}() {{\n{body}\n}}\n"
+        if lang in ("java",):
+            return f"{dec_block}public void {name}() {{\n{body}\n}}\n"
+        if lang in ("csharp", "cs"):
+            return f"{dec_block}public void {name}() {{\n{body}\n}}\n"
+        if lang in ("php",):
+            return f"{dec_block}function {name}() {{\n{body}\n}}\n"
+        if lang in ("ruby", "rb"):
+            return f"{dec_block}def {name}\n{body}\nend\n"
+        # generic brace language fallback
+        return f"{dec_block}{name}() {{\n{body}\n}}\n"
+
+    if kind_norm in ("class", "struct"):
+        if lang in ("python", "py"):
+            inner = indent(body) or "    pass"
+            return f"{dec_block}class {name}:\n{inner}\n"
+        if lang in ("ruby", "rb"):
+            return f"{dec_block}class {name}\n{body}\nend\n"
+        return f"{dec_block}class {name} {{\n{body}\n}}\n"
+
+    if kind_norm in ("constant", "variable", "const", "var"):
+        if lang in ("python", "py"):
+            return f"{dec_block}{name} = {body or 'None'}\n"
+        if lang == "go":
+            return f"{dec_block}const {name} = {body or 'nil'}\n"
+        if lang in ("javascript", "typescript", "js", "ts"):
+            return f"{dec_block}const {name} = {body or 'null'};\n"
+        return f"{dec_block}{name} = {body or 'null'}\n"
+
+    # Unknown kind: emit the body verbatim
+    return (body + "\n") if body else ""
+
+
+def canonical_file_path(file_path: str) -> str:
+    r"""Resolve a file path to the project-relative form the graph stores.
+
+    Absolute paths become relative to the cwd (the project root), so
+    create_entity's reindex step matches existing entities instead of
+    creating duplicates.
+    """
+    if os.path.isabs(file_path):
+        try:
+            return '.' + os.sep + os.path.relpath(file_path, os.getcwd())
+        except ValueError:
+            return file_path
+    if file_path.startswith(('./', '.\\')):
+        return file_path
+    return '.' + os.sep + file_path
+
+
+def create_entity(file_path: str, language: str, kind: str, name: str, body: str,
+                  decorators: Sequence[str] | None = None, anchor: str = "end",
+                  signature: str | None = None, dry_run: bool = True,
+                  *, graph: Any = None) -> dict:
+    """Insert a new function, class or constant into `file_path`.
+
+    The code is rendered from `name` / `body` / `decorators` per
+    `language`; for function-like kinds `signature` is the complete header,
+    written verbatim. `anchor` is ``end``, ``top`` or an entity id to insert
+    after.
+    """
+    _require_index()
+    g = graph or _graph()
+    note = ""
+    if (signature or "").strip() and kind.lower() not in ("function", "method", "fn"):
+        note = (f"`signature` is only used for function-like kinds; it was "
+                f"ignored for kind '{kind}'.")
+
+    def plan():
+        code = render_entity_code(language, kind, name, body, decorators, signature or "")
+        if not code.strip():
+            raise InvalidRequest("Cannot render entity: provide a non-empty body or kind.")
+        anchor_norm = anchor or "end"
+        if anchor_norm not in ("top", "end"):
+            anchor_norm = canonical_entity_id(anchor_norm)
+        return g.plan_create_entity(canonical_file_path(file_path), anchor_norm, code,
+                                    dry_run=True)
+
+    return _edit(plan, dry_run, g, note)
+
+
+# ── Index lifecycle ───────────────────────────────────────────────────────
+
+def reindex(with_embeddings: bool = False, full: bool = False,
+            exclude: Sequence[str] | None = None, root: str | Path = ".") -> dict:
+    """Bring the index for `root` up to date.
+
+    By default the cheap way (v0.8 P2-4): a warm store loads and only the
+    changed files are re-parsed; without a loadable store the whole tree is
+    walked. `full` (or one-shot `exclude` patterns) always walks the whole
+    tree. Returns ``{"stats", "embeddings"?, "embeddings_error"?}``.
+    """
+    try:
+        from coderadar._core import graph_stats
+    except ImportError as e:
+        raise NoExtension(str(e)) from None
+    try:
+        if full or exclude:
+            import coderadar
+            coderadar.analyze(str(root), exclude=list(exclude) if exclude else None)
+        else:
+            from coderadar import coldstart
+            coldstart.build_graph(root)
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    out: dict[str, Any] = {"stats": graph_stats()}
+    if with_embeddings:
+        try:
+            out["embeddings"] = compute_embeddings()
+        except Exception as e:  # noqa: BLE001 - reported, the index itself is fine
+            out["embeddings_error"] = str(e)
+    return out
+
+
+def update_file(file_path: str, content: str | None = None, *, graph: Any = None):
+    """Sync one file into the graph: from `content`, else from disk; a file
+    deleted from disk is dropped from the graph. Returns the
+    `coderadar.UpdateReport` (``removed`` / ``entities_removed`` for a
+    deletion, ``fully_applied`` False for a recovered parse)."""
+    _require_index()
+    if not file_path.strip():
+        raise InvalidRequest("Please provide a file path.")
+    try:
+        return (graph or _graph()).update_file(file_path, content)
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+
+
+def status(root: str | Path | None = None) -> dict:
+    """What is indexed for `root` (default: the cwd), and how fresh it is.
+
+    Returns ``{"root", "config", "store", "loaded", "stats", "age_seconds",
+    "store_fresh"}``: ``config`` / ``store`` are paths or None; ``stats``
+    (the graph counts) and ``age_seconds`` are None when no graph is
+    loaded; ``store_fresh`` says whether the store on disk is newer than
+    every source file (None without a store).
+    """
+    import time
+
+    root_path = Path(root or os.getcwd()).resolve()
+    config = root_path / ".coderadar.toml"
+    store = root_path / ".coderadar" / "store"
+    out: dict[str, Any] = {
+        "root": str(root_path),
+        "config": str(config) if config.exists() else None,
+        "store": str(store) if store.exists() else None,
+        "loaded": False,
+        "stats": None,
+        "age_seconds": None,
+        "store_fresh": None,
+    }
+    try:
+        from coderadar import coldstart
+        db = coldstart.store_db_path(root_path)
+        if db is not None:
+            out["store_fresh"] = bool(coldstart.store_is_fresh(root_path, db))
+    except Exception:  # noqa: BLE001, S110 - freshness is best-effort
+        pass
+    try:
+        from coderadar._core import graph_stats
+        stats = graph_stats()
+    except ImportError as e:
+        raise NoExtension(str(e)) from None
+    except RuntimeError:
+        return out  # no graph loaded in this process
+    out["loaded"] = True
+    out["stats"] = stats
+    indexed_at = stats.get("indexed_at")
+    if indexed_at:
+        out["age_seconds"] = max(0.0, time.time() - float(indexed_at))
+    return out

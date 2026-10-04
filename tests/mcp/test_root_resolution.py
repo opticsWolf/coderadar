@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from coderadar import markers
 from coderadar.mcp.roots import (
     CLIENT_ROOT,
     CWD,
@@ -286,7 +287,7 @@ class TestTheWalkUpHasABoundary:
         (home / ".coderadar").mkdir(parents=True)
         nested = home / "code" / "someproject" / "src"
         nested.mkdir(parents=True)
-        monkeypatch.setattr(roots, "_home", lambda: home.resolve())
+        monkeypatch.setattr(markers, "_home", lambda: home.resolve())
 
         assert roots.find_marker(nested) is None
 
@@ -299,7 +300,7 @@ class TestTheWalkUpHasABoundary:
         (project / ".coderadar").mkdir(parents=True)
         nested = project / "src" / "deep"
         nested.mkdir(parents=True)
-        monkeypatch.setattr(roots, "_home", lambda: home.resolve())
+        monkeypatch.setattr(markers, "_home", lambda: home.resolve())
 
         assert roots.find_marker(nested) == project / ".coderadar"
 
@@ -312,6 +313,6 @@ class TestTheWalkUpHasABoundary:
         (above / ".coderadar.toml").write_text("[project]\n", encoding="utf-8")
         nested = home / "work"
         nested.mkdir()
-        monkeypatch.setattr(roots, "_home", lambda: home.resolve())
+        monkeypatch.setattr(markers, "_home", lambda: home.resolve())
 
         assert roots.find_marker(nested) is None

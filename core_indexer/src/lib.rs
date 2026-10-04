@@ -2265,7 +2265,7 @@ fn function_signature_text(f: &Function) -> Option<String> {
 ///
 /// Covers every entity kind the projection holds. `compute_embeddings` asks
 /// for `import`, `constant` and `type_alias` as well as the big three, and
-/// `codegraph_search_similar` advertises them; they used to come back empty,
+/// `coderadar_search_similar` advertises them; they used to come back empty,
 /// so those three kinds were never embedded. A single-token query scores
 /// exactly as the old whole-string matcher (the name tiers are unchanged);
 /// the signature/docstring tiers are additive and can only promote matches

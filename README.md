@@ -1,4 +1,4 @@
-# CodeRadar v0.10.0
+# CodeRadar v0.11.0
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -26,7 +26,7 @@ CodeGraph pioneered the semantic code graph for agents — CodeRadar builds on t
 | **Semantic fallback resolution** | ❌ | ✅ L4 embedding-based resolution when structural resolution fails |
 | **Python-native embedding** | ❌ | ✅ Native Python integration for embeddings, GraphRAG, and ML pipelines |
 | **Zero runtime boot** | 1.4s Node.js startup | ✅ <50ms — Python process is already warm |
-| **LLM-driven refactoring** | ❌ | ✅ `plan_body_replacement()` — LLM proposes, CodeRadar validates, applies, and rolls back on error |
+| **LLM-driven refactoring** | ❌ | ✅ `replace_body()` — LLM proposes, CodeRadar validates, applies, and rolls back on error |
 
 **The key insight:** CodeGraph answers "what is this codebase?" — CodeRadar answers that **and** "what was it yesterday?" **and** "what would it look like if I changed X?" **and** "apply that change safely."
 
@@ -57,8 +57,8 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 1319 passing (413 Rust + 906 Python; 1 Python skipped) |
-| **MCP Tools** | 22 — 17 `codegraph_*` (explore, search, node, affected, query, search_similar, compute_embeddings, module_children, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, reindex, update_file, set_project) + 5 `coderadar_*` (resolve, replace_body, update_signature, rename, create_entity) |
+| **Tests** | 1359 passing (413 Rust + 946 Python; 1 Python skipped) |
+| **Operations** | 23, one name each: MCP tool `coderadar_<op>`, CLI command `coderadar <op>` (hyphenated), `CodeGraph.<op>()` — explore, node, search, affected, resolve, query, search_similar, compute_embeddings, module_children, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, replace_body, update_signature, rename, create_entity, reindex, update_file, status, set_project (CLI: `-C`) |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
 | **Agents** | MCP server over stdio — finds the project root, indexes in the background, and exits with its client |
@@ -71,14 +71,26 @@ pip install coderadar-rs
 # Write .coderadar.toml, create the store, run the first analysis
 coderadar init
 
-# Query
+# Every MCP tool `coderadar_<op>` is the command `coderadar <op>`
+# (underscores become hyphens), with the same arguments and the same text.
+# Run from anywhere inside the project, or name it with -C.
+coderadar explore UserService.create          # source + call paths
 coderadar query "functions where is_async == true"
+coderadar affected "src/services.py::UserService.create"
+coderadar traverse "src/auth.py::validate_user" --direction upstream
+coderadar get-smells --rule-id god-class
+coderadar -C ../other-project status
 
-# Trace call flows
-coderadar callers "src/services.py::UserService.create"
-coderadar callees "src/services.py::UserService.create"
+# Edits print a diff; --apply writes it
+coderadar rename "src/auth.py::validate_user" is_valid_user
+coderadar rename "src/auth.py::validate_user" is_valid_user --apply
 
-# Watch for changes
+# Scripts: --format json prints the data instead of the text
+coderadar dead-code --min-confidence 0.8 --format json
+
+# Keep the index current
+coderadar update-file src/auth.py     # one file (a deleted file is dropped)
+coderadar reindex                     # changed files; --full for everything
 coderadar watch src/ --debounce 50
 
 # Visualize (hierarchy, dependencies, call-graph)
@@ -98,43 +110,44 @@ import coderadar
 # leave a `.coderadar/` behind for the next root lookup to find.
 graph = coderadar.analyze("src/")
 
+# The same operations as methods. They return data (dicts, lists,
+# dataclasses); the MCP tools and CLI commands render the same data as text.
+# Failures raise coderadar.ops.OpError subclasses (NotFound, InvalidRequest, …).
+
+# Source plus call paths for named symbols
+result = graph.explore(symbols=["UserService.create"])
+
 # Query
-for cls in graph.query("classes where inherits_from contains 'BaseModel'"):
-    print(cls.name, [m.name for m in cls.methods])
+for row in graph.query("functions where caller_count == 0"):
+    print(row["id"])
 
-# Call-graph walk — rows of {entity_id, edge_kind, direction, depth}
-flow = graph.explore("src/services.py::UserService.create",
-                     direction="out", max_depth=2)
+# One entity, its direct neighbours, the blast radius
+entity = graph.node("src/services.py::UserService.create", include_neighbors=True)
+callers = graph.callers("views.py::user_detail")  # includes framework edges
+impact = graph.affected("src/auth.py::validate_user", max_depth=3)
 
-# Callers (includes framework edges: route → handler)
-callers = graph.callers_of("views.py::user_detail")
+# Walk calls / imports / extends / overrides (edge_kinds=None walks all four);
+# full entity rows, the start node at depth 0
+rows = graph.traverse("src/auth.py::validate_user", direction="upstream", max_depth=3)
 
-# Update after file change
+# Edits are dry runs unless dry_run=False: {"plan", "result", "note"}
+outcome = graph.replace_body(
+    "src/auth.py::validate_user",
+    "    return bool(re.match(r'^[^@]+@[^@]+$', email))",
+)
+print(outcome["plan"].diff_preview)
+graph.rename("src/auth.py::validate_user", "is_valid_user", dry_run=False)
+
+# Sync a changed (or deleted) file
 report = graph.update_file("src/core/engine.py")
 
-# Mutation (LLM-driven)
-plan = graph.plan_body_replacement(
-    entity_id="src/auth.py::validate_user",
-    new_body="    return bool(re.match(r'^[^@]+@[^@]+$', email))",
-    dry_run=True
-)
-
-# Module children resolution
-from coderadar._core import module_children
-children = module_children("src/auth.py::module")
-for cls in children["classes"]:
-    print(cls["name"], cls["grammar_kind"])
+# Analyses and housekeeping
+smells = graph.get_smells(rule_id="god-class")
+dead = graph.dead_code(min_confidence=0.8)
+print(graph.status())
 
 # Temporal queries (Macrame bitemporal)
 past = graph.as_of("2026-08-01T00:00:00Z")
-# Graph walk across calls / imports / extends / overrides — full entity rows,
-# with the start node at depth 0. edge_types=None walks all four kinds.
-neighbors = graph.traverse("src/auth.py::validate_user", max_depth=3, direction="both")
-
-# Code smells (native Rust engine, 9 rules)
-from coderadar._core import get_smells
-for finding in get_smells(rule_id="god-class"):
-    print(finding["entity_name"], finding["severity"], finding["message"])
 ```
 
 ### Entity IDs
@@ -209,27 +222,26 @@ not assume the cwd is the project:
   inside the served project (a file, a subdirectory, or the root itself) is
   accepted via nearest-marker resolution; another project is refused with the
   reason, not quietly answered from the wrong codebase.
-- **Switching projects without restarting.** `codegraph_set_project` re-runs
+- **Switching projects without restarting.** `coderadar_set_project` re-runs
   startup against a new root from inside a tool call: that project's config
   and mutation policy take effect, indexing restarts in the background, and an
   explicit switch outranks the client's declared workspace for the rest of the
   connection.
 - **Not outliving the client.** Handshake timeout, parent-process watchdog, and
   teardown when stdin closes.
-- **Tool names are prefixed by the client.** When an MCP client exposes these
-  tools, it typically namespaces them as `<server>_<tool>` — e.g.
-  `coderadar_codegraph_query` or, under a gateway that merges several servers,
-  `codegraph_query`. Call tools by the name the client advertises in its tool
-  list, not the bare names used in this README; a batched script that calls
-  bare `codegraph_*` names will fail with `tool_not_found` even though the
-  server is healthy (CODERADAR_BUGS_QUIRKS.md #10).
+- **Tool names are prefixed by the client.** Clients usually namespace tools
+  as `<server>_<tool>`, so a server registered as `coderadar` shows them as
+  `coderadar_coderadar_explore` and so on (or as `coderadar_explore` under a
+  gateway that merges servers). Call tools by the name the client
+  advertises, not the bare names used in this README
+  (CODERADAR_BUGS_QUIRKS.md #10).
 - **Default excludes.** The file walk skips a 15-directory build-output
   baseline (`.venv/`, `node_modules/`, `target/`, `dist/`, `build/`,
   `__pycache__/`, `.git/`, …) on top of `.gitignore` and `[project] exclude`,
   and one shared matcher enforces it in every pass — walker, star exports,
   framework extraction, watcher, and staleness — so generated artifacts never
   pollute counts or smells. `coderadar exclude list|add|remove` edits the
-  config; `--exclude` narrows a single `analyze`/`rebuild`; `coderadar stats`
+  config; `--exclude` narrows a single `reindex`; `coderadar status`
   prints the effective stack.
 
 ## Language Support
@@ -274,7 +286,57 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 | **Vue Router** | JS/TS | `package.json` | `createRouter` route objects, lazy `import()` component resolution, `addRoute` dynamic routes |
 | **React Router** | JSX/TSX | `package.json` | JSX `<Route>` declarations, v6 data router objects, `<Link>`/`<NavLink>` navigation tracking |
 
-Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers_of()` / `callees_of()`.
+Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers()` / `callees()`.
+
+## v0.11.0 Highlights — one surface
+
+One name per operation on all three surfaces: the MCP tool
+`coderadar_<op>`, the CLI command `coderadar <op>` (underscores become
+hyphens) and the `CodeGraph` method `<op>`. All three call the same
+`coderadar.ops` function, and the tools and commands print the same
+`coderadar.render` text; `tests/test_surface_parity.py` keeps it that way.
+
+**Breaking — MCP tool names.** The 17 `codegraph_*` tools are now
+`coderadar_*` (`codegraph_explore` → `coderadar_explore`, …), so every tool
+shares one prefix. `coderadar_node` and `coderadar_affected` take
+`entity_id` instead of `id`. Update client allow-lists and scripts that call
+tools by name.
+
+**New**
+
+- `coderadar_status` (MCP), `coderadar status`, `CodeGraph.status()`: the
+  served project, its config and store, and how fresh the index is.
+- CLI commands for every operation: `explore`, `node`, `search`,
+  `affected`, `resolve`, `search-similar`, `compute-embeddings`,
+  `module-children`, `as-of`, `get-smells`, `dead-code`, `find-clones`,
+  `find-scaffolding`, `replace-body`, `update-signature`, `rename`,
+  `create-entity`, `reindex`, `update-file`. Each takes `--format json`;
+  edits are dry runs unless `--apply`. Errors go to stderr, exit 2 for bad
+  input and 1 otherwise.
+- `-C/--project`, and the CLI works from any directory inside a project:
+  it walks up to the nearest `.coderadar` marker, as the MCP server does.
+- `CodeGraph` methods for the operations it lacked: `node`, `callers`,
+  `callees`, `replace_body`, `update_signature`, `rename`, `create_entity`,
+  `reindex`, `status`; `explore` now returns what `coderadar_explore` shows.
+- `update_file` on a file deleted from disk drops it from the graph.
+- `coderadar traverse` follows every edge kind by default, like the tool.
+- Piped CLI output is UTF-8 on every platform.
+
+**Renamed** (old names still work, with a `DeprecationWarning` or a note on
+stderr, and are hidden from `--help`)
+
+| Old | New |
+|-----|-----|
+| `coderadar analyze PATH` / `rebuild PATH` | `coderadar -C PATH reindex --full` |
+| `coderadar update FILE` | `coderadar update-file FILE` |
+| `coderadar stats` | `coderadar status` |
+| `coderadar blame` / `git-clean` / `git-diff` | `coderadar git blame` / `git is-clean` / `git diff` |
+| `coderadar traverse --depth/--edges` | `--max-depth/--edge-kinds` |
+| `CodeGraph.find` | `CodeGraph.node` |
+| `CodeGraph.callers_of` / `callees_of` | `callers` / `callees` |
+| `CodeGraph.plan_body_replacement` / `plan_signature_update` | `plan_replace_body` / `plan_update_signature` |
+| `CodeGraph.explore(start_id=…, max_depth=…)` (call-graph walk) | `CodeGraph.traverse` |
+| `CodeGraph.traverse(edge_types=…)` | `edge_kinds=…` |
 
 ## v0.10.0 Highlights — precision
 

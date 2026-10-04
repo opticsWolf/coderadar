@@ -35,10 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-#: Names that mark a directory as a CodeRadar project root. `.coderadar/` is
-#: created by `coderadar init`; `.coderadar.toml` is the config file, which a
-#: user may commit without committing the store.
-MARKERS = (".coderadar", ".coderadar.toml")
+from coderadar.markers import find_marker
 
 #: Ladder rung names, in the order they are tried.
 CLIENT_ROOT = "client root"
@@ -88,52 +85,6 @@ def uri_to_path(uri: str) -> Path | None:
     if os.name == "nt" and len(path) > 2 and path[0] == "/" and path[2] == ":":
         path = path[1:]
     return Path(path) if path else None
-
-
-def _home() -> Path | None:
-    try:
-        return Path.home().resolve()
-    except (OSError, RuntimeError):
-        return None
-
-
-def _can_be_a_root(directory: Path, home: Path | None) -> bool:
-    """Is this directory low enough in the tree to be somebody's project?
-
-    Projects live *inside* the home directory, never at it and never above
-    it. The walk-up has to stop somewhere, and this is the honest boundary:
-    a stray `~/.coderadar` — which CodeRadar itself may have left there, and
-    which is a user-level directory rather than a project — would otherwise
-    be found from anywhere under the home tree and adopted as the root of
-    every project the user has.
-    """
-    if home is None:
-        return True  # no boundary to enforce; the walk still ends at the root
-    if directory == home:
-        return False
-    # An ancestor of home — C:/Users, /home, the filesystem root — is never
-    # one either, so the walk is done once it climbs past home.
-    return directory not in home.parents
-
-
-def find_marker(start: Path) -> Path | None:
-    """Walk up from `start` looking for a project marker.
-
-    Returns the marker itself (`.../.coderadar` or `.../.coderadar.toml`), so
-    the caller can both report it and take its parent as the root. Returns
-    None if the walk reaches its boundary — the home directory, or the
-    filesystem root — without finding one.
-    """
-    current = start if start.is_dir() else start.parent
-    home = _home()
-    for directory in (current, *current.parents):
-        if not _can_be_a_root(directory, home):
-            break
-        for name in MARKERS:
-            candidate = directory / name
-            if candidate.exists():
-                return candidate
-    return None
 
 
 def _canonical(path: Path) -> Path | None:
@@ -270,9 +221,9 @@ def resolve_selector(project_path: str) -> ResolvedRoot | None:
 def adopt_project_root(resolved: ResolvedRoot) -> Path:
     """Make the resolved root the process cwd, and report the old one.
 
-    Every read helper in the server resolves graph paths against the process
-    cwd — `_read_source` opens them, `_get_stale_files` stats them,
-    `_canonical_file_path` relativises against them — and entity ids are
+    Every read helper in `coderadar.ops` resolves graph paths against the
+    process cwd — `read_source` opens them, `stale_files` stats them,
+    `canonical_file_path` relativises against them — and entity ids are
     prefixed with whatever path `analyze()` walked. Serving `--path
     /other/project` while sitting in a different cwd therefore produced ids
     under one prefix and lookups under another, and the agent saw an empty

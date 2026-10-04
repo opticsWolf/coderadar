@@ -72,10 +72,10 @@ class TestMCPCreation:
 
     def test_instructions_describe_all_four_tools(self):
         from coderadar.mcp.server import SERVER_INSTRUCTIONS
-        assert "codegraph_explore" in SERVER_INSTRUCTIONS
-        assert "codegraph_node" in SERVER_INSTRUCTIONS
-        assert "codegraph_search" in SERVER_INSTRUCTIONS
-        assert "codegraph_affected" in SERVER_INSTRUCTIONS
+        assert "coderadar_explore" in SERVER_INSTRUCTIONS
+        assert "coderadar_node" in SERVER_INSTRUCTIONS
+        assert "coderadar_search" in SERVER_INSTRUCTIONS
+        assert "coderadar_affected" in SERVER_INSTRUCTIONS
 
     def test_instructions_include_anti_patterns(self):
         from coderadar.mcp.server import SERVER_INSTRUCTIONS
@@ -83,23 +83,23 @@ class TestMCPCreation:
         assert "grep" in SERVER_INSTRUCTIONS.lower()
 
     def test_name_parser_splits_query(self):
-        from coderadar.mcp.server import _parse_names
-        assert _parse_names("User.save authenticate logout", []) == \
+        from coderadar import ops
+        assert ops.parse_names("User.save authenticate logout", []) == \
             ["User.save", "authenticate", "logout"]
 
     def test_name_parser_handles_explicit_symbols(self):
-        from coderadar.mcp.server import _parse_names
-        assert _parse_names("", ["User", "AdminUser"]) == ["User", "AdminUser"]
+        from coderadar import ops
+        assert ops.parse_names("", ["User", "AdminUser"]) == ["User", "AdminUser"]
 
     def test_name_parser_rejects_empty(self):
-        from coderadar.mcp.server import _parse_names
-        assert _parse_names("", []) == []
-        assert _parse_names("  ,  ", []) == []
+        from coderadar import ops
+        assert ops.parse_names("", []) == []
+        assert ops.parse_names("  ,  ", []) == []
 
     def test_name_parser_filters_short_tokens(self):
-        from coderadar.mcp.server import _parse_names
+        from coderadar import ops
         # "a" and "x" are too short (< 2 chars), should be filtered
-        result = _parse_names("a User x", [])
+        result = ops.parse_names("a User x", [])
         assert "a" not in result
         assert "x" not in result
         assert "User" in result
@@ -197,9 +197,10 @@ class TestAgentWorkflow:
 
     def test_node_detail_shows_full_metadata(self):
         """Step 3: Agent drills into entity — gets full details."""
-        from coderadar.mcp.server import _node_detail, _text_search
+        from coderadar import ops
+        from coderadar.mcp.server import _node_detail
 
-        results = _text_search(None, "AdminUser", 3)
+        results = ops.search("AdminUser", top_k=3)
         assert len(results) > 0, "Should find AdminUser"
         entity_id = results[0]["id"]
         assert entity_id
@@ -213,9 +214,10 @@ class TestAgentWorkflow:
 
     def test_node_detail_with_neighbors_shows_callers(self):
         """Neighbors mode includes callers and callees."""
-        from coderadar.mcp.server import _node_detail, _text_search
+        from coderadar import ops
+        from coderadar.mcp.server import _node_detail
 
-        results = _text_search(None, "format_username", 3)
+        results = ops.search("format_username", top_k=3)
         assert len(results) > 0
         entity_id = results[0]["id"]
 
@@ -226,10 +228,11 @@ class TestAgentWorkflow:
 
     def test_affected_traces_upstream_dependents(self):
         """Step 4: Agent checks blast radius before editing."""
-        from coderadar.mcp.server import _affected, _text_search
+        from coderadar import ops
+        from coderadar.mcp.server import _affected
 
         # format_username is called by create_user
-        results = _text_search(None, "format_username", 3)
+        results = ops.search("format_username", top_k=3)
         assert len(results) > 0
         entity_id = results[0]["id"]
 
@@ -252,9 +255,9 @@ class TestAgentWorkflow:
 
     def test_resolve_names_finds_both_exact_and_fuzzy(self):
         """Name resolver finds entities by exact name and falls back to search."""
-        from coderadar.mcp.server import _resolve_names
+        from coderadar import ops
 
-        result = _resolve_names(None, ["User", "create_user"])
+        result = ops.resolve_names(["User", "create_user"])
         assert len(result) >= 2, f"Expected >=2 resolved, got {len(result)}"
         names = [r.get("name", "") for r in result]
         assert any("User" in n for n in names)
@@ -274,7 +277,7 @@ class TestAgentWorkflow:
 
         result = _explore(None, "xyzzynonexistent_12345", [], "both", 8)
         assert "Couldn't find" in result or "not found" in result.lower()
-        assert "codegraph_search" in result.lower()
+        assert "coderadar_search" in result.lower()
 
     def test_node_detail_nonexistent_entity(self):
         from coderadar.mcp.server import _node_detail
@@ -314,9 +317,10 @@ class TestAgentWorkflow:
 
     def test_affected_output_has_depth_hierarchy(self):
         """Affected output shows dependency depth with indentation."""
-        from coderadar.mcp.server import _affected, _text_search
+        from coderadar import ops
+        from coderadar.mcp.server import _affected
 
-        results = _text_search(None, "format_username", 3)
+        results = ops.search("format_username", top_k=3)
         if results:
             entity_id = results[0]["id"]
             result = _affected(None, entity_id, max_depth=3)
@@ -350,7 +354,7 @@ class TestMCPServerRoundTrip:
         _index_fixtures()
 
     def test_call_tool_search(self):
-        """call_tool dispatches to codegraph_search."""
+        """call_tool dispatches to coderadar_search."""
         import asyncio
 
         from coderadar.mcp.server import create_server
@@ -359,7 +363,7 @@ class TestMCPServerRoundTrip:
 
         async def _call():
             return await server.call_tool(
-                "codegraph_search",
+                "coderadar_search",
                 {"query": "User", "top_k": 5},
             )
 
@@ -373,7 +377,7 @@ class TestMCPServerRoundTrip:
         assert "User" in text
 
     def test_call_tool_explore(self):
-        """call_tool dispatches to codegraph_explore."""
+        """call_tool dispatches to coderadar_explore."""
         import asyncio
 
         from coderadar.mcp.server import create_server
@@ -382,7 +386,7 @@ class TestMCPServerRoundTrip:
 
         async def _call():
             return await server.call_tool(
-                "codegraph_explore",
+                "coderadar_explore",
                 {"query": "create_user", "direction": "both", "max_files": 8},
             )
 
@@ -394,7 +398,7 @@ class TestMCPServerRoundTrip:
         assert "create_user" in text.lower()
 
     def test_call_tool_node_detail(self):
-        """call_tool dispatches to codegraph_node."""
+        """call_tool dispatches to coderadar_node."""
         import asyncio
 
         from coderadar.mcp.server import create_server
@@ -409,8 +413,8 @@ class TestMCPServerRoundTrip:
 
         async def _call():
             return await server.call_tool(
-                "codegraph_node",
-                {"id": entity_id, "include_neighbors": False},
+                "coderadar_node",
+                {"entity_id": entity_id, "include_neighbors": False},
             )
 
         output = asyncio.run(_call())
@@ -422,7 +426,7 @@ class TestMCPServerRoundTrip:
         assert "- **ID:**" in text
 
     def test_call_tool_affected(self):
-        """call_tool dispatches to codegraph_affected."""
+        """call_tool dispatches to coderadar_affected."""
         import asyncio
 
         from coderadar.mcp.server import create_server
@@ -435,8 +439,8 @@ class TestMCPServerRoundTrip:
 
         async def _call():
             return await server.call_tool(
-                "codegraph_affected",
-                {"id": entity_id, "max_depth": 3},
+                "coderadar_affected",
+                {"entity_id": entity_id, "max_depth": 3},
             )
 
         output = asyncio.run(_call())
@@ -459,31 +463,31 @@ class TestQueryNormalization:
     """Language spelling normalization (Elixir/Erlang → index)."""
 
     def test_arity_tail_stripped(self):
-        from coderadar.mcp.server import _normalize_query_spelling
-        assert _normalize_query_spelling("GenServer:handle_call/3") == "GenServer.handle_call"
+        from coderadar import ops
+        assert ops.normalize_query_spelling("GenServer:handle_call/3") == "GenServer.handle_call"
 
     def test_module_colon_to_dot(self):
-        from coderadar.mcp.server import _normalize_query_spelling
-        assert _normalize_query_spelling("mod:fn") == "mod.fn"
+        from coderadar import ops
+        assert ops.normalize_query_spelling("mod:fn") == "mod.fn"
 
     def test_multi_arity_stripped(self):
-        from coderadar.mcp.server import _normalize_query_spelling
-        assert _normalize_query_spelling("cowboy_stream_h:request_process/3") == \
+        from coderadar import ops
+        assert ops.normalize_query_spelling("cowboy_stream_h:request_process/3") == \
             "cowboy_stream_h.request_process"
 
     def test_preserves_kind_prefix(self):
-        from coderadar.mcp.server import _normalize_query_spelling
-        assert _normalize_query_spelling("kind:function lang:python User") == \
+        from coderadar import ops
+        assert ops.normalize_query_spelling("kind:function lang:python User") == \
             "kind:function lang:python User"
 
     def test_plain_query_unaffected(self):
-        from coderadar.mcp.server import _normalize_query_spelling
-        assert _normalize_query_spelling("create_user format_username") == \
+        from coderadar import ops
+        assert ops.normalize_query_spelling("create_user format_username") == \
             "create_user format_username"
 
     def test_integrated_into_parse_names(self):
-        from coderadar.mcp.server import _parse_names
-        result = _parse_names("GenServer:handle_call/3 spawn/1", [])
+        from coderadar import ops
+        result = ops.parse_names("GenServer:handle_call/3 spawn/1", [])
         assert "handle_call/3" not in result
         assert any("handle_call" in r for r in result)
 
@@ -492,37 +496,37 @@ class TestOutputBudget:
     """Budget-aware explore output truncation."""
 
     def test_budget_below_trim_threshold_passes_through(self):
-        from coderadar.mcp.server import _apply_output_budget
+        from coderadar import render
         short = ["**test.py** — foo(function)", "", "1\tdef foo(): pass"]
-        result = _apply_output_budget(short, max_chars=10_000)
+        result = render.apply_output_budget(short, max_chars=10_000)
         assert "def foo" in result
 
     def test_budget_truncates_large_file(self):
-        from coderadar.mcp.server import _apply_output_budget
+        from coderadar import render
         big_body = [f"{i}\t{'x' * 100}" for i in range(1, 200)]
         lines = ["**big.py** — big(function)", ""] + big_body
-        result = _apply_output_budget(lines, max_chars=20_000, max_per_file=1000)
+        result = render.apply_output_budget(lines, max_chars=20_000, max_per_file=1000)
         assert len(result) < len("\n".join(lines))
 
     def test_budget_preserves_file_headers(self):
-        from coderadar.mcp.server import _apply_output_budget
+        from coderadar import render
         lines = [
             "**models.py** — User(class)", "",
             "1\tclass User:",
             "2\t    pass",
         ]
-        result = _apply_output_budget(lines, max_chars=50)
+        result = render.apply_output_budget(lines, max_chars=50)
         assert "models.py" in result
 
     def test_budget_respects_relationships_section(self):
-        from coderadar.mcp.server import _apply_output_budget
+        from coderadar import render
         lines = [
             "**src.py** — foo(function)", "",
             "1\tdef foo(): pass", "",
             "## Relationships",
             "- `bar` ←──[caller] `foo`",
         ]
-        result = _apply_output_budget(lines, max_chars=500)
+        result = render.apply_output_budget(lines, max_chars=500)
         assert "## Relationships" in result
 
 
@@ -530,32 +534,32 @@ class TestStalenessBanner:
     """Staleness detection and formatting."""
 
     def test_empty_stale_list_returns_empty(self):
-        from coderadar.mcp.server import _format_stale_banner
-        result = _format_stale_banner([], [])
+        from coderadar import render
+        result = render.stale_banner([], [])
         assert result == ""
 
     def test_stale_files_not_in_referenced_returns_empty(self):
-        from coderadar.mcp.server import _format_stale_banner
+        from coderadar import render
         stale = [{"path": "/tmp/other.py", "mtime": 999999}]
-        result = _format_stale_banner(stale, ["/tmp/main.py"])
+        result = render.stale_banner(stale, ["/tmp/main.py"])
         assert result == ""
 
     def test_stale_file_in_referenced_shows_banner(self):
-        from coderadar.mcp.server import _format_stale_banner
+        from coderadar import render
         stale = [{"path": "/tmp/main.py", "mtime": 999999}]
-        result = _format_stale_banner(stale, ["/tmp/main.py"])
+        result = render.stale_banner(stale, ["/tmp/main.py"])
         assert "⚠" in result
         assert "/tmp/main.py" in result
         assert "Read them directly" in result
 
     def test_get_stale_files_returns_list(self):
-        from coderadar.mcp.server import _get_stale_files
-        result = _get_stale_files(["/nonexistent/path.py"])
+        from coderadar import ops
+        result = ops.stale_files(["/nonexistent/path.py"])
         assert isinstance(result, list)
 
     def test_get_stale_files_with_real_file(self):
-        from coderadar.mcp.server import _get_stale_files
-        result = _get_stale_files([str(E2E_DIR / "models.py")])
+        from coderadar import ops
+        result = ops.stale_files([str(E2E_DIR / "models.py")])
         assert isinstance(result, list)
 
 
@@ -582,9 +586,10 @@ class TestResponseFormats:
 
     def test_node_detail_has_all_required_sections(self):
         """Node detail should have at minimum: ID, Kind, File."""
-        from coderadar.mcp.server import _node_detail, _text_search
+        from coderadar import ops
+        from coderadar.mcp.server import _node_detail
 
-        results = _text_search(None, "User", 3)
+        results = ops.search("User", top_k=3)
         assert len(results) > 0
         entity_id = results[0]["id"]
 
@@ -604,9 +609,10 @@ class TestResponseFormats:
 
     def test_affected_output_is_structured(self):
         """Affected output shows depth levels and counts."""
-        from coderadar.mcp.server import _affected, _text_search
+        from coderadar import ops
+        from coderadar.mcp.server import _affected
 
-        results = _text_search(None, "format_username", 3)
+        results = ops.search("format_username", top_k=3)
         if results:
             entity_id = results[0]["id"]
             result = _affected(None, entity_id, max_depth=3)
@@ -744,14 +750,14 @@ class TestInstructionsV059:
 
     def test_instructions_mention_query_tools(self):
         from coderadar.mcp.server import SERVER_INSTRUCTIONS
-        assert "codegraph_query" in SERVER_INSTRUCTIONS
-        assert "codegraph_search_similar" in SERVER_INSTRUCTIONS
-        assert "codegraph_module_children" in SERVER_INSTRUCTIONS
+        assert "coderadar_query" in SERVER_INSTRUCTIONS
+        assert "coderadar_search_similar" in SERVER_INSTRUCTIONS
+        assert "coderadar_module_children" in SERVER_INSTRUCTIONS
 
     def test_instructions_mention_temporal_and_traverse(self):
         from coderadar.mcp.server import SERVER_INSTRUCTIONS
-        assert "codegraph_as_of" in SERVER_INSTRUCTIONS
-        assert "codegraph_traverse" in SERVER_INSTRUCTIONS
+        assert "coderadar_as_of" in SERVER_INSTRUCTIONS
+        assert "coderadar_traverse" in SERVER_INSTRUCTIONS
 
     def test_instructions_mention_mutation_tools(self):
         from coderadar.mcp.server import SERVER_INSTRUCTIONS
@@ -762,16 +768,16 @@ class TestInstructionsV059:
 
     def test_instructions_mention_sync_tools(self):
         from coderadar.mcp.server import SERVER_INSTRUCTIONS
-        assert "codegraph_reindex" in SERVER_INSTRUCTIONS
-        assert "codegraph_update_file" in SERVER_INSTRUCTIONS
+        assert "coderadar_reindex" in SERVER_INSTRUCTIONS
+        assert "coderadar_update_file" in SERVER_INSTRUCTIONS
 
     def test_instructions_mention_compute_embeddings(self):
         from coderadar.mcp.server import SERVER_INSTRUCTIONS
-        assert "codegraph_compute_embeddings" in SERVER_INSTRUCTIONS
+        assert "coderadar_compute_embeddings" in SERVER_INSTRUCTIONS
 
 
 class TestQueryTool:
-    """codegraph_query backend validation."""
+    """coderadar_query backend validation."""
 
     def test_query_empty_query_returns_prompt(self):
         from coderadar.mcp.server import _query_graph
@@ -817,7 +823,7 @@ class TestQueryTool:
 
 
 class TestModuleChildren:
-    """codegraph_module_children backend."""
+    """coderadar_module_children backend."""
 
     def test_module_children_empty_id(self):
         from coderadar.mcp.server import _module_children
@@ -838,7 +844,7 @@ class TestModuleChildren:
 
 
 class TestTraverse:
-    """codegraph_traverse backend."""
+    """coderadar_traverse backend."""
 
     def test_traverse_empty_entity_id(self):
         from coderadar.mcp.server import _traverse
@@ -930,37 +936,36 @@ class TestMutationTools:
     """Mutation tools — plan + apply via dry_run toggle."""
 
     def test_render_entity_code_python(self):
-        from coderadar.mcp.server import _render_entity_code
-        fn = _render_entity_code("python", "function", "greet", 'return "hi"', ["@staticmethod"])
+        from coderadar import ops
+        fn = ops.render_entity_code("python", "function", "greet", 'return "hi"', ["@staticmethod"])
         assert fn == '@staticmethod\ndef greet():\n    return "hi"\n'
-        cls = _render_entity_code("python", "class", "Widget", "pass", None)
+        cls = ops.render_entity_code("python", "class", "Widget", "pass", None)
         assert cls == 'class Widget:\n    pass\n'
-        const = _render_entity_code("python", "constant", "MAX", "3", None)
+        const = ops.render_entity_code("python", "constant", "MAX", "3", None)
         assert const == 'MAX = 3\n'
 
     def test_render_entity_code_rust_and_go(self):
-        from coderadar.mcp.server import _render_entity_code
-        rs = _render_entity_code("rust", "function", "add", "a + b", None)
+        from coderadar import ops
+        rs = ops.render_entity_code("rust", "function", "add", "a + b", None)
         assert rs == 'pub fn add() {\na + b\n}\n'
-        go = _render_entity_code("go", "function", "run", "return nil", None)
+        go = ops.render_entity_code("go", "function", "run", "return nil", None)
         assert go == 'func run() {\nreturn nil\n}\n'
 
     def test_canonical_file_path(self):
-        from coderadar.mcp.server import _canonical_file_path
+        from coderadar import ops
         # Relative without prefix gets ./
-        assert _canonical_file_path("a/b.py").startswith(".")
+        assert ops.canonical_file_path("a/b.py").startswith(".")
         # Absolute path → project-relative
         abs_path = os.path.join(os.getcwd(), "x", "y.py")
-        assert _canonical_file_path(abs_path) == "." + os.sep + os.path.join("x", "y.py")
+        assert ops.canonical_file_path(abs_path) == "." + os.sep + os.path.join("x", "y.py")
         # Already-prefixed relative is unchanged
         p = "." + os.sep + "a.py"
-        assert _canonical_file_path(p) == p
+        assert ops.canonical_file_path(p) == p
 
     @pytest.mark.skipif(not _CORE_AVAILABLE, reason="Rust _core extension not built")
     def test_create_entity_end_to_end(self, tmp_path):
-        from coderadar import CodeGraph
+        from coderadar import CodeGraph, ops
         from coderadar._core import analyze
-        from coderadar.mcp.server import _render_entity_code
 
         # Create a writable target file, then index the directory holding it:
         # the mutation policy confines writes to the indexed root, so the
@@ -970,7 +975,7 @@ class TestMutationTools:
         target_s = str(target)
         analyze(str(tmp_path))
 
-        code = _render_entity_code("python", "function", "created_fn", "return 42", None)
+        code = ops.render_entity_code("python", "function", "created_fn", "return 42", None)
         cg = CodeGraph()
         plan = cg.plan_create_entity(target_s, "end", code, dry_run=True)
         # Real span: end of file, not 0..0 placeholder
@@ -1140,7 +1145,7 @@ class TestMutationTools:
 
         cg = CodeGraph()
         eid = f"{target}::foo"
-        plan = cg.plan_body_replacement(eid, "return 2", dry_run=True)
+        plan = cg.plan_replace_body(eid, "return 2", dry_run=True)
         e = plan.edits[0]
         broken = MutationPlan(
             id="t", tool="replace_entity_body",
@@ -1154,8 +1159,7 @@ class TestMutationTools:
         assert target.read_text(encoding="utf-8") == "def foo():\n    return 1\n"
 
     def test_format_mutation_plan_shows_diff(self):
-        from coderadar import MutationEdit, MutationPlan
-        from coderadar.mcp.server import _format_mutation_plan
+        from coderadar import MutationEdit, MutationPlan, render
         plan = MutationPlan(
             id="test-123",
             tool="replace_entity_body",
@@ -1165,20 +1169,19 @@ class TestMutationTools:
             unverified_sites=[],
             warnings=[],
         )
-        result = _format_mutation_plan(plan)
+        result = render.mutation_plan(plan)
         assert "DRY RUN" in result
         assert "test-123" in result
         assert "Diff Preview" in result
 
     def test_format_mutation_applied_shows_result(self):
-        from coderadar import MutationResult
-        from coderadar.mcp.server import _format_mutation_applied
+        from coderadar import MutationResult, render
         result_obj = MutationResult(
             status="Applied",
             files_written=["test.py"],
             syntax_errors=[],
         )
-        result = _format_mutation_applied(result_obj)
+        result = render.mutation_applied(result_obj)
         assert "Mutation Applied" in result
         assert "test.py" in result
 
@@ -1187,8 +1190,7 @@ class TestMutationTools:
         # used to carry the header "## Mutation Applied" plus "Graph has been
         # updated" while the file was untouched. Header, state claims, and
         # status must all derive from one source now.
-        from coderadar import MutationResult
-        from coderadar.mcp.server import _format_mutation_applied
+        from coderadar import MutationResult, render
         rejected = MutationResult(
             status="RejectedPolicy",
             files_written=[],
@@ -1197,7 +1199,7 @@ class TestMutationTools:
                 "message": "policy rejected the plan — deny-listed path",
             }],
         )
-        out = _format_mutation_applied(rejected)
+        out = render.mutation_applied(rejected)
         assert "Rejected" in out
         assert "## Mutation Applied" not in out
         assert "Graph has been updated" not in out
@@ -1205,17 +1207,16 @@ class TestMutationTools:
         assert "**Graph updated:** no" in out
 
     def test_format_mutation_stale_explains_recovery(self):
-        from coderadar import MutationResult
-        from coderadar.mcp.server import _format_mutation_applied
+        from coderadar import MutationResult, render
         stale = MutationResult(status="RejectedStale", files_written=[], syntax_errors=[])
-        out = _format_mutation_applied(stale)
+        out = render.mutation_applied(stale)
         assert "Stale" in out
         assert "plan tool again" in out
         assert "Graph has been updated" not in out
 
 
 class TestReindexUpdateFile:
-    """codegraph_reindex and codegraph_update_file backends."""
+    """coderadar_reindex and coderadar_update_file backends."""
 
     def test_update_file_empty_path(self):
         from coderadar.mcp.server import _update_file
@@ -1224,7 +1225,7 @@ class TestReindexUpdateFile:
 
 
 class TestSearchSimilar:
-    """codegraph_search_similar backend."""
+    """coderadar_search_similar backend."""
 
     def test_search_similar_empty_query(self):
         from coderadar.mcp.server import _search_similar
@@ -1233,10 +1234,10 @@ class TestSearchSimilar:
 
 
 class TestComputeEmbeddings:
-    """codegraph_compute_embeddings backend."""
+    """coderadar_compute_embeddings backend."""
 
 class TestAsOf:
-    """codegraph_as_of backend."""
+    """coderadar_as_of backend."""
 
     def test_as_of_empty_timestamp(self):
         from coderadar.mcp.server import _as_of
@@ -1244,7 +1245,7 @@ class TestAsOf:
         assert "timestamp" in result.lower()
 
 class TestStalenessBannerFires:
-    """`_get_stale_files` read `stats["epoch"]`, a key graph_stats never set.
+    """`ops.stale_files` read `stats["epoch"]`, a key graph_stats never set.
 
     So `index_epoch` was always 0, the `> 0` guard never passed, and every
     staleness banner in the server was unreachable — while `rename` went on
@@ -1273,16 +1274,16 @@ class TestStalenessBannerFires:
             pytest.skip("Rust _core extension not built")
         import time
 
-        from coderadar.mcp.server import _get_stale_files
+        from coderadar import ops
 
         target = tmp_path / "s.py"
         target.write_text("def f():\n    return 1\n", encoding="utf-8")
         analyze(str(tmp_path))
 
-        assert _get_stale_files([str(target)]) == [], "fresh index, nothing stale"
+        assert ops.stale_files([str(target)]) == [], "fresh index, nothing stale"
 
         future = time.time() + 60
         os.utime(target, (future, future))
-        stale = _get_stale_files([str(target)])
+        stale = ops.stale_files([str(target)])
 
         assert [s["path"] for s in stale] == [str(target)]

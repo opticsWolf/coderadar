@@ -293,7 +293,7 @@ def progress_message(outcome: IndexOutcome) -> str:
         return (
             "The project index failed to build, so no code intelligence is "
             f"available: {outcome.error}\n\n"
-            "Fix the underlying problem and call codegraph_reindex to retry."
+            "Fix the underlying problem and call coderadar_reindex to retry."
         )
     return (
         f"The project is still being indexed ({outcome.elapsed:.0f}s so far). "

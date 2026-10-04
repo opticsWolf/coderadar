@@ -833,7 +833,7 @@ def get_smells(entity_id: str = None, rule_id: str = None) -> list[dict]:
 > the existing pattern (name, description, `annotations={...}`), e.g.
 > `@mcp.tool(description=..., annotations={...})` then a `def get_smells(...)`
 > with a `_get_smells(graph, ...)` render helper, mirroring
-> `codegraph_traverse` → `_traverse` at `server.py:371/1278`.
+> `coderadar_traverse` → `_traverse` at `server.py:371/1278`.
 
 ---
 

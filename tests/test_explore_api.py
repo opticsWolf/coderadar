@@ -74,9 +74,14 @@ def _names(rows):
     }
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 class TestExplore:
+    """The deprecated call-graph walk (`start_id=`, in/out directions,
+    `max_depth`) keeps working until it is removed."""
+
     def test_it_returns_rows_instead_of_raising(self, project):
-        rows = coderadar.CodeGraph().explore(_id("middle"), direction="both")
+        with pytest.warns(DeprecationWarning):
+            rows = coderadar.CodeGraph().explore(start_id=_id("middle"), direction="both")
 
         assert rows, "an entity with a caller and a callee explored to nothing"
         for row in rows:
@@ -138,6 +143,6 @@ class TestTraverseDefaults:
 
     def test_naming_a_kind_still_narrows_the_walk(self, project):
         rows = coderadar.CodeGraph().traverse(
-            _id("top"), max_depth=3, edge_types=["imports"])
+            _id("top"), max_depth=3, edge_kinds=["imports"])
 
         assert _names(rows) == {"top"}, "imports followed a call edge"

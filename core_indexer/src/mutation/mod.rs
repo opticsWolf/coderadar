@@ -600,7 +600,7 @@ impl MutationEngine {
             };
             if params_span_valid(source, entity_name, candidate) {
                 warnings.push(format!(
-                    "Recorded params span for `{}` was stale (pointed at byte {}); re-resolved from the def line — consider `codegraph_update_file` before relying on call-site edits.",
+                    "Recorded params span for `{}` was stale (pointed at byte {}); re-resolved from the def line — consider `coderadar_update_file` before relying on call-site edits.",
                     entity_name, recorded.start
                 ));
                 return Ok(candidate);

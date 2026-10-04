@@ -1,7 +1,7 @@
 """v0.8 P2-1: multi-token search (guide: docs/v0.8-p2-agent-ux-guide.md).
 
-Field evidence (Süvea session, report 1): ``codegraph_search("SyncNode
-exchange_with")`` and ``codegraph_search("Store export_snapshot
+Field evidence (Süvea session, report 1): ``coderadar_search("SyncNode
+exchange_with")`` and ``coderadar_search("Store export_snapshot
 import_snapshot")`` returned zero results while the index was fully ready —
 the Rust scorer matched the *whole* lowercased query string against entity
 names, so no ≥2-token query could ever hit. Tokens are now the unit of

@@ -132,8 +132,8 @@ def test_class_method_call_has_no_synthetic_id(tmp_path, monkeypatch):
     assert _target(_fid("m.py", "use"), "add") == "Manager.add"
     unknown = _site(_fid("m.py", "use_unknown"), "add")
     assert unknown["status"] == "external"
-    assert [c["id"] for c in graph.callees_of(_fid("m.py", "use"))] == [_fid("m.py", "Manager.add")]
-    assert [c["id"] for c in graph.callees_of(_fid("m.py", "use_unknown"))] == ["external::Missing.add"]
+    assert [c["id"] for c in graph.callees(_fid("m.py", "use"))] == [_fid("m.py", "Manager.add")]
+    assert [c["id"] for c in graph.callees(_fid("m.py", "use_unknown"))] == ["external::Missing.add"]
 
 
 def test_in_repo_constructor_resolves_to_init(tmp_path, monkeypatch):
@@ -154,7 +154,7 @@ def test_in_repo_constructor_resolves_to_init(tmp_path, monkeypatch):
     assert _site(_fid("m.py", "build"), "Plain")["target"].endswith("::Plain")
     assert _site(_fid("m.py", "build"), "WithInit")["status"] == "constructor"
     # The edge lands on `__init__` when there is one, on the class otherwise.
-    assert {c["id"] for c in graph.callees_of(_fid("m.py", "build"))} == \
+    assert {c["id"] for c in graph.callees(_fid("m.py", "build"))} == \
         {_fid("m.py", "Plain"), _fid("m.py", "WithInit.__init__")}
 
 
@@ -400,4 +400,4 @@ def test_callbacks_keep_functions_alive_without_becoming_callers(tmp_path, monke
     assert ref("_truly_dead") in dead
     assert ref("Panel.unused_slot") in dead
     # A reference is not a call: the callee has no callers.
-    assert graph.callers_of(ref("Panel._on_click")) == []
+    assert graph.callers(ref("Panel._on_click")) == []

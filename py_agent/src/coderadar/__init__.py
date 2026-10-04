@@ -21,7 +21,7 @@ import functools
 #: installed wheel/sdist reports its own version) and falls back to the
 #: release constant below, which MUST be kept in sync with pyproject.toml
 #: and Cargo.toml [workspace.package] on every bump.
-_FALLBACK_VERSION = "0.10.0"
+_FALLBACK_VERSION = "0.11.0"
 
 
 def _resolve_version() -> str:
@@ -84,8 +84,16 @@ except ImportError:
     pass
 
 # The caller/callee indexes the facade walks carry exactly one kind of
-# edge. Named so explore() can answer honestly when asked for another.
+# edge. Named so the legacy call-graph walk can answer honestly when asked
+# for another.
 EDGE_KIND_CALLS = "calls"
+
+
+def _deprecated(old: str, new: str) -> None:
+    """Warn once per call site that `old` is now spelled `new`."""
+    import warnings
+    warnings.warn(f"CodeGraph.{old} is deprecated; use {new}", DeprecationWarning,
+                  stacklevel=3)
 
 # ── Public API Types ────────────────────────────────────────────────────────
 
@@ -105,6 +113,9 @@ class UpdateReport:
     fully_applied: bool
     epoch_before: int
     epoch_after: int
+    #: The file was gone from disk, so its entities were dropped instead.
+    removed: bool = False
+    entities_removed: int = 0
 
 
 @dataclass(frozen=True)
@@ -242,7 +253,7 @@ class CodeGraph:
         for cls in graph.query("classes where inherits_from contains 'BaseModel'"):
             print(cls.name)
         snapshot = graph.as_of("2025-06-15T10:00:00Z")
-        for caller in graph.callers_of("src/models.py::User.save"):
+        for caller in graph.callers("src/models.py::User.save"):
             print(caller["name"])
     """
 
@@ -311,28 +322,52 @@ class CodeGraph:
     @_bound_to_loaded_project
     def explore(
         self,
+        query: str = "",
+        symbols: list[str] | None = None,
+        direction: Literal["downstream", "upstream", "both"] = "both",
+        max_files: int = 8,
+        *,
+        start_id: str | None = None,
+        max_depth: int | None = None,
+        edge_kinds: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Source and call paths for the named symbols (MCP ``coderadar_explore``).
+
+        `query` is symbol names or a question; `symbols` names them
+        explicitly. Returns ``{"names", "files", "relationships",
+        "stale_files"}`` — see :func:`coderadar.ops.explore`.
+
+        The old call-graph walk (``explore(start_id, direction, max_depth,
+        edge_kinds)`` returning ``{entity_id, edge_kind, direction, depth}``
+        rows) still runs when called with ``start_id=``, ``max_depth=`` or
+        ``edge_kinds=``, or with direction ``in`` / ``out``, and warns: use
+        :meth:`traverse` with ``edge_kinds=["calls"]``.
+        """
+        if (start_id is not None or max_depth is not None or edge_kinds is not None
+                or direction in ("in", "out")):
+            _deprecated("explore(start_id, ...)", "CodeGraph.traverse")
+            return self._walk(start_id or query, direction,
+                              3 if max_depth is None else max_depth, edge_kinds)
+        from . import ops
+        return ops.explore(query, symbols, direction, max_files)
+
+    def _walk(
+        self,
         start_id: str,
-        direction: Literal["in", "out", "both"] = "both",
+        direction: str = "both",
         max_depth: int = 3,
         edge_kinds: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Walk the call graph outward from start_id.
+        """The legacy call-graph walk behind ``explore(start_id=...)``.
 
         Breadth-first, so the depth reported for an entity is the length of
         the shortest path to it, and an entity reached both ways is reported
-        once — at whichever depth found it first.
-
-        Args:
-            start_id: EntityId to start from (e.g. "src/models.py::User").
-            direction: "in" (callers), "out" (callees), or "both".
-            max_depth: How many hops to take. 0 returns nothing.
-            edge_kinds: Filter by edge kind. The only kind this walk follows
-                        is "calls"; anything else selects nothing. None means
-                        no filter. For imports and containment use traverse().
-
-        Returns:
-            List of dicts with `entity_id`, `edge_kind`, `direction`, `depth`.
+        once — at whichever depth found it first. Direction is "in"
+        (callers), "out" (callees) or "both"; the only edge kind this walk
+        follows is "calls". Rows: `entity_id`, `edge_kind`, `direction`,
+        `depth`.
         """
+        direction = {"upstream": "in", "downstream": "out"}.get(direction, direction)
         if edge_kinds is not None and EDGE_KIND_CALLS not in edge_kinds:
             return []
 
@@ -394,14 +429,37 @@ class CodeGraph:
     @_bound_to_loaded_project
     def traverse(
         self,
-        start_id: str,
+        entity_id: str | None = None,
+        direction: str = "both",
+        edge_kinds: list[str] | None = None,
         max_depth: int = 3,
+        *,
+        start_id: str | None = None,
         edge_types: list[str] | None = None,
-        direction: Literal["in", "out", "both"] = "both",
     ) -> list[dict[str, Any]]:
-        """Traverse the graph from start_id via Macrame."""
-        from .query import MacrameQuery
-        return MacrameQuery(self).traverse(start_id, max_depth, edge_types, direction)
+        """Breadth-first walk along any edge kinds (MCP ``coderadar_traverse``).
+
+        `direction` is ``downstream`` | ``upstream`` | ``both`` (``out`` /
+        ``in`` accepted); `edge_kinds` any of ``calls``, ``imports``,
+        ``inherits`` (alias ``extends``), ``overrides`` — None means all.
+        Returns the reached entity rows, each with ``depth`` and
+        ``edge_type``; an unknown `entity_id` raises ``ops.NotFound``.
+
+        The old argument order ``traverse(start_id, max_depth, edge_types,
+        direction)`` and the ``start_id=`` / ``edge_types=`` keywords still
+        work, with a DeprecationWarning.
+        """
+        if isinstance(direction, int) or start_id is not None or edge_types is not None:
+            _deprecated("traverse(start_id, max_depth, edge_types, direction)",
+                        "traverse(entity_id, direction, edge_kinds, max_depth)")
+            if isinstance(direction, int):  # old positional order
+                old_depth, old_types = direction, edge_kinds
+                old_direction = max_depth if isinstance(max_depth, str) else "both"
+                direction, edge_kinds, max_depth = old_direction, old_types, old_depth
+            entity_id = start_id or entity_id
+            edge_kinds = edge_types if edge_types is not None else edge_kinds
+        from . import ops
+        return ops.traverse(entity_id or "", direction, edge_kinds, max_depth)["results"]
 
     def as_of(self, timestamp: str) -> Snapshot:
         """Return a point-in-time snapshot via Macrame's reconstruct(ts)."""
@@ -409,27 +467,33 @@ class CodeGraph:
 
     @_bound_to_loaded_project
     def find(self, entity_id: str) -> dict[str, Any] | None:
-        """Look up an entity by ID.
-
-        Accepts the canonical form (``pkg/mod.py::Class.method``), the
-        legacy spellings (absolute, backslashes, leading ``./``), and a
-        dotted qualified name (``pkg.mod.Class.method`` — the spelling a
-        traceback uses) when a module prefix matches.
-        """
+        """Deprecated: :meth:`node` returns the same record and raises
+        ``ops.NotFound`` (with candidates) instead of returning None."""
+        _deprecated("find", "CodeGraph.node")
         from .query import MacrameQuery
         return MacrameQuery(self).find(entity_id)
 
     @_bound_to_loaded_project
-    def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Find callers via reverse call index."""
+    def callers(self, entity_id: str) -> list[dict[str, Any]]:
+        """Direct callers, from the reverse call index (CLI ``callers``)."""
         from .query import MacrameQuery
         return MacrameQuery(self).callers_of(entity_id)
 
     @_bound_to_loaded_project
-    def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Find callees via forward call index."""
+    def callees(self, entity_id: str) -> list[dict[str, Any]]:
+        """Direct callees, from the forward call index (CLI ``callees``)."""
         from .query import MacrameQuery
         return MacrameQuery(self).callees_of(entity_id)
+
+    def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
+        """Deprecated spelling of :meth:`callers`."""
+        _deprecated("callers_of", "CodeGraph.callers")
+        return self.callers(entity_id)
+
+    def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
+        """Deprecated spelling of :meth:`callees`."""
+        _deprecated("callees_of", "CodeGraph.callees")
+        return self.callees(entity_id)
 
     @_bound_to_loaded_project
     def call_sites(self, entity_id: str) -> list[dict[str, Any]] | None:
@@ -451,7 +515,7 @@ class CodeGraph:
 
     @_bound_to_loaded_project
     def node(self, entity_id: str, include_neighbors: bool = False) -> dict[str, Any]:
-        """One entity's full record (MCP ``codegraph_node``); with
+        """One entity's full record (MCP ``coderadar_node``); with
         `include_neighbors`, plus ``callers`` and ``callees`` lists."""
         from . import ops
         return ops.node(entity_id, include_neighbors)
@@ -460,7 +524,7 @@ class CodeGraph:
     def search(self, query: str, kind: str | None = None,
                top_k: int = 10) -> list[dict[str, Any]]:
         """Keyword search over names, signatures and docstrings (MCP
-        ``codegraph_search``). `kind`: function | class | type_alias |
+        ``coderadar_search``). `kind`: function | class | type_alias |
         constant | module | import."""
         from . import ops
         return ops.search(query, kind, top_k)
@@ -468,14 +532,14 @@ class CodeGraph:
     @_bound_to_loaded_project
     def affected(self, entity_id: str, max_depth: int = 5) -> dict[str, Any]:
         """Transitive callers, centrality-ranked per depth (MCP
-        ``codegraph_affected``): ``{entity, max_depth, depths, central_ids}``."""
+        ``coderadar_affected``): ``{entity, max_depth, depths, central_ids}``."""
         from . import ops
         return ops.affected(entity_id, max_depth)
 
     @_bound_to_loaded_project
     def module_children(self, module_id: str) -> dict[str, Any]:
         """A module's classes, functions, imports and constants (MCP
-        ``codegraph_module_children``)."""
+        ``coderadar_module_children``)."""
         from . import ops
         return ops.module_children(module_id)
 
@@ -490,7 +554,7 @@ class CodeGraph:
     def dead_code(self, min_confidence: float = 0.6, include_test_reachable: bool = False,
                   max_findings: int = 100) -> list[dict[str, Any]]:
         """Dead-code findings, most safely deletable first (MCP
-        ``codegraph_dead_code``). Ranked evidence, not proof: check
+        ``coderadar_dead_code``). Ranked evidence, not proof: check
         :meth:`affected` before deleting."""
         from . import ops
         return ops.dead_code(min_confidence, include_test_reachable, max_findings)
@@ -498,7 +562,7 @@ class CodeGraph:
     @_bound_to_loaded_project
     def get_smells(self, entity_id: str | None = None, rule_id: str | None = None,
                    strictness: str = "normal") -> list[dict[str, Any]]:
-        """Code-smell findings (MCP ``codegraph_get_smells``); `strictness`
+        """Code-smell findings (MCP ``coderadar_get_smells``); `strictness`
         is strict | normal | loose."""
         from . import ops
         return ops.get_smells(entity_id, rule_id, strictness)
@@ -506,7 +570,7 @@ class CodeGraph:
     @_bound_to_loaded_project
     def find_clones(self, min_lines: int = 10, min_similarity: float = 0.8,
                     max_groups: int = 100) -> list[dict[str, Any]]:
-        """Clone groups, Types 1-3, largest first (MCP ``codegraph_find_clones``)."""
+        """Clone groups, Types 1-3, largest first (MCP ``coderadar_find_clones``)."""
         from . import ops
         return ops.find_clones(min_lines, min_similarity, max_groups)
 
@@ -514,102 +578,91 @@ class CodeGraph:
     def find_scaffolding(self, include_secrets: bool = False,
                          max_findings: int = 100) -> list[dict[str, Any]]:
         """Scaffolding debt: markers, placeholder bodies, temp files, opt-in
-        redacted secrets (MCP ``codegraph_find_scaffolding``). The last row
+        redacted secrets (MCP ``coderadar_find_scaffolding``). The last row
         (``kind == "scan-stats"``) is a coverage footer."""
         from . import ops
         return ops.find_scaffolding(include_secrets, max_findings)
 
     @_bound_to_loaded_project
     def search_similar(
-        self, query_embedding: list[float], top_k: int = 10,
+        self, query: str | list[float], top_k: int = 10,
     ) -> list[dict[str, Any]]:
-        """Vector similarity search via cosine similarity against stored embeddings.
+        """Semantic search (MCP ``coderadar_search_similar``).
 
-        Requires embeddings to be pre-computed and stored via the embedding pipeline.
+        `query` is natural language — embedded locally with fastembed, at
+        most 20 results, embeddings computed on first use — or a ready
+        embedding vector.
         """
-        try:
-            from coderadar._core import search_similar as _ss
-            return _ss(query_embedding, top_k)
-        except ImportError:
-            return []
-
-    # ── Embedding Pipeline ────────────────────────────────────────────
+        from . import ops
+        return ops.search_similar(query, top_k)
 
     def compute_embeddings(self, model_name: str | None = None,
                            batch_size: int = 32) -> dict[str, int]:
-        """Compute and store embeddings for all indexable entities.
+        """Compute and store embeddings for all indexable entities (MCP
+        ``coderadar_compute_embeddings``). Returns ``{generated, cached,
+        total, errors}``; unchanged entities are skipped by content hash."""
+        from . import ops
+        return ops.compute_embeddings(model_name, batch_size)
 
-        Uses fastembed for local embedding generation. Embeddings are
-        written into the in-memory Function.embedding field, making them
-        immediately available for search_similar() queries.
+    # ── Edits (dry run by default) ─────────────────────────────────────
+    # Each returns {"plan": MutationPlan, "result": MutationResult | None,
+    # "note": str}; result is None for a dry run. dry_run=False applies the
+    # plan, writing the file and updating the graph together. Failures
+    # raise coderadar.ops.MutationFailed. The plan_* methods below are the
+    # two-step form (plan, then apply).
 
-        Args:
-            model_name: HuggingFace model name for fastembed. None takes the
-                configured model, which is also what the search path loads —
-                a mismatch there silently breaks similarity.
-            batch_size: Batch size for embedding generation.
+    @_bound_to_loaded_project
+    def replace_body(self, entity_id: str, new_body: str,
+                     expected_hash: str | None = None,
+                     dry_run: bool = True) -> dict[str, Any]:
+        """Replace a function/method body (MCP ``coderadar_replace_body``)."""
+        from . import ops
+        return ops.replace_body(entity_id, new_body, expected_hash, dry_run, graph=self)
 
-        Returns:
-            Dict with metrics: {generated, cached, total, errors}.
-        """
-        from .embedding import (
-            EmbeddingDedup,
-            EmbedTarget,
-            compute_content_hash,
-            embedding_settings,
-        )
+    @_bound_to_loaded_project
+    def update_signature(self, entity_id: str, new_signature: str,
+                         inject_defaults: bool = False,
+                         dry_run: bool = True) -> dict[str, Any]:
+        """Change a signature (MCP ``coderadar_update_signature``); call
+        sites come back as ``plan.unverified_sites``."""
+        from . import ops
+        return ops.update_signature(entity_id, new_signature, inject_defaults, dry_run,
+                                    graph=self)
 
-        configured_model, dimension = embedding_settings()
-        dedup = EmbeddingDedup(model_name=model_name or configured_model,
-                               dimension=dimension, batch_size=batch_size)
-        targets: list[EmbedTarget] = []
+    @_bound_to_loaded_project
+    def rename(self, entity_id: str, new_name: str, dry_run: bool = True) -> dict[str, Any]:
+        """Rename an entity and every reference (MCP ``coderadar_rename``)."""
+        from . import ops
+        return ops.rename(entity_id, new_name, dry_run, graph=self)
 
-        try:
-            from coderadar._core import search_entities
-            # Collect all embeddable entities across all kinds
-            for kind in ("function", "class", "module", "import", "constant", "type_alias"):
-                entities = search_entities("", 10_000, kind)
-                for entity in entities:
-                    entity_id = entity.get("id", "")
-                    if not entity_id:
-                        continue
-                    body = entity.get("signature", "") or entity.get("name", "") or ""
-                    content_hash = compute_content_hash(body.encode())
-                    targets.append(EmbedTarget(
-                        entity_id=entity_id,
-                        body=body,
-                        content_hash=content_hash,
-                        kind=kind,
-                    ))
-        except ImportError:
-            return {"generated": 0, "cached": 0, "total": 0, "errors": 1}
+    @_bound_to_loaded_project
+    def create_entity(self, file_path: str, language: str, kind: str, name: str,
+                      body: str, decorators: list[str] | None = None,
+                      anchor: str = "end", signature: str | None = None,
+                      dry_run: bool = True) -> dict[str, Any]:
+        """Insert a function, class or constant (MCP ``coderadar_create_entity``)."""
+        from . import ops
+        return ops.create_entity(file_path, language, kind, name, body, decorators,
+                                 anchor, signature, dry_run, graph=self)
 
-        results = dedup.embed_batch(targets, db=None)
-        cached = 0
-        try:
-            from coderadar._core import set_embeddings_bulk
-        except ImportError:
-            return {"generated": 0, "cached": 0, "total": len(targets), "errors": 1}
+    # ── Index lifecycle ────────────────────────────────────────────────
 
-        # One call, one projection clone. Looping set_embedding cloned the
-        # whole ProjectedGraph per entity — O(N²) on a project of any size.
-        entries = []
-        for target, vec in zip(targets, results):
-            if vec is None:
-                cached += 1
-                continue
-            entries.append((target.id, list(vec), target.content_hash))
+    def reindex(self, with_embeddings: bool = False, full: bool = False,
+                exclude: list[str] | None = None) -> dict[str, Any]:
+        """Bring the index for the cwd's project up to date (MCP
+        ``coderadar_reindex``): the cheap way by default, the whole tree
+        with `full` or one-shot `exclude` patterns. Returns ``{"stats",
+        "embeddings"?}``."""
+        from . import ops
+        result = ops.reindex(with_embeddings, full, exclude)
+        self._root = None  # the graph was rebuilt; rebind on next use
+        return result
 
-        try:
-            report = set_embeddings_bulk(entries)
-        except RuntimeError:
-            return {"generated": 0, "cached": cached,
-                    "total": len(targets), "errors": len(entries)}
-
-        generated = int(report.get("applied", 0))
-        errors = len(report.get("missing", []))
-        return {"generated": generated, "cached": cached,
-                "total": len(targets), "errors": errors}
+    def status(self) -> dict[str, Any]:
+        """What is indexed for the cwd's project and how fresh it is (MCP
+        ``coderadar_status``)."""
+        from . import ops
+        return ops.status()
 
     # ── Update ─────────────────────────────────────────────────────────
 
@@ -621,7 +674,22 @@ class CodeGraph:
         Phase 1: Rust parses, diffs, and stages changes.
         Phase 2: Macrame persists entities and edges with timestamps.
         Phase 3: ProjectedGraph rebuilds reverse indexes.
+
+        A file that no longer exists on disk (and no `content` given) is
+        dropped from the graph instead: the report says ``removed`` and
+        how many entities went.
         """
+        removed = 0
+        if content is None and not Path(file_path).exists():
+            removed = self.remove_file(file_path)
+        if removed:  # a file never indexed falls through and fails below
+            return UpdateReport(
+                affected_files=[file_path], changed_symbols=[],
+                new_unresolved_references=[], newly_resolved_references=[],
+                elapsed_ms=0.0, parse_quality="Removed", parse_errors=0,
+                fully_applied=True, epoch_before=0, epoch_after=0,
+                removed=True, entities_removed=removed,
+            )
         try:
             from coderadar._core import update_file as _update_file_rust
             result = _update_file_rust(file_path, content, force)
@@ -676,8 +744,8 @@ class CodeGraph:
     def remove_file(self, file_path: str) -> int:
         """Drop a deleted file's entities from the graph.
 
-        `update_file` cannot do this — it re-reads the file, and a deleted
-        file has no content to diff. Returns the number of entities removed.
+        `update_file` does this too when it finds the file gone from disk.
+        Returns the number of entities removed.
         """
         try:
             from coderadar._core import remove_file as _remove_file_rust
@@ -715,7 +783,7 @@ class CodeGraph:
     # ── Mutation ───────────────────────────────────────────────────────
 
     @_bound_to_loaded_project
-    def plan_body_replacement(
+    def plan_replace_body(
         self,
         entity_id: str,
         new_body: str,
@@ -739,7 +807,7 @@ class CodeGraph:
         )
 
     @_bound_to_loaded_project
-    def plan_signature_update(
+    def plan_update_signature(
         self,
         entity_id: str,
         new_signature: str,
@@ -760,6 +828,16 @@ class CodeGraph:
             id="", tool="update_signature", edits=[],
             affected_files=[], diff_preview="", unverified_sites=[], warnings=[],
         )
+
+    def plan_body_replacement(self, *args: Any, **kwargs: Any) -> MutationPlan:
+        """Deprecated spelling of :meth:`plan_replace_body`."""
+        _deprecated("plan_body_replacement", "CodeGraph.plan_replace_body")
+        return self.plan_replace_body(*args, **kwargs)
+
+    def plan_signature_update(self, *args: Any, **kwargs: Any) -> MutationPlan:
+        """Deprecated spelling of :meth:`plan_update_signature`."""
+        _deprecated("plan_signature_update", "CodeGraph.plan_update_signature")
+        return self.plan_update_signature(*args, **kwargs)
 
     @_bound_to_loaded_project
     def plan_rename(
@@ -925,13 +1003,29 @@ class Snapshot:
         # Macrame reconstruct(ts) + ProjectedGraph from that point
         return self._graph.query(query_str)
 
+    def callers(self, entity_id: str) -> list[dict[str, Any]]:
+        """Callers at this point in time."""
+        return self._graph.callers(entity_id)
+
+    def callees(self, entity_id: str) -> list[dict[str, Any]]:
+        """Callees at this point in time."""
+        return self._graph.callees(entity_id)
+
+    def traverse(self, entity_id: str, direction: str = "both",
+                 edge_kinds: list[str] | None = None,
+                 max_depth: int = 3) -> list[dict[str, Any]]:
+        """Traverse from entity_id at this point in time."""
+        return self._graph.traverse(entity_id, direction, edge_kinds, max_depth)
+
     def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Find callers at this point in time."""
-        return self._graph.callers_of(entity_id)
+        """Deprecated spelling of :meth:`callers`."""
+        _deprecated("Snapshot.callers_of", "Snapshot.callers")
+        return self.callers(entity_id)
 
     def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Find callees at this point in time."""
-        return self._graph.callees_of(entity_id)
+        """Deprecated spelling of :meth:`callees`."""
+        _deprecated("Snapshot.callees_of", "Snapshot.callees")
+        return self.callees(entity_id)
 
     def explore(
         self,
@@ -939,8 +1033,9 @@ class Snapshot:
         direction: Literal["in", "out", "both"] = "both",
         max_depth: int = 3,
     ) -> list[dict[str, Any]]:
-        """Traverse from start_id at this point in time."""
-        return self._graph.explore(start_id, direction, max_depth)
+        """Deprecated call-graph walk; use :meth:`traverse`."""
+        _deprecated("Snapshot.explore", "Snapshot.traverse")
+        return self._graph._walk(start_id, direction, max_depth)
 
 
 # ── Batch Context Manager ───────────────────────────────────────────────────
@@ -1021,7 +1116,7 @@ def analyze(root: str, create_store: bool = False, exclude: list | None = None) 
         _analyze_rust(root, create_store, _merged_excludes)
     except ImportError:
         pass
-    # F14: readers (_read_source et al.) resolve canonical relative ids
+    # F14: readers (ops.read_source et al.) resolve canonical relative ids
     # against this, not the CWD.
     try:
         from coderadar.excludes import set_indexed_root as _set_root

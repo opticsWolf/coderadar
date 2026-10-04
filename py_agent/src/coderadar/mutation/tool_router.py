@@ -81,7 +81,7 @@ class ToolRouter:
         expected_hash = args.get("expected_hash")
 
         if self.graph:
-            plan = self.graph.plan_body_replacement(
+            plan = self.graph.plan_replace_body(
                 entity_id, new_body, expected_hash, dry_run=self.dry_run,
             )
             if not self.dry_run:
@@ -115,7 +115,7 @@ class ToolRouter:
         inject_defaults = args.get("inject_defaults", False)
 
         if self.graph:
-            plan = self.graph.plan_signature_update(
+            plan = self.graph.plan_update_signature(
                 entity_id, new_signature, call_site_values,
                 inject_defaults, dry_run=self.dry_run,
             )

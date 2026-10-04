@@ -1352,7 +1352,7 @@ class TestPlanPreviewsAreDiffs:
 
         hits = search_entities("f", 10, kind="function")
         assert hits, "fixture function was not indexed"
-        plan = CodeGraph().plan_body_replacement(
+        plan = CodeGraph().plan_replace_body(
             hits[0]["id"], "    return a + 1\n", None, dry_run=True)
 
         preview = plan.diff_preview

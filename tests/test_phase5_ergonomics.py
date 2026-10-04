@@ -98,28 +98,28 @@ class TestQualifiedNames:
         assert entity is not None and entity["name"] == "render"
 
     def test_graph_find_accepts_the_dotted_form(self, project):
-        found = coderadar.CodeGraph().find("pkg.model.Widget.render")
+        found = coderadar.CodeGraph().node("pkg.model.Widget.render")
         assert found is not None and found["name"] == "render"
 
     def test_the_resolved_id_is_the_real_one(self, project):
         graph = coderadar.CodeGraph()
-        dotted = graph.find("pkg.model.Widget.render")
-        exact = graph.find(dotted["id"])
+        dotted = graph.node("pkg.model.Widget.render")
+        exact = graph.node(dotted["id"])
         assert dotted == exact
 
     def test_a_miss_offers_candidates(self, project):
-        from coderadar.mcp.server import _not_found_message
+        from coderadar import ops, render
 
-        message = _not_found_message(coderadar.CodeGraph(), "pkg.model.Widget.rendr")
+        message = render.not_found("pkg.model.Widget.rendr", ops.suggest_entities("pkg.model.Widget.rendr"))
         assert "not found" in message
         assert "render" in message, message
 
     def test_a_name_that_exists_nowhere_says_so(self, project):
-        from coderadar.mcp.server import _not_found_message
+        from coderadar import ops, render
 
-        message = _not_found_message(coderadar.CodeGraph(), "pkg.model.Nothing.zzz")
+        message = render.not_found("pkg.model.Nothing.zzz", ops.suggest_entities("pkg.model.Nothing.zzz"))
         assert "not found" in message
-        assert "codegraph_search" in message
+        assert "coderadar_search" in message
 
 
 # ── §5.3 One path spelling ─────────────────────────────────────────────────
@@ -144,7 +144,7 @@ class TestPathSpelling:
         for row in rows:
             assert "\\" not in row["id"] and "\\" not in row["file_path"], row
             assert not row["id"].startswith("./"), row
-        for caller in graph.callers_of("pkg/model.py::Widget.render"):
+        for caller in graph.callers("pkg/model.py::Widget.render"):
             assert "\\" not in caller["id"], caller
 
     def test_graph_stats_root_has_no_verbatim_prefix(self, project):

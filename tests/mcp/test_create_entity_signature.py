@@ -13,8 +13,8 @@ import os
 from pathlib import Path
 
 import pytest
+from coderadar import ops
 from coderadar.mcp import lazy, startup
-from coderadar.mcp.server import _render_entity_code
 
 try:
     from coderadar._core import analyze as _analyze
@@ -37,7 +37,7 @@ def _clean_handles(tmp_path):
 
 
 def test_rust_signature_written_verbatim():
-    code = _render_entity_code(
+    code = ops.render_entity_code(
         "rust", "function", "sync_status_text",
         "    Ok(())\n", None,
         "fn sync_status_text(store: &Store) -> Result<(), String>",
@@ -50,7 +50,7 @@ def test_rust_signature_written_verbatim():
 
 
 def test_python_signature_gets_its_colon_and_indent():
-    code = _render_entity_code(
+    code = ops.render_entity_code(
         "python", "function", "save",
         "return name", None,
         "def save(self, name: str) -> None",
@@ -59,7 +59,7 @@ def test_python_signature_gets_its_colon_and_indent():
 
 
 def test_python_signature_with_colon_not_doubled():
-    code = _render_entity_code(
+    code = ops.render_entity_code(
         "python", "function", "save",
         "return 1", None,
         "def save(self) -> int:",
@@ -68,19 +68,19 @@ def test_python_signature_with_colon_not_doubled():
 
 
 def test_python_signature_empty_body_gets_pass():
-    code = _render_entity_code(
+    code = ops.render_entity_code(
         "python", "function", "stub", "", None, "def stub(self) -> None")
     assert "pass" in code
     assert code.startswith("def stub(self) -> None:\n")
 
 
 def test_rust_without_signature_keeps_legacy_rendering():
-    code = _render_entity_code("rust", "function", "f", "x", None)
+    code = ops.render_entity_code("rust", "function", "f", "x", None)
     assert code == "pub fn f() {\nx\n}\n"
 
 
 def test_decorators_still_prepend_with_signature():
-    code = _render_entity_code(
+    code = ops.render_entity_code(
         "python", "method", "hook", "return 1", ["@app.route('/x')"],
         "def hook(self, req) -> int",
     )

@@ -10,11 +10,12 @@ caller's, since they depend on how the surface found its project.
 from __future__ import annotations
 
 import re
+from typing import Any
 
-from .ops import friendly_entity_id
+from .ops import display_file, friendly_entity_id
 
 
-def not_found(entity_id: str, candidates: list[dict], hint: str = "codegraph_search") -> str:
+def not_found(entity_id: str, candidates: list[dict], hint: str = "coderadar_search") -> str:
     """A miss with candidates instead of a bare `not found`."""
     lines = [f"Entity `{entity_id}` not found."]
     if candidates:
@@ -53,8 +54,8 @@ def search_miss(query: str, kind: str | None) -> str:
             "and docstrings and hit nothing."
         )
     out.append(
-        "Escape hatches: `codegraph_search_similar` (semantic, embedding-based) "
-        "or `codegraph_explore` with explicit `symbols` for known names."
+        "Escape hatches: `coderadar_search_similar` (semantic, embedding-based) "
+        "or `coderadar_explore` with explicit `symbols` for known names."
     )
     return "\n".join(out)
 
@@ -162,7 +163,7 @@ def resolve(result: dict) -> str:
     name, results = result["name"], result["results"]
     if result["mode"] == "route":
         if not results:
-            return f"No handler found for route `{name}`. Try codegraph_search."
+            return f"No handler found for route `{name}`. Try coderadar_search."
         lines = [f"## Route Resolution: `{name}`", f"Found {len(results)} handler(s)", ""]
         for i, r in enumerate(results, 1):
             lines.append(f"### {i}. `{r.get('name', '?')}` ({r.get('kind', '?')}) — "
@@ -176,7 +177,7 @@ def resolve(result: dict) -> str:
         return "\n".join(lines)
     if not results:
         return (f"No framework resolver claimed `{name}`. "
-                f"Try codegraph_search for a broader search.")
+                f"Try coderadar_search for a broader search.")
     lines = [f"## Reference Resolution: `{name}`", f"Found {len(results)} result(s)", ""]
     for i, r in enumerate(results, 1):
         lines.append(f"### {i}. `{r.get('name', '?')}` ({r.get('kind', '?')}) — "
@@ -303,4 +304,620 @@ def find_scaffolding(findings: list[dict], include_secrets: bool) -> str:
         lines.append("")
     for s in stats_rows:
         lines.append(f"_{s['label']}_")
+    return "\n".join(lines)
+
+
+# ── Staleness ─────────────────────────────────────────────────────────────
+# Adapted from CodeGraph's formatStaleBanner / formatDegradedBanner
+# (MIT License, https://github.com/colbymchenry/codegraph)
+
+def stale_banner(stale_files: list[dict], referenced_paths: list[str]) -> str:
+    """A warning naming the referenced files edited since the last sync.
+
+    Only files in `referenced_paths` (those the response actually uses) are
+    named; other stale files are noise to a reader about to act on these.
+    """
+    if not stale_files:
+        return ""
+    referenced_set = set(referenced_paths)
+    relevant = [s for s in stale_files if s["path"] in referenced_set]
+    if not relevant:
+        return ""
+    lines = [
+        (
+            "⚠️ Some files referenced below were edited since the last index sync — "
+            "their codegraph entries may be stale:"
+        ),
+    ]
+    for s in relevant:
+        lines.append(f"  - {s['path']}")
+    lines.append(
+        "For accurate content of those specific files, Read them directly. "
+        "Every file NOT listed above is fresh — still trust codegraph."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ── Explore ───────────────────────────────────────────────────────────────
+# Output budget adapted from CodeGraph's getExploreOutputBudget /
+# allocateExploreBudget (MIT License, https://github.com/colbymchenry/codegraph)
+
+MAX_OUTPUT_CHARS = 18_000
+"""Hard cap on total explore output (characters)."""
+
+MAX_CHARS_PER_FILE = 4_500
+"""Maximum source characters served per file."""
+
+POINTER_HEADER = "**Not shown above — explore these names for their source**"
+"""Header for files trimmed by the output budget."""
+
+
+def explore_usage() -> str:
+    return (
+        "Please provide symbol names or a question to explore. "
+        'For example: coderadar_explore(query="User.save authenticate")'
+    )
+
+
+def explore_miss(names: list[str]) -> str:
+    name_list = ", ".join(f"`{n}`" for n in names)
+    return (
+        f"Couldn't find {name_list} in the index. Each name was matched "
+        "exactly, then as search tokens, against names, signatures and "
+        "docstrings. Try a single well-known symbol, `coderadar_search` "
+        "with one token, or `coderadar_search_similar` for semantic search."
+    )
+
+
+def explore(result: dict) -> str:
+    """Source grouped by file, then the call relationships, within the
+    output budget."""
+    lines: list[str] = []
+    stale = result.get("stale_files") or []
+    banner = stale_banner(stale, [s["path"] for s in stale])
+    if banner:
+        lines.append(banner)
+
+    for f in result["files"]:
+        entities = f["entities"]
+        names_str = ", ".join(
+            f"{e.get('name', '?')}({e.get('kind', '?')})" for e in entities[:10]
+        )
+        lines.append(f"**{f['file_path']}** — {names_str}")
+        lines.append("")
+        for entity in entities:
+            if entity.get("source"):
+                lines.append(entity["source"])
+                lines.append("")
+
+    rel_lines = []
+    for r in result["relationships"]:
+        if r["kind"] == "caller":
+            rel_lines.append(f"- `{r['other_name']}` ←──[caller] `{r['entity_name']}`")
+        else:
+            rel_lines.append(f"- `{r['entity_name']}` ──→[callee] `{r['other_name']}`")
+    if rel_lines:
+        lines.append("## Relationships")
+        lines.extend(rel_lines)
+
+    return apply_output_budget(lines)
+
+
+def apply_output_budget(
+    lines: list[str],
+    max_chars: int = MAX_OUTPUT_CHARS,
+    max_per_file: int = MAX_CHARS_PER_FILE,
+) -> str:
+    """Trim full output to fit within a character budget.
+
+    Strategy: walk through file sections (delimited by ``**file_path**`` headers),
+    applying per-file caps first, then a global cap. Files below the cap get
+    full source; at-cap files get their source truncated at cluster boundaries.
+    Files that don't fit at all are converted to pointer lines.
+
+    Always preserves file headers and the Relationships section.
+    """
+    text = "\n".join(lines)
+    if len(text) <= max_chars:
+        return text
+
+    # Identify file sections and the relationships section
+    file_sections: list[list[str]] = []
+    current_section: list[str] = []
+    relationships_lines: list[str] = []
+    in_relationships = False
+
+    for line in lines:
+        if line.startswith("## Relationships"):
+            in_relationships = True
+            if current_section:
+                file_sections.append(current_section)
+                current_section = []
+        if in_relationships:
+            relationships_lines.append(line)
+            continue
+        # File header detection: **path** — ...
+        if line.startswith("**") and "** —" in line:
+            if current_section:
+                file_sections.append(current_section)
+            current_section = [line]
+        elif current_section:
+            current_section.append(line)
+        else:
+            # Preamble lines (before first file header)
+            current_section.append(line)
+
+    if current_section:
+        file_sections.append(current_section)
+
+    # Separate preamble from file sections
+    preamble_lines: list[str] = []
+    file_sections_filtered: list[list[str]] = []
+    for sec in file_sections:
+        if sec and sec[0].startswith("**") and "** —" in sec[0]:
+            file_sections_filtered.append(sec)
+        else:
+            preamble_lines = sec
+
+    # Build output: preamble + truncated file sections + relationships
+    output_lines = list(preamble_lines)
+    remaining = max_chars - len("\n".join(output_lines))
+    if relationships_lines:
+        remaining -= len("\n".join(relationships_lines)) + 2  # 2 for separators
+
+    if remaining <= 0:
+        # Bare minimum: just relationships
+        output_lines = [POINTER_HEADER, ""]
+        output_lines.extend(relationships_lines)
+        return "\n".join(output_lines)
+
+    pointer_files: list[str] = []
+
+    for sec in file_sections_filtered:
+        sec_text = "\n".join(sec)
+        if len(sec_text) <= max_per_file:
+            # Small enough — include whole (but check global budget)
+            if len(sec_text) <= remaining:
+                output_lines.extend(sec)
+                remaining -= len(sec_text)
+            else:
+                # Budget exhausted — pointer only
+                pointer_files.append(extract_path_from_header(sec[0]))
+        else:
+            # Per-file cap: trim to max_per_file, preserving the header
+            header = sec[0]
+            body_lines = sec[1:]
+            trimmed_body = trim_to_char_budget(body_lines, max_per_file - len(header) - 1)
+            trimmed_sec = [header] + trimmed_body
+            sec_text = "\n".join(trimmed_sec)
+            if len(sec_text) <= remaining:
+                output_lines.extend(trimmed_sec)
+                remaining -= len(sec_text)
+            else:
+                pointer_files.append(extract_path_from_header(header))
+
+    # Pointer list for files that didn't fit
+    if pointer_files:
+        output_lines.append("")
+        output_lines.append(POINTER_HEADER)
+        for pf in pointer_files:
+            output_lines.append(f"- {pf}")
+        output_lines.append("")
+
+    # Relationships
+    if relationships_lines:
+        output_lines.append("")
+        output_lines.extend(relationships_lines)
+
+    return "\n".join(output_lines)
+
+
+def extract_path_from_header(header: str) -> str:
+    """Extract file path from a ``**path** — symbols`` header."""
+    return header.removeprefix("**").split("**")[0].strip()
+
+
+def trim_to_char_budget(body_lines: list[str], max_chars: int) -> list[str]:
+    """Trim body source lines to fit within max_chars, at line boundaries."""
+    if max_chars <= 0:
+        return []
+    result: list[str] = []
+    used = 0
+    for line in body_lines:
+        # +1 for newline separator
+        cost = len(line) + 1
+        if used + cost > max_chars:
+            break
+        result.append(line)
+        used += cost
+    if len(result) < len(body_lines):
+        result.append("...")
+    return result
+
+
+# ── Traverse / query ──────────────────────────────────────────────────────
+
+def traverse(result: dict) -> str:
+    entity = result["entity"]
+    title = f"## Traverse from `{entity.get('name', result['entity_id'])}`"
+    rows = result["results"]
+    depth = result["max_depth"]
+    if not rows:
+        return (f"{title}\n\nNo neighbors found "
+                f"(direction={result['direction']}, max_depth={depth})")
+
+    by_depth: dict[int, list[dict]] = {}
+    for r in rows:
+        by_depth.setdefault(r.get("depth", 1), []).append(r)
+
+    lines = [
+        title,
+        (
+            f"Direction: {result['direction']}, max depth: {depth}, "
+            f"edge kinds: {result['edge_kinds'] or 'all'}"
+        ),
+        f"Found {len(rows)} reachable entities",
+        "",
+    ]
+    if result.get("unresolved", 0) > 0:
+        lines.append(
+            f"⚠️ Traversal incomplete: {result['unresolved']} outgoing target(s) "
+            f"could not be resolved and were excluded from the walk."
+        )
+    for d in sorted(by_depth):
+        items = by_depth[d]
+        lines.append(f"### Depth {d} ({len(items)})")
+        for item in items[:15]:
+            name = item.get("name", item.get("id", item.get("entity_id", "?")))
+            ek = item.get("kind", item.get("edge_type", "?"))
+            eid = item.get("id", item.get("entity_id", ""))
+            fp = display_file(item)
+            fp_str = f" — `{fp}`" if fp and fp != "?" else ""
+            id_str = f" — `{eid}`" if eid and eid != name else ""
+            lines.append(f"- `{name}` ({ek}){fp_str}{id_str}")
+        if len(items) > 15:
+            lines.append(f"  ... and {len(items) - 15} more")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def query_usage() -> str:
+    return ("Please provide a query. Examples:\n"
+            "  - classes where inherits_from contains 'BaseModel'\n"
+            "  - methods where is_async == true\n"
+            "  - functions where name starts_with 'test_'\n"
+            "  - imports where import_kind == 'from'\n"
+            "Entities: modules, classes, functions, methods, constants, entities, "
+            "imports, calls, fields. Full field reference: docs/query-language.md")
+
+
+def query(query: str, rows: list[dict], limit: int | None = 30) -> str:
+    """Numbered rows; `limit` None prints all of them."""
+    if not rows:
+        return f"Query `{query}` returned no results."
+    lines = [f"## Query: `{query}`", f"Found {len(rows)} result(s)", ""]
+    shown = rows if limit is None else rows[:limit]
+    for i, row in enumerate(shown, 1):
+        name = row.get("name", row.get("id", "?"))
+        kind = row.get("kind", row.get("entity_type", "?"))
+        fp = display_file(row)
+        rid = row.get("id", row.get("entity_id", ""))
+        sl = row.get("start_line", row.get("line", ""))
+        lines.append(f"{i}. `{name}` ({kind}) — `{fp}`")
+        if rid:
+            lines.append(f"   ID: `{rid}`")
+        if sl:
+            lines.append(f"   Line: {sl}")
+        sig = row.get("signature")
+        if sig:
+            lines.append(f"   Signature: `{sig}`")
+    if len(rows) > len(shown):
+        lines.append(f"... and {len(rows) - len(shown)} more")
+    return "\n".join(lines)
+
+
+# ── Embeddings ────────────────────────────────────────────────────────────
+
+def search_similar(query: str, results: list[dict]) -> str:
+    if not results:
+        return f"No semantically similar results found for '{query}'."
+    lines = [f"## Semantic Search: `{query}`", f"Found {len(results)} result(s)", ""]
+    for i, r in enumerate(results, 1):
+        lines.append(f"{i}. `{r.get('name', '?')}` ({r.get('kind', '?')}) — "
+                     f"similarity {r.get('similarity', 0.0):.3f}")
+        lines.append(f"   File: `{display_file(r)}`")
+        doc = r.get("docstring")
+        if doc:
+            lines.append(f"   {doc[:120]}{'...' if len(doc) > 120 else ''}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+FASTEMBED_MISSING = (
+    "Semantic search requires `fastembed` to be installed. "
+    "Run: pip install fastembed\n"
+    "Then run compute_embeddings() to index all entities."
+)
+
+NO_EMBEDDINGS = (
+    "No embeddings found and auto-computation failed. "
+    "Run coderadar_compute_embeddings first, or "
+    "coderadar_reindex with_embeddings=True."
+)
+
+
+def compute_embeddings(metrics: dict) -> str:
+    return (
+        f"## Embeddings Complete\n\n"
+        f"- **Generated:** {metrics.get('generated', 0)}\n"
+        f"- **Cached (unchanged):** {metrics.get('cached', 0)}\n"
+        f"- **Total entities:** {metrics.get('total', 0)}\n"
+        f"- **Errors:** {metrics.get('errors', 0)}\n\n"
+        f"Semantic search (coderadar_search_similar) is now available."
+    )
+
+
+# ── Temporal ──────────────────────────────────────────────────────────────
+
+def as_of(result: dict) -> str:
+    timestamp = result["timestamp"]
+    if not result["names"]:
+        # Nothing is loaded at this point; as_of resolves per symbol.
+        return "\n".join([
+            f"## Snapshot at `{timestamp}`",
+            "",
+            (
+                "Pass `symbols` to look entities up as they were at this "
+                "timestamp — for example "
+                f'coderadar_as_of(timestamp="{timestamp}", symbols=["User"]).'
+            ),
+            "",
+            (
+                "Only symbol lookup is reconstructed from the ledger. "
+                "`coderadar_query` and `coderadar_search` always run against the "
+                "current index."
+            ),
+        ])
+    lines = [f"## Snapshot at `{timestamp}`", ""]
+    for name in result["names"]:
+        entity = result["entities"].get(name)
+        if entity:
+            lines.append(f"**{entity.get('name', name)}** ({entity.get('kind', '?')})")
+            lines.append(f"- File: `{entity.get('file_path', '?')}`")
+            sig = entity.get("signature")
+            if sig:
+                lines.append(f"- Signature: `{sig}`")
+        else:
+            lines.append(f"`{name}` — not found at {timestamp}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+# ── Edits ─────────────────────────────────────────────────────────────────
+
+def edit(outcome: dict, apply_hint: str = "call again with `dry_run=False`") -> str:
+    """A dry-run plan (ending with how to apply it) or an applied result."""
+    note = f"Note: {outcome['note']}\n\n" if outcome.get("note") else ""
+    plan = outcome["plan"]
+    if outcome["result"] is None:
+        return note + mutation_plan(plan) + f"\n**To apply:** {apply_hint}."
+    return note + mutation_applied(outcome["result"], plan.unverified_sites)
+
+
+def mutation_error(raw: str) -> str:
+    """Translate raw engine errors into LLM-actionable prose (F10 fix)."""
+    if "StaleIndex" in raw or "stale" in raw.lower():
+        return (
+            "## Mutation Rejected — Stale Index\n\n"
+            "The file changed on disk after it was indexed, so the planned "
+            "span no longer lines up. Nothing was written.\n\n"
+            "**Next step:** run `coderadar_update_file` on the file (or "
+            "re-analyze), then retry the mutation.\n\n"
+            f"<details>Raw error: `{raw[:300]}`</details>"
+        )
+    if "RejectedPolicy" in raw or "policy" in raw.lower():
+        return (
+            "## Mutation Rejected — Policy\n\n"
+            "The target path is outside the `[mutation] allow` list. "
+            "Nothing was written.\n\n"
+            "**Next step:** pick a target under an allowed root, or ask the "
+            "user to extend the allow list.\n\n"
+            f"<details>Raw error: `{raw[:300]}`</details>"
+        )
+    if "SpanOutOfBounds" in raw or "out of bounds" in raw.lower():
+        return (
+            "## Mutation Failed — Span Mismatch\n\n"
+            "The computed edit span fell outside the file — likely a stale "
+            "concept or an off-by-one in the planner. Nothing was written "
+            "(rollback confirmed).\n\n"
+            "**Next step:** update the file in the graph and retry; if it "
+            "persists, report it with the entity id.\n\n"
+            f"<details>Raw error: `{raw[:300]}`</details>"
+        )
+    if "ParseError" in raw or "syntax" in raw.lower():
+        return (
+            "## Mutation Failed — Syntax\n\n"
+            "The edited file did not re-parse, so the change was rolled "
+            "back. Nothing was written.\n\n"
+            f"<details>Raw error: `{raw[:300]}`</details>"
+        )
+    return f"Mutation failed: {raw}"
+
+
+def mutation_plan(plan: Any) -> str:
+    """A MutationPlan (dry run): id, affected files, diff, unverified sites."""
+    lines = [f"## Mutation Plan: `{plan.tool}` (DRY RUN)", ""]
+    lines.append(f"- **Plan ID:** `{plan.id}`")
+    lines.append(f"- **Affected files:** {len(plan.affected_files)}")
+
+    if plan.diff_preview:
+        lines.append("")
+        lines.append("### Diff Preview")
+        lines.append("```diff")
+        lines.extend(plan.diff_preview.split("\n")[:60])
+        if len(plan.diff_preview.split("\n")) > 60:
+            lines.append("...")
+        lines.append("```")
+
+    if plan.unverified_sites:
+        lines.append("")
+        lines.append(
+            f"⚠️ **WARNING: {len(plan.unverified_sites)} call site(s) could not be "
+            f"verified/rewritten. Manual review required.**"
+        )
+        for site in plan.unverified_sites[:10]:
+            if isinstance(site, dict):
+                where = f"{site.get('file', '?')}:{site.get('line', 0)}"
+                lines.append(
+                    f"- `{where}` — {site.get('reason', '')}"
+                    + (f" (`{site['snippet']}`)" if site.get("snippet") else "")
+                )
+            else:
+                lines.append(f"- `{site}`")
+
+    if plan.warnings:
+        lines.append("")
+        lines.append("### Warnings")
+        for w in plan.warnings:
+            lines.append(f"- ⚠ {w}")
+
+    return "\n".join(lines)
+
+
+def mutation_applied(result: Any, unverified_sites: list | None = None) -> str:
+    """A MutationResult — truthfully, whatever the outcome.
+
+    BUGS_QUIRKS #2: this used to print "## Mutation Applied" and "Graph has
+    been updated" even for rejections, while a separate status line said
+    RejectedPolicy and the file was untouched. The header, the state claims,
+    and the status now derive from one source: result.status.
+    """
+    status = str(getattr(result, "status", ""))
+    files_written = list(getattr(result, "files_written", []) or [])
+    applied = status == "Applied"
+
+    header = {
+        "Applied": "## Mutation Applied",
+        "RolledBack": "## Mutation Rolled Back",
+        "RejectedStale": "## Mutation Rejected — Stale",
+        "RejectedPolicy": "## Mutation Rejected — Policy",
+    }.get(status, f"## Mutation Result — {status or 'Unknown'}")
+
+    lines = [header, ""]
+    lines.append(f"- **Status:** {status}")
+    lines.append(f"- **File written:** {'yes' if files_written else 'no'}")
+    lines.append(
+        f"- **Graph updated:** {'yes' if applied else 'no — nothing changed'}"
+    )
+    if files_written:
+        lines.append(f"- **Files written:** {len(files_written)}")
+        for f in files_written:
+            lines.append(f"  - `{f}`")
+    if result.syntax_errors:
+        lines.append(f"- **Syntax errors:** {len(result.syntax_errors)}")
+        for e in result.syntax_errors[:5]:
+            if isinstance(e, dict):
+                where = f"{e.get('file', '?')}:{e.get('line', 0)}:{e.get('column', 0)}"
+                lines.append(f"  - `{where}` — {e.get('message', '')}")
+            else:
+                lines.append(f"  - {e}")
+    if getattr(result, "backup_path", None):
+        lines.append(f"- **Backup:** `{result.backup_path}`")
+    if not applied:
+        lines.append("")
+        if status == "RejectedStale":
+            lines.append(
+                "The file changed since planning — call the plan tool again to "
+                "re-read the current content, then apply the fresh plan."
+            )
+        else:
+            lines.append("No changes were kept. Address the reason above and re-plan.")
+    if unverified_sites:
+        lines.append("")
+        lines.append(
+            f"⚠️ **WARNING: {len(unverified_sites)} call site(s) could not be "
+            f"verified/rewritten. Manual review required.**"
+        )
+        for site in unverified_sites[:10]:
+            lines.append(f"- `{site}`")
+    return "\n".join(lines)
+
+
+# ── Index lifecycle ───────────────────────────────────────────────────────
+
+def reindex(result: dict) -> str:
+    stats = result["stats"]
+    lines = [
+        "## Reindex Complete",
+        "",
+        f"- **Files:** {stats.get('file_count', 0)}",
+        f"- **Modules:** {stats.get('modules', 0)}",
+        f"- **Classes:** {stats.get('classes', 0)}",
+        f"- **Functions:** {stats.get('functions', 0)}",
+        f"- **Call edges:** {stats.get('call_edges', 0)}",
+    ]
+    if "embeddings" in result:
+        lines.append("")
+        lines.append(f"- **Embeddings generated:** {result['embeddings'].get('generated', 0)}")
+        lines.append(f"- **Embeddings cached:** {result['embeddings'].get('cached', 0)}")
+    elif "embeddings_error" in result:
+        lines.append("")
+        lines.append(f"- **Embeddings:** failed — {result['embeddings_error']}")
+    return "\n".join(lines)
+
+
+def update_file(file_path: str, report: Any, from_content: bool) -> str:
+    if getattr(report, "removed", False):
+        return (
+            f"## File Removed\n\n"
+            f"- **File:** `{file_path}`\n"
+            f"- Not on disk any more: {report.entities_removed} entit"
+            f"{'y' if report.entities_removed == 1 else 'ies'} dropped from the graph.\n"
+        )
+    if not report.fully_applied:
+        # tree-sitter recovers rather than failing, so the graph did take
+        # entities from the file — just not reliably the ones inside the
+        # region it had to recover from.
+        return (
+            f"## Update Incomplete\n\n"
+            f"- **File:** `{file_path}`\n"
+            f"- **Parse quality:** {report.parse_quality}\n"
+            f"- **Parse errors:** {report.parse_errors}\n"
+            f"\nThe file was indexed from a recovered parse — entities in "
+            f"the broken region may be missing or wrong. Fix the syntax "
+            f"and update again.\n"
+        )
+    return (
+        f"## File Updated\n\n"
+        f"- **File:** `{file_path}`\n"
+        f"- Graph refreshed from {'provided content' if from_content else 'disk'}.\n"
+    )
+
+
+def status(result: dict) -> str:
+    lines = [f"## Project: `{result['root']}`", ""]
+    config = result["config"]
+    lines.append(f"- **Config:** `{config}`" if config else "- **Config:** none")
+    store = result["store"]
+    if store:
+        fresh = result.get("store_fresh")
+        state = "" if fresh is None else (" (fresh)" if fresh else
+                                          " (older than some source files)")
+        lines.append(f"- **Store:** `{store}`{state}")
+    else:
+        lines.append("- **Store:** none — run `coderadar init` to create one")
+    stats = result.get("stats")
+    if not result["loaded"] or stats is None:
+        lines.append("- **Index:** not loaded")
+        return "\n".join(lines)
+    age = result.get("age_seconds")
+    when = "" if age is None else (f", synced {age / 60:.0f} min ago" if age >= 60
+                                   else ", synced just now")
+    lines.append(f"- **Index:** loaded{when}")
+    lines.append("")
+    for key in ("file_count", "modules", "classes", "functions", "imports",
+                "constants", "call_edges"):
+        if key in stats:
+            lines.append(f"- {key.replace('_', ' ')}: {stats[key]}")
     return "\n".join(lines)

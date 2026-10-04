@@ -50,7 +50,7 @@ The forward sides are equally empty:
 - `resolve_calls_scoped` (`graph.rs:847`) resolves **call** edges only —
   which is exactly why the two call indexes have data and the others don't.
 
-**Consequence:** `codegraph_traverse` with `edge_kinds=["imports"]` /
+**Consequence:** `coderadar_traverse` with `edge_kinds=["imports"]` /
 `["inherits"]` / `["overrides"]` returns empty today **not** because of the
 edge-filter bug fixed in v0.6.4 Bug #2, but because there is no index data
 behind those kinds. The v0.6.4 `['imports'] → 0` result was

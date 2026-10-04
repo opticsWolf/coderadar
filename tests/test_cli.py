@@ -89,13 +89,13 @@ class TestOneCommandPerName:
 
 
 class TestCommandsThatUsedToAnswerNothing:
-    def test_rebuild_actually_indexes(self, run):
-        result = run("rebuild", ".")
+    def test_reindex_actually_indexes(self, run):
+        result = run("reindex", "--full")
 
         assert result.exit_code == 0, result.output
         # It used to print "Rebuilding..." and return.
-        assert "function(s)" in result.output
-        assert "0 function(s)" not in result.output
+        assert "Functions:" in result.output
+        assert "Functions:** 0" not in result.output
 
     def test_status_reports_the_project_not_a_slogan(self, run):
         result = run("status")

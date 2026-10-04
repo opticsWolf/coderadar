@@ -161,7 +161,7 @@ class TestWhatWeDoWithTheAnswer:
 
 
 class TestExplicitChoice:
-    """A codegraph_set_project call outranks everything, forever.
+    """A coderadar_set_project call outranks everything, forever.
 
     The lazy retry exists because startup's guess can be wrong. Once the
     agent has named the project itself there is nothing left to ask about —
@@ -297,6 +297,6 @@ class TestGuidance:
             _idle_index()))
         message = server_mod._no_index_message()
 
-        assert "codegraph_reindex" in message
+        assert "coderadar_reindex" in message
         # A confirmed root is not something to send the user off to change.
         assert "restart the server" not in message

@@ -38,7 +38,7 @@ def test_smells_description_lists_every_rule():
     rule_ids = set()
     for rs in (ROOT / "core_indexer/src/smells/rules").glob("*.rs"):
         rule_ids.update(re.findall(r'fn id\(&self\)[^{]*\{\s*"([a-z-]+)"', rs.read_text(encoding="utf-8")))
-    desc = _tools()["codegraph_get_smells"].description
+    desc = _tools()["coderadar_get_smells"].description
     assert rule_ids and all(r in desc for r in rule_ids), rule_ids - {r for r in rule_ids if r in desc}
 
 
@@ -46,7 +46,7 @@ def test_edge_kinds_match_the_engine():
     lib = (ROOT / "core_indexer/src/lib.rs").read_text(encoding="utf-8")
     kinds = set(re.search(r"ALL_EDGE_KINDS: \[&str; \d+\] = \[([^\]]+)\]", lib).group(1).replace('"', "").replace(" ", "").split(","))
     cli_help = CliRunner().invoke(main, ["traverse", "--help"]).output
-    mcp_desc = _tools()["codegraph_traverse"].description
+    mcp_desc = _tools()["coderadar_traverse"].description
     for text in (cli_help, mcp_desc):
         for kind in kinds:
             assert kind in text

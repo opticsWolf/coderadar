@@ -203,7 +203,7 @@ class TestFullPipeline:
 
         search_entities only scanned functions, classes and modules, so the
         three further kinds compute_embeddings asks for were never embedded
-        and codegraph_search_similar could never surface them.
+        and coderadar_search_similar could never surface them.
         """
         results = search_entities("", 50, kind="import")
         assert results, "the e2e project imports something"

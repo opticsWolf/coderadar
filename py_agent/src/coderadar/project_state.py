@@ -2,7 +2,7 @@
 
 MCP clients launch the server from wherever they happen to be — often the
 client's install directory, not the project — and every session re-runs the
-path ladder from scratch. The agent that called `codegraph_set_project` in
+path ladder from scratch. The agent that called `coderadar_set_project` in
 last session has already answered "which project does this launch directory
 mean"; this module remembers that answer, keyed by the *launch* cwd (the
 directory the process started in, before any chdir), so the next launch from

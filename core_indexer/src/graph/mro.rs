@@ -120,7 +120,7 @@ impl CodeGraph {
     // ── Phase D: Inheritance / Import / Override back-fill ─────────────────
     //
     // These three passes populate the reverse/forward indexes that the
-    // Rust `traverse` binding (and the MCP `codegraph_traverse` tool) read:
+    // Rust `traverse` binding (and the MCP `coderadar_traverse` tool) read:
     //   - `resolved_bases`  (forward `extends`) + `subclasses` (reverse)
     //   - `Import.resolution` (forward `imports`)            + `importers` (reverse)
     //   - `overrides_base`   (forward `overrides`)            + `overridden_by` (reverse)

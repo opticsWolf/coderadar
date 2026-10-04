@@ -158,12 +158,12 @@ class TestEntryPointRules:
 
 
             @requires_index
-            def codegraph_node():
+            def coderadar_node():
                 return 1
 
 
             @mcp.tool(description="search")
-            def codegraph_search():
+            def coderadar_search():
                 return 2
 
 
@@ -174,8 +174,8 @@ class TestEntryPointRules:
         )
         findings = _findings(tmp_path)
         assert "pkg/srv.py::requires_index" not in findings
-        assert "pkg/srv.py::codegraph_node" not in findings
-        assert "pkg/srv.py::codegraph_search" not in findings
+        assert "pkg/srv.py::coderadar_node" not in findings
+        assert "pkg/srv.py::coderadar_search" not in findings
         # A plain attribute-reference decorator registers nothing.
         assert "pkg/srv.py::_memoized" in findings
 

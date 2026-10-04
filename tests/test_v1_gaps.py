@@ -200,14 +200,14 @@ def test_unverified_sites_warning():
     """Plan 2.4 — mutation renderers surface unverified_sites loudly."""
     from types import SimpleNamespace
 
-    from coderadar.mcp.server import _format_mutation_applied, _format_mutation_plan
+    from coderadar import render
 
     result = SimpleNamespace(
         status="Applied", files_written=["a.py"], syntax_errors=[], backup_path=None,
     )
 
     # apply path: unverified sites → loud warning
-    out = _format_mutation_applied(result, unverified_sites=[{"line": 3}, {"line": 7}])
+    out = render.mutation_applied(result, unverified_sites=[{"line": 3}, {"line": 7}])
     assert "⚠️ **WARNING: 2 call site(s)" in out, out
 
     # dry-run path: unverified sites → loud warning
@@ -215,11 +215,11 @@ def test_unverified_sites_warning():
         tool="update_signature", id="p1", affected_files=["a.py"],
         diff_preview="", unverified_sites=[{"line": 5}], warnings=[],
     )
-    out2 = _format_mutation_plan(plan)
+    out2 = render.mutation_plan(plan)
     assert "⚠️ **WARNING: 1 call site(s)" in out2, out2
 
     # no sites → no warning
-    out3 = _format_mutation_applied(result, unverified_sites=[])
+    out3 = render.mutation_applied(result, unverified_sites=[])
     assert "WARNING" not in out3, out3
 
 

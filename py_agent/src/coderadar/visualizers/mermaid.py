@@ -93,7 +93,7 @@ def _mermaid_class_hierarchy(args: list[str],
 
     raise NothingToVisualize(
         "No classes in the index. Run `coderadar init` or "
-        "`coderadar analyze` in the project first."
+        "`coderadar reindex` in the project first."
     )
 
 
@@ -128,7 +128,7 @@ def _mermaid_call_graph(args: list[str],
 
     raise NothingToVisualize(
         "No call edges found for that entity. Either the index is empty "
-        "(run `coderadar init` or `coderadar analyze` in the project "
+        "(run `coderadar init` or `coderadar reindex` in the project "
         "first) or nothing indexed calls it and it calls nothing indexed."
     )
 
@@ -142,13 +142,13 @@ def _gather_call_edges(graph, entity_id: str, depth: int,
     visited.add(entity_id)
 
     if direction in ("out", "both"):
-        for callee in graph.callees_of(entity_id):
+        for callee in graph.callees(entity_id):
             edges.append((entity_id, callee.get("id", callee.get("name", "?")), 1.0))
             _gather_call_edges(graph, callee.get("id", ""), depth - 1,
                               direction, visited, edges)
 
     if direction in ("in", "both"):
-        for caller in graph.callers_of(entity_id):
+        for caller in graph.callers(entity_id):
             edges.append((caller.get("id", caller.get("name", "?")), entity_id, 1.0))
             _gather_call_edges(graph, caller.get("id", ""), depth - 1,
                               direction, visited, edges)
@@ -196,7 +196,7 @@ def _mermaid_dependency_graph(args: list[str],
 
     raise NothingToVisualize(
         "No module dependencies in the index. Run `coderadar init` or "
-        "`coderadar analyze` in the project first."
+        "`coderadar reindex` in the project first."
     )
 
 
