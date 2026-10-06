@@ -839,6 +839,16 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
         raise EngineError(str(e)) from None
     names = parse_names(query, symbols)
+    if not names:
+        # Guidance path (render.as_of's empty-names branch): no symbols to
+        # place in history, so no fold — and no store required. `predates`
+        # is vacuously False: nothing was looked up.
+        return {
+            "timestamp": normalized,
+            "names": [],
+            "entities": {},
+            "predates_recorded_history": False,
+        }
     try:
         batch = _lookup_at(names, normalized)
     except ValueError as e:  # already normalized; defensive
