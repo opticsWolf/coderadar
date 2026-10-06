@@ -232,6 +232,60 @@ class TestRecoveryArgsMatch:
         assert "model_name" in props
 
 
+class TestSetProjectOpenProjectParity:
+    """MCP `set_project` and `ops.open_project` agree (plan §1.x).
+
+    The tool words the opener's dict; the confirm gate, the marker story
+    and the already-serving shortcut cannot drift between them.
+    """
+
+    @pytest.fixture
+    def two_projects(self, tmp_path, monkeypatch):
+        for name in ("proj_a", "proj_b"):
+            root = tmp_path / name
+            (root / ".coderadar").mkdir(parents=True)
+            (root / "pkg").mkdir()
+            (root / "pkg" / "mod.py").write_text(
+                SOURCE, encoding="utf-8")
+        monkeypatch.chdir(tmp_path / "proj_a")
+        coderadar.analyze(".")
+        return tmp_path / "proj_a", tmp_path / "proj_b"
+
+    def test_switch_words_the_opener(self, two_projects):
+        from coderadar.mcp import server as _server
+
+        _a, b = two_projects
+        text = _server._set_project(str(b))
+        opened = ops.open_project(str(b), ensure=False)
+        assert "Switched to" in text
+        assert opened["root"] in text
+        assert opened["confirmed"] is True
+        if opened["marker"]:
+            assert opened["marker"] in text
+
+    def test_already_serving_shortcuts_both(self, two_projects):
+        from coderadar.mcp import server as _server
+
+        a, _b = two_projects
+        opened = ops.open_project(str(a), ensure=False)
+        assert opened["source"] == "already"
+        assert f"Already serving `{opened['root']}`" in _server._set_project(
+            str(a))
+
+    def test_unmarked_needs_confirm_both(self, tmp_path, monkeypatch):
+        from coderadar.mcp import server as _server
+
+        bare = tmp_path / "bare"
+        bare.mkdir()
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(ops.InvalidRequest):
+            ops.open_project(str(bare), ensure=False)
+        text = _server._set_project(str(bare))
+        assert "confirm=true" in text
+        opened = ops.open_project(str(bare), confirm=True, ensure=False)
+        assert opened["confirmed"] is False
+
+
 class TestCliVocabulary:
     """CLI text never names `coderadar_*` tools (MCP vocabulary leaks)."""
 

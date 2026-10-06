@@ -1100,65 +1100,53 @@ def _set_project(project_path: str, confirm: bool = False) -> str:
     project it wants must not be second-guessed by whatever the host declares
     as its workspace.
     """
-    from coderadar.config import activate_config
     from coderadar.mcp import lazy, startup
-    from coderadar.mcp.roots import adopt_project_root, resolve_selector
+    from coderadar.mcp.roots import resolve_selector as _resolve
 
-    selected = resolve_selector(project_path)
-    if selected is None:
-        return (
-            f"`{project_path}` names no readable directory, so no project "
-            "can be selected from it. Pass a directory (or any file inside "
-            "one) and retry."
-        )
-
-    if not selected.confirmed and not confirm:
-        return (
-            f"No `.coderadar/` or `.coderadar.toml` was found at or above "
-            f"`{selected.path}`, so nothing confirms that directory as a "
-            "project root.\n\n"
-            "Run `coderadar init` there if it should be one, or re-call "
-            "with confirm=true to serve it anyway (unmarked roots are "
-            "served as bare guesses, same as at startup)."
-        )
+    # Shared opener (step-4 surface): resolve, confirm-gate, config,
+    # chdir. `ensure=False` — the server owns its background index handle
+    # and restarts it below instead of blocking on a synchronous build.
+    try:
+        opened = ops.open_project(project_path, confirm=confirm, ensure=False)
+    except ops.InvalidRequest as e:
+        return str(e)
+    except ops.OpError as e:
+        return _op_message(e)
 
     # Already there? Say so rather than silently re-indexing the same tree.
-    served_now = _served_root()
-    if os.path.normcase(str(selected.path)) == os.path.normcase(str(served_now)):
+    if opened["source"] == "already":
         return (
-            f"Already serving `{selected.path}` — nothing to switch. Use "
+            f"Already serving `{opened['root']}` — nothing to switch. Use "
             "`coderadar_reindex` to refresh the index."
         )
 
-    lines = [f"Switched to `{selected.path}`"]
-    if selected.confirmed:
-        lines[0] += f" (marker {selected.marker.name})"
+    lines = [f"Switched to `{opened['root']}`"]
+    if opened["confirmed"]:
+        lines[0] += f" (marker {opened['marker']})"
     else:
         lines[0] += " — unconfirmed: no marker found, serving on your say-so"
 
-    # 1. Config from the NEW project, before anything reads it.
-    try:
-        activated = activate_config(selected.path)
-        if activated.ignored:
-            lines.append(
-                f"Config: {len(activated.ignored)} setting(s) with no "
-                f"consumer were ignored ({', '.join(activated.ignored[:3])}" +
-                (", ..." if len(activated.ignored) > 3 else "") + ")."
-            )
-    except Exception as exc:  # noqa: BLE001 — a broken config must not strand the server on the old project
+    # 1. Config from the NEW project (applied inside `open_project`,
+    # before anything reads it). A broken file warned there and runs on
+    # defaults — reported here, never stranding the server.
+    if opened["config_ignored"]:
+        ignored = opened["config_ignored"]
         lines.append(
-            f"WARNING: config not applied ({type(exc).__name__}: {exc}) — "
+            f"Config: {len(ignored)} setting(s) with no "
+            f"consumer were ignored ({', '.join(ignored[:3])}" +
+            (", ..." if len(ignored) > 3 else "") + ")."
+        )
+    if opened["config_error"] is not None:
+        lines.append(
+            f"WARNING: config not applied ({opened['config_error']}) — "
             "this project runs on defaults, including default mutation "
             "policy."
         )
         structlog.get_logger(__name__).warning(
-            "mcp.set_project.config_failed", root=str(selected.path),
-            error=str(exc))
+            "mcp.set_project.config_failed", root=str(opened["root"]),
+            error=str(opened["config_error"]))
 
-    # 2. Move the process: entity ids and cwd-relative helpers follow.
-    adopt_project_root(selected)
-
-    # 3. Re-index in the background; ensure_ready makes callers wait or
+    # 2. Re-index in the background; ensure_ready makes callers wait or
     #    report progress, never answer from the old graph.
     index = startup.current()
     if index is not None:
@@ -1170,9 +1158,13 @@ def _set_project(project_path: str, confirm: bool = False) -> str:
                      "`coderadar_reindex` to build the new graph.")
 
     # 4. The explicit choice outranks the client's workspace forever after.
+    # `open_project` returns plain data, but the retry records the
+    # resolution — re-resolve the (now certain) root for its handle.
     retry = lazy.current()
     if retry is not None:
-        retry.mark_user_chosen(selected)
+        reselected = _resolve(opened["root"])
+        if reselected is not None:
+            retry.mark_user_chosen(reselected)
 
     # 5. Remember this launch directory for the next session (P2-3). The
     #    client starts us from a fixed place; the agent has now declared
@@ -1180,11 +1172,11 @@ def _set_project(project_path: str, confirm: bool = False) -> str:
     #    resumes here. Best-effort: recording can never fail the switch.
     if _LAUNCH_CWD is not None:
         from coderadar.project_state import record_project
-        record_project(_LAUNCH_CWD, selected.path)
+        record_project(_LAUNCH_CWD, opened["root"])
 
     structlog.get_logger(__name__).info(
-        "mcp.project.switched", to=str(selected.path),
-        confirmed=selected.confirmed)
+        "mcp.project.switched", to=str(opened["root"]),
+        confirmed=opened["confirmed"])
     return "\n".join(lines)
 
 

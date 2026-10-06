@@ -1025,6 +1025,86 @@ def store_repair(db_path: str | Path | None = None, delete: bool = False) -> dic
     return out
 
 
+def open_project(path: str | Path, confirm: bool = False,
+                 ensure: bool = True) -> dict:
+    """Resolve, enter and ensure a project — the shared project opener.
+
+    Behind MCP `coderadar_set_project` (with `ensure=False`: the server
+    owns its background index handle and restarts it) and CLI `-C`
+    (via `_enter_project`, `confirm=True`, `ensure=False`: commands ensure
+    their own graph, and an unmarked cwd is served as today). Direct
+    callers get the full sequence: walk to the `.coderadar` marker, chdir,
+    activate the TOML, cold-start-or-index.
+
+    Returns `{root, marker, confirmed, source, config_ignored,
+    config_error, stats}` where `source` is the ladder rung that chose the
+    root (`"already"` when this root is already served — no rebuild),
+    and `stats` is the post-ensure `graph_stats` (or `{}` when
+    `ensure=False`). Raises `InvalidRequest` for an unusable path or an
+    unmarked root without `confirm`; a broken TOML never fails the open —
+    it is reported in `config_error` and defaults stand (the MCP
+    warn-and-continue rule).
+    """
+    from coderadar.mcp.roots import adopt_project_root, resolve_selector
+
+    selected = resolve_selector(str(path))
+    if selected is None:
+        raise InvalidRequest(
+            f"`{path}` names no readable directory, so no project can be "
+            "selected from it. Pass a directory (or any file inside one) "
+            "and retry.")
+    if not selected.confirmed and not confirm:
+        raise InvalidRequest(
+            "No `.coderadar/` or `.coderadar.toml` was found at or above "
+            f"`{selected.path}`, so nothing confirms that directory as a "
+            "project root. Run `coderadar init` there if it should be one, "
+            "or re-call with confirm=true to serve it anyway.")
+    root = str(selected.path)
+    try:
+        from coderadar._core import graph_stats as _stats
+        indexed = (_stats().get("indexed_root") or "")
+        indexed = indexed.removeprefix("\\\\?\\")
+        if indexed and Path(indexed).resolve() == Path(root).resolve():
+            return {
+                "root": root,
+                "marker": selected.marker.name if selected.marker else None,
+                "confirmed": selected.confirmed,
+                "source": "already",
+                "config_ignored": [],
+                "config_error": None,
+                "stats": dict(_stats()),
+            }
+    except Exception:  # noqa: BLE001 - no usable index: open normally
+        pass
+    ignored: list[str] = []
+    config_error: str | None = None
+    try:
+        from coderadar.config import activate_config as _activate_cfg
+        activated = _activate_cfg(Path(root))
+        ignored = list(activated.ignored)
+    except Exception as e:  # noqa: BLE001 - broken config: defaults stand
+        config_error = f"{type(e).__name__}: {e}"
+    adopt_project_root(selected)
+    stats: dict[str, Any] = {}
+    if ensure:
+        try:
+            from coderadar import coldstart as _coldstart
+            from coderadar._core import graph_stats as _stats2
+            _coldstart.build_graph(root)
+            stats = dict(_stats2())
+        except Exception as e:  # noqa: BLE001 - ensure failure is honest
+            raise EngineError(f"project opens but the index will not build: {e}") from e
+    return {
+        "root": root,
+        "marker": selected.marker.name if selected.marker else None,
+        "confirmed": selected.confirmed,
+        "source": selected.source,
+        "config_ignored": ignored,
+        "config_error": config_error,
+        "stats": stats,
+    }
+
+
 def find_scaffolding(include_secrets: bool = False, max_findings: int = 100) -> list[dict]:
     """Scaffolding debt: comment markers, placeholder bodies, temp-file
     names and (opt-in, redacted) secrets.

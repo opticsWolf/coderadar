@@ -100,6 +100,11 @@ coderadar visualize call-graph --format graphviz -o calls.dot
 coderadar mcp serve
 ```
 
+> **0.13 removal notice.** The old CLI spellings (`analyze`, `rebuild`,
+> `update`, `stats`, `blame`, `git-clean`, `git-diff`) still work but are
+> hidden; they are removed in 0.13. Use `reindex`, `update-file`, `status`,
+> and `git blame` / `git is-clean` / `git diff`.
+
 ## Python API
 
 ```python
@@ -182,6 +187,10 @@ coderadar mcp serve --path .   # or say where it is
   }
 }
 ```
+
+The server key is yours: `"cr"` works identically and keeps client
+configs short. Tool names keep the full `coderadar_` prefix either way —
+the key names the server, the prefix names the tools.
 
 MCP clients launch servers from wherever they happen to be, so the server does
 not assume the cwd is the project:

@@ -394,16 +394,25 @@ def _enter_project(*paths: str | None, project: str | None = None,
     project. The ops resolve graph paths against the cwd, exactly as the
     MCP server does after its own root ladder.
     """
-    from .markers import find_marker
-
     absolute = [Path(p).resolve() if p else None for p in paths]
     if project is None:
         ctx = click.get_current_context(silent=True)
         project = ctx.meta.get(_PROJECT_KEY) if ctx is not None else None
     start = Path(project).resolve() if project else Path.cwd().resolve()
-    marker = find_marker(start) if walk else None
-    root = marker.parent if marker is not None else start
-    os.chdir(root)
+    if walk:
+        # Shared opener (step-4 surface): marker walk, chdir, TOML
+        # activation. `confirm=True` preserves the old rule (an unmarked
+        # start dir is served, not gated); `ensure=False` because commands
+        # ensure their own graph via `_ensure_graph`.
+        from . import ops
+        try:
+            opened = ops.open_project(str(start), confirm=True, ensure=False)
+        except ops.OpError as e:
+            _fail(e)
+        root = Path(opened["root"])
+    else:
+        root = start
+        os.chdir(root)
     out: list[str | None] = []
     for p in absolute:
         if p is None:
