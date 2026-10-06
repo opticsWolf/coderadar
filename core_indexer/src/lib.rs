@@ -56,6 +56,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(unresolved_targets, m)?)?;
     m.add_function(wrap_pyfunction!(call_sites, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entity, m)?)?;
+    m.add_function(wrap_pyfunction!(normalize_timestamp, m)?)?;
+    m.add_function(wrap_pyfunction!(lookup_entity_at, m)?)?;
+    m.add_function(wrap_pyfunction!(lookup_entities_at, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
     m.add_function(wrap_pyfunction!(index_edge_stats, m)?)?;
@@ -2169,6 +2172,116 @@ fn lookup_entity(py: Python<'_>, entity_id: &str) -> PyResult<Option<PyObject>> 
     })
 }
 
+/// Normalize `ts` to Macrame canonical UTC (`YYYY-MM-DDTHH:MM:SS.ffffffZ`;
+/// legacy second-precision is widened). Garbage — `"now"`, offsets,
+/// millisecond precision, naive stamps — is a `ValueError`, which the Python
+/// layer maps to `InvalidRequest`. One source of truth for every temporal
+/// entry point (`CodeGraph.as_of`, `ops.as_of`, MCP, CLI).
+#[pyfunction]
+fn normalize_timestamp(timestamp: &str) -> PyResult<String> {
+    macrame::util::timestamp::normalize(timestamp).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "invalid timestamp {timestamp:?}: expected Macrame canonical UTC \
+             (YYYY-MM-DDTHH:MM:SS.ffffffZ); {e:?}"
+        ))
+    })
+}
+
+/// Shared fold for the temporal lookups: one `reconstruct(ts)` + one
+/// throwaway projection, then per-id extraction in live-`lookup_entity`
+/// shape (including the dotted-name fallback). Returns the per-id
+/// `entity | None` list plus `predates_recorded_history`: `None` means
+/// "not in the graph at T" (never asserted, not yet asserted, or already
+/// retired then) — a data answer, distinct from the errors below.
+fn entities_at(
+    py: Python<'_>,
+    entity_ids: &[String],
+    timestamp: &str,
+) -> PyResult<(Vec<Option<PyObject>>, bool)> {
+    use crate::graph::cold_start::projection_from_state;
+    // Normalize first so a garbage ts is deterministically a ValueError
+    // (→ `InvalidRequest`), not whatever the fold would report.
+    let ts = normalize_timestamp(timestamp)?;
+    // Snapshot the store handle under the read lock, then release BEFORE
+    // the DB fold — a slow reconstruct must not block a writer.
+    let store = {
+        let guard = GLOBAL_GRAPH.read();
+        let graph = guard.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "No graph loaded — run coderadar init first",
+            )
+        })?;
+        graph.store.clone().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "No persistent store — temporal lookup needs a .coderadar store",
+            )
+        })?
+    };
+    let state = py
+        .allow_threads(|| store.reconstruct(&ts))
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "reconstruct({ts:?}) failed: {e:?}"
+            ))
+        })?;
+    let predates = state.predates_recorded_history;
+    let (projection, _stats) = projection_from_state(&state).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("projection at {ts:?} failed: {e}"))
+    })?;
+    let entities = entity_ids
+        .iter()
+        .map(|id| {
+            // R2-16: existence checks accept any id spelling too.
+            let canon = canonical_lookup_id(id);
+            if let Some(found) = entity_ref_to_dict(py, &canon, &projection) {
+                return Some(found);
+            }
+            match resolve_qualified_name(&projection, &canon) {
+                Some(resolved) => entity_ref_to_dict(py, &resolved, &projection),
+                None => None,
+            }
+        })
+        .collect();
+    Ok((entities, predates))
+}
+
+/// Entity lookup as of a past timestamp — the §0.1(a) honest-`Snapshot`
+/// primitive. Returns `{"entity": dict | None, "predates_recorded_history":
+/// bool}`. A garbage timestamp is a `ValueError`; a missing graph or store
+/// is a `RuntimeError`.
+#[pyfunction]
+#[pyo3(signature = (entity_id, timestamp))]
+fn lookup_entity_at(py: Python<'_>, entity_id: &str, timestamp: &str) -> PyResult<PyObject> {
+    let ids = vec![entity_id.to_string()];
+    let (mut entities, predates) = entities_at(py, &ids, timestamp)?;
+    let out = PyDict::new(py);
+    out.set_item("entity", entities.pop().flatten())?;
+    out.set_item("predates_recorded_history", predates)?;
+    Ok(out.into())
+}
+
+/// Batched `lookup_entity_at`: one fold serves every id. Returns
+/// `{"entities": {id: dict | None}, "predates_recorded_history": bool}`.
+/// `ops.as_of` funnels N symbols through here so a 20-symbol call costs
+/// one reconstruct, not twenty.
+#[pyfunction]
+#[pyo3(signature = (entity_ids, timestamp))]
+fn lookup_entities_at(
+    py: Python<'_>,
+    entity_ids: Vec<String>,
+    timestamp: &str,
+) -> PyResult<PyObject> {
+    let (entities, predates) = entities_at(py, &entity_ids, timestamp)?;
+    let by_id = PyDict::new(py);
+    for (id, entity) in entity_ids.iter().zip(entities) {
+        by_id.set_item(id, entity)?;
+    }
+    let out = PyDict::new(py);
+    out.set_item("entities", by_id)?;
+    out.set_item("predates_recorded_history", predates)?;
+    Ok(out.into())
+}
+
 /// Search tokens from a free-text query: whitespace-split, surrounding
 /// punctuation stripped, lowercased, deduped (first occurrence wins).
 ///
@@ -2584,13 +2697,13 @@ fn traverse(
             .collect();
         let start_owned = start_id.to_string();
         let ts_owned = ts.to_string();
-        // Snapshot graph + store under the read lock, then release the lock
-        // BEFORE the DB traversal — a slow `load_subgraph_with` must not
-        // block a writer (`reindex`/`update_file`). Mirrors the 2.6 fix.
-        let (snap, store) = {
+        // Snapshot the store under the read lock, then release the lock
+        // BEFORE the DB work — a slow fold must not block a writer
+        // (`reindex`/`update_file`). Mirrors the 2.6 fix.
+        let store = {
             let guard = GLOBAL_GRAPH.read();
             match guard.as_ref() {
-                Some(g) => (g.snapshot(), g.store.clone()),
+                Some(g) => g.store.clone(),
                 None => {
                     return Err(pyo3::exceptions::PyRuntimeError::new_err(
                         "No graph loaded — run coderadar init first",
@@ -2606,21 +2719,40 @@ fn traverse(
                 ));
             }
         };
-        let sub = py
-            .allow_threads({
-                let s = start_owned.clone();
-                let e = edge_types.clone();
-                let t = ts_owned.clone();
-                move || store.traverse_at(&s, max_depth, &e, &t)
-            })
+        // §0.1(a): ONE fold serves topology AND bodies. `reconstruct(ts)`
+        // is the recorded-time truth; the BFS below runs over the state's
+        // edges (valid interval checked at T) and nodes materialize from
+        // the at-T projection — never the live graph.
+        //
+        // Two earlier shapes lied here, both fixed: (1) reachability came
+        // from Macrame's walk under CURRENT belief while bodies came from
+        // the live projection (a rename walked at its old timestamp wore
+        // its CURRENT name); (2) `as_of_recorded(ts)` on the builder still
+        // missed a retired edge at its own `max(recorded_at)` on the
+        // rename fixture, while the equivalent fold SQL by hand found it.
+        // Whatever the walk's blind spot is, the state fold is the
+        // primitive the plan blesses ("entity lookup via reconstruct(T)"),
+        // so topology reads it too.
+        use crate::graph::cold_start::projection_from_state;
+        let ts_for_state = ts_owned.clone();
+        let state = py
+            .allow_threads(move || store.reconstruct(&ts_for_state))
             .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!("as_of traversal failed: {e:?}"))
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "as_of state at {ts_owned:?} failed: {e:?}"
+                ))
             })?;
-        let reached = subgraph_bfs(&sub, &start_owned, max_depth);
+        let (projection, _stats) = projection_from_state(&state).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "as_of projection at {ts_owned:?} failed: {e}"
+            ))
+        })?;
+        let reached =
+            bfs_over_state(&state, &start_owned, max_depth, &edge_types, &ts_owned);
         let mut results = Vec::with_capacity(reached.len());
         for (id, depth, ek) in reached {
             // R2-1: materialize non-concept nodes instead of dropping them.
-            let d = entity_ref_to_dict(py, &id, &snap)
+            let d = entity_ref_to_dict(py, &id, &projection)
                 .unwrap_or_else(|| unresolved_ref_to_dict(py, &id));
             if let Ok(dd) = d.downcast_bound::<pyo3::types::PyDict>(py) {
                 let _ = dd.set_item("depth", depth);
@@ -2665,9 +2797,53 @@ fn traverse(
     })
 }
 
+/// Downstream BFS over a reconstructed state's edges — the §0.1(a) temporal
+/// topology (the `traverse(as_of=)` leg documents why Macrame's walk is not
+/// read here: current-belief topology missed a retired edge at its own
+/// timestamp on the rename fixture).
+///
+/// Same contract as `subgraph_bfs`: the start id at depth 0, each reached
+/// neighbor tagged with BFS depth + the edge kind that first reached it.
+/// `edge_types` holds UPPER-CASE kinds (`CALLS`…); empty means all kinds.
+/// An edge counts only while `valid_from <= ts < valid_to` — string order
+/// is chronological for canonical UTC, same predicate as the ledger SQL.
+fn bfs_over_state(
+    state: &macrame::temporal::MaterializedState,
+    start: &str,
+    max_depth: usize,
+    edge_types: &[String],
+    ts: &str,
+) -> Vec<(String, usize, String)> {
+    let mut visited: HashSet<String> = HashSet::new();
+    visited.insert(start.to_string());
+    let mut out = vec![(start.to_string(), 0usize, String::new())];
+    let mut queue = vec![(start.to_string(), 0usize)];
+    let mut head = 0usize;
+    while head < queue.len() {
+        let (cur, depth) = queue[head].clone();
+        head += 1;
+        if depth >= max_depth {
+            continue;
+        }
+        for e in state.edges.iter().filter(|e| {
+            e.source_id == cur
+                && (edge_types.is_empty()
+                    || edge_types.iter().any(|k| k == &e.edge_type))
+                && e.valid_from.as_str() <= ts
+                && ts < e.valid_to.as_str()
+        }) {
+            if visited.insert(e.target_id.clone()) {
+                out.push((e.target_id.clone(), depth + 1, e.edge_type.clone()));
+                queue.push((e.target_id.clone(), depth + 1));
+            }
+        }
+    }
+    out
+}
+
 /// BFS over a Macrame `Subgraph` to recover (node, depth, edge_type) tuples.
 /// `Subgraph` stores topology + edge types but not BFS depth, so depth is
-/// recomputed here (the `as_of` path uses this instead of the in-memory BFS).
+/// recomputed here (the live path uses this instead of the in-memory BFS).
 fn subgraph_bfs(
     sub: &macrame::graph::Subgraph,
     start: &str,
@@ -3428,8 +3604,11 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
                     "ledger reconstruct failed for {db}: {e:?}"
                 ))
             })?;
-            drop(store);
-
+            // §0.1(a) (DR-9): keep the store on the loaded graph. Dropping
+            // it here left `store: None`, which made EVERY temporal read —
+            // `_core.traverse(as_of=)` included — fail with "No persistent
+            // store" on exactly the cold-start path MCP/CLI always use.
+            // The analyze path already holds its store open; load matches it.
             let (mut projection, stats) =
                 projection_from_state(&state).map_err(pyo3::exceptions::PyValueError::new_err)?;
 
@@ -3437,7 +3616,7 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             // (resolved_calls already restored from v2 concepts) and
             // `persist_edges` (the ledger already is the truth).
             let config = active_config();
-            let graph = CodeGraph::new((*config).clone());
+            let graph = CodeGraph::new((*config).clone()).with_store(store);
             graph.resolve_imports(&mut projection);
             graph.populate_class_methods(&mut projection);
             graph.compute_all_mro(&mut projection);

@@ -721,7 +721,13 @@ impl CodeGraphStore {
         self.traverse_at(start_id, max_depth, &types, "now")
     }
 
-    /// Traverse the graph as it existed at `ts` (temporal read).
+    /// Traverse the graph from a source entity at `ts` (temporal read).
+    ///
+    /// Only the `"now"` live path uses this: temporal walks BFS over the
+    /// reconstructed state instead (see `bfs_over_state` — Macrame's walk
+    /// under current belief missed a retired edge at its own timestamp on
+    /// the rename fixture, and `as_of_recorded` on the builder did not fix
+    /// it; the state fold is the recorded-time primitive).
     pub fn traverse_at(
         &self,
         start_id: &str,
@@ -2524,6 +2530,42 @@ mod tests {
 
         assert_eq!((concepts, edges), (0, 0), "nothing left open to close");
         assert_eq!(live_concept_ids(&store).len(), 2);
+    }
+
+    /// §0.1(a) (DR-9): `reconstruct(T)` folds on recorded time, not valid
+    /// time. A retroactive correction — `valid_from` backdated, recorded now
+    /// — is invisible at any T before its recording. The honest-Snapshot
+    /// surface depends on this: `as_of(T)` answers "what was RECORDED by
+    /// T", and a pre-history T reports `predates_recorded_history` instead
+    /// of an error or a valid-time guess.
+    #[test]
+    fn reconstruct_is_recorded_time_not_valid_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bitemporal.db");
+        let store = CodeGraphStore::open(&path).unwrap();
+        let concept = macrame::ConceptUpsert::new("retro.py::module", "retro")
+            .content(r#"{"meta_version": 2, "kind": "module"}"#)
+            .valid_from("2000-01-01T00:00:00.000000Z".to_string())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[concept]).unwrap(), 1);
+        // The backdated write was recorded NOW, so a mid-past T sees
+        // nothing — and knows it predates the recorded history.
+        let mid = store
+            .reconstruct("2020-06-15T12:00:00.000000Z")
+            .unwrap();
+        assert!(
+            !mid.concepts.contains_key("retro.py::module"),
+            "recorded-now write must be invisible at a pre-recording T"
+        );
+        assert!(
+            mid.predates_recorded_history,
+            "a T before the first recorded write must say so distinctly"
+        );
+        // …while the present sees the backdated concept fine.
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let now = store.reconstruct(&now_iso8601()).unwrap();
+        assert!(now.concepts.contains_key("retro.py::module"));
     }
 
     /// §0.6 (DR-25): the 0.19 blob surface round-trips through a store

@@ -463,8 +463,20 @@ class CodeGraph:
         return ops.traverse(entity_id or "", direction, edge_kinds, max_depth)["results"]
 
     def as_of(self, timestamp: str) -> Snapshot:
-        """Return a point-in-time snapshot via Macrame's reconstruct(ts)."""
-        return Snapshot(self, timestamp)
+        """Return a point-in-time snapshot: entity reads fold the ledger at
+        recorded-time T (Macrame canonical UTC; anything else is
+        `ops.InvalidRequest`). Signature decision (plan §0.1a): `as_of` stays
+        — MCP/CLI/Python names are pinned by the parity test, and DR-17
+        rules out another rename round. Bytes-at-T is §0.1(b) work."""
+        from . import ops
+        try:
+            from coderadar._core import normalize_timestamp as _normalize_ts
+            normalized = _normalize_ts(timestamp or "")
+        except ImportError as e:
+            raise ops.EngineError(f"native extension unavailable: {e}") from e
+        except ValueError as e:
+            raise ops.InvalidRequest(str(e)) from None
+        return Snapshot(self, normalized)
 
     @_bound_to_loaded_project
     def find(self, entity_id: str) -> dict[str, Any] | None:
@@ -981,45 +993,141 @@ class CodeGraph:
 class Snapshot:
     """A point-in-time view of the graph via Macrame's bitemporal ledger.
 
+    Honest by construction (§0.1a, DR-9): the timestamp is normalized to
+    Macrame canonical UTC at :meth:`CodeGraph.as_of` time; :meth:`find`
+    folds the ledger at recorded-time T (``None`` = "not in the graph at
+    T"); downstream :meth:`traverse` walks the at-T edges with at-T node
+    bodies; every method WITHOUT a temporal path (`query`, `callers`,
+    upstream `traverse`, `explore`) raises `ops.TemporalUnsupported`
+    instead of answering from the present. `predates_recorded_history`
+    reports a T before the first recorded write distinctly (empty answer,
+    not an error). Bytes-at-T is §0.1(b) work — entities carry `ByteSpan`s,
+    not source bodies, until the blob read path lands.
+
     Usage:
-        snapshot = graph.as_of("2025-06-15T10:00:00Z")
-        for fn in snapshot.query("functions where name contains 'handle'"):
-            print(fn)
+        snapshot = graph.as_of("2025-06-15T10:00:00.000000Z")
+        entity = snapshot.find("src/models.py::User.save")  # None if absent at T
     """
 
     def __init__(self, graph: CodeGraph, timestamp: str):
         self._graph = graph
         self._timestamp = timestamp
+        self._predates: bool | None = None
 
     @property
     def timestamp(self) -> str:
         return self._timestamp
 
-    def query(self, query_str: str) -> Iterator[dict[str, Any]]:
-        """Execute a query against the reconstructed snapshot.
+    @property
+    def predates_recorded_history(self) -> bool:
+        """True when T sits before the first recorded write.
 
-        Same language and row shape as :meth:`CodeGraph.query` — see
-        ``docs/query-language.md``.
+        Computed lazily (one ledger fold, no entity extraction) and cached.
+        "True" with every `find` returning `None` is the honest pre-history
+        answer — not an error, not present-tense data.
         """
-        # Macrame reconstruct(ts) + ProjectedGraph from that point
-        return self._graph.query(query_str)
+        if self._predates is None:
+            from . import ops
+            try:
+                from coderadar._core import lookup_entities_at as _lookup_at
+                batch = _lookup_at([], self._timestamp)
+            except ValueError as e:  # normalized at construction; defensive
+                raise ops.InvalidRequest(str(e)) from None
+            except RuntimeError as e:
+                raise ops.EngineError(str(e)) from None
+            self._predates = bool(batch.get("predates_recorded_history", False))
+        return self._predates
+
+    def find(self, entity_id: str) -> dict[str, Any] | None:
+        """One entity as it was at T (live-`lookup_entity` dict shape).
+
+        `None` means "not in the graph at T" — never asserted, not yet
+        asserted, or already retired then. Updates the cached
+        :attr:`predates_recorded_history`.
+        """
+        from . import ops
+        try:
+            from coderadar._core import lookup_entity_at as _lookup_at
+            result = _lookup_at(entity_id, self._timestamp)
+        except ValueError as e:  # normalized at construction; defensive
+            raise ops.InvalidRequest(str(e)) from None
+        except RuntimeError as e:
+            raise ops.EngineError(str(e)) from None
+        self._predates = bool(result.get("predates_recorded_history", False))
+        return result.get("entity")
+
+    def query(self, query_str: str) -> Iterator[dict[str, Any]]:
+        """Refuses: query execution has no temporal path (raises)."""
+        from . import ops
+        raise ops.TemporalUnsupported(
+            "Snapshot.query has no temporal path: the query engine reads the "
+            "present-tense index. Use CodeGraph.query for present-tense search, "
+            "or Snapshot.find / Snapshot.traverse(direction='out') for as-of-T reads."
+        )
 
     def callers(self, entity_id: str) -> list[dict[str, Any]]:
-        """Callers at this point in time."""
-        return self._graph.callers(entity_id)
+        """Refuses: upstream walks have no temporal path (raises)."""
+        from . import ops
+        raise ops.TemporalUnsupported(
+            "Snapshot.callers has no temporal path: Macrame's temporal leg follows "
+            "outgoing edges only. Use CodeGraph.callers for present-tense callers, "
+            "or Snapshot.callees / Snapshot.traverse(direction='out') for as-of-T reads."
+        )
 
     def callees(self, entity_id: str) -> list[dict[str, Any]]:
-        """Callees at this point in time."""
-        return self._graph.callees(entity_id)
+        """Direct callees as of T: full entity dicts (live-`lookup` shape).
+
+        A depth-1 downstream walk at T, with reached ids re-read from the
+        at-T projection — never present-tense bodies. A start id unknown
+        at T walks nowhere and yields `[]`.
+        """
+        nodes = self.traverse(entity_id, direction="out",
+                              edge_kinds=["calls"], max_depth=1)
+        ids = [n["id"] for n in nodes
+               if isinstance(n, dict) and n.get("id") and n["id"] != entity_id
+               and n.get("depth", 1) == 1]
+        if not ids:
+            return []
+        from . import ops
+        try:
+            from coderadar._core import lookup_entities_at as _lookup_at
+            batch = _lookup_at(ids, self._timestamp)
+        except ValueError as e:
+            raise ops.InvalidRequest(str(e)) from None
+        except RuntimeError as e:
+            raise ops.EngineError(str(e)) from None
+        self._predates = bool(batch.get("predates_recorded_history", False))
+        found = batch.get("entities", {})
+        return [found[i] for i in ids if found.get(i)]
 
     def traverse(self, entity_id: str, direction: str = "both",
                  edge_kinds: list[str] | None = None,
                  max_depth: int = 3) -> list[dict[str, Any]]:
-        """Traverse from entity_id at this point in time."""
-        return self._graph.traverse(entity_id, direction, edge_kinds, max_depth)
+        """Downstream walk as of T (raw traversal node dicts: entity fields
+        read from the at-T projection, plus `depth` + `edge_type`).
+
+        `direction='out'`/`'downstream'` only — anything upstream raises
+        `ops.TemporalUnsupported` (Macrame's temporal leg follows outgoing
+        edges). Garbage directions raise `ops.InvalidRequest` via the engine.
+        """
+        from . import ops
+        if direction.strip().lower() in ("in", "upstream", "both"):
+            raise ops.TemporalUnsupported(
+                f"Snapshot.traverse(direction={direction!r}) has no temporal path: "
+                "Macrame's temporal leg follows outgoing edges only. Pass "
+                "direction='out', or use CodeGraph.traverse for present-tense walks."
+            )
+        try:
+            from coderadar._core import traverse as _traverse
+            return _traverse(entity_id, max_depth, edge_kinds or [],
+                             direction, self._timestamp)
+        except ValueError as e:
+            raise ops.InvalidRequest(str(e)) from None
+        except RuntimeError as e:
+            raise ops.EngineError(str(e)) from None
 
     def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Deprecated spelling of :meth:`callers`."""
+        """Deprecated spelling of :meth:`callers` (which refuses: raises)."""
         _deprecated("Snapshot.callers_of", "Snapshot.callers")
         return self.callers(entity_id)
 
@@ -1034,9 +1142,9 @@ class Snapshot:
         direction: Literal["in", "out", "both"] = "both",
         max_depth: int = 3,
     ) -> list[dict[str, Any]]:
-        """Deprecated call-graph walk; use :meth:`traverse`."""
+        """Deprecated call-graph walk (which refuses: raises)."""
         _deprecated("Snapshot.explore", "Snapshot.traverse")
-        return self._graph._walk(start_id, direction, max_depth)
+        return self.traverse(start_id, direction, None, max_depth)
 
 
 # ── Batch Context Manager ───────────────────────────────────────────────────

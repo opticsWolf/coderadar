@@ -103,6 +103,18 @@ class InvalidRequest(OpError):
     """The arguments cannot be answered (empty query, unknown kind, …)."""
 
 
+class TemporalUnsupported(InvalidRequest):
+    """A `Snapshot` method with no temporal path refused honestly (§0.1a).
+
+    A subclass of `InvalidRequest` so existing MCP/CLI error mapping keeps
+    working: the request is well-formed but cannot be answered as-of-T.
+    The message always names the supported alternative (`Snapshot.find`,
+    downstream `Snapshot.traverse`, or the present-tense `CodeGraph`
+    method). Distinct from a data answer: `find` returns `None` for
+    "not in the graph at T"; this raises for "cannot be looked up at T".
+    """
+
+
 class NotFound(OpError):
     """An entity or module id matched nothing.
 
@@ -791,35 +803,54 @@ def _graph():
 
 def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
           *, graph: Any = None) -> dict:
-    """Look symbols up as they were at an ISO 8601 `timestamp`.
+    """Look symbols up as they were at a Macrame-canonical `timestamp`.
 
-    Returns ``{"timestamp", "names", "entities": {name: entity | None}}``.
-    Only symbol lookup is reconstructed; query and search always run
-    against the current index.
+    Returns ``{"timestamp", "names", "entities": {name: entity | None},
+    "predates_recorded_history": bool}``. Every name is reconstructed from
+    the ledger at recorded-time T via one batched fold — an entity value of
+    `None` means "not in the graph at T" (never asserted, not yet asserted,
+    or already retired then), and `predates_recorded_history` is true when T
+    sits before the first recorded write. `query` text contributes candidate
+    names only; there is no temporal query execution (use `coderadar_query`
+    for present-tense search). Bytes-at-T is §0.1(b) work: entities carry
+    `ByteSpan`s, not source bodies, until the blob read path lands.
     """
     _require_index()
     if not timestamp:
         raise InvalidRequest(
             "Please provide an ISO 8601 timestamp (e.g. '2025-01-15T10:00:00Z').")
-    # R2-10: garbage used to sail through into a snapshot template that
-    # echoed it back with no complaint (only "" was validated).
-    from datetime import datetime
+    # R2-10 + §0.1(a): one normalization truth (Macrame canonical UTC) for
+    # every temporal entry point — `datetime.fromisoformat` used to accept
+    # offsets/naive stamps Macrame then rejects downstream.
     try:
-        datetime.fromisoformat(timestamp)
-    except ValueError:
-        raise InvalidRequest(
-            f"Invalid timestamp {timestamp!r}: expected ISO 8601 "
-            f"(e.g. '2025-01-15T10:00:00Z').") from None
+        from coderadar._core import lookup_entities_at as _lookup_at
+        from coderadar._core import normalize_timestamp as _normalize_ts
+        normalized = _normalize_ts(timestamp)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from e
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    # Validation parity gate: the same timestamp must pass `CodeGraph.as_of`
+    # (MCP/CLI/Python agree by construction — same normalizer, same fold).
     try:
-        snapshot = (graph or _graph()).as_of(timestamp)
+        (graph or _graph()).as_of(normalized)
+    except InvalidRequest:
+        raise
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
         raise EngineError(str(e)) from None
     names = parse_names(query, symbols)
-    find = getattr(snapshot, "find", None)
+    try:
+        batch = _lookup_at(names, normalized)
+    except ValueError as e:  # already normalized; defensive
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    found = batch.get("entities", {})
     return {
-        "timestamp": timestamp,
+        "timestamp": normalized,
         "names": names,
-        "entities": {name: (find(name) if find else None) for name in names},
+        "entities": {name: found.get(name) for name in names},
+        "predates_recorded_history": bool(batch.get("predates_recorded_history", False)),
     }
 
 
