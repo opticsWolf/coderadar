@@ -2727,12 +2727,19 @@ fn traverse(
         // Two earlier shapes lied here, both fixed: (1) reachability came
         // from Macrame's walk under CURRENT belief while bodies came from
         // the live projection (a rename walked at its old timestamp wore
-        // its CURRENT name); (2) `as_of_recorded(ts)` on the builder still
-        // missed a retired edge at its own `max(recorded_at)` on the
-        // rename fixture, while the equivalent fold SQL by hand found it.
-        // Whatever the walk's blind spot is, the state fold is the
-        // primitive the plan blesses ("entity lookup via reconstruct(T)"),
-        // so topology reads it too.
+        // its CURRENT name); (2) Macrame's `load_subgraph_with` at a
+        // historical instant STILL missed the retired edge — root-caused
+        // with a pure-macrame reproducer (no CodeRadar layers): the walk
+        // FINDS the edge, but `hydrate` reads node attributes from live
+        // `concepts WHERE retired = 0` and `drop_dangling_adjacency` then
+        // enforces present-tense closure, pruning edges whose endpoint
+        // retired AFTER the instant. Documented Macrame design for
+        // current-belief reads (§4.1: retired = not visible); a real gap
+        // for historical instants (upstream report pending) — so topology
+        // reads the state fold, the primitive the plan blesses
+        // ("entity lookup via reconstruct(T)"). Do not route temporal
+        // walks back through the loader without re-proving on the rename
+        // fixture.
         use crate::graph::cold_start::projection_from_state;
         let ts_for_state = ts_owned.clone();
         let state = py
@@ -2798,9 +2805,11 @@ fn traverse(
 }
 
 /// Downstream BFS over a reconstructed state's edges — the §0.1(a) temporal
-/// topology (the `traverse(as_of=)` leg documents why Macrame's walk is not
-/// read here: current-belief topology missed a retired edge at its own
-/// timestamp on the rename fixture).
+/// topology (the `traverse(as_of=)` leg documents why Macrame's loader is
+/// not read here: its walk finds the retired edge, but present-tense node
+/// closure — `hydrate` on live `retired = 0` rows plus
+/// `drop_dangling_adjacency` — prunes edges whose endpoint retired after
+/// the instant).
 ///
 /// Same contract as `subgraph_bfs`: the start id at depth 0, each reached
 /// neighbor tagged with BFS depth + the edge kind that first reached it.

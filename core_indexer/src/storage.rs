@@ -725,9 +725,10 @@ impl CodeGraphStore {
     ///
     /// Only the `"now"` live path uses this: temporal walks BFS over the
     /// reconstructed state instead (see `bfs_over_state` — Macrame's walk
-    /// under current belief missed a retired edge at its own timestamp on
-    /// the rename fixture, and `as_of_recorded` on the builder did not fix
-    /// it; the state fold is the recorded-time primitive).
+    /// finds the retired edge, but the loader's present-tense node closure
+    /// (`hydrate` on live `retired = 0` rows + `drop_dangling_adjacency`)
+    /// prunes edges whose endpoint retired after the instant; the state
+    /// fold is the recorded-time primitive).
     pub fn traverse_at(
         &self,
         start_id: &str,
