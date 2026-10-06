@@ -209,3 +209,24 @@ class TestCallersCalleesParity:
         assert cli.exit_code == 0, cli.output
         assert "Unknown entity" in cli.output
         assert "Unknown entity" in _server._callers(None, "pkg/mod.py::nosuch")
+
+
+class TestRecoveryArgsMatch:
+    """The agent's recovery paths exist on MCP too: `reindex(full)`,
+    `compute_embeddings(model_name)` — schema-pinned, not executed."""
+
+    def test_mcp_reindex_takes_full(self):
+        from coderadar.mcp.server import create_server
+
+        tools = {t.name: t for t in create_server(None)._tool_manager.list_tools()}
+        props = (tools["coderadar_reindex"].parameters or {}).get("properties", {})
+        assert "full" in props
+        assert "with_embeddings" in props
+
+    def test_mcp_compute_embeddings_takes_model_name(self):
+        from coderadar.mcp.server import create_server
+
+        tools = {t.name: t for t in create_server(None)._tool_manager.list_tools()}
+        props = (tools["coderadar_compute_embeddings"].parameters or {}).get(
+            "properties", {})
+        assert "model_name" in props

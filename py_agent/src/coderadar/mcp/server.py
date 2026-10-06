@@ -365,6 +365,7 @@ def create_server(graph: Any) -> MCPServer:
         },
     )
     def coderadar_compute_embeddings(
+        model_name: str | None = None,
         project_path: str | None = None,
     ) -> str:
         """Compute embeddings for semantic search."""
@@ -372,7 +373,7 @@ def create_server(graph: Any) -> MCPServer:
         if mismatch:
             return mismatch
 
-        return _compute_embeddings(graph)
+        return _compute_embeddings(graph, model_name)
 
     # ── coderadar_module_children — structural discovery ─────────────
 
@@ -801,7 +802,9 @@ def create_server(graph: Any) -> MCPServer:
             "Re-index the entire project to refresh the code graph. "
             "Use after batch edits when you've changed many files and want "
             "a guaranteed-fresh index. Slower than coderadar_update_file but "
-            "always correct. Set with_embeddings=True to also compute embedding "
+            "always correct. Cheap by default (only changed files); set full=True "
+            "to walk the whole tree (e.g. after config changes). "
+            "Set with_embeddings=True to also compute embedding "
             "vectors for semantic search (adds 8-10s for small projects). "
             "Returns index statistics."
         ),
@@ -814,14 +817,15 @@ def create_server(graph: Any) -> MCPServer:
     )
     def coderadar_reindex(
         with_embeddings: bool = False,
+        full: bool = False,
         project_path: str | None = None,
     ) -> str:
-        """Full reindex with optional embeddings."""
+        """Bring the index up to date; `full` walks the whole tree."""
         mismatch = _wrong_project(project_path)
         if mismatch:
             return mismatch
 
-        return _reindex(graph, with_embeddings)
+        return _reindex(graph, with_embeddings, full)
 
     # ── coderadar_update_file — incremental single-file sync ────────
 
@@ -1303,10 +1307,10 @@ def _query_graph(graph: Any, query: str) -> str:
     return render.query(query, rows)
 
 
-def _compute_embeddings(graph: Any) -> str:
+def _compute_embeddings(graph: Any, model_name: str | None = None) -> str:
     """Compute embeddings for every indexed entity."""
     try:
-        metrics = ops.compute_embeddings()
+        metrics = ops.compute_embeddings(model_name)
     except ops.OpError as e:
         return _op_message(e)
     except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises
@@ -1500,15 +1504,15 @@ def _create_entity(
 
 # ── Index lifecycle ──────────────────────────────────────────────────────
 
-def _reindex(graph: Any, with_embeddings: bool = False) -> str:
-    """Reindex the project: current, the cheap way (v0.8 P2-4).
+def _reindex(graph: Any, with_embeddings: bool = False, full: bool = False) -> str:
+    """Reindex the project: cheap by default, whole-tree walk on `full`.
 
     The server chdir'd onto the resolved project root before serving, so
     '.' is the project root — and the same spelling startup indexed, which
     keeps entity ids stable across the two.
     """
     try:
-        result = ops.reindex(with_embeddings)
+        result = ops.reindex(with_embeddings, full=full)
     except ops.NoExtension:
         return "CodeRadar extension not available."
     except ops.OpError as e:
