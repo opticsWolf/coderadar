@@ -1454,10 +1454,13 @@ pub struct ProjectedGraph {
     pub module_by_dotted_name: HashMap<(Language, String), EntityId>,
     /// Fast path for `find_module_by_dotted_name` (v0.8 P1): every
     /// segment-boundary suffix of each module's extension-less path — both
-    /// keeping and dropping a trailing `__init__` segment — mapped to the
-    /// module id. Rebuilt by `rebuild_module_path_index` after full analyze
-    /// and cold load; lookups fall back to the full scan when it is empty.
-    pub module_path_index: HashMap<String, EntityId>,
+    /// keeping and dropping a trailing `__init__` segment — mapped to ALL
+    /// module ids sharing it, sorted ascending (DR-14: a single winner per
+    /// key reintroduced HashMap-iteration luck for collisions). The query
+    /// ranks same-language candidates first, then smallest id. Rebuilt by
+    /// `rebuild_module_path_index` after full analyze and cold load;
+    /// lookups fall back to the full scan when it is empty.
+    pub module_path_index: HashMap<String, Vec<EntityId>>,
 
     pub importers: HashMap<EntityId, BTreeSet<EntityId>>,
     /// Forward import index: importer module → set of modules it imports.

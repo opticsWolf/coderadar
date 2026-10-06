@@ -140,8 +140,18 @@ pub(crate) const KNOWN_MODULE_EXTENSIONS: &[&str] = &[
 /// of scanning every module (on the 605-file benchmark repo the scan form
 /// cost 8.3s inside `resolve_imports` alone).
 pub(crate) fn rebuild_module_path_index(projection: &mut ProjectedGraph) {
-    let mut index: HashMap<String, EntityId> = HashMap::new();
-    for module in projection.modules.values() {
+    let mut index: HashMap<String, Vec<EntityId>> = HashMap::new();
+    // DR-14: every module sharing a suffix key is recorded (sorted), and
+    // the query ranks same-language first, smallest id second. A single
+    // winner per key reintroduced HashMap-iteration luck (per-process
+    // RandomState): it flapped resolution across CLI invocations — e.g.
+    // `config` flip-flopping between config.py and config.rs — and fed
+    // perpetual stale-edge retirements on unchanged trees. (Finer
+    // proximity ranking — nearest-same-package wins — is a precision
+    // follow-up, not this fix; see the v0.12 deviations log.)
+    let mut modules: Vec<_> = projection.modules.values().collect();
+    modules.sort_by(|a, b| a.id.cmp(&b.id));
+    for module in modules {
         let path = normalize_path_str(&module.path.to_string_lossy());
         // Extension-less path; the scanner only matches KNOWN_MODULE_EXTENSIONS,
         // so exotic-extension modules must not enter the index.
@@ -163,13 +173,44 @@ pub(crate) fn rebuild_module_path_index(projection: &mut ProjectedGraph) {
                     tail.insert(0, '/');
                 }
                 tail.insert_str(0, seg);
-                index
-                    .entry(tail.clone())
-                    .or_insert_with(|| module.id.clone());
+                // Sorted-id insertion order keeps every vec ascending, so
+                // query-time ranking is a stable pick-first with no sort.
+                index.entry(tail.clone()).or_default().push(module.id.clone());
             }
         }
     }
     projection.module_path_index = index;
+}
+
+/// Rank one suffix key's candidates (DR-14): same language as the importing
+/// module first — a Python import never means a Rust file and vice versa —
+/// smallest module id second. Order-robust: true for index vecs (ascending)
+/// and scan collections (HashMap order) alike, hence stable in every process.
+fn pick_suffix_winner(
+    projection: &ProjectedGraph,
+    ids: &[EntityId],
+    importer_lang: Option<Language>,
+) -> Option<String> {
+    let mut best: Option<&str> = None;
+    let mut best_same_lang = false;
+    for id in ids {
+        let same = importer_lang.is_some_and(|l| {
+            projection
+                .modules
+                .get(id)
+                .is_some_and(|m| m.language == l)
+        });
+        let better = match (same, best_same_lang) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => best.is_none_or(|b| id.as_str() < b),
+        };
+        if better {
+            best = Some(id.as_str());
+            best_same_lang = same;
+        }
+    }
+    best.map(str::to_string)
 }
 
 /// Find a module by its dotted name (e.g., "coderadar.config" → config.py).
@@ -179,7 +220,7 @@ pub(crate) fn rebuild_module_path_index(projection: &mut ProjectedGraph) {
 pub(crate) fn find_module_by_dotted_name(
     projection: &ProjectedGraph,
     dotted_name: &str,
-    _current_module: &str,
+    current_module: &str,
 ) -> Option<String> {
     // 2.2: normalize common TS path aliases before suffix matching.
     // `@/...` and `~/...` conventionally map to `src/...` (Vite/Next/tsconfig).
@@ -206,24 +247,34 @@ pub(crate) fn find_module_by_dotted_name(
     //
     // A graph with modules but an empty index is legacy or hand-built (unit
     // tests) — it keeps the full-scan behaviour below, unchanged.
+    let importer_lang = projection
+        .modules
+        .get(current_module)
+        .map(|m| m.language);
     if projection.modules.is_empty() || !projection.module_path_index.is_empty() {
         for start in 0..segments.len() {
             let tail = segments[start..].join("/");
-            if let Some(id) = projection.module_path_index.get(&tail) {
-                return Some(id.clone());
+            if let Some(ids) = projection.module_path_index.get(&tail) {
+                if let Some(winner) = pick_suffix_winner(projection, ids, importer_lang) {
+                    return Some(winner);
+                }
             }
         }
         return None;
     }
 
-    // Legacy slow path: full scan over every module.
+    // Legacy slow path: full scan over every module. Longest-suffix-first
+    // priority is preserved (outer loop), but within one suffix length the
+    // winner is the smallest module id — DR-14: first-HashMap-hit-wins
+    // flapped across processes. Same for the fallback below.
     //
     // Build candidate path suffixes by matching the last N segments
     for n in (1..=segments.len()).rev() {
         let suffix_parts = &segments[segments.len() - n..];
         let suffix_slash = suffix_parts.join("/");
 
-        for (_, module) in &projection.modules {
+        let mut ids = Vec::new();
+        for module in projection.modules.values() {
             let path_str = module.path.to_string_lossy().to_string();
             let path_normalized = path_str.replace('\\', "/");
             // Check each known extension
@@ -231,15 +282,20 @@ pub(crate) fn find_module_by_dotted_name(
                 let suffix = format!("{}.{}", suffix_slash, ext);
                 let init_suffix = format!("{}/__init__.{}", suffix_slash, ext);
                 if path_normalized.ends_with(&suffix) || path_normalized.ends_with(&init_suffix) {
-                    return Some(module.id.clone());
+                    ids.push(module.id.clone());
+                    break;
                 }
             }
+        }
+        if !ids.is_empty() {
+            return pick_suffix_winner(projection, &ids, importer_lang);
         }
     }
 
     // Fallback: strip any extension and match segments in reverse order
     let last_segment = segments.last().unwrap_or(&"");
-    for (_, module) in &projection.modules {
+    let mut ids = Vec::new();
+    for module in projection.modules.values() {
         if module.name == *last_segment {
             let path_str = module.path.to_string_lossy().to_string();
             let path_normalized = path_str.replace('\\', "/");
@@ -253,13 +309,16 @@ pub(crate) fn find_module_by_dotted_name(
             if file_segments.len() >= segments.len() {
                 let file_suffix = &file_segments[file_segments.len() - segments.len()..];
                 if file_suffix == segments.as_slice() {
-                    return Some(module.id.clone());
+                    ids.push(module.id.clone());
                 }
             }
         }
     }
 
-    None
+    if ids.is_empty() {
+        return None;
+    }
+    pick_suffix_winner(projection, &ids, importer_lang)
 }
 
 /// Find a symbol (function or class) with a given name within a specific module.
