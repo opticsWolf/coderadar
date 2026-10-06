@@ -988,6 +988,43 @@ def diagnose(unresolved: bool = True, low_confidence: bool = True) -> dict:
     return out
 
 
+def store_repair(db_path: str | Path | None = None, delete: bool = False) -> dict:
+    """Report load-blocking rows and retire what is safely retireable.
+
+    The shared seam behind CLI `store-repair` (which also owns `--delete`).
+    Deliberately NOT an MCP tool: re-analyze already retires v1 leftovers
+    automatically, so an agent with an unloadable store should reindex, not
+    hand-repair ledger rows — and `--delete` removes the whole store, a
+    local-admin act no agent surface gets. Returns `{"v1_found",
+    "v1_retired", "edges_retired", "unreadable_live", "legacy_ids"}`
+    or `{"deleted": path}` / `{"missing": path}`.
+    """
+    from pathlib import Path as _Path
+
+    p = _Path(db_path) if db_path else _Path(".coderadar/store/coderadar.db")
+    if not p.exists():
+        return {"missing": str(p)}
+    if delete:
+        p.unlink()
+        return {"deleted": str(p)}
+    try:
+        from coderadar._core import store_repair as _repair
+    except ImportError as e:
+        raise NoExtension(str(e)) from None
+    try:
+        rep = _repair(str(p))
+    except Exception as e:  # noqa: BLE001 - _core errors surface as EngineError
+        raise EngineError(str(e)) from None
+    out = {
+        "v1_found": rep.get("v1_found", 0),
+        "v1_retired": rep.get("v1_retired", 0),
+        "edges_retired": rep.get("edges_retired", 0),
+        "unreadable_live": rep.get("unreadable_live", 0),
+        "legacy_ids": rep.get("legacy_ids", 0),
+    }
+    return out
+
+
 def find_scaffolding(include_secrets: bool = False, max_findings: int = 100) -> list[dict]:
     """Scaffolding debt: comment markers, placeholder bodies, temp-file
     names and (opt-in, redacted) secrets.

@@ -232,6 +232,28 @@ class TestRecoveryArgsMatch:
         assert "model_name" in props
 
 
+class TestStoreRepairOpsSeam:
+    """`store-repair` answers from `ops.store_repair` (CLI-only surface,
+    no MCP tool by design — destructive `--delete`, and re-analyze already
+    retires automatically)."""
+
+    def test_missing_store_reports(self, project):
+        assert ops.store_repair("nope.db") == {"missing": "nope.db"}
+        cli = _run("store-repair", "--db", "nope.db")
+        assert cli.exit_code == 0, cli.output
+        assert "nothing to repair" in cli.output
+
+    def test_report_shape_on_real_store(self, project):
+        coderadar.analyze(".", create_store=True)
+        db = str(project / ".coderadar" / "store" / "coderadar.db")
+        result = ops.store_repair(db)
+        assert set(result) == {"v1_found", "v1_retired", "edges_retired",
+                               "unreadable_live", "legacy_ids"}
+        cli = _run("store-repair", "--db", db)
+        assert cli.exit_code == 0, cli.output
+        assert "Store repair:" in cli.output
+
+
 DIAGNOSE_SOURCE = '''\
 def ok():
     return helper() + missing_target()

@@ -1128,43 +1128,19 @@ def store_repair(db_path: str | None, delete: bool):
     """
     (db_path,) = _enter_project(db_path)
     db_path = db_path or ".coderadar/store/coderadar.db"
-    from pathlib import Path
-    p = Path(db_path)
-    if not p.exists():
-        console.print(f"[yellow]No store at {p} — nothing to repair.[/yellow]")
-        return
-    if delete:
-        p.unlink()
-        console.print(f"[green]OK[/green]  Deleted {p}; next analyze rebuilds from scratch.")
-        return
+    from . import ops, render
     try:
-        from coderadar._core import store_repair as _repair
-        rep = _repair(str(p))
+        result = ops.store_repair(db_path, delete=delete)
     except Exception as e:  # noqa: BLE001 - CLI boundary reports, then exits 1
         console.print(f"[red]Repair failed:[/red] {e}")
         raise SystemExit(1)
-    console.print(f"[bold]Store repair: {p}[/bold]")
-    console.print(f"  v1 leftovers found:   {rep.get('v1_found', 0)}")
-    console.print(f"  v1 leftovers retired: {rep.get('v1_retired', 0)}")
-    console.print(f"  edges retired:        {rep.get('edges_retired', 0)}")
-    console.print(f"  unreadable rows:      {rep.get('unreadable_live', 0)}")
-    legacy = rep.get("legacy_ids", 0)
-    if legacy:
-        console.print(f"  pre-0.10 id spellings: {legacy}")
-    if rep.get('unreadable_live', 0):
-        console.print("[yellow]Unreadable rows cannot be retired — if cold load still "
-                        "fails, re-run with --delete.[/yellow]")
-    elif legacy:
-        console.print(
-            f"[yellow]{legacy} concept id(s) predate the 0.10 canonical form "
-            "(forward slashes, no './' prefix) — the store will not load until "
-            "re-analyzed. Run `coderadar reindex --full` (or let cold start do it) to "
-            "re-key them.[/yellow]"
-        )
-    elif not rep.get('v1_found', 0):
-        console.print("[green]OK[/green]  Store is clean — nothing to retire.")
-    else:
-        console.print("[green]OK[/green]  Next cold load should succeed.")
+    if "missing" in result:
+        console.print(f"[yellow]{render.store_repair(db_path, result)}[/yellow]")
+        return
+    if "deleted" in result:
+        console.print(f"[green]{render.store_repair(db_path, result)}[/green]")
+        return
+    console.print(render.store_repair(db_path, result))
 
 
 def _print_effective_excludes() -> None:

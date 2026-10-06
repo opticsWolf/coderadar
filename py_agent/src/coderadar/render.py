@@ -247,6 +247,41 @@ def diagnose(result: dict) -> str:
     return "\n".join(lines)
 
 
+def store_repair(db_path: str, result: dict) -> str:
+    """Store-repair report (CLI `store-repair`; no MCP tool by design)."""
+    if "missing" in result:
+        return f"No store at {result['missing']} — nothing to repair."
+    if "deleted" in result:
+        return f"OK  Deleted {result['deleted']}; next analyze rebuilds from scratch."
+    lines = [
+        f"Store repair: {db_path}",
+        f"  v1 leftovers found:   {result.get('v1_found', 0)}",
+        f"  v1 leftovers retired: {result.get('v1_retired', 0)}",
+        f"  edges retired:        {result.get('edges_retired', 0)}",
+        f"  unreadable rows:      {result.get('unreadable_live', 0)}",
+    ]
+    legacy = result.get("legacy_ids", 0)
+    if legacy:
+        lines.append(f"  pre-0.10 id spellings: {legacy}")
+    if result.get("unreadable_live", 0):
+        lines.append(
+            "Unreadable rows cannot be retired — if cold load still fails, "
+            "re-run with --delete."
+        )
+    elif legacy:
+        lines.append(
+            f"{legacy} concept id(s) predate the 0.10 canonical form "
+            "(forward slashes, no './' prefix) — the store will not load until "
+            "re-analyzed. Run `coderadar reindex --full` (or let cold start do it) "
+            "to re-key them."
+        )
+    elif not result.get("v1_found", 0):
+        lines.append("OK  Store is clean — nothing to retire.")
+    else:
+        lines.append("OK  Next cold load should succeed.")
+    return "\n".join(lines)
+
+
 def dead_code(findings: list[dict], min_confidence: float) -> str:
     if not findings:
         return (
