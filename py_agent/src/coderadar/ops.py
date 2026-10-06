@@ -44,6 +44,7 @@ __all__ = [
     "compute_embeddings",
     "create_entity",
     "dead_code",
+    "diagnose",
     "display_file",
     "explore",
     "find_clones",
@@ -84,7 +85,7 @@ OPERATIONS = (
     "traverse", "get_smells", "dead_code", "find_clones", "find_scaffolding",
     "replace_body", "update_signature", "rename", "create_entity",
     "reindex", "update_file", "status", "set_project",
-    "callers", "callees",
+    "callers", "callees", "diagnose",
 )
 
 
@@ -945,6 +946,46 @@ def find_clones(min_lines: int = 10, min_similarity: float = 0.8,
     _require_index("functions")
     from coderadar._core import find_clones as _find_clones
     return _run_engine(_find_clones, min_lines, min_similarity, max_groups)
+
+
+def diagnose(unresolved: bool = True, low_confidence: bool = True) -> dict:
+    """Graph self-health: unresolved call targets + ambiguous base classes.
+
+    The shared seam behind CLI `diagnose`, MCP `coderadar_diagnose` and
+    `CodeGraph.diagnose`. Returns `{"unresolved": [{"id", "targets"}],
+    "ambiguous_bases": [...], "ambiguous_base_count": int}` — an empty
+    list reads as a clean bill of health, never as a report never written.
+    Unresolved targets are attributed per function (R2-12), most gaps first.
+    """
+    out: dict[str, Any] = {"unresolved": [], "ambiguous_bases": [],
+                           "ambiguous_base_count": 0}
+    try:
+        _require_index("functions")
+    except NoIndex:
+        # An indexed-nothing graph reports clean (headers + none),
+        # the pre-ops CLI behaviour — not an error.
+        return out
+    try:
+        from coderadar._core import (
+            index_edge_stats,
+            search_entities,
+            unresolved_targets,
+        )
+    except ImportError as e:
+        raise NoExtension(str(e)) from None
+    if unresolved:
+        rows = []
+        for fn in search_entities("", 1000, "function"):
+            names = ", ".join(unresolved_targets(fn["id"]))
+            if names:
+                rows.append({"id": fn["id"], "targets": names})
+        rows.sort(key=lambda r: -len(r["targets"]))
+        out["unresolved"] = rows
+    if low_confidence:
+        stats = index_edge_stats()
+        out["ambiguous_bases"] = list(stats.get("ambiguous_base_details") or [])
+        out["ambiguous_base_count"] = int(stats.get("ambiguous_bases", 0))
+    return out
 
 
 def find_scaffolding(include_secrets: bool = False, max_findings: int = 100) -> list[dict]:

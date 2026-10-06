@@ -1392,48 +1392,14 @@ def diagnose(unresolved: bool, low_confidence: bool):
     _enter_project()
     # Both flags used to print a header and no rows, which reads as a clean
     # bill of health rather than a report that was never written.
-    from coderadar._core import index_edge_stats, search_entities
+    from . import ops, render
 
     if not unresolved and not low_confidence:
         unresolved = low_confidence = True
 
     _ensure_graph()
-
-    if unresolved:
-        from coderadar._core import unresolved_targets as _unresolved_names
-        console.print("[bold]Unresolved references:[/bold]")
-        rows = []
-        for fn in search_entities("", 1000, "function"):
-            # R2-12: attribute each function's OWN targets (the old
-            # traverse_unresolved count summed the 1-hop neighborhood,
-            # which listed callers for their callees' gaps).
-            names = ", ".join(_unresolved_names(fn["id"]))
-            if names:
-                rows.append((fn["id"], names))
-        if not rows:
-            console.print("  [green]none[/green]")
-        else:
-            table = Table()
-            table.add_column("Entity", style="cyan")
-            table.add_column("Unresolved call targets", style="yellow")
-            for entity_id, names in sorted(rows, key=lambda r: -len(r[1])):
-                table.add_row(entity_id, names)
-            console.print(table)
-            console.print(
-                f"[dim]{len(rows)} function(s) call targets the graph "
-                f"cannot follow[/dim]"
-            )
-
-    if low_confidence:
-        console.print("[bold]Ambiguous base classes:[/bold]")
-        stats = index_edge_stats()
-        details = stats.get("ambiguous_base_details") or []
-        if not details:
-            console.print("  [green]none[/green]")
-        else:
-            for detail in details:
-                console.print(f"  {detail}")
-            console.print(f"[dim]{stats.get('ambiguous_bases', 0)} ambiguous[/dim]")
+    console.print(render.diagnose(
+        ops.diagnose(unresolved=unresolved, low_confidence=low_confidence)))
 
 
 @main.group()

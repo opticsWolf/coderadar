@@ -230,3 +230,49 @@ class TestRecoveryArgsMatch:
         props = (tools["coderadar_compute_embeddings"].parameters or {}).get(
             "properties", {})
         assert "model_name" in props
+
+
+DIAGNOSE_SOURCE = '''\
+def ok():
+    return helper() + missing_target()
+'''
+
+
+@pytest.mark.skipif(not _CORE, reason="Rust _core extension not built")
+class TestDiagnoseParity:
+    """`diagnose` reports the same gap on ops, CLI and MCP."""
+
+    @pytest.fixture
+    def gappy(self, tmp_path):
+        (tmp_path / ".coderadar").mkdir()
+        (tmp_path / "g.py").write_text(DIAGNOSE_SOURCE, encoding="utf-8")
+        previous = Path(os.getcwd())
+        os.chdir(tmp_path)
+        try:
+            coderadar.analyze(".")
+            yield tmp_path
+        finally:
+            os.chdir(previous)
+
+    def test_all_three_surfaces_agree(self, gappy):
+        from coderadar.mcp import server as _server
+
+        result = ops.diagnose()
+        gap = [r for r in result["unresolved"] if r["id"] == "g.py::ok"]
+        assert gap and "missing_target" in gap[0]["targets"]
+
+        cli = _run("diagnose")
+        assert cli.exit_code == 0, cli.output
+        assert "missing_target" in cli.output
+
+        assert "missing_target" in _server._diagnose(None)
+
+    def test_clean_graph_reports_none_everywhere(self, project):
+        coderadar.analyze(".")
+        from coderadar.mcp import server as _server
+
+        assert ops.diagnose()["unresolved"] == []
+        cli = _run("diagnose")
+        assert cli.exit_code == 0, cli.output
+        assert "none" in cli.output
+        assert "none" in _server._diagnose(None)

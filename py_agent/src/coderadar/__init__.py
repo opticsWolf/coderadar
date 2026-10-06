@@ -570,6 +570,15 @@ class CodeGraph:
         return ops.resolve(name, limit)
 
     @_bound_to_loaded_project
+    @_bound_to_loaded_project
+    def diagnose(self, unresolved: bool = True,
+                 low_confidence: bool = True) -> dict[str, Any]:
+        """Graph self-health: unresolved targets + ambiguous bases (MCP
+        ``coderadar_diagnose``, CLI ``diagnose``)."""
+        from . import ops
+        return ops.diagnose(unresolved, low_confidence)
+
+    @_bound_to_loaded_project
     def dead_code(self, min_confidence: float = 0.6, include_test_reachable: bool = False,
                   max_findings: int = 100) -> list[dict[str, Any]]:
         """Dead-code findings, most safely deletable first (MCP

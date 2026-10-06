@@ -56,6 +56,7 @@ Need more? Call it again with more specific names.
 - `coderadar_as_of` — the graph at a past timestamp
 - `coderadar_resolve` — framework references: routes (`/users/:id`), `*Model` / `*View` names
 - `coderadar_get_smells`, `coderadar_dead_code`, `coderadar_find_clones`, `coderadar_find_scaffolding` — quality findings. Dead code is ranked evidence, not proof: check `coderadar_affected` before deleting.
+- `coderadar_diagnose` — graph self-health (unresolved targets, ambiguous bases); empty reads as clean.
 
 ## Editing
 
@@ -449,6 +450,34 @@ def create_server(graph: Any) -> MCPServer:
             return mismatch
 
         return _callees(graph, entity_id)
+
+    # ── coderadar_diagnose — graph self-health ─────────────────────
+
+    @mcp.tool(
+        description=(
+            "Report graph self-health: unresolved call targets per function "
+            "and ambiguous base classes. Empty sections read as a clean bill "
+            "of health. Use before trusting coderadar_affected on an "
+            "unfamiliar project."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_diagnose(
+        unresolved: bool = True,
+        low_confidence: bool = True,
+        project_path: str | None = None,
+    ) -> str:
+        """Show unresolved references and ambiguous edges."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _diagnose(graph, unresolved, low_confidence)
 
     # ── coderadar_as_of — temporal query ─────────────────────────────
 
@@ -1353,6 +1382,15 @@ def _callers(graph: Any, entity_id: str) -> str:
             and not entity_id.startswith("external::"):
         return f"Unknown entity: {entity_id}"
     return render.callers(entity_id, results)
+
+
+def _diagnose(graph: Any, unresolved: bool = True, low_confidence: bool = True) -> str:
+    """Graph self-health report."""
+    try:
+        result = ops.diagnose(unresolved, low_confidence)
+    except ops.OpError as e:
+        return _op_message(e)
+    return render.diagnose(result)
 
 
 def _callees(graph: Any, entity_id: str) -> str:

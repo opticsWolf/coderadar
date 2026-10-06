@@ -220,6 +220,33 @@ def resolve(result: dict) -> str:
     return "\n".join(lines)
 
 
+def diagnose(result: dict) -> str:
+    """Graph self-health report (MCP `coderadar_diagnose`, CLI `diagnose`).
+
+    Headers are pinned by `test_cli.py::test_diagnose_reports_rows_or_says_none`:
+    `Unresolved references:` / `Ambiguous base classes:` with `none` under
+    an empty section — a header with nothing under it must never read as a
+    clean bill of health by accident, nor must a clean graph error.
+    """
+    lines = ["Unresolved references:"]
+    unresolved = result.get("unresolved") or []
+    if not unresolved:
+        lines.append("  none")
+    else:
+        for row in unresolved:
+            lines.append(f"  `{row['id']}` → {row['targets']}")
+        lines.append(f"{len(unresolved)} function(s) call targets the graph cannot follow")
+    lines.append("Ambiguous base classes:")
+    details = result.get("ambiguous_bases") or []
+    if not details:
+        lines.append("  none")
+    else:
+        for detail in details:
+            lines.append(f"  {detail}")
+        lines.append(f"{result.get('ambiguous_base_count', len(details))} ambiguous")
+    return "\n".join(lines)
+
+
 def dead_code(findings: list[dict], min_confidence: float) -> str:
     if not findings:
         return (
