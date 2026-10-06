@@ -2525,4 +2525,29 @@ mod tests {
         assert_eq!((concepts, edges), (0, 0), "nothing left open to close");
         assert_eq!(live_concept_ids(&store).len(), 2);
     }
+
+    /// §0.6 (DR-25): the 0.19 blob surface round-trips through a store
+    /// opened by `CodeGraphStore` — and a missing digest reads as absent
+    /// (None), not error, which is how pre-0.19 cold files must behave
+    /// after the v21 -> v22 migration.
+    #[test]
+    fn blob_put_get_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blobs.db");
+        let store = CodeGraphStore::open(&path).unwrap();
+        let bytes = b"def f():\n    return 1\n";
+        let digest = runtime().block_on(store.db.blob_put(bytes)).unwrap();
+        assert_eq!(digest.len(), 64, "sha256 hex: {digest:?}");
+        assert!(
+            digest.chars().all(|c| c.is_ascii_hexdigit()
+                && !c.is_ascii_uppercase()),
+            "lowercase hex: {digest:?}"
+        );
+        let back = runtime().block_on(store.db.blob_get(&digest)).unwrap();
+        assert_eq!(back.as_deref(), Some(bytes.as_slice()));
+        let missing = runtime()
+            .block_on(store.db.blob_get(&"0".repeat(64)))
+            .unwrap();
+        assert_eq!(missing, None, "unknown digest reads as absent");
+    }
 }
