@@ -776,6 +776,36 @@ impl CodeGraph {
                 .map_err(|e| format!("Failed to read file: {}", e))?,
         };
 
+        // §1.9 put-then-assert: the file's bytes hit the blob store BEFORE
+        // the v2 flush below asserts any digest (same ordering guarantee
+        // as the analyze path; degrade-with-eprintln on put failure).
+        let mut digests = crate::storage::SourceBlobDigests::new();
+        // Per-file report fields (0/1 + bytes); cumulative counters update
+        // inside `put_source_blob` regardless.
+        let (mut blob_stored, mut blob_oversize, mut blob_excluded, mut blob_bytes) =
+            (0u64, 0u64, 0u64, 0u64);
+        if let Some(ref store) = self.store {
+            match store.put_source_blob(file_path, source.as_bytes()) {
+                Ok(crate::storage::BlobOutcome::Stored { digest, bytes }) => {
+                    digests.insert(file_path.to_string(), digest);
+                    blob_stored = 1;
+                    blob_bytes = bytes;
+                }
+                Ok(crate::storage::BlobOutcome::SkippedOversize { .. }) => {
+                    blob_oversize = 1;
+                }
+                Ok(crate::storage::BlobOutcome::SkippedExcluded) => {
+                    blob_excluded = 1;
+                }
+                Ok(crate::storage::BlobOutcome::Disabled) => {}
+                Err(e) => {
+                    eprintln!(
+                        "[diag] blob put failed for {file_path}: {e:?} — continuing without blob"
+                    );
+                }
+            }
+        }
+
         // Phase 1-2: Parse and extract
         let mut parser = tree_sitter::Parser::new();
         parser
@@ -821,7 +851,8 @@ impl CodeGraph {
         // cold start parses back. Replaces the old pre-cascade v1
         // `persist_entities` flush.
         if let Some(ref store) = self.store {
-            let v2 = crate::storage::build_v2_concepts_for_file(&projection, file_path);
+            let v2 =
+                crate::storage::build_v2_concepts_for_file(&projection, file_path, &digests);
             let _ = store.upsert_concepts_bulk(&v2);
         }
         // Scoped: an edit to one file must not re-assert the project's whole
@@ -863,6 +894,10 @@ impl CodeGraph {
             parse_quality: crate::extract::node_quality(root_node),
             parse_errors: crate::extract::count_parse_errors(root_node),
             elapsed_ms: started.elapsed().as_secs_f64() * 1000.0,
+            blobs_stored: blob_stored,
+            blobs_skipped_oversize: blob_oversize,
+            blobs_skipped_excluded: blob_excluded,
+            blobs_bytes: blob_bytes,
         })
     }
 

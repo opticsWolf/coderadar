@@ -142,6 +142,74 @@ impl CodeGraphStore {
         Ok(Self { db })
     }
 
+    /// §1.9 write-through: content-addressed put of one file's bytes.
+    ///
+    /// Bytes are put BEFORE any digest is asserted (callers persist after),
+    /// so a crash between leaves an orphan blob at worst — never a live
+    /// digest pointing at absent bytes; retry converges on the same digest
+    /// (idempotent by construction). Re-put refreshes `put_at` without
+    /// rewriting: 0 new bytes on unchanged-tree reindex (the DR-25
+    /// zero-growth property). Every outcome feeds the cumulative counters.
+    pub fn put_source_blob(
+        &self,
+        file_path: &str,
+        bytes: &[u8],
+    ) -> macrame::Result<BlobOutcome> {
+        let cfg = crate::active_config();
+        if !cfg.database.store_source_blobs {
+            return Ok(BlobOutcome::Disabled);
+        }
+        // Match against the canonical id-form path; normalize belt for
+        // native-separator callers.
+        let normalized = file_path.replace('\\', "/");
+        if !cfg.database.blob_exclude.is_empty() {
+            let mut builder = ignore::gitignore::GitignoreBuilder::new("");
+            for pat in &cfg.database.blob_exclude {
+                let _ = builder.add_line(None, pat);
+            }
+            if let Ok(matcher) = builder.build() {
+                if crate::path_excluded(
+                    &matcher,
+                    std::path::Path::new(&normalized),
+                    false,
+                ) {
+                    let outcome = BlobOutcome::SkippedExcluded;
+                    record_blob_outcome(&outcome);
+                    return Ok(outcome);
+                }
+            }
+        }
+        if bytes.len() > BLOB_MAX_BYTES {
+            let outcome = BlobOutcome::SkippedOversize {
+                bytes: bytes.len() as u64,
+            };
+            record_blob_outcome(&outcome);
+            return Ok(outcome);
+        }
+        match runtime().block_on(self.db.blob_put(bytes)) {
+            Ok(digest) => {
+                validate_digest(&digest).map_err(|e| {
+                    macrame::DbError::InvalidDigest(format!(
+                        "blob_put returned {e} for {file_path}"
+                    ))
+                })?;
+                let outcome = BlobOutcome::Stored {
+                    digest,
+                    bytes: bytes.len() as u64,
+                };
+                record_blob_outcome(&outcome);
+                Ok(outcome)
+            }
+            Err(macrame::DbError::BlobTooLarge { size, .. }) => {
+                // Engine belt (custom tuning): same skip, same count.
+                let outcome = BlobOutcome::SkippedOversize { bytes: size as u64 };
+                record_blob_outcome(&outcome);
+                Ok(outcome)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Synchronous wrapper around Macrame's async upsert.
     pub fn upsert_entity(
         &self,
@@ -770,21 +838,153 @@ impl CodeGraphStore {
     }
 }
 
+// ── Source-blob write path (§1.9, DR-25/DR-30) ────────────────────────────
+
+/// Blob size cap: Macrame's `Tuning::max_blob_bytes` default (8 MiB).
+/// CodeRadar does not plumb tuning, so this const mirrors the engine — a
+/// file over it is refused HERE, and the engine refuses it again as belt
+/// (both count as `skipped_oversize`, never as an index failure).
+///
+/// Pairing (documented, not enforced): the watcher skips files over
+/// `[watch] max_file_size_bytes` (1 MiB default) before they ever reach
+/// this path, so oversize blobs arise only from direct `analyze` /
+/// `update_file` calls on files between 1 MiB and 8 MiB. Raising one cap
+/// must never silently raise the other.
+pub const BLOB_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// A sha256 digest is 64 lowercase hex chars — the address and the integrity
+/// check in one. Validated at the persistence boundary, both directions:
+/// put-returns are checked before their digest is asserted (an engine bug
+/// must fail loudly, never mint a live digest pointing at absent bytes),
+/// and stored extras are checked on read (legacy generations have no digest
+/// at all; malformed ones read as absent, never as errors).
+pub fn validate_digest(digest: &str) -> std::result::Result<(), String> {
+    if digest.len() == 64
+        && digest
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        Ok(())
+    } else {
+        Err(format!("malformed source_blob digest: {digest:?}"))
+    }
+}
+
+/// The `extra.coderadar.source_blob` read boundary (§3.0 reads through
+/// this): a validated digest, or `None` — legacy generations (no key) and
+/// malformed ones both read as absent, never as errors.
+pub fn source_blob_of_extra(extra_json: &str) -> Option<String> {
+    let extra: serde_json::Value = serde_json::from_str(extra_json).ok()?;
+    let digest = extra.get("coderadar")?.get("source_blob")?.as_str()?;
+    validate_digest(digest).ok()?;
+    Some(digest.to_string())
+}
+
+/// One file's blob outcome. `Stored` carries the digest + byte length;
+/// the policy skips keep full graph coverage with no blob. Anything else
+/// (I/O, engine bugs) is a propagated error — a broken store must fail
+/// the index honestly, not silently skip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlobOutcome {
+    Stored { digest: String, bytes: u64 },
+    SkippedOversize { bytes: u64 },
+    SkippedExcluded,
+    Disabled,
+}
+
+/// Cumulative blob activity backing the currently loaded graph generation:
+/// reset on `analyze`/`load_snapshot`, incremented by every write-through
+/// put. Read via `blob_stats()` for the reindex/watcher/status surfaces —
+/// the DR-30 notice (counts ARE the notice) without per-call threading.
+#[derive(Clone, Debug, Default)]
+pub struct BlobStats {
+    pub stored: u64,
+    pub skipped_oversize: u64,
+    pub skipped_excluded: u64,
+    pub bytes: u64,
+}
+
+static BLOB_STATS: std::sync::LazyLock<std::sync::Mutex<BlobStats>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(BlobStats::default()));
+
+/// Reset the cumulative counters (analyze/load boundaries).
+pub fn reset_blob_stats() {
+    if let Ok(mut stats) = BLOB_STATS.lock() {
+        *stats = BlobStats::default();
+    }
+}
+
+/// Snapshot the cumulative counters for the report surfaces.
+pub fn blob_stats_snapshot() -> BlobStats {
+    BLOB_STATS
+        .lock()
+        .map(|stats| stats.clone())
+        .unwrap_or_default()
+}
+
+fn record_blob_outcome(outcome: &BlobOutcome) {
+    let Ok(mut stats) = BLOB_STATS.lock() else {
+        return;
+    };
+    match outcome {
+        BlobOutcome::Stored { bytes, .. } => {
+            stats.stored += 1;
+            stats.bytes += bytes;
+        }
+        BlobOutcome::SkippedOversize { .. } => stats.skipped_oversize += 1,
+        BlobOutcome::SkippedExcluded => stats.skipped_excluded += 1,
+        BlobOutcome::Disabled => {}
+    }
+}
+
 // ── Concept Builder ─────────────────────────────────────────────────────────
 
 /// Build a Macrame ConceptUpsert from a CodeRadar ExtractedUnit.
 /// Compact, queryable CodeRadar attributes carried beside canonical entity
 /// content. Keep the namespace application-specific so other users of the
 /// shared ledger can evolve their own attributes independently.
-fn coderadar_extra(content: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "coderadar": {
-            "format": 1,
-            "kind": content.get("kind").cloned().unwrap_or(serde_json::Value::Null),
-            "file_path": content.get("file_path").cloned().unwrap_or(serde_json::Value::Null),
-            "content_hash": content.get(annotation::CONTENT_HASH).cloned().unwrap_or(serde_json::Value::Null),
-        }
-    })
+/// `format` stays 1 (declared §1.9): `source_blob` is additive-optional —
+/// present on module concepts whose file bytes were blob-stored, absent on
+/// legacy generations and policy-skipped files. Absence is the signal;
+/// readers (`source_blob_of_extra`) treat missing and malformed alike.
+fn coderadar_extra(
+    content: &serde_json::Value,
+    source_blob: Option<&str>,
+) -> serde_json::Value {
+    let mut inner = serde_json::Map::new();
+    inner.insert("format".to_string(), serde_json::json!(1));
+    inner.insert(
+        "kind".to_string(),
+        content
+            .get("kind")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    );
+    inner.insert(
+        "file_path".to_string(),
+        content
+            .get("file_path")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    );
+    inner.insert(
+        "content_hash".to_string(),
+        content
+            .get(annotation::CONTENT_HASH)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    );
+    if let Some(digest) = source_blob {
+        inner.insert(
+            "source_blob".to_string(),
+            serde_json::Value::String(digest.to_string()),
+        );
+    }
+    serde_json::Value::Object(
+        [("coderadar".to_string(), serde_json::Value::Object(inner))]
+            .into_iter()
+            .collect(),
+    )
 }
 
 /// Entity metadata is stored canonically in `content`; the small subset needed
@@ -794,7 +994,9 @@ pub fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> C
     let (title, _kind, metadata) = entity_meta(unit, file_path, language);
 
     let content = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".into());
-    let extra = coderadar_extra(&metadata).to_string();
+    // v1 pre-flush rows carry no digest (healed to v2 with digests in the
+    // same run); the digest-less shape is also what legacy rows look like.
+    let extra = coderadar_extra(&metadata, None).to_string();
 
     let valid_from = now_iso8601();
 
@@ -1020,8 +1222,14 @@ fn content_hash_of(content: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn v2_upsert(id: &str, title: &str, content: serde_json::Value, now: &str) -> ConceptUpsert {
-    let extra = coderadar_extra(&content).to_string();
+fn v2_upsert(
+    id: &str,
+    title: &str,
+    content: serde_json::Value,
+    now: &str,
+    source_blob: Option<&str>,
+) -> ConceptUpsert {
+    let extra = coderadar_extra(&content, source_blob).to_string();
     ConceptUpsert::new(id.to_string(), title.to_string())
         .content(content.to_string())
         .extra(extra)
@@ -1166,31 +1374,60 @@ fn type_alias_content(t: &TypeAlias) -> serde_json::Value {
     v
 }
 
+/// File path → source_blob digest for the module concepts of this flush.
+/// Built by the caller from file bytes BEFORE any concept is asserted
+/// (put-then-assert ordering); consulted only for modules — every other
+/// kind passes `None` and keeps digest-less extras.
+pub type SourceBlobDigests = HashMap<String, String>;
+
+/// Module id (`{file}::module`) → digest lookup in a [`SourceBlobDigests`]
+/// map keyed by file path.
+fn digest_for_module(module_id: &str, digests: &SourceBlobDigests) -> Option<String> {
+    let file = module_id.strip_suffix("::module")?;
+    digests.get(file).cloned()
+}
+
 /// Build concept JSON v2 [`ConceptUpsert`]s for the WHOLE projection.
 ///
 /// Call this on the FINAL projection (post-cascade), BEFORE
 /// `persist_edges`, because edges reference concept ids and the concept
 /// upsert must land first.
-pub fn build_v2_concepts_all(projection: &ProjectedGraph) -> Vec<ConceptUpsert> {
+pub fn build_v2_concepts_all(
+    projection: &ProjectedGraph,
+    digests: &SourceBlobDigests,
+) -> Vec<ConceptUpsert> {
     let now = now_iso8601();
     let mut out: Vec<ConceptUpsert> = Vec::new();
     for m in projection.modules.values() {
-        out.push(v2_upsert(&m.id, &m.name, module_content(m), &now));
+        let digest = digest_for_module(&m.id, digests);
+        out.push(v2_upsert(
+            &m.id,
+            &m.name,
+            module_content(m),
+            &now,
+            digest.as_deref(),
+        ));
     }
     for c in projection.classes.values() {
-        out.push(v2_upsert(&c.id, &c.name, class_content(c), &now));
+        out.push(v2_upsert(&c.id, &c.name, class_content(c), &now, None));
     }
     for f in projection.functions.values() {
-        out.push(v2_upsert(&f.id, &f.name, function_content(f), &now));
+        out.push(v2_upsert(&f.id, &f.name, function_content(f), &now, None));
     }
     for i in projection.imports.values() {
-        out.push(v2_upsert(&i.id, &i.raw, import_content(i), &now));
+        out.push(v2_upsert(&i.id, &i.raw, import_content(i), &now, None));
     }
     for k in projection.constants.values() {
-        out.push(v2_upsert(&k.id, &k.name, constant_content(k), &now));
+        out.push(v2_upsert(&k.id, &k.name, constant_content(k), &now, None));
     }
     for t in projection.type_aliases.values() {
-        out.push(v2_upsert(&t.id, &t.name, type_alias_content(t), &now));
+        out.push(v2_upsert(
+            &t.id,
+            &t.name,
+            type_alias_content(t),
+            &now,
+            None,
+        ));
     }
     out
 }
@@ -1200,38 +1437,52 @@ pub fn build_v2_concepts_all(projection: &ProjectedGraph) -> Vec<ConceptUpsert> 
 pub fn build_v2_concepts_for_file(
     projection: &ProjectedGraph,
     file_path: &str,
+    digests: &SourceBlobDigests,
 ) -> Vec<ConceptUpsert> {
     let prefix = format!("{file_path}::");
     let now = now_iso8601();
     let mut out: Vec<ConceptUpsert> = Vec::new();
     for m in projection.modules.values() {
         if m.id.starts_with(&prefix) {
-            out.push(v2_upsert(&m.id, &m.name, module_content(m), &now));
+            let digest = digest_for_module(&m.id, digests);
+            out.push(v2_upsert(
+                &m.id,
+                &m.name,
+                module_content(m),
+                &now,
+                digest.as_deref(),
+            ));
         }
     }
     for c in projection.classes.values() {
         if c.id.starts_with(&prefix) {
-            out.push(v2_upsert(&c.id, &c.name, class_content(c), &now));
+            out.push(v2_upsert(&c.id, &c.name, class_content(c), &now, None));
         }
     }
     for f in projection.functions.values() {
         if f.id.starts_with(&prefix) {
-            out.push(v2_upsert(&f.id, &f.name, function_content(f), &now));
+            out.push(v2_upsert(&f.id, &f.name, function_content(f), &now, None));
         }
     }
     for i in projection.imports.values() {
         if i.id.starts_with(&prefix) {
-            out.push(v2_upsert(&i.id, &i.raw, import_content(i), &now));
+            out.push(v2_upsert(&i.id, &i.raw, import_content(i), &now, None));
         }
     }
     for k in projection.constants.values() {
         if k.id.starts_with(&prefix) {
-            out.push(v2_upsert(&k.id, &k.name, constant_content(k), &now));
+            out.push(v2_upsert(&k.id, &k.name, constant_content(k), &now, None));
         }
     }
     for t in projection.type_aliases.values() {
         if t.id.starts_with(&prefix) {
-            out.push(v2_upsert(&t.id, &t.name, type_alias_content(t), &now));
+            out.push(v2_upsert(
+                &t.id,
+                &t.name,
+                type_alias_content(t),
+                &now,
+                None,
+            ));
         }
     }
     out
@@ -2213,6 +2464,7 @@ mod tests {
                 "foo",
                 serde_json::json!({"meta_version": 2, "content_hash": hash}),
                 &now,
+                None,
             )
         };
         // Fresh id writes once, identical re-upsert writes nothing.
@@ -2227,6 +2479,7 @@ mod tests {
             "foo_renamed",
             serde_json::json!({"meta_version": 2, "content_hash": "def"}),
             &now,
+            None,
         );
         assert_eq!(store.upsert_concepts_bulk(&[renamed]).unwrap(), 1);
         // Retired-flag flip writes even with identical content (separate id
@@ -2237,6 +2490,7 @@ mod tests {
                 "qux",
                 serde_json::json!({"meta_version": 2, "content_hash": "def"}),
                 &now,
+                None,
             )
         };
         assert_eq!(store.upsert_concepts_bulk(&[mk_qux()]).unwrap(), 1);
@@ -2249,6 +2503,7 @@ mod tests {
             "bar",
             serde_json::json!({"meta_version": 2}),
             &now,
+            None,
         );
         assert_eq!(store.upsert_concepts_bulk(&[bare.clone()]).unwrap(), 1);
         assert_eq!(store.upsert_concepts_bulk(&[bare]).unwrap(), 1);
@@ -2265,6 +2520,7 @@ mod tests {
             "v1",
             serde_json::json!({"meta_version": 2, "content_hash": "abc"}),
             &now,
+            None,
         );
         assert_eq!(store.upsert_concepts_bulk(&[modern.clone()]).unwrap(), 1);
         assert_eq!(store.upsert_concepts_bulk(&[modern]).unwrap(), 0);
@@ -2282,6 +2538,7 @@ mod tests {
                     "content_hash": "stable",
                 }),
                 &now,
+                None,
             )
         };
         assert_eq!(
@@ -2325,6 +2582,7 @@ mod tests {
                     "content_hash": "same-hash",
                 }),
                 &now,
+                None,
             )
         };
         store
@@ -2394,6 +2652,7 @@ mod tests {
                     "content_hash": "same-hash",
                 }),
                 &now,
+                None,
             )
         };
         store
@@ -2567,6 +2826,132 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1));
         let now = store.reconstruct(&now_iso8601()).unwrap();
         assert!(now.concepts.contains_key("retro.py::module"));
+    }
+
+    /// §1.9 (DR-25): digest validation at the persistence boundary.
+    #[test]
+    fn validate_digest_accepts_canonical_rejects_rest() {
+        assert!(validate_digest(&"a".repeat(64)).is_ok());
+        assert!(validate_digest(&"0123456789abcdef".repeat(4)).is_ok());
+        // Short, long, uppercase, non-hex, empty.
+        assert!(validate_digest(&"a".repeat(63)).is_err());
+        assert!(validate_digest(&"a".repeat(65)).is_err());
+        assert!(validate_digest(&"A".repeat(64)).is_err());
+        assert!(validate_digest(&"g".repeat(64)).is_err());
+        assert!(validate_digest("").is_err());
+    }
+
+    /// §1.9 (DR-25): the extra read boundary — legacy generations (no key)
+    /// and malformed digests read as absent, never as errors.
+    #[test]
+    fn source_blob_of_extra_reads_new_and_legacy() {
+        let digest = "b".repeat(64);
+        let with = format!(
+            r#"{{"coderadar":{{"format":1,"source_blob":"{digest}"}}}}"#
+        );
+        assert_eq!(source_blob_of_extra(&with).as_deref(), Some(digest.as_str()));
+        // Legacy: no source_blob key.
+        assert_eq!(
+            source_blob_of_extra(r#"{"coderadar":{"format":1}}"#),
+            None
+        );
+        // Malformed: uppercase digest reads as absent.
+        let bad = r#"{"coderadar":{"format":1,"source_blob":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}"#;
+        assert_eq!(source_blob_of_extra(bad), None);
+        // Not JSON at all.
+        assert_eq!(source_blob_of_extra("not json"), None);
+    }
+
+    /// §1.9 (DR-25): put round-trip + idempotent retry (the
+    /// failure-injection property without hooks — a put with no following
+    /// assert is an orphan; retry converges on the same digest, one row).
+    #[test]
+    fn blob_put_retry_converges_on_one_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("retry.db")).unwrap();
+        let bytes = b"def f():\n    return 1\n";
+        // First put (imagine the crash before any digest assert).
+        let first = store.put_source_blob("a.py", bytes).unwrap();
+        let digest = match &first {
+            BlobOutcome::Stored { digest, .. } => digest.clone(),
+            other => panic!("expected Stored, got {other:?}"),
+        };
+        // Retry: same digest, and still exactly one blob row.
+        let second = store.put_source_blob("a.py", bytes).unwrap();
+        assert_eq!(second, first);
+        let n: i64 = runtime()
+            .block_on(async {
+                let mut rows = store
+                    .db
+                    .read_conn()
+                    .query("SELECT COUNT(*) FROM blobs", ())
+                    .await
+                    .unwrap();
+                rows.next().await.unwrap().unwrap().get(0).unwrap()
+            });
+        assert_eq!(n, 1, "content-addressed: one row for identical bytes");
+        // And the bytes come back.
+        let back: Vec<u8> = runtime()
+            .block_on(store.db.blob_get(&digest))
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, bytes);
+    }
+
+    /// §1.9 (DR-25): oversize degrades to skip+count, never an index failure.
+    #[test]
+    fn blob_put_oversize_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("big.db")).unwrap();
+        let big = vec![0u8; BLOB_MAX_BYTES + 1];
+        match store.put_source_blob("big.py", &big).unwrap() {
+            BlobOutcome::SkippedOversize { bytes } => {
+                assert_eq!(bytes, (BLOB_MAX_BYTES + 1) as u64)
+            }
+            other => panic!("expected SkippedOversize, got {other:?}"),
+        }
+    }
+
+    /// §1.9 (DR-25): policy skips — kill-switch and secret defaults.
+    #[test]
+    fn blob_put_honors_kill_switch_and_excludes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("policy.db")).unwrap();
+        // Secret default: .env gets graph coverage, no blob.
+        assert_eq!(
+            store.put_source_blob(".env", b"KEY=1\n").unwrap(),
+            BlobOutcome::SkippedExcluded
+        );
+        assert_eq!(
+            store.put_source_blob("sub/creds.env", b"x\n").unwrap(),
+            BlobOutcome::SkippedExcluded
+        );
+        // Ordinary file stores.
+        assert!(matches!(
+            store.put_source_blob("app.py", b"x\n").unwrap(),
+            BlobOutcome::Stored { .. }
+        ));
+    }
+
+    /// §1.9 (DR-25): backfill-once — a module extra missing `source_blob`
+    /// counts as changed (re-persist asserts the digest); once present and
+    /// equal, the concept filters unchanged (zero-growth).
+    #[test]
+    fn missing_digest_forces_repersist_then_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("backfill.db")).unwrap();
+        let now = now_iso8601();
+        let content =
+            serde_json::json!({"meta_version": 2, "kind": "module", "content_hash": "h"});
+        // Legacy-shaped (no digest) vs current without digest: stable.
+        let legacy = v2_upsert("m.py::module", "m", content.clone(), &now, None);
+        assert_eq!(store.upsert_concepts_bulk(&[legacy.clone()]).unwrap(), 1);
+        assert_eq!(store.upsert_concepts_bulk(&[legacy]).unwrap(), 0);
+        // Same content WITH a digest: changed (backfill), then stable.
+        let digest = "c".repeat(64);
+        let filled = v2_upsert("m.py::module", "m", content, &now, Some(&digest));
+        assert_eq!(store.upsert_concepts_bulk(&[filled.clone()]).unwrap(), 1);
+        assert_eq!(store.upsert_concepts_bulk(&[filled]).unwrap(), 0);
     }
 
     /// §0.6 (DR-25): the 0.19 blob surface round-trips through a store

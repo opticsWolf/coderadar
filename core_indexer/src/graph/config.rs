@@ -51,17 +51,58 @@ impl Default for ProjectConfig {
     }
 }
 
+/// Built-in secret patterns for `[database] blob_exclude` (§1.9, DR-30).
+///
+/// Belt over the trust-boundary argument: the store lives beside the
+/// sources, but backups and copies travel — secret-bearing files get graph
+/// coverage WITHOUT a blob. Gitignore syntax, matched against the
+/// canonical root-relative id form. User patterns MERGE over these (union,
+/// not replace: setting `blob_exclude` must never silently drop the secret
+/// defaults); full off is `store_source_blobs = false`.
+pub const SECRET_BLOB_EXCLUDE_DEFAULTS: &[&str] = &[
+    ".env",
+    ".env.*",
+    "*.env",
+    "*.pem",
+    "*.key",
+    "*.pfx",
+    "*.p12",
+    "*.jks",
+    "*.kdbx",
+    "*secret*",
+    "*credential*",
+    "*.token",
+    "id_rsa*",
+    "id_dsa*",
+];
+
 /// Where the Macrame store lives.
 #[derive(Clone, Debug)]
 pub struct DatabaseConfig {
     /// Relative to the project root, or absolute. The default is the path
     /// `analyze` hardcoded before this was configurable.
     pub path: String,
+    /// §1.9 (DR-30: default-on-with-notice). File bytes are content-addressed
+    /// into the blob store on every analyze/update_file write-through, with
+    /// the digest at `extra.coderadar.source_blob` on the file's module
+    /// concept. `false` is the kill-switch: graph coverage continues, no
+    /// bytes are stored. True by default — also on paths that never push
+    /// config (bare `analyze`), which is what default-on means.
+    pub store_source_blobs: bool,
+    /// Extra gitignore patterns (besides the secret defaults above) whose
+    /// files get graph coverage WITHOUT a blob. Merged (union) with the
+    /// defaults at `set_config`, never replacing them.
+    pub blob_exclude: Vec<String>,
 }
 impl Default for DatabaseConfig {
     fn default() -> Self {
         Self {
             path: ".coderadar/store/coderadar.db".to_string(),
+            store_source_blobs: true,
+            blob_exclude: SECRET_BLOB_EXCLUDE_DEFAULTS
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 }

@@ -85,7 +85,7 @@ DR-1–DR-24 unchanged from the graph register (closed/carried/open as stored; P
 
 | ID | Decision | Standing |
 |---|---|---|
-| DR-25 | Source history in Macrame-0.19 content-addressed blobs; digest at `extra.coderadar.source_blob` on the file module concept; `validate_digest` (64 lowercase hex) at the boundary; diffs computed on read, never stored; retention via the archive reference scan; raw-bytes-at-recorded-time + explicit unavailable/missing/invalid outcomes; PyO3 round-trip required | **open** (v0.12 §0.6/§1.9/§3.0/§3.4) |
+| DR-25 | Source history in Macrame-0.19 content-addressed blobs; digest at `extra.coderadar.source_blob` on the file module concept; `validate_digest` (64 lowercase hex) at the boundary; diffs computed on read, never stored; retention via the archive reference scan; raw-bytes-at-recorded-time + explicit unavailable/missing/invalid outcomes; PyO3 round-trip required | **part-landed** v0.11.4 (§0.6 surface) + v0.11.7 (§1.9 write path: put-then-assert on analyze/update/watcher, kill-switch + secret belt per DR-30, `blob_stats()` notice on every report; §3.0 reads + §3.4 retention remain) |
 | DR-26 | Version policy: +0.0.1 per implemented feature (`pyproject.toml` + workspace `Cargo.toml` together, one bump commit, named in the feature's DR row); patches accumulate to 0.12.0 | **open**, process-active now |
 | DR-27 | Self-hosting allow-list: derive or fix `[mutation] allow` to own dirs; state deny-wins; keep `default_dry_run` decision explicit (recommend keep `true` until D18 lands) | **open** (was P-A; P4/D18) |
 | DR-28 | Split `lib.rs` per App. E (bindings + converters + git/watcher/config/synthetics out) | **open** (was P-B; P4/D19) |

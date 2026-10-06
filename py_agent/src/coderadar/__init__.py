@@ -117,6 +117,12 @@ class UpdateReport:
     #: The file was gone from disk, so its entities were dropped instead.
     removed: bool = False
     entities_removed: int = 0
+    #: §1.9 (DR-30 notice): this update's blob outcome. Watcher batches
+    #: fold per-file reports by summation.
+    blobs_stored: int = 0
+    blobs_skipped_oversize: int = 0
+    blobs_skipped_excluded: int = 0
+    blobs_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -725,6 +731,10 @@ class CodeGraph:
                     fully_applied=bool(result.get("fully_applied", True)),
                     epoch_before=int(result.get("epoch_before", 0)),
                     epoch_after=int(result.get("epoch_after", 0)),
+                    blobs_stored=int(result.get("blobs_stored", 0)),
+                    blobs_skipped_oversize=int(result.get("blobs_skipped_oversize", 0)),
+                    blobs_skipped_excluded=int(result.get("blobs_skipped_excluded", 0)),
+                    blobs_bytes=int(result.get("blobs_bytes", 0)),
                 )
         except ImportError:
             # Nothing parsed anything, so "Clean" and fully_applied=True were
@@ -1371,9 +1381,27 @@ def watch(root: str) -> Watcher:
     return graph.watch([root])
 
 
+def blob_stats() -> dict:
+    """Cumulative blob activity backing the loaded generation (§1.9).
+
+    Reset on `analyze`/`load_snapshot`, incremented by every write-through
+    put — the DR-30 notice (counts ARE the notice). Keys: `stored`,
+    `skipped_oversize`, `skipped_excluded`, `bytes`. Empty (all zeros)
+    means no blob activity yet, or the kill-switch `[database]
+    store_source_blobs=false` is on.
+    """
+    try:
+        from coderadar._core import blob_stats as _blob_stats_rust
+        return dict(_blob_stats_rust())
+    except ImportError:
+        return {"stored": 0, "skipped_oversize": 0,
+                "skipped_excluded": 0, "bytes": 0}
+
+
 __all__ = [
     "BatchContext",
     "CodeGraph",
+    "blob_stats",
     "MutationEdit",
     "MutationError",
     "MutationPlan",
@@ -1446,6 +1474,10 @@ class Watcher:
         fully_applied = True
         epoch_before = None
         epoch_after = None
+        blobs_stored = 0
+        blobs_skipped_oversize = 0
+        blobs_skipped_excluded = 0
+        blobs_bytes = 0
 
         for file_path, change_kind in batch:
             # The watcher stats the path, so "Delete" now actually arrives;
@@ -1479,6 +1511,10 @@ class Watcher:
             new_unresolved.extend(report.new_unresolved_references)
             newly_resolved.extend(report.newly_resolved_references)
             parse_errors += report.parse_errors
+            blobs_stored += report.blobs_stored
+            blobs_skipped_oversize += report.blobs_skipped_oversize
+            blobs_skipped_excluded += report.blobs_skipped_excluded
+            blobs_bytes += report.blobs_bytes
             fully_applied = fully_applied and report.fully_applied
             if quality_rank.get(report.parse_quality, 0) > quality_rank[quality]:
                 quality = report.parse_quality
@@ -1500,6 +1536,10 @@ class Watcher:
             fully_applied=fully_applied,
             epoch_before=epoch_before if epoch_before is not None else 0,
             epoch_after=epoch_after if epoch_after is not None else 0,
+            blobs_stored=blobs_stored,
+            blobs_skipped_oversize=blobs_skipped_oversize,
+            blobs_skipped_excluded=blobs_skipped_excluded,
+            blobs_bytes=blobs_bytes,
         )
 
     def __enter__(self) -> Watcher:  # noqa: PYI034 - typing.Self needs 3.11+

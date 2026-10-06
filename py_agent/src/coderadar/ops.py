@@ -1135,6 +1135,14 @@ def reindex(with_embeddings: bool = False, full: bool = False,
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
         raise EngineError(str(e)) from None
     out: dict[str, Any] = {"stats": graph_stats()}
+    # §1.9 (DR-30 notice): blob counts ride every reindex report — full
+    # analyze resets and refills them; the cheap path accumulates the
+    # updates it applied.
+    try:
+        import coderadar
+        out["blobs"] = coderadar.blob_stats()
+    except Exception:  # noqa: BLE001 - stats must not fail the report
+        pass
     if with_embeddings:
         try:
             out["embeddings"] = compute_embeddings()

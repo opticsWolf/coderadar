@@ -1149,6 +1149,11 @@ pub struct UpdateOutcome {
     /// `CodeGraph::epoch()` immediately before and after the commit.
     pub epoch_before: u64,
     pub epoch_after: u64,
+    /// §1.9: this file's blob outcome (stored 0/1, skips, stored bytes).
+    pub blobs_stored: u64,
+    pub blobs_skipped_oversize: u64,
+    pub blobs_skipped_excluded: u64,
+    pub blobs_bytes: u64,
 }
 
 /// One entity of the updated file that differs before vs after the update.

@@ -59,6 +59,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(normalize_timestamp, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entity_at, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entities_at, m)?)?;
+    m.add_function(wrap_pyfunction!(blob_stats, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
     m.add_function(wrap_pyfunction!(index_edge_stats, m)?)?;
@@ -807,6 +808,10 @@ struct AnalyzeOutcome {
     total_entities: usize,
     failures: Vec<String>,
     panicked_workers: usize,
+    blobs_stored: u64,
+    blobs_skipped_oversize: u64,
+    blobs_skipped_excluded: u64,
+    blobs_bytes: u64,
 }
 
 /// Index a project from source and make it the loaded graph.
@@ -840,6 +845,11 @@ fn analyze(
     // Silence used to be indistinguishable from success here.
     dict.set_item("extraction_failures", outcome.failures)?;
     dict.set_item("panicked_workers", outcome.panicked_workers)?;
+    // §1.9 notice: blob counts ride every analyze report (DR-30).
+    dict.set_item("blobs_stored", outcome.blobs_stored)?;
+    dict.set_item("blobs_skipped_oversize", outcome.blobs_skipped_oversize)?;
+    dict.set_item("blobs_skipped_excluded", outcome.blobs_skipped_excluded)?;
+    dict.set_item("blobs_bytes", outcome.blobs_bytes)?;
     Ok(dict.into())
 }
 
@@ -847,6 +857,9 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
     use crate::types::{Language, ParseQuality};
     use std::fs;
 
+    // §1.9: cumulative blob counters describe the generation this analyze
+    // produces — reset here, incremented by every write-through put.
+    crate::storage::reset_blob_stats();
     let config = active_config();
     let mut graph = CodeGraph::new((*config).clone());
     // F14: the write-time canonical form strips THIS root — it must be
@@ -905,6 +918,9 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
     // never make good concepts look stale merely because source was missed.
     let mut reconciliation_safe = root_path.is_dir();
     let mut all_concepts: Vec<macrame::ConceptUpsert> = Vec::new();
+    // §1.9: file path → source_blob digest, filled while task sources are
+    // alive (end of the walk scope) and read at the v2 flush below.
+    let mut blob_digests = crate::storage::SourceBlobDigests::new();
 
     if root_path.is_dir() {
         // Phase 1: Collect file paths + source content for all indexable files.
@@ -1129,6 +1145,27 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                 graph.commit_projection(proj);
             }
         } // if !tasks.is_empty()
+        // §1.9 put-then-assert, part 1: every file's bytes hit the blob
+        // store while sources are still in memory. Digests are asserted
+        // into module concepts at the v2 flush below — a crash between
+        // leaves orphan blobs at worst (bounded, documented), never a
+        // live digest pointing at absent bytes; retry converges.
+        if let Some(ref store) = graph.store {
+            for task in &tasks {
+                match store.put_source_blob(&task.path, task.source.as_bytes()) {
+                    Ok(crate::storage::BlobOutcome::Stored { digest, .. }) => {
+                        blob_digests.insert(task.path.clone(), digest);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        eprintln!(
+                            "[diag] blob put failed for {}: {e:?} — continuing without blob",
+                            task.path
+                        );
+                    }
+                }
+            }
+        }
     }
 
     // Compute MRO and run resolution cascade on all calls.
@@ -1157,8 +1194,13 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         graph.resolve_overrides(&mut projection);
         graph.resolve_all_calls(&mut projection);
         // Concept JSON v2 flush — post-cascade, pre-edge (FK order).
+        // Part 2 of put-then-assert: digests computed above are asserted
+        // here. A degraded put (no digest) keeps graph coverage and
+        // self-heals next run (missing digest ⇒ extra mismatch ⇒
+        // re-persist); a failed index for a blob problem would invert the
+        // priority (graph primary, bytes secondary).
         if let Some(ref store) = graph.store {
-            let v2 = crate::storage::build_v2_concepts_all(&projection);
+            let v2 = crate::storage::build_v2_concepts_all(&projection, &blob_digests);
             current_concept_ids = v2.iter().map(|concept| concept.id.clone()).collect();
             if let Err(e) = store.upsert_concepts_bulk(&v2) {
                 concept_flush_succeeded = false;
@@ -1266,11 +1308,16 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
     let mut guard = GLOBAL_GRAPH.write();
     *guard = Some(graph);
 
+    let blob_totals = crate::storage::blob_stats_snapshot();
     AnalyzeOutcome {
         files_indexed,
         total_entities,
         failures,
         panicked_workers,
+        blobs_stored: blob_totals.stored,
+        blobs_skipped_oversize: blob_totals.skipped_oversize,
+        blobs_skipped_excluded: blob_totals.skipped_excluded,
+        blobs_bytes: blob_totals.bytes,
     }
 }
 
@@ -1446,6 +1493,11 @@ fn update_file(
     dict.set_item("newly_resolved", refs(&outcome.newly_resolved))?;
     dict.set_item("epoch_before", outcome.epoch_before)?;
     dict.set_item("epoch_after", outcome.epoch_after)?;
+    // §1.9 notice: per-file blob outcome rides the update report (DR-30).
+    dict.set_item("blobs_stored", outcome.blobs_stored)?;
+    dict.set_item("blobs_skipped_oversize", outcome.blobs_skipped_oversize)?;
+    dict.set_item("blobs_skipped_excluded", outcome.blobs_skipped_excluded)?;
+    dict.set_item("blobs_bytes", outcome.blobs_bytes)?;
     Ok(dict.into())
 }
 
@@ -1918,6 +1970,29 @@ fn set_config(py: Python<'_>, cfg: &Bound<'_, PyDict>) -> PyResult<PyObject> {
 
     if let Some(db) = cfg_section(cfg, "database")? {
         take!(db, "path", "database.path", c.database.path, String);
+        take!(
+            db,
+            "store_source_blobs",
+            "database.store_source_blobs",
+            c.database.store_source_blobs,
+            bool
+        );
+        // Merge, not replace: user patterns UNION the built-in secret
+        // defaults (see SECRET_BLOB_EXCLUDE_DEFAULTS) so adding one pattern
+        // can never silently drop the secret belt. Full off is the
+        // kill-switch above, not an empty list.
+        if let Some(extra) = cfg_value::<Vec<String>>(&db, "blob_exclude", "database.blob_exclude")? {
+            let mut merged = c.database.blob_exclude.clone();
+            for pat in extra {
+                if !merged.contains(&pat) {
+                    merged.push(pat);
+                }
+            }
+            merged.sort();
+            applied.set_item("database.blob_exclude", merged.clone())?;
+            c.database.blob_exclude = merged;
+            consumed.insert("database.blob_exclude".to_string());
+        }
     }
 
     if let Some(res) = cfg_section(cfg, "resolution")? {
@@ -2124,6 +2199,8 @@ fn get_config(py: Python<'_>) -> PyResult<PyObject> {
 
     let database = PyDict::new(py);
     database.set_item("path", c.database.path.clone())?;
+    database.set_item("store_source_blobs", c.database.store_source_blobs)?;
+    database.set_item("blob_exclude", c.database.blob_exclude.clone())?;
     out.set_item("database", database)?;
 
     let resolution = PyDict::new(py);
@@ -2279,6 +2356,21 @@ fn lookup_entities_at(
     let out = PyDict::new(py);
     out.set_item("entities", by_id)?;
     out.set_item("predates_recorded_history", predates)?;
+    Ok(out.into())
+}
+
+/// Cumulative blob activity backing the currently loaded graph generation
+/// (§1.9, DR-30 notice): reset on `analyze`/`load_snapshot`, incremented
+/// by every write-through put. `ops.reindex`, the watcher and status read
+/// this — per-call threading would miss the cheap path's internal updates.
+#[pyfunction]
+fn blob_stats(py: Python<'_>) -> PyResult<PyObject> {
+    let stats = crate::storage::blob_stats_snapshot();
+    let out = PyDict::new(py);
+    out.set_item("stored", stats.stored)?;
+    out.set_item("skipped_oversize", stats.skipped_oversize)?;
+    out.set_item("skipped_excluded", stats.skipped_excluded)?;
+    out.set_item("bytes", stats.bytes)?;
     Ok(out.into())
 }
 
@@ -3645,6 +3737,8 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
 
             let revision = state.seq_anchor;
             *LEDGER_REVISION.write() = Some(revision);
+            // §1.9: a loaded generation has no blob activity backing it yet.
+            crate::storage::reset_blob_stats();
             *GLOBAL_GRAPH.write() = Some(graph);
             // F14: canonicalized absolute, exactly like analyze_inner — a
             // relative root here made every later strip_prefix fail and

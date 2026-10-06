@@ -434,7 +434,8 @@ mod tests {
     }
 
     fn state_from(g: &ProjectedGraph, edges: Vec<(String, String, String)>) -> MaterializedState {
-        let concepts = build_v2_concepts_all(g);
+        let concepts =
+            build_v2_concepts_all(g, &std::collections::HashMap::new());
         let mut map = HashMap::new();
         for c in &concepts {
             map.insert(
