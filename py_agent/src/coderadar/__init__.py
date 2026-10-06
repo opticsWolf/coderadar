@@ -14,6 +14,7 @@ v3.6 Architecture:
 
 from __future__ import annotations
 
+import contextlib
 import functools
 
 #: Single version source (F11 fix): pyproject.toml is authoritative.
@@ -1127,6 +1128,14 @@ def analyze(root: str, create_store: bool = False, exclude: list | None = None) 
     # v0.5: Extract __all__ star exports for wildcard import resolution.
     # Must run after Rust analysis populates modules, before MCP server reads.
     _apply_star_exports(root)
+
+    # DR-31: record the honored config so the cheap path can detect a
+    # later `.coderadar.toml` change (BUGS_QUIRKS #3). Best-effort: never
+    # fail the index when the sidecar cannot be written.
+    with contextlib.suppress(OSError):
+        from coderadar.coldstart import _record_indexed_config as _record_cfg
+
+        _record_cfg(root)
 
     return CodeGraph()
 

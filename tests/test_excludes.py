@@ -110,3 +110,21 @@ def test_exclude_list_shows_gitignore_layer_and_effect(tmp_path, monkeypatch):
     assert "comment" not in out.output  # comments are not patterns
     assert "Effect on" in out.output
     assert "3 file(s)" in out.output  # .gitignore + a.py + b.log walked
+
+
+def test_config_change_forces_full_reindex(tmp_path):
+    # DR-31 (BUGS_QUIRKS #3): adding an exclude then reindexing must drop
+    # the newly-excluded files even though no source file changed — the
+    # cheap path used to load the store and apply nothing.
+    from coderadar import analyze
+    from coderadar.coldstart import build_graph
+
+    (tmp_path / "keep.py").write_text("def k():\n    pass\n")
+    (tmp_path / "big").mkdir()
+    (tmp_path / "big" / "drop.py").write_text("def d():\n    pass\n")
+    analyze(str(tmp_path), create_store=True)
+    assert build_graph(str(tmp_path)).find("big/drop.py::module") is not None
+    (tmp_path / ".coderadar.toml").write_text('[project]\nexclude = ["big/"]\n')
+    g = build_graph(str(tmp_path))
+    assert g.find("big/drop.py::module") is None
+    assert g.find("keep.py::module") is not None
