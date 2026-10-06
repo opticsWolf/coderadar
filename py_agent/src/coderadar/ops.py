@@ -1221,7 +1221,17 @@ def reindex(with_embeddings: bool = False, full: bool = False,
     changed files are re-parsed; without a loadable store the whole tree is
     walked. `full` (or one-shot `exclude` patterns) always walks the whole
     tree. Returns ``{"stats", "embeddings"?, "embeddings_error"?}``.
+
+    Step-4 surface: the root's `.coderadar.toml` is (re-)activated first,
+    so MCP/API reindex picks up config edits exactly like the CLI (which
+    `_activate`s per command). A missing or broken file keeps the current
+    core config — reindex must never fail for a config problem.
     """
+    try:
+        from coderadar.config import activate_config as _activate_cfg
+        _activate_cfg(Path(root))
+    except Exception:  # noqa: BLE001 - config must not fail the reindex
+        pass
     try:
         from coderadar._core import graph_stats
     except ImportError as e:

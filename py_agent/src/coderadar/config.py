@@ -97,6 +97,11 @@ class DatabaseConfig(BaseModel):
     """
     # Relative to the project root unless absolute. Read by `analyze`.
     path: str = ".coderadar/store/coderadar.db"
+    # §1.9 (DR-30): source-blob write path. `store_source_blobs=false` is
+    # the kill-switch (default on with notice); `blob_exclude` unions with
+    # the built-in secret defaults at `set_config`, never replaces them.
+    store_source_blobs: bool = True
+    blob_exclude: list[str] = []
 
 
 class MutationConfig(BaseModel):

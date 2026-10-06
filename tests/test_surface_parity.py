@@ -232,6 +232,25 @@ class TestRecoveryArgsMatch:
         assert "model_name" in props
 
 
+class TestReindexReactivatesConfig:
+    """`ops.reindex` picks up `.coderadar.toml` edits like the CLI does."""
+
+    def test_toml_kill_switch_reaches_the_core(self, project):
+        from coderadar._core import get_config, set_config
+
+        (project / "pkg" / "mod.py").write_text(
+            "def f():\n    return 1\n", encoding="utf-8")
+        coderadar.analyze(".", create_store=True)
+        assert get_config()["database"]["store_source_blobs"] is True
+        (project / ".coderadar.toml").write_text(
+            "[database]\nstore_source_blobs = false\n", encoding="utf-8")
+        try:
+            ops.reindex()
+            assert get_config()["database"]["store_source_blobs"] is False
+        finally:
+            set_config({"database": {"store_source_blobs": True}})
+
+
 class TestStoreRepairOpsSeam:
     """`store-repair` answers from `ops.store_repair` (CLI-only surface,
     no MCP tool by design — destructive `--delete`, and re-analyze already

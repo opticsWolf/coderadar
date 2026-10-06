@@ -89,6 +89,12 @@ except ImportError:
 # for another.
 EDGE_KIND_CALLS = "calls"
 
+# Step-4 surface: `coderadar.ops` answers attribute access after a bare
+# `import coderadar` (the shared seam's errors catch as
+# `coderadar.ops.OpError`, ...). `ops` imports stdlib only at module level,
+# so this cannot cycle back through the package.
+from . import ops
+
 
 def _deprecated(old: str, new: str) -> None:
     """Warn once per call site that `old` is now spelled `new`."""
@@ -707,16 +713,19 @@ class CodeGraph:
         dropped from the graph instead: the report says ``removed`` and
         how many entities went.
         """
-        removed = 0
+        dropped: dict | None = None
         if content is None and not Path(file_path).exists():
-            removed = self.remove_file(file_path)
-        if removed:  # a file never indexed falls through and fails below
+            dropped = self._remove_file_full(file_path)
+        if dropped and dropped["entities_removed"]:
+            # a file never indexed falls through and fails below
             return UpdateReport(
                 affected_files=[file_path], changed_symbols=[],
                 new_unresolved_references=[], newly_resolved_references=[],
                 elapsed_ms=0.0, parse_quality="Removed", parse_errors=0,
-                fully_applied=True, epoch_before=0, epoch_after=0,
-                removed=True, entities_removed=removed,
+                fully_applied=True,
+                epoch_before=dropped["epoch_before"],
+                epoch_after=dropped["epoch_after"],
+                removed=True, entities_removed=dropped["entities_removed"],
             )
         try:
             from coderadar._core import update_file as _update_file_rust
@@ -772,12 +781,11 @@ class CodeGraph:
             fully_applied=False, epoch_before=0, epoch_after=0,
         )
 
-    @_bound_to_loaded_project
-    def remove_file(self, file_path: str) -> int:
-        """Drop a deleted file's entities from the graph.
+    def _remove_file_full(self, file_path: str) -> dict:
+        """Drop a deleted file; full report (epochs included).
 
-        `update_file` does this too when it finds the file gone from disk.
-        Returns the number of entities removed.
+        `remove_file` keeps the historic int return; this is the seam
+        `update_file`'s delete-drop branch reports through.
         """
         try:
             from coderadar._core import remove_file as _remove_file_rust
@@ -787,7 +795,20 @@ class CodeGraph:
                 "nothing can be removed from the graph."
             ) from exc
         result = _remove_file_rust(file_path)
-        return int(result.get("entities_removed", 0))
+        return {
+            "entities_removed": int(result.get("entities_removed", 0)),
+            "epoch_before": int(result.get("epoch_before", 0)),
+            "epoch_after": int(result.get("epoch_after", 0)),
+        }
+
+    @_bound_to_loaded_project
+    def remove_file(self, file_path: str) -> int:
+        """Drop a deleted file's entities from the graph.
+
+        `update_file` does this too when it finds the file gone from disk.
+        Returns the number of entities removed.
+        """
+        return self._remove_file_full(file_path)["entities_removed"]
 
     def watch(self, paths: list[str] | None = None,
               debounce_ms: int | None = None,
@@ -1410,7 +1431,9 @@ def blob_stats() -> dict:
 __all__ = [
     "BatchContext",
     "CodeGraph",
+    "CodeRadarError",
     "blob_stats",
+    "ops",
     "MutationEdit",
     "MutationError",
     "MutationPlan",

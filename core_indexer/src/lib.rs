@@ -1510,6 +1510,8 @@ fn remove_file(file_path: &str) -> PyResult<PyObject> {
         // F14: remove by the canonical form or the walk-form entry is
         // never found (forward-slash input vs `\` -joined stored ids).
         let canonical = crate::graph::module_resolution::canonical_file_form(file_path);
+        // Step-4 surface: delete-drop reports real epochs (was 0/0).
+        let epoch_before = graph.epoch();
         let mut removed = graph.remove_file(&canonical);
         // The in-memory projection may have lost track of concepts written by
         // an interrupted or older indexer. Use the indexed `extra.file_path`
@@ -1539,6 +1541,8 @@ fn remove_file(file_path: &str) -> PyResult<PyObject> {
         dict.set_item("entities_removed", removed.len())?;
         dict.set_item("removed_ids", removed)?;
         dict.set_item("elapsed_ms", started.elapsed().as_secs_f64() * 1000.0)?;
+        dict.set_item("epoch_before", epoch_before)?;
+        dict.set_item("epoch_after", graph.epoch())?;
         Ok(dict.into())
     })
 }

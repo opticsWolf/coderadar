@@ -19,7 +19,23 @@ from . import __version__
 console = Console(soft_wrap=True)
 # R2-15/R2-13: diagnostics (cold-start notes, fallbacks, config nudges)
 # go to stderr, so stdout stays machine-readable (pipes, --format json).
-err_console = Console(file=sys.stderr)
+class _LazyErrConsole:
+    """`err_console` without the import-time stderr bind (step-4 surface).
+
+    Importing `cli` must not touch stderr: test collectors and library
+    importers get a pristine stream, and the first real diagnostic pays
+    for the Console exactly once. Call sites are unchanged (`err_console`
+    still answers `.print`).
+    """
+    _console = None
+
+    def __getattr__(self, name):
+        if type(self)._console is None:
+            type(self)._console = Console(file=sys.stderr)
+        return getattr(type(self)._console, name)
+
+
+err_console = _LazyErrConsole()
 
 
 def _ledger_synthetic_edge_kind(resolver_name: str, edge_kind: str) -> str:
