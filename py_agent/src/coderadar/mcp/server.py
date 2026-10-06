@@ -1353,9 +1353,9 @@ def _search_similar(graph: Any, query: str, top_k: int) -> str:
     try:
         results = ops.search_similar(query, top_k)
     except ops.MissingDependency:
-        return render.FASTEMBED_MISSING
+        return render.fastembed_missing()
     except ops.NoEmbeddings:
-        return render.NO_EMBEDDINGS
+        return render.no_embeddings()
     except ops.EngineError as e:
         return str(e)
     except ops.OpError as e:

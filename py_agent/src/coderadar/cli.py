@@ -441,11 +441,12 @@ def _fail(e) -> NoReturn:
     elif isinstance(e, ops.NotFound):
         msg = e.detail or render.not_found(e.entity_id, e.candidates, "`coderadar search`")
     elif isinstance(e, ops.MutationFailed):
-        msg = render.mutation_error(str(e))
+        msg = render.mutation_error(str(e), update_file="`coderadar update-file`")
     elif isinstance(e, ops.MissingDependency):
-        msg = render.FASTEMBED_MISSING
+        msg = render.fastembed_missing(compute="`coderadar compute-embeddings`")
     elif isinstance(e, ops.NoEmbeddings):
-        msg = render.NO_EMBEDDINGS
+        msg = render.no_embeddings(compute="`coderadar compute-embeddings`",
+                                   reindex="`coderadar reindex --with-embeddings`")
     else:
         msg = str(e)
     click.echo(msg, err=True)
@@ -502,10 +503,14 @@ def explore(symbols: tuple, query_text: str, direction: str, max_files: int, fmt
     try:
         result = ops.explore(query_text, list(symbols), direction, max_files)
     except ops.InvalidRequest:
-        click.echo(render.explore_usage(), err=True)
+        click.echo(render.explore_usage(
+            example='coderadar explore "User.save authenticate"'), err=True)
         raise SystemExit(2) from None
     except ops.NotFound:
-        click.echo(render.explore_miss(ops.parse_names(query_text, list(symbols))), err=True)
+        click.echo(render.explore_miss(
+            ops.parse_names(query_text, list(symbols)),
+            search="`coderadar search`",
+            search_similar="`coderadar search-similar`"), err=True)
         raise SystemExit(1) from None
     except ops.OpError as e:
         _fail(e)
@@ -535,7 +540,9 @@ def search(query_text: str, kind: str | None, top_k: int, fmt: str):
     from . import ops, render
     _enter_project()
     _op(fmt, lambda: ops.search(query_text, kind, top_k),
-        lambda rows: render.search(query_text, kind, rows))
+        lambda rows: render.search(
+            query_text, kind, rows, explore="`coderadar explore`",
+            search_similar="`coderadar search-similar`"))
 
 
 @main.command()
@@ -559,7 +566,8 @@ def resolve(name: str, limit: int, fmt: str):
     (MCP coderadar_resolve)."""
     from . import ops, render
     _enter_project()
-    _op(fmt, lambda: ops.resolve(name, limit), render.resolve)
+    _op(fmt, lambda: ops.resolve(name, limit),
+        lambda result: render.resolve(result, search="`coderadar search`"))
 
 
 @main.command()
@@ -629,7 +637,9 @@ def compute_embeddings(model_name: str | None, batch_size: int, fmt: str):
     """Compute embeddings for every indexed entity (MCP coderadar_compute_embeddings)."""
     from . import ops, render
     _enter_project()
-    _op(fmt, lambda: ops.compute_embeddings(model_name, batch_size), render.compute_embeddings)
+    _op(fmt, lambda: ops.compute_embeddings(model_name, batch_size),
+        lambda metrics: render.compute_embeddings(
+            metrics, search_similar="`coderadar search-similar`"))
 
 
 @main.command(name="module-children")
@@ -652,7 +662,11 @@ def as_of(timestamp: str, symbols: tuple, query_text: str, fmt: str):
     """Look SYMBOLS up as of TIMESTAMP (MCP coderadar_as_of)."""
     from . import ops, render
     _enter_project()
-    _op(fmt, lambda: ops.as_of(timestamp, query_text, list(symbols)), render.as_of)
+    _op(fmt, lambda: ops.as_of(timestamp, query_text, list(symbols)),
+        lambda result: render.as_of(
+            result,
+            example=f'coderadar as-of --timestamp "{timestamp}" --symbols User',
+            query="`coderadar query`", search="`coderadar search`"))
 
 
 @main.command()

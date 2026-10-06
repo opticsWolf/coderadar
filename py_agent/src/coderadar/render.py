@@ -27,7 +27,9 @@ def not_found(entity_id: str, candidates: list[dict], hint: str = "coderadar_sea
     return "\n".join(lines)
 
 
-def search_miss(query: str, kind: str | None) -> str:
+def search_miss(query: str, kind: str | None, *,
+                search_similar: str = "`coderadar_search_similar`",
+                explore: str = "`coderadar_explore`") -> str:
     """A miss that says what was actually tried.
 
     "Try broader terms" made an empty result look like the index was missing
@@ -54,15 +56,18 @@ def search_miss(query: str, kind: str | None) -> str:
             "and docstrings and hit nothing."
         )
     out.append(
-        "Escape hatches: `coderadar_search_similar` (semantic, embedding-based) "
-        "or `coderadar_explore` with explicit `symbols` for known names."
+        f"Escape hatches: {search_similar} (semantic, embedding-based) "
+        f"or {explore} with explicit `symbols` for known names."
     )
     return "\n".join(out)
 
 
-def search(query: str, kind: str | None, results: list[dict]) -> str:
+def search(query: str, kind: str | None, results: list[dict], *,
+           search_similar: str = "`coderadar_search_similar`",
+           explore: str = "`coderadar_explore`") -> str:
     if not results:
-        return search_miss(query, kind)
+        return search_miss(query, kind,
+                           search_similar=search_similar, explore=explore)
     lines = [f"## Search: `{query}`", f"Found {len(results)} result(s)", ""]
     for i, entity in enumerate(results, 1):
         lines.append(f"### {i}. `{entity.get('name', '?')}` ({entity.get('kind', '?')})")
@@ -188,11 +193,11 @@ def module_children(result: dict) -> str:
     return "\n".join(lines)
 
 
-def resolve(result: dict) -> str:
+def resolve(result: dict, *, search: str = "`coderadar_search`") -> str:
     name, results = result["name"], result["results"]
     if result["mode"] == "route":
         if not results:
-            return f"No handler found for route `{name}`. Try coderadar_search."
+            return f"No handler found for route `{name}`. Try {search}."
         lines = [f"## Route Resolution: `{name}`", f"Found {len(results)} handler(s)", ""]
         for i, r in enumerate(results, 1):
             lines.append(f"### {i}. `{r.get('name', '?')}` ({r.get('kind', '?')}) — "
@@ -206,7 +211,7 @@ def resolve(result: dict) -> str:
         return "\n".join(lines)
     if not results:
         return (f"No framework resolver claimed `{name}`. "
-                f"Try coderadar_search for a broader search.")
+                f"Try {search} for a broader search.")
     lines = [f"## Reference Resolution: `{name}`", f"Found {len(results)} result(s)", ""]
     for i, r in enumerate(results, 1):
         lines.append(f"### {i}. `{r.get('name', '?')}` ({r.get('kind', '?')}) — "
@@ -444,20 +449,22 @@ POINTER_HEADER = "**Not shown above — explore these names for their source**"
 """Header for files trimmed by the output budget."""
 
 
-def explore_usage() -> str:
+def explore_usage(*, example: str = 'coderadar_explore(query="User.save authenticate")') -> str:
     return (
         "Please provide symbol names or a question to explore. "
-        'For example: coderadar_explore(query="User.save authenticate")'
+        f"For example: {example}"
     )
 
 
-def explore_miss(names: list[str]) -> str:
+def explore_miss(names: list[str], *,
+                 search: str = "`coderadar_search`",
+                 search_similar: str = "`coderadar_search_similar`") -> str:
     name_list = ", ".join(f"`{n}`" for n in names)
     return (
         f"Couldn't find {name_list} in the index. Each name was matched "
         "exactly, then as search tokens, against names, signatures and "
-        "docstrings. Try a single well-known symbol, `coderadar_search` "
-        "with one token, or `coderadar_search_similar` for semantic search."
+        f"docstrings. Try a single well-known symbol, {search} "
+        f"with one token, or {search_similar} for semantic search."
     )
 
 
@@ -725,34 +732,46 @@ def search_similar(query: str, results: list[dict]) -> str:
     return "\n".join(lines)
 
 
-FASTEMBED_MISSING = (
-    "Semantic search requires `fastembed` to be installed. "
-    "Run: pip install fastembed\n"
-    "Then run compute_embeddings() to index all entities."
-)
-
-NO_EMBEDDINGS = (
-    "No embeddings found and auto-computation failed. "
-    "Run coderadar_compute_embeddings first, or "
-    "coderadar_reindex with_embeddings=True."
-)
+def fastembed_missing(compute: str = "`coderadar_compute_embeddings`") -> str:
+    """Missing-dependency notice (MCP tool name by default, CLI spelling
+    at the CLI call site)."""
+    return (
+        "Semantic search requires `fastembed` to be installed. "
+        "Run: pip install fastembed\n"
+        f"Then run {compute} to index all entities."
+    )
 
 
-def compute_embeddings(metrics: dict) -> str:
+def no_embeddings(compute: str = "`coderadar_compute_embeddings`",
+                  reindex: str = "`coderadar_reindex with_embeddings=True`") -> str:
+    """No-embeddings notice (vocabulary parameterized like the rest)."""
+    return (
+        "No embeddings found and auto-computation failed. "
+        f"Run {compute} first, or {reindex}."
+    )
+
+
+def compute_embeddings(metrics: dict, *,
+                       search_similar: str = "`coderadar_search_similar`") -> str:
     return (
         f"## Embeddings Complete\n\n"
         f"- **Generated:** {metrics.get('generated', 0)}\n"
         f"- **Cached (unchanged):** {metrics.get('cached', 0)}\n"
         f"- **Total entities:** {metrics.get('total', 0)}\n"
         f"- **Errors:** {metrics.get('errors', 0)}\n\n"
-        f"Semantic search (coderadar_search_similar) is now available."
+        f"Semantic search ({search_similar}) is now available."
     )
 
 
 # ── Temporal ──────────────────────────────────────────────────────────────
 
-def as_of(result: dict) -> str:
+def as_of(result: dict, *,
+          example: str | None = None,
+          query: str = "`coderadar_query`",
+          search: str = "`coderadar_search`") -> str:
     timestamp = result["timestamp"]
+    if example is None:
+        example = f'coderadar_as_of(timestamp="{timestamp}", symbols=["User"])'
     if not result["names"]:
         # Nothing is loaded at this point; as_of resolves per symbol.
         return "\n".join([
@@ -760,13 +779,12 @@ def as_of(result: dict) -> str:
             "",
             (
                 "Pass `symbols` to look entities up as they were at this "
-                "timestamp — for example "
-                f'coderadar_as_of(timestamp="{timestamp}", symbols=["User"]).'
+                f"timestamp — for example {example}."
             ),
             "",
             (
                 "Only symbol lookup is reconstructed from the ledger. "
-                "`coderadar_query` and `coderadar_search` always run against the "
+                f"{query} and {search} always run against the "
                 "current index."
             ),
         ])
@@ -796,14 +814,14 @@ def edit(outcome: dict, apply_hint: str = "call again with `dry_run=False`") -> 
     return note + mutation_applied(outcome["result"], plan.unverified_sites)
 
 
-def mutation_error(raw: str) -> str:
+def mutation_error(raw: str, *, update_file: str = "`coderadar_update_file`") -> str:
     """Translate raw engine errors into LLM-actionable prose (F10 fix)."""
     if "StaleIndex" in raw or "stale" in raw.lower():
         return (
             "## Mutation Rejected — Stale Index\n\n"
             "The file changed on disk after it was indexed, so the planned "
             "span no longer lines up. Nothing was written.\n\n"
-            "**Next step:** run `coderadar_update_file` on the file (or "
+            f"**Next step:** run {update_file} on the file (or "
             "re-analyze), then retry the mutation.\n\n"
             f"<details>Raw error: `{raw[:300]}`</details>"
         )

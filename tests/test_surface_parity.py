@@ -232,6 +232,22 @@ class TestRecoveryArgsMatch:
         assert "model_name" in props
 
 
+class TestCliVocabulary:
+    """CLI text never names `coderadar_*` tools (MCP vocabulary leaks)."""
+
+    def test_miss_paths_use_cli_spellings(self, project):
+        coderadar.analyze(".")
+        for args in (["search", "zzzz_no_such_token"],
+                     ["explore", "zzzz_no_such_symbol"],
+                     ["resolve", "zzzz_no_such_route"],
+                     ["as-of", "2020-01-01T00:00:00Z"]):
+            result = _run(*args)
+            combined = (result.output or "") + (result.stderr or "")
+            assert "coderadar_" not in combined, (args, combined)
+        assert "coderadar search" in _run(
+            "search", "zzzz_no_such_token").output
+
+
 class TestReindexReactivatesConfig:
     """`ops.reindex` picks up `.coderadar.toml` edits like the CLI does."""
 
