@@ -91,6 +91,7 @@ DR-1–DR-24 unchanged from the graph register (closed/carried/open as stored; P
 | DR-28 | Split `lib.rs` per App. E (bindings + converters + git/watcher/config/synthetics out) | **open** (was P-B; P4/D19) |
 | DR-29 | Residue: `resolve/mod.rs:2-3` header + delete stale flatbuffer `.pyc` | **open** (was P-C; P4 first) |
 | DR-30 | Source-blob security/retention: opt-in vs default-on-with-notice; at-rest coverage for hot DB, cold archive, backups/exports; permissions, retention, deletion/erasure; secret-sentinel fixture | **open** (blocks default blob writes) |
+| DR-34 | FTS5 keyword search over concept text as the find-symbols-mentioning-X surface (§1.10): `macrame::vector::keyword_search` + `escape_fts5_query` over existing v2 JSON, escaped-by-default with opt-in raw, live-only, bodies stay in blobs; ops contract now, MCP/CLI binding in step 4 | **proposed** (spike-proven 2026-10-06; number skips graph-held DR-31–33) |
 
 Process rule (DR-26 + plan gate): no item is done until its DR row carries status + commit hash in the same session; the release gate reads the register, not memory.
 
