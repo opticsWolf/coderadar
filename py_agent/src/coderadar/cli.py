@@ -1012,33 +1012,22 @@ _hidden_alias(git_diff, "git-diff", "git diff")
 def callers(entity_id: str):
     """List direct callers of ENTITY_ID (transitive: MCP coderadar_affected)."""
     _enter_project()
-    from .query import MacrameQuery
+    from . import ops, render
 
-    graph = _ensure_graph()
-    mq = MacrameQuery(graph)
-    results = mq.callers_of(entity_id)
+    _ensure_graph()
+    results = ops.callers(entity_id)
 
     if not results:
         # R2-16: typo'd ids reported the same "No callers" as truly
         # callerless entities. Pseudo-targets (external::) are addressable
         # graph members, not unknowns.
-        if mq.find(entity_id) is None and not entity_id.startswith("external::"):
+        if ops.find_entity(entity_id) is None and not entity_id.startswith("external::"):
             console.print(f"[yellow]Unknown entity: {entity_id}[/yellow]")
         else:
             console.print(f"[yellow]No callers found for {entity_id}[/yellow]")
         return
 
-    console.print(f"[bold]Callers of {entity_id}:[/bold]")
-    for r in results:
-        _rid = str(r.get('id', r.get('entity_id', '?')))
-        if _rid.startswith('external::'):
-            # R2-1: external/builtin targets have no file/line -- say so.
-            console.print(f"  {_rid} (external)")
-            continue
-        _f = r.get('file', None) or r.get('file_path', None) or r.get('path', None)
-        if not _f and '::' in _rid:
-            _f = _rid.split('::')[0]
-        console.print(f"  {_rid} ({_f or '?'}:{r.get('line', '?')})")
+    console.print(render.callers(entity_id, results))
 
 
 @main.command()
@@ -1046,31 +1035,20 @@ def callers(entity_id: str):
 def callees(entity_id: str):
     """List direct callees of ENTITY_ID."""
     _enter_project()
-    from .query import MacrameQuery
+    from . import ops, render
 
-    graph = _ensure_graph()
-    mq = MacrameQuery(graph)
-    results = mq.callees_of(entity_id)
+    _ensure_graph()
+    results = ops.callees(entity_id)
 
     if not results:
         # R2-16: see callers() above.
-        if mq.find(entity_id) is None and not entity_id.startswith("external::"):
+        if ops.find_entity(entity_id) is None and not entity_id.startswith("external::"):
             console.print(f"[yellow]Unknown entity: {entity_id}[/yellow]")
         else:
             console.print(f"[yellow]No callees from {entity_id}[/yellow]")
         return
 
-    console.print(f"[bold]Callees from {entity_id}:[/bold]")
-    for r in results:
-        _rid = str(r.get('id', r.get('entity_id', '?')))
-        if _rid.startswith('external::'):
-            # R2-1: external/builtin targets have no file/line -- say so.
-            console.print(f"  {_rid} (external)")
-            continue
-        _f = r.get('file', None) or r.get('file_path', None) or r.get('path', None)
-        if not _f and '::' in _rid:
-            _f = _rid.split('::')[0]
-        console.print(f"  {_rid} ({_f or '?'}:{r.get('line', '?')})")
+    console.print(render.callees(entity_id, results))
 
 
 @main.command()

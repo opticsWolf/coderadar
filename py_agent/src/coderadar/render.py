@@ -81,6 +81,35 @@ def search(query: str, kind: str | None, results: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _caller_rows(results: list[dict]) -> list[str]:
+    """One line per caller/callee row (R2-1 external spelling shared)."""
+    lines = []
+    for r in results:
+        rid = str(r.get("id", r.get("entity_id", "?")))
+        if rid.startswith("external::"):
+            lines.append(f"- `{rid}` (external)")
+            continue
+        f = r.get("file", None) or r.get("file_path", None) or r.get("path", None)
+        if not f and "::" in rid:
+            f = rid.split("::")[0]
+        lines.append(f"- `{rid}` (`{f or '?'}`:{r.get('line', '?')})")
+    return lines
+
+
+def callers(entity_id: str, results: list[dict]) -> str:
+    """Direct callers list (MCP `coderadar_callers`, CLI `callers`)."""
+    lines = [f"## Callers of `{entity_id}` ({len(results)})", ""]
+    lines.extend(_caller_rows(results))
+    return "\n".join(lines)
+
+
+def callees(entity_id: str, results: list[dict]) -> str:
+    """Direct callees list (MCP `coderadar_callees`, CLI `callees`)."""
+    lines = [f"## Callees from `{entity_id}` ({len(results)})", ""]
+    lines.extend(_caller_rows(results))
+    return "\n".join(lines)
+
+
 def node(entity: dict) -> str:
     lines = [
         f"## {entity.get('name', '?')}",

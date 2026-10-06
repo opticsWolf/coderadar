@@ -175,3 +175,37 @@ class TestCli:
 
         assert result.exit_code == 0, result.output
         assert "coderadar status" in result.stderr
+
+
+@pytest.mark.skipif(not _CORE, reason="Rust _core extension not built")
+class TestCallersCalleesParity:
+    """`callers`/`callees` answer identically on ops, CLI and MCP."""
+
+    def test_all_three_surfaces_agree(self, project):
+        coderadar.analyze(".")
+        target = "pkg/mod.py::helper"
+
+        from coderadar.mcp import server as _server
+        ops_callers = {r["id"] for r in ops.callers(target)}
+        assert "pkg/mod.py::caller" in ops_callers
+        ops_callees = {r["id"] for r in ops.callees("pkg/mod.py::caller")}
+        assert target in ops_callees
+
+        cli = _run("callers", target)
+        assert cli.exit_code == 0, cli.output
+        assert "pkg/mod.py::caller" in cli.output
+
+        mcp_text = _server._callers(None, target)
+        assert "pkg/mod.py::caller" in mcp_text
+        mcp_text = _server._callees(None, "pkg/mod.py::caller")
+        assert target in mcp_text
+
+    def test_unknown_is_unknown_everywhere(self, project):
+        coderadar.analyze(".")
+        from coderadar.mcp import server as _server
+
+        assert ops.callers("pkg/mod.py::nosuch") == []
+        cli = _run("callers", "pkg/mod.py::nosuch")
+        assert cli.exit_code == 0, cli.output
+        assert "Unknown entity" in cli.output
+        assert "Unknown entity" in _server._callers(None, "pkg/mod.py::nosuch")

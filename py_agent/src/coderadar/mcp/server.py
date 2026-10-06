@@ -50,7 +50,7 @@ Need more? Call it again with more specific names.
 - `coderadar_search` — find symbols by keyword when you don't know the name
 - `coderadar_search_similar` — semantic search (embeddings via `coderadar_compute_embeddings`, computed on first use)
 - `coderadar_node` — one entity's details and neighbours; `coderadar_module_children` — a module's contents
-- `coderadar_affected` — transitive callers (blast radius), centrality-ranked
+- `coderadar_affected` — transitive callers (blast radius), centrality-ranked; `coderadar_callers` / `coderadar_callees` — direct 1-hop neighbours
 - `coderadar_traverse` — any edge kind, upstream or downstream
 - `coderadar_query` — structured queries, e.g. `functions where caller_count == 0` (docs/query-language.md)
 - `coderadar_as_of` — the graph at a past timestamp
@@ -399,6 +399,55 @@ def create_server(graph: Any) -> MCPServer:
             return mismatch
 
         return _module_children(graph, module_id)
+
+    # ── coderadar_callers / coderadar_callees — 1-hop neighbourhood ──
+
+    @mcp.tool(
+        description=(
+            "List the direct callers of one entity (1 hop upstream). "
+            "For the transitive blast radius use coderadar_affected instead. "
+            "Unknown ids are reported as unknown, not as callerless."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_callers(
+        entity_id: str,
+        project_path: str | None = None,
+    ) -> str:
+        """List direct callers."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _callers(graph, entity_id)
+
+    @mcp.tool(
+        description=(
+            "List the direct callees of one entity (1 hop downstream). "
+            "An entity with no callees reports empty; unknown ids report unknown."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_callees(
+        entity_id: str,
+        project_path: str | None = None,
+    ) -> str:
+        """List direct callees."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _callees(graph, entity_id)
 
     # ── coderadar_as_of — temporal query ─────────────────────────────
 
@@ -1288,6 +1337,30 @@ def _module_children(graph: Any, module_id: str) -> str:
     except ops.OpError as e:
         return _op_message(e)
     return render.module_children(result)
+
+
+def _callers(graph: Any, entity_id: str) -> str:
+    """Direct callers of one entity (R2-16 unknown-vs-callerless kept)."""
+    try:
+        results = ops.callers(entity_id)
+    except ops.OpError as e:
+        return _op_message(e)
+    if not results and ops.find_entity(entity_id) is None \
+            and not entity_id.startswith("external::"):
+        return f"Unknown entity: {entity_id}"
+    return render.callers(entity_id, results)
+
+
+def _callees(graph: Any, entity_id: str) -> str:
+    """Direct callees of one entity (R2-16 unknown-vs-empty kept)."""
+    try:
+        results = ops.callees(entity_id)
+    except ops.OpError as e:
+        return _op_message(e)
+    if not results and ops.find_entity(entity_id) is None \
+            and not entity_id.startswith("external::"):
+        return f"Unknown entity: {entity_id}"
+    return render.callees(entity_id, results)
 
 
 def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:

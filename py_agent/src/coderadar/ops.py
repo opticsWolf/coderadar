@@ -37,6 +37,8 @@ __all__ = [
     "OpError",
     "affected",
     "as_of",
+    "callees",
+    "callers",
     "canonical_entity_id",
     "canonical_file_path",
     "compute_embeddings",
@@ -82,6 +84,7 @@ OPERATIONS = (
     "traverse", "get_smells", "dead_code", "find_clones", "find_scaffolding",
     "replace_body", "update_signature", "rename", "create_entity",
     "reindex", "update_file", "status", "set_project",
+    "callers", "callees",
 )
 
 
@@ -270,6 +273,26 @@ def _callees(entity_id: str) -> list[dict]:
         return callees_of(entity_id) or []
     except ImportError:
         return []
+
+
+def callers(entity_id: str) -> list[dict]:
+    """Direct callers of `entity_id` (reverse call index).
+
+    The shared seam behind CLI `callers`, MCP `coderadar_callers` and
+    `CodeGraph.callers`: all three reach the same `_core.callers_of`
+    backend, so the surfaces cannot disagree. Empty means callerless
+    *or* unknown — pair with `find_entity` to tell them apart (R2-16).
+    """
+    return _callers(entity_id)
+
+
+def callees(entity_id: str) -> list[dict]:
+    """Direct callees of `entity_id` (forward call index).
+
+    The shared seam behind CLI `callees`, MCP `coderadar_callees` and
+    `CodeGraph.callees`; see `callers` for the contract.
+    """
+    return _callees(entity_id)
 
 
 def suggest_entities(entity_id: str, limit: int = 3) -> list[dict]:
