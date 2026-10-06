@@ -1060,22 +1060,27 @@ def open_project(path: str | Path, confirm: bool = False,
             "project root. Run `coderadar init` there if it should be one, "
             "or re-call with confirm=true to serve it anyway.")
     root = str(selected.path)
-    try:
-        from coderadar._core import graph_stats as _stats
-        indexed = (_stats().get("indexed_root") or "")
-        indexed = indexed.removeprefix("\\\\?\\")
-        if indexed and Path(indexed).resolve() == Path(root).resolve():
-            return {
-                "root": root,
-                "marker": selected.marker.name if selected.marker else None,
-                "confirmed": selected.confirmed,
-                "source": "already",
-                "config_ignored": [],
-                "config_error": None,
-                "stats": dict(_stats()),
-            }
-    except Exception:  # noqa: BLE001 - no usable index: open normally
-        pass
+    # Already serving = the process is already rooted there (the pre-ops
+    # rule compared the served root, not the index: staying put rebuilds
+    # nothing even with no index yet — `reindex` builds on demand).
+    import os as _os
+    if _os.path.normcase(str(Path(root).resolve())) == _os.path.normcase(
+            str(Path.cwd().resolve())):
+        stats: dict[str, Any] = {}
+        try:
+            from coderadar._core import graph_stats as _stats0
+            stats = dict(_stats0())
+        except Exception:  # noqa: BLE001 - no index yet: empty stats
+            pass
+        return {
+            "root": root,
+            "marker": selected.marker.name if selected.marker else None,
+            "confirmed": selected.confirmed,
+            "source": "already",
+            "config_ignored": [],
+            "config_error": None,
+            "stats": stats,
+        }
     ignored: list[str] = []
     config_error: str | None = None
     try:
