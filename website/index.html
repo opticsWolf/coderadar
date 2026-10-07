@@ -6,20 +6,32 @@
 <meta name="description" content="CodeRadar — live semantic graph of your codebase. Incremental, queryable, LLM-writable.">
 <title>CodeRadar — live semantic graph of your codebase</title>
 <style>
-  /* ── Tokens ─────────────────────────────────────────────── */
+  /* ── Tokens ───────────────────────────────────────────────
+     main cyan = live truth · violet = history/structure ·
+     magenta = agent action. One job per tone, everywhere. */
   :root {
-    --main:   #3ee6ff;   /* radar cyan — the main color */
-    --tone-a: #8b5cf6;   /* violet — gradient tone 1 */
-    --tone-b: #f471d6;   /* magenta — gradient tone 2 */
-    --bg:     #05070d;
-    --bg-soft:#090d18;
+    --main:   #3ee6ff;
+    --main-deep: #1b9fc4;
+    --tone-a: #8b5cf6;
+    --tone-a-deep: #5b34d6;
+    --tone-b: #f471d6;
+    --tone-b-deep: #c2439f;
+    --bg:     #04060d;
+    --bg-soft:#070b16;
     --panel:  #0b1120;
     --line:   rgba(62, 230, 255, .12);
-    --ink:    #e8f1ff;
-    --muted:  #93a1bd;
-    --grad-a: linear-gradient(120deg, var(--main), var(--tone-a));
-    --grad-b: linear-gradient(120deg, var(--main), var(--tone-b));
-    --grad-ab: linear-gradient(120deg, var(--tone-a), var(--tone-b));
+    --line-a: rgba(139, 92, 246, .16);
+    --line-b: rgba(244, 113, 214, .16);
+    --ink:    #eaf2ff;
+    --muted:  #9fabca;
+    --faint:  #64748f;
+    --grad-brand: linear-gradient(135deg, var(--main) 0%, #7c8cf6 48%, var(--tone-b) 100%);
+    --grad-a: linear-gradient(135deg, var(--main) 0%, #6ea8ff 45%, var(--tone-a) 100%);
+    --grad-b: linear-gradient(135deg, var(--main) 0%, #c07df0 50%, var(--tone-b) 100%);
+    --grad-ab: linear-gradient(135deg, var(--tone-a) 0%, #b45cf0 55%, var(--tone-b) 100%);
+    --glow-a: 0 0 2.2rem rgba(62, 230, 255, .35);
+    --glow-b: 0 0 2.2rem rgba(139, 92, 246, .40);
+    --glow-c: 0 0 2.2rem rgba(244, 113, 214, .35);
     --radius: 1rem;
     --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
@@ -27,85 +39,89 @@
   * { box-sizing: border-box; }
   html { scroll-behavior: smooth; }
   body {
-    margin: 0; font-family: var(--font); color: var(--ink); background: var(--bg);
+    margin: 0; font-family: var(--font); color: var(--ink);
+    background:
+      radial-gradient(44rem 30rem at 10% -6%, rgba(139, 92, 246, .14), transparent 62%),
+      radial-gradient(48rem 32rem at 90% 2%, rgba(62, 230, 255, .09), transparent 62%),
+      radial-gradient(52rem 34rem at 50% 112%, rgba(244, 113, 214, .07), transparent 62%),
+      var(--bg);
     overflow-x: hidden; line-height: 1.6;
   }
-  /* ambient aurora */
-  body::before {
-    content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
-    background:
-      radial-gradient(42rem 30rem at 12% -6%, rgba(139, 92, 246, .16), transparent 60%),
-      radial-gradient(46rem 32rem at 88% 4%, rgba(62, 230, 255, .10), transparent 60%),
-      radial-gradient(50rem 36rem at 50% 110%, rgba(244, 113, 214, .08), transparent 60%),
-      var(--bg);
-  }
-  ::selection { background: rgba(62, 230, 255, .28); }
-  a { color: var(--main); }
+  ::selection { background: rgba(139, 92, 246, .45); color: #fff; }
+  ::-webkit-scrollbar { width: .65rem; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--grad-ab); border-radius: 999px; }
+  a { color: var(--main); text-underline-offset: .18em; }
+  :focus-visible { outline: 2px solid var(--main); outline-offset: 3px; border-radius: .3rem; }
   .wrap { max-width: 70rem; margin: 0 auto; padding: 0 clamp(1rem, 4vw, 2rem); }
 
   /* ── Nav ────────────────────────────────────────────────── */
   nav {
     position: sticky; top: 0; z-index: 50;
     backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-    background: rgba(5, 7, 13, .72); border-bottom: 1px solid var(--line);
+    background: rgba(4, 6, 13, .78); border-bottom: 1px solid var(--line);
   }
   nav .wrap { display: flex; align-items: center; gap: 1.25rem; height: 3.75rem; }
   .brand { display: flex; align-items: center; gap: .6rem; font-weight: 800; letter-spacing: .02em;
     color: var(--ink); text-decoration: none; font-size: 1.1rem; }
   .brand .dot {
     width: .9rem; height: .9rem; border-radius: 50%;
-    background: var(--grad-a); box-shadow: 0 0 1rem rgba(62, 230, 255, .8);
-    animation: pulse 2.6s ease-in-out infinite;
+    background: var(--grad-brand); box-shadow: var(--glow-a);
   }
-  @keyframes pulse { 50% { box-shadow: 0 0 2rem rgba(139, 92, 246, .9); transform: scale(1.12); } }
-  nav .links { display: flex; gap: 1.1rem; margin-left: auto; }
+  nav .links { display: flex; gap: 1.1rem; margin-left: auto; align-items: center; }
   nav .links a { color: var(--muted); text-decoration: none; font-size: .92rem; }
   nav .links a:hover { color: var(--ink); }
   .btn {
     display: inline-block; text-decoration: none; font-weight: 700; color: #04121a !important;
-    background: var(--grad-a); padding: .65rem 1.3rem; border-radius: 999px;
-    box-shadow: 0 .4rem 1.4rem rgba(62, 230, 255, .25); transition: transform .2s, box-shadow .2s;
-    border: 0;
+    background: var(--grad-brand); background-size: 140% 140%;
+    padding: .65rem 1.3rem; border-radius: 999px;
+    box-shadow: 0 .4rem 1.4rem rgba(62, 230, 255, .22), 0 .2rem 1rem rgba(244, 113, 214, .18);
+    transition: transform .2s, box-shadow .2s, background-position .4s; border: 0;
   }
-  .btn:hover { transform: translateY(-2px); box-shadow: 0 .6rem 2rem rgba(139, 92, 246, .45); }
+  .btn:hover { transform: translateY(-2px); background-position: 90% 90%;
+    box-shadow: 0 .6rem 2rem rgba(139, 92, 246, .45); }
   .btn.ghost {
-    color: var(--ink) !important; background: transparent;
+    color: var(--ink) !important; background: rgba(62, 230, 255, .05);
     border: 1px solid rgba(62, 230, 255, .35); box-shadow: none;
   }
-  .btn.ghost:hover { border-color: var(--tone-b); box-shadow: 0 .4rem 1.4rem rgba(244, 113, 214, .25); }
+  .btn.ghost:hover { border-color: var(--tone-b); box-shadow: 0 .4rem 1.4rem rgba(244, 113, 214, .22); }
   nav .btn { padding: .45rem 1rem; font-size: .88rem; }
-  @media (max-width: 46rem) { nav .links a:not(.btn) { display: none; } }
+  @media (max-width: 52rem) { nav .links a:not(.btn) { display: none; } }
 
   /* ── Hero ───────────────────────────────────────────────── */
-  header.hero { position: relative; padding: clamp(3rem, 8vw, 6rem) 0 3rem; overflow: clip; }
+  header.hero { position: relative; padding: clamp(3.5rem, 9vw, 6.5rem) 0 3rem; overflow: clip; }
+  header.hero::after {
+    content: ""; position: absolute; left: 50%; bottom: -1px; width: min(60rem, 120%);
+    height: 1px; transform: translateX(-50%);
+    background: linear-gradient(90deg, transparent, rgba(62,230,255,.5) 30%, rgba(139,92,246,.5) 50%, rgba(244,113,214,.5) 70%, transparent);
+  }
   #radar {
     position: absolute; inset: 0; width: 100%; height: 100%;
-    opacity: .5; mask-image: radial-gradient(60% 90% at 50% 40%, #000 30%, transparent 75%);
+    opacity: .55; mask-image: radial-gradient(60% 90% at 50% 40%, #000 30%, transparent 75%);
     -webkit-mask-image: radial-gradient(60% 90% at 50% 40%, #000 30%, transparent 75%);
   }
   .hero-inner { position: relative; text-align: center; }
-  .kicker {
-    display: inline-block; font-family: var(--mono); font-size: .8rem; letter-spacing: .14em;
-    text-transform: uppercase; color: var(--main);
-    border: 1px solid var(--line); border-radius: 999px; padding: .3rem .9rem;
-    background: rgba(62, 230, 255, .06); margin-bottom: 1.2rem;
-  }
   h1 {
     font-size: clamp(2.4rem, 6.4vw, 4.4rem); line-height: 1.05; margin: 0 0 1rem;
-    letter-spacing: -0.02em;
+    letter-spacing: -0.02em; text-wrap: balance;
   }
-  h1 .grad {
-    background: var(--grad-a); -webkit-background-clip: text; background-clip: text; color: transparent;
-    animation: hue 7s ease-in-out infinite alternate; background-size: 200% 200%;
+  h1 .sweep {
+    position: relative; white-space: nowrap;
+    text-shadow: 0 0 2.4rem rgba(62, 230, 255, .45);
   }
-  @keyframes hue { to { filter: hue-rotate(38deg); } }
-  .lede { color: var(--muted); font-size: clamp(1rem, 2.4vw, 1.25rem); max-width: 44rem; margin: 0 auto 2rem; }
+  h1 .sweep::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: .02em; height: .09em;
+    background: var(--grad-brand); border-radius: 999px; box-shadow: var(--glow-b);
+  }
+  .lede { color: var(--muted); font-size: clamp(1rem, 2.4vw, 1.25rem); max-width: 46rem; margin: 0 auto 2rem; }
   .lede strong { color: var(--ink); }
   .cta { display: flex; gap: .8rem; justify-content: center; flex-wrap: wrap; margin-bottom: 2rem; }
   .install {
     display: inline-flex; align-items: center; gap: .8rem; font-family: var(--mono);
-    background: var(--panel); border: 1px solid var(--line); border-radius: .8rem;
+    background: linear-gradient(180deg, #0d1526, #080d18);
+    border: 1px solid var(--line); border-radius: .8rem;
     padding: .8rem 1rem; font-size: .95rem; max-width: 100%;
+    box-shadow: inset 0 1px 0 rgba(62, 230, 255, .08), 0 .8rem 2rem rgba(0, 0, 0, .45);
   }
   .install .pm { color: var(--tone-b); }
   .install button {
@@ -114,56 +130,145 @@
     border-radius: .5rem; padding: .3rem .7rem;
   }
   .install button:hover { border-color: var(--main); }
-  .badges { display: flex; gap: .5rem; justify-content: center; flex-wrap: wrap; margin-top: 1.4rem; }
+  .release-line { margin-top: 1rem; color: var(--faint); font-size: .85rem; }
+  .release-line a { color: var(--muted); }
+  .badges { display: flex; gap: .5rem; justify-content: center; flex-wrap: wrap; margin-top: 1rem; }
   .badges img { height: 1.35rem; }
 
-  /* ── Stats ──────────────────────────────────────────────── */
-  .stats {
-    display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin: 3.5rem 0 0;
-    background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  /* proof strip — metrics as data, not hero boxes */
+  .proof {
+    margin: 3.2rem auto 0; max-width: 52rem; text-align: center;
+    font-family: var(--mono); font-size: clamp(.82rem, 2vw, .95rem); color: var(--muted);
   }
-  .stat { background: rgba(11, 17, 32, .9); padding: 1.4rem .8rem; text-align: center; }
-  .stat b {
-    display: block; font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 800;
-    background: var(--grad-b); -webkit-background-clip: text; background-clip: text; color: transparent;
-  }
-  .stat span { color: var(--muted); font-size: .85rem; }
-  @media (max-width: 40rem) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  .proof b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 700; }
+  .proof .sep { margin: 0 .7em; background: var(--grad-brand);
+    -webkit-background-clip: text; background-clip: text; color: transparent; font-weight: 700; }
+  .proof .fnote { display: block; margin-top: .6rem; font-size: .78rem; color: var(--faint); }
 
   /* ── Sections ───────────────────────────────────────────── */
-  section { padding: clamp(3rem, 7vw, 5.5rem) 0; }
-  h2 { font-size: clamp(1.6rem, 3.6vw, 2.4rem); letter-spacing: -0.01em; margin: 0 0 .4rem; text-align: center; }
-  h2 .grad { background: var(--grad-b); -webkit-background-clip: text; background-clip: text; color: transparent; }
-  .sub { color: var(--muted); text-align: center; max-width: 46rem; margin: 0 auto 2.4rem; }
+  section { padding: clamp(3.5rem, 7vw, 5.5rem) 0; position: relative; }
+  section.tint-a::before, section.tint-b::before {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+  }
+  section.tint-a::before {
+    background: radial-gradient(36rem 20rem at 50% 0%, rgba(139, 92, 246, .07), transparent 70%);
+  }
+  section.tint-b::before {
+    background: radial-gradient(36rem 20rem at 50% 0%, rgba(244, 113, 214, .06), transparent 70%);
+  }
+  h2 { font-size: clamp(1.6rem, 3.6vw, 2.4rem); letter-spacing: -0.01em;
+    margin: 0 0 .4rem; text-align: center; text-wrap: balance; }
+  h2 .u-a { text-decoration: underline; text-decoration-color: var(--tone-a);
+    text-decoration-thickness: .08em; text-underline-offset: .14em; }
+  h2 .u-b { text-decoration: underline; text-decoration-color: var(--tone-b);
+    text-decoration-thickness: .08em; text-underline-offset: .14em; }
+  h2 .u-m { text-decoration: underline; text-decoration-color: var(--main);
+    text-decoration-thickness: .08em; text-underline-offset: .14em; }
+  .sub { color: var(--muted); text-align: center; max-width: 48rem; margin: 0 auto 2.6rem; }
 
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
-  @media (max-width: 56rem) { .grid { grid-template-columns: repeat(2, 1fr); } }
-  @media (max-width: 36rem) { .grid { grid-template-columns: 1fr; } }
-  .card {
-    position: relative; background: var(--panel); border: 1px solid var(--line);
-    border-radius: var(--radius); padding: 1.4rem; overflow: hidden;
+  /* ── Why rows (editorial, alternating) ──────────────────── */
+  .why-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: clamp(1.5rem, 4vw, 3rem);
+    align-items: center; margin-bottom: clamp(2.5rem, 6vw, 4rem);
+  }
+  .why-row:last-child { margin-bottom: 0; }
+  .why-row.flip > .why-copy { order: 2; }
+  @media (max-width: 52rem) {
+    .why-row { grid-template-columns: 1fr; }
+    .why-row.flip > .why-copy { order: 0; }
+  }
+  .why-copy h3 { font-size: clamp(1.25rem, 2.6vw, 1.6rem); margin: 0 0 .5rem; letter-spacing: -0.01em; }
+  .why-copy h3 .k-cyan { color: var(--main); }
+  .why-copy h3 .k-violet { color: var(--tone-a); }
+  .why-copy h3 .k-magenta { color: var(--tone-b); }
+  .why-copy p { color: var(--muted); margin: 0 0 .8rem; }
+  .why-copy p strong { color: var(--ink); }
+  .why-copy ul { margin: 0; padding: 0; list-style: none; }
+  .why-copy li {
+    color: var(--muted); font-size: .94rem; padding-left: 1.4rem; position: relative; margin: .3rem 0;
+  }
+  .why-copy li::before { content: ""; position: absolute; left: 0; top: .52em;
+    width: .55rem; height: .55rem; border-radius: 50%; background: var(--grad-brand); }
+  .why-copy code, .mini code { font-family: var(--mono); font-size: .84em; color: var(--main); }
+  .mini {
+    background: linear-gradient(180deg, #0d1526, #070b14);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    box-shadow: 0 1.4rem 3rem rgba(0, 0, 0, .55), inset 0 1px 0 rgba(62, 230, 255, .07);
+    overflow: hidden;
+  }
+  .mini.violet { border-color: var(--line-a); box-shadow: 0 1.4rem 3rem rgba(0,0,0,.55), 0 0 2.5rem rgba(139,92,246,.12); }
+  .mini.magenta { border-color: var(--line-b); box-shadow: 0 1.4rem 3rem rgba(0,0,0,.55), 0 0 2.5rem rgba(244,113,214,.10); }
+  .mini .bar { display: flex; gap: .45rem; padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
+  .mini .bar i { width: .7rem; height: .7rem; border-radius: 50%; background: #26314d; }
+  .mini .bar i:first-child { background: var(--tone-b); }
+  .mini .bar i:nth-child(2) { background: var(--tone-a); }
+  .mini .bar i:nth-child(3) { background: var(--main); }
+  .mini pre { margin: 0; padding: 1.1rem 1.25rem; overflow-x: auto; font-family: var(--mono);
+    font-size: .84rem; line-height: 1.7; }
+  .tok-k { color: var(--tone-b); } .tok-s { color: var(--main); }
+  .tok-c { color: var(--faint); } .tok-f { color: var(--tone-a); }
+
+  /* contrast strip: why not grep / LSP */
+  .contrast {
+    margin-top: clamp(2.5rem, 6vw, 4rem); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden;
+    background: linear-gradient(180deg, rgba(13, 21, 38, .7), rgba(7, 11, 20, .7));
+  }
+  .contrast .row {
+    display: grid; grid-template-columns: 11rem 1fr; gap: 1rem; padding: 1rem 1.3rem;
+  }
+  .contrast .row + .row { border-top: 1px solid var(--line); }
+  .contrast .row.me { background: rgba(62, 230, 255, .04); }
+  @media (max-width: 40rem) { .contrast .row { grid-template-columns: 1fr; gap: .2rem; } }
+  .contrast dt { font-weight: 700; }
+  .contrast .row.me dt { color: var(--main); }
+  .contrast dd { margin: 0; color: var(--muted); font-size: .93rem; }
+  .contrast dd strong { color: var(--ink); }
+
+  /* ── Capabilities bento (mixed spans, not a card grid) ──── */
+  .bento { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  .cell {
+    position: relative; border-radius: var(--radius); padding: 1.5rem; overflow: hidden;
+    background: linear-gradient(180deg, #0c1322, #080d18);
+    border: 1px solid var(--line);
     transition: transform .25s, border-color .25s, box-shadow .25s;
   }
-  .card::before {
-    content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
-    background: var(--grad-a); opacity: 0; transition: opacity .25s;
+  .cell:hover { transform: translateY(-3px); }
+  .cell.wide { grid-column: span 2; }
+  .cell.v { border-color: var(--line-a); }
+  .cell.m { border-color: var(--line-b); }
+  .cell:hover.v { border-color: rgba(139, 92, 246, .5); box-shadow: 0 1rem 2.4rem rgba(0,0,0,.5), var(--glow-b); }
+  .cell:hover.m { border-color: rgba(244, 113, 214, .5); box-shadow: 0 1rem 2.4rem rgba(0,0,0,.5), var(--glow-c); }
+  .cell:hover:not(.v):not(.m) { border-color: rgba(62, 230, 255, .45); box-shadow: 0 1rem 2.4rem rgba(0,0,0,.5), var(--glow-a); }
+  @media (max-width: 52rem) { .bento { grid-template-columns: 1fr 1fr; } .cell.wide { grid-column: span 2; } }
+  @media (max-width: 36rem) { .bento { grid-template-columns: 1fr; } .cell.wide { grid-column: span 1; } }
+  .cell .glyph { width: 2rem; height: 2rem; margin-bottom: .7rem; }
+  .cell .glyph circle, .cell .glyph path, .cell .glyph rect, .cell .glyph line {
+    stroke-width: 1.8; fill: none; stroke-linecap: round; stroke-linejoin: round;
   }
-  .card:nth-child(3n+2)::before { background: var(--grad-b); }
-  .card:nth-child(3n)::before { background: var(--grad-ab); }
-  .card:hover { transform: translateY(-4px); border-color: rgba(62, 230, 255, .4);
-    box-shadow: 0 1rem 2.4rem rgba(0, 0, 0, .5), 0 0 2rem rgba(139, 92, 246, .15); }
-  .card:hover::before { opacity: 1; }
-  .card .icon { font-size: 1.6rem; }
-  .card h3 { margin: .6rem 0 .4rem; font-size: 1.05rem; }
-  .card p { margin: 0; color: var(--muted); font-size: .92rem; }
-  .card code { font-family: var(--mono); font-size: .82rem; color: var(--main); }
+  .cell.c .glyph * { stroke: var(--main); }
+  .cell.v .glyph * { stroke: var(--tone-a); }
+  .cell.m .glyph * { stroke: var(--tone-b); }
+  .cell h3 { margin: 0 0 .4rem; font-size: 1.08rem; }
+  .cell p { margin: 0; color: var(--muted); font-size: .92rem; }
+  .cell code { font-family: var(--mono); font-size: .82rem; color: var(--main); }
+  .cell .tag {
+    display: inline-block; font-family: var(--mono); font-size: .72rem; letter-spacing: .08em;
+    text-transform: uppercase; margin-bottom: .6rem; padding: .15rem .6rem; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted);
+  }
+  .cell.v .tag { border-color: var(--line-a); color: var(--tone-a); }
+  .cell.m .tag { border-color: var(--line-b); color: var(--tone-b); }
+  .cell.c .tag { color: var(--main); }
 
   /* ── Surfaces tabs ──────────────────────────────────────── */
   .tabs { display: flex; gap: .5rem; justify-content: center; margin-bottom: 1.2rem; flex-wrap: wrap; }
   .tabs button {
     font: inherit; font-weight: 700; cursor: pointer; color: var(--muted);
     background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: .5rem 1.2rem;
+    transition: border-color .2s, color .2s;
   }
+  .tabs button:hover { color: var(--ink); border-color: var(--tone-a); }
   .tabs button[aria-selected="true"] { color: #04121a; background: var(--grad-a); border-color: transparent; }
   .codecard {
     background: #070b14; border: 1px solid var(--line); border-radius: var(--radius);
@@ -177,46 +282,50 @@
   .codecard .bar i:nth-child(3) { background: var(--main); }
   .codecard pre { margin: 0; padding: 1.2rem 1.3rem; overflow-x: auto; font-family: var(--mono);
     font-size: .86rem; line-height: 1.7; }
-  .tok-k { color: var(--tone-b); } .tok-s { color: var(--main); }
-  .tok-c { color: #5b6b8c; } .tok-f { color: var(--tone-a); }
+  .surfaces-note { text-align: center; color: var(--faint); font-size: .88rem; margin-top: 1.2rem; }
+  .surfaces-note code { font-family: var(--mono); color: var(--muted); }
 
   /* ── Timeline (history) ─────────────────────────────────── */
-  .history {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: stretch;
-  }
+  .history { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: stretch; }
   @media (max-width: 52rem) { .history { grid-template-columns: 1fr; } }
   .history .panel {
-    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.6rem;
+    border-radius: var(--radius); padding: 1.6rem;
+    background: linear-gradient(180deg, #0c1322, #080d18);
   }
+  .history .panel.ask { border: 1px solid var(--line-a); box-shadow: 0 0 2.5rem rgba(139,92,246,.10); }
+  .history .panel.keep { border: 1px solid var(--line); }
   .history h3 { margin-top: 0; }
+  .history .panel.ask h3 { color: var(--tone-a); }
+  .history .panel.keep h3 { color: var(--main); }
   .history ul { margin: .6rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: .94rem; }
   .history li { margin: .35rem 0; }
   .history li b { color: var(--ink); font-weight: 600; }
   .history code { font-family: var(--mono); font-size: .82rem; color: var(--main); }
 
   /* ── Docs ───────────────────────────────────────────────── */
-  .docs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  .docs { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
   @media (max-width: 52rem) { .docs { grid-template-columns: 1fr; } }
   .docs a {
     display: block; text-decoration: none; color: var(--ink);
-    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-    padding: 1.4rem; transition: transform .25s, border-color .25s;
+    background: linear-gradient(180deg, #0c1322, #080d18);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 1.4rem; transition: transform .25s, border-color .25s, box-shadow .25s;
   }
-  .docs a:hover { transform: translateY(-4px); border-color: var(--tone-a); }
+  .docs a:hover { transform: translateY(-4px); border-color: var(--tone-b);
+    box-shadow: 0 1rem 2.4rem rgba(0,0,0,.5), 0 0 2rem rgba(244, 113, 214, .12); }
   .docs a h3 { margin: 0 0 .3rem; font-size: 1.05rem; }
-  .docs a h3 span { background: var(--grad-ab); -webkit-background-clip: text; background-clip: text; color: transparent; }
   .docs a p { margin: 0; color: var(--muted); font-size: .9rem; }
 
   footer { border-top: 1px solid var(--line); padding: 2rem 0 3rem; color: var(--muted);
     font-size: .88rem; text-align: center; }
-  footer .grad { background: var(--grad-a); -webkit-background-clip: text; background-clip: text; color: transparent; font-weight: 700; }
+  footer strong { color: var(--ink); }
 
-  /* ── Reveal on scroll ───────────────────────────────────── */
-  .rv { opacity: 0; transform: translateY(1.4rem); transition: opacity .7s ease, transform .7s ease; }
-  .rv.in { opacity: 1; transform: none; }
+  /* ── Reveal on scroll: one quiet entrance ───────────────── */
+  .rv { opacity: 0; transition: opacity .8s cubic-bezier(.22, 1, .36, 1); }
+  .rv.in { opacity: 1; }
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation: none !important; transition: none !important; }
-    .rv { opacity: 1; transform: none; }
+    .rv { opacity: 1; }
     html { scroll-behavior: auto; }
   }
 </style>
@@ -227,7 +336,8 @@
   <div class="wrap">
     <a class="brand" href="#top"><span class="dot"></span>CodeRadar</a>
     <div class="links">
-      <a href="#features">Features</a>
+      <a href="#why">Why</a>
+      <a href="#capabilities">Capabilities</a>
       <a href="#surfaces">Surfaces</a>
       <a href="#history">History</a>
       <a href="#docs">Docs</a>
@@ -239,19 +349,19 @@
 <header class="hero" id="top">
   <canvas id="radar" aria-hidden="true"></canvas>
   <div class="wrap hero-inner">
-    <span class="kicker">v0.12 · history becomes real</span>
-    <h1>Your codebase,<br><span class="grad">on the radar.</span></h1>
+    <h1>Your codebase,<br><span class="sweep">on the radar.</span></h1>
     <p class="lede">CodeRadar indexes your code into a <strong>live semantic graph</strong> —
-      entities, calls, routes, smells — and keeps <strong>every generation as history</strong>,
+      entities, calls, routes, smells, and keeps <strong>every generation as history</strong>,
       so agents and humans can explore, query, and rewrite with the past one lookup away.</p>
     <div class="cta">
       <a class="btn" href="https://github.com/opticsWolf/coderadar">Get started</a>
-      <a class="btn ghost" href="#surfaces">See it in action</a>
+      <a class="btn ghost" href="#why">Why CodeRadar</a>
     </div>
     <div>
       <span class="install"><span class="pm">$</span>&nbsp;pip install coderadar-rs
         <button id="copy" type="button">copy</button></span>
     </div>
+    <p class="release-line">v0.12 — history becomes real · <a href="https://github.com/opticsWolf/coderadar/blob/main/CHANGELOG.md">changelog</a></p>
     <div class="badges">
       <img alt="CI" src="https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg">
       <img alt="PyPI" src="https://img.shields.io/pypi/v/coderadar-rs?label=pypi">
@@ -259,53 +369,143 @@
       <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
     </div>
 
-    <div class="stats rv">
-      <div class="stat"><b data-count="41">0</b><span>languages indexed</span></div>
-      <div class="stat"><b data-count="26">0</b><span>operations, one name each</span></div>
-      <div class="stat"><b data-count="1512">0</b><span>tests passing</span></div>
-      <div class="stat"><b data-count="3">0</b><span>surfaces: MCP · CLI · Python</span></div>
-    </div>
+    <p class="proof rv">
+      <b data-count="41">0</b> languages <span class="sep">·</span>
+      <b data-count="26">0</b> operations, one name each <span class="sep">·</span>
+      <b data-count="1512">0</b> tests passing <span class="sep">·</span>
+      <b>100/100</b> resolution precision-recall
+      <span class="fnote">measured on the self-hosted corpus, guarded by CI — not claimed, proven</span>
+    </p>
   </div>
 </header>
 
 <main class="wrap">
 
-  <section id="features">
-    <h2 class="rv">Built for <span class="grad">agents that read code</span></h2>
-    <p class="sub rv">AST-only resolution at 100/100 precision-recall, an honesty-first error model,
-      and history stored as bytes — not vibes.</p>
-    <div class="grid">
-      <div class="card rv"><div class="icon">📡</div><h3>Semantic graph, 41 grammars</h3>
-        <p>Single-pass tree-sitter extraction across 12 Tier-1 languages. Imports, calls,
-        inheritance, and <code>route → handler</code> edges resolved through the L1–L4 cascade.</p></div>
-      <div class="card rv"><div class="icon">🕰️</div><h3>History as bytes</h3>
-        <p>Every generation stored as content-addressed blobs. <code>read_bytes</code> serves
-        exact source-at-T; diffs compute on read; cold bytes archive, never vanish.</p></div>
-      <div class="card rv"><div class="icon">🤝</div><h3>Honest by construction</h3>
-        <p>No capability fakes an answer. Missing graphs, absent blobs, and temporal
-        dead-ends raise named errors — <code>NoIndex · ContentUnavailable · TemporalUnsupported</code>.</p></div>
-      <div class="card rv"><div class="icon">🔍</div><h3>Query + keyword + vectors</h3>
+  <section id="why">
+    <h2 class="rv">Why <span class="u-m">CodeRadar</span></h2>
+    <p class="sub rv">Three bets no other code index makes at once: the past is data,
+      the tool never bluffs, and one fix reaches every surface.</p>
+
+    <div class="why-row rv">
+      <div class="why-copy">
+        <h3><span class="k-violet">The past is bytes,</span> not vibes</h3>
+        <p>A bitemporal ledger sits under the graph: every fact carries world-time and
+          learned-time, and every file generation is stored as a content-addressed blob.
+          Any recorded moment folds back into a readable state.</p>
+        <ul>
+          <li><strong>Names at T</strong>: symbols as they were, renames included</li>
+          <li><strong>Bytes at T</strong>: exact source, CRLF and CJK intact</li>
+          <li><strong>Diffs on read</strong>: generations diffed live, nothing pre-rendered</li>
+        </ul>
+      </div>
+      <div class="mini violet"><div class="bar"><i></i><i></i><i></i></div>
+<pre><code><span class="tok-c"># what did this file look like before the refactor?</span>
+snap = g.as_of(<span class="tok-s">"2026-09-01T00:00:00Z"</span>)
+snap.read_bytes(<span class="tok-s">"py_agent/src/coderadar/ops.py"</span>)
+<span class="tok-f">→ exact bytes · old names · old edges</span></code></pre>
+      </div>
+    </div>
+
+    <div class="why-row flip rv">
+      <div class="why-copy">
+        <h3><span class="k-cyan">It won't fake</span> an answer</h3>
+        <p>Every failure mode is a named error with a way out: a missing graph, an
+          archived blob, a moment the ledger can't reconstruct. Misses say which
+          tokens were tried and where to look next, instead of rendering plausibly.</p>
+        <ul>
+          <li><strong><code>NoIndex</code></strong>: nothing indexed here, and how to fix it</li>
+          <li><strong><code>ContentUnavailable</code></strong>: the blob is archived, not gone</li>
+          <li><strong><code>TemporalUnsupported</code></strong>: this op can't travel, honestly</li>
+        </ul>
+      </div>
+      <div class="mini"><div class="bar"><i></i><i></i><i></i></div>
+<pre><code>$ coderadar traverse dead::module --as-of 2024-01-01
+<span class="tok-k">TemporalUnsupported:</span> traverse reads live state;
+use <span class="tok-s">as_of</span> + <span class="tok-s">read_bytes</span> for moments.</code></pre>
+      </div>
+    </div>
+
+    <div class="why-row rv">
+      <div class="why-copy">
+        <h3><span class="k-magenta">One op,</span> every agent surface</h3>
+        <p>26 operations share one name across MCP, CLI, and Python, all calling one
+          shared function, pinned by parity tests. A fix in the op layer lands
+          everywhere at once, and agent skills ship in the repo, drift-tested
+          against the registry.</p>
+        <ul>
+          <li><strong>26 <code>coderadar_*</code> tools</strong>: one prefix, allow-list friendly</li>
+          <li><strong>CLI for every op</strong>: JSON out, stderr + exit codes, dry-run by default</li>
+          <li><strong>Skills in-repo</strong>: <code>skills/coderadar-mcp</code> is the source of truth</li>
+        </ul>
+      </div>
+      <div class="mini magenta"><div class="bar"><i></i><i></i><i></i></div>
+<pre><code><span class="tok-c"># same op, three spellings, one behavior</span>
+$ coderadar callers <span class="tok-s">pkg/mod.py::handler</span>
+tools.coderadar_callers({entity_id: …})
+g.callers(<span class="tok-s">"pkg/mod.py::handler"</span>)</code></pre>
+      </div>
+    </div>
+
+    <dl class="contrast rv">
+      <div class="row"><dt>grep / ripgrep</dt>
+        <dd>Finds text. No semantics, no history, no notion of a rename: a moved symbol vanishes.</dd></div>
+      <div class="row"><dt>Language servers</dt>
+        <dd>Answer precisely about <strong>now</strong>. They remember nothing, diff nothing, and won't batch-rewrite with receipts.</dd></div>
+      <div class="row me"><dt>CodeRadar</dt>
+        <dd><strong>Semantics plus memory plus guarded writes</strong>: resolved edges, every generation readable, mutations planned, verified, and reversible.</dd></div>
+    </dl>
+  </section>
+
+  <section id="capabilities" class="tint-a">
+    <h2 class="rv">What it <span class="u-a">does</span></h2>
+    <p class="sub rv">Six capabilities, each measured against the self-hosted corpus before it shipped.</p>
+    <div class="bento">
+      <div class="cell c wide rv"><span class="tag">resolution</span>
+        <svg class="glyph" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="8"/></svg>
+        <h3>Resolves, doesn't guess</h3>
+        <p>A four-level cascade turns <code>self</code> calls, typed locals, constructor results,
+          aliases, relative imports, and transitive re-export chains into real edges at 100/100
+          precision-recall held. Thirteen framework resolvers register
+          <code>route → handler</code> edges, so agents trace URLs to functions.</p></div>
+      <div class="cell v rv"><span class="tag">search</span>
+        <svg class="glyph" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="16" y1="16" x2="21" y2="21"/></svg>
+        <h3>Ask three ways</h3>
         <p>A real query language with a generated reference, millisecond FTS5
-        <code>search_symbols</code>, and Phase-1 embedding search with keyed, gated vectors.</p></div>
-      <div class="card rv"><div class="icon">✏️</div><h3>Guarded mutations</h3>
-        <p>Plan-then-apply rewrites with byte-span verification and post-write parse checks.
-        Dry-run unless applied; call-site cascades flagged, never silently skipped.</p></div>
-      <div class="card rv"><div class="icon">🩺</div><h3>Smells · clones · dead code</h3>
-        <p>Twelve smell rules, deterministic MinHash clone detection, and reachability-based
-        dead code that shrinks as resolution improves.</p></div>
+          <code>search_symbols</code>, and keyed, dimension-gated embedding search.</p></div>
+      <div class="cell m rv"><span class="tag">analysis</span>
+        <svg class="glyph" viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>
+        <h3>Findings you can act on</h3>
+        <p>Twelve smell rules with confidence tiers, byte-identical MinHash clone detection,
+          and reachability dead code with evidence — findings fell 269 → 121 as resolution improved.</p></div>
+      <div class="cell c wide rv"><span class="tag">mutations</span>
+        <svg class="glyph" viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16l-1 4z"/><path d="M13 7l3 3"/></svg>
+        <h3>Rewrites with receipts</h3>
+        <p>Plan-then-apply with content-hash span verification and post-write parse checks.
+          Renames cascade across attribute call sites; what the graph can't resolve ships as
+          <code>unverified_sites</code> — reported, never silently skipped.</p></div>
+      <div class="cell v rv"><span class="tag">serve</span>
+        <svg class="glyph" viewBox="0 0 24 24"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>
+        <h3>Cold start, warm everything</h3>
+        <p>Loads the ledger and refreshes only changed files — zero tree walks at steady state.
+          A watcher keeps it live; the last project resumes across restarts.</p></div>
+      <div class="cell m wide rv"><span class="tag">retain</span>
+        <svg class="glyph" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 12v7h14v-7M10 16h4"/></svg>
+        <h3>History that fits on disk</h3>
+        <p><code>archive_after_days</code> moves cold bytes aside without breaking reads;
+          hot + cold backup restores are tested, not hoped. 41 grammars, one store.</p></div>
     </div>
   </section>
 
   <section id="surfaces">
-    <h2 class="rv">Three surfaces, <span class="grad">one name per op</span></h2>
+    <h2 class="rv">Three surfaces, <span class="u-m">one name per op</span></h2>
     <p class="sub rv">One fix in the shared op layer reaches MCP, CLI, and Python — pinned by parity tests.</p>
-    <div class="tabs rv" role="tablist">
+    <div class="tabs rv" role="tablist" aria-label="Surface examples">
       <button role="tab" aria-selected="true" data-tab="cli">CLI</button>
       <button role="tab" aria-selected="false" data-tab="mcp">MCP</button>
       <button role="tab" aria-selected="false" data-tab="py">Python</button>
     </div>
     <div class="codecard rv">
-      <div class="bar"><i></i><i></i><i></i></div>
+      <div class="bar" aria-hidden="true"><i></i><i></i><i></i></div>
       <pre id="codepane"><code><span class="tok-c"># who calls the embedding gate?</span>
 $ coderadar callers core_indexer/graph/embeddings.py::dedup_key
   <span class="tok-f">→ search_similar, compute_embeddings, 4 call sites</span>
@@ -313,20 +513,22 @@ $ coderadar callers core_indexer/graph/embeddings.py::dedup_key
 <span class="tok-c"># what breaks if this file changes?</span>
 $ coderadar affected py_agent/src/coderadar/ops.py --max-depth 2</code></pre>
     </div>
+    <p class="surfaces-note rv">Every example above runs the same <code>coderadar.ops</code> function —
+      <code>tests/test_surface_parity.py</code> keeps it that way.</p>
   </section>
 
-  <section id="history">
-    <h2 class="rv">The ledger <span class="grad">remembers</span></h2>
+  <section id="history" class="tint-a">
+    <h2 class="rv">The ledger <span class="u-a">remembers</span></h2>
     <p class="sub rv">A bitemporal Macrame ledger under the graph: facts carry world-time and learned-time,
       so any recorded moment folds back into a readable state.</p>
     <div class="history">
-      <div class="panel rv"><h3>Ask the past</h3>
+      <div class="panel ask rv"><h3>Ask the past</h3>
         <ul>
           <li><b>Names at T</b> — <code>as_of(t)</code> reconstructs every symbol as it was.</li>
           <li><b>Bytes at T</b> — <code>read_bytes(id)</code> returns exact file bytes, CRLF intact.</li>
           <li><b>Diffs on read</b> — generations diffed live from blobs; nothing pre-rendered.</li>
         </ul></div>
-      <div class="panel rv"><h3>Keep the present fast</h3>
+      <div class="panel keep rv"><h3>Keep the present fast</h3>
         <ul>
           <li><b>Cold start</b> — load the ledger, refresh only changed files. Zero walks at steady state.</li>
           <li><b>Retention</b> — <code>archive_after_days</code> moves cold bytes aside; reads never break.</li>
@@ -335,16 +537,18 @@ $ coderadar affected py_agent/src/coderadar/ops.py --max-depth 2</code></pre>
     </div>
   </section>
 
-  <section id="docs">
-    <h2 class="rv">Read <span class="grad">deeper</span></h2>
+  <section id="docs" class="tint-b">
+    <h2 class="rv">Read <span class="u-b">deeper</span></h2>
     <p class="sub rv">The repo docs are the live set — everything retired lives in the knowledge graph, never deleted.</p>
     <div class="docs">
       <a class="rv" href="https://github.com/opticsWolf/coderadar/blob/main/docs/ARCHITECTURE.md">
-        <h3><span>Architecture</span></h3><p>Layers, data model, pipeline, storage, honesty model, decision index.</p></a>
+        <h3>Architecture</h3><p>Layers, data model, pipeline, storage, honesty model, decision index.</p></a>
       <a class="rv" href="https://github.com/opticsWolf/coderadar/blob/main/docs/QUICKREF.md">
-        <h3><span>Quick reference</span></h3><p>Everyday ops as CLI·MCP·Python triples, config cheat, troubleshooting.</p></a>
+        <h3>Quick reference</h3><p>Everyday ops as CLI·MCP·Python triples, config cheat, troubleshooting.</p></a>
       <a class="rv" href="https://github.com/opticsWolf/coderadar/blob/main/CHANGELOG.md">
-        <h3><span>Changelog</span></h3><p>Per-version record from v0.6 to v0.12 — blobs, FTS, routes, and all.</p></a>
+        <h3>Changelog</h3><p>Per-version record from v0.5.4 to v0.12 — cold start, smells, blobs, FTS, routes.</p></a>
+      <a class="rv" href="https://github.com/opticsWolf/coderadar/tree/main/skills">
+        <h3>Agent skills</h3><p>Repo-truth MCP + CLI skill packs, drift-tested — drop into any agent harness.</p></a>
     </div>
   </section>
 
@@ -352,7 +556,7 @@ $ coderadar affected py_agent/src/coderadar/ops.py --max-depth 2</code></pre>
 
 <footer>
   <div class="wrap">
-    <span class="grad">CodeRadar</span> · MIT · <a href="https://github.com/opticsWolf/coderadar">repository</a> ·
+    <strong>CodeRadar</strong> · MIT · <a href="https://github.com/opticsWolf/coderadar">repository</a> ·
     <a href="https://pypi.org/project/coderadar-rs/">PyPI</a> · built with Rust + Python + Macrame
   </div>
 </footer>
@@ -362,7 +566,7 @@ $ coderadar affected py_agent/src/coderadar/ops.py --max-depth 2</code></pre>
   "use strict";
   var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-  /* ── Radar sweep ── */
+  /* ── Radar sweep: cyan beam, violet-tinted trail, tri-tone blips ── */
   var cv = document.getElementById("radar"), ctx = cv.getContext("2d");
   var W = 0, H = 0, cx = 0, cy = 0, R = 0, ang = 0;
   var blips = [];
@@ -386,23 +590,29 @@ $ coderadar affected py_agent/src/coderadar/ops.py --max-depth 2</code></pre>
     cx = W / 2; cy = H * 0.42; R = Math.min(W, H) * 0.46;
     seed();
   }
-  function ring(r, alpha) {
+  function ring(r, rgb, alpha) {
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = "rgba(62,230,255," + alpha + ")"; ctx.lineWidth = 1; ctx.stroke();
+    ctx.strokeStyle = "rgba(" + rgb + "," + alpha + ")"; ctx.lineWidth = 1; ctx.stroke();
   }
   function frame() {
     ctx.clearRect(0, 0, W, H);
-    [0.25, 0.5, 0.75, 1].forEach(function (f) { ring(R * f, 0.10 + 0.05 * f); });
+    ring(R, "244,113,214", 0.10);
+    ring(R * 0.75, "62,230,255", 0.13);
+    ring(R * 0.5, "139,92,246", 0.15);
+    ring(R * 0.25, "62,230,255", 0.16);
     ctx.beginPath(); ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
     ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
-    ctx.strokeStyle = "rgba(62,230,255,0.07)"; ctx.stroke();
-    /* sweep with trailing gradient */
-    for (var t = 0; t < 40; t++) {
-      var a = ang - t * 0.012;
+    ctx.strokeStyle = "rgba(139,92,246,0.10)"; ctx.stroke();
+    /* sweep: cyan head dissolving into violet */
+    for (var t = 0; t < 44; t++) {
+      var a = ang - t * 0.011, k = t / 44;
+      var rC = Math.round(62 + (139 - 62) * k),
+          gC = Math.round(230 - (230 - 92) * k),
+          bC = Math.round(255 - (255 - 246) * k);
       ctx.beginPath(); ctx.moveTo(cx, cy);
-      ctx.arc(cx, cy, R, a, a + 0.012);
+      ctx.arc(cx, cy, R, a, a + 0.011);
       ctx.closePath();
-      ctx.fillStyle = "rgba(62,230,255," + (0.10 * (1 - t / 40)) + ")";
+      ctx.fillStyle = "rgba(" + rC + "," + gC + "," + bC + "," + (0.10 * (1 - k)) + ")";
       ctx.fill();
     }
     ctx.beginPath(); ctx.moveTo(cx, cy);
@@ -443,7 +653,7 @@ $ coderadar affected py_agent/src/coderadar/ops.py --max-depth 2</code></pre>
       if (!e.isIntersecting) return;
       cio.unobserve(e.target);
       var el = e.target, end = parseInt(el.dataset.count, 10), t0 = null;
-      if (reduce) { el.textContent = end.toLocaleString(); return; }
+      if (reduce || isNaN(end)) { if (!isNaN(end)) el.textContent = end.toLocaleString(); return; }
       function tick(t) {
         if (!t0) t0 = t;
         var p = Math.min((t - t0) / 1400, 1), ease = 1 - Math.pow(1 - p, 3);
