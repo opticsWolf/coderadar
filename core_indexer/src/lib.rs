@@ -2300,16 +2300,17 @@ fn traverse(
         // its CURRENT name); (2) Macrame's `load_subgraph_with` at a
         // historical instant STILL missed the retired edge — root-caused
         // with a pure-macrame reproducer (no CodeRadar layers): the walk
-        // FINDS the edge, but `hydrate` reads node attributes from live
+        // FINDS the edge, but `hydrate` read node attributes from live
         // `concepts WHERE retired = 0` and `drop_dangling_adjacency` then
-        // enforces present-tense closure, pruning edges whose endpoint
-        // retired AFTER the instant. Documented Macrame design for
-        // current-belief reads (§4.1: retired = not visible); a real gap
-        // for historical instants (upstream report pending) — so topology
-        // reads the state fold, the primitive the plan blesses
-        // ("entity lookup via reconstruct(T)"). Do not route temporal
-        // walks back through the loader without re-proving on the rename
-        // fixture.
+        // enforced present-tense closure, pruning edges whose endpoint
+        // retired AFTER the instant. Fixed upstream in macrame-db 0.19.1
+        // (opticsWolf/Macrame#3 via D-289/D-290 `hydrate_historical` +
+        // `AttributeMode`); re-proven on the rename fixture and pinned by
+        // `repro_walk_retired` (un-ignored). Topology still reads the state
+        // fold — the primitive the plan blesses ("entity lookup via
+        // reconstruct(T)") — by decision, not necessity; do not route
+        // temporal walks back through the loader without a reason beyond
+        // parity.
         use crate::graph::cold_start::projection_from_state;
         let ts_for_state = ts_owned.clone();
         let state = py

@@ -1050,12 +1050,15 @@ impl CodeGraphStore {
 
     /// Traverse the graph from a source entity at `ts` (temporal read).
     ///
-    /// Only the `"now"` live path uses this: temporal walks BFS over the
-    /// reconstructed state instead (see `bfs_over_state` — Macrame's walk
-    /// finds the retired edge, but the loader's present-tense node closure
-    /// (`hydrate` on live `retired = 0` rows + `drop_dangling_adjacency`)
-    /// prunes edges whose endpoint retired after the instant; the state
-    /// fold is the recorded-time primitive).
+    /// Only the `"now"` live path uses this (no builder instants, so no
+    /// `attribute_mode` is required): temporal walks BFS over the
+    /// reconstructed state instead (see `bfs_over_state`). The historical
+    /// loader gap that forced this (present-tense node closure pruning
+    /// post-instant retirements, upstream opticsWolf/Macrame#3) is fixed in
+    /// macrame-db 0.19.1 via `hydrate_historical` + `AttributeMode`, re-proven
+    /// on the rename fixture (`repro_walk_retired`, now un-ignored) — but the
+    /// state fold stays the recorded-time primitive; do not route temporal
+    /// walks back through the loader without a reason beyond parity.
     pub fn traverse_at(
         &self,
         start_id: &str,

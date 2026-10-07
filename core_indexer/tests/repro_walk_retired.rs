@@ -12,14 +12,25 @@
 //! same `WHERE c.retired = 0` into its projection openly.)
 //!
 //! CodeRadar reads temporal topology from the `reconstruct` state instead
-//! (`bfs_over_state`); the ignored tests below are kept as the reproducer
-//! for the upstream report — un-ignore when the loader honors instants in
-//! node closure.
+//! (`bfs_over_state`), and production stays there. The tests below were the
+//! upstream-report reproducer (opticsWolf/Macrame#3, fixed in 0.19.1 via
+//! D-289/D-290 `hydrate_historical` + `AttributeMode`); re-proven green on
+//! 0.19.1 including the rename fixture, they now pin loader correctness as
+//! ordinary regression tests.
 //!
 //! `T_RETIRE` is a fixed future stamp so no clock formatting is needed;
 //! `t1` (real `max(recorded_at)`) always lands inside `[T0, T_RETIRE)`.
+//!
+//! 0.19.1 note (D-289/D-290): setting either builder instant without
+//! `attribute_mode` is now a hard `DbError::AttributeModeUnstated` (not a
+//! silent live-text mix), and `AttributeMode::AtTime` hydrates node
+//! attributes from the transaction log as believed at the instant via
+//! `hydrate_historical`. The recorded-fold test below states AtTime; if it
+//! goes green, the upstream #3 loader closure gap is fixed through the new
+//! API (un-ignore then). CodeRadar production still reads temporal
+//! topology from the `reconstruct` state (`bfs_over_state`).
 
-use macrame::graph::{EdgeAssertion, Subgraph, TraversalBuilder};
+use macrame::graph::{AttributeMode, EdgeAssertion, Subgraph, TraversalBuilder};
 use macrame::{ConceptUpsert, Database};
 
 const TS_OPEN: &str = "9999-12-31T23:59:59.999999Z";
@@ -159,11 +170,9 @@ async fn dump_ledger(db: &Database, t1: &str) {
     }
 }
 
-// Ignored: documents the upstream gap (loader closure vs instant).
-// Un-ignore when Macrame's loader honors historical instants in node
-// closure; CodeRadar's own temporal path does not use the loader.
+// Was the upstream gap (loader closure vs instant); green since 0.19.1.
+// CodeRadar's own temporal path does not use the loader.
 #[test]
-#[ignore = "upstream: load_subgraph_with drops edges retired after the instant"]
 fn repro_bare_walk_at_own_timestamp() {
     let rt = rt();
     let (_dir, db, t1) = setup(&rt);
@@ -180,15 +189,15 @@ fn repro_bare_walk_at_own_timestamp() {
     );
 }
 
-// Ignored: same upstream gap via the recorded-fold shape.
+// Same shape via the recorded-fold + AtTime composition.
 #[test]
-#[ignore = "upstream: load_subgraph_with drops edges retired after the instant"]
 fn repro_recorded_fold_walk_at_own_timestamp() {
     let rt = rt();
     let (_dir, db, t1) = setup(&rt);
     let traversal = TraversalBuilder::new(A)
         .max_depth(2)
-        .as_of_recorded(t1.clone());
+        .as_of_recorded(t1.clone())
+        .attribute_mode(AttributeMode::AtTime);
     let sub = rt
         .block_on(db.load_subgraph_with(&traversal, &t1, 10_000_000))
         .unwrap();
@@ -197,6 +206,94 @@ fn repro_recorded_fold_walk_at_own_timestamp() {
     assert!(
         found.contains(&(A.to_string(), B.to_string(), "CALLS".to_string())),
         "RECORDED-FOLD WALK MISSED the retired edge at its own timestamp"
+    );
+}
+
+const T_MID: &str = "2026-06-01T00:00:00.000000Z";
+const C: &str = "repro::new_name";
+
+// Re-prove gate for the 0.19.1 loader: a rename (retire-old + assert-new)
+// walked at a pre-rename valid instant must reach the OLD name, and at a
+// post-rename instant the NEW name — the exact shape of the DR-9 failure
+// (renames wore current names through the loader). Green here un-ignores
+// the whole file: the loader is re-proven on the rename fixture, though
+// CodeRadar production stays on `bfs_over_state` regardless.
+#[test]
+fn repro_rename_walk_wears_period_names() {
+    let rt = rt();
+    let (_dir, db, t1) = setup(&rt);
+    // Rename B -> C: retire the old concept + its edge, assert the new pair.
+    rt.block_on(
+        db.upsert_concept(
+            ConceptUpsert::new(B, B)
+                .content(r#"{"meta_version": 2, "kind": "function"}"#)
+                .valid_from(T0.to_string())
+                .valid_to(T_MID.to_string())
+                .retired(true),
+        ),
+    )
+    .unwrap();
+    rt.block_on(
+        db.upsert_concept(
+            ConceptUpsert::new(C, C)
+                .content(r#"{"meta_version": 2, "kind": "function"}"#)
+                .valid_from(T_MID.to_string())
+                .valid_to(TS_OPEN.to_string())
+                .retired(false),
+        ),
+    )
+    .unwrap();
+    rt.block_on(db.retire_edge(A, B, "CALLS", T0, T_MID))
+        .unwrap();
+    rt.block_on(
+        db.assert_edge(
+            EdgeAssertion::new(A, C, "CALLS")
+                .valid_from(T_MID.to_string())
+                .weight(1.0)
+                .properties("{}"),
+        ),
+    )
+    .unwrap();
+    // Bitemporal composition (the BCDM cell): believed-at-r about true-at-v.
+    // r = t1 (recorded before the rename) keeps B live in belief; v selects
+    // the valid axis. as_of_valid alone cannot carry history: AtTime with no
+    // recorded instant hydrates against current belief, where B is retired.
+    let before = TraversalBuilder::new(A)
+        .max_depth(2)
+        .as_of_recorded(t1.clone())
+        .as_of_valid("2026-03-01T00:00:00.000000Z")
+        .attribute_mode(AttributeMode::AtTime);
+    let found_before = edge_triples(
+        &rt.block_on(db.load_subgraph_with(&before, "2026-09-01T00:00:00.000000Z", 10_000_000))
+            .unwrap(),
+    );
+    println!("rename walk at 2026-03: {found_before:?}");
+    assert!(
+        found_before.contains(&(A.to_string(), B.to_string(), "CALLS".to_string())),
+        "PRE-RENAME WALK MISSED the old name"
+    );
+    assert!(
+        !found_before.contains(&(A.to_string(), C.to_string(), "CALLS".to_string())),
+        "PRE-RENAME WALK LEAKED the new name"
+    );
+    let t2 = rt.block_on(max_recorded(&db));
+    let after = TraversalBuilder::new(A)
+        .max_depth(2)
+        .as_of_recorded(t2)
+        .as_of_valid("2026-09-01T00:00:00.000000Z")
+        .attribute_mode(AttributeMode::AtTime);
+    let found_after = edge_triples(
+        &rt.block_on(db.load_subgraph_with(&after, "2026-09-01T00:00:00.000000Z", 10_000_000))
+            .unwrap(),
+    );
+    println!("rename walk at 2026-09: {found_after:?}");
+    assert!(
+        found_after.contains(&(A.to_string(), C.to_string(), "CALLS".to_string())),
+        "POST-RENAME WALK MISSED the new name"
+    );
+    assert!(
+        !found_after.contains(&(A.to_string(), B.to_string(), "CALLS".to_string())),
+        "POST-RENAME WALK LEAKED the old name"
     );
 }
 

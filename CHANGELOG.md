@@ -16,6 +16,11 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
   bytes in one flow (`test_release_gate_history.py`).
 - BUGS_QUIRKS triage: 9/10 fixed-with-evidence (#1 root-caused: re-base
   from lines[1..] + regression test; #10 carried, harness-side).
+- macrame-db 0.19.1 uptake (no bump: dep patch, no user-facing change):
+  `hydrate_historical` + `AttributeMode` fix upstream #3 through the
+  bitemporal composition; `repro_walk_retired.rs` re-proven on a rename
+  probe and un-ignored as regression pins; production stays on
+  `bfs_over_state` by decision. libsql single 0.9.30, clippy 0, fmt clean.
 - §3.2 read-path discipline pinned E2E (unchanged-tree reindex: revision
   stable, `indexed_at` never advances, 0 new blob bytes); §3.3 upstream
   traversal NO-GO for 0.12 with evidence (no ledger in-edges in Macrame
