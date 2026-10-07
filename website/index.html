@@ -388,10 +388,11 @@
 
     <div class="why-row rv">
       <div class="why-copy">
-        <h3><span class="k-violet">The past is bytes,</span> not vibes</h3>
-        <p>A bitemporal ledger sits under the graph: every fact carries world-time and
-          learned-time, and every file generation is stored as a content-addressed blob.
-          Any recorded moment folds back into a readable state.</p>
+        <h3><span class="k-violet">History as bytes</span></h3>
+        <p>Every generation stored as content-addressed blobs over a bitemporal ledger:
+          every fact carries world-time and learned-time, so any recorded moment folds
+          back into a readable state. <code>read_bytes</code> serves exact source-at-T;
+          diffs compute on read; cold bytes archive, never vanish.</p>
         <ul>
           <li><strong>Names at T</strong>: symbols as they were, renames included</li>
           <li><strong>Bytes at T</strong>: exact source, CRLF and CJK intact</li>
@@ -408,10 +409,10 @@ snap.read_bytes(<span class="tok-s">"py_agent/src/coderadar/ops.py"</span>)
 
     <div class="why-row flip rv">
       <div class="why-copy">
-        <h3><span class="k-cyan">It won't fake</span> an answer</h3>
-        <p>Every failure mode is a named error with a way out: a missing graph, an
-          archived blob, a moment the ledger can't reconstruct. Misses say which
-          tokens were tried and where to look next, instead of rendering plausibly.</p>
+        <h3><span class="k-cyan">Honest by construction</span></h3>
+        <p>No capability fakes an answer. Missing graphs, absent blobs, and temporal
+          dead-ends raise named errors: instead of rendering plausibly, misses say which
+          tokens were tried and where to look next.</p>
         <ul>
           <li><strong><code>NoIndex</code></strong>: nothing indexed here, and how to fix it</li>
           <li><strong><code>ContentUnavailable</code></strong>: the blob is archived, not gone</li>
@@ -457,32 +458,32 @@ g.callers(<span class="tok-s">"pkg/mod.py::handler"</span>)</code></pre>
   </section>
 
   <section id="capabilities" class="tint-a">
-    <h2 class="rv">What it <span class="u-a">does</span></h2>
-    <p class="sub rv">Six capabilities, each measured against the self-hosted corpus before it shipped.</p>
+    <h2 class="rv">Built for <span class="u-a">agents that read code</span></h2>
+    <p class="sub rv">AST-only resolution at 100/100 precision-recall, an honesty-first error model,
+      and history stored as bytes: not vibes.</p>
     <div class="bento">
       <div class="cell c wide rv"><span class="tag">resolution</span>
         <svg class="glyph" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="8"/></svg>
-        <h3>Resolves, doesn't guess</h3>
-        <p>A four-level cascade turns <code>self</code> calls, typed locals, constructor results,
-          aliases, relative imports, and transitive re-export chains into real edges at 100/100
-          precision-recall held. Thirteen framework resolvers register
-          <code>route → handler</code> edges, so agents trace URLs to functions.</p></div>
+        <h3>Semantic graph, 41 grammars</h3>
+        <p>Single-pass tree-sitter extraction across 12 Tier-1 languages. Imports, calls,
+          inheritance, and <code>route → handler</code> edges resolved through the L1–L4 cascade
+          at 100/100 precision-recall: thirteen framework resolvers trace URLs to functions.</p></div>
       <div class="cell v rv"><span class="tag">search</span>
         <svg class="glyph" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><line x1="16" y1="16" x2="21" y2="21"/></svg>
-        <h3>Ask three ways</h3>
+        <h3>Query + keyword + vectors</h3>
         <p>A real query language with a generated reference, millisecond FTS5
-          <code>search_symbols</code>, and keyed, dimension-gated embedding search.</p></div>
+          <code>search_symbols</code>, and Phase-1 embedding search with keyed, gated vectors.</p></div>
       <div class="cell m rv"><span class="tag">analysis</span>
         <svg class="glyph" viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/></svg>
-        <h3>Findings you can act on</h3>
-        <p>Twelve smell rules with confidence tiers, byte-identical MinHash clone detection,
-          and reachability dead code with evidence — findings fell 269 → 121 as resolution improved.</p></div>
+        <h3>Smells · clones · dead code</h3>
+        <p>Twelve smell rules, deterministic MinHash clone detection, and reachability-based
+          dead code that shrinks as resolution improves: findings fell 269 → 121.</p></div>
       <div class="cell c wide rv"><span class="tag">mutations</span>
         <svg class="glyph" viewBox="0 0 24 24"><path d="M4 20l4-1 11-11-3-3L5 16l-1 4z"/><path d="M13 7l3 3"/></svg>
-        <h3>Rewrites with receipts</h3>
-        <p>Plan-then-apply with content-hash span verification and post-write parse checks.
-          Renames cascade across attribute call sites; what the graph can't resolve ships as
-          <code>unverified_sites</code> — reported, never silently skipped.</p></div>
+        <h3>Guarded mutations</h3>
+        <p>Plan-then-apply rewrites with byte-span verification and post-write parse checks.
+          Dry-run unless applied; call-site cascades flagged as
+          <code>unverified_sites</code>, never silently skipped.</p></div>
       <div class="cell v rv"><span class="tag">serve</span>
         <svg class="glyph" viewBox="0 0 24 24"><path d="M13 2L4 14h6l-1 8 9-12h-6l1-8z"/></svg>
         <h3>Cold start, warm everything</h3>
