@@ -493,7 +493,8 @@ class CodeGraph:
         recorded-time T (Macrame canonical UTC; anything else is
         `ops.InvalidRequest`). Signature decision (plan §0.1a): `as_of` stays
         — MCP/CLI/Python names are pinned by the parity test, and DR-17
-        rules out another rename round. Bytes-at-T is §0.1(b) work."""
+        rules out another rename round. Bytes-at-T rides source blobs (§3.0:
+        `Snapshot.read_bytes` / `read_source`)."""
         from . import ops
         try:
             from coderadar._core import normalize_timestamp as _normalize_ts
@@ -1109,8 +1110,8 @@ class Snapshot:
     upstream `traverse`, `explore`) raises `ops.TemporalUnsupported`
     instead of answering from the present. `predates_recorded_history`
     reports a T before the first recorded write distinctly (empty answer,
-    not an error). Bytes-at-T is §0.1(b) work — entities carry `ByteSpan`s,
-    not source bodies, until the blob read path lands.
+    not an error). Bytes-at-T rides source blobs (§3.0): `read_bytes`
+    serves exact bytes-at-T, `read_source` the display form.
 
     Usage:
         snapshot = graph.as_of("2025-06-15T10:00:00.000000Z")

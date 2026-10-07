@@ -43,22 +43,26 @@ CodeRadar wins on small-to-medium Python/Rust projects due to zero runtime boot 
 
 ## Architecture
 
+> Full system design: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) ·
+> Operator cheat sheet: [`docs/QUICKREF.md`](docs/QUICKREF.md).
+
 ```
-Python Layer (CLI, Visualizers, Framework Resolvers, GraphRAG, MCP Server)
+Surfaces (MCP 26 tools, CLI, Python CodeGraph — one name per op)
         │
-    PyO3 FFI  +  register_synthetic_edge() bridge
+    ops.py (shared validated op layer)  +  synthetic-edge bridge
         │
-Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
-           Resolution Cascade L1-L3, Query Engine, Mutation Engine, Smell Engine)
+Rust _core (single-pass extraction, 41 grammars, resolve cascade L1-L4,
+             query engine, mutation plans, smells, clones, snapshots)
         │
-    Macrame DB (bitemporal persistence with valid_from/valid_to timestamps)
+    Macrame 0.19 ledger (bitemporal facts) + SQLite hot store
+    + sha256 blobs + archive sibling + FTS5 + Phase-1 vector keys
 ```
 
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
 | **Tests** | 1512 passing (434 Rust + 1078 Python) |
-| **Operations** | One name per graph operation on every surface that serves it: MCP tool `coderadar_<op>`, CLI command `coderadar <op>` (hyphenated), `CodeGraph.<op>()` — explore, node, search, affected, resolve, query, search_similar, compute_embeddings, module_children, callers, callees, diagnose, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, replace_body, update_signature, rename, create_entity, reindex, update_file, status, set_project (CLI: `-C`). `search_symbols` (keyword search) and `archive` (retention) are Python-API-only by design; `visualize`, `shell`, `git`, `exclude`, `watch`, `init`, `load-snapshot`, `store-repair` stay CLI-side (local-process concerns) — see the step-4 surface verdict in the v0.12 deviations log |
+| **Operations** | One name per graph operation on every surface that serves it: MCP tool `coderadar_<op>`, CLI command `coderadar <op>` (hyphenated), `CodeGraph.<op>()` — 26 ops (25 graph operations + `set_project` project switching, CLI: `-C`): explore, node, search, affected, resolve, query, search_similar, compute_embeddings, module_children, callers, callees, diagnose, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, replace_body, update_signature, rename, create_entity, reindex, update_file, status, set_project. `search_symbols` (keyword search) and `archive` (retention) are Python-API-only by design; `visualize`, `shell`, `git`, `exclude`, `watch`, `init`, `load-snapshot`, `store-repair` stay CLI-side (local-process concerns) — see the step-4 surface verdict in the v0.12 deviations log |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
 | **Agents** | MCP server over stdio — finds the project root, indexes in the background, and exits with its client |
@@ -830,7 +834,7 @@ py_agent/src/coderadar/    # Python layer
     lsp/                   # Persistent LSP warm pool
     mutation/              # Tool router for LLM
     mcp/                   # MCP server
-      server.py            #   25 tools + guidance
+      server.py            #   26 tools + guidance
       roots.py             #   project-root ladder and marker walk-up
       startup.py           #   background index, ensure_ready()
       lazy.py              #   roots/list retry on the first tool call
@@ -838,7 +842,11 @@ py_agent/src/coderadar/    # Python layer
     query/                 # Query planner + templates + cache
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
-docs/                      # Specifications + code review + performance roadmap
+docs/                      # Live doc set: ARCHITECTURE.md (system design),
+                           #   QUICKREF.md (operator cheat sheet), v0.12 trio +
+                           #   deviations, store-and-retention, query-language
+                           #   (generated), smell reference, open-items,
+                           #   BUGS_QUIRKS. Retired docs live in OKFgraph.
 tests/                     # 1078 Python tests (E2E incl. dead-code/clones/scaffold/CFG/
                            #   centrality/dead-branch/RTA goldens, mutation E2E, MCP,
                            #   framework resolvers, ingest parity, benchmarks)

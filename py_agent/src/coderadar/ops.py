@@ -1057,8 +1057,8 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     or already retired then), and `predates_recorded_history` is true when T
     sits before the first recorded write. `query` text contributes candidate
     names only; there is no temporal query execution (use `coderadar_query`
-    for present-tense search). Bytes-at-T is §0.1(b) work: entities carry
-    `ByteSpan`s, not source bodies, until the blob read path lands.
+    for present-tense search). Bytes-at-T rides source blobs (§3.0: use
+    `Snapshot.read_bytes` / `read_source` for entity bytes at T.
     """
     _require_index()
     if not timestamp:
