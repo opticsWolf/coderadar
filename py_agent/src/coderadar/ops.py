@@ -325,7 +325,8 @@ def _entity_or_raise(entity_id: str) -> dict:
 
 # ── Read operations ───────────────────────────────────────────────────────
 
-SEARCH_KINDS = ("function", "class", "type_alias", "constant", "module", "import")
+SEARCH_KINDS = ("function", "class", "type_alias", "constant", "module", "import",
+                "route")
 
 
 def search(query: str, kind: str | None = None, top_k: int = 10) -> list[dict]:
@@ -449,7 +450,7 @@ def resolve(name: str, limit: int = 5) -> dict:
     if name.startswith("/"):
         from coderadar.resolvers.resolution import resolve_route
         return {"name": name, "mode": "route",
-                "results": resolve_route(name, searcher, limit=limit) or []}
+                "results": resolve_route(name, searcher, _callees, limit=limit) or []}
     from coderadar.resolvers import ALL_RESOLVERS
     from coderadar.resolvers.resolution import resolve_reference
     return {"name": name, "mode": "reference",

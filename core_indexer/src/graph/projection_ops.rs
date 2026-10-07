@@ -104,6 +104,17 @@ impl CodeGraph {
                     removed.insert(id.clone());
                 }
             }
+            // §1.3: routes match by id prefix (file-prefixed ids) or by
+            // the struct's file_path.
+            for (id, r) in projection.routes.iter() {
+                if (matches(id)
+                    || r.file_path == file_path
+                    || r.file_path == lookup)
+                    && !removed.contains(id)
+                {
+                    removed.insert(id.clone());
+                }
+            }
             // Remove entities directly without module lookup
             for id in &removed.clone() {
                 projection.functions.remove(id);
@@ -112,6 +123,7 @@ impl CodeGraph {
                 projection.constants.remove(id);
                 projection.type_aliases.remove(id);
                 projection.modules.remove(id);
+                projection.routes.remove(id);
                 projection.callers_by_callee.remove(id);
                 projection.callees_by_caller.remove(id);
                 projection.subclasses.remove(id);
@@ -125,6 +137,9 @@ impl CodeGraph {
             projection.callees_by_caller.retain(|_, callers| {
                 callers.retain(|cid| !removed.contains(cid));
                 !callers.is_empty()
+            });
+            projection.synthetic_edges.retain(|(s, t)| {
+                !removed.contains(s) && !removed.contains(t)
             });
             self.retire_in_store(removed.iter());
             return removed;
@@ -201,6 +216,28 @@ impl CodeGraph {
             projection.modules.remove(module_id);
         }
 
+        // §1.3: routes are file-keyed but not module members, so neither
+        // sweep above finds them. Match on the struct's file_path (plus id
+        // prefixes for pre-canonical spellings); the shared cleanup below
+        // scrubs their index pairs and the ledger retire covers concepts.
+        let route_prefixes = [format!("{}::", file_path), format!("{}::", lookup)];
+        let routes_to_remove: Vec<EntityId> = projection
+            .routes
+            .iter()
+            .filter(|(id, r)| {
+                r.file_path == file_path
+                    || r.file_path == lookup
+                    || route_prefixes.iter().any(|p| id.starts_with(p.as_str()))
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &routes_to_remove {
+            projection.routes.remove(id);
+            projection.callers_by_callee.remove(id);
+            projection.callees_by_caller.remove(id);
+            removed.insert(id.clone());
+        }
+
         // Clean up callers_by_callee entries that reference removed entities
         projection.callers_by_callee.retain(|_, callees| {
             callees.retain(|cid| !removed.contains(cid));
@@ -209,6 +246,10 @@ impl CodeGraph {
         projection.callees_by_caller.retain(|_, callers| {
             callers.retain(|cid| !removed.contains(cid));
             !callers.is_empty()
+        });
+        // ... and the synthetic pair registry (keyed by pair, not endpoint).
+        projection.synthetic_edges.retain(|(s, t)| {
+            !removed.contains(s) && !removed.contains(t)
         });
 
         self.retire_in_store(removed.iter());

@@ -716,6 +716,12 @@ class CodeGraph:
         dropped: dict | None = None
         if content is None and not Path(file_path).exists():
             dropped = self._remove_file_full(file_path)
+            # §1.3 (DR-10): the file is gone — its routes retire via the
+            # file-scoped diff (missing file extracts nothing).
+            try:
+                self._refresh_framework_routes(file_path, None)
+            except Exception:  # noqa: BLE001, S110 - removal stands regardless
+                pass
         if dropped and dropped["entities_removed"]:
             # a file never indexed falls through and fails below
             return UpdateReport(
@@ -730,6 +736,13 @@ class CodeGraph:
         try:
             from coderadar._core import update_file as _update_file_rust
             result = _update_file_rust(file_path, content, force)
+            # §1.3 (DR-10): re-extract this file's routes (scope = file;
+            # ghosts retire via the diff). Best-effort: extraction must
+            # never fail the update.
+            try:
+                self._refresh_framework_routes(file_path, content)
+            except Exception:  # noqa: BLE001, S110 - update stands regardless
+                pass
             if isinstance(result, dict):
                 return UpdateReport(
                     affected_files=result.get("affected_files") or [file_path],
@@ -781,6 +794,27 @@ class CodeGraph:
             fully_applied=False, epoch_before=0, epoch_after=0,
         )
 
+    @staticmethod
+    def _refresh_framework_routes(file_path: str, content: str | None) -> None:
+        """Re-extract one file's framework routes (§1.3, DR-10)."""
+        import os
+
+        from coderadar import framework as _framework
+        from coderadar.excludes import resolve_entity_path as _resolve
+        try:
+            from coderadar._core import indexed_root_py as _rust_root
+            root = _rust_root() or os.getcwd()
+        except Exception:  # noqa: BLE001 - fall back to the cwd
+            root = os.getcwd()
+        abs_path = _resolve(file_path)
+        try:
+            rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
+        except ValueError:
+            return
+        if rel.startswith(".."):
+            return
+        _framework.refresh_framework_file(root, rel, content)
+
     def _remove_file_full(self, file_path: str) -> dict:
         """Drop a deleted file; full report (epochs included).
 
@@ -808,7 +842,13 @@ class CodeGraph:
         `update_file` does this too when it finds the file gone from disk.
         Returns the number of entities removed.
         """
-        return self._remove_file_full(file_path)["entities_removed"]
+        removed = self._remove_file_full(file_path)["entities_removed"]
+        # §1.3 (DR-10): the file's routes retire with it.
+        try:
+            self._refresh_framework_routes(file_path, None)
+        except Exception:  # noqa: BLE001, S110 - removal stands regardless
+            pass
+        return removed
 
     def watch(self, paths: list[str] | None = None,
               debounce_ms: int | None = None,
@@ -1285,6 +1325,17 @@ def analyze(root: str, create_store: bool = False, exclude: list | None = None) 
 
         _record_cfg(root)
 
+    # §1.3 (DR-10): framework routes persist as concepts + synthetic edges
+    # on every full analyze (not just `init`), so a fresh session from the
+    # store resolves routes. Best-effort like the star-export pass above:
+    # extraction must never fail the index (counts ride `graph_stats`).
+    try:
+        from coderadar import framework as _framework
+
+        _framework.run_framework_extraction(root)
+    except Exception:  # noqa: BLE001 - extraction must never fail analyze
+        pass
+
     return CodeGraph()
 
 
@@ -1517,6 +1568,7 @@ class Watcher:
             # the next full analyze.
             if change_kind == "Delete":
                 try:
+                    # `remove_file` also retires the file's routes (§1.3).
                     removed = self._graph.remove_file(file_path)
                     affected.append(file_path)
                     if echo:

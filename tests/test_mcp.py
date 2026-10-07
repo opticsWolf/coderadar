@@ -700,27 +700,34 @@ class TestQueryTimeResolution:
         assert results == []
 
     def test_resolve_route_finds_handler(self):
-        """resolve_route matches route nodes and returns handlers."""
+        """resolve_route matches route nodes and follows edges to handlers.
+
+        §1.3: the handler is reached via the route→handler edge (a handler
+        never contains the route id, so the old text-search second leg
+        could not work against a real graph). The searcher is queried with
+        the path's static segments; `callees` walks the persisted edge.
+        """
         from coderadar.resolvers.resolution import resolve_route
 
         def searcher(name, limit):
-            entities = {
-                "/users": [{
-                    "id": "route:1",
-                    "name": "GET /users",
-                    "kind": "route",
-                    "file_path": "routes.go",
-                }],
-                "route:1": [{
-                    "id": "handlers.go::listUsers",
-                    "name": "listUsers",
-                    "kind": "function",
-                    "file_path": "handlers/",
-                }],
-            }
-            return entities.get(name, [])
+            assert name == "users"
+            return [{
+                "id": "routes.go::go:route:/users/<id>",
+                "name": "/users/<id>",
+                "kind": "route",
+                "file_path": "routes.go",
+            }]
 
-        results = resolve_route("/users", searcher, limit=5)
+        def callees(route_id):
+            assert route_id == "routes.go::go:route:/users/<id>"
+            return [{
+                "id": "handlers.go::listUsers",
+                "name": "listUsers",
+                "kind": "function",
+                "file_path": "handlers/",
+            }]
+
+        results = resolve_route("/users/:id", searcher, callees, limit=5)
         assert len(results) >= 1
         assert results[0]["name"] == "listUsers"
         assert results[0]["resolved_by"] == "route-resolution"

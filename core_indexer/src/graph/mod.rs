@@ -97,6 +97,7 @@ impl CodeGraph {
             imports: HashMap::new(),
             constants: HashMap::new(),
             type_aliases: HashMap::new(),
+            routes: HashMap::new(),
             file_to_modules: HashMap::new(),
             module_by_dotted_name: HashMap::new(),
             module_path_index: HashMap::new(),

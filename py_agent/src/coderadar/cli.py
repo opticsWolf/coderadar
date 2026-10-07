@@ -38,90 +38,10 @@ class _LazyErrConsole:
 err_console = _LazyErrConsole()
 
 
-def _ledger_synthetic_edge_kind(resolver_name: str, edge_kind: str) -> str:
-    """Return a stable, application-namespaced Macrame 0.18 edge kind."""
-    return f"synthetic:{resolver_name.strip().lower()}:{edge_kind.strip().lower()}"
-
-
-def _run_framework_extraction(project_root: Path) -> dict:
-    """v3.6: Run framework resolvers on a project and return summary.
-
-    Detects Django/Flask/FastAPI projects and extracts route nodes
-    and handler edges. Synthetic edges are registered in the Rust
-    graph so agents can trace them via callers_of / callees_of.
-    """
-    from coderadar.resolvers import ALL_RESOLVERS
-
-    results = {"routes": 0, "handlers": 0, "frameworks": [], "edges_registered": 0}
-    # Collected across every resolver and file, then registered in one call:
-    # the per-edge variant clones the whole ProjectedGraph each time.
-    synthetic_edges: list[tuple[str, str, str]] = []
-    for resolver_cls in ALL_RESOLVERS:
-        resolver = resolver_cls()
-        if not resolver.detect(project_root):
-            continue
-        results["frameworks"].append(resolver.name)
-        for py_file in project_root.rglob("*.py"):
-            if py_file.name.startswith("__"):
-                continue
-            try:
-                source = py_file.read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                continue
-            extraction = resolver.extract(str(py_file), source)
-            results["routes"] += len(extraction.nodes)
-            results["handlers"] += len(extraction.edges)
-            synthetic_edges.extend(
-                (
-                    edge.source_id,
-                    edge.target_id,
-                    _ledger_synthetic_edge_kind(resolver.name, edge.kind),
-                )
-                for edge in extraction.edges
-            )
-
-    if synthetic_edges:
-        try:
-            from coderadar._core import register_synthetic_edges_bulk
-            report = register_synthetic_edges_bulk(synthetic_edges)
-            results["edges_registered"] = int(report.get("registered", 0))
-        except (ImportError, RuntimeError):
-            # Graph not loaded or _core not available — edges displayed only
-            pass
-    return results
-
-
-def _extract_star_exports(project_root: Path) -> int:
-    """v0.5: Extract __all__ exports from Python modules.
-
-    Scans all .py files, statically detects __all__ lists, and
-    registers them via set_module_star_exports so wildcard
-    imports (from X import *) can be resolved.
-    """
-    from coderadar.resolvers.exports import extract_all_exports
-    try:
-        from coderadar._core import set_module_star_exports_bulk
-    except ImportError:
-        return 0
-
-    # Collected, then applied in one call — the per-module variant clones the
-    # whole ProjectedGraph each time.
-    entries: list[tuple[str, list[str]]] = []
-    for py_file in project_root.rglob("*.py"):
-        try:
-            source = py_file.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        names = extract_all_exports(source)
-        if names:
-            entries.append((f"{py_file}::module", names))
-    if not entries:
-        return 0
-    try:
-        report = set_module_star_exports_bulk(entries)
-    except RuntimeError:
-        return 0
-    return int(report.get("applied", 0))
+# §1.3 (DR-10): framework extraction lives in `coderadar.framework` and
+# runs inside `coderadar.analyze` (persisted routes, not init-only
+# memory); star exports are applied by `analyze`/`load` themselves. Both
+# former CLI-local passes are deleted, not moved.
 
 
 def _activate(project_root) -> None:
@@ -360,16 +280,11 @@ include_same_package = true
     console.print(f"  Functions:  {stats.get('functions', 0)}")
     console.print(f"  Imports:    {stats.get('imports', 0)}")
     console.print(f"  Call edges: {stats.get('call_edges', 0)}")
-    # v3.6: Run framework resolvers for Django/Flask/FastAPI
-    framework = _run_framework_extraction(root)
-    if framework["frameworks"]:
-        console.print(f"  Frameworks: {', '.join(framework['frameworks'])}")
-        console.print(f"  Routes:     {framework['routes']}")
-        console.print(f"  Handlers:   {framework['handlers']}")
-    # v0.5: Extract __all__ star exports for wildcard import resolution
-    star_count = _extract_star_exports(root)
-    if star_count > 0:
-        console.print(f"  Star exports: {star_count} module(s) with __all__")
+    # §1.3 (DR-10): routes/handlers persisted by `analyze` above ride the
+    # stats (star exports are applied inside `analyze`/`load` too).
+    if stats.get("routes", 0):
+        console.print(f"  Routes:     {stats['routes']}")
+        console.print(f"  Handlers:   {stats.get('route_edges', 0)}")
     console.print("[green]OK  Analysis complete[/green]")
 
 

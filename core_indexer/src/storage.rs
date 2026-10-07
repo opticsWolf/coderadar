@@ -573,14 +573,127 @@ impl CodeGraphStore {
                 {
                     return false;
                 }
-                matches!(
-                    classify_v2_concept(content),
-                    V2ConceptClass::Canonical(_) | V2ConceptClass::StandaloneField
-                )
+                // Routes are owned by the framework hook's scoped diff-retire
+                // (§1.3): the generic sweep runs before extraction and would
+                // orphan-then-churn every route each full analyze.
+                match classify_v2_concept(content) {
+                    V2ConceptClass::Canonical(k) => k != "route",
+                    V2ConceptClass::StandaloneField => true,
+                    _ => false,
+                }
             })
             .map(|(id, _)| id)
             .collect();
         Ok(self.retire_entities(&stale_ids)?.0)
+    }
+
+    /// Live ids of framework route concepts (§1.3), optionally scoped to
+    /// one file. Routes are identified by the mirrored
+    /// `extra.coderadar.kind`, not by id pattern, so a coincidence in a
+    /// qualifier can never promote an entity into (or hide a route from)
+    /// the framework hook's scoped diff-retire.
+    pub fn live_route_ids(&self) -> macrame::Result<Vec<String>> {
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        Ok(runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT id FROM concepts WHERE retired = 0 \
+                     AND json_extract(extra, '$.coderadar.kind') = 'route'",
+                    libsql::params![],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut ids = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                ids.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok::<_, macrame::DbError>(ids)
+        })?)
+    }
+
+    pub fn live_route_ids_for_file(&self, file_path: &str) -> macrame::Result<Vec<String>> {
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        Ok(runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT id FROM concepts WHERE retired = 0 \
+                     AND json_extract(extra, '$.coderadar.kind') = 'route' \
+                     AND json_extract(extra, '$.coderadar.file_path') = ?1",
+                    libsql::params![file_path],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut ids = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                ids.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok::<_, macrame::DbError>(ids)
+        })?)
+    }
+
+    /// Open non-structural edge triples with their `valid_from`, for the
+    /// framework hook's scoped pair-retire (§1.3). Structural kinds are
+    /// owned by `retire_stale_edges`; synthetic `synthetic:*` rows live
+    /// and die with the route diff instead.
+    pub fn open_synthetic_triples(
+        &self,
+        now: &str,
+    ) -> macrame::Result<Vec<(String, String, String, String)>> {
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        Ok(runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT source_id, target_id, edge_type, valid_from \
+                     FROM links_current WHERE valid_to > ?1 \
+                     AND edge_type NOT IN ('CALLS', 'IMPORTS', 'EXTENDS', 'OVERRIDES')",
+                    libsql::params![now],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                    row.get::<String>(3).unwrap_or_default(),
+                ));
+            }
+            Ok::<_, macrame::DbError>(out)
+        })?)
+    }
+
+    /// Close open synthetic edge triples the framework hook no longer
+    /// believes (§1.3 scoped pair-retire). Structural kinds are never
+    /// passed here — `retire_stale_edges` owns those. NotFound (something
+    /// else closed it first) is the desired end state, same tolerance as
+    /// `retire_entities`.
+    pub fn retire_synthetic_pairs(
+        &self,
+        stale: &[(String, String, String, String)],
+        ts: &str,
+    ) -> macrame::Result<usize> {
+        let n = runtime().block_on(async {
+            let mut n = 0usize;
+            for (source, target, etype, valid_from) in stale {
+                if self
+                    .db
+                    .retire_edge(
+                        source.as_str(),
+                        target.as_str(),
+                        etype.as_str(),
+                        valid_from.as_str(),
+                        ts,
+                    )
+                    .await
+                    .is_ok()
+                {
+                    n += 1;
+                }
+            }
+            n
+        });
+        Ok(n)
     }
 
     /// Live concept ids belonging to one exact source file.
@@ -1142,6 +1255,7 @@ pub const V2_CANONICAL_KINDS: &[&str] = &[
     "import",
     "constant",
     "type_alias",
+    "route",
 ];
 
 fn file_path_of(id: &str) -> &str {
@@ -1222,7 +1336,7 @@ fn content_hash_of(content: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn v2_upsert(
+pub(crate) fn v2_upsert(
     id: &str,
     title: &str,
     content: serde_json::Value,
@@ -1496,6 +1610,7 @@ pub enum V2Entity {
     Import(Import),
     Constant(Constant),
     TypeAlias(TypeAlias),
+    Route(Route),
 }
 
 /// How a cold-start pre-scan should treat one concept's content.
@@ -1765,6 +1880,45 @@ fn parse_v2_type_alias(id: &str, v: &serde_json::Value) -> std::result::Result<T
     })
 }
 
+/// Parse a v2 route concept (§1.3). `name` is the URL pattern; the handler
+/// and methods ride as plain fields (no spans — resolvers record files,
+/// not offsets).
+fn parse_v2_route(id: &str, v: &serde_json::Value) -> std::result::Result<Route, String> {
+    let methods = v
+        .get("methods")
+        .and_then(|m| m.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Route {
+        id: id.to_string(),
+        pattern: req_str(v, "name", id)?,
+        file_path: req_str(v, "file_path", id)?,
+        handler_id: req_str(v, "handler", id)?,
+        methods,
+        framework: opt_str(v, "framework").unwrap_or_default(),
+    })
+}
+
+/// Build the v2 content JSON for a framework route (§1.3). Mirrors
+/// `v2_common` plus the route fields `parse_v2_route` reads back.
+pub fn route_content(
+    pattern: &str,
+    file_path: &str,
+    handler: &str,
+    methods: &[String],
+    framework: &str,
+) -> serde_json::Value {
+    let mut v = v2_common("route", pattern, file_path, 0, 0, &None, &[]);
+    v["handler"] = serde_json::json!(handler);
+    v["methods"] = serde_json::json!(methods);
+    v["framework"] = serde_json::json!(framework);
+    v
+}
+
 /// Parse one v2 concept's content into its typed entity.
 ///
 /// Hard-fails (no silent v1 fallback) when a canonical concept lacks
@@ -1788,6 +1942,7 @@ pub fn parse_v2_concept(id: &str, content: &str) -> std::result::Result<V2Entity
         "import" => Ok(V2Entity::Import(parse_v2_import(id, &v)?)),
         "constant" => Ok(V2Entity::Constant(parse_v2_constant(id, &v)?)),
         "type_alias" => Ok(V2Entity::TypeAlias(parse_v2_type_alias(id, &v)?)),
+        "route" => Ok(V2Entity::Route(parse_v2_route(id, &v)?)),
         other => Err(v2_err(id, &format!("unknown kind '{other}'"))),
     }
 }
@@ -1963,6 +2118,36 @@ mod concept_v2_tests {
             name_span: ByteSpan { start: 20, end: 50 },
             embedding: EmbeddingVec::default(),
         }
+    }
+
+    #[test]
+    fn route_roundtrip() {
+        // §1.3: route concepts survive the ledger JSON round-trip.
+        let json = route_content(
+            "/users/<id>",
+            "app.py",
+            "app.py::get_user",
+            &["GET".to_string()],
+            "flask",
+        )
+        .to_string();
+        let id = "app.py::flask:route:/users/<id>";
+        match parse_v2_concept(id, &json).unwrap() {
+            V2Entity::Route(got) => {
+                assert_eq!(got.id, id);
+                assert_eq!(got.pattern, "/users/<id>");
+                assert_eq!(got.file_path, "app.py");
+                assert_eq!(got.handler_id, "app.py::get_user");
+                assert_eq!(got.methods, vec!["GET".to_string()]);
+                assert_eq!(got.framework, "flask");
+            }
+            other => panic!("expected Route, got {other:?}"),
+        }
+        // The new kind classifies canonical, never a v1 leftover.
+        assert!(matches!(
+            classify_v2_concept(&json),
+            V2ConceptClass::Canonical(_)
+        ));
     }
 
     #[test]

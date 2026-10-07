@@ -1022,6 +1022,28 @@ pub struct TypeAlias {
     pub embedding: EmbeddingVec,
 }
 
+/// A framework route (§1.3, DR-10): a URL pattern synthesized by a
+/// framework resolver (Flask `@app.route`, Express `app.get`, ...).
+/// Not tree-sitter-extracted — asserted as a canonical concept by
+/// `register_synthetic_nodes_bulk` after analysis, so route→handler edges
+/// survive the ledger and cold start restores them. Ids are file-prefixed
+/// (`{rel_path}::{resolver}:route:{pattern}`) so `file_path_of`,
+/// canonical lookup and per-file retirement work by construction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Route {
+    pub id: EntityId,
+    /// The URL pattern as written (`/users/<id>`).
+    pub pattern: String,
+    /// Defining file, root-relative posix.
+    pub file_path: String,
+    /// Handler entity id the route edge points at.
+    pub handler_id: EntityId,
+    /// HTTP methods (`["GET"]`).
+    pub methods: Vec<String>,
+    /// Resolver that synthesized it (`flask`, `express`, ...).
+    pub framework: String,
+}
+
 // ── Extraction Intermediate Types (§3.3a) — EntityId-based ──────────────────
 
 #[derive(Clone, Debug)]
@@ -1454,6 +1476,9 @@ pub struct ProjectedGraph {
     pub imports: HashMap<EntityId, Arc<Import>>,
     pub constants: HashMap<EntityId, Arc<Constant>>,
     pub type_aliases: HashMap<EntityId, Arc<TypeAlias>>,
+    /// Framework routes (§1.3): synthesized, file-prefixed ids; traversed
+    /// via the generic call indices, persisted as canonical concepts.
+    pub routes: HashMap<EntityId, Arc<Route>>,
 
     pub file_to_modules: HashMap<PathBuf, Vec<EntityId>>,
     pub module_by_dotted_name: HashMap<(Language, String), EntityId>,

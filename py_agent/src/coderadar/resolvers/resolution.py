@@ -78,29 +78,73 @@ def resolve_reference(
     return deduped[:limit]
 
 
+def canonical_route_pattern(path: str) -> tuple[str, ...]:
+    """Canonicalize a route pattern into comparable segments.
+
+    Frameworks spell parameters differently (`/users/<id>` Flask/Django,
+    `/users/:id` Express, `/users/{id}` Rails/Spring) but route the same
+    URL. A segment is a parameter when it starts with `<`, `:`, `{` (or
+    is `*`); parameters compare equal to every concrete spelling, so the
+    done-clause query `/users/:id` finds a real Flask `/users/<id>`.
+    """
+    segments = []
+    for seg in path.strip("/").split("/"):
+        if seg[:1] in ("<", ":", "{") or seg == "*":
+            segments.append("*")
+        else:
+            segments.append(seg)
+    return tuple(segments)
+
+
+def route_patterns_match(query: str, candidate: str) -> bool:
+    """True when two route spellings route the same URL shape."""
+    q, c = canonical_route_pattern(query), canonical_route_pattern(candidate)
+    return len(q) == len(c) and all(a == b or "*" in (a, b)
+                                     for a, b in zip(q, c))
+
+
 def resolve_route(
     path: str,
     searcher: Callable[[str, int], list[dict[str, Any]]],
+    callees: Callable[[str], list[dict[str, Any]]] | None = None,
     *,
     limit: int = 5,
 ) -> list[dict[str, Any]]:
     """Resolve a URL path to its handler(s).
 
-    Searches for route nodes matching the path pattern, then follows
-    handler edges to find the implementing function.
+    Finds persisted `route`-kind entities (§1.3) whose pattern matches the
+    query across framework spellings, then follows the route→handler edge
+    (not text search — the handler never contains the route id) to the
+    implementing function. Without `callees` (or without persisted routes)
+    the answer is honestly empty: route facts live in the graph, not in
+    string proximity.
     """
     results: list[dict[str, Any]] = []
+    if callees is None:
+        return results
 
-    route_candidates = searcher(path, limit * 2)
+    # The entity scorer matches whitespace-separated tokens against names;
+    # a raw path ("/users/:id") is one token no pattern contains, so
+    # search the static segments ("users") and segment-match below.
+    static = [s for s in path.strip("/").split("/")
+              if s[:1] not in ("<", ":", "{") and s != "*"]
+    try:
+        route_candidates = searcher(" ".join(static) or path, limit * 2)
+    except Exception:  # noqa: BLE001, S112 - a bad searcher resolves nothing
+        return results
     route_nodes = [
         r for r in route_candidates
-        if r.get("kind") == "route" and path in r.get("name", "")
+        if r.get("kind") == "route"
+        and route_patterns_match(path, str(r.get("name", "")))
     ]
 
     for route in route_nodes:
         route_id = route.get("id", "")
-        handler_candidates = searcher(route_id, 3)
-        for h in handler_candidates:
+        try:
+            neighbours = callees(route_id)
+        except Exception:  # noqa: BLE001, S112 - one bad edge read resolves nothing
+            continue
+        for h in neighbours:
             if h.get("kind") in ("function", "method", "struct"):
                 h.setdefault("resolved_by", "route-resolution")
                 h.setdefault("confidence", 0.9)

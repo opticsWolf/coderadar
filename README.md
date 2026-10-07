@@ -75,6 +75,7 @@ coderadar init
 # (underscores become hyphens), with the same arguments and the same text.
 # Run from anywhere inside the project, or name it with -C.
 coderadar explore UserService.create          # source + call paths
+coderadar resolve "/users/:id"                # route → handler (any framework spelling)
 coderadar query "functions where is_async == true"
 coderadar affected "src/services.py::UserService.create"
 coderadar traverse "src/auth.py::validate_user" --direction upstream

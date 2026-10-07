@@ -1,6 +1,8 @@
 use super::CodeGraph;
+use crate::storage::{now_iso8601, route_content, v2_upsert};
 use crate::types::*;
 use macrame::graph::EdgeAssertion;
+use std::sync::Arc;
 
 /// Ledger dedup key for an edge triple. `\u{0}` cannot appear in entity ids
 /// or edge kinds, so the join is collision-free.
@@ -123,6 +125,9 @@ impl CodeGraph {
             .chain(projection.imports.keys())
             .chain(projection.constants.keys())
             .chain(projection.type_aliases.keys())
+            // §1.3: route nodes are concepts, so route→handler edges persist
+            // (previously the FK check dropped every edge from a route).
+            .chain(projection.routes.keys())
             .map(String::as_str)
             .collect();
         let is_persistable = |id: &str| valid.contains(id);
@@ -355,5 +360,227 @@ impl CodeGraph {
         }
 
         Ok(edges.len())
+    }
+
+    /// Register framework routes (§1.3, DR-10): nodes + route→handler edges
+    /// with scoped diff-retire, in one projection commit.
+    ///
+    /// `nodes` are `(id, pattern, file_path, handler_id, methods,
+    /// framework)`; `edges` are `(source_id, target_id, kind)` with
+    /// route-id sources. `scope` is `"full"` (whole-tree extraction: any
+    /// live route concept absent from `nodes` is a ghost) or a root-relative
+    /// file path (only that file's routes are reconciled).
+    ///
+    /// Ledger writes happen only with a store attached (memory-only
+    /// otherwise — same best-effort rule as the synthetic-edges path).
+    /// Unchanged re-runs write nothing: concept upserts go through
+    /// `filter_unchanged` and already-open triples are skipped via the
+    /// single-open guard read.
+    ///
+    /// Returns `(routes_upserted, routes_retired, pairs_retired)`.
+    pub fn register_synthetic_routes(
+        &self,
+        nodes: Vec<(String, String, String, String, Vec<String>, String)>,
+        edges: Vec<(String, String, String)>,
+        scope: &str,
+    ) -> Result<(usize, usize, usize), String> {
+        let ts_now = now_iso8601();
+        let new_ids: std::collections::HashSet<&str> =
+            nodes.iter().map(|n| n.0.as_str()).collect();
+        let new_pairs: std::collections::HashSet<(&str, &str, &str)> = edges
+            .iter()
+            .map(|e| (e.0.as_str(), e.1.as_str(), e.2.as_str()))
+            .collect();
+        // In-scope route ids: the fresh set plus live ledger ghosts (a
+        // vanished route is in the ledger but in neither the fresh set nor
+        // — after a full analyze — the projection).
+        let mut scope_ids: std::collections::HashSet<String> =
+            new_ids.iter().map(|s| s.to_string()).collect();
+        if let Some(store) = self.store.as_ref() {
+            let live: Vec<String> = if scope == "full" {
+                store.live_route_ids()
+            } else {
+                store.live_route_ids_for_file(scope)
+            }
+            .map_err(|e| format!("route ghost scan failed: {e:?}"))?;
+            scope_ids.extend(live);
+        } else if scope != "full" {
+            // Storeless: ghosts can only hide in the projection.
+            let snap = self.snapshot();
+            scope_ids.extend(
+                snap.routes
+                    .values()
+                    .filter(|r| r.file_path == scope)
+                    .map(|r| r.id.clone()),
+            );
+        }
+
+        // 1. Upsert route concepts (no-op when unchanged).
+        let mut upserted = 0usize;
+        if let Some(store) = self.store.as_ref() {
+            let concepts: Vec<macrame::ConceptUpsert> = nodes
+                .iter()
+                .map(|(id, pattern, file, handler, methods, framework)| {
+                    v2_upsert(
+                        id.as_str(),
+                        pattern.as_str(),
+                        route_content(
+                            pattern.as_str(),
+                            file.as_str(),
+                            handler.as_str(),
+                            methods,
+                            framework.as_str(),
+                        ),
+                        &ts_now,
+                        None,
+                    )
+                })
+                .collect();
+            upserted = store
+                .upsert_concepts_bulk(&concepts)
+                .map_err(|e| format!("route concept upsert failed: {e:?}"))?;
+        }
+
+        // 2. Retire ghost route concepts (cascades their edges).
+        let ghosts: Vec<String> = scope_ids
+            .iter()
+            .filter(|id| !new_ids.contains(id.as_str()))
+            .cloned()
+            .collect();
+        let mut retired_routes = 0usize;
+        if !ghosts.is_empty() {
+            if let Some(store) = self.store.as_ref() {
+                retired_routes = store
+                    .retire_entities(&ghosts)
+                    .map_err(|e| format!("route retire failed: {e:?}"))?
+                    .0;
+            }
+        }
+
+        // 3. Assert new edges (single-open guard: re-runs are no-ops).
+        if let Some(store) = self.store.as_ref() {
+            let open: std::collections::HashSet<String> = store
+                .open_edge_triples(ts_now.as_str())
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(s, t, k)| edge_key(&s, &t, &k))
+                .collect();
+            let batch: Vec<EdgeAssertion> = edges
+                .iter()
+                .filter(|(s, t, k)| !open.contains(&edge_key(s, t, k)))
+                .map(|(s, t, k)| {
+                    EdgeAssertion::new(s.as_str(), t.as_str(), k.as_str())
+                        .valid_from(ts_now.as_str())
+                        .weight(1.0)
+                })
+                .collect();
+            if !batch.is_empty() {
+                let _ = store.assert_edges_bulk(batch);
+            }
+            // 4. Close in-scope open synthetic triples the fresh set no
+            // longer believes (handler renamed, edge kind changed).
+            let stale: Vec<(String, String, String, String)> = store
+                .open_synthetic_triples(ts_now.as_str())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(s, t, k, _)| {
+                    scope_ids.contains(s) && !new_pairs.contains(&(s.as_str(), t.as_str(), k.as_str()))
+                })
+                .collect();
+            if !stale.is_empty() {
+                let _ = store.retire_synthetic_pairs(&stale, ts_now.as_str());
+            }
+        }
+
+        // 5. One projection commit — but only when something actually
+        // changed. The hook runs on every `update_file`, and an unconditional
+        // commit would advance the epoch (and `indexed_at`) on updates that
+        // touch no route, breaking the epoch-continuity reports pin.
+        let mut changed = upserted > 0 || retired_routes > 0;
+        let mut projection = (*self.snapshot()).clone();
+        for (id, pattern, file, handler, methods, framework) in &nodes {
+            let route = Arc::new(Route {
+                id: id.clone(),
+                pattern: pattern.clone(),
+                file_path: file.clone(),
+                handler_id: handler.clone(),
+                methods: methods.clone(),
+                framework: framework.clone(),
+            });
+            if projection.routes.get(id) != Some(&route) {
+                projection.routes.insert(id.clone(), route);
+                changed = true;
+            }
+        }
+        for id in &ghosts {
+            projection.routes.remove(id);
+        }
+        // Drop in-scope index pairs the fresh set no longer believes. A
+        // surviving route keeps its surviving pairs; a ghost loses all of
+        // them (its ledger rows died in step 2 via the retire cascade).
+        let drop_pair = |projection: &mut ProjectedGraph, source: &str, target: &str| {
+            if let Some(targets) = projection.callees_by_caller.get_mut(source) {
+                targets.remove(target);
+            }
+            if let Some(callers) = projection.callers_by_callee.get_mut(target) {
+                callers.remove(source);
+            }
+            projection
+                .synthetic_edges
+                .remove(&(source.to_string(), target.to_string()));
+        };
+        let mut index_stale = 0usize;
+        for source in &scope_ids {
+            let targets: Vec<String> = projection
+                .callees_by_caller
+                .get(source)
+                .map(|s| s.iter().cloned().collect())
+                .unwrap_or_default();
+            for target in targets {
+                // Only synthetic pairs are ours: a route id can never be a
+                // structural caller (tree-sitter emits no such edges), but
+                // the guard keeps the hook from touching CALLS rows even if
+                // that invariant ever breaks.
+                if !projection
+                    .synthetic_edges
+                    .contains(&(source.clone(), target.clone()))
+                {
+                    continue;
+                }
+                if edges.iter().any(|(s, t, _)| s == source && t == &target) {
+                    continue;
+                }
+                drop_pair(&mut projection, source, &target);
+                index_stale += 1;
+            }
+        }
+        // Insert fresh pairs (new ones only — re-inserting an existing
+        // pair must not count as a change).
+        for (source, target, _kind) in &edges {
+            let pair_new = !projection
+                .callees_by_caller
+                .get(source)
+                .is_some_and(|s| s.contains(target));
+            projection
+                .callees_by_caller
+                .entry(source.clone())
+                .or_default()
+                .insert(target.clone());
+            projection
+                .callers_by_callee
+                .entry(target.clone())
+                .or_default()
+                .insert(source.clone());
+            projection
+                .synthetic_edges
+                .insert((source.clone(), target.clone()));
+            changed |= pair_new;
+        }
+        changed |= index_stale > 0;
+        if changed {
+            self.commit_projection(projection);
+        }
+
+        Ok((upserted, retired_routes, index_stale))
     }
 }

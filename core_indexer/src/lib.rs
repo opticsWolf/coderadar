@@ -27,7 +27,7 @@ use crate::graph::ImportGraph;
 use crate::query::exec::{execute_query, QueryIterator};
 use crate::query::grammar::parse_query;
 use crate::types::{
-    Class, Constant, EmbeddingVec, Function, Import, Module, ProjectedGraph, TypeAlias,
+    Class, Constant, EmbeddingVec, Function, Import, Module, ProjectedGraph, Route, TypeAlias,
 };
 
 // ── Python Module ──────────────────────────────────────────────────────────
@@ -76,6 +76,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
     m.add_function(wrap_pyfunction!(register_synthetic_edges_bulk, m)?)?;
+    m.add_function(wrap_pyfunction!(register_synthetic_routes, m)?)?;
     m.add_function(wrap_pyfunction!(set_embedding, m)?)?;
     m.add_function(wrap_pyfunction!(set_embeddings_bulk, m)?)?;
     m.add_function(wrap_pyfunction!(clear_embeddings_for_file, m)?)?;
@@ -417,6 +418,21 @@ fn type_alias_to_dict(py: Python<'_>, ta: &TypeAlias) -> PyResult<PyObject> {
     Ok(dict.into())
 }
 
+/// §1.3: a framework route to a dict. `name` is the URL pattern (what
+/// `resolve_route` substring-matches); `handler` is the edge target so
+/// resolve can attach it without a second lookup.
+fn route_to_dict(py: Python<'_>, r: &Route) -> PyResult<PyObject> {
+    let dict = PyDict::new(py);
+    dict.set_item("id", &r.id)?;
+    dict.set_item("name", &r.pattern)?;
+    dict.set_item("kind", "route")?;
+    dict.set_item("file_path", &r.file_path)?;
+    dict.set_item("handler", &r.handler_id)?;
+    dict.set_item("methods", &r.methods)?;
+    dict.set_item("framework", &r.framework)?;
+    Ok(dict.into())
+}
+
 // ── Entity References to Dict ──────────────────────────────────────────────
 
 /// Convert a thin entity reference (just ID + name + kind) to a dict.
@@ -432,6 +448,7 @@ fn entity_exists(snap: &ProjectedGraph, entity_id: &str) -> bool {
         || snap.imports.contains_key(entity_id)
         || snap.constants.contains_key(entity_id)
         || snap.type_aliases.contains_key(entity_id)
+        || snap.routes.contains_key(entity_id)
 }
 
 fn entity_ref_to_dict(py: Python<'_>, entity_id: &str, snap: &ProjectedGraph) -> Option<PyObject> {
@@ -461,6 +478,8 @@ fn entity_ref_to_dict(py: Python<'_>, entity_id: &str, snap: &ProjectedGraph) ->
         constant_to_dict(py, k).ok()
     } else if let Some(ta) = snap.type_aliases.get(entity_id) {
         type_alias_to_dict(py, ta).ok()
+    } else if let Some(r) = snap.routes.get(entity_id) {
+        route_to_dict(py, r).ok()
     } else {
         None
     }
@@ -2501,13 +2520,14 @@ fn search_entities(
             "constant",
             "module",
             "import",
+            "route",
         ];
         let kind_filter = kind.map(|k| k.to_lowercase());
         if let Some(ref kf) = kind_filter {
             if !KNOWN_KINDS.contains(&kf.as_str()) {
                 return Err(pyo3::exceptions::PyValueError::new_err(format!(
                     "unknown kind `{kf}` (expected: function | class | type_alias | \
-                     constant | module | import)"
+                     constant | module | import | route)"
                 )));
             }
         }
@@ -2521,6 +2541,7 @@ fn search_entities(
         let doc_f = |f: &Function| f.docstring.clone();
         let doc_c = |c: &Class| c.docstring.clone();
         let none_c = |_e: &Class| None;
+        let none_r = |_e: &Route| None;
         let none_t = |_e: &TypeAlias| None;
         let none_k = |_e: &Constant| None;
         let none_m = |_e: &Module| None;
@@ -2606,6 +2627,17 @@ fn search_entities(
             8,
             none_i,
             none_i
+        );
+        // §1.3: routes scan on the URL pattern — a path query is usually
+        // after the route itself, so it ranks with the definitions.
+        scan!(
+            "route",
+            snap.routes,
+            pattern,
+            route_to_dict,
+            10,
+            none_r,
+            none_r
         );
 
         // Sort by score descending, take top_k
@@ -3103,6 +3135,17 @@ fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
         dict.set_item("imports", snap.imports.len())?;
         dict.set_item("constants", snap.constants.len())?;
         dict.set_item("type_aliases", snap.type_aliases.len())?;
+        // §1.3: framework routes + their handler edges (reindex stats and
+        // the init report count them; `call_edges` keeps counting every
+        // index pair as before).
+        dict.set_item("routes", snap.routes.len())?;
+        let route_edges: usize = snap
+            .routes
+            .keys()
+            .filter_map(|id| snap.callees_by_caller.get(id))
+            .map(|s| s.len())
+            .sum();
+        dict.set_item("route_edges", route_edges)?;
         dict.set_item("file_count", snap.file_to_modules.len())?;
         // Total call edges
         let total_calls: usize = snap.callees_by_caller.values().map(|s| s.len()).sum();
@@ -3936,6 +3979,35 @@ fn register_synthetic_edge(source_id: &str, target_id: &str, kind: &str) -> PyRe
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
     dict.set_item("ok", true)?;
+    Ok(dict.into())
+}
+
+/// Register framework routes (§1.3, DR-10): nodes + route→handler edges
+/// with scoped diff-retire, in one projection commit.
+///
+/// `nodes` are `(id, pattern, file_path, handler_id, methods, framework)`;
+/// `edges` are `(source_id, target_id, kind)`; `scope` is `"full"` or a
+/// root-relative file path. Returns `{routes_upserted, routes_retired,
+/// pairs_retired}`.
+#[pyfunction]
+fn register_synthetic_routes(
+    nodes: Vec<(String, String, String, String, Vec<String>, String)>,
+    edges: Vec<(String, String, String)>,
+    scope: &str,
+) -> PyResult<PyObject> {
+    let py = unsafe { Python::assume_gil_acquired() };
+    let mut guard = GLOBAL_GRAPH.write();
+    let graph = guard.as_mut().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
+    })?;
+    let (upserted, retired, pairs) = graph
+        .register_synthetic_routes(nodes, edges, scope)
+        .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+    let dict = PyDict::new(py);
+    dict.set_item("ok", true)?;
+    dict.set_item("routes_upserted", upserted)?;
+    dict.set_item("routes_retired", retired)?;
+    dict.set_item("pairs_retired", pairs)?;
     Ok(dict.into())
 }
 
