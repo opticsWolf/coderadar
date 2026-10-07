@@ -140,3 +140,116 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 - One name per operation on MCP, CLI, and the Python API behind the
   shared `ops` seam; v0.12 improvement plan published.
+- CLI commands for every operation (`--format json`, stderr + exit 2/1,
+  dry-run-unless-`--apply`); `-C/--project` with marker walk-up;
+  `status` reports project, config, store, freshness.
+- Renamed spellings warn (removal in 0.13): `analyze`/`rebuild` →
+  `reindex`, `codegraph_*` tools → `coderadar_*`, `find` → `node`,
+  `callers_of`/`callees_of` → `callers`/`callees`.
+
+## v0.10.0 — precision
+
+- Findings you can act on: dead-code 269 → 121 on the self corpus,
+  extraction recall ~85 % → 99.97 %, resolution 100/100 held.
+- `self`/typed-local/ctor calls resolve; relative imports, aliases,
+  local imports, initializers produce edges.
+- Dead code: external-base overrides and `Protocol` members are entry
+  points; framework packs table-driven opt-in; findings carry evidence.
+- Query language: `methods`/`constants`/`entities`, starts/ends-with,
+  "did you mean" on unknown fields; reference generated from schema.
+- Rename rewrites attribute call sites; unresolvable sites reported as
+  `unverified_sites`. Canonical ids + `store-repair` migration path.
+
+## v0.9.1–v0.9.2 — platform + lint
+
+- Windows 8.3 short-path aliasing fixed (`canonical_file_form`);
+  ruff backlog to zero (pinned, blocking); 41 query files, one per
+  Tier-1/2 language.
+
+## v0.8.15–v0.9.0 — dogfood round 2
+
+- All CLI commands + MCP tools green (104/118 → 121/121), each red a
+  tracked finding with a battery anchor.
+- External callees visible; transitive re-export chains; rename heals
+  the whole chain; synthetic edges never persist as CALLS.
+- Strict surfaces: stderr logging, machine-readable stdout, `json`
+  formats, validated env knobs. macrame-db 0.15 → 0.17.
+
+## v0.8.1–v0.8.14 — dogfood batch
+
+- Mutation-engine P0s fixed at root (clone panic, allow-list anchoring,
+  brace-language splices, stale-plan healing, friendly errors).
+- One canonical id form; one shared exclude matcher; star-export pass
+  stops rglobbing `.venv` (17.6 s → 0.16 s).
+- `store-repair`, `init --force` ledger rebuild, single version source.
+
+## v0.8.0 — ledger cold start + agent UX
+
+- `load_snapshot` replays the ledger (sub-second vs 10–15 s analyze);
+  `build_graph` loads + refreshes stale files only; last project
+  persists across `mcp serve` restarts.
+- Multi-token search with OR semantics; `create_entity` full signatures;
+  textual call-site backstop for rename/signature plans; OS-native id
+  storage with forgiving display forms. macrame-db 0.18 (schema v21).
+
+## v0.7.3–v0.7.18 — fossil-mcp detector port
+
+- Re-derived detector suite: write-path integrity, confidence tiers +
+  strictness profiles, dead code, MinHash/LSH/TED clones, scaffolding +
+  secrets, CFG metrics, harmonic centrality, RTA-lite dispatch.
+- Smell engine 9 → 12 rules; golden tests per stage.
+
+## v0.7.2 — runtime project switching
+
+- `set_project` re-runs startup against a new root mid-connection;
+  `project_path` accepts files/subdirs via marker walk-up; refusals
+  name the way out; mutation confinement follows the switched root.
+
+## v0.7.0 — correctness pass
+
+- Write path that works (span-verified rename, reachable class rename,
+  FFI-boundary policy); unified-diff previews; ledger retirement +
+  scoped persists; bulk writes; GIL released in analyze/update_file.
+- Visualizers read real indexes (empty graph errors); exit codes fixed;
+  all Tier-1 languages get real signatures and keywords; ~100 inert
+  config knobs removed; ~4,300 dead lines retired.
+
+## v0.6.6 — base resolution + honesty
+
+- Language-family base filtering, import-aware bases, `@/`→`src/`
+  aliases; `traverse_unresolved` + `unverified_sites` warnings;
+  valid_from sentinel fix; smell golden snapshots.
+
+## v0.6.5 — native smell engine
+
+- 9 structural smells with severity tiers; AST metrics pass (no
+  re-parse); class fields populated; native 4-kind `traverse`;
+  subclasses/importers/overrides backfill; cross-file MRO.
+
+## v0.6.4 — query engine fixed
+
+- WHERE clauses match; `and`/`or` folds rewritten; `imports` by
+  `target_kind`; traverse edge filter; anonymous functions skipped.
+
+## v0.6.3 — mutation safety hardened
+
+- Stale-write content hashes (`RejectedStale`); rollback on tainted
+  updates; process-wide write guard; language-aware `create_entity`.
+
+## v0.6.0 — full MCP surface
+
+- 17 MCP tools; embeddings pipeline (compute/store/search_similar,
+  BGE-small, xxHash dedup); plan-review-apply mutations; 13 framework
+  resolvers; 41 languages across 3 tiers.
+
+## v0.5.6–v0.5.7 — resolvers + languages
+
+- Framework resolvers 9 → 13 (Rails, NestJS, Vue/ React Router);
+  +10 languages (28 total); natural-language QueryPlanner.
+
+## v0.5.4 — single-pass extraction
+
+- QueryCursor-driven single pass (37 % faster on TS); parallel
+  pipeline; per-language `.scm` with compile validation; query
+  caching; live file watcher; Graphviz renderer; docstring + `__all__`
+  + annotation capture.
