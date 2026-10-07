@@ -241,9 +241,9 @@ class TestTheGuardConsultsIt:
             server = server_mod.create_server(None)
             tools = {t.name: t.fn for t in server._tool_manager.list_tools()}
             for name in (
-                "codegraph_dead_code",
-                "codegraph_find_clones",
-                "codegraph_find_scaffolding",
+                "coderadar_dead_code",
+                "coderadar_find_clones",
+                "coderadar_find_scaffolding",
             ):
                 answer = tools[name]()
                 assert "still being indexed" in answer, name

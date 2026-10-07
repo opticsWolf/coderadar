@@ -66,13 +66,20 @@ impl CodeGraph {
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("unknown");
+        let (uses, attr_reads) = if matches!(language, Language::Python) {
+            crate::extract::single_pass::module_scope_uses(root, source)
+        } else {
+            (Vec::new(), Vec::new())
+        };
         ExtractedUnit::Module(ExtractedModule {
             id: format!("{}::module", file_path),
             name: stem.to_string(),
             path: PathBuf::from(file_path),
-            language: language.clone(),
+            language: *language,
             parse_quality: crate::extract::node_quality(root),
             content_hash: crate::extract::hash_span(source, 0, source.len()),
+            uses,
+            attr_reads,
         })
     }
 
@@ -150,6 +157,7 @@ impl CodeGraph {
             imports: HashMap::new(),
             constants: HashMap::new(),
             type_aliases: HashMap::new(),
+            routes: HashMap::new(),
             file_to_modules: HashMap::new(),
             module_by_dotted_name: HashMap::new(),
             module_path_index: HashMap::new(),
@@ -173,12 +181,16 @@ impl CodeGraph {
         // Carried onto the projected Module below — see insert_extracted.
         let mut module_quality = ParseQuality::Clean;
         let mut module_content_hash = 0u64;
+        let mut module_uses: Vec<crate::types::UnresolvedRef> = Vec::new();
+        let mut module_attr_reads: Vec<String> = Vec::new();
 
         for unit in units {
             match unit {
                 ExtractedUnit::Module(m) => {
                     module_quality = m.parse_quality;
                     module_content_hash = m.content_hash;
+                    module_uses = m.uses.clone();
+                    module_attr_reads = m.attr_reads.clone();
                 }
                 ExtractedUnit::Class(c) => {
                     let class = Class::from_extracted(
@@ -221,7 +233,7 @@ impl CodeGraph {
                         id: k.id.clone(),
                         name: k.name.clone(),
                         annotation: k.annotation.clone(),
-                        source: k.source.clone(),
+                        source: k.source,
                         default_value: k.default_value.clone(),
                         span: k.span,
                         name_span: k.name_span,
@@ -237,7 +249,7 @@ impl CodeGraph {
                         id: ta.id.clone(),
                         name: ta.name.clone(),
                         target: ta.target.clone(),
-                        source: ta.source.clone(),
+                        source: ta.source,
                         span: ta.span,
                         name_span: ta.name_span,
                         embedding: EmbeddingVec::default(),
@@ -280,10 +292,13 @@ impl CodeGraph {
             id: module_id.clone(),
             name: file_stem.to_string(),
             path: PathBuf::from(file_path),
-            language: language.clone(),
+            language: *language,
             package: None,
             exports: vec![],
             star_exports: None,
+            uses: module_uses,
+            resolved_uses: Vec::new(),
+            attr_reads: module_attr_reads,
             classes: module_classes,
             functions: module_functions,
             imports: module_imports,

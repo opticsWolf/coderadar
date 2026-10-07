@@ -140,8 +140,18 @@ pub(crate) const KNOWN_MODULE_EXTENSIONS: &[&str] = &[
 /// of scanning every module (on the 605-file benchmark repo the scan form
 /// cost 8.3s inside `resolve_imports` alone).
 pub(crate) fn rebuild_module_path_index(projection: &mut ProjectedGraph) {
-    let mut index: HashMap<String, EntityId> = HashMap::new();
-    for module in projection.modules.values() {
+    let mut index: HashMap<String, Vec<EntityId>> = HashMap::new();
+    // DR-14: every module sharing a suffix key is recorded (sorted), and
+    // the query ranks same-language first, smallest id second. A single
+    // winner per key reintroduced HashMap-iteration luck (per-process
+    // RandomState): it flapped resolution across CLI invocations — e.g.
+    // `config` flip-flopping between config.py and config.rs — and fed
+    // perpetual stale-edge retirements on unchanged trees. (Finer
+    // proximity ranking — nearest-same-package wins — is a precision
+    // follow-up, not this fix; see the v0.12 deviations log.)
+    let mut modules: Vec<_> = projection.modules.values().collect();
+    modules.sort_by(|a, b| a.id.cmp(&b.id));
+    for module in modules {
         let path = normalize_path_str(&module.path.to_string_lossy());
         // Extension-less path; the scanner only matches KNOWN_MODULE_EXTENSIONS,
         // so exotic-extension modules must not enter the index.
@@ -163,13 +173,114 @@ pub(crate) fn rebuild_module_path_index(projection: &mut ProjectedGraph) {
                     tail.insert(0, '/');
                 }
                 tail.insert_str(0, seg);
+                // Sorted-id insertion order keeps every vec ascending, so
+                // query-time ranking is a stable pick-first with no sort.
                 index
                     .entry(tail.clone())
-                    .or_insert_with(|| module.id.clone());
+                    .or_default()
+                    .push(module.id.clone());
             }
         }
     }
     projection.module_path_index = index;
+}
+
+/// Resolve a Rust module path (`::` chains from `use` or call sites) to a
+/// module entity (DR-13 §0.3). `src_mod` arrives dotted (`super.alpha` —
+/// the extractor normalizes `::` to `.`). Roots: `crate`/`self` strip to a
+/// crate-relative tail (the suffix match below is root-independent, so no
+/// crate-root lookup is needed); leading `super`s walk up from the
+/// importer's file directory (file-modules cover real code; inline
+/// `mod x {}` inside another file resolves against the file's directory
+/// instead — documented miss, not silent wrongness: the suffix still has
+/// to match a real module file). Anything else is already crate-relative
+/// (`mod beta;` makes `beta::run` callable with no `use`) or an extern
+/// crate (matches nothing → external, correctly).
+///
+/// Sibling-or-self tails (`helper` in the importing file) are NOT modules
+/// and never match — the caller falls back to sibling lookup for those.
+///
+/// Based on the Python L2–L3 import cascade (same file); the Rust half it
+/// never got. Algorithm intentionally mirrors `find_module_by_dotted_name`
+/// and delegates the actual suffix match to it.
+pub(crate) fn find_rust_module(
+    projection: &ProjectedGraph,
+    src_mod: &str,
+    importer_file: &std::path::Path,
+    current_module: &str,
+) -> Option<String> {
+    let mut segs: Vec<&str> = src_mod.split('.').collect();
+    while segs.first().is_some_and(|s| *s == "crate" || *s == "self") {
+        segs.remove(0);
+    }
+    let mut supers = 0usize;
+    while segs.first().is_some_and(|s| *s == "super") {
+        segs.remove(0);
+        supers += 1;
+    }
+    if segs.is_empty() {
+        return None;
+    }
+    if supers > 0 {
+        // Walk up from the importing file's directory. `parent()` of the
+        // empty dir (a top-level file like `beta.rs`) is None, not "" —
+        // and anything past the representable root is unknowable — so a
+        // depleted walk falls back to the bare tail: the suffix match
+        // below tries every tail anyway.
+        let mut dir = importer_file.parent();
+        for _ in 0..supers {
+            match dir {
+                Some(d) if !d.as_os_str().is_empty() => dir = d.parent(),
+                _ => {
+                    dir = None;
+                    break;
+                }
+            }
+        }
+        let dotted = match dir {
+            Some(d) => {
+                // Absolute prefixes are harmless: the suffix match below
+                // tries every tail, so only the trailing segments have
+                // to be right.
+                let ds = d.to_string_lossy().replace('\\', "/");
+                if ds.is_empty() {
+                    segs.join(".")
+                } else {
+                    format!("{}.{}", ds.replace('/', "."), segs.join("."))
+                }
+            }
+            None => segs.join("."),
+        };
+        return find_module_by_dotted_name(projection, &dotted, current_module);
+    }
+    find_module_by_dotted_name(projection, &segs.join("."), current_module)
+}
+
+/// Rank one suffix key's candidates (DR-14): same language as the importing
+/// module first — a Python import never means a Rust file and vice versa —
+/// smallest module id second. Order-robust: true for index vecs (ascending)
+/// and scan collections (HashMap order) alike, hence stable in every process.
+fn pick_suffix_winner(
+    projection: &ProjectedGraph,
+    ids: &[EntityId],
+    importer_lang: Option<Language>,
+) -> Option<String> {
+    let mut best: Option<&str> = None;
+    let mut best_same_lang = false;
+    for id in ids {
+        let same = importer_lang
+            .is_some_and(|l| projection.modules.get(id).is_some_and(|m| m.language == l));
+        let better = match (same, best_same_lang) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => best.is_none_or(|b| id.as_str() < b),
+        };
+        if better {
+            best = Some(id.as_str());
+            best_same_lang = same;
+        }
+    }
+    best.map(str::to_string)
 }
 
 /// Find a module by its dotted name (e.g., "coderadar.config" → config.py).
@@ -179,15 +290,13 @@ pub(crate) fn rebuild_module_path_index(projection: &mut ProjectedGraph) {
 pub(crate) fn find_module_by_dotted_name(
     projection: &ProjectedGraph,
     dotted_name: &str,
-    _current_module: &str,
+    current_module: &str,
 ) -> Option<String> {
     // 2.2: normalize common TS path aliases before suffix matching.
     // `@/...` and `~/...` conventionally map to `src/...` (Vite/Next/tsconfig).
     let normalized;
-    let dotted_name: &str = if dotted_name.starts_with("@/") {
-        normalized = format!("src/{}", &dotted_name[2..]);
-        &normalized
-    } else if dotted_name.starts_with("~/") {
+    // `@/` and `~/` are two spellings for the same `src/` root (one arm).
+    let dotted_name: &str = if dotted_name.starts_with("@/") || dotted_name.starts_with("~/") {
         normalized = format!("src/{}", &dotted_name[2..]);
         &normalized
     } else {
@@ -206,24 +315,31 @@ pub(crate) fn find_module_by_dotted_name(
     //
     // A graph with modules but an empty index is legacy or hand-built (unit
     // tests) — it keeps the full-scan behaviour below, unchanged.
+    let importer_lang = projection.modules.get(current_module).map(|m| m.language);
     if projection.modules.is_empty() || !projection.module_path_index.is_empty() {
         for start in 0..segments.len() {
             let tail = segments[start..].join("/");
-            if let Some(id) = projection.module_path_index.get(&tail) {
-                return Some(id.clone());
+            if let Some(ids) = projection.module_path_index.get(&tail) {
+                if let Some(winner) = pick_suffix_winner(projection, ids, importer_lang) {
+                    return Some(winner);
+                }
             }
         }
         return None;
     }
 
-    // Legacy slow path: full scan over every module.
+    // Legacy slow path: full scan over every module. Longest-suffix-first
+    // priority is preserved (outer loop), but within one suffix length the
+    // winner is the smallest module id — DR-14: first-HashMap-hit-wins
+    // flapped across processes. Same for the fallback below.
     //
     // Build candidate path suffixes by matching the last N segments
     for n in (1..=segments.len()).rev() {
         let suffix_parts = &segments[segments.len() - n..];
         let suffix_slash = suffix_parts.join("/");
 
-        for (_, module) in &projection.modules {
+        let mut ids = Vec::new();
+        for module in projection.modules.values() {
             let path_str = module.path.to_string_lossy().to_string();
             let path_normalized = path_str.replace('\\', "/");
             // Check each known extension
@@ -231,15 +347,20 @@ pub(crate) fn find_module_by_dotted_name(
                 let suffix = format!("{}.{}", suffix_slash, ext);
                 let init_suffix = format!("{}/__init__.{}", suffix_slash, ext);
                 if path_normalized.ends_with(&suffix) || path_normalized.ends_with(&init_suffix) {
-                    return Some(module.id.clone());
+                    ids.push(module.id.clone());
+                    break;
                 }
             }
+        }
+        if !ids.is_empty() {
+            return pick_suffix_winner(projection, &ids, importer_lang);
         }
     }
 
     // Fallback: strip any extension and match segments in reverse order
     let last_segment = segments.last().unwrap_or(&"");
-    for (_, module) in &projection.modules {
+    let mut ids = Vec::new();
+    for module in projection.modules.values() {
         if module.name == *last_segment {
             let path_str = module.path.to_string_lossy().to_string();
             let path_normalized = path_str.replace('\\', "/");
@@ -253,13 +374,16 @@ pub(crate) fn find_module_by_dotted_name(
             if file_segments.len() >= segments.len() {
                 let file_suffix = &file_segments[file_segments.len() - segments.len()..];
                 if file_suffix == segments.as_slice() {
-                    return Some(module.id.clone());
+                    ids.push(module.id.clone());
                 }
             }
         }
     }
 
-    None
+    if ids.is_empty() {
+        return None;
+    }
+    pick_suffix_winner(projection, &ids, importer_lang)
 }
 
 /// Find a symbol (function or class) with a given name within a specific module.
@@ -292,10 +416,15 @@ fn find_symbol_in_module_guarded(
         return None;
     }
     let module = projection.modules.get(module_id)?;
-    // 1. Direct definitions (unchanged precedence).
+    // 1. Direct definitions. Methods and nested functions are not module
+    // names: `module.functions` lists them, but `import x` cannot see them.
     for func_id in &module.functions {
         if let Some(func) = projection.functions.get(func_id) {
-            if func.name == symbol_name {
+            let nested = func
+                .id
+                .rsplit_once('.')
+                .is_some_and(|(head, _)| projection.functions.contains_key(head));
+            if func.name == symbol_name && func.parent_class.is_none() && !nested {
                 return Some(func.id.clone());
             }
         }
@@ -401,6 +530,37 @@ fn find_symbol_in_module_guarded(
     None
 }
 
+/// Resolve a canonical id-form path for disk IO (F14 follow-up): absolute
+/// passes through; relative resolves against the indexed root (the file
+/// itself decides via `exists()`, else its parent dir — tmp/backup targets
+/// do not exist yet), then CWD. Report keys stay in id form — only fs ops
+/// use the resolved path. Centralized here so analysis passes (clones,
+/// smells, scaffold, dead-code) share it with the mutation engine instead
+/// of each assuming CWD == indexed root.
+pub(crate) fn disk_path_for(path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+    let root = crate::indexed_root();
+    let cand = root.join(p);
+    if cand.exists() {
+        return cand;
+    }
+    if let Some(parent) = cand.parent() {
+        if !parent.as_os_str().is_empty() && parent.exists() {
+            return cand;
+        }
+    }
+    std::env::current_dir().unwrap_or(root).join(p)
+}
+
+/// Read a project file by canonical id-form path: empty string when
+/// missing (callers treat unreadable as skip, never as crash).
+pub(crate) fn read_project_file(path: &str) -> String {
+    std::fs::read_to_string(disk_path_for(path)).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod canonical_form_tests {
     use super::*;
@@ -480,35 +640,4 @@ mod canonical_form_tests {
         assert!(!is_canonical_file_head("/home/proj/x.py")); // absolute (POSIX)
         assert!(!is_canonical_file_head("")); // empty
     }
-}
-
-/// Resolve a canonical id-form path for disk IO (F14 follow-up): absolute
-/// passes through; relative resolves against the indexed root (the file
-/// itself decides via `exists()`, else its parent dir — tmp/backup targets
-/// do not exist yet), then CWD. Report keys stay in id form — only fs ops
-/// use the resolved path. Centralized here so analysis passes (clones,
-/// smells, scaffold, dead-code) share it with the mutation engine instead
-/// of each assuming CWD == indexed root.
-pub(crate) fn disk_path_for(path: &str) -> std::path::PathBuf {
-    let p = std::path::Path::new(path);
-    if p.is_absolute() {
-        return p.to_path_buf();
-    }
-    let root = crate::indexed_root();
-    let cand = root.join(p);
-    if cand.exists() {
-        return cand;
-    }
-    if let Some(parent) = cand.parent() {
-        if !parent.as_os_str().is_empty() && parent.exists() {
-            return cand;
-        }
-    }
-    std::env::current_dir().unwrap_or(root).join(p)
-}
-
-/// Read a project file by canonical id-form path: empty string when
-/// missing (callers treat unreadable as skip, never as crash).
-pub(crate) fn read_project_file(path: &str) -> String {
-    std::fs::read_to_string(disk_path_for(path)).unwrap_or_default()
 }

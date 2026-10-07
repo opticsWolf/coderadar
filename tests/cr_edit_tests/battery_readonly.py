@@ -67,21 +67,21 @@ core_id     = (core_fn or {}).get("id", "")
 log(f"demo_py_id={demo_py_id!r}\ndemo_ts_id={demo_ts_id!r}\ndemo_rs_id={demo_rs_id!r}\ncore_id={core_id!r}")
 
 # ── 1-15: read-only tools ─────────────────────────────────────────────────
-run("codegraph_explore",        mcp._explore, graph, "cold start store load", [], "both", 4)
-run("codegraph_node",           mcp._node_detail, graph, core_id, True)
-run("codegraph_search",         mcp._search, graph, "mutation plan", None, 5)
-run("codegraph_affected",       mcp._affected, graph, core_id, 3)
+run("coderadar_explore",        mcp._explore, graph, "cold start store load", [], "both", 4)
+run("coderadar_node",           mcp._node_detail, graph, core_id, True)
+run("coderadar_search",         mcp._search, graph, "mutation plan", None, 5)
+run("coderadar_affected",       mcp._affected, graph, core_id, 3)
 run("coderadar_resolve",        mcp._resolve_ref, graph, "/users/:id", 5)
-run("codegraph_query",          mcp._query_graph, graph, "functions where name contains 'parse'")
-run("codegraph_search_similar", mcp._search_similar, graph, "incremental file update", 5)
-run("codegraph_module_children",mcp._module_children, graph, r".\py_agent\src\coderadar::module")
-run("codegraph_as_of",          mcp._as_of, graph, "2025-01-15T10:00:00Z", "", [])
-run("codegraph_traverse",       mcp._traverse, graph, core_id, "both", ["calls"], 2)
-run("codegraph_get_smells",     mcp._get_smells, graph, None, None, "normal")
-run("codegraph_dead_code",      mcp._dead_code, graph, 0.6, False, 100)
-run("codegraph_find_clones",    mcp._find_clones, graph, 10, 0.8, 100)
-run("codegraph_find_scaffolding", mcp._find_scaffolding, False, 100)
-run("codegraph_update_file",    mcp._update_file, graph, any_file, None)
+run("coderadar_query",          mcp._query_graph, graph, "functions where name contains 'parse'")
+run("coderadar_search_similar", mcp._search_similar, graph, "incremental file update", 5)
+run("coderadar_module_children",mcp._module_children, graph, r".\py_agent\src\coderadar::module")
+run("coderadar_as_of",          mcp._as_of, graph, "2025-01-15T10:00:00Z", "", [])
+run("coderadar_traverse",       mcp._traverse, graph, core_id, "both", ["calls"], 2)
+run("coderadar_get_smells",     mcp._get_smells, graph, None, None, "normal")
+run("coderadar_dead_code",      mcp._dead_code, graph, 0.6, False, 100)
+run("coderadar_find_clones",    mcp._find_clones, graph, 10, 0.8, 100)
+run("coderadar_find_scaffolding", mcp._find_scaffolding, False, 100)
+run("coderadar_update_file",    mcp._update_file, graph, any_file, None)
 
 # ── 16: mutation tools — DRY RUN on core repo entity (must refuse or plan) ─
 run("coderadar_replace_body[core,dry]",    mcp._replace_body, graph, core_id, "pass", None, True)
@@ -93,7 +93,7 @@ run("coderadar_create_entity[demo,dry]", mcp._create_entity, graph,
     any_file, "python", "function", "demo_review_helper", "return 42", None, "end", None, True)
 
 # ── 18: compute embeddings (slow, optional) ───────────────────────────────
-run("codegraph_compute_embeddings", mcp._compute_embeddings, graph)
+run("coderadar_compute_embeddings", mcp._compute_embeddings, graph)
 
 # ── summary ───────────────────────────────────────────────────────────────
 log("\n" + "=" * 70)

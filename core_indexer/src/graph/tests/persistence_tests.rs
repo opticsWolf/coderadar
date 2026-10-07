@@ -109,7 +109,7 @@ fn test_synthetic_edge_roundtrip_query() {
     // Querying callees_of the route should return list_items
     let callees = snap.callees_by_caller.get("fastapi:route:main.py:/items");
     assert!(
-        callees.map_or(false, |c| c.iter().any(|e| e.contains("list_items"))),
+        callees.is_some_and(|c| c.iter().any(|e| e.contains("list_items"))),
         "route should have list_items as callee"
     );
 }
@@ -497,7 +497,7 @@ fn synthetic_pairs_not_persisted_as_calls_and_stale_edges_retracted() {
     assert!(
         snap.callees_by_caller
             .get(&main_id)
-            .map_or(false, |s| s.contains(&run_id)),
+            .is_some_and(|s| s.contains(&run_id)),
         "natural main -> run edge must resolve"
     );
 

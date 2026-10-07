@@ -155,7 +155,7 @@ impl Indexed {
             };
         }
 
-        let mut labels: Vec<String> = std::iter::repeat(String::new()).take(n + 1).collect();
+        let mut labels: Vec<String> = std::iter::repeat_n(String::new(), n + 1).collect();
         let mut leftmost_leaf = vec![0usize; n + 1];
         let mut parent = vec![0usize; n + 1];
 

@@ -58,39 +58,39 @@ any_id = any_e.get("id") if any_e else None
 any_file = any_e.get("file_path") if any_e else None
 log("\nDiscovered:", json.dumps(any_e, default=str) if any_e else "NONE")
 
-# ── 1. codegraph_explore ──────────────────────────────────────────────────
-run("codegraph_explore", mcp._explore, graph, "index parse token", [], "both", 4)
+# ── 1. coderadar_explore ──────────────────────────────────────────────────
+run("coderadar_explore", mcp._explore, graph, "index parse token", [], "both", 4)
 
-# ── 2. codegraph_node ─────────────────────────────────────────────────────
-run("codegraph_node", mcp._node_detail, graph, any_id or "::", True)
+# ── 2. coderadar_node ─────────────────────────────────────────────────────
+run("coderadar_node", mcp._node_detail, graph, any_id or "::", True)
 
-# ── 3. codegraph_search ───────────────────────────────────────────────────
-run("codegraph_search", mcp._search, graph, "parse", None, 5)
+# ── 3. coderadar_search ───────────────────────────────────────────────────
+run("coderadar_search", mcp._search, graph, "parse", None, 5)
 
-# ── 4. codegraph_affected ─────────────────────────────────────────────────
-run("codegraph_affected", mcp._affected, graph, any_id or "::", 3)
+# ── 4. coderadar_affected ─────────────────────────────────────────────────
+run("coderadar_affected", mcp._affected, graph, any_id or "::", 3)
 
 # ── 5. coderadar_resolve ──────────────────────────────────────────────────
 run("coderadar_resolve", mcp._resolve_ref, graph, "db/index", 5)
 
-# ── 6. codegraph_query ────────────────────────────────────────────────────
-run("codegraph_query", mcp._query_graph, graph, "functions where name contains 'parse'")
+# ── 6. coderadar_query ────────────────────────────────────────────────────
+run("coderadar_query", mcp._query_graph, graph, "functions where name contains 'parse'")
 
-# ── 7. codegraph_compute_embeddings ───────────────────────────────────────
-run("codegraph_compute_embeddings", mcp._compute_embeddings, graph)
+# ── 7. coderadar_compute_embeddings ───────────────────────────────────────
+run("coderadar_compute_embeddings", mcp._compute_embeddings, graph)
 
-# ── 8. codegraph_search_similar ───────────────────────────────────────────
-run("codegraph_search_similar", mcp._search_similar, graph, "indexing source files", 5)
+# ── 8. coderadar_search_similar ───────────────────────────────────────────
+run("coderadar_search_similar", mcp._search_similar, graph, "indexing source files", 5)
 
-# ── 9. codegraph_module_children ──────────────────────────────────────────
+# ── 9. coderadar_module_children ──────────────────────────────────────────
 module_id = f"{any_file}::module" if any_file else "::module"
-run("codegraph_module_children", mcp._module_children, graph, module_id)
+run("coderadar_module_children", mcp._module_children, graph, module_id)
 
-# ── 10. codegraph_as_of ───────────────────────────────────────────────────
-run("codegraph_as_of", mcp._as_of, graph, "2025-01-15T10:00:00Z", "", [])
+# ── 10. coderadar_as_of ───────────────────────────────────────────────────
+run("coderadar_as_of", mcp._as_of, graph, "2025-01-15T10:00:00Z", "", [])
 
-# ── 11. codegraph_traverse ────────────────────────────────────────────────
-run("codegraph_traverse", mcp._traverse, graph, any_id or "::", "both", ["calls"], 2)
+# ── 11. coderadar_traverse ────────────────────────────────────────────────
+run("coderadar_traverse", mcp._traverse, graph, any_id or "::", "both", ["calls"], 2)
 
 # ── 12. coderadar_replace_body (dry_run) ─────────────────────────────────
 run("coderadar_replace_body", mcp._replace_body, graph, any_id or "::", "return null", None, True)
@@ -105,11 +105,11 @@ run("coderadar_rename", mcp._rename, graph, any_id or "::", "renamed_parse", Tru
 run("coderadar_create_entity", mcp._create_entity, graph,
     any_file or "src/__test__.ts", "typescript", "function", "mcpTestFn", "return 1", None, "end", True)
 
-# ── 16. codegraph_reindex ─────────────────────────────────────────────────
-run("codegraph_reindex", mcp._reindex, graph, False)
+# ── 16. coderadar_reindex ─────────────────────────────────────────────────
+run("coderadar_reindex", mcp._reindex, graph, False)
 
-# ── 17. codegraph_update_file ─────────────────────────────────────────────
-run("codegraph_update_file", mcp._update_file, graph, any_file or "src/__test__.ts", None)
+# ── 17. coderadar_update_file ─────────────────────────────────────────────
+run("coderadar_update_file", mcp._update_file, graph, any_file or "src/__test__.ts", None)
 
 # ── Summary ───────────────────────────────────────────────────────────────
 log("\n" + "=" * 70)

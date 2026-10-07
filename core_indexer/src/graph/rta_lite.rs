@@ -54,6 +54,14 @@ pub fn instantiated_classes(graph: &ProjectedGraph) -> HashSet<String> {
             }
         }
     }
+    // Module-level code (`app = App()`, `REGISTRY = {"x": Handler}`).
+    for m in graph.modules.values() {
+        for r in &m.uses {
+            if let Some(class_id) = by_name.get(r.name.as_str()) {
+                out.insert((*class_id).clone());
+            }
+        }
+    }
     // Class-level field defaults construct at class-definition time
     // (`session_interface: SessionInterface = SecureCookieSessionInterface()`
     // builds the instance before any `__init__` runs; bare class-name
@@ -173,7 +181,7 @@ pub fn direct_call_reachable(graph: &ProjectedGraph, roots: &HashSet<String>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ReceiverShape, ResolvedCall};
+    use crate::types::ResolvedCall;
     use std::sync::Arc;
 
     fn method_func(id: &str, class: Option<&str>) -> crate::types::Function {

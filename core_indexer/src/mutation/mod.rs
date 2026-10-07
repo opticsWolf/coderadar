@@ -13,7 +13,7 @@ pub mod write_guard;
 use std::collections::HashMap;
 
 use crate::mutation::edit::apply_edits_to_file;
-use crate::mutation::indent::{detect_indent_style, normalize_indent};
+use crate::mutation::indent::detect_indent_style;
 use crate::mutation::write_guard::WriteGuard;
 use crate::types::{ByteSpan, ParseQuality, ProjectedGraph, ResolvedCall};
 
@@ -568,7 +568,7 @@ impl MutationEngine {
         let line_text = |idx: usize| -> &str {
             let s = line_starts[idx];
             let e = line_starts.get(idx + 1).copied().unwrap_or(source.len());
-            source[s..e].trim_end_matches(|c| c == '\r' || c == '\n')
+            source[s..e].trim_end_matches(['\r', '\n'])
         };
         let def_idx = def_line.saturating_sub(1).min(n_lines - 1);
         let lo = def_idx.saturating_sub(3);
@@ -600,7 +600,7 @@ impl MutationEngine {
             };
             if params_span_valid(source, entity_name, candidate) {
                 warnings.push(format!(
-                    "Recorded params span for `{}` was stale (pointed at byte {}); re-resolved from the def line — consider `codegraph_update_file` before relying on call-site edits.",
+                    "Recorded params span for `{}` was stale (pointed at byte {}); re-resolved from the def line — consider `coderadar_update_file` before relying on call-site edits.",
                     entity_name, recorded.start
                 ));
                 return Ok(candidate);
@@ -636,9 +636,15 @@ impl MutationEngine {
         }
         let body_column: &str = prefix;
 
-        // Incoming base = smallest leading whitespace over non-blank lines.
-        let incoming_base = new_body
+        // Incoming base = smallest leading whitespace over non-blank lines
+        // AFTER the first. Line 0 inherits its column from the prefix, so
+        // its own leading whitespace is meaningless — and counting it (the
+        // old rule) double-indented every later line whenever line 0 sat at
+        // column 0 (BUGS_QUIRKS #1: Applied + unparseable). Line 0 is
+        // trimmed, the rest are re-based to the body column.
+        let rest_base = new_body
             .lines()
+            .skip(1)
             .filter(|l| !l.trim().is_empty())
             .map(|l| l.chars().take_while(|c| *c == ' ' || *c == '\t').count())
             .min()
@@ -653,11 +659,11 @@ impl MutationEngine {
                 out_lines.push(String::new());
                 continue;
             }
-            let stripped: String = raw.chars().skip(incoming_base).collect();
             if i == 0 {
                 // First line inherits whatever the prefix already provides.
-                out_lines.push(stripped);
+                out_lines.push(raw.trim_start().to_string());
             } else {
+                let stripped: String = raw.chars().skip(rest_base).collect();
                 out_lines.push(format!("{}{}", body_column, stripped));
             }
         }
@@ -1247,6 +1253,10 @@ impl MutationEngine {
     /// tree-sitter — every identifier after the `import`/`export` keyword
     /// that is not an `as` alias. Star imports need nothing (runtime
     /// name-agnostic); `__all__` string literals stay for review.
+    /// Eight params (&self + context + three out-vectors): the rename needs
+    /// every index and every sink at once; a param struct would churn the
+    /// five callers for no behavior gain.
+    #[allow(clippy::too_many_arguments)]
     fn collect_import_binding_edits(
         &self,
         entity_id: &str,
@@ -2077,7 +2087,7 @@ impl MutationEngine {
         let mut files_written: Vec<String> = Vec::new();
         for (file_path, edits) in &by_file {
             let original = originals.get(file_path).cloned().unwrap_or_default();
-            let new_content = match apply_edits_to_file(&original, &edits) {
+            let new_content = match apply_edits_to_file(&original, edits) {
                 Ok(s) => s,
                 Err(e) => {
                     rollback_all(&backups);
@@ -2444,8 +2454,8 @@ fn signature_header(
 fn header_colon(source: &str, from: usize) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut depth: i32 = 0;
-    for i in from..bytes.len() {
-        match bytes[i] {
+    for (i, b) in bytes.iter().enumerate().skip(from) {
+        match b {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth -= 1,
             b':' if depth <= 0 => return Some(i),
@@ -2497,7 +2507,7 @@ pub enum MutationError {
 mod tests {
     use super::*;
     use crate::graph::MutationConfig;
-    use crate::mutation::indent::IndentStyle;
+    use crate::mutation::indent::{normalize_indent, IndentStyle};
     use crate::types::ByteSpan;
     use std::path::Path;
     use std::sync::Arc;
@@ -2703,6 +2713,17 @@ mod tests {
     }
 
     #[test]
+    fn self_host_allow_list_covers_own_dirs_dr27() {
+        // DR-27: the self-host `.coderadar.toml` allow list must admit the
+        // repo's own sources (root-anchored); the store dir stays denied.
+        assert!(path_matches("core_indexer/src/lib.rs", "core_indexer/"));
+        assert!(path_matches("py_agent/src/coderadar/ops.py", "py_agent/"));
+        assert!(path_matches("tests/test_mcp.py", "tests/"));
+        assert!(!path_matches("py_agent/src/coderadar/ops.py", "src/"));
+        assert!(path_matches(".coderadar/store/coderadar.db", ".coderadar/"));
+    }
+
+    #[test]
     fn interior_fragments_still_match_at_depth() {
         // `/migrations/` keeps the anywhere-match — that is its purpose.
         assert!(path_matches("migrations/001.py", "/migrations/"));
@@ -2786,8 +2807,10 @@ mod tests {
         let path = dir.path().join("mod.py");
         std::fs::write(&path, "value = 1\n").unwrap();
 
-        let mut config = MutationConfig::default();
-        config.max_edits_per_plan = 1;
+        let config = MutationConfig {
+            max_edits_per_plan: 1,
+            ..Default::default()
+        };
         let mut eng = MutationEngine::new(config).with_project_root(dir.path());
 
         let mut over = hashed_plan(
@@ -2828,8 +2851,10 @@ mod tests {
         let path = dir.path().join("mod.py");
         std::fs::write(&path, "value = 1\n").unwrap();
 
-        let mut config = MutationConfig::default();
-        config.enabled = false;
+        let config = MutationConfig {
+            enabled: false,
+            ..Default::default()
+        };
         let mut eng = MutationEngine::new(config).with_project_root(dir.path());
         let plan = hashed_plan(
             &path.to_string_lossy(),
@@ -2847,8 +2872,10 @@ mod tests {
         std::fs::write(dir.path().join("src").join("ok.py"), "a = 1\n").unwrap();
         std::fs::write(dir.path().join("other.py"), "a = 1\n").unwrap();
 
-        let mut config = MutationConfig::default();
-        config.allow = vec!["src/".into()];
+        let config = MutationConfig {
+            allow: vec!["src/".into()],
+            ..Default::default()
+        };
 
         let inside = dir.path().join("src").join("ok.py");
         let mut eng = MutationEngine::new(config.clone()).with_project_root(dir.path());
@@ -3037,6 +3064,9 @@ mod tests {
                 package: None,
                 exports: vec![],
                 star_exports: None,
+                uses: Vec::new(),
+                resolved_uses: Vec::new(),
+                attr_reads: Vec::new(),
                 classes: vec![],
                 functions: vec![],
                 imports: vec![],
@@ -3079,6 +3109,72 @@ mod tests {
     }
 
     #[test]
+    fn test_body_replacement_flush_first_line_no_double_indent() {
+        // BUGS_QUIRKS #1 root cause (v0.12): the incoming base used to
+        // include line 0, so a naturally written body (first line flush,
+        // rest relative) double-indented every later line and applied an
+        // unparseable file with status Applied. Line 0's own indent is
+        // meaningless (the prefix positions it); the base comes from the
+        // rest.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.py");
+        let src = "def f(a):\n    return a\n";
+        std::fs::write(&path, src).unwrap();
+
+        let start = src.find("return a").unwrap();
+        let mut g = crate::smells::engine::tests::empty_graph();
+        let mut f = crate::graph::deadcode::tests::func("m.py::f", "f", "m.py::module");
+        f.body_span = ByteSpan {
+            start,
+            end: start + 8,
+        };
+        g.functions.insert("m.py::f".into(), Arc::new(f));
+        g.modules.insert(
+            "m.py::module".into(),
+            Arc::new(crate::types::Module {
+                id: "m.py::module".into(),
+                name: "m".into(),
+                path: path.clone(),
+                language: crate::types::Language::Python,
+                package: None,
+                exports: vec![],
+                star_exports: None,
+                uses: Vec::new(),
+                resolved_uses: Vec::new(),
+                attr_reads: Vec::new(),
+                classes: vec![],
+                functions: vec![],
+                imports: vec![],
+                constants: vec![],
+                type_aliases: vec![],
+                parse_quality: crate::types::ParseQuality::Clean,
+                content_hash: 0,
+                embedding: Default::default(),
+                file_version: 0,
+            }),
+        );
+
+        let mut eng = MutationEngine::new(MutationConfig::default());
+        let plan = eng
+            .plan_body_replacement(
+                "m.py::f",
+                "x = 1\n    y = 2\n    return y\n",
+                None,
+                true,
+                &g,
+            )
+            .unwrap();
+        let p2 = eng.apply(&plan);
+        assert_eq!(p2.status, MutationStatus::Applied);
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            written, "def f(a):\n    x = 1\n    y = 2\n    return y\n",
+            "{written}"
+        );
+        assert!(!parse_has_error(crate::types::Language::Python, written.as_bytes()).unwrap());
+    }
+
+    #[test]
     fn test_body_replacement_multiline_continuations_get_body_column() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("m.py");
@@ -3103,6 +3199,9 @@ mod tests {
                 package: None,
                 exports: vec![],
                 star_exports: None,
+                uses: Vec::new(),
+                resolved_uses: Vec::new(),
+                attr_reads: Vec::new(),
                 classes: vec![],
                 functions: vec![],
                 imports: vec![],

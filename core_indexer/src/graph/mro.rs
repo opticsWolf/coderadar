@@ -52,11 +52,7 @@ fn c3_merge(mut lists: Vec<Vec<MroNode>>) -> Vec<MroNode> {
 impl CodeGraph {
     /// Compute C3 linearization MRO for all classes in the projection.
     pub fn compute_all_mro(&self, projection: &mut ProjectedGraph) {
-        let class_ids: Vec<String> = projection
-            .classes
-            .iter()
-            .map(|(id, _)| id.clone())
-            .collect();
+        let class_ids: Vec<String> = projection.classes.keys().cloned().collect();
         for class_id in &class_ids {
             let mro = self.compute_c3_mro(projection, class_id);
             if let Some(class) = projection.classes.get(class_id) {
@@ -120,7 +116,7 @@ impl CodeGraph {
     // ── Phase D: Inheritance / Import / Override back-fill ─────────────────
     //
     // These three passes populate the reverse/forward indexes that the
-    // Rust `traverse` binding (and the MCP `codegraph_traverse` tool) read:
+    // Rust `traverse` binding (and the MCP `coderadar_traverse` tool) read:
     //   - `resolved_bases`  (forward `extends`) + `subclasses` (reverse)
     //   - `Import.resolution` (forward `imports`)            + `importers` (reverse)
     //   - `overrides_base`   (forward `overrides`)            + `overridden_by` (reverse)
@@ -137,6 +133,7 @@ impl CodeGraph {
     ///      module — 2.1c);
     ///   3. project-global unique-name match filtered to the caller's
     ///      language family (2.1a).
+    ///
     /// Returns `None` when ambiguous (multiple candidates) or not found.
     fn resolve_base_by_name(
         projection: &ProjectedGraph,
@@ -216,7 +213,7 @@ impl CodeGraph {
                 }
                 _ => Vec::new(),
             };
-            if !names.iter().any(|n| *n == base_name) {
+            if !names.contains(&base_name) {
                 continue;
             }
             if let crate::types::ImportResolution::Module(target) = &imp.resolution {

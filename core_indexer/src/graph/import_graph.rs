@@ -145,3 +145,9 @@ impl ImportGraph {
         self.exports.get(path)
     }
 }
+
+impl Default for ImportGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}

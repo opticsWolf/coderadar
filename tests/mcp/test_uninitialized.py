@@ -82,7 +82,7 @@ class TestEveryBackendWithoutAnIndex:
         # of the two states it is in — no index here, or the wrong project.
         assert any(
             hint in result
-            for hint in ("coderadar init", "codegraph_reindex", "--path")
+            for hint in ("coderadar init", "coderadar_reindex", "--path")
         ), f"{name} gave no next step: {result!r}"
 
     def test_it_does_not_claim_to_have_answered(self, index):

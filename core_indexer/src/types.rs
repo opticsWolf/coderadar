@@ -11,20 +11,12 @@ use std::sync::Arc;
 /// Wrapper around Vec<f64> that defaults to empty.
 /// Embedding vector with content-hash for deduplication.
 /// Hash is xxHash64 hex of entity body; empty = no embedding stored.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct EmbeddingVec {
     pub vec: Vec<f64>,
     pub hash: String,
 }
 
-impl Default for EmbeddingVec {
-    fn default() -> Self {
-        EmbeddingVec {
-            vec: vec![],
-            hash: String::new(),
-        }
-    }
-}
 // Stable dotted-path identity, e.g. "src/auth.py::UserService.create".
 // Used as Macrame concept IDs and ProjectedGraph hashmap keys.
 
@@ -129,16 +121,10 @@ pub enum SymbolId {
 
 // ── ByteSpan (§3.3) ─────────────────────────────────────────────────────────
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize, Default)]
 pub struct ByteSpan {
     pub start: usize,
     pub end: usize, // exclusive
-}
-
-impl Default for ByteSpan {
-    fn default() -> Self {
-        Self { start: 0, end: 0 }
-    }
 }
 
 impl ByteSpan {
@@ -171,7 +157,7 @@ pub fn line_col_at(source: &[u8], offset: usize) -> (usize, usize) {
 }
 
 /// Slice a source string by a ByteSpan, verifying UTF-8 char boundaries.
-pub fn slice_span<'a>(source: &'a str, span: ByteSpan) -> Result<&'a str, SpanError> {
+pub fn slice_span(source: &str, span: ByteSpan) -> Result<&str, SpanError> {
     if span.start > source.len() || span.end > source.len() {
         return Err(SpanError::OutOfBounds);
     }
@@ -887,6 +873,15 @@ pub struct Module {
     pub package: Option<EntityId>,
     pub exports: Vec<Export>,
     pub star_exports: Option<Vec<String>>,
+    /// Calls and function-valued references made by module-level code
+    /// (statements, class bodies, decorators): it runs at import, so
+    /// what it uses is live. Python only.
+    pub uses: Vec<UnresolvedRef>,
+    /// `uses` resolved to in-repo functions (dead-code roots).
+    pub resolved_uses: Vec<EntityId>,
+    /// Attribute names read anywhere in the module (`x.name`), sorted:
+    /// a `@property` is used by reading it, never by calling it.
+    pub attr_reads: Vec<String>,
     pub classes: Vec<EntityId>,
     pub functions: Vec<EntityId>,
     pub imports: Vec<EntityId>,
@@ -1013,6 +1008,28 @@ pub struct TypeAlias {
     pub embedding: EmbeddingVec,
 }
 
+/// A framework route (§1.3, DR-10): a URL pattern synthesized by a
+/// framework resolver (Flask `@app.route`, Express `app.get`, ...).
+/// Not tree-sitter-extracted — asserted as a canonical concept by
+/// `register_synthetic_nodes_bulk` after analysis, so route→handler edges
+/// survive the ledger and cold start restores them. Ids are file-prefixed
+/// (`{rel_path}::{resolver}:route:{pattern}`) so `file_path_of`,
+/// canonical lookup and per-file retirement work by construction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Route {
+    pub id: EntityId,
+    /// The URL pattern as written (`/users/<id>`).
+    pub pattern: String,
+    /// Defining file, root-relative posix.
+    pub file_path: String,
+    /// Handler entity id the route edge points at.
+    pub handler_id: EntityId,
+    /// HTTP methods (`["GET"]`).
+    pub methods: Vec<String>,
+    /// Resolver that synthesized it (`flask`, `express`, ...).
+    pub framework: String,
+}
+
 // ── Extraction Intermediate Types (§3.3a) — EntityId-based ──────────────────
 
 #[derive(Clone, Debug)]
@@ -1055,6 +1072,8 @@ pub struct ExtractedModule {
     pub language: Language,
     pub parse_quality: ParseQuality,
     pub content_hash: u64,
+    pub uses: Vec<UnresolvedRef>,
+    pub attr_reads: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -1138,6 +1157,11 @@ pub struct UpdateOutcome {
     /// `CodeGraph::epoch()` immediately before and after the commit.
     pub epoch_before: u64,
     pub epoch_after: u64,
+    /// §1.9: this file's blob outcome (stored 0/1, skips, stored bytes).
+    pub blobs_stored: u64,
+    pub blobs_skipped_oversize: u64,
+    pub blobs_skipped_excluded: u64,
+    pub blobs_bytes: u64,
 }
 
 /// One entity of the updated file that differs before vs after the update.
@@ -1192,7 +1216,7 @@ impl Function {
             kind: f.kind.clone(),
             is_async: f.is_async,
             is_generator: f.is_generator,
-            source: f.source.clone(),
+            source: f.source,
             signature_hash: f.signature_hash,
             body_hash: f.body_hash,
             metrics: f.metrics,
@@ -1235,14 +1259,14 @@ impl Class {
                 .map(|ef| Field {
                     name: ef.name.clone(),
                     annotation: ef.annotation.clone(),
-                    source: ef.source.clone(),
+                    source: ef.source,
                     default_value: ef.default_value.clone(),
                     is_class_var: ef.is_class_var,
                     span: ef.name_span,
                     name_span: ef.name_span,
                 })
                 .collect(),
-            source: c.source.clone(),
+            source: c.source,
             decorators: c.decorators.clone(),
             effective: EffectiveClass::Plain,
             is_type_checking_only: c.is_type_checking_only,
@@ -1438,15 +1462,21 @@ pub struct ProjectedGraph {
     pub imports: HashMap<EntityId, Arc<Import>>,
     pub constants: HashMap<EntityId, Arc<Constant>>,
     pub type_aliases: HashMap<EntityId, Arc<TypeAlias>>,
+    /// Framework routes (§1.3): synthesized, file-prefixed ids; traversed
+    /// via the generic call indices, persisted as canonical concepts.
+    pub routes: HashMap<EntityId, Arc<Route>>,
 
     pub file_to_modules: HashMap<PathBuf, Vec<EntityId>>,
     pub module_by_dotted_name: HashMap<(Language, String), EntityId>,
     /// Fast path for `find_module_by_dotted_name` (v0.8 P1): every
     /// segment-boundary suffix of each module's extension-less path — both
-    /// keeping and dropping a trailing `__init__` segment — mapped to the
-    /// module id. Rebuilt by `rebuild_module_path_index` after full analyze
-    /// and cold load; lookups fall back to the full scan when it is empty.
-    pub module_path_index: HashMap<String, EntityId>,
+    /// keeping and dropping a trailing `__init__` segment — mapped to ALL
+    /// module ids sharing it, sorted ascending (DR-14: a single winner per
+    /// key reintroduced HashMap-iteration luck for collisions). The query
+    /// ranks same-language candidates first, then smallest id. Rebuilt by
+    /// `rebuild_module_path_index` after full analyze and cold load;
+    /// lookups fall back to the full scan when it is empty.
+    pub module_path_index: HashMap<String, Vec<EntityId>>,
 
     pub importers: HashMap<EntityId, BTreeSet<EntityId>>,
     /// Forward import index: importer module → set of modules it imports.
@@ -1455,7 +1485,7 @@ pub struct ProjectedGraph {
     pub imports_by_importer: HashMap<EntityId, BTreeSet<EntityId>>,
     pub callers_by_callee: HashMap<EntityId, BTreeSet<EntityId>>,
     pub callees_by_caller: HashMap<EntityId, BTreeSet<EntityId>>,
-    /// Receiver-typing provenance (plan §1.2 step 3, §2.4): 	`(callee -> caller)`
+    /// Receiver-typing provenance (plan §1.2 step 3, §2.4):     `(callee -> caller)`
     /// → how the call edge was inferred. In-memory only — the ledger persists
     /// `resolved_calls`, not inference provenance — so a cold start loses the
     /// tags and the §2.4 weighting then degrades to "strong" (no ×0.8). Never

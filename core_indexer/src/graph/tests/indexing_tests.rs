@@ -603,7 +603,7 @@ fn test_lua_table_indexing() {
     let snap = graph.snapshot();
     // Lua tables captured as classes
     assert!(
-        snap.classes.values().any(|c| c.name == "M") || snap.functions.len() > 0,
+        snap.classes.values().any(|c| c.name == "M") || !snap.functions.is_empty(),
         "Should have Lua entities"
     );
 }
@@ -616,7 +616,7 @@ fn test_elixir_module_indexing() {
         "user.ex",
     );
     let snap = graph.snapshot();
-    assert!(snap.modules.len() > 0, "Should index the module");
+    assert!(!snap.modules.is_empty(), "Should index the module");
     // v3.6: def/defp extraction — verify function entity
     assert!(
         snap.functions.values().any(|f| f.name == "greet"),

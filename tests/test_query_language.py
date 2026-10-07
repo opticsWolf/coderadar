@@ -159,8 +159,8 @@ def test_row_id_can_be_fed_back_into_the_api(graph):
     rows = list(graph.query("functions where name == 'build'"))
     entity_id = rows[0]["id"]
     assert rows[0]["file_path"].endswith("app.py")
-    assert graph.callers_of(entity_id) is not None
-    callees = graph.callees_of(entity_id)
+    assert graph.callers(entity_id) is not None
+    callees = graph.callees(entity_id)
     assert any("Widget" in c["name"] for c in callees), callees
 
 

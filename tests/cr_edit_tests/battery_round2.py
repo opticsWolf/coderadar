@@ -313,7 +313,7 @@ try:
     ok22 = len(names) == 22
     if ok22:
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-              "params": {"name": "codegraph_search", "arguments": {"query": "combine", "top_k": 3}}})
+              "params": {"name": "coderadar_search", "arguments": {"query": "combine", "top_k": 3}}})
         call_r = read_msg()
         check(SEC, "mcp-tools-call", bool(call_r and "result" in call_r), str(call_r)[:200])
     m.kill()

@@ -80,7 +80,7 @@ def generate_call_graph(args: list, graph: Any | None = None) -> str:
     raise NothingToVisualize(
         f"No call edges found {'from' if direction == 'out' else 'to'} "
         f"`{func_name}`. Either the index is empty (run `coderadar init` "
-        f"or `coderadar analyze` in the project first) or that function "
+        f"or `coderadar reindex` in the project first) or that function "
         f"neither calls nor is called by anything indexed."
     )
 
@@ -116,7 +116,7 @@ def _gather_fan_out(graph, entity_id: str, depth: int,
     visited.add(entity_id)
 
     try:
-        for callee in graph.callees_of(entity_id):
+        for callee in graph.callees(entity_id):
             callee_id = callee.get("id", "")
             if callee_id:
                 edges.append((entity_id, callee_id, 1.0))
@@ -135,7 +135,7 @@ def _gather_fan_in(graph, entity_id: str, depth: int,
     visited.add(entity_id)
 
     try:
-        for caller in graph.callers_of(entity_id):
+        for caller in graph.callers(entity_id):
             caller_id = caller.get("id", "")
             if caller_id:
                 edges.append((caller_id, entity_id, 1.0))

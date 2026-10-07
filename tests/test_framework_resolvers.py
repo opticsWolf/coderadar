@@ -7,7 +7,7 @@ from Python source code.
 
 from pathlib import Path
 
-from coderadar.cli import _ledger_synthetic_edge_kind
+from coderadar.framework import _ledger_synthetic_edge_kind
 from coderadar.resolvers.django import DjangoResolver
 from coderadar.resolvers.fastapi import FastAPIResolver
 from coderadar.resolvers.flask import FlaskResolver

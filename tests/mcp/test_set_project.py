@@ -1,6 +1,6 @@
 """Switching projects at runtime, end to end.
 
-`codegraph_set_project` re-runs the whole startup sequence against a new
+`coderadar_set_project` re-runs the whole startup sequence against a new
 root — config in, process moved, index restarted — from inside a tool call.
 These drive it through the real `analyze`, the real background index and
 the real config loader, because the interesting failures are exactly the

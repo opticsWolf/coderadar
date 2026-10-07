@@ -83,7 +83,10 @@ class EmbeddingConfig(BaseModel):
     # the pair that already worked end to end.
     model: str = "BAAI/bge-small-en-v1.5"
     dimension: int = 384
-    truncated_dimension: int = 64
+    # `truncated_dimension` was removed in §3.1 (DR-11): nothing ever
+    # truncated — vectors store full width, one dimension per projection
+    # enforced by the Rust write gate. Old TOMLs naming it still load
+    # (pydantic ignores the unknown key).
     max_body_tokens: int = 2000
     batch_size: int = 32
 
@@ -97,6 +100,23 @@ class DatabaseConfig(BaseModel):
     """
     # Relative to the project root unless absolute. Read by `analyze`.
     path: str = ".coderadar/store/coderadar.db"
+    # §1.9 (DR-30): source-blob write path. `store_source_blobs=false` is
+    # the kill-switch (default on with notice); `blob_exclude` unions with
+    # the built-in secret defaults at `set_config`, never replaces them.
+    store_source_blobs: bool = True
+    blob_exclude: list[str] = []
+
+
+class RetentionConfig(BaseModel):
+    """Archive retention — read by `ops.archive` (§3.4, DR-25).
+
+    One cutoff, days-hot: `archive_after_days=30` archives blobs (and
+    ledger rows) last written more than 30 days ago. `None` (default) =
+    no file-based default — `ops.archive` then needs an explicit cutoff.
+    Analyze never auto-archives: retention is an explicit maintenance
+    action, so a slow archive session can never surprise an index run.
+    """
+    archive_after_days: int | None = None
 
 
 class MutationConfig(BaseModel):
@@ -133,7 +153,8 @@ class CodeRadarConfig(BaseModel):
 
     Sections with a consumer today: `project` and `database` (the walk and
     the store, read by `analyze`), `mutation` (the policy gate),
-    `resolution.import_graph` (the resolver), `embedding` and `watch` (read
+    `resolution.import_graph` (the resolver), `retention` (the archive
+    cutoff, read by `ops.archive`), `embedding` and `watch` (read
     on this side).
 
     Sections with none were deleted rather than left documented and inert —
@@ -153,6 +174,7 @@ class CodeRadarConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     mutation: MutationConfig = Field(default_factory=MutationConfig)
+    retention: RetentionConfig = Field(default_factory=RetentionConfig)
     query: QueryConfig = Field(default_factory=QueryConfig)
     watch: WatchConfig = Field(default_factory=WatchConfig)
 
@@ -195,7 +217,7 @@ def activate_config(project_root: Path) -> ActivatedConfig:
     report = set_config(payload)
     # The core reports what *it* could not map. Two sections are read on this
     # side instead — listing them as ignored would be a false alarm.
-    python_side = ("embedding.", "watch.")
+    python_side = ("embedding.", "watch.", "retention.")
     ignored = [k for k in report.get("ignored", [])
                if not k.startswith(python_side)]
     return ActivatedConfig(

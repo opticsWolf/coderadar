@@ -29,6 +29,10 @@ class LSPOverride:
 class LSPPool:
     """One long-lived server process per enabled language, shared across all files.
 
+    P4 wire-or-cut verdict (v0.12): KEPT as the L4 override seam
+    (orchestrator header: Python-side, deferred). Wiring trigger: the
+    first agent trace needing override precision past L2 confidence.
+
     Spawned once on first use; initialized with workspace root.
     Kept synchronized via textDocument/didOpen + didChange on every ingestion.
     Idle servers shut down after idle_timeout_s (default 600) and re-spawn lazy.

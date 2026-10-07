@@ -29,10 +29,10 @@ async def main():
             print(f"[tools/list] {len(names)} tools in {time.time()-t0:.1f}s: {names}")
             issues = []
             for tool_name, args in [
-                ("codegraph_explore", {"query": "mutation policy"}),
-                ("codegraph_search", {"query": "clone detection", "top_k": 3}),
-                ("codegraph_get_smells", {"strictness": "high"}),
-                ("codegraph_query", {"query": "classes where name contains 'Mutation'"}),
+                ("coderadar_explore", {"query": "mutation policy"}),
+                ("coderadar_search", {"query": "clone detection", "top_k": 3}),
+                ("coderadar_get_smells", {"strictness": "high"}),
+                ("coderadar_query", {"query": "classes where name contains 'Mutation'"}),
                 ("coderadar_rename", {"entity_id": r".\tests\cr_edit_tests\demo_billing.py::print_invoice",
                                        "new_name": "print_invoice_renamed", "dry_run": True}),
                 ("coderadar_create_entity", {"file_path": r"tests\cr_edit_tests\demo_billing.py",

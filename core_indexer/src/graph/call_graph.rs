@@ -121,3 +121,9 @@ impl CallGraph {
         None
     }
 }
+
+impl Default for CallGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}

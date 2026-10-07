@@ -23,6 +23,50 @@ class EmbeddingUnavailable(RuntimeError):
     """
 
 
+# DR-11 (§3.1) preprocessing version. The embed text (see `embed_body`)
+# and the cache-key format below are versioned together: any change to
+# what gets embedded bumps this, which retires every stored vector exactly
+# once via mass re-embed (old keys never match, never silently reused).
+PREPROCESS_VERSION = 1
+
+
+def embed_body(entity: dict, kind: str) -> str:
+    """The text that gets embedded for one entity (DR-11 embed-what).
+
+    Functions, classes and modules embed `signature + docstring`: bodies
+    stay unembedded by design (bodies live in blobs; the vector's job is
+    symbol similarity, and docstrings are curated natural language for
+    exactly that). Everything else embeds `signature or name`. Routes
+    carry no vectors (§1.3 decision; FTS covers them) and never reach here.
+    """
+    sig = entity.get("signature", "") or ""
+    name = entity.get("name", "") or ""
+    if kind in ("function", "class", "module"):
+        doc = entity.get("docstring", "") or ""
+        text = (sig + "\n" + doc).strip() if doc.strip() else (sig or name)
+        return text
+    return sig or name
+
+
+def embed_cache_key(body_hash: str, model_id: str) -> str:
+    """The dedup key stored as `embedding_hash` (DR-11, §3.1).
+
+    `{model_id}#pp{PREPROCESS_VERSION}#{body_xxh3}`. Model id and
+    preprocessing are IN the key (a model switch or embed-text change
+    retires vectors by missing, never by silent reuse), and the format is
+    blob-ready: the 0.13 vector move keeps the key as the blob address
+    suffix. Bare pre-key hashes (no `#`) always miss and re-embed once.
+    """
+    return f"{model_id}#pp{PREPROCESS_VERSION}#{body_hash}"
+
+
+def stored_key_model(stored_hash: str) -> str | None:
+    """The model id baked into a stored key, or None for legacy bare hashes."""
+    if "#" not in stored_hash:
+        return None
+    return stored_hash.split("#", 1)[0] or None
+
+
 class EmbeddingDedup:
     """Content-addressed embedding cache.
 
@@ -31,11 +75,10 @@ class EmbeddingDedup:
     """
 
     def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5",
-                 dimension: int = 384, truncated_dimension: int = 64,
+                 dimension: int = 384,
                  max_body_tokens: int = 2000, batch_size: int = 32):
         self.model_name = model_name
         self.dimension = dimension
-        self.truncated_dimension = truncated_dimension
         self.max_body_tokens = max_body_tokens
         self.batch_size = batch_size
         self._model = None  # Lazy-loaded fastembed model

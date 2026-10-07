@@ -14,6 +14,7 @@ v3.6 Architecture:
 
 from __future__ import annotations
 
+import contextlib
 import functools
 
 #: Single version source (F11 fix): pyproject.toml is authoritative.
@@ -21,14 +22,28 @@ import functools
 #: installed wheel/sdist reports its own version) and falls back to the
 #: release constant below, which MUST be kept in sync with pyproject.toml
 #: and Cargo.toml [workspace.package] on every bump.
-_FALLBACK_VERSION = "0.10.0"
+_FALLBACK_VERSION = "0.11.0"
 
 
 def _resolve_version() -> str:
-    # Source-tree constant is authoritative in a checkout: an editable
-    # install freezes metadata at install time (stale 0.7.20 proved this),
-    # so when metadata and source disagree the NEWER wins. In a proper
-    # release flow both agree after reinstall.
+    # Source tree is authoritative in a checkout: pyproject.toml is read
+    # first (an editable install freezes metadata at install time — stale
+    # 0.7.20 proved it — so metadata is only a fallback for installed
+    # wheels/sdists, where it agrees with the build). P2 reinstall-proof:
+    # the MCP-serving venv resolves repo sources, so it reports the repo.
+    try:
+        from pathlib import Path
+
+        import tomllib
+        _root = Path(__file__).resolve().parent.parent.parent.parent
+        _pyproject = _root / "pyproject.toml"
+        if _pyproject.is_file():
+            with open(_pyproject, "rb") as _f:
+                _ver = tomllib.load(_f).get("project", {}).get("version", "")
+            if _ver:
+                return _ver
+    except Exception:  # noqa: BLE001, S110 - any read failure falls through to metadata
+        pass
     def _tup(v: str) -> tuple:
         try:
             return tuple(int(p) for p in v.split("."))
@@ -84,8 +99,22 @@ except ImportError:
     pass
 
 # The caller/callee indexes the facade walks carry exactly one kind of
-# edge. Named so explore() can answer honestly when asked for another.
+# edge. Named so the legacy call-graph walk can answer honestly when asked
+# for another.
 EDGE_KIND_CALLS = "calls"
+
+# Step-4 surface: `coderadar.ops` answers attribute access after a bare
+# `import coderadar` (the shared seam's errors catch as
+# `coderadar.ops.OpError`, ...). `ops` imports stdlib only at module level,
+# so this cannot cycle back through the package.
+from . import ops
+
+
+def _deprecated(old: str, new: str) -> None:
+    """Warn once per call site that `old` is now spelled `new`."""
+    import warnings
+    warnings.warn(f"CodeGraph.{old} is deprecated; use {new}", DeprecationWarning,
+                  stacklevel=3)
 
 # ── Public API Types ────────────────────────────────────────────────────────
 
@@ -105,6 +134,15 @@ class UpdateReport:
     fully_applied: bool
     epoch_before: int
     epoch_after: int
+    #: The file was gone from disk, so its entities were dropped instead.
+    removed: bool = False
+    entities_removed: int = 0
+    #: §1.9 (DR-30 notice): this update's blob outcome. Watcher batches
+    #: fold per-file reports by summation.
+    blobs_stored: int = 0
+    blobs_skipped_oversize: int = 0
+    blobs_skipped_excluded: int = 0
+    blobs_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -242,7 +280,7 @@ class CodeGraph:
         for cls in graph.query("classes where inherits_from contains 'BaseModel'"):
             print(cls.name)
         snapshot = graph.as_of("2025-06-15T10:00:00Z")
-        for caller in graph.callers_of("src/models.py::User.save"):
+        for caller in graph.callers("src/models.py::User.save"):
             print(caller["name"])
     """
 
@@ -311,28 +349,52 @@ class CodeGraph:
     @_bound_to_loaded_project
     def explore(
         self,
+        query: str = "",
+        symbols: list[str] | None = None,
+        direction: Literal["downstream", "upstream", "both"] = "both",
+        max_files: int = 8,
+        *,
+        start_id: str | None = None,
+        max_depth: int | None = None,
+        edge_kinds: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Source and call paths for the named symbols (MCP ``coderadar_explore``).
+
+        `query` is symbol names or a question; `symbols` names them
+        explicitly. Returns ``{"names", "files", "relationships",
+        "stale_files"}`` — see :func:`coderadar.ops.explore`.
+
+        The old call-graph walk (``explore(start_id, direction, max_depth,
+        edge_kinds)`` returning ``{entity_id, edge_kind, direction, depth}``
+        rows) still runs when called with ``start_id=``, ``max_depth=`` or
+        ``edge_kinds=``, or with direction ``in`` / ``out``, and warns: use
+        :meth:`traverse` with ``edge_kinds=["calls"]``.
+        """
+        if (start_id is not None or max_depth is not None or edge_kinds is not None
+                or direction in ("in", "out")):
+            _deprecated("explore(start_id, ...)", "CodeGraph.traverse")
+            return self._walk(start_id or query, direction,
+                              3 if max_depth is None else max_depth, edge_kinds)
+        from . import ops
+        return ops.explore(query, symbols, direction, max_files)
+
+    def _walk(
+        self,
         start_id: str,
-        direction: Literal["in", "out", "both"] = "both",
+        direction: str = "both",
         max_depth: int = 3,
         edge_kinds: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Walk the call graph outward from start_id.
+        """The legacy call-graph walk behind ``explore(start_id=...)``.
 
         Breadth-first, so the depth reported for an entity is the length of
         the shortest path to it, and an entity reached both ways is reported
-        once — at whichever depth found it first.
-
-        Args:
-            start_id: EntityId to start from (e.g. "src/models.py::User").
-            direction: "in" (callers), "out" (callees), or "both".
-            max_depth: How many hops to take. 0 returns nothing.
-            edge_kinds: Filter by edge kind. The only kind this walk follows
-                        is "calls"; anything else selects nothing. None means
-                        no filter. For imports and containment use traverse().
-
-        Returns:
-            List of dicts with `entity_id`, `edge_kind`, `direction`, `depth`.
+        once — at whichever depth found it first. Direction is "in"
+        (callers), "out" (callees) or "both"; the only edge kind this walk
+        follows is "calls". Rows: `entity_id`, `edge_kind`, `direction`,
+        `depth`.
         """
+        direction = {"upstream": "in", "downstream": "out"}.get(direction, direction)
         if edge_kinds is not None and EDGE_KIND_CALLS not in edge_kinds:
             return []
 
@@ -394,42 +456,84 @@ class CodeGraph:
     @_bound_to_loaded_project
     def traverse(
         self,
-        start_id: str,
+        entity_id: str | None = None,
+        direction: str = "both",
+        edge_kinds: list[str] | None = None,
         max_depth: int = 3,
+        *,
+        start_id: str | None = None,
         edge_types: list[str] | None = None,
-        direction: Literal["in", "out", "both"] = "both",
     ) -> list[dict[str, Any]]:
-        """Traverse the graph from start_id via Macrame."""
-        from .query import MacrameQuery
-        return MacrameQuery(self).traverse(start_id, max_depth, edge_types, direction)
+        """Breadth-first walk along any edge kinds (MCP ``coderadar_traverse``).
+
+        `direction` is ``downstream`` | ``upstream`` | ``both`` (``out`` /
+        ``in`` accepted); `edge_kinds` any of ``calls``, ``imports``,
+        ``inherits`` (alias ``extends``), ``overrides`` — None means all.
+        Returns the reached entity rows, each with ``depth`` and
+        ``edge_type``; an unknown `entity_id` raises ``ops.NotFound``.
+
+        The old argument order ``traverse(start_id, max_depth, edge_types,
+        direction)`` and the ``start_id=`` / ``edge_types=`` keywords still
+        work, with a DeprecationWarning.
+        """
+        if isinstance(direction, int) or start_id is not None or edge_types is not None:
+            _deprecated("traverse(start_id, max_depth, edge_types, direction)",
+                        "traverse(entity_id, direction, edge_kinds, max_depth)")
+            if isinstance(direction, int):  # old positional order
+                old_depth, old_types = direction, edge_kinds
+                old_direction = max_depth if isinstance(max_depth, str) else "both"
+                direction, edge_kinds, max_depth = old_direction, old_types, old_depth
+            entity_id = start_id or entity_id
+            edge_kinds = edge_types if edge_types is not None else edge_kinds
+        from . import ops
+        return ops.traverse(entity_id or "", direction, edge_kinds, max_depth)["results"]
 
     def as_of(self, timestamp: str) -> Snapshot:
-        """Return a point-in-time snapshot via Macrame's reconstruct(ts)."""
-        return Snapshot(self, timestamp)
+        """Return a point-in-time snapshot: entity reads fold the ledger at
+        recorded-time T (Macrame canonical UTC; anything else is
+        `ops.InvalidRequest`). Signature decision (plan §0.1a): `as_of` stays
+        — MCP/CLI/Python names are pinned by the parity test, and DR-17
+        rules out another rename round. Bytes-at-T rides source blobs (§3.0:
+        `Snapshot.read_bytes` / `read_source`)."""
+        from . import ops
+        try:
+            from coderadar._core import normalize_timestamp as _normalize_ts
+            normalized = _normalize_ts(timestamp or "")
+        except ImportError as e:
+            raise ops.EngineError(f"native extension unavailable: {e}") from e
+        except ValueError as e:
+            raise ops.InvalidRequest(str(e)) from None
+        return Snapshot(self, normalized)
 
     @_bound_to_loaded_project
     def find(self, entity_id: str) -> dict[str, Any] | None:
-        """Look up an entity by ID.
-
-        Accepts the canonical form (``pkg/mod.py::Class.method``), the
-        legacy spellings (absolute, backslashes, leading ``./``), and a
-        dotted qualified name (``pkg.mod.Class.method`` — the spelling a
-        traceback uses) when a module prefix matches.
-        """
+        """Deprecated: :meth:`node` returns the same record and raises
+        ``ops.NotFound`` (with candidates) instead of returning None."""
+        _deprecated("find", "CodeGraph.node")
         from .query import MacrameQuery
         return MacrameQuery(self).find(entity_id)
 
     @_bound_to_loaded_project
-    def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Find callers via reverse call index."""
+    def callers(self, entity_id: str) -> list[dict[str, Any]]:
+        """Direct callers, from the reverse call index (CLI ``callers``)."""
         from .query import MacrameQuery
         return MacrameQuery(self).callers_of(entity_id)
 
     @_bound_to_loaded_project
-    def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Find callees via forward call index."""
+    def callees(self, entity_id: str) -> list[dict[str, Any]]:
+        """Direct callees, from the forward call index (CLI ``callees``)."""
         from .query import MacrameQuery
         return MacrameQuery(self).callees_of(entity_id)
+
+    def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
+        """Deprecated spelling of :meth:`callers`."""
+        _deprecated("callers_of", "CodeGraph.callers")
+        return self.callers(entity_id)
+
+    def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
+        """Deprecated spelling of :meth:`callees`."""
+        _deprecated("callees_of", "CodeGraph.callees")
+        return self.callees(entity_id)
 
     @_bound_to_loaded_project
     def call_sites(self, entity_id: str) -> list[dict[str, Any]] | None:
@@ -444,97 +548,184 @@ class CodeGraph:
         from coderadar._core import call_sites
         return call_sites(entity_id)
 
+    # ── Shared operations (coderadar.ops; MCP and CLI expose the same) ──
+    # Names are the MCP tool names without their prefix. Errors raise
+    # coderadar.ops.OpError subclasses: NoIndex, InvalidRequest, NotFound
+    # (with .candidates), EngineError.
+
+    @_bound_to_loaded_project
+    def node(self, entity_id: str, include_neighbors: bool = False) -> dict[str, Any]:
+        """One entity's full record (MCP ``coderadar_node``); with
+        `include_neighbors`, plus ``callers`` and ``callees`` lists."""
+        from . import ops
+        return ops.node(entity_id, include_neighbors)
+
+    @_bound_to_loaded_project
+    def search(self, query: str, kind: str | None = None,
+               top_k: int = 10) -> list[dict[str, Any]]:
+        """Keyword search over names, signatures and docstrings (MCP
+        ``coderadar_search``). `kind`: function | class | type_alias |
+        constant | module | import."""
+        from . import ops
+        return ops.search(query, kind, top_k)
+
+    @_bound_to_loaded_project
+    def affected(self, entity_id: str, max_depth: int = 5) -> dict[str, Any]:
+        """Transitive callers, centrality-ranked per depth (MCP
+        ``coderadar_affected``): ``{entity, max_depth, depths, central_ids}``."""
+        from . import ops
+        return ops.affected(entity_id, max_depth)
+
+    @_bound_to_loaded_project
+    def module_children(self, module_id: str) -> dict[str, Any]:
+        """A module's classes, functions, imports and constants (MCP
+        ``coderadar_module_children``)."""
+        from . import ops
+        return ops.module_children(module_id)
+
+    @_bound_to_loaded_project
+    def resolve(self, name: str, limit: int = 5) -> dict[str, Any]:
+        """Framework-aware resolution of a route (``/users/:id``) or a
+        service / model / view name (MCP ``coderadar_resolve``)."""
+        from . import ops
+        return ops.resolve(name, limit)
+
+    @_bound_to_loaded_project
+    @_bound_to_loaded_project
+    def diagnose(self, unresolved: bool = True,
+                 low_confidence: bool = True) -> dict[str, Any]:
+        """Graph self-health: unresolved targets + ambiguous bases (MCP
+        ``coderadar_diagnose``, CLI ``diagnose``)."""
+        from . import ops
+        return ops.diagnose(unresolved, low_confidence)
+
+    @_bound_to_loaded_project
+    def dead_code(self, min_confidence: float = 0.6, include_test_reachable: bool = False,
+                  max_findings: int = 100) -> list[dict[str, Any]]:
+        """Dead-code findings, most safely deletable first (MCP
+        ``coderadar_dead_code``). Ranked evidence, not proof: check
+        :meth:`affected` before deleting."""
+        from . import ops
+        return ops.dead_code(min_confidence, include_test_reachable, max_findings)
+
+    @_bound_to_loaded_project
+    def get_smells(self, entity_id: str | None = None, rule_id: str | None = None,
+                   strictness: str = "normal") -> list[dict[str, Any]]:
+        """Code-smell findings (MCP ``coderadar_get_smells``); `strictness`
+        is strict | normal | loose."""
+        from . import ops
+        return ops.get_smells(entity_id, rule_id, strictness)
+
+    @_bound_to_loaded_project
+    def find_clones(self, min_lines: int = 10, min_similarity: float = 0.8,
+                    max_groups: int = 100) -> list[dict[str, Any]]:
+        """Clone groups, Types 1-3, largest first (MCP ``coderadar_find_clones``)."""
+        from . import ops
+        return ops.find_clones(min_lines, min_similarity, max_groups)
+
+    @_bound_to_loaded_project
+    def find_scaffolding(self, include_secrets: bool = False,
+                         max_findings: int = 100) -> list[dict[str, Any]]:
+        """Scaffolding debt: markers, placeholder bodies, temp files, opt-in
+        redacted secrets (MCP ``coderadar_find_scaffolding``). The last row
+        (``kind == "scan-stats"``) is a coverage footer."""
+        from . import ops
+        return ops.find_scaffolding(include_secrets, max_findings)
+
     @_bound_to_loaded_project
     def search_similar(
-        self, query_embedding: list[float], top_k: int = 10,
+        self, query: str | list[float], top_k: int = 10,
     ) -> list[dict[str, Any]]:
-        """Vector similarity search via cosine similarity against stored embeddings.
+        """Semantic search (MCP ``coderadar_search_similar``).
 
-        Requires embeddings to be pre-computed and stored via the embedding pipeline.
+        `query` is natural language — embedded locally with fastembed, at
+        most 20 results, embeddings computed on first use — or a ready
+        embedding vector.
         """
-        try:
-            from coderadar._core import search_similar as _ss
-            return _ss(query_embedding, top_k)
-        except ImportError:
-            return []
-
-    # ── Embedding Pipeline ────────────────────────────────────────────
+        from . import ops
+        return ops.search_similar(query, top_k)
 
     def compute_embeddings(self, model_name: str | None = None,
-                           batch_size: int = 32) -> dict[str, int]:
-        """Compute and store embeddings for all indexable entities.
-
-        Uses fastembed for local embedding generation. Embeddings are
-        written into the in-memory Function.embedding field, making them
-        immediately available for search_similar() queries.
-
-        Args:
-            model_name: HuggingFace model name for fastembed. None takes the
-                configured model, which is also what the search path loads —
-                a mismatch there silently breaks similarity.
-            batch_size: Batch size for embedding generation.
-
-        Returns:
-            Dict with metrics: {generated, cached, total, errors}.
+                           batch_size: int = 32,
+                           recompute: bool = False) -> dict[str, int]:
+        """Compute and store embeddings for all indexable entities (MCP
+        ``coderadar_compute_embeddings``). Returns ``{generated, cached,
+        total, errors}``; unchanged entities are skipped by keyed content
+        hash. A model switch needs ``recompute=True`` (clear + regenerate).
         """
-        from .embedding import (
-            EmbeddingDedup,
-            EmbedTarget,
-            compute_content_hash,
-            embedding_settings,
-        )
+        from . import ops
+        return ops.compute_embeddings(model_name, batch_size, recompute)
 
-        configured_model, dimension = embedding_settings()
-        dedup = EmbeddingDedup(model_name=model_name or configured_model,
-                               dimension=dimension, batch_size=batch_size)
-        targets: list[EmbedTarget] = []
+    # ── Edits (dry run by default) ─────────────────────────────────────
+    # Each returns {"plan": MutationPlan, "result": MutationResult | None,
+    # "note": str}; result is None for a dry run. dry_run=False applies the
+    # plan, writing the file and updating the graph together. Failures
+    # raise coderadar.ops.MutationFailed. The plan_* methods below are the
+    # two-step form (plan, then apply).
 
-        try:
-            from coderadar._core import search_entities
-            # Collect all embeddable entities across all kinds
-            for kind in ("function", "class", "module", "import", "constant", "type_alias"):
-                entities = search_entities("", 10_000, kind)
-                for entity in entities:
-                    entity_id = entity.get("id", "")
-                    if not entity_id:
-                        continue
-                    body = entity.get("signature", "") or entity.get("name", "") or ""
-                    content_hash = compute_content_hash(body.encode())
-                    targets.append(EmbedTarget(
-                        entity_id=entity_id,
-                        body=body,
-                        content_hash=content_hash,
-                        kind=kind,
-                    ))
-        except ImportError:
-            return {"generated": 0, "cached": 0, "total": 0, "errors": 1}
+    @_bound_to_loaded_project
+    def replace_body(self, entity_id: str, new_body: str,
+                     expected_hash: str | None = None,
+                     dry_run: bool = True) -> dict[str, Any]:
+        """Replace a function/method body (MCP ``coderadar_replace_body``)."""
+        from . import ops
+        return ops.replace_body(entity_id, new_body, expected_hash, dry_run, graph=self)
 
-        results = dedup.embed_batch(targets, db=None)
-        cached = 0
-        try:
-            from coderadar._core import set_embeddings_bulk
-        except ImportError:
-            return {"generated": 0, "cached": 0, "total": len(targets), "errors": 1}
+    @_bound_to_loaded_project
+    def update_signature(self, entity_id: str, new_signature: str,
+                         inject_defaults: bool = False,
+                         dry_run: bool = True) -> dict[str, Any]:
+        """Change a signature (MCP ``coderadar_update_signature``); call
+        sites come back as ``plan.unverified_sites``."""
+        from . import ops
+        return ops.update_signature(entity_id, new_signature, inject_defaults, dry_run,
+                                    graph=self)
 
-        # One call, one projection clone. Looping set_embedding cloned the
-        # whole ProjectedGraph per entity — O(N²) on a project of any size.
-        entries = []
-        for target, vec in zip(targets, results):
-            if vec is None:
-                cached += 1
-                continue
-            entries.append((target.id, list(vec), target.content_hash))
+    @_bound_to_loaded_project
+    def rename(self, entity_id: str, new_name: str, dry_run: bool = True) -> dict[str, Any]:
+        """Rename an entity and every reference (MCP ``coderadar_rename``)."""
+        from . import ops
+        return ops.rename(entity_id, new_name, dry_run, graph=self)
 
-        try:
-            report = set_embeddings_bulk(entries)
-        except RuntimeError:
-            return {"generated": 0, "cached": cached,
-                    "total": len(targets), "errors": len(entries)}
+    @_bound_to_loaded_project
+    def create_entity(self, file_path: str, language: str, kind: str, name: str,
+                      body: str, decorators: list[str] | None = None,
+                      anchor: str = "end", signature: str | None = None,
+                      dry_run: bool = True) -> dict[str, Any]:
+        """Insert a function, class or constant (MCP ``coderadar_create_entity``)."""
+        from . import ops
+        return ops.create_entity(file_path, language, kind, name, body, decorators,
+                                 anchor, signature, dry_run, graph=self)
 
-        generated = int(report.get("applied", 0))
-        errors = len(report.get("missing", []))
-        return {"generated": generated, "cached": cached,
-                "total": len(targets), "errors": errors}
+    # ── Index lifecycle ────────────────────────────────────────────────
+
+    def reindex(self, with_embeddings: bool = False, full: bool = False,
+                exclude: list[str] | None = None) -> dict[str, Any]:
+        """Bring the index for the cwd's project up to date (MCP
+        ``coderadar_reindex``): the cheap way by default, the whole tree
+        with `full` or one-shot `exclude` patterns. Returns ``{"stats",
+        "embeddings"?}``."""
+        from . import ops
+        result = ops.reindex(with_embeddings, full, exclude)
+        self._root = None  # the graph was rebuilt; rebind on next use
+        return result
+
+    def status(self) -> dict[str, Any]:
+        """What is indexed for the cwd's project and how fresh it is (MCP
+        ``coderadar_status``)."""
+        from . import ops
+        return ops.status()
+
+    def archive(self, cutoff: str | None = None) -> dict[str, Any]:
+        """One archive session at `cutoff` (§3.4, DR-25).
+
+        Moves blobs last-put before the cutoff and named by no hot log
+        entry to the `<store-stem>_archive.db` sibling, alongside archivable
+        ledger rows. Omitted `cutoff` reads `[retention] archive_after_days`
+        from `./.coderadar.toml`. Reads never break (cold fallback); backup
+        is the hot+cold pair — see `docs/store-and-retention.md`."""
+        from . import ops
+        return ops.archive(cutoff)
 
     # ── Update ─────────────────────────────────────────────────────────
 
@@ -546,10 +737,41 @@ class CodeGraph:
         Phase 1: Rust parses, diffs, and stages changes.
         Phase 2: Macrame persists entities and edges with timestamps.
         Phase 3: ProjectedGraph rebuilds reverse indexes.
+
+        A file that no longer exists on disk (and no `content` given) is
+        dropped from the graph instead: the report says ``removed`` and
+        how many entities went.
         """
+        dropped: dict | None = None
+        if content is None and not Path(file_path).exists():
+            dropped = self._remove_file_full(file_path)
+            # §1.3 (DR-10): the file is gone — its routes retire via the
+            # file-scoped diff (missing file extracts nothing).
+            try:
+                self._refresh_framework_routes(file_path, None)
+            except Exception:  # noqa: BLE001, S110 - removal stands regardless
+                pass
+        if dropped and dropped["entities_removed"]:
+            # a file never indexed falls through and fails below
+            return UpdateReport(
+                affected_files=[file_path], changed_symbols=[],
+                new_unresolved_references=[], newly_resolved_references=[],
+                elapsed_ms=0.0, parse_quality="Removed", parse_errors=0,
+                fully_applied=True,
+                epoch_before=dropped["epoch_before"],
+                epoch_after=dropped["epoch_after"],
+                removed=True, entities_removed=dropped["entities_removed"],
+            )
         try:
             from coderadar._core import update_file as _update_file_rust
             result = _update_file_rust(file_path, content, force)
+            # §1.3 (DR-10): re-extract this file's routes (scope = file;
+            # ghosts retire via the diff). Best-effort: extraction must
+            # never fail the update.
+            try:
+                self._refresh_framework_routes(file_path, content)
+            except Exception:  # noqa: BLE001, S110 - update stands regardless
+                pass
             if isinstance(result, dict):
                 return UpdateReport(
                     affected_files=result.get("affected_files") or [file_path],
@@ -569,6 +791,10 @@ class CodeGraph:
                     fully_applied=bool(result.get("fully_applied", True)),
                     epoch_before=int(result.get("epoch_before", 0)),
                     epoch_after=int(result.get("epoch_after", 0)),
+                    blobs_stored=int(result.get("blobs_stored", 0)),
+                    blobs_skipped_oversize=int(result.get("blobs_skipped_oversize", 0)),
+                    blobs_skipped_excluded=int(result.get("blobs_skipped_excluded", 0)),
+                    blobs_bytes=int(result.get("blobs_bytes", 0)),
                 )
         except ImportError:
             # Nothing parsed anything, so "Clean" and fully_applied=True were
@@ -597,12 +823,32 @@ class CodeGraph:
             fully_applied=False, epoch_before=0, epoch_after=0,
         )
 
-    @_bound_to_loaded_project
-    def remove_file(self, file_path: str) -> int:
-        """Drop a deleted file's entities from the graph.
+    @staticmethod
+    def _refresh_framework_routes(file_path: str, content: str | None) -> None:
+        """Re-extract one file's framework routes (§1.3, DR-10)."""
+        import os
 
-        `update_file` cannot do this — it re-reads the file, and a deleted
-        file has no content to diff. Returns the number of entities removed.
+        from coderadar import framework as _framework
+        from coderadar.excludes import resolve_entity_path as _resolve
+        try:
+            from coderadar._core import indexed_root_py as _rust_root
+            root = _rust_root() or os.getcwd()
+        except Exception:  # noqa: BLE001 - fall back to the cwd
+            root = os.getcwd()
+        abs_path = _resolve(file_path)
+        try:
+            rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
+        except ValueError:
+            return
+        if rel.startswith(".."):
+            return
+        _framework.refresh_framework_file(root, rel, content)
+
+    def _remove_file_full(self, file_path: str) -> dict:
+        """Drop a deleted file; full report (epochs included).
+
+        `remove_file` keeps the historic int return; this is the seam
+        `update_file`'s delete-drop branch reports through.
         """
         try:
             from coderadar._core import remove_file as _remove_file_rust
@@ -612,7 +858,26 @@ class CodeGraph:
                 "nothing can be removed from the graph."
             ) from exc
         result = _remove_file_rust(file_path)
-        return int(result.get("entities_removed", 0))
+        return {
+            "entities_removed": int(result.get("entities_removed", 0)),
+            "epoch_before": int(result.get("epoch_before", 0)),
+            "epoch_after": int(result.get("epoch_after", 0)),
+        }
+
+    @_bound_to_loaded_project
+    def remove_file(self, file_path: str) -> int:
+        """Drop a deleted file's entities from the graph.
+
+        `update_file` does this too when it finds the file gone from disk.
+        Returns the number of entities removed.
+        """
+        removed = self._remove_file_full(file_path)["entities_removed"]
+        # §1.3 (DR-10): the file's routes retire with it.
+        try:
+            self._refresh_framework_routes(file_path, None)
+        except Exception:  # noqa: BLE001, S110 - removal stands regardless
+            pass
+        return removed
 
     def watch(self, paths: list[str] | None = None,
               debounce_ms: int | None = None,
@@ -640,7 +905,7 @@ class CodeGraph:
     # ── Mutation ───────────────────────────────────────────────────────
 
     @_bound_to_loaded_project
-    def plan_body_replacement(
+    def plan_replace_body(
         self,
         entity_id: str,
         new_body: str,
@@ -664,7 +929,7 @@ class CodeGraph:
         )
 
     @_bound_to_loaded_project
-    def plan_signature_update(
+    def plan_update_signature(
         self,
         entity_id: str,
         new_signature: str,
@@ -685,6 +950,16 @@ class CodeGraph:
             id="", tool="update_signature", edits=[],
             affected_files=[], diff_preview="", unverified_sites=[], warnings=[],
         )
+
+    def plan_body_replacement(self, *args: Any, **kwargs: Any) -> MutationPlan:
+        """Deprecated spelling of :meth:`plan_replace_body`."""
+        _deprecated("plan_body_replacement", "CodeGraph.plan_replace_body")
+        return self.plan_replace_body(*args, **kwargs)
+
+    def plan_signature_update(self, *args: Any, **kwargs: Any) -> MutationPlan:
+        """Deprecated spelling of :meth:`plan_update_signature`."""
+        _deprecated("plan_signature_update", "CodeGraph.plan_update_signature")
+        return self.plan_update_signature(*args, **kwargs)
 
     @_bound_to_loaded_project
     def plan_rename(
@@ -827,36 +1102,270 @@ class CodeGraph:
 class Snapshot:
     """A point-in-time view of the graph via Macrame's bitemporal ledger.
 
+    Honest by construction (§0.1a, DR-9): the timestamp is normalized to
+    Macrame canonical UTC at :meth:`CodeGraph.as_of` time; :meth:`find`
+    folds the ledger at recorded-time T (``None`` = "not in the graph at
+    T"); downstream :meth:`traverse` walks the at-T edges with at-T node
+    bodies; every method WITHOUT a temporal path (`query`, `callers`,
+    upstream `traverse`, `explore`) raises `ops.TemporalUnsupported`
+    instead of answering from the present. `predates_recorded_history`
+    reports a T before the first recorded write distinctly (empty answer,
+    not an error). Bytes-at-T rides source blobs (§3.0): `read_bytes`
+    serves exact bytes-at-T, `read_source` the display form.
+
     Usage:
-        snapshot = graph.as_of("2025-06-15T10:00:00Z")
-        for fn in snapshot.query("functions where name contains 'handle'"):
-            print(fn)
+        snapshot = graph.as_of("2025-06-15T10:00:00.000000Z")
+        entity = snapshot.find("src/models.py::User.save")  # None if absent at T
     """
 
     def __init__(self, graph: CodeGraph, timestamp: str):
         self._graph = graph
         self._timestamp = timestamp
+        self._predates: bool | None = None
 
     @property
     def timestamp(self) -> str:
         return self._timestamp
 
-    def query(self, query_str: str) -> Iterator[dict[str, Any]]:
-        """Execute a query against the reconstructed snapshot.
+    @property
+    def predates_recorded_history(self) -> bool:
+        """True when T sits before the first recorded write.
 
-        Same language and row shape as :meth:`CodeGraph.query` — see
-        ``docs/query-language.md``.
+        Computed lazily (one ledger fold, no entity extraction) and cached.
+        "True" with every `find` returning `None` is the honest pre-history
+        answer — not an error, not present-tense data.
         """
-        # Macrame reconstruct(ts) + ProjectedGraph from that point
-        return self._graph.query(query_str)
+        if self._predates is None:
+            from . import ops
+            try:
+                from coderadar._core import lookup_entities_at as _lookup_at
+                batch = _lookup_at([], self._timestamp)
+            except ValueError as e:  # normalized at construction; defensive
+                raise ops.InvalidRequest(str(e)) from None
+            except RuntimeError as e:
+                raise ops.EngineError(str(e)) from None
+            self._predates = bool(batch.get("predates_recorded_history", False))
+        return self._predates
+
+    def find(self, entity_id: str) -> dict[str, Any] | None:
+        """One entity as it was at T (live-`lookup_entity` dict shape).
+
+        `None` means "not in the graph at T" — never asserted, not yet
+        asserted, or already retired then. Updates the cached
+        :attr:`predates_recorded_history`.
+        """
+        from . import ops
+        try:
+            from coderadar._core import lookup_entity_at as _lookup_at
+            result = _lookup_at(entity_id, self._timestamp)
+        except ValueError as e:  # normalized at construction; defensive
+            raise ops.InvalidRequest(str(e)) from None
+        except RuntimeError as e:
+            raise ops.EngineError(str(e)) from None
+        self._predates = bool(result.get("predates_recorded_history", False))
+        return result.get("entity")
+
+    def query(self, query_str: str) -> Iterator[dict[str, Any]]:
+        """Refuses: query execution has no temporal path (raises)."""
+        from . import ops
+        raise ops.TemporalUnsupported(
+            "Snapshot.query has no temporal path: the query engine reads the "
+            "present-tense index. Use CodeGraph.query for present-tense search, "
+            "or Snapshot.find / Snapshot.traverse(direction='out') for as-of-T reads."
+        )
+
+    def callers(self, entity_id: str) -> list[dict[str, Any]]:
+        """Refuses: upstream walks have no temporal path (raises)."""
+        from . import ops
+        raise ops.TemporalUnsupported(
+            "Snapshot.callers has no temporal path: Macrame's temporal leg follows "
+            "outgoing edges only. Use CodeGraph.callers for present-tense callers, "
+            "or Snapshot.callees / Snapshot.traverse(direction='out') for as-of-T reads."
+        )
+
+    def callees(self, entity_id: str) -> list[dict[str, Any]]:
+        """Direct callees as of T: full entity dicts (live-`lookup` shape).
+
+        A depth-1 downstream walk at T, with reached ids re-read from the
+        at-T projection — never present-tense bodies. A start id unknown
+        at T walks nowhere and yields `[]`.
+        """
+        nodes = self.traverse(entity_id, direction="out",
+                              edge_kinds=["calls"], max_depth=1)
+        ids = [n["id"] for n in nodes
+               if isinstance(n, dict) and n.get("id") and n["id"] != entity_id
+               and n.get("depth", 1) == 1]
+        if not ids:
+            return []
+        from . import ops
+        try:
+            from coderadar._core import lookup_entities_at as _lookup_at
+            batch = _lookup_at(ids, self._timestamp)
+        except ValueError as e:
+            raise ops.InvalidRequest(str(e)) from None
+        except RuntimeError as e:
+            raise ops.EngineError(str(e)) from None
+        self._predates = bool(batch.get("predates_recorded_history", False))
+        found = batch.get("entities", {})
+        return [found[i] for i in ids if found.get(i)]
+
+    def traverse(self, entity_id: str, direction: str = "both",
+                 edge_kinds: list[str] | None = None,
+                 max_depth: int = 3) -> list[dict[str, Any]]:
+        """Downstream walk as of T (raw traversal node dicts: entity fields
+        read from the at-T projection, plus `depth` + `edge_type`).
+
+        `direction='out'`/`'downstream'` only — anything upstream raises
+        `ops.TemporalUnsupported` (Macrame's temporal leg follows outgoing
+        edges). Garbage directions raise `ops.InvalidRequest` via the engine.
+        """
+        from . import ops
+        if direction.strip().lower() in ("in", "upstream", "both"):
+            raise ops.TemporalUnsupported(
+                f"Snapshot.traverse(direction={direction!r}) has no temporal path: "
+                "Macrame's temporal leg follows outgoing edges only. Pass "
+                "direction='out', or use CodeGraph.traverse for present-tense walks."
+            )
+        try:
+            from coderadar._core import traverse as _traverse
+            return _traverse(entity_id, max_depth, edge_kinds or [],
+                             direction, self._timestamp)
+        except ValueError as e:
+            raise ops.InvalidRequest(str(e)) from None
+        except RuntimeError as e:
+            raise ops.EngineError(str(e)) from None
+
+    def read_bytes(self, entity_id: str, start: int | None = None,
+                   end: int | None = None) -> bytes | None:
+        """Exact source bytes for one entity as of T (§3.0 raw-byte path).
+
+        `None` = not in the graph at T (same answer as :meth:`find`, never
+        an error). Otherwise the file bytes recorded at T, sliced to the
+        entity's at-T byte span — CRLF, non-ASCII, everything preserved
+        bit-for-bit. Module ids (`{file}::module`) read the whole file
+        (file-bytes-at-T); entity spans are tree-sitter node extents, so a
+        trailing line break belongs to no entity. `start`/`end` narrow to
+        a sub-range of the returned bytes (outside = `InvalidRequest`).
+
+        Raises `ops.ContentUnavailable` (never a silent present-tense
+        answer) when the entity is in the graph at T but its bytes cannot
+        be served: no blob recorded (pre-blob generation, excluded,
+        oversize, disabled — the message says how to check), recorded
+        digest unresolvable (bytes gone), or a synthetic without a source
+        span (routes name their handler instead).
+        """
+        entity, raw, _ref = self._read_raw(entity_id)
+        if entity is None or raw is None:
+            return None
+        if start is None and end is None:
+            return raw
+        lo = 0 if start is None else start
+        hi = len(raw) if end is None else end
+        if not (0 <= lo <= hi <= len(raw)):
+            from . import ops
+            raise ops.InvalidRequest(
+                f"range [{lo}, {hi}] is outside {entity['id']}'s "
+                f"{len(raw)}-byte span at {self._timestamp}"
+            )
+        return raw[lo:hi]
+
+    def read_source(self, entity_id: str) -> str | None:
+        """Line-numbered source for one entity as of T (§3.0 display path).
+
+        `None` = not in the graph at T; `ContentUnavailable` propagates
+        when the bytes are missing. Decodes the raw at-T bytes as UTF-8
+        (`errors="replace"` — display decodes lossy, :meth:`read_bytes`
+        is exact), slices the entity's at-T line range, and prefixes
+        line numbers: the same presentation as `ops.read_source`, but
+        from recorded bytes, never the disk.
+        """
+        entity, raw, ref = self._read_raw(entity_id)
+        if entity is None or raw is None:
+            return None
+        if ref.get("full_file"):
+            ref_start, ref_end = 1, len(raw.decode("utf-8", errors="replace").splitlines())
+        else:
+            ref_start = int(ref.get("start_line", 1))
+            ref_end = int(ref.get("end_line", ref_start))
+        text = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        si = max(0, ref_start - 1)
+        ei = min(len(lines), ref_end)
+        return "".join(f"{i + 1}\t{lines[i]}\n" for i in range(si, ei))
+
+    def _read_raw(
+        self, entity_id: str
+    ) -> tuple[dict[str, Any] | None, bytes | None, dict[str, Any] | None]:
+        """`(entity-at-T, exact bytes, source ref)` shared by the readers.
+
+        `(None, None, None)` = not in the graph at T. Raises
+        `ContentUnavailable` for in-graph-but-byteless.
+        """
+        from . import ops
+        entity = self.find(entity_id)
+        if entity is None:
+            return None, None, None
+        try:
+            from coderadar._core import blob_get as _blob_get
+            from coderadar._core import entity_source_ref_at as _ref_at
+            ref = _ref_at(entity["id"], self._timestamp)
+        except ValueError as e:  # normalized at construction; defensive
+            raise ops.InvalidRequest(str(e)) from None
+        except RuntimeError as e:
+            raise ops.EngineError(str(e)) from None
+        if ref is None:  # vanished between the two folds; answer as absent
+            return None, None, None
+        digest = ref.get("digest")
+        if not digest:
+            raise ops.ContentUnavailable(
+                f"no source blob recorded for {ref.get('file_path')} "
+                f"at {self._timestamp} (predates blob storage, or the file "
+                f"was excluded, oversize, or blobs disabled — "
+                f"coderadar.blob_stats() shows this session's puts/skips)"
+            )
+        if not ref.get("has_span") and not ref.get("full_file"):
+            handler = ref.get("handler_id")
+            hint = f"; read its handler {handler} instead" if handler else ""
+            raise ops.ContentUnavailable(
+                f"{ref.get('id')} is a synthetic route with no source span{hint}"
+            )
+        try:
+            blob = _blob_get(digest)
+        except ValueError as e:  # recorded digest malformed: ledger corrupt
+            raise ops.ContentUnavailable(
+                f"recorded digest {digest!r} for {ref.get('file_path')} "
+                f"at {self._timestamp} is malformed: {e}"
+            ) from None
+        except RuntimeError as e:
+            raise ops.EngineError(str(e)) from None
+        if blob is None:
+            raise ops.ContentUnavailable(
+                f"source blob {digest} for {ref.get('file_path')} "
+                f"at {self._timestamp} is recorded but unresolvable "
+                f"(bytes gone — restore the hot+cold backup pair)"
+            )
+        raw = bytes(blob)
+        if ref.get("full_file"):
+            # Modules are the file: whole blob, no slicing (file-bytes-at-T).
+            return entity, raw, ref
+        lo, hi = int(ref["span_start"]), int(ref["span_end"])
+        if not (0 <= lo <= hi <= len(raw)):
+            raise ops.ContentUnavailable(
+                f"recorded span [{lo}, {hi}] for {ref.get('id')} exceeds "
+                f"blob bytes ({len(raw)} at digest {digest}): ledger and "
+                f"blob disagree"
+            )
+        return entity, raw[lo:hi], ref
 
     def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Find callers at this point in time."""
-        return self._graph.callers_of(entity_id)
+        """Deprecated spelling of :meth:`callers` (which refuses: raises)."""
+        _deprecated("Snapshot.callers_of", "Snapshot.callers")
+        return self.callers(entity_id)
 
     def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Find callees at this point in time."""
-        return self._graph.callees_of(entity_id)
+        """Deprecated spelling of :meth:`callees`."""
+        _deprecated("Snapshot.callees_of", "Snapshot.callees")
+        return self.callees(entity_id)
 
     def explore(
         self,
@@ -864,8 +1373,9 @@ class Snapshot:
         direction: Literal["in", "out", "both"] = "both",
         max_depth: int = 3,
     ) -> list[dict[str, Any]]:
-        """Traverse from start_id at this point in time."""
-        return self._graph.explore(start_id, direction, max_depth)
+        """Deprecated call-graph walk (which refuses: raises)."""
+        _deprecated("Snapshot.explore", "Snapshot.traverse")
+        return self.traverse(start_id, direction, None, max_depth)
 
 
 # ── Batch Context Manager ───────────────────────────────────────────────────
@@ -946,7 +1456,7 @@ def analyze(root: str, create_store: bool = False, exclude: list | None = None) 
         _analyze_rust(root, create_store, _merged_excludes)
     except ImportError:
         pass
-    # F14: readers (_read_source et al.) resolve canonical relative ids
+    # F14: readers (ops.read_source et al.) resolve canonical relative ids
     # against this, not the CWD.
     try:
         from coderadar.excludes import set_indexed_root as _set_root
@@ -957,6 +1467,25 @@ def analyze(root: str, create_store: bool = False, exclude: list | None = None) 
     # v0.5: Extract __all__ star exports for wildcard import resolution.
     # Must run after Rust analysis populates modules, before MCP server reads.
     _apply_star_exports(root)
+
+    # DR-31: record the honored config so the cheap path can detect a
+    # later `.coderadar.toml` change (BUGS_QUIRKS #3). Best-effort: never
+    # fail the index when the sidecar cannot be written.
+    with contextlib.suppress(OSError):
+        from coderadar.coldstart import _record_indexed_config as _record_cfg
+
+        _record_cfg(root)
+
+    # §1.3 (DR-10): framework routes persist as concepts + synthetic edges
+    # on every full analyze (not just `init`), so a fresh session from the
+    # store resolves routes. Best-effort like the star-export pass above:
+    # extraction must never fail the index (counts ride `graph_stats`).
+    try:
+        from coderadar import framework as _framework
+
+        _framework.run_framework_extraction(root)
+    except Exception:  # noqa: BLE001, S110 - extraction must never fail analyze
+        pass
 
     return CodeGraph()
 
@@ -1084,9 +1613,27 @@ def watch(root: str) -> Watcher:
     return graph.watch([root])
 
 
+def blob_stats() -> dict:
+    """Cumulative blob activity backing the loaded generation (§1.9).
+
+    Reset on `analyze`/`load_snapshot`, incremented by every write-through
+    put — the DR-30 notice (counts ARE the notice). Keys: `stored`,
+    `skipped_oversize`, `skipped_excluded`, `bytes`. Empty (all zeros)
+    means no blob activity yet, or the kill-switch `[database]
+    store_source_blobs=false` is on.
+    """
+    try:
+        from coderadar._core import blob_stats as _blob_stats_rust
+        return dict(_blob_stats_rust())
+    except ImportError:
+        return {"stored": 0, "skipped_oversize": 0,
+                "skipped_excluded": 0, "bytes": 0}
+
+
 __all__ = [
     "BatchContext",
     "CodeGraph",
+    "CodeRadarError",
     "MutationEdit",
     "MutationError",
     "MutationPlan",
@@ -1100,7 +1647,9 @@ __all__ = [
     "UpdateReport",
     "Watcher",
     "analyze",
+    "blob_stats",
     "load",
+    "ops",
     "watch",
 ]
 
@@ -1159,6 +1708,10 @@ class Watcher:
         fully_applied = True
         epoch_before = None
         epoch_after = None
+        blobs_stored = 0
+        blobs_skipped_oversize = 0
+        blobs_skipped_excluded = 0
+        blobs_bytes = 0
 
         for file_path, change_kind in batch:
             # The watcher stats the path, so "Delete" now actually arrives;
@@ -1166,6 +1719,7 @@ class Watcher:
             # the next full analyze.
             if change_kind == "Delete":
                 try:
+                    # `remove_file` also retires the file's routes (§1.3).
                     removed = self._graph.remove_file(file_path)
                     affected.append(file_path)
                     if echo:
@@ -1192,6 +1746,10 @@ class Watcher:
             new_unresolved.extend(report.new_unresolved_references)
             newly_resolved.extend(report.newly_resolved_references)
             parse_errors += report.parse_errors
+            blobs_stored += report.blobs_stored
+            blobs_skipped_oversize += report.blobs_skipped_oversize
+            blobs_skipped_excluded += report.blobs_skipped_excluded
+            blobs_bytes += report.blobs_bytes
             fully_applied = fully_applied and report.fully_applied
             if quality_rank.get(report.parse_quality, 0) > quality_rank[quality]:
                 quality = report.parse_quality
@@ -1213,6 +1771,10 @@ class Watcher:
             fully_applied=fully_applied,
             epoch_before=epoch_before if epoch_before is not None else 0,
             epoch_after=epoch_after if epoch_after is not None else 0,
+            blobs_stored=blobs_stored,
+            blobs_skipped_oversize=blobs_skipped_oversize,
+            blobs_skipped_excluded=blobs_skipped_excluded,
+            blobs_bytes=blobs_bytes,
         )
 
     def __enter__(self) -> Watcher:  # noqa: PYI034 - typing.Self needs 3.11+

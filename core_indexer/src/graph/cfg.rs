@@ -77,11 +77,6 @@ struct Scan {
 }
 
 impl Scan {
-    fn is_ws_gap(src: &[u8], from: usize, to: usize) -> bool {
-        src.get(from..to)
-            .is_some_and(|gap| gap.iter().all(u8::is_ascii_whitespace))
-    }
-
     fn new(node: tree_sitter::Node, src: &[u8]) -> Self {
         let mut s = Self {
             predicates: Vec::new(),
@@ -350,7 +345,7 @@ mod tests {
 
 #[cfg(test)]
 mod dbg {
-    use super::*;
+
     #[test]
     fn dbg_scan() {
         let src = "def f():\n    x = 1\n    return x\n".to_string();

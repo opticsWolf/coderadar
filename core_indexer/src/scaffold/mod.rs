@@ -308,7 +308,7 @@ mod tests {
 
     #[test]
     fn glob_shapes_match_expected_names() {
-        for pat in [
+        for _pat in [
             "temp_*", "tmp_*", "backup_*", "old_*", "phase_*", "*.bak", "*_old.*",
         ] {
             // sanity: the pattern table's own shapes must match themselves

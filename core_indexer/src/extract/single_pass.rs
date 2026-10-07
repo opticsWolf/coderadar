@@ -16,7 +16,7 @@ use crate::extract::walker::{
     classify_class_like, derive_function_kind, detect_async, detect_generator, emit_call_for_node,
     extract_base_classes, extract_class_name, extract_decorators, extract_function_name,
     extract_go_receiver_type, extract_parameters, make_entity_id, parse_import_from_statement,
-    parse_import_statement,
+    parse_import_statement, parse_rust_use,
 };
 use crate::types::*;
 
@@ -145,7 +145,7 @@ impl<'a> CursorExtractor<'a> {
                     None => continue,
                 };
                 let node = capture.node;
-                let node_id = node.id() as usize;
+                let node_id = node.id();
 
                 if !seen.insert(node_id) {
                     continue;
@@ -164,7 +164,7 @@ impl<'a> CursorExtractor<'a> {
 
     /// Pop frames whose end byte is before the given position.
     fn pop_frames(&mut self, byte_pos: usize) {
-        while self.frames.last().map_or(false, |f| byte_pos >= f.end_byte) {
+        while self.frames.last().is_some_and(|f| byte_pos >= f.end_byte) {
             let popped = self.frames.pop().unwrap();
             // Restore current_function_idx when leaving a function
             if popped.kind == EmittedKind::Function {
@@ -572,10 +572,8 @@ impl<'a> CursorExtractor<'a> {
             .any(|f| f.kind == EmittedKind::Class);
         let parent_class = if is_method {
             parent_class_from_frame.or_else(|| go_receiver_type.clone())
-        } else if let Some(ref recv) = go_receiver_type {
-            Some(recv.clone())
         } else {
-            None
+            go_receiver_type.clone()
         };
 
         let decorators = extract_decorators(node, self.source);
@@ -670,44 +668,56 @@ impl<'a> CursorExtractor<'a> {
             end: node.end_byte(),
         };
 
-        let kind = match node.kind() {
-            "import_statement" => parse_import_statement(node, self.source),
-            "import_from_statement" => parse_import_from_statement(node, self.source),
-            _ => ImportKind::ModuleImport {
+        // Rust `use` parses to potentially TWO readings (item vs module
+        // tail); every other form yields exactly one kind.
+        let kinds: Vec<ImportKind> = match node.kind() {
+            "import_statement" => vec![parse_import_statement(node, self.source)],
+            "import_from_statement" => vec![parse_import_from_statement(node, self.source)],
+            "use_declaration" => parse_rust_use(node, self.source),
+            _ => vec![ImportKind::ModuleImport {
                 module: text.clone(),
                 alias: None,
-            },
+            }],
         };
 
         // Collect imported names for fn_ref resolution
-        match &kind {
-            ImportKind::FromImport { names, .. } | ImportKind::RelativeImport { names, .. } => {
-                for (name, alias) in names {
-                    self.fn_names.insert(name.clone());
+        for kind in &kinds {
+            match kind {
+                ImportKind::FromImport { names, .. } | ImportKind::RelativeImport { names, .. } => {
+                    for (name, alias) in names {
+                        self.fn_names.insert(name.clone());
+                        if let Some(a) = alias {
+                            self.fn_names.insert(a.clone());
+                        }
+                    }
+                }
+                ImportKind::ModuleImport { alias, module, .. } => {
+                    self.fn_names.insert(module.clone());
                     if let Some(a) = alias {
                         self.fn_names.insert(a.clone());
                     }
                 }
+                _ => {}
             }
-            ImportKind::ModuleImport { alias, module, .. } => {
-                self.fn_names.insert(module.clone());
-                if let Some(a) = alias {
-                    self.fn_names.insert(a.clone());
-                }
-            }
-            _ => {}
         }
 
-        let entity_id = make_entity_id(self.file_path, &format!("import@{}", line));
-
-        self.units.push(ExtractedUnit::Import(ExtractedImport {
-            id: entity_id,
-            raw: text,
-            kind,
-            line,
-            is_type_only: false,
-            name_span,
-        }));
+        // `use a::b::c;` can legitimately yield two units for one line;
+        // the second takes a suffixed id so same-line imports stay unique.
+        for (unit_no, kind) in kinds.into_iter().enumerate() {
+            let entity_id = if unit_no == 0 {
+                make_entity_id(self.file_path, &format!("import@{}", line))
+            } else {
+                make_entity_id(self.file_path, &format!("import@{}#{}", line, unit_no))
+            };
+            self.units.push(ExtractedUnit::Import(ExtractedImport {
+                id: entity_id,
+                raw: text.clone(),
+                kind,
+                line,
+                is_type_only: false,
+                name_span,
+            }));
+        }
     }
 
     fn emit_impl(&mut self, node: Node) {
@@ -851,10 +861,69 @@ fn scan_subtree_for_fn_ref(
     func_idx: usize,
     candidates: &mut Vec<(usize, UnresolvedRef)>,
 ) {
+    let mut found = Vec::new();
+    value_refs(node, source, &mut found);
+    candidates.extend(found.into_iter().map(|r| (func_idx, r)));
+
+    // Recurse into children
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        scan_subtree_for_fn_ref(child, source, func_idx, candidates);
+    }
+}
+
+/// Calls, function-valued references and attribute reads of Python
+/// module-level code: statements, class bodies and decorators, which run at
+/// import. Function bodies are left to their own functions; their attribute
+/// reads are still collected (a `@property` is used by reading it anywhere).
+/// Returns (uses, sorted attribute names).
+pub(crate) fn module_scope_uses(root: Node, source: &str) -> (Vec<UnresolvedRef>, Vec<String>) {
+    fn walk(
+        node: Node,
+        source: &str,
+        in_fn: bool,
+        uses: &mut Vec<UnresolvedRef>,
+        attrs: &mut HashSet<String>,
+    ) {
+        if node.kind() == "attribute" {
+            if let Some(a) = node
+                .child_by_field_name("attribute")
+                .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+            {
+                attrs.insert(a.to_string());
+            }
+        }
+        let in_fn = in_fn || node.kind() == "function_definition";
+        if !in_fn {
+            uses.extend(call_ref(node, source));
+            value_refs(node, source, uses);
+            // `@register` (bare decorator): the decorator itself is applied.
+            if node.kind() == "decorator" {
+                uses.extend(node.named_child(0).and_then(|n| ref_of(n, source)));
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, source, in_fn, uses, attrs);
+        }
+    }
+    let mut uses = Vec::new();
+    let mut attrs = HashSet::new();
+    walk(root, source, false, &mut uses, &mut attrs);
+    uses.retain(|r| !r.name.is_empty());
+    let mut attrs: Vec<String> = attrs.into_iter().collect();
+    attrs.sort();
+    (uses, attrs)
+}
+
+/// Function-as-value sites directly at `node` (not recursive): call
+/// arguments, keyword arguments, dict/list/tuple/set elements, assignment
+/// right-hand sides and returned values.
+fn value_refs(node: Node, source: &str, out: &mut Vec<UnresolvedRef>) {
     let kind = node.kind();
     let mut take = |n: Option<Node>| {
         if let Some(r) = n.and_then(|n| ref_of(n, source)) {
-            candidates.push((func_idx, r));
+            out.push(r);
         }
     };
 
@@ -897,12 +966,6 @@ fn scan_subtree_for_fn_ref(
             }
         }
         _ => {}
-    }
-
-    // Recurse into children
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        scan_subtree_for_fn_ref(child, source, func_idx, candidates);
     }
 }
 

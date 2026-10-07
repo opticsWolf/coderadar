@@ -57,14 +57,14 @@ fn test_traverse_calls_downstream_depth() {
     assert!(
         reached
             .iter()
-            .any(|(id, _, _)| proj.functions.get(id).map_or(false, |f| f.name == "b")),
+            .any(|(id, _, _)| proj.functions.get(id).is_some_and(|f| f.name == "b")),
         "b reached at depth 1, got {:?}",
         reached
     );
     assert!(
         !reached
             .iter()
-            .any(|(id, _, _)| proj.functions.get(id).map_or(false, |f| f.name == "c")),
+            .any(|(id, _, _)| proj.functions.get(id).is_some_and(|f| f.name == "c")),
         "c should NOT be reached at max_depth=1"
     );
     // depth tags
@@ -120,7 +120,7 @@ fn test_traverse_diamond_one_entry_per_node() {
     let reached = CodeGraph::traverse_bfs(&proj, &a, 5, &["calls".to_string()], false, true);
     let d_count = reached
         .iter()
-        .filter(|(id, _, _)| proj.functions.get(id).map_or(false, |f| f.name == "d"))
+        .filter(|(id, _, _)| proj.functions.get(id).is_some_and(|f| f.name == "d"))
         .count();
     assert_eq!(
         d_count, 1,
@@ -177,7 +177,7 @@ fn test_traverse_imports_upstream_nonempty() {
         who.iter().any(|id| proj
             .modules
             .get(*id)
-            .map_or(false, |m| m.path.to_string_lossy().contains("b.py"))),
+            .is_some_and(|m| m.path.to_string_lossy().contains("b.py"))),
         "imports upstream from c should reach b, got {:?}",
         who
     );
@@ -218,9 +218,9 @@ fn test_traverse_overrides_upstream_from_base() {
         .iter()
         .find(|(_, f)| {
             f.name == "helper"
-                && f.parent_class.as_deref().map_or(false, |pc| {
-                    proj.classes.get(pc).map_or(false, |c| c.name == "Base")
-                })
+                && f.parent_class
+                    .as_deref()
+                    .is_some_and(|pc| proj.classes.get(pc).is_some_and(|c| c.name == "Base"))
         })
         .map(|(id, _)| id.clone())
         .unwrap();
@@ -251,5 +251,5 @@ fn test_traverse_inherits_alias_for_extends() {
     let reached = CodeGraph::traverse_bfs(&proj, &b_id, 3, &["extends".to_string()], false, true);
     assert!(reached
         .iter()
-        .any(|(id, _, _)| proj.classes.get(id).map_or(false, |c| c.name == "A")));
+        .any(|(id, _, _)| proj.classes.get(id).is_some_and(|c| c.name == "A")));
 }

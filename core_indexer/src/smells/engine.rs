@@ -165,6 +165,12 @@ impl SmellEngine {
     }
 }
 
+impl Default for SmellEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Canonical dedupe key: `<rule>|<normalized-file>|<symbol>`.
 ///
 /// Compares identities, not raw IDs: `.\a\b.py::f`, `./a/b.py::f` and any
@@ -300,6 +306,64 @@ fn target_class_of(call: &ResolvedCall, graph: &ProjectedGraph) -> Option<Entity
     }
 }
 
+/// Stage 4 helper: build a CFG for `f` and return (cyclomatic, unreachable
+/// blocks), or None when the body can't be located/parsed — the strangler's
+/// silent fallback to AST numbers.
+/// Stage 4/6.2 facts derived from one parsed function body.
+pub(crate) struct CfgFacts {
+    cyclomatic: usize,
+    unreachable_blocks: usize,
+    /// Count of statically-decided conditions; `None` = none found.
+    dead_branches: Option<usize>,
+}
+
+fn refine_with_cfg(
+    graph: &crate::types::ProjectedGraph,
+    f: &crate::types::Function,
+) -> Option<CfgFacts> {
+    let module = graph.modules.get(&f.parent_module)?;
+    // F14 follow-up: canonical module paths resolve via the indexed root.
+    let src = crate::graph::module_resolution::read_project_file(&module.path.to_string_lossy());
+    if src.is_empty() {
+        return None;
+    }
+    let ts_lang = crate::graph::CodeGraph::ts_language(&module.language)?;
+    let mut parser = tree_sitter::Parser::new();
+    parser.set_language(&ts_lang).ok()?;
+
+    // Parse once per run per file is handled by the caller's content_hash
+    // cache; here we parse the file and locate the body node by span.
+    let tree = parser.parse(&src, None)?;
+    let target = find_node_at_span(tree.root_node(), f.body_span)?;
+    let cfg = crate::graph::cfg::ControlFlowGraph::build(&f.id, target, src.as_bytes());
+    let dead_branches = crate::smells::const_eval::count_decided_conditions(target, &src);
+    Some(CfgFacts {
+        cyclomatic: cfg.cyclomatic(),
+        unreachable_blocks: cfg.unreachable_blocks().len(),
+        dead_branches,
+    })
+}
+
+/// Deepest node whose byte range equals `span` exactly.
+fn find_node_at_span<'a>(
+    node: tree_sitter::Node<'a>,
+    span: ByteSpan,
+) -> Option<tree_sitter::Node<'a>> {
+    if node.start_byte() == span.start && node.end_byte() == span.end {
+        return Some(node);
+    }
+    if node.end_byte() < span.end || node.start_byte() > span.start {
+        return None;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(hit) = find_node_at_span(child, span) {
+            return Some(hit);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use std::collections::HashMap;
@@ -318,6 +382,7 @@ pub(crate) mod tests {
             imports: HashMap::new(),
             constants: HashMap::new(),
             type_aliases: HashMap::new(),
+            routes: HashMap::new(),
             file_to_modules: HashMap::new(),
             module_by_dotted_name: HashMap::new(),
             module_path_index: HashMap::new(),
@@ -507,62 +572,4 @@ pub(crate) mod tests {
             finding_key(&mk("./src/b.py::f"))
         );
     }
-}
-
-/// Stage 4 helper: build a CFG for `f` and return (cyclomatic, unreachable
-/// blocks), or None when the body can't be located/parsed — the strangler's
-/// silent fallback to AST numbers.
-/// Stage 4/6.2 facts derived from one parsed function body.
-pub(crate) struct CfgFacts {
-    cyclomatic: usize,
-    unreachable_blocks: usize,
-    /// Count of statically-decided conditions; `None` = none found.
-    dead_branches: Option<usize>,
-}
-
-fn refine_with_cfg(
-    graph: &crate::types::ProjectedGraph,
-    f: &crate::types::Function,
-) -> Option<CfgFacts> {
-    let module = graph.modules.get(&f.parent_module)?;
-    // F14 follow-up: canonical module paths resolve via the indexed root.
-    let src = crate::graph::module_resolution::read_project_file(&module.path.to_string_lossy());
-    if src.is_empty() {
-        return None;
-    }
-    let ts_lang = crate::graph::CodeGraph::ts_language(&module.language)?;
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&ts_lang).ok()?;
-
-    // Parse once per run per file is handled by the caller's content_hash
-    // cache; here we parse the file and locate the body node by span.
-    let tree = parser.parse(&src, None)?;
-    let target = find_node_at_span(tree.root_node(), f.body_span)?;
-    let cfg = crate::graph::cfg::ControlFlowGraph::build(&f.id, target, src.as_bytes());
-    let dead_branches = crate::smells::const_eval::count_decided_conditions(target, &src);
-    Some(CfgFacts {
-        cyclomatic: cfg.cyclomatic(),
-        unreachable_blocks: cfg.unreachable_blocks().len(),
-        dead_branches,
-    })
-}
-
-/// Deepest node whose byte range equals `span` exactly.
-fn find_node_at_span<'a>(
-    node: tree_sitter::Node<'a>,
-    span: ByteSpan,
-) -> Option<tree_sitter::Node<'a>> {
-    if node.start_byte() == span.start && node.end_byte() == span.end {
-        return Some(node);
-    }
-    if node.end_byte() < span.end || node.start_byte() > span.start {
-        return None;
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if let Some(hit) = find_node_at_span(child, span) {
-            return Some(hit);
-        }
-    }
-    None
 }

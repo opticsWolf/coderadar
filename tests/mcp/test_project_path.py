@@ -37,14 +37,14 @@ def _serving(path: Path) -> None:
 
 
 class TestTheSchema:
-    #: `codegraph_set_project` names a project rather than asking about one,
+    #: `coderadar_set_project` names a project rather than asking about one,
     #: so it has no project_path argument of its own.
-    NO_PROJECT_PATH_TOOLS: ClassVar[set[str]] = {"codegraph_set_project"}
+    NO_PROJECT_PATH_TOOLS: ClassVar[set[str]] = {"coderadar_set_project"}
 
     def test_every_tool_offers_project_path(self):
         tools = server_mod.create_server(None)._tool_manager.list_tools()
-        # 22 tools since codegraph_find_scaffolding (Stage 3) joined the surface.
-        assert len(tools) == 22
+        # 26 tools since coderadar_callers/callees/diagnose joined.
+        assert len(tools) == 26
 
         without = [
             t.name for t in tools
@@ -55,7 +55,7 @@ class TestTheSchema:
 
     def test_project_path_is_never_required(self):
         # An agent that does not care which project must not have to say so.
-        # The exception is codegraph_set_project: there, the argument does
+        # The exception is coderadar_set_project: there, the argument does
         # not ask about a project — it names the one to switch to.
         tools = server_mod.create_server(None)._tool_manager.list_tools()
         required = [
@@ -111,7 +111,7 @@ class TestTheGuard:
         assert str(served.resolve()) in message
         assert str(other.resolve()) in message
         # Refusing without a way forward is just a dead end.
-        assert "codegraph_set_project" in message
+        assert "coderadar_set_project" in message
 
     def test_with_no_retry_handle_the_cwd_is_what_we_serve(self, tmp_path):
         # A directly constructed server has no root handle; the process cwd
@@ -139,7 +139,7 @@ class TestATool:
             t.name: t for t in
             server_mod.create_server(object())._tool_manager.list_tools()
         }
-        assert "codegraph_search" in tools
+        assert "coderadar_search" in tools
 
-        answer = tools["codegraph_search"].fn(query="anything", project_path=str(other))
+        answer = tools["coderadar_search"].fn(query="anything", project_path=str(other))
         assert "cannot answer" in answer

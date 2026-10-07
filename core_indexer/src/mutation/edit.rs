@@ -13,7 +13,7 @@ use super::{MutationEdit, MutationError};
 pub fn apply_edits_to_file(source: &str, edits: &[MutationEdit]) -> Result<String, MutationError> {
     let rope = Rope::from_str(source);
     let mut ordered: Vec<&MutationEdit> = edits.iter().collect();
-    ordered.sort_by(|a, b| b.span.start.cmp(&a.span.start)); // descending byte offsets
+    ordered.sort_by_key(|a| std::cmp::Reverse(a.span.start)); // descending byte offsets
 
     let mut result = rope.clone();
     for edit in ordered {

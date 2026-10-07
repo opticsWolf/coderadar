@@ -99,6 +99,201 @@ pub fn parse_import_statement(node: Node, source: &str) -> ImportKind {
     }
 }
 
+/// Flatten a Rust use-tree path (`scoped_identifier`, possibly nested over
+/// `super`/`crate`/`self` leaves) into its segments. `a::b::{c}` shapes are
+/// handled by the caller; this only reads plain `::` chains.
+fn rust_path_segments(node: Node, source: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    fn rec(n: Node, src: &str, acc: &mut Vec<String>) {
+        match n.kind() {
+            // shape: path `::` name, path nested left for a::b::c
+            "scoped_identifier" => {
+                let mut cur = n.walk();
+                for k in n.children(&mut cur) {
+                    if k.kind() == "::" {
+                        continue;
+                    }
+                    rec(k, src, acc);
+                }
+            }
+            "identifier" | "self" | "super" | "crate" => {
+                if let Ok(t) = n.utf8_text(src.as_bytes()) {
+                    acc.push(t.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    rec(node, source, &mut out);
+    out
+}
+
+/// Parse a Rust `use_declaration` into one or two `ImportKind`s.
+///
+/// `use a::b::c;` is ambiguous (c = item or submodule), so it emits BOTH
+/// readings: `FromImport(a::b <- c)` for `c()` item calls and
+/// `ModuleImport(a::b::c)` for `c::f()` module calls. Whichever matches
+/// the store wins; the other resolves to nothing, harmlessly. Groups
+/// (`use a::{b, c as d}`) fold into one `FromImport` with a name list;
+/// globs (`use a::*`) become `StarImport`; a lone `use a;` is a module
+/// binding (`ModuleImport`). `::` separators are normalized to `.` — the
+/// resolver interprets leading `super`/`self`/`crate` against the
+/// importer's file, everything else suffix-matches like any dotted name.
+pub fn parse_rust_use(node: Node, source: &str) -> Vec<ImportKind> {
+    let mut cur = node.walk();
+    let arg = node
+        .children(&mut cur)
+        .find(|c| c.kind() != "use" && c.kind() != ";");
+    let arg = match arg {
+        Some(a) => a,
+        None => return vec![],
+    };
+    // (module segments, [(name, alias)]) + whether the module itself binds.
+    let mut out = Vec::new();
+    let mut handle = |mod_segs: Vec<String>, names: Vec<(String, Option<String>)>| {
+        let module = mod_segs.join(".");
+        if !module.is_empty() {
+            out.push(ImportKind::FromImport { module, names });
+        }
+    };
+    match arg.kind() {
+        // `use a;` — a lone module binding.
+        "identifier" => {
+            if let Ok(t) = arg.utf8_text(source.as_bytes()) {
+                out.push(ImportKind::ModuleImport {
+                    module: t.to_string(),
+                    alias: None,
+                });
+            }
+        }
+        "scoped_identifier" => {
+            let segs = rust_path_segments(arg, source);
+            if segs.len() == 1 {
+                out.push(ImportKind::ModuleImport {
+                    module: segs[0].clone(),
+                    alias: None,
+                });
+            } else if let Some((name, head)) = segs.split_last() {
+                handle(head.to_vec(), vec![(name.clone(), None)]);
+                // Ambiguous tail: c may itself be a module (`c::f()`).
+                out.push(ImportKind::ModuleImport {
+                    module: segs.join("."),
+                    alias: None,
+                });
+            }
+        }
+        "use_as_clause" => {
+            let mut c = arg.walk();
+            let kids: Vec<Node> = arg.children(&mut c).collect();
+            let path_node = kids
+                .iter()
+                .find(|k| k.kind() == "scoped_identifier" || k.kind() == "identifier");
+            let alias = kids
+                .iter()
+                .rev()
+                .find(|k| k.kind() == "identifier")
+                .and_then(|k| k.utf8_text(source.as_bytes()).ok())
+                .map(|s| s.to_string());
+            if let Some(p) = path_node {
+                // The alias is a separate child, never part of the path.
+                let segs = if p.kind() == "scoped_identifier" {
+                    rust_path_segments(*p, source)
+                } else {
+                    vec![p.utf8_text(source.as_bytes()).unwrap_or("").to_string()]
+                };
+                if segs.len() == 1 && alias.is_some() {
+                    // `use foo as f`: module binding with an alias.
+                    out.push(ImportKind::ModuleImport {
+                        module: segs[0].clone(),
+                        alias,
+                    });
+                } else if let Some((name, head)) = segs.split_last() {
+                    handle(head.to_vec(), vec![(name.clone(), alias)]);
+                }
+            }
+        }
+        "scoped_use_list" => {
+            let mut c = arg.walk();
+            let kids: Vec<Node> = arg.children(&mut c).collect();
+            let mut head: Vec<String> = Vec::new();
+            let mut names: Vec<(String, Option<String>)> = Vec::new();
+            for k in &kids {
+                match k.kind() {
+                    "identifier" | "self" | "super" | "crate" => {
+                        if let Ok(t) = k.utf8_text(source.as_bytes()) {
+                            head.push(t.to_string());
+                        }
+                    }
+                    "scoped_identifier" => {
+                        head = rust_path_segments(*k, source);
+                    }
+                    "use_list" => {
+                        let mut lc = k.walk();
+                        for item in k.children(&mut lc) {
+                            match item.kind() {
+                                "identifier" => {
+                                    if let Ok(t) = item.utf8_text(source.as_bytes()) {
+                                        names.push((t.to_string(), None));
+                                    }
+                                }
+                                // `c as d`: first identifier is the name,
+                                // trailing one the alias.
+                                "use_as_clause" => {
+                                    let mut ic = item.walk();
+                                    let ids: Vec<String> = item
+                                        .children(&mut ic)
+                                        .filter(|x| x.kind() == "identifier")
+                                        .filter_map(|x| {
+                                            x.utf8_text(source.as_bytes())
+                                                .ok()
+                                                .map(|s| s.to_string())
+                                        })
+                                        .collect();
+                                    if let Some(nm) = ids.first() {
+                                        let al = ids
+                                            .last()
+                                            .cloned()
+                                            .filter(|a| ids.len() > 1 && a.as_str() != nm.as_str());
+                                        names.push((nm.clone(), al));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            handle(head, names);
+        }
+        "use_wildcard" => {
+            let mut c = arg.walk();
+            let mut segs: Vec<String> = Vec::new();
+            for k in arg.children(&mut c) {
+                match k.kind() {
+                    "identifier" | "self" | "super" | "crate" => {
+                        if let Ok(t) = k.utf8_text(source.as_bytes()) {
+                            segs.push(t.to_string());
+                        }
+                    }
+                    "scoped_identifier" => {
+                        segs = rust_path_segments(k, source);
+                        segs.pop(); // trailing `*` is separate; scoped part is the module
+                    }
+                    _ => {}
+                }
+            }
+            if !segs.is_empty() {
+                out.push(ImportKind::StarImport {
+                    module: segs.join("."),
+                });
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 /// Strip surrounding quotes from a `string` node's text (`'x'` → `x`).
 fn strip_import_quotes(s: &str) -> &str {
     let s = s.trim();
@@ -513,7 +708,7 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
                 name: dotted,
                 path: vec![],
                 line: id.start_position().row + 1,
-                col: id.start_position().column as usize,
+                col: id.start_position().column,
                 name_span: node_span(id),
             })
         })
@@ -684,6 +879,24 @@ pub fn emit_call_for_node(
                 });
             }
         }
+        // Rust `a::b::c()` (and `Type::assoc()`, `self::f()`, `crate::f()`):
+        // the callee is a `scoped_identifier`; record the full `::` chain
+        // so the resolver can walk it against `use` bindings and the
+        // module tree. Without this the call vanishes (no UnresolvedRef).
+        Some(n) if n.kind() == "scoped_identifier" => {
+            let segs = rust_path_segments(n, source);
+            if let Some((name, path)) = segs.split_last() {
+                if !name.is_empty() && !is_stoplisted(name) {
+                    func.calls.push(UnresolvedRef {
+                        name: name.clone(),
+                        path: path.to_vec(),
+                        line,
+                        col: col as usize,
+                        name_span: node_span(n),
+                    });
+                }
+            }
+        }
         Some(n)
             if n.kind() == "attribute"
                 || n.kind() == "field_expression"
@@ -699,9 +912,9 @@ pub fn emit_call_for_node(
                 "field"
             } else if n.kind() == "member_expression" {
                 "property"
-            } else if n.kind() == "call" {
-                "method"
-            } else if n.kind() == "chained_method_call" {
+            } else if n.kind() == "call" || n.kind() == "chained_method_call" {
+                // Same grammar shape (method + receiver) under two node
+                // kinds; one arm, not two identical ones.
                 "method"
             } else if n.kind() == "member_access_expression" {
                 "name"
@@ -714,9 +927,7 @@ pub fn emit_call_for_node(
                 "value"
             } else if n.kind() == "member_expression" {
                 "object"
-            } else if n.kind() == "call" {
-                "receiver"
-            } else if n.kind() == "chained_method_call" {
+            } else if n.kind() == "call" || n.kind() == "chained_method_call" {
                 "receiver"
             } else if n.kind() == "member_access_expression" {
                 "expression"
@@ -740,7 +951,7 @@ pub fn emit_call_for_node(
                 .to_string();
             if !is_stoplisted(&method) {
                 let call_receiver =
-                    n.kind() == "attribute" && object_node.map_or(false, |c| c.kind() == "call");
+                    n.kind() == "attribute" && object_node.is_some_and(|c| c.kind() == "call");
                 let path = if call_receiver {
                     receiver_segments(object_node, source)
                 } else if object.is_empty() {
@@ -1004,11 +1215,8 @@ fn parameter_name(node: Node, source: &str) -> String {
         // declarators hold it as a plain child rather than a field — taking
         // the node's text there yields "& name" instead of "name".
         let mut current = named;
-        loop {
-            match current.child_by_field_name("declarator") {
-                Some(inner) => current = inner,
-                None => break,
-            }
+        while let Some(inner) = current.child_by_field_name("declarator") {
+            current = inner;
         }
         if current.kind() == "identifier" {
             if let Ok(text) = current.utf8_text(source.as_bytes()) {
@@ -1178,5 +1386,96 @@ mod decorator_capture_tests {
         );
         // Bare fn: nothing, and importantly no panic.
         assert!(decorators_of("fn f() {}\n").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod rust_use_tests {
+    use super::*;
+
+    fn parse_uses(src: &str) -> Vec<ImportKind> {
+        let lang = crate::graph::CodeGraph::ts_language(&crate::types::Language::Rust)
+            .expect("rust grammar");
+        let mut parser = tree_sitter::Parser::new();
+        parser.set_language(&lang).unwrap();
+        let tree = parser.parse(src, None).unwrap();
+        let root = tree.root_node();
+        let mut stack = vec![root];
+        let mut out = Vec::new();
+        while let Some(n) = stack.pop() {
+            if n.kind() == "use_declaration" {
+                out.extend(parse_rust_use(n, src));
+                continue;
+            }
+            let mut cursor = n.walk();
+            for child in n.children(&mut cursor) {
+                stack.push(child);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn rust_use_shapes_parse() {
+        // Item import with alias: module + (name, alias).
+        assert_eq!(
+            parse_uses("use alpha::helper as assist;\n"),
+            vec![ImportKind::FromImport {
+                module: "alpha".to_string(),
+                names: vec![("helper".to_string(), Some("assist".to_string()))],
+            }]
+        );
+        // Rooted paths keep their roots for the resolver.
+        assert_eq!(
+            parse_uses("use super::alpha::helper;\n"),
+            vec![
+                ImportKind::FromImport {
+                    module: "super.alpha".to_string(),
+                    names: vec![("helper".to_string(), None)],
+                },
+                ImportKind::ModuleImport {
+                    module: "super.alpha.helper".to_string(),
+                    alias: None,
+                },
+            ]
+        );
+        assert_eq!(
+            parse_uses("use crate::alpha::helper;\n"),
+            vec![
+                ImportKind::FromImport {
+                    module: "crate.alpha".to_string(),
+                    names: vec![("helper".to_string(), None)],
+                },
+                ImportKind::ModuleImport {
+                    module: "crate.alpha.helper".to_string(),
+                    alias: None,
+                },
+            ]
+        );
+        // Groups fold into one name list.
+        assert_eq!(
+            parse_uses("use a::{b, c as d};\n"),
+            vec![ImportKind::FromImport {
+                module: "a".to_string(),
+                names: vec![
+                    ("b".to_string(), None),
+                    ("c".to_string(), Some("d".to_string())),
+                ],
+            }]
+        );
+        // Globs and bare module bindings.
+        assert_eq!(
+            parse_uses("use a::*;\n"),
+            vec![ImportKind::StarImport {
+                module: "a".to_string(),
+            }]
+        );
+        assert_eq!(
+            parse_uses("use a;\n"),
+            vec![ImportKind::ModuleImport {
+                module: "a".to_string(),
+                alias: None,
+            }]
+        );
     }
 }

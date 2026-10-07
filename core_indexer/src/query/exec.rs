@@ -181,10 +181,7 @@ fn collect_operand_fields(op: &Operand, keys: &mut std::collections::HashSet<Str
             keys.insert(parts.join("."));
             false
         }
-        Operand::ListValue(items) => items
-            .iter()
-            .map(|i| collect_operand_fields(i, keys))
-            .fold(false, |a, b| a || b),
+        Operand::ListValue(items) => items.iter().any(|i| collect_operand_fields(i, keys)),
         Operand::DerivedCall { .. } => true,
         Operand::StringValue(_) | Operand::NumberValue(_) | Operand::BoolValue(_) => false,
     }
@@ -498,7 +495,7 @@ fn scan_functions(
     let cap = pushdown_limit(query);
     let mut rows = Vec::new();
 
-    for (_id, fn_val) in snapshot.functions.iter() {
+    for fn_val in snapshot.functions.values() {
         if methods_only && fn_val.parent_class.is_none() {
             continue;
         }
@@ -680,7 +677,7 @@ fn scan_classes(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow>
     let cap = pushdown_limit(query);
     let mut rows = Vec::new();
 
-    for (_id, cls) in snapshot.classes.iter() {
+    for cls in snapshot.classes.values() {
         let ident = identity_pairs(
             &cls.id,
             &file_path_of(snapshot, &cls.parent_module),
@@ -803,7 +800,7 @@ fn scan_modules(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow>
     let cap = pushdown_limit(query);
     let mut rows = Vec::new();
 
-    for (_id, module) in snapshot.modules.iter() {
+    for module in snapshot.modules.values() {
         let ident = identity_pairs(
             &module.id,
             &module.path.to_string_lossy().replace('\\', "/"),
@@ -831,7 +828,7 @@ fn scan_constants(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRo
     let cap = pushdown_limit(query);
     let mut rows = Vec::new();
 
-    for (_id, constant) in snapshot.constants.iter() {
+    for constant in snapshot.constants.values() {
         let ident = identity_pairs(
             &constant.id,
             &file_from_entity_id(&constant.id),
@@ -929,7 +926,7 @@ fn scan_imports(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow>
     let cap = pushdown_limit(query);
     let mut rows = Vec::new();
 
-    for (_id, import) in snapshot.imports.iter() {
+    for import in snapshot.imports.values() {
         let ident = identity_pairs(&import.id, &file_from_entity_id(&import.id), "import", None);
         if let Some(pred) = &query.where_clause {
             let probe = with_identity(import_fields(import, &probe_want), &ident);
@@ -1171,7 +1168,7 @@ fn scan_fields(snapshot: &ProjectedGraph, query: &ParsedQuery) -> Vec<QueryRow> 
     let mut rows = Vec::new();
 
     // Fields live on classes — iterate classes and emit each field as a row
-    for (_class_id, cls) in snapshot.classes.iter() {
+    for cls in snapshot.classes.values() {
         for field in cls.fields.iter() {
             let ident = identity_pairs(
                 &format!("{}::{}", cls.id, field.name),
@@ -1262,13 +1259,10 @@ fn evaluate_derived_call(
     match name {
         "inherits_from" => {
             // Check if parent_class field contains the given class name
-            let target = args
-                .first()
-                .map(|a| operand_to_string(a))
-                .unwrap_or_default();
+            let target = args.first().map(operand_to_string).unwrap_or_default();
             let parent = fields
                 .get("parent_class")
-                .map(|v| value_to_string(v))
+                .map(value_to_string)
                 .unwrap_or_default();
             QueryValue::Bool(parent.contains(&target))
         }
@@ -1291,10 +1285,7 @@ fn evaluate_derived_call(
             }
         }
         "has_method" => {
-            let target = args
-                .first()
-                .map(|a| operand_to_string(a))
-                .unwrap_or_default();
+            let target = args.first().map(operand_to_string).unwrap_or_default();
             let methods = fields.get("method_names").or_else(|| fields.get("methods"));
             match methods {
                 Some(QueryValue::List(items)) => {
@@ -1307,7 +1298,7 @@ fn evaluate_derived_call(
             // Present when parent_class is set AND the method exists on both
             let parent = fields
                 .get("parent_class")
-                .map(|v| value_to_string(v))
+                .map(value_to_string)
                 .unwrap_or_default();
             QueryValue::Bool(!parent.is_empty())
         }

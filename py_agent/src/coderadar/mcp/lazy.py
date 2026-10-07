@@ -73,7 +73,7 @@ class LazyRootRetry:
     # ── action ───────────────────────────────────────────────────────────
 
     def mark_user_chosen(self, resolved: ResolvedRoot) -> None:
-        """Record an explicit ``codegraph_set_project`` choice.
+        """Record an explicit ``coderadar_set_project`` choice.
 
         An explicit tool call is the strongest signal there is — stronger
         than a marker found at startup, and much stronger than the client's

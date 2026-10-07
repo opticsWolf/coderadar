@@ -40,7 +40,7 @@ impl WriteGuard {
         );
     }
 
-    fn key_of(path: &PathBuf) -> PathBuf {
+    fn key_of(path: &std::path::Path) -> PathBuf {
         PathBuf::from(crate::graph::module_resolution::normalize_path_str(
             &path.to_string_lossy(),
         ))
@@ -48,7 +48,7 @@ impl WriteGuard {
 
     /// Check if a path has an active (non-expired) suppression entry.
     /// Cheap — does not hash file content.
-    pub fn is_suppressed(&self, path: &PathBuf) -> bool {
+    pub fn is_suppressed(&self, path: &std::path::Path) -> bool {
         if let Some(entry) = self.suppressed.get(&Self::key_of(path)) {
             let (_, expiry) = entry.value();
             return Instant::now() <= *expiry;
@@ -58,7 +58,7 @@ impl WriteGuard {
 
     /// Check if a file event should be dropped (the engine just wrote it).
     /// Returns true if the event should be suppressed.
-    pub fn should_drop(&self, path: &PathBuf, current_hash: &str) -> bool {
+    pub fn should_drop(&self, path: &std::path::Path, current_hash: &str) -> bool {
         let key = Self::key_of(path);
         if let Some(entry) = self.suppressed.get(&key) {
             let (expected_hash, expiry) = entry.value();
@@ -90,6 +90,11 @@ impl WriteGuard {
     /// Number of active suppressed paths.
     pub fn len(&self) -> usize {
         self.suppressed.len()
+    }
+
+    /// No paths currently suppressed.
+    pub fn is_empty(&self) -> bool {
+        self.suppressed.is_empty()
     }
 }
 

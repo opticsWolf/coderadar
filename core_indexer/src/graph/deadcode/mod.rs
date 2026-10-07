@@ -82,7 +82,7 @@ pub struct DeadFinding {
 }
 
 /// Options for a detection run.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct DeadCodeOptions {
     /// Report functions that are live only from test code.
     pub include_test_only: bool,
@@ -90,15 +90,6 @@ pub struct DeadCodeOptions {
     /// to — never past — this directory, and `pyproject.toml` entry points
     /// are read from it. `None` keeps the immediate-parent rule only.
     pub root: Option<std::path::PathBuf>,
-}
-
-impl Default for DeadCodeOptions {
-    fn default() -> Self {
-        Self {
-            include_test_only: false,
-            root: None,
-        }
-    }
 }
 
 /// Ceiling for a finding whose liveness could go either way: an unresolvable
@@ -361,7 +352,7 @@ fn distance_to_dead_chain_head(graph: &ProjectedGraph, id: &str) -> Option<usize
 pub(crate) mod tests {
     use super::*;
     use crate::types::{ByteSpan, EmbeddingVec, Function, FunctionKind, SourceType};
-    use std::collections::{BTreeSet, HashMap};
+
     use std::path::PathBuf;
 
     pub(crate) fn func(id: &str, name: &str, module: &str) -> Function {
@@ -640,7 +631,7 @@ pub(crate) mod tests {
         m.classes = vec!["pkg/__init__.py::CodeGraph".into()];
         g.modules
             .insert("pkg/__init__.py::module".into(), std::sync::Arc::new(m));
-        let mut watch = func("pkg/__init__.py::watch", "watch", "pkg/__init__.py::module");
+        let watch = func("pkg/__init__.py::watch", "watch", "pkg/__init__.py::module");
         g.functions
             .insert(watch.id.clone(), std::sync::Arc::new(watch));
         let cls = crate::types::Class {
@@ -696,40 +687,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn module_level_calls_root_import_time_initializers() {
+    fn module_level_uses_root_import_time_initializers() {
         use super::entry_points::detect_entry_points;
         let mut g = fixture();
-        let dir = tempfile::tempdir().unwrap();
-        let py = dir.path().join("ver.py");
-        std::fs::write(
-            &py,
-            "\"\"\"Dead: `_orphan` (no callers) is prose, not a call.\"\"\"
-
-
-"
-            .to_string()
-                + "__version__ = _resolve_version()
-
-
-" + "def _resolve_version():
-    return \"1.0\"
-
-
-" + "def _orphan():
-    return 1
-",
-        )
-        .unwrap();
+        // `__version__ = _resolve_version()` at module scope: the extractor
+        // records the use and resolution binds it.
         let mut m = mk_module("ver.py::module");
-        m.path = py.canonicalize().unwrap();
         m.functions = vec!["ver.py::_resolve_version".into(), "ver.py::_orphan".into()];
+        m.resolved_uses = vec!["ver.py::_resolve_version".into()];
         g.modules
             .insert("ver.py::module".into(), std::sync::Arc::new(m));
         for name in ["_resolve_version", "_orphan"] {
             let f = func(&format!("ver.py::{name}"), name, "ver.py::module");
             g.functions.insert(f.id.clone(), std::sync::Arc::new(f));
         }
-        // `disk_path_for` takes absolute paths as-is, so no global root here.
         let eps = detect_entry_points(&g, None);
         assert!(eps.production.contains("ver.py::_resolve_version"));
         assert!(!eps.production.contains("ver.py::_orphan"));
@@ -816,6 +787,9 @@ pub(crate) mod tests {
             package: None,
             exports: vec![],
             star_exports: None,
+            uses: Vec::new(),
+            resolved_uses: Vec::new(),
+            attr_reads: Vec::new(),
             classes: vec![],
             functions: vec![],
             imports: vec![],

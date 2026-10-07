@@ -42,7 +42,7 @@ pub fn detect_indent_style(source: &str) -> IndentStyle {
             .chars()
             .take_while(|c| c.is_whitespace())
             .collect::<Vec<_>>();
-        if leading.iter().any(|c| *c == '\t') {
+        if leading.contains(&'\t') {
             tab_count += 1;
         } else if !leading.is_empty() && leading.iter().all(|c| *c == ' ') {
             *space_counts.entry(leading.len()).or_default() += 1;

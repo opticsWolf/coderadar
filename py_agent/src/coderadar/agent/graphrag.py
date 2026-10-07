@@ -1,5 +1,10 @@
 """CodeRadar v3.6 — GraphRAG Query Pipeline (§13.3)
 
+P4 wire-or-cut verdict (v0.12): KEPT as the P2 agent-context seam.
+Tested but unwired today; P2 skills (coderadar-mcp/coderadar-cli)
+assemble agent context through GraphRAGPipeline — cutting it now would
+be churn, not hygiene.
+
 Natural-language intent classification → direct Macrame operations →
 context building with token budget.
 

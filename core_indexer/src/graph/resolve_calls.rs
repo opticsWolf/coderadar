@@ -1,9 +1,73 @@
-use super::module_resolution::{find_module_by_dotted_name, find_symbol_in_module};
+use super::module_resolution::{
+    find_module_by_dotted_name, find_rust_module, find_symbol_in_module,
+};
 use super::CodeGraph;
 use super::ImportGraph;
 use crate::types::*;
 
 use super::receiver_types::MethodsByClass;
+
+/// What one function resolution produces: bound calls, plain edge pairs,
+/// and edge pairs with receiver evidence. Factored out for
+/// `type_complexity` (clippy 0).
+type ResolveOutcome = (
+    Vec<crate::types::ResolvedCall>,
+    Vec<(String, String)>,
+    Vec<((String, String), crate::types::ReceiverEvidence)>,
+);
+
+/// Resolve one Rust `::` call path to its target (DR-13 §0.3).
+///
+/// Order matters: (1) `self::f` is the current module's own names;
+/// (2) a first segment bound by `use x[ as y];` to a MODULE (empty
+/// original slot) answers `x::f` directly — this also honors aliases and
+/// shadows a same-named crate module the way the `use` does; (3) the
+/// root-aware module lookup (`crate`/`super`/`self` against the importing
+/// file, else crate-relative suffix match) covers `mod`-declared siblings
+/// with no `use` at all. Anything unanswered falls through to the generic
+/// dotted arm (which misses) and stays unresolved — extern crates and
+/// genuinely unknown paths correctly never become edges.
+#[allow(clippy::too_many_arguments)]
+fn resolve_rust_path(
+    projection: &ProjectedGraph,
+    parent_module: &str,
+    sibling_funcs: &std::collections::HashMap<String, String>,
+    import_targets: &std::collections::HashMap<String, (String, String)>,
+    importer_file: Option<&std::path::Path>,
+    path: &[String],
+    name: &str,
+) -> Option<crate::types::ResolvedCall> {
+    let finish = |id: String| {
+        Some(if projection.classes.contains_key(&id) {
+            crate::types::ResolvedCall::Constructor(id)
+        } else {
+            crate::types::ResolvedCall::Function(id)
+        })
+    };
+    // (1) `self::f` — the caller's own module. (`Self::assoc` arrives
+    // capitalized and is handled by the class-ref arm, not here.)
+    if path == ["self"] {
+        return sibling_funcs.get(name).cloned().and_then(finish);
+    }
+    // (2) `use x;` / `use a as b;` module bindings (empty original).
+    // Item bindings (`use m::item`) bind the ITEM, never a path head —
+    // a non-empty original slot means "not a module", skip it.
+    if path.len() == 1 {
+        if let Some((mod_id, original)) = import_targets.get(&path[0]) {
+            if original.is_empty() {
+                if let Some(id) = find_symbol_in_module(projection, mod_id, name) {
+                    return finish(id);
+                }
+            }
+        }
+    }
+    // (3) Root-aware module lookup + symbol search.
+    let file = importer_file?;
+    let dotted = path.join(".");
+    let mid = find_rust_module(projection, &dotted, file, parent_module)?;
+    let id = find_symbol_in_module(projection, &mid, name)?;
+    finish(id)
+}
 
 impl CodeGraph {
     /// Run the resolution cascade on all functions, or scoped to a single file.
@@ -30,18 +94,31 @@ impl CodeGraph {
             projection,
             methods_by_class: &methods_by_class,
         };
-        let mut updates: Vec<(EntityId, Vec<EntityId>)> = Vec::new();
-        for (id, f) in projection.functions.iter() {
-            if let Some(fp) = scope_file {
-                let path = f
-                    .parent_module
-                    .rsplit_once("::")
-                    .map_or(f.parent_module.as_str(), |(p, _)| p);
-                if path != fp {
-                    continue;
+        let in_scope = |module_id: &str| {
+            scope_file
+                .is_none_or(|fp| module_id.rsplit_once("::").map_or(module_id, |(p, _)| p) == fp)
+        };
+        // Every class below `class_id`, transitively.
+        let descendants = |class_id: &str| {
+            let mut seen = std::collections::BTreeSet::new();
+            let mut stack = vec![class_id.to_string()];
+            while let Some(c) = stack.pop() {
+                for sub in projection.subclasses.get(&c).into_iter().flatten() {
+                    if seen.insert(sub.clone()) {
+                        stack.push(sub.clone());
+                    }
                 }
             }
-            if f.refs.is_empty() && f.resolved_refs.is_empty() {
+            seen
+        };
+        let mut updates: Vec<(EntityId, Vec<EntityId>)> = Vec::new();
+        for (id, f) in projection.functions.iter() {
+            if !in_scope(&f.parent_module) {
+                continue;
+            }
+            // Nothing raw to resolve (a cold start restores only the
+            // resolved side): keep what is there.
+            if f.refs.is_empty() && f.calls.is_empty() {
                 continue;
             }
             let mut targets: Vec<EntityId> = f
@@ -49,10 +126,45 @@ impl CodeGraph {
                 .iter()
                 .filter_map(|r| types.resolve_ref(id, &r.path, &r.name))
                 .collect();
+            // Template methods: a mixin's `self.m()` that its own MRO cannot
+            // answer dispatches to the subclasses that define `m`.
+            if let Some(class_id) = &f.parent_class {
+                for c in &f.calls {
+                    let on_self = matches!(c.path.as_slice(), [p] if p == "self" || p == "cls");
+                    if !on_self || types.method_of(class_id, &c.name).is_some() {
+                        continue;
+                    }
+                    for sub in descendants(class_id) {
+                        if let Some(ms) = methods_by_class.get(&sub) {
+                            targets.extend(
+                                ms.iter()
+                                    .filter(|(n, _)| *n == c.name)
+                                    .map(|(_, mid)| mid.clone()),
+                            );
+                        }
+                    }
+                }
+            }
             targets.sort();
             targets.dedup();
             if targets != f.resolved_refs {
                 updates.push((id.clone(), targets));
+            }
+        }
+        let mut module_updates: Vec<(EntityId, Vec<EntityId>)> = Vec::new();
+        for (mid, m) in projection.modules.iter() {
+            if m.uses.is_empty() || !in_scope(mid) {
+                continue;
+            }
+            let mut targets: Vec<EntityId> = m
+                .uses
+                .iter()
+                .filter_map(|r| types.resolve_module_use(mid, &r.path, &r.name))
+                .collect();
+            targets.sort();
+            targets.dedup();
+            if targets != m.resolved_uses {
+                module_updates.push((mid.clone(), targets));
             }
         }
         for (id, targets) in updates {
@@ -62,6 +174,13 @@ impl CodeGraph {
                 projection
                     .functions
                     .insert(id, std::sync::Arc::new(updated));
+            }
+        }
+        for (id, targets) in module_updates {
+            if let Some(arc) = projection.modules.get(&id) {
+                let mut updated = (**arc).clone();
+                updated.resolved_uses = targets;
+                projection.modules.insert(id, std::sync::Arc::new(updated));
             }
         }
     }
@@ -74,6 +193,9 @@ impl CodeGraph {
     ///
     /// Technique adopted from CodeGraph's per-file resolution in
     /// resolve/index.ts (MIT license, https://github.com/opticsWolf/codegraph).
+    /// Eight params because resolution needs every index at once; bundling
+    /// them into a struct would churn every caller for no behavior gain.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_one_function(
         func_id: &str,
         calls: &[crate::types::UnresolvedRef],
@@ -83,11 +205,7 @@ impl CodeGraph {
         projection: &ProjectedGraph,
         import_graph: &ImportGraph,
         orchestrator: &mut crate::resolve::orchestrator::ResolutionOrchestrator,
-    ) -> (
-        Vec<crate::types::ResolvedCall>,
-        Vec<(String, String)>,
-        Vec<((String, String), crate::types::ReceiverEvidence)>,
-    ) {
+    ) -> ResolveOutcome {
         let mut edge_pairs = Vec::new();
         let mut evidence_pairs: Vec<((String, String), crate::types::ReceiverEvidence)> =
             Vec::new();
@@ -139,6 +257,58 @@ impl CodeGraph {
         let class_named = |name: &str| types.class_in_scope(&parent_module, name);
         let method_of = |class_id: &str, name: &str| types.method_of(class_id, name);
 
+        // Python resolves a bare name lexically: the enclosing functions'
+        // locals (nested defs; a parameter or assignment shadows), then the
+        // module's own names and imports. Methods are never in that chain,
+        // so `apply_fix()` inside `Model.apply_fix` is the imported function.
+        let is_python = projection
+            .modules
+            .get(&parent_module)
+            .is_some_and(|m| matches!(m.language, Language::Python));
+        // DR-13 §0.3: Rust module paths need root-aware lookup (sibling
+        // map + importer file for `super`); computed once per function.
+        let is_rust = projection
+            .modules
+            .get(&parent_module)
+            .is_some_and(|m| matches!(m.language, Language::Rust));
+        let rust_importer_file: Option<std::path::PathBuf> = if is_rust {
+            projection
+                .modules
+                .get(&parent_module)
+                .map(|m| m.path.clone())
+        } else {
+            None
+        };
+        let python_bare = |name: &str| -> Option<crate::types::ResolvedCall> {
+            let shadows = |g: &Function| {
+                g.parameters.iter().any(|p| p.name == name)
+                    || g.bindings
+                        .iter()
+                        .any(|b| b.target.len() == 1 && b.target[0] == name)
+            };
+            let mut outer = func_id;
+            while let Some(f) = projection.functions.get(outer) {
+                let nested = format!("{outer}.{name}");
+                if projection.functions.contains_key(&nested) {
+                    return Some(crate::types::ResolvedCall::Function(nested));
+                }
+                if shadows(f) {
+                    // A local value: whatever it holds, it is not resolvable.
+                    return Some(crate::types::ResolvedCall::External(name.to_string()));
+                }
+                match outer.rsplit_once('.') {
+                    Some((head, _)) => outer = head,
+                    None => break,
+                }
+            }
+            let id = find_symbol_in_module(projection, &parent_module, name)?;
+            Some(if projection.classes.contains_key(&id) {
+                crate::types::ResolvedCall::Constructor(id)
+            } else {
+                crate::types::ResolvedCall::Function(id)
+            })
+        };
+
         let resolved: Vec<_> = resolved
             .into_iter()
             .map(|rc| {
@@ -172,6 +342,28 @@ impl CodeGraph {
                             None => {}
                         }
                     }
+                    // DR-13 §0.3: Rust `a::b::f()` where the `::` prefix
+                    // names a `use`-bound module, a `crate`/`super`/`self`
+                    // root, or a crate-relative module (`mod beta;` needs
+                    // no `use`). Runs before the generic dotted lookup,
+                    // which would read `super`/`crate` as literal names.
+                    if is_rust
+                        && !on_self
+                        && !raw.path.is_empty()
+                        && !raw.path.iter().any(|s| s.starts_with('<'))
+                    {
+                        if let Some(bound) = resolve_rust_path(
+                            projection,
+                            &parent_module,
+                            sibling_funcs,
+                            import_targets,
+                            rust_importer_file.as_deref(),
+                            &raw.path,
+                            &raw.name,
+                        ) {
+                            return bound;
+                        }
+                    }
                     // `mod.f()` / `pkg.sub.f()` where the dotted prefix names an
                     // imported module: look `f` up inside that module.
                     if !on_self
@@ -202,13 +394,65 @@ impl CodeGraph {
                 } = &rc
                 {
                     let name = method.rsplit("::").next().unwrap_or(method);
+                    // DR-13 §0.3: `Self::assoc` is the enclosing impl's
+                    // type. (Only Rust routes a bare `Self` receiver
+                    // through ClassRef, hence the gate.)
+                    if is_rust && prefix == "Self" {
+                        if let Some(mid) = my_parent_class
+                            .as_deref()
+                            .and_then(|cid| method_of(cid, name))
+                        {
+                            return crate::types::ResolvedCall::Function(mid);
+                        }
+                        return crate::types::ResolvedCall::External(format!("Self.{name}"));
+                    }
                     let bound = class_named(prefix).and_then(|cid| method_of(&cid, name));
-                    return match bound {
-                        Some(mid) => crate::types::ResolvedCall::Function(mid),
-                        None => crate::types::ResolvedCall::External(format!("{prefix}.{name}")),
-                    };
+                    if let Some(mid) = bound {
+                        return crate::types::ResolvedCall::Function(mid);
+                    }
+                    // DR-13 §0.3: `Enum::Variant` constructs the enum —
+                    // variants are not methods, so `method_of` misses by
+                    // design. The enum class is the honest target
+                    // (`grammar_kind` is the raw node kind: `enum_item`).
+                    if is_rust {
+                        if let Some(cid) = class_named(prefix) {
+                            if projection
+                                .classes
+                                .get(&cid)
+                                .is_some_and(|c| c.grammar_kind == "enum_item")
+                            {
+                                return crate::types::ResolvedCall::Constructor(cid);
+                            }
+                        }
+                    }
+                    return crate::types::ResolvedCall::External(format!("{prefix}.{name}"));
+                }
+                if is_python {
+                    if let crate::types::ResolvedCall::External(name)
+                    | crate::types::ResolvedCall::Builtin(name) = &rc
+                    {
+                        if let Some(bound) = python_bare(name) {
+                            return bound;
+                        }
+                        if matches!(rc, crate::types::ResolvedCall::Builtin(_)) {
+                            return rc;
+                        }
+                    }
                 }
                 if let crate::types::ResolvedCall::External(name) = &rc {
+                    if is_python {
+                        // Only the import alias map is left to try: Python
+                        // never binds a bare name to a method.
+                        if let Some((target_mod_id, original)) = import_targets.get(name.as_str()) {
+                            let symbol = if original.is_empty() { name } else { original };
+                            if let Some(imported_func_id) =
+                                find_symbol_in_module(projection, target_mod_id, symbol)
+                            {
+                                return crate::types::ResolvedCall::Function(imported_func_id);
+                            }
+                        }
+                        return rc;
+                    }
                     if let Some(target_id) = sibling_funcs.get(name.as_str()) {
                         return crate::types::ResolvedCall::Function(target_id.clone());
                     }
@@ -442,6 +686,11 @@ impl CodeGraph {
 
             let mut import_targets_map = std::collections::HashMap::new();
             if let Some(module) = projection.modules.get(parent_module) {
+                // DR-13 §0.3: Rust `use` paths carry `crate`/`super`/`self`
+                // roots — resolve them against the importing FILE, not as
+                // literal dotted segments.
+                let is_rust_mod = matches!(module.language, Language::Rust);
+                let importer_file = module.path.clone();
                 for import_id in &module.imports {
                     if let Some(import) = projection.imports.get(import_id) {
                         match &import.kind {
@@ -454,8 +703,16 @@ impl CodeGraph {
                                 names,
                                 ..
                             } => {
-                                let target_mod_id =
-                                    find_module_by_dotted_name(projection, src_mod, parent_module);
+                                let target_mod_id = if is_rust_mod {
+                                    find_rust_module(
+                                        projection,
+                                        src_mod,
+                                        &importer_file,
+                                        parent_module,
+                                    )
+                                } else {
+                                    find_module_by_dotted_name(projection, src_mod, parent_module)
+                                };
                                 for (name, alias) in names {
                                     if let Some(ref tgt_id) = target_mod_id {
                                         // The *local* binding is what a call site
@@ -499,9 +756,17 @@ impl CodeGraph {
                                 module: src_mod,
                                 alias,
                             } => {
-                                if let Some(tgt_id) =
+                                let target_mod_id = if is_rust_mod {
+                                    find_rust_module(
+                                        projection,
+                                        src_mod,
+                                        &importer_file,
+                                        parent_module,
+                                    )
+                                } else {
                                     find_module_by_dotted_name(projection, src_mod, parent_module)
-                                {
+                                };
+                                if let Some(tgt_id) = target_mod_id {
                                     // `import numpy as np` binds `np`, not
                                     // `numpy`; the short name is the fallback.
                                     let local = alias.clone().unwrap_or_else(|| {
@@ -514,9 +779,53 @@ impl CodeGraph {
                                 }
                             }
                             crate::types::ImportKind::StarImport { module: src_mod } => {
-                                if let Some(tgt_id) =
+                                let target_mod_id = if is_rust_mod {
+                                    find_rust_module(
+                                        projection,
+                                        src_mod,
+                                        &importer_file,
+                                        parent_module,
+                                    )
+                                } else {
                                     find_module_by_dotted_name(projection, src_mod, parent_module)
-                                {
+                                };
+                                // DR-13 §0.3: Rust has no `__all__` analogue
+                                // (`star_exports` stays None), so `use m::*`
+                                // binds the target module's top-level
+                                // functions directly — that IS what a glob
+                                // import means. (Classes resolve scope-wide
+                                // via `class_named` already.)
+                                if is_rust_mod {
+                                    if let Some(tgt_id) = target_mod_id.clone() {
+                                        if let Some(tgt) = projection.modules.get(&tgt_id) {
+                                            // Top-level only: one `::`
+                                            // segment past the module head
+                                            // (methods and nested fns are
+                                            // not glob-visible).
+                                            let head = format!(
+                                                "{}::",
+                                                tgt_id
+                                                    .rsplit_once("::")
+                                                    .map_or(tgt_id.as_str(), |(h, _)| h)
+                                            );
+                                            for fid in tgt.functions.clone() {
+                                                if let Some(f) = projection.functions.get(&fid) {
+                                                    if f.parent_class.is_none()
+                                                        && fid
+                                                            .strip_prefix(&head)
+                                                            .is_some_and(|t| !t.contains("::"))
+                                                    {
+                                                        import_targets_map.insert(
+                                                            f.name.clone(),
+                                                            (tgt_id.clone(), f.name.clone()),
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some(tgt_id) = target_mod_id {
                                     if let Some(tgt_module) = projection.modules.get(&tgt_id) {
                                         if let Some(ref exports) = tgt_module.star_exports {
                                             for name in exports {
@@ -555,9 +864,8 @@ impl CodeGraph {
             Vec<(String, String)>,
             Vec<((String, String), crate::types::ReceiverEvidence)>,
         );
-        let results: Vec<ResolveResult>;
 
-        if all_work.len() > 50 {
+        let results: Vec<ResolveResult> = if all_work.len() > 50 {
             // Cap at 4: benchmarking shows the cross-file benchmark (1 heavy
             // item + 995 empty) doesn't benefit from parallelism, but real
             // codebases with balanced call distribution will. The cap prevents
@@ -565,7 +873,7 @@ impl CodeGraph {
             let num_threads = std::thread::available_parallelism()
                 .map(|n| n.get().min(4))
                 .unwrap_or(2);
-            let chunk_size = (all_work.len() + num_threads - 1) / num_threads;
+            let chunk_size = all_work.len().div_ceil(num_threads);
             let results_mutex = std::sync::Mutex::new(Vec::<ResolveResult>::new());
             let projection_ro: &ProjectedGraph = projection; // shared borrow
             let methods_ref: &MethodsByClass = &methods_by_class;
@@ -601,7 +909,7 @@ impl CodeGraph {
                 }
             });
             // projection_ro borrow ends — projection is exclusively mutable again
-            results = results_mutex.into_inner().unwrap();
+            results_mutex.into_inner().unwrap()
         } else {
             // Small work set — sequential (avoid thread overhead)
             let mut results_vec = Vec::new();
@@ -618,8 +926,8 @@ impl CodeGraph {
                 );
                 results_vec.push((fid.clone(), rc, ep, ev));
             }
-            results = results_vec;
-        }
+            results_vec
+        };
 
         // Phase C: Apply results to projection (sequential)
         for (func_id, resolved, edge_pairs, evidence_pairs) in &results {

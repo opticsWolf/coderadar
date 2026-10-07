@@ -335,7 +335,6 @@ pub(crate) fn count_decided_conditions(body: Node, source: &str) -> Option<usize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::Language;
 
     fn eval(s: &str) -> Option<bool> {
         eval_constant(s)

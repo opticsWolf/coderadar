@@ -1,7 +1,7 @@
 """Any tool name a message suggests has to be callable.
 
-`codegraph_as_of` told the agent to use "`codegraph_query` with timestamp"
-and "`search_entities`". `codegraph_query` takes no timestamp parameter and
+`coderadar_as_of` told the agent to use "`coderadar_query` with timestamp"
+and "`search_entities`". `coderadar_query` takes no timestamp parameter and
 `search_entities` is not a tool at all — it is a function on the Rust core.
 An agent following that guidance failed twice and had no way to tell that
 the advice, rather than its own call, was wrong.
@@ -59,7 +59,7 @@ class TestEveryToolNameMentionedExists:
         # make the assertion above vacuous — the failure mode this whole
         # file exists to catch.
         assert len(_guidance_strings()) > 5
-        assert "codegraph_search" in tool_names
+        assert "coderadar_search" in tool_names
 
 
 class TestAsOfGuidance:

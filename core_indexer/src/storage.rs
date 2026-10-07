@@ -142,6 +142,66 @@ impl CodeGraphStore {
         Ok(Self { db })
     }
 
+    /// §1.9 write-through: content-addressed put of one file's bytes.
+    ///
+    /// Bytes are put BEFORE any digest is asserted (callers persist after),
+    /// so a crash between leaves an orphan blob at worst — never a live
+    /// digest pointing at absent bytes; retry converges on the same digest
+    /// (idempotent by construction). Re-put refreshes `put_at` without
+    /// rewriting: 0 new bytes on unchanged-tree reindex (the DR-25
+    /// zero-growth property). Every outcome feeds the cumulative counters.
+    pub fn put_source_blob(&self, file_path: &str, bytes: &[u8]) -> macrame::Result<BlobOutcome> {
+        let cfg = crate::active_config();
+        if !cfg.database.store_source_blobs {
+            return Ok(BlobOutcome::Disabled);
+        }
+        // Match against the canonical id-form path; normalize belt for
+        // native-separator callers.
+        let normalized = file_path.replace('\\', "/");
+        if !cfg.database.blob_exclude.is_empty() {
+            let mut builder = ignore::gitignore::GitignoreBuilder::new("");
+            for pat in &cfg.database.blob_exclude {
+                let _ = builder.add_line(None, pat);
+            }
+            if let Ok(matcher) = builder.build() {
+                if crate::path_excluded(&matcher, std::path::Path::new(&normalized), false) {
+                    let outcome = BlobOutcome::SkippedExcluded;
+                    record_blob_outcome(&outcome);
+                    return Ok(outcome);
+                }
+            }
+        }
+        if bytes.len() > BLOB_MAX_BYTES {
+            let outcome = BlobOutcome::SkippedOversize {
+                bytes: bytes.len() as u64,
+            };
+            record_blob_outcome(&outcome);
+            return Ok(outcome);
+        }
+        match runtime().block_on(self.db.blob_put(bytes)) {
+            Ok(digest) => {
+                validate_digest(&digest).map_err(|e| {
+                    macrame::DbError::InvalidDigest(format!(
+                        "blob_put returned {e} for {file_path}"
+                    ))
+                })?;
+                let outcome = BlobOutcome::Stored {
+                    digest,
+                    bytes: bytes.len() as u64,
+                };
+                record_blob_outcome(&outcome);
+                Ok(outcome)
+            }
+            Err(macrame::DbError::BlobTooLarge { size, .. }) => {
+                // Engine belt (custom tuning): same skip, same count.
+                let outcome = BlobOutcome::SkippedOversize { bytes: size as u64 };
+                record_blob_outcome(&outcome);
+                Ok(outcome)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// Synchronous wrapper around Macrame's async upsert.
     pub fn upsert_entity(
         &self,
@@ -332,6 +392,160 @@ impl CodeGraphStore {
         Ok((guard, conn))
     }
 
+    /// FTS5 keyword search over concept text (§1.10, DR-34).
+    ///
+    /// Zero storage change: `concepts_fts` (title+content, trigger-maintained)
+    /// already indexes every v2 concept's JSON, so names, docstrings, file
+    /// paths and member lists are all searchable with no new write path.
+    /// Escaped-by-default (`raw=false` quotes each token via macrame's
+    /// `escape_fts5_query`, so hostile input like `cats not dogs` or an
+    /// unbalanced quote degrades to safe empty, never an error); `raw=true`
+    /// passes the MATCH expression through for power MATCH syntax.
+    /// Live-only: the engine filters retired rows, and history search is
+    /// out of scope — FTS indexes current rows, the ledger holds the past.
+    /// Empty queries short-circuit to `[]` without touching the store.
+    /// `top_k` clamps to [1, 50].
+    ///
+    /// Foreign/old stores may predate the FTS table: that is an honest
+    /// error naming `rebuild_fts`, never a silent empty.
+    pub fn search_symbols(
+        &self,
+        query: &str,
+        top_k: usize,
+        raw: bool,
+    ) -> macrame::Result<Vec<(String, f64)>> {
+        let top_k = top_k.clamp(1, 50);
+        let matched = if raw {
+            query.trim().to_string()
+        } else {
+            macrame::vector::escape_fts5_query(query)
+        };
+        if matched.is_empty() {
+            return Ok(Vec::new());
+        }
+        let res = (|| -> macrame::Result<Vec<(String, f64)>> {
+            let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+            runtime().block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT name FROM sqlite_master WHERE name='concepts_fts'",
+                        libsql::params![],
+                    )
+                    .await?;
+                if rows.next().await?.is_none() {
+                    return Err(Self::missing_fts_err("sqlite_master lists no concepts_fts"));
+                }
+                macrame::vector::keyword_search(&conn, &matched, top_k, None, None).await
+            })
+        })();
+        // Whatever layer notices the missing table (our pre-check, the
+        // MATCH itself, or open-time schema verification), the answer names
+        // the repair, never a bare table name or a silent empty.
+        res.map_err(|e| {
+            if format!("{e:?}").contains("concepts_fts") {
+                Self::missing_fts_err(&format!("{e:?}"))
+            } else {
+                e
+            }
+        })
+    }
+
+    /// Raw blob bytes by digest (§3.0, DR-25): the `blob_get` half of the
+    /// PyO3 round-trip. `None` = valid address, no bytes (never put, or the
+    /// bytes are gone) — the Python layer adds the at-T context and raises
+    /// `ContentUnavailable` there, keeping `None` distinct from
+    /// "not in the graph at T". Malformed digests refuse via
+    /// `validate_digest`; cold-archived blobs resolve through macrame's
+    /// hot→cold fallback, so archive never breaks a read.
+    pub fn blob_get(&self, digest: &str) -> macrame::Result<Option<Vec<u8>>> {
+        macrame::blob::validate_digest(digest)?;
+        runtime().block_on(self.db.blob_get(digest))
+    }
+
+    /// Where one entity's bytes live at one timestamp (§3.0, DR-25).
+    ///
+    /// One `reconstruct(T)` over the ledger: the entity concept's content
+    /// JSON gives `file_path` + byte `span` + line range, the file's module
+    /// concept at T gives the `source_blob` digest from its extra. `None`
+    /// = not in the graph at T (never asserted, not yet, or retired) — the
+    /// same answer as `lookup_entity_at`, never an error. `digest=None` =
+    /// no blob recorded (pre-blob generation, excluded, oversize, or
+    /// disabled); `has_span=false` = synthetic (routes) with no source
+    /// bytes. Takes the id as given — spelling resolution is the caller's
+    /// (`Snapshot` resolves via `find` first).
+    pub fn entity_source_ref_at(
+        &self,
+        entity_id: &str,
+        timestamp: &str,
+    ) -> macrame::Result<Option<SourceRef>> {
+        let state = self.reconstruct(timestamp)?;
+        let concept = match state.concepts.get(entity_id) {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+        let content: serde_json::Value = serde_json::from_str(&concept.content).map_err(|e| {
+            macrame::DbError::Engine(libsql::Error::Misuse(format!(
+                "concept {entity_id} has unparseable content at {timestamp}: {e}",
+            )))
+        })?;
+        let file_path = content
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                macrame::DbError::Engine(libsql::Error::Misuse(format!(
+                    "concept {entity_id} has no file_path at {timestamp}",
+                )))
+            })?;
+        let span = span_of(&content, "span");
+        let is_module = content
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .is_some_and(|k| k == "module");
+        let module_id = format!("{file_path}::module");
+        let digest = state
+            .concepts
+            .get(&module_id)
+            .and_then(|m| source_blob_of_extra(&m.extra));
+        Ok(Some(SourceRef {
+            id: entity_id.to_string(),
+            file_path: file_path.to_string(),
+            digest,
+            span_start: span.start,
+            span_end: span.end,
+            has_span: content.get("span").is_some(),
+            full_file: is_module,
+            start_line: content.get("line").and_then(|v| v.as_u64()).unwrap_or(1),
+            end_line: content
+                .get("exit_line")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1),
+            handler_id: content
+                .get("handler_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        }))
+    }
+
+    /// One archive session at `cutoff` (§3.4, DR-25): moves blobs last-put
+    /// before the cutoff and named by no hot log entry to `cold.blobs`,
+    /// alongside archivable links/concepts/log rows. Reads never break:
+    /// `blob_get` falls back to cold, and hot entries naming cold-only
+    /// blobs copy them back (`blobs_restored`). The cold file is the
+    /// `<store-stem>_archive.db` sibling — backup means the hot+cold pair,
+    /// a hot-only copy is pointers (recorded digests, no bytes).
+    pub fn archive(&self, cutoff: &str) -> macrame::Result<macrame::temporal::ArchiveReport> {
+        runtime().block_on(self.db.archive(cutoff))
+    }
+
+    /// The honest error for a store without the FTS index: names the table
+    /// symptom and the `rebuild_fts` repair, never a silent empty.
+    fn missing_fts_err(detail: &str) -> macrame::DbError {
+        macrame::DbError::Engine(libsql::Error::Misuse(format!(
+            "concepts_fts is absent (foreign/old store; {detail}): run \
+             Database::rebuild_fts() in macrame, then reindex, before keyword search",
+        )))
+    }
+
     /// Retire concepts and close every open edge that touches them.
     ///
     /// `retired: true` appeared nowhere in the codebase: a deleted function, a
@@ -505,14 +719,127 @@ impl CodeGraphStore {
                 {
                     return false;
                 }
-                matches!(
-                    classify_v2_concept(content),
-                    V2ConceptClass::Canonical(_) | V2ConceptClass::StandaloneField
-                )
+                // Routes are owned by the framework hook's scoped diff-retire
+                // (§1.3): the generic sweep runs before extraction and would
+                // orphan-then-churn every route each full analyze.
+                match classify_v2_concept(content) {
+                    V2ConceptClass::Canonical(k) => k != "route",
+                    V2ConceptClass::StandaloneField => true,
+                    _ => false,
+                }
             })
             .map(|(id, _)| id)
             .collect();
         Ok(self.retire_entities(&stale_ids)?.0)
+    }
+
+    /// Live ids of framework route concepts (§1.3), optionally scoped to
+    /// one file. Routes are identified by the mirrored
+    /// `extra.coderadar.kind`, not by id pattern, so a coincidence in a
+    /// qualifier can never promote an entity into (or hide a route from)
+    /// the framework hook's scoped diff-retire.
+    pub fn live_route_ids(&self) -> macrame::Result<Vec<String>> {
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT id FROM concepts WHERE retired = 0 \
+                     AND json_extract(extra, '$.coderadar.kind') = 'route'",
+                    libsql::params![],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut ids = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                ids.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok::<_, macrame::DbError>(ids)
+        })
+    }
+
+    pub fn live_route_ids_for_file(&self, file_path: &str) -> macrame::Result<Vec<String>> {
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT id FROM concepts WHERE retired = 0 \
+                     AND json_extract(extra, '$.coderadar.kind') = 'route' \
+                     AND json_extract(extra, '$.coderadar.file_path') = ?1",
+                    libsql::params![file_path],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut ids = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                ids.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok::<_, macrame::DbError>(ids)
+        })
+    }
+
+    /// Open non-structural edge triples with their `valid_from`, for the
+    /// framework hook's scoped pair-retire (§1.3). Structural kinds are
+    /// owned by `retire_stale_edges`; synthetic `synthetic:*` rows live
+    /// and die with the route diff instead.
+    pub fn open_synthetic_triples(
+        &self,
+        now: &str,
+    ) -> macrame::Result<Vec<(String, String, String, String)>> {
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT source_id, target_id, edge_type, valid_from \
+                     FROM links_current WHERE valid_to > ?1 \
+                     AND edge_type NOT IN ('CALLS', 'IMPORTS', 'EXTENDS', 'OVERRIDES')",
+                    libsql::params![now],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                    row.get::<String>(3).unwrap_or_default(),
+                ));
+            }
+            Ok::<_, macrame::DbError>(out)
+        })
+    }
+
+    /// Close open synthetic edge triples the framework hook no longer
+    /// believes (§1.3 scoped pair-retire). Structural kinds are never
+    /// passed here — `retire_stale_edges` owns those. NotFound (something
+    /// else closed it first) is the desired end state, same tolerance as
+    /// `retire_entities`.
+    pub fn retire_synthetic_pairs(
+        &self,
+        stale: &[(String, String, String, String)],
+        ts: &str,
+    ) -> macrame::Result<usize> {
+        let n = runtime().block_on(async {
+            let mut n = 0usize;
+            for (source, target, etype, valid_from) in stale {
+                if self
+                    .db
+                    .retire_edge(
+                        source.as_str(),
+                        target.as_str(),
+                        etype.as_str(),
+                        valid_from.as_str(),
+                        ts,
+                    )
+                    .await
+                    .is_ok()
+                {
+                    n += 1;
+                }
+            }
+            n
+        });
+        Ok(n)
     }
 
     /// Live concept ids belonging to one exact source file.
@@ -721,7 +1048,17 @@ impl CodeGraphStore {
         self.traverse_at(start_id, max_depth, &types, "now")
     }
 
-    /// Traverse the graph as it existed at `ts` (temporal read).
+    /// Traverse the graph from a source entity at `ts` (temporal read).
+    ///
+    /// Only the `"now"` live path uses this (no builder instants, so no
+    /// `attribute_mode` is required): temporal walks BFS over the
+    /// reconstructed state instead (see `bfs_over_state`). The historical
+    /// loader gap that forced this (present-tense node closure pruning
+    /// post-instant retirements, upstream opticsWolf/Macrame#3) is fixed in
+    /// macrame-db 0.19.1 via `hydrate_historical` + `AttributeMode`, re-proven
+    /// on the rename fixture (`repro_walk_retired`, now un-ignored) — but the
+    /// state fold stays the recorded-time primitive; do not route temporal
+    /// walks back through the loader without a reason beyond parity.
     pub fn traverse_at(
         &self,
         start_id: &str,
@@ -763,21 +1100,171 @@ impl CodeGraphStore {
     }
 }
 
+// ── Source-blob write path (§1.9, DR-25/DR-30) ────────────────────────────
+
+/// Blob size cap: Macrame's `Tuning::max_blob_bytes` default (8 MiB).
+/// CodeRadar does not plumb tuning, so this const mirrors the engine — a
+/// file over it is refused HERE, and the engine refuses it again as belt
+/// (both count as `skipped_oversize`, never as an index failure).
+///
+/// Pairing (documented, not enforced): the watcher skips files over
+/// `[watch] max_file_size_bytes` (1 MiB default) before they ever reach
+/// this path, so oversize blobs arise only from direct `analyze` /
+/// `update_file` calls on files between 1 MiB and 8 MiB. Raising one cap
+/// must never silently raise the other.
+pub const BLOB_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+/// A sha256 digest is 64 lowercase hex chars — the address and the integrity
+/// check in one. Validated at the persistence boundary, both directions:
+/// put-returns are checked before their digest is asserted (an engine bug
+/// must fail loudly, never mint a live digest pointing at absent bytes),
+/// and stored extras are checked on read (legacy generations have no digest
+/// at all; malformed ones read as absent, never as errors).
+pub fn validate_digest(digest: &str) -> std::result::Result<(), String> {
+    if digest.len() == 64
+        && digest
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        Ok(())
+    } else {
+        Err(format!("malformed source_blob digest: {digest:?}"))
+    }
+}
+
+/// The `extra.coderadar.source_blob` read boundary (§3.0 reads through
+/// this): a validated digest, or `None` — legacy generations (no key) and
+/// malformed ones both read as absent, never as errors.
+pub fn source_blob_of_extra(extra_json: &str) -> Option<String> {
+    let extra: serde_json::Value = serde_json::from_str(extra_json).ok()?;
+    let digest = extra.get("coderadar")?.get("source_blob")?.as_str()?;
+    validate_digest(digest).ok()?;
+    Some(digest.to_string())
+}
+
+/// One file's blob outcome. `Stored` carries the digest + byte length;
+/// the policy skips keep full graph coverage with no blob. Anything else
+/// (I/O, engine bugs) is a propagated error — a broken store must fail
+/// the index honestly, not silently skip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BlobOutcome {
+    Stored { digest: String, bytes: u64 },
+    SkippedOversize { bytes: u64 },
+    SkippedExcluded,
+    Disabled,
+}
+
+/// Cumulative blob activity backing the currently loaded graph generation:
+/// reset on `analyze`/`load_snapshot`, incremented by every write-through
+/// put. Read via `blob_stats()` for the reindex/watcher/status surfaces —
+/// the DR-30 notice (counts ARE the notice) without per-call threading.
+#[derive(Clone, Debug, Default)]
+pub struct BlobStats {
+    pub stored: u64,
+    pub skipped_oversize: u64,
+    pub skipped_excluded: u64,
+    pub bytes: u64,
+}
+
+static BLOB_STATS: std::sync::LazyLock<std::sync::Mutex<BlobStats>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(BlobStats::default()));
+
+/// Reset the cumulative counters (analyze/load boundaries).
+pub fn reset_blob_stats() {
+    if let Ok(mut stats) = BLOB_STATS.lock() {
+        *stats = BlobStats::default();
+    }
+}
+
+/// Where one entity's bytes live at one timestamp (§3.0 read path).
+///
+/// `digest=None` = no blob recorded for the file at T; `has_span=false` =
+/// the concept carries no source span (synthetic routes). Modules carry no
+/// span either, but they ARE the file: `full_file=true` means the whole
+/// blob, no slicing (file-bytes-at-T, plan §3.0). `handler_id` is populated
+/// for routes so the honest error can name the fallback.
+#[derive(Clone, Debug)]
+pub struct SourceRef {
+    pub id: String,
+    pub file_path: String,
+    pub digest: Option<String>,
+    pub span_start: usize,
+    pub span_end: usize,
+    pub has_span: bool,
+    pub full_file: bool,
+    pub start_line: u64,
+    pub end_line: u64,
+    pub handler_id: Option<String>,
+}
+
+/// Snapshot the cumulative counters for the report surfaces.
+pub fn blob_stats_snapshot() -> BlobStats {
+    BLOB_STATS
+        .lock()
+        .map(|stats| stats.clone())
+        .unwrap_or_default()
+}
+
+fn record_blob_outcome(outcome: &BlobOutcome) {
+    let Ok(mut stats) = BLOB_STATS.lock() else {
+        return;
+    };
+    match outcome {
+        BlobOutcome::Stored { bytes, .. } => {
+            stats.stored += 1;
+            stats.bytes += bytes;
+        }
+        BlobOutcome::SkippedOversize { .. } => stats.skipped_oversize += 1,
+        BlobOutcome::SkippedExcluded => stats.skipped_excluded += 1,
+        BlobOutcome::Disabled => {}
+    }
+}
+
 // ── Concept Builder ─────────────────────────────────────────────────────────
 
 /// Build a Macrame ConceptUpsert from a CodeRadar ExtractedUnit.
 /// Compact, queryable CodeRadar attributes carried beside canonical entity
 /// content. Keep the namespace application-specific so other users of the
 /// shared ledger can evolve their own attributes independently.
-fn coderadar_extra(content: &serde_json::Value) -> serde_json::Value {
-    serde_json::json!({
-        "coderadar": {
-            "format": 1,
-            "kind": content.get("kind").cloned().unwrap_or(serde_json::Value::Null),
-            "file_path": content.get("file_path").cloned().unwrap_or(serde_json::Value::Null),
-            "content_hash": content.get(annotation::CONTENT_HASH).cloned().unwrap_or(serde_json::Value::Null),
-        }
-    })
+/// `format` stays 1 (declared §1.9): `source_blob` is additive-optional —
+/// present on module concepts whose file bytes were blob-stored, absent on
+/// legacy generations and policy-skipped files. Absence is the signal;
+/// readers (`source_blob_of_extra`) treat missing and malformed alike.
+fn coderadar_extra(content: &serde_json::Value, source_blob: Option<&str>) -> serde_json::Value {
+    let mut inner = serde_json::Map::new();
+    inner.insert("format".to_string(), serde_json::json!(1));
+    inner.insert(
+        "kind".to_string(),
+        content
+            .get("kind")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    );
+    inner.insert(
+        "file_path".to_string(),
+        content
+            .get("file_path")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    );
+    inner.insert(
+        "content_hash".to_string(),
+        content
+            .get(annotation::CONTENT_HASH)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
+    );
+    if let Some(digest) = source_blob {
+        inner.insert(
+            "source_blob".to_string(),
+            serde_json::Value::String(digest.to_string()),
+        );
+    }
+    serde_json::Value::Object(
+        [("coderadar".to_string(), serde_json::Value::Object(inner))]
+            .into_iter()
+            .collect(),
+    )
 }
 
 /// Entity metadata is stored canonically in `content`; the small subset needed
@@ -787,7 +1274,9 @@ pub fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> C
     let (title, _kind, metadata) = entity_meta(unit, file_path, language);
 
     let content = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".into());
-    let extra = coderadar_extra(&metadata).to_string();
+    // v1 pre-flush rows carry no digest (healed to v2 with digests in the
+    // same run); the digest-less shape is also what legacy rows look like.
+    let extra = coderadar_extra(&metadata, None).to_string();
 
     let valid_from = now_iso8601();
 
@@ -933,6 +1422,7 @@ pub const V2_CANONICAL_KINDS: &[&str] = &[
     "import",
     "constant",
     "type_alias",
+    "route",
 ];
 
 fn file_path_of(id: &str) -> &str {
@@ -1013,8 +1503,14 @@ fn content_hash_of(content: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn v2_upsert(id: &str, title: &str, content: serde_json::Value, now: &str) -> ConceptUpsert {
-    let extra = coderadar_extra(&content).to_string();
+pub(crate) fn v2_upsert(
+    id: &str,
+    title: &str,
+    content: serde_json::Value,
+    now: &str,
+    source_blob: Option<&str>,
+) -> ConceptUpsert {
+    let extra = coderadar_extra(&content, source_blob).to_string();
     ConceptUpsert::new(id.to_string(), title.to_string())
         .content(content.to_string())
         .extra(extra)
@@ -1035,6 +1531,17 @@ fn module_content(m: &Module) -> serde_json::Value {
     v["imports"] = serde_json::json!(&m.imports);
     v["constants"] = serde_json::json!(&m.constants);
     v["type_aliases"] = serde_json::json!(&m.type_aliases);
+    // Module-scope liveness (dead-code roots, RTA, property reads). Written
+    // only when present: most modules have none, and loads default them.
+    if !m.uses.is_empty() {
+        v["uses"] = serde_json::json!(&m.uses);
+    }
+    if !m.resolved_uses.is_empty() {
+        v["resolved_uses"] = serde_json::json!(&m.resolved_uses);
+    }
+    if !m.attr_reads.is_empty() {
+        v["attr_reads"] = serde_json::json!(&m.attr_reads);
+    }
     v
 }
 
@@ -1096,6 +1603,10 @@ fn function_content(f: &Function) -> serde_json::Value {
     // Post-resolution state: the ONLY call data the ledger keeps. Cold
     // start rebuilds the call indices from this (see cold_start).
     v["resolved_calls"] = serde_json::json!(&f.resolved_calls);
+    // Callback and template-method liveness, kept for the same reason.
+    if !f.resolved_refs.is_empty() {
+        v["resolved_refs"] = serde_json::json!(&f.resolved_refs);
+    }
     v
 }
 
@@ -1144,31 +1655,54 @@ fn type_alias_content(t: &TypeAlias) -> serde_json::Value {
     v
 }
 
+/// File path → source_blob digest for the module concepts of this flush.
+/// Built by the caller from file bytes BEFORE any concept is asserted
+/// (put-then-assert ordering); consulted only for modules — every other
+/// kind passes `None` and keeps digest-less extras.
+pub type SourceBlobDigests = HashMap<String, String>;
+
+/// Module id (`{file}::module`) → digest lookup in a [`SourceBlobDigests`]
+/// map keyed by file path.
+fn digest_for_module(module_id: &str, digests: &SourceBlobDigests) -> Option<String> {
+    let file = module_id.strip_suffix("::module")?;
+    digests.get(file).cloned()
+}
+
 /// Build concept JSON v2 [`ConceptUpsert`]s for the WHOLE projection.
 ///
 /// Call this on the FINAL projection (post-cascade), BEFORE
 /// `persist_edges`, because edges reference concept ids and the concept
 /// upsert must land first.
-pub fn build_v2_concepts_all(projection: &ProjectedGraph) -> Vec<ConceptUpsert> {
+pub fn build_v2_concepts_all(
+    projection: &ProjectedGraph,
+    digests: &SourceBlobDigests,
+) -> Vec<ConceptUpsert> {
     let now = now_iso8601();
     let mut out: Vec<ConceptUpsert> = Vec::new();
     for m in projection.modules.values() {
-        out.push(v2_upsert(&m.id, &m.name, module_content(m), &now));
+        let digest = digest_for_module(&m.id, digests);
+        out.push(v2_upsert(
+            &m.id,
+            &m.name,
+            module_content(m),
+            &now,
+            digest.as_deref(),
+        ));
     }
     for c in projection.classes.values() {
-        out.push(v2_upsert(&c.id, &c.name, class_content(c), &now));
+        out.push(v2_upsert(&c.id, &c.name, class_content(c), &now, None));
     }
     for f in projection.functions.values() {
-        out.push(v2_upsert(&f.id, &f.name, function_content(f), &now));
+        out.push(v2_upsert(&f.id, &f.name, function_content(f), &now, None));
     }
     for i in projection.imports.values() {
-        out.push(v2_upsert(&i.id, &i.raw, import_content(i), &now));
+        out.push(v2_upsert(&i.id, &i.raw, import_content(i), &now, None));
     }
     for k in projection.constants.values() {
-        out.push(v2_upsert(&k.id, &k.name, constant_content(k), &now));
+        out.push(v2_upsert(&k.id, &k.name, constant_content(k), &now, None));
     }
     for t in projection.type_aliases.values() {
-        out.push(v2_upsert(&t.id, &t.name, type_alias_content(t), &now));
+        out.push(v2_upsert(&t.id, &t.name, type_alias_content(t), &now, None));
     }
     out
 }
@@ -1178,38 +1712,46 @@ pub fn build_v2_concepts_all(projection: &ProjectedGraph) -> Vec<ConceptUpsert> 
 pub fn build_v2_concepts_for_file(
     projection: &ProjectedGraph,
     file_path: &str,
+    digests: &SourceBlobDigests,
 ) -> Vec<ConceptUpsert> {
     let prefix = format!("{file_path}::");
     let now = now_iso8601();
     let mut out: Vec<ConceptUpsert> = Vec::new();
     for m in projection.modules.values() {
         if m.id.starts_with(&prefix) {
-            out.push(v2_upsert(&m.id, &m.name, module_content(m), &now));
+            let digest = digest_for_module(&m.id, digests);
+            out.push(v2_upsert(
+                &m.id,
+                &m.name,
+                module_content(m),
+                &now,
+                digest.as_deref(),
+            ));
         }
     }
     for c in projection.classes.values() {
         if c.id.starts_with(&prefix) {
-            out.push(v2_upsert(&c.id, &c.name, class_content(c), &now));
+            out.push(v2_upsert(&c.id, &c.name, class_content(c), &now, None));
         }
     }
     for f in projection.functions.values() {
         if f.id.starts_with(&prefix) {
-            out.push(v2_upsert(&f.id, &f.name, function_content(f), &now));
+            out.push(v2_upsert(&f.id, &f.name, function_content(f), &now, None));
         }
     }
     for i in projection.imports.values() {
         if i.id.starts_with(&prefix) {
-            out.push(v2_upsert(&i.id, &i.raw, import_content(i), &now));
+            out.push(v2_upsert(&i.id, &i.raw, import_content(i), &now, None));
         }
     }
     for k in projection.constants.values() {
         if k.id.starts_with(&prefix) {
-            out.push(v2_upsert(&k.id, &k.name, constant_content(k), &now));
+            out.push(v2_upsert(&k.id, &k.name, constant_content(k), &now, None));
         }
     }
     for t in projection.type_aliases.values() {
         if t.id.starts_with(&prefix) {
-            out.push(v2_upsert(&t.id, &t.name, type_alias_content(t), &now));
+            out.push(v2_upsert(&t.id, &t.name, type_alias_content(t), &now, None));
         }
     }
     out
@@ -1223,6 +1765,7 @@ pub enum V2Entity {
     Import(Import),
     Constant(Constant),
     TypeAlias(TypeAlias),
+    Route(Route),
 }
 
 /// How a cold-start pre-scan should treat one concept's content.
@@ -1353,6 +1896,9 @@ fn parse_v2_module(id: &str, v: &serde_json::Value) -> std::result::Result<Modul
         package: None,
         exports: vec![],
         star_exports: None,
+        uses: deser_or_default(v, "uses"),
+        resolved_uses: str_list(v, "resolved_uses"),
+        attr_reads: str_list(v, "attr_reads"),
         classes: str_list(v, "classes"),
         functions: str_list(v, "functions"),
         imports: str_list(v, "imports"),
@@ -1423,7 +1969,7 @@ fn parse_v2_function(id: &str, v: &serde_json::Value) -> std::result::Result<Fun
         setter_of: None,
         bindings: Vec::new(),
         refs: Vec::new(),
-        resolved_refs: Vec::new(),
+        resolved_refs: str_list(v, "resolved_refs"),
         line: req_u64(v, "line", id)? as usize,
         exit_line: req_u64(v, "exit_line", id)? as usize,
         docstring: opt_str(v, "docstring"),
@@ -1489,6 +2035,45 @@ fn parse_v2_type_alias(id: &str, v: &serde_json::Value) -> std::result::Result<T
     })
 }
 
+/// Parse a v2 route concept (§1.3). `name` is the URL pattern; the handler
+/// and methods ride as plain fields (no spans — resolvers record files,
+/// not offsets).
+fn parse_v2_route(id: &str, v: &serde_json::Value) -> std::result::Result<Route, String> {
+    let methods = v
+        .get("methods")
+        .and_then(|m| m.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Route {
+        id: id.to_string(),
+        pattern: req_str(v, "name", id)?,
+        file_path: req_str(v, "file_path", id)?,
+        handler_id: req_str(v, "handler", id)?,
+        methods,
+        framework: opt_str(v, "framework").unwrap_or_default(),
+    })
+}
+
+/// Build the v2 content JSON for a framework route (§1.3). Mirrors
+/// `v2_common` plus the route fields `parse_v2_route` reads back.
+pub fn route_content(
+    pattern: &str,
+    file_path: &str,
+    handler: &str,
+    methods: &[String],
+    framework: &str,
+) -> serde_json::Value {
+    let mut v = v2_common("route", pattern, file_path, 0, 0, &None, &[]);
+    v["handler"] = serde_json::json!(handler);
+    v["methods"] = serde_json::json!(methods);
+    v["framework"] = serde_json::json!(framework);
+    v
+}
+
 /// Parse one v2 concept's content into its typed entity.
 ///
 /// Hard-fails (no silent v1 fallback) when a canonical concept lacks
@@ -1512,6 +2097,7 @@ pub fn parse_v2_concept(id: &str, content: &str) -> std::result::Result<V2Entity
         "import" => Ok(V2Entity::Import(parse_v2_import(id, &v)?)),
         "constant" => Ok(V2Entity::Constant(parse_v2_constant(id, &v)?)),
         "type_alias" => Ok(V2Entity::TypeAlias(parse_v2_type_alias(id, &v)?)),
+        "route" => Ok(V2Entity::Route(parse_v2_route(id, &v)?)),
         other => Err(v2_err(id, &format!("unknown kind '{other}'"))),
     }
 }
@@ -1529,6 +2115,9 @@ mod concept_v2_tests {
             package: None,
             exports: vec![],
             star_exports: None,
+            uses: Vec::new(),
+            resolved_uses: Vec::new(),
+            attr_reads: Vec::new(),
             classes: vec!["pkg/alpha.py::Alpha".into()],
             functions: vec!["pkg/alpha.py::helper".into()],
             imports: vec!["pkg/alpha.py::import os".into()],
@@ -1687,8 +2276,40 @@ mod concept_v2_tests {
     }
 
     #[test]
+    fn route_roundtrip() {
+        // §1.3: route concepts survive the ledger JSON round-trip.
+        let json = route_content(
+            "/users/<id>",
+            "app.py",
+            "app.py::get_user",
+            &["GET".to_string()],
+            "flask",
+        )
+        .to_string();
+        let id = "app.py::flask:route:/users/<id>";
+        match parse_v2_concept(id, &json).unwrap() {
+            V2Entity::Route(got) => {
+                assert_eq!(got.id, id);
+                assert_eq!(got.pattern, "/users/<id>");
+                assert_eq!(got.file_path, "app.py");
+                assert_eq!(got.handler_id, "app.py::get_user");
+                assert_eq!(got.methods, vec!["GET".to_string()]);
+                assert_eq!(got.framework, "flask");
+            }
+            other => panic!("expected Route, got {other:?}"),
+        }
+        // The new kind classifies canonical, never a v1 leftover.
+        assert!(matches!(
+            classify_v2_concept(&json),
+            V2ConceptClass::Canonical(_)
+        ));
+    }
+
+    #[test]
     fn module_roundtrip() {
-        let m = sample_module();
+        let mut m = sample_module();
+        m.resolved_uses = vec!["pkg/alpha.py::helper".into()];
+        m.attr_reads = vec!["enabled".into(), "name".into()];
         let json = module_content(&m).to_string();
         match parse_v2_concept(&m.id, &json).unwrap() {
             V2Entity::Module(got) => {
@@ -1704,6 +2325,9 @@ mod concept_v2_tests {
                 assert_eq!(got.imports, m.imports);
                 assert_eq!(got.constants, m.constants);
                 assert_eq!(got.type_aliases, m.type_aliases);
+                // Module-scope liveness survives a cold start.
+                assert_eq!(got.resolved_uses, m.resolved_uses);
+                assert_eq!(got.attr_reads, m.attr_reads);
             }
             other => panic!("expected Module, got {other:?}"),
         }
@@ -1744,7 +2368,8 @@ mod concept_v2_tests {
 
     #[test]
     fn function_roundtrip_preserves_resolved_calls() {
-        let f = sample_function();
+        let mut f = sample_function();
+        f.resolved_refs = vec!["pkg/alpha.py::callback".into()];
         let json = function_content(&f).to_string();
         match parse_v2_concept(&f.id, &json).unwrap() {
             V2Entity::Function(got) => {
@@ -1755,6 +2380,7 @@ mod concept_v2_tests {
                 assert_eq!(got.kind, f.kind);
                 assert_eq!(got.resolved_calls, f.resolved_calls);
                 assert!(got.calls.is_empty(), "raw call sites are not persisted");
+                assert_eq!(got.resolved_refs, f.resolved_refs);
                 assert_eq!(got.is_async, f.is_async);
                 assert_eq!(got.is_generator, f.is_generator);
                 assert_eq!(got.source, f.source);
@@ -2146,6 +2772,79 @@ mod tests {
         (dir, store)
     }
 
+    /// §1.10 (DR-34): the spike probes pinned at the store level — top-1
+    /// for two natural queries, hostile-input safety, and retirement
+    /// removing a hit. Triggers keep `concepts_fts` current on upsert, so
+    /// no explicit rebuild is needed on this path.
+    #[test]
+    fn fts_search_symbols_pins_spike_probes() {
+        let (dir, store) = temp_store();
+        let now = now_iso8601();
+        let mk = |id: &str, content: &str| {
+            ConceptUpsert::new(id, id)
+                .content(content)
+                .valid_from(now.clone())
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)
+        };
+        store
+            .upsert_concepts_bulk(&[
+                mk(
+                    "watch.py::start_watcher",
+                    r#"{"meta_version": 2, "kind": "function", "name": "start_watcher", "file_path": "watch.py", "docstring": "Debounce the file watcher before restarting the index."}"#,
+                ),
+                mk(
+                    "graph.py::CodeGraph.rename",
+                    r#"{"meta_version": 2, "kind": "function", "name": "rename", "file_path": "graph.py", "docstring": "Rename a function via MutationEngine.plan_rename."}"#,
+                ),
+                mk(
+                    "svc.py::authenticate",
+                    r#"{"meta_version": 2, "kind": "function", "name": "authenticate", "file_path": "svc.py", "docstring": "Check the service token."}"#,
+                ),
+            ])
+            .unwrap();
+        // Spike probe 1: both terms only co-occur on the watcher.
+        let hits = store.search_symbols("watcher debounce", 10, false).unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].0, "watch.py::start_watcher");
+        // Spike probe 2: "function" is in every v2 JSON (IDF self-penalty)
+        // yet the entity also mentioning rename still ranks top-1.
+        let hits = store.search_symbols("rename function", 10, false).unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].0, "graph.py::CodeGraph.rename");
+        // Hostile input: safe empty, never an error or silent exclusion.
+        assert!(store
+            .search_symbols("cats not dogs", 10, false)
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .search_symbols("say \"hi", 10, false)
+            .unwrap()
+            .is_empty());
+        assert!(store.search_symbols("", 10, false).unwrap().is_empty());
+        assert!(store.search_symbols("   ", 10, false).unwrap().is_empty());
+        // Retirement removes the hit: live-only, no history search.
+        store
+            .retire_entities(&["watch.py::start_watcher".to_string()])
+            .unwrap();
+        let hits = store.search_symbols("watcher debounce", 10, false).unwrap();
+        assert!(hits.iter().all(|(id, _)| id != "watch.py::start_watcher"));
+        // A store without the FTS table names rebuild_fts, never empties.
+        // The diagnostic conn is readonly, so drop via a throwaway local
+        // connection against the live store (no reopen: `open` verifies the
+        // schema and would refuse the tampered file first).
+        let path = dir.path().join("t.db");
+        runtime().block_on(async {
+            let db = libsql::Builder::new_local(&path).build().await.unwrap();
+            let conn = db.connect().unwrap();
+            conn.execute("DROP TABLE concepts_fts", libsql::params![])
+                .await
+                .unwrap();
+        });
+        let err = store.search_symbols("watcher", 10, false).unwrap_err();
+        assert!(format!("{err:?}").contains("rebuild_fts"), "got: {err:?}");
+    }
+
     /// One row per id, so the count is also an assertion that retirement
     /// replaces the current row rather than adding a second live one.
     fn live_concept_ids(store: &CodeGraphStore) -> Vec<String> {
@@ -2178,6 +2877,7 @@ mod tests {
                 "foo",
                 serde_json::json!({"meta_version": 2, "content_hash": hash}),
                 &now,
+                None,
             )
         };
         // Fresh id writes once, identical re-upsert writes nothing.
@@ -2192,6 +2892,7 @@ mod tests {
             "foo_renamed",
             serde_json::json!({"meta_version": 2, "content_hash": "def"}),
             &now,
+            None,
         );
         assert_eq!(store.upsert_concepts_bulk(&[renamed]).unwrap(), 1);
         // Retired-flag flip writes even with identical content (separate id
@@ -2202,11 +2903,17 @@ mod tests {
                 "qux",
                 serde_json::json!({"meta_version": 2, "content_hash": "def"}),
                 &now,
+                None,
             )
         };
         assert_eq!(store.upsert_concepts_bulk(&[mk_qux()]).unwrap(), 1);
         let tombstone = mk_qux().retired(true);
-        assert_eq!(store.upsert_concepts_bulk(&[tombstone.clone()]).unwrap(), 1);
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(std::slice::from_ref(&tombstone))
+                .unwrap(),
+            1
+        );
         assert_eq!(store.upsert_concepts_bulk(&[tombstone]).unwrap(), 0);
         // Unhashable content always rewrites (safe direction).
         let bare = v2_upsert(
@@ -2214,8 +2921,14 @@ mod tests {
             "bar",
             serde_json::json!({"meta_version": 2}),
             &now,
+            None,
         );
-        assert_eq!(store.upsert_concepts_bulk(&[bare.clone()]).unwrap(), 1);
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(std::slice::from_ref(&bare))
+                .unwrap(),
+            1
+        );
         assert_eq!(store.upsert_concepts_bulk(&[bare]).unwrap(), 1);
         // A meta_version-less row with matching hash still upgrades (the
         // v1-store upgrade path); afterwards it skips like any v2 row.
@@ -2230,8 +2943,14 @@ mod tests {
             "v1",
             serde_json::json!({"meta_version": 2, "content_hash": "abc"}),
             &now,
+            None,
         );
-        assert_eq!(store.upsert_concepts_bulk(&[modern.clone()]).unwrap(), 1);
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(std::slice::from_ref(&modern))
+                .unwrap(),
+            1
+        );
         assert_eq!(store.upsert_concepts_bulk(&[modern]).unwrap(), 0);
 
         // App metadata drift is a real concept change even when the content
@@ -2247,6 +2966,7 @@ mod tests {
                     "content_hash": "stable",
                 }),
                 &now,
+                None,
             )
         };
         assert_eq!(
@@ -2290,6 +3010,7 @@ mod tests {
                     "content_hash": "same-hash",
                 }),
                 &now,
+                None,
             )
         };
         store
@@ -2359,6 +3080,7 @@ mod tests {
                     "content_hash": "same-hash",
                 }),
                 &now,
+                None,
             )
         };
         store
@@ -2496,5 +3218,197 @@ mod tests {
 
         assert_eq!((concepts, edges), (0, 0), "nothing left open to close");
         assert_eq!(live_concept_ids(&store).len(), 2);
+    }
+
+    /// §0.1(a) (DR-9): `reconstruct(T)` folds on recorded time, not valid
+    /// time. A retroactive correction — `valid_from` backdated, recorded now
+    /// — is invisible at any T before its recording. The honest-Snapshot
+    /// surface depends on this: `as_of(T)` answers "what was RECORDED by
+    /// T", and a pre-history T reports `predates_recorded_history` instead
+    /// of an error or a valid-time guess.
+    #[test]
+    fn reconstruct_is_recorded_time_not_valid_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bitemporal.db");
+        let store = CodeGraphStore::open(&path).unwrap();
+        let concept = macrame::ConceptUpsert::new("retro.py::module", "retro")
+            .content(r#"{"meta_version": 2, "kind": "module"}"#)
+            .valid_from("2000-01-01T00:00:00.000000Z".to_string())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[concept]).unwrap(), 1);
+        // The backdated write was recorded NOW, so a mid-past T sees
+        // nothing — and knows it predates the recorded history.
+        let mid = store.reconstruct("2020-06-15T12:00:00.000000Z").unwrap();
+        assert!(
+            !mid.concepts.contains_key("retro.py::module"),
+            "recorded-now write must be invisible at a pre-recording T"
+        );
+        assert!(
+            mid.predates_recorded_history,
+            "a T before the first recorded write must say so distinctly"
+        );
+        // …while the present sees the backdated concept fine.
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let now = store.reconstruct(&now_iso8601()).unwrap();
+        assert!(now.concepts.contains_key("retro.py::module"));
+    }
+
+    /// §1.9 (DR-25): digest validation at the persistence boundary.
+    #[test]
+    fn validate_digest_accepts_canonical_rejects_rest() {
+        assert!(validate_digest(&"a".repeat(64)).is_ok());
+        assert!(validate_digest(&"0123456789abcdef".repeat(4)).is_ok());
+        // Short, long, uppercase, non-hex, empty.
+        assert!(validate_digest(&"a".repeat(63)).is_err());
+        assert!(validate_digest(&"a".repeat(65)).is_err());
+        assert!(validate_digest(&"A".repeat(64)).is_err());
+        assert!(validate_digest(&"g".repeat(64)).is_err());
+        assert!(validate_digest("").is_err());
+    }
+
+    /// §1.9 (DR-25): the extra read boundary — legacy generations (no key)
+    /// and malformed digests read as absent, never as errors.
+    #[test]
+    fn source_blob_of_extra_reads_new_and_legacy() {
+        let digest = "b".repeat(64);
+        let with = format!(r#"{{"coderadar":{{"format":1,"source_blob":"{digest}"}}}}"#);
+        assert_eq!(
+            source_blob_of_extra(&with).as_deref(),
+            Some(digest.as_str())
+        );
+        // Legacy: no source_blob key.
+        assert_eq!(source_blob_of_extra(r#"{"coderadar":{"format":1}}"#), None);
+        // Malformed: uppercase digest reads as absent.
+        let bad = r#"{"coderadar":{"format":1,"source_blob":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}"#;
+        assert_eq!(source_blob_of_extra(bad), None);
+        // Not JSON at all.
+        assert_eq!(source_blob_of_extra("not json"), None);
+    }
+
+    /// §1.9 (DR-25): put round-trip + idempotent retry (the
+    /// failure-injection property without hooks — a put with no following
+    /// assert is an orphan; retry converges on the same digest, one row).
+    #[test]
+    fn blob_put_retry_converges_on_one_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("retry.db")).unwrap();
+        let bytes = b"def f():\n    return 1\n";
+        // First put (imagine the crash before any digest assert).
+        let first = store.put_source_blob("a.py", bytes).unwrap();
+        let digest = match &first {
+            BlobOutcome::Stored { digest, .. } => digest.clone(),
+            other => panic!("expected Stored, got {other:?}"),
+        };
+        // Retry: same digest, and still exactly one blob row.
+        let second = store.put_source_blob("a.py", bytes).unwrap();
+        assert_eq!(second, first);
+        let n: i64 = runtime().block_on(async {
+            let mut rows = store
+                .db
+                .read_conn()
+                .query("SELECT COUNT(*) FROM blobs", ())
+                .await
+                .unwrap();
+            rows.next().await.unwrap().unwrap().get(0).unwrap()
+        });
+        assert_eq!(n, 1, "content-addressed: one row for identical bytes");
+        // And the bytes come back.
+        let back: Vec<u8> = runtime()
+            .block_on(store.db.blob_get(&digest))
+            .unwrap()
+            .unwrap();
+        assert_eq!(back, bytes);
+    }
+
+    /// §1.9 (DR-25): oversize degrades to skip+count, never an index failure.
+    #[test]
+    fn blob_put_oversize_skips() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("big.db")).unwrap();
+        let big = vec![0u8; BLOB_MAX_BYTES + 1];
+        match store.put_source_blob("big.py", &big).unwrap() {
+            BlobOutcome::SkippedOversize { bytes } => {
+                assert_eq!(bytes, (BLOB_MAX_BYTES + 1) as u64)
+            }
+            other => panic!("expected SkippedOversize, got {other:?}"),
+        }
+    }
+
+    /// §1.9 (DR-25): policy skips — kill-switch and secret defaults.
+    #[test]
+    fn blob_put_honors_kill_switch_and_excludes() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("policy.db")).unwrap();
+        // Secret default: .env gets graph coverage, no blob.
+        assert_eq!(
+            store.put_source_blob(".env", b"KEY=1\n").unwrap(),
+            BlobOutcome::SkippedExcluded
+        );
+        assert_eq!(
+            store.put_source_blob("sub/creds.env", b"x\n").unwrap(),
+            BlobOutcome::SkippedExcluded
+        );
+        // Ordinary file stores.
+        assert!(matches!(
+            store.put_source_blob("app.py", b"x\n").unwrap(),
+            BlobOutcome::Stored { .. }
+        ));
+    }
+
+    /// §1.9 (DR-25): backfill-once — a module extra missing `source_blob`
+    /// counts as changed (re-persist asserts the digest); once present and
+    /// equal, the concept filters unchanged (zero-growth).
+    #[test]
+    fn missing_digest_forces_repersist_then_filters() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("backfill.db")).unwrap();
+        let now = now_iso8601();
+        let content = serde_json::json!({"meta_version": 2, "kind": "module", "content_hash": "h"});
+        // Legacy-shaped (no digest) vs current without digest: stable.
+        let legacy = v2_upsert("m.py::module", "m", content.clone(), &now, None);
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(std::slice::from_ref(&legacy))
+                .unwrap(),
+            1
+        );
+        assert_eq!(store.upsert_concepts_bulk(&[legacy]).unwrap(), 0);
+        // Same content WITH a digest: changed (backfill), then stable.
+        let digest = "c".repeat(64);
+        let filled = v2_upsert("m.py::module", "m", content, &now, Some(&digest));
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(std::slice::from_ref(&filled))
+                .unwrap(),
+            1
+        );
+        assert_eq!(store.upsert_concepts_bulk(&[filled]).unwrap(), 0);
+    }
+
+    /// §0.6 (DR-25): the 0.19 blob surface round-trips through a store
+    /// opened by `CodeGraphStore` — and a missing digest reads as absent
+    /// (None), not error, which is how pre-0.19 cold files must behave
+    /// after the v21 -> v22 migration.
+    #[test]
+    fn blob_put_get_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("blobs.db");
+        let store = CodeGraphStore::open(&path).unwrap();
+        let bytes = b"def f():\n    return 1\n";
+        let digest = runtime().block_on(store.db.blob_put(bytes)).unwrap();
+        assert_eq!(digest.len(), 64, "sha256 hex: {digest:?}");
+        assert!(
+            digest
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "lowercase hex: {digest:?}"
+        );
+        let back = runtime().block_on(store.db.blob_get(&digest)).unwrap();
+        assert_eq!(back.as_deref(), Some(bytes.as_slice()));
+        let missing = runtime()
+            .block_on(store.db.blob_get(&"0".repeat(64)))
+            .unwrap();
+        assert_eq!(missing, None, "unknown digest reads as absent");
     }
 }

@@ -1,7 +1,7 @@
 """Live mutation battery — applied ONLY to tests/cr_edit_tests/demo_* files.
 
 Every mutating call targets an entity inside tests/cr_edit_tests/. After each
-applied mutation the file on disk is re-checked, `codegraph_update_file` is
+applied mutation the file on disk is re-checked, `coderadar_update_file` is
 called, and the graph is queried to confirm the edit landed. At the end all
 demo files are restored from git.
 

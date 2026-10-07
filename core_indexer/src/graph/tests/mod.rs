@@ -12,6 +12,7 @@ mod mro_tests;
 mod persistence_tests;
 mod projection_tests;
 mod query_compile_tests;
+mod suffix_winner_tests;
 mod traversal_tests;
 
 fn make_call_node(g: &mut CallGraph, id: &str) -> NodeIndex {

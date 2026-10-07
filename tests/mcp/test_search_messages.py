@@ -12,8 +12,8 @@ import os
 from pathlib import Path
 
 import pytest
+from coderadar import render
 from coderadar.mcp import lazy, startup
-from coderadar.mcp import server as server_mod
 
 try:
     from coderadar._core import analyze as _analyze
@@ -36,20 +36,20 @@ def _clean_handles(tmp_path):
 
 
 def test_multi_token_miss_lists_the_tokens():
-    msg = server_mod._search_miss_message("SyncNode exchange_with", None)
+    msg = render.search_miss("SyncNode exchange_with", None)
     assert "No results found for 'SyncNode exchange_with'" in msg
     assert "`SyncNode`" in msg and "`exchange_with`" in msg
     # The miss explains the OR semantics and points at the escape hatches.
     assert "OR" in msg
-    assert "codegraph_search_similar" in msg
-    assert "codegraph_explore" in msg
+    assert "coderadar_search_similar" in msg
+    assert "coderadar_explore" in msg
 
 
 def test_single_token_miss_names_the_match_scope():
-    msg = server_mod._search_miss_message("fool", "function")
+    msg = render.search_miss("fool", "function")
     assert "(kind: function)" in msg
     assert "name" in msg and "signature" in msg and "docstring" in msg
-    assert "codegraph_search_similar" in msg
+    assert "coderadar_search_similar" in msg
     # No OR explanation for a single token.
     assert "Tokens are matched independently" not in msg
 
@@ -83,7 +83,7 @@ def test_real_miss_message_end_to_end(project):
     msg = _search(graph, "zzzqqq xynx", None, 10)
     assert "No results found for 'zzzqqq xynx'" in msg
     assert "`zzzqqq`" in msg and "`xynx`" in msg
-    assert "codegraph_search_similar" in msg
+    assert "coderadar_search_similar" in msg
 
     # A real hit is unaffected by the miss wording.
     msg = _search(graph, "real_symbol", None, 10)

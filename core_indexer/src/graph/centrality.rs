@@ -11,7 +11,7 @@
 //
 // Normalized to 0..=1 for stable thresholds and stable display ordering.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 use crate::types::{EntityId, ProjectedGraph};
 
@@ -59,8 +59,8 @@ pub fn harmonic_centrality(graph: &ProjectedGraph, max_depth: usize) -> HashMap<
 /// changes. Snapshots carry no timestamp, so the revision key is a cheap
 /// content fingerprint: function count ⊕ all body hashes + caller index
 /// size — any edit changes at least one hash.
-static CENTRALITY_CACHE: std::sync::Mutex<Option<((u64, usize), HashMap<EntityId, f64>)>> =
-    std::sync::Mutex::new(None);
+type CentralityEntry = ((u64, usize), HashMap<EntityId, f64>);
+static CENTRALITY_CACHE: std::sync::Mutex<Option<CentralityEntry>> = std::sync::Mutex::new(None);
 
 fn graph_revision(graph: &ProjectedGraph) -> (u64, usize) {
     let mut fp: u64 = graph.functions.len() as u64;
@@ -118,7 +118,7 @@ mod tests {
         for name in &names {
             g.functions.insert(name.clone(), Arc::new(func(name)));
         }
-        let mut edge = |g: &mut ProjectedGraph, caller: &str, callee: &str| {
+        let edge = |g: &mut ProjectedGraph, caller: &str, callee: &str| {
             g.callees_by_caller
                 .entry(caller.into())
                 .or_default()

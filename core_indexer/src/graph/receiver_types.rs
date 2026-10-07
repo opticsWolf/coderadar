@@ -411,15 +411,41 @@ impl<'a> TypeCtx<'a> {
         target.filter(|id| is_plain_callable(id) && id != fid)
     }
 
-    /// The method a call `path.name(...)` made inside function `fid` binds to.
-    /// Kept for the direct call-edge path; the value path (with evidence and
-    /// construction fallback) is `resolve_call_value`.
-    pub fn resolve_method_call(&self, fid: &str, path: &[String], name: &str) -> Option<EntityId> {
-        self.resolve_call_value(fid, path, name)
-            .and_then(|t| match t {
-                crate::types::CallTarget::Method(m, _) => Some(m),
-                crate::types::CallTarget::Ctor(_) => None,
-            })
+    /// The function a call or reference `path.name` made by module-level code
+    /// (a statement, class body or decorator in `module_id`) points at.
+    /// Naming a class reaches its `__init__`.
+    pub fn resolve_module_use(
+        &self,
+        module_id: &str,
+        path: &[String],
+        name: &str,
+    ) -> Option<EntityId> {
+        let module_level = |id: &EntityId| self.func(id).is_some_and(|g| g.parent_class.is_none());
+        if path.is_empty() {
+            let Some(id) = find_symbol_in_module(self.projection, module_id, name) else {
+                // A class body reads its own earlier defs by bare name:
+                // `value = property(_get_value)`.
+                let module = self.projection.modules.get(module_id)?;
+                return module.functions.iter().find_map(|fid| {
+                    let g = self.func(fid)?;
+                    (g.name == name && g.parent_class.is_some()).then(|| fid.clone())
+                });
+            };
+            if self.projection.classes.contains_key(&id) {
+                return self.method_of(&id, "__init__");
+            }
+            return Some(id).filter(module_level);
+        }
+        let (head, last) = path.split_at(path.len() - 1);
+        if let Some(c) = self.class_of_ref(module_id, head, &last[0]) {
+            return self.method_of(&c, name);
+        }
+        let m = find_module_by_dotted_name(self.projection, &path.join("."), module_id)?;
+        let id = find_symbol_in_module(self.projection, &m, name)?;
+        if self.projection.classes.contains_key(&id) {
+            return self.method_of(&id, "__init__");
+        }
+        Some(id).filter(module_level)
     }
 
     /// A call `path.name(...)` either resolves to a method (`Method`, with

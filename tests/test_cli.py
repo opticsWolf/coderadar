@@ -88,14 +88,39 @@ class TestOneCommandPerName:
         assert "mutations" not in main.commands
 
 
+class TestRenamedTools:
+    """P2 renamed-tool checks: old spellings work AND carry the 0.13 notice."""
+    @pytest.mark.parametrize("old,new", [
+        ("analyze", "reindex --full"),
+        ("rebuild", "reindex --full"),
+        ("update", "update-file"),
+        ("stats", "status"),
+    ])
+    def test_old_spelling_prints_removal_notice(self, old, new):
+        import io
+        from contextlib import redirect_stderr
+
+        from coderadar.cli import _renamed
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            _renamed(old, new)
+        out = buf.getvalue()
+        assert new in out
+        assert "0.13" in out
+
+    def test_old_spellings_still_registered(self):
+        for old in ("analyze", "rebuild", "update", "stats"):
+            assert old in main.commands
+
+
 class TestCommandsThatUsedToAnswerNothing:
-    def test_rebuild_actually_indexes(self, run):
-        result = run("rebuild", ".")
+    def test_reindex_actually_indexes(self, run):
+        result = run("reindex", "--full")
 
         assert result.exit_code == 0, result.output
         # It used to print "Rebuilding..." and return.
-        assert "function(s)" in result.output
-        assert "0 function(s)" not in result.output
+        assert "Functions:" in result.output
+        assert "Functions:** 0" not in result.output
 
     def test_status_reports_the_project_not_a_slogan(self, run):
         result = run("status")

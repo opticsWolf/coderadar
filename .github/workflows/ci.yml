@@ -3,8 +3,12 @@ name: CI
 on:
   push:
     branches: [main, dev]
+    paths-ignore:
+      - 'website/**'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'website/**'
 
 jobs:
   test-rust:
@@ -68,11 +72,11 @@ jobs:
         run: uv run pytest -q
 
   lint:
-    name: Lint (advisory)
+    name: Lint (blocking)
     runs-on: ubuntu-latest
-    # Non-blocking for now: these surface the existing warning backlog
-    # (plan §5.2) without gating merges. Flip to blocking once it is cleared.
-    continue-on-error: true
+    # Blocking since v0.11.14 (P4 hygiene): clippy 0, rustfmt clean,
+    # ruff check clean. Keep it at zero — flip back to advisory (with a
+    # reason) rather than landing warnings.
     steps:
       - uses: actions/checkout@v4
 
@@ -93,7 +97,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: cargo clippy
-        run: cargo clippy --package core_indexer --all-targets
+        run: cargo clippy --package core_indexer --all-targets -- -D warnings
 
       - name: ruff
         # Pinned: unpinned `uvx ruff` drifted defaults under us before

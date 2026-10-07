@@ -132,6 +132,62 @@ def stale_source_files(project_root: Path, db_path: Path,
     return stale
 
 
+def _toml_exclude_state(root: Path) -> tuple[bool, list, float | None]:
+    """The `[project] exclude` the walk would honor: (exists, patterns, mtime)."""
+    toml = root / ".coderadar.toml"
+    try:
+        if not toml.is_file():
+            return False, [], None
+        mtime = os.path.getmtime(toml)
+    except OSError:
+        return False, [], None
+    try:
+        import tomllib
+
+        with open(toml, "rb") as fh:
+            data = tomllib.load(fh)
+        pats = data.get("project", {}).get("exclude", [])
+        return True, list(pats or []), mtime
+    except Exception:  # noqa: BLE001 - broken toml means "no usable config"
+        return True, [], None
+
+
+def _record_indexed_config(root: str | Path) -> None:
+    """Snapshot the config the just-finished analyze honored (DR-31)."""
+    resolved = Path(root).expanduser().resolve()
+    marker = resolved / ".coderadar"
+    if not marker.is_dir():
+        return
+    exists, pats, mtime = _toml_exclude_state(resolved)
+    try:
+        import json
+
+        (marker / "indexed_config.json").write_text(
+            json.dumps({"exclude": pats, "toml_present": exists, "toml_mtime": mtime})
+        )
+    except OSError:
+        pass
+
+
+def _indexed_config_changed(root: Path) -> bool:
+    """True when the config differs from what the store was indexed with."""
+    import json
+
+    exists, pats, mtime = _toml_exclude_state(root)
+    try:
+        recorded = json.loads((root / ".coderadar" / "indexed_config.json").read_text())
+    except (OSError, ValueError):
+        # Legacy store with no sidecar: only force a walk when excludes
+        # exist that were never recorded — otherwise preserve the cheap path.
+        return exists and bool(pats)
+    if recorded.get("toml_present") != exists:
+        return True
+    if recorded.get("exclude", []) != pats:
+        return True
+    old_mtime = recorded.get("toml_mtime")
+    return old_mtime is not None and mtime is not None and mtime != old_mtime
+
+
 def build_graph(root: str | Path = ".", create_store: bool = False):
     """A current CodeGraph for `root`, the cheap way to get one.
 
@@ -182,6 +238,17 @@ def build_graph(root: str | Path = ".", create_store: bool = False):
                     # Corrupt, foreign, or v1 store. The full analyze also
                     # performs the v1 -> v2 upgrade; do not report the load
                     # error — analyze succeeding is the answer.
+                    coderadar.analyze(root_str, create_store=create_store)
+                    return graph
+                # BUGS_QUIRKS #3 (DR-31): a `.coderadar.toml` change alone
+                # never marked the store stale — the cheap path loaded old
+                # files and no re-walk applied the new excludes. A changed
+                # config forces the full analyze, which honors excludes
+                # (R2-7) and retracts newly-excluded concepts. Compared by
+                # content (recorded at analyze time), not by mtime: routine
+                # store touches (planner stats, checkpoints) rewrite the db
+                # file after the toml edit and defeat mtime comparison.
+                if _indexed_config_changed(resolved):
                     coderadar.analyze(root_str, create_store=create_store)
                     return graph
                 if not store_is_fresh(resolved, db):

@@ -44,6 +44,8 @@ pub struct ColdStartStats {
     pub imports: usize,
     pub constants: usize,
     pub type_aliases: usize,
+    /// Framework routes (§1.3) restored as entities.
+    pub routes: usize,
     /// Pairs restored into the call indices from `resolved_calls`.
     pub resolved_call_pairs: usize,
     /// Non-structural (synthetic-kind) ledger edges restored into the
@@ -63,6 +65,7 @@ impl ColdStartStats {
             imports: 0,
             constants: 0,
             type_aliases: 0,
+            routes: 0,
             resolved_call_pairs: 0,
             synthetic_edges: 0,
             skipped_field_concepts: 0,
@@ -86,6 +89,7 @@ pub fn projection_from_state(
         imports: HashMap::new(),
         constants: HashMap::new(),
         type_aliases: HashMap::new(),
+        routes: HashMap::new(),
         file_to_modules: HashMap::new(),
         module_by_dotted_name: HashMap::new(),
         module_path_index: HashMap::new(),
@@ -133,6 +137,10 @@ pub fn projection_from_state(
                 V2Entity::TypeAlias(t) => {
                     g.type_aliases.insert(t.id.clone(), Arc::new(t));
                     stats.type_aliases += 1;
+                }
+                V2Entity::Route(r) => {
+                    g.routes.insert(r.id.clone(), Arc::new(r));
+                    stats.routes += 1;
                 }
             },
         }
@@ -273,6 +281,7 @@ mod tests {
             imports: HashMap::new(),
             constants: HashMap::new(),
             type_aliases: HashMap::new(),
+            routes: HashMap::new(),
             file_to_modules: HashMap::new(),
             module_by_dotted_name: HashMap::new(),
             module_path_index: HashMap::new(),
@@ -298,6 +307,9 @@ mod tests {
                 package: None,
                 exports: Vec::new(),
                 star_exports: None,
+                uses: Vec::new(),
+                resolved_uses: Vec::new(),
+                attr_reads: Vec::new(),
                 classes: vec!["a.py::C".to_string()],
                 functions: vec!["a.py::foo".to_string(), "a.py::bar".to_string()],
                 imports: vec![],
@@ -431,7 +443,7 @@ mod tests {
     }
 
     fn state_from(g: &ProjectedGraph, edges: Vec<(String, String, String)>) -> MaterializedState {
-        let concepts = build_v2_concepts_all(g);
+        let concepts = build_v2_concepts_all(g, &std::collections::HashMap::new());
         let mut map = HashMap::new();
         for c in &concepts {
             map.insert(

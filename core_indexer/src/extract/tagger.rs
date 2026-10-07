@@ -60,7 +60,7 @@ pub fn tag_tree<'a>(
             let idx = capture.index as usize;
             if idx < compiled.capture_tags.len() {
                 if let Some(ref tag) = compiled.capture_tags[idx] {
-                    tags.insert(capture.node.id() as usize, TagInfo { tag: *tag });
+                    tags.insert(capture.node.id(), TagInfo { tag: *tag });
                 }
             }
         }

@@ -114,7 +114,7 @@ def _dot_dependency_graph(args: list, graph: Any | None = None) -> str:
     if not edges:
         raise NothingToVisualize(
             "No module dependencies in the index. Run `coderadar init` or "
-            "`coderadar analyze` in the project first."
+            "`coderadar reindex` in the project first."
         )
 
     # Find SCCs and highlight cycles
@@ -224,7 +224,7 @@ def _dot_class_hierarchy(args: list, graph: Any | None = None) -> str:
     if len(lines) == 4:
         raise NothingToVisualize(
             "No classes in the index. Run `coderadar init` or "
-            "`coderadar analyze` in the project first."
+            "`coderadar reindex` in the project first."
         )
 
     lines.append("}")
@@ -339,7 +339,7 @@ def _dot_call_graph(args: list, graph: Any | None = None) -> str:
         raise NothingToVisualize(
             f"No call edges found {'from' if direction == 'out' else 'to'} "
             f"`{func_name}`. Either the index is empty (run `coderadar "
-            f"init` or `coderadar analyze` in the project first) or that "
+            f"init` or `coderadar reindex` in the project first) or that "
             f"function neither calls nor is called by anything indexed."
         )
 
