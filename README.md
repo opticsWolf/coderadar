@@ -303,6 +303,43 @@ CodeRadar detects and extracts framework-specific patterns that tree-sitter can'
 
 Framework edges are registered in the Rust graph — agents can trace from URL patterns to handler functions via `callers()` / `callees()`.
 
+## v0.12.0 Highlights — history becomes real
+
+Source history, keyword search, framework routes, Rust resolution, and
+agent enablement — the full v0.12 plan per its release gate (see
+`CHANGELOG.md`).
+
+- **Source history in blobs (DR-25).** Every indexed generation puts its
+  bytes as SHA-256 content-addressed blobs (`macrame-db` 0.19); the digest
+  rides `extra.coderadar.source_blob`, diffs compute on read.
+  `Snapshot.read_bytes` serves exact bytes-at-T (CRLF included), `read_source`
+  the display form; missing blobs are `ContentUnavailable`, distinct from
+  absent-at-T. `[retention] archive_after_days` moves cold bytes to a
+  sibling archive file (hot+cold backup + restore tested); analyze never
+  auto-archives. Default-on-with-notice (DR-30): blob counts on every
+  report surface are the notice; kill-switch
+  `[database] store_source_blobs=false`.
+- **FTS5 keyword search (DR-34).** `search_symbols()` over
+  trigger-maintained `concepts_fts` — escaped-by-default, live-only,
+  single-digit milliseconds; Python-API-only by design.
+- **Framework routes (DR-10).** Routes are canonical `route` concepts with
+  persisted route→handler edges; `resolve /users/:id` follows them, with
+  zero tree walks at steady state.
+- **Rust cross-module resolution (DR-13).** `use` parsing (groups, globs,
+  aliases, `crate`/`super`/`self` roots) + `::` call chains; `Self::assoc`
+  and `Enum::Variant` resolve; self-corpus asserted edges 999 → 1320,
+  dead-code findings 100 → 57.
+- **Embeddings Phase 1 (DR-11).** Model id + preprocessing in the dedup key,
+  write/query dimension gates, `recompute` flag on every surface;
+  persistence stays 0.13.
+- **Agent enablement (P2).** `skills/coderadar-mcp` + `skills/coderadar-cli`
+  (repo source of truth, registry drift-tested), release-gate history proof
+  (`as_of` → old/new names *and* bytes), read-path discipline pinned.
+- **Upstream fix.** `macrame-db` 0.19.1 repairs the historical loader
+  (opticsWolf/Macrame#3) via the bitemporal composition; the rename-fixture
+  reproducer is green and un-ignored, production stays on the state fold by
+  decision.
+
 ## v0.11.0 Highlights — one surface
 
 One name per operation on all three surfaces: the MCP tool
@@ -347,43 +384,6 @@ stderr, and are hidden from `--help`)
 | `coderadar stats` | `coderadar status` |
 | `coderadar blame` / `git-clean` / `git-diff` | `coderadar git blame` / `git is-clean` / `git diff` |
 | `coderadar traverse --depth/--edges` | `--max-depth/--edge-kinds` |
-
-## v0.12.0 Highlights — history becomes real
-
-Source history, keyword search, framework routes, Rust resolution, and
-agent enablement — the full v0.12 plan per its release gate (see
-`CHANGELOG.md`).
-
-- **Source history in blobs (DR-25).** Every indexed generation puts its
-  bytes as SHA-256 content-addressed blobs (`macrame-db` 0.19); the digest
-  rides `extra.coderadar.source_blob`, diffs compute on read.
-  `Snapshot.read_bytes` serves exact bytes-at-T (CRLF included), `read_source`
-  the display form; missing blobs are `ContentUnavailable`, distinct from
-  absent-at-T. `[retention] archive_after_days` moves cold bytes to a
-  sibling archive file (hot+cold backup + restore tested); analyze never
-  auto-archives. Default-on-with-notice (DR-30): blob counts on every
-  report surface are the notice; kill-switch
-  `[database] store_source_blobs=false`.
-- **FTS5 keyword search (DR-34).** `search_symbols()` over
-  trigger-maintained `concepts_fts` — escaped-by-default, live-only,
-  single-digit milliseconds; Python-API-only by design.
-- **Framework routes (DR-10).** Routes are canonical `route` concepts with
-  persisted route→handler edges; `resolve /users/:id` follows them, with
-  zero tree walks at steady state.
-- **Rust cross-module resolution (DR-13).** `use` parsing (groups, globs,
-  aliases, `crate`/`super`/`self` roots) + `::` call chains; `Self::assoc`
-  and `Enum::Variant` resolve; self-corpus asserted edges 999 → 1320,
-  dead-code findings 100 → 57.
-- **Embeddings Phase 1 (DR-11).** Model id + preprocessing in the dedup key,
-  write/query dimension gates, `recompute` flag on every surface;
-  persistence stays 0.13.
-- **Agent enablement (P2).** `skills/coderadar-mcp` + `skills/coderadar-cli`
-  (repo source of truth, registry drift-tested), release-gate history proof
-  (`as_of` → old/new names *and* bytes), read-path discipline pinned.
-- **Upstream fix.** `macrame-db` 0.19.1 repairs the historical loader
-  (opticsWolf/Macrame#3) via the bitemporal composition; the rename-fixture
-  reproducer is green and un-ignored, production stays on the state fold by
-  decision.
 | `CodeGraph.find` | `CodeGraph.node` |
 | `CodeGraph.callers_of` / `callees_of` | `callers` / `callees` |
 | `CodeGraph.plan_body_replacement` / `plan_signature_update` | `plan_replace_body` / `plan_update_signature` |
