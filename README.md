@@ -340,42 +340,65 @@ agent enablement — the full v0.12 plan per its release gate (see
   reproducer is green and un-ignored, production stays on the state fold by
   decision.
 
-## v0.11.0 Highlights — one surface
+## Feature highlights — v0.5 → v0.11
 
-One name per operation on all three surfaces: the MCP tool
-`coderadar_<op>`, the CLI command `coderadar <op>` (underscores become
-hyphens) and the `CodeGraph` method `<op>`. All three call the same
-`coderadar.ops` function, and the tools and commands print the same
-`coderadar.render` text; `tests/test_surface_parity.py` keeps it that way.
+Everything below shipped before v0.12 and still holds. Per-version detail
+lives in `CHANGELOG.md`; the numbers are CI-guarded (1512 tests and
+counting, clippy/ruff/fmt green and blocking, 100/100 resolution
+precision-recall on the benchmark corpus).
 
-**Breaking — MCP tool names.** The 17 `codegraph_*` tools are now
-`coderadar_*` (`codegraph_explore` → `coderadar_explore`, …), so every tool
-shares one prefix. `coderadar_node` and `coderadar_affected` take
-`entity_id` instead of `id`. Update client allow-lists and scripts that call
-tools by name.
+**Index & serve.** Single-pass tree-sitter extraction (41 grammars: 12
+Tier-1 with signature tests, 29 Tier-2), parallel pipeline, per-file
+incremental `update_file` plus a debounced file watcher. The MCP server and
+CLI cold-start from the Macrame ledger instead of re-indexing every session
+(`build_graph`: load + refresh changed files only); the last project per
+launch directory persists across restarts. Canonical forward-slash ids on
+every path, one shared exclude matcher, `store-repair` + auto-retirement for
+legacy rows, `-C/--project` with marker walk-up from any subdirectory.
 
-**New**
+**Resolution.** `self` attribute calls, typed locals and constructor results
+resolve to real edges; relative imports, aliases, function-local imports,
+module initializers, and transitive re-export chains all produce edges.
+Thirteen framework resolvers (Django, Flask, FastAPI, Express, Rails,
+NestJS, Vue/React Router, …) register route → handler edges in the graph.
+Cross-file MRO with populated subclasses/importers/overrides indexes.
+Rename rewrites attribute call sites and cascades base/override renames;
+what the graph cannot resolve is reported as `unverified_sites`, never
+silently skipped.
 
-- `coderadar_status` (MCP), `coderadar status`, `CodeGraph.status()`: the
-  served project, its config and store, and how fresh the index is.
-- CLI commands for every operation: `explore`, `node`, `search`,
-  `affected`, `resolve`, `search-similar`, `compute-embeddings`,
-  `module-children`, `as-of`, `get-smells`, `dead-code`, `find-clones`,
-  `find-scaffolding`, `replace-body`, `update-signature`, `rename`,
-  `create-entity`, `reindex`, `update-file`. Each takes `--format json`;
-  edits are dry runs unless `--apply`. Errors go to stderr, exit 2 for bad
-  input and 1 otherwise.
-- `-C/--project`, and the CLI works from any directory inside a project:
-  it walks up to the nearest `.coderadar` marker, as the MCP server does.
-- `CodeGraph` methods for the operations it lacked: `node`, `callers`,
-  `callees`, `replace_body`, `update_signature`, `rename`, `create_entity`,
-  `reindex`, `status`; `explore` now returns what `coderadar_explore` shows.
-- `update_file` on a file deleted from disk drops it from the graph.
-- `coderadar traverse` follows every edge kind by default, like the tool.
-- Piped CLI output is UTF-8 on every platform.
+**Read.** A real query language (`functions where …`, generated reference,
+"did you mean" on unknown fields) next to multi-token `search_entities`,
+embedding `search_similar`, whole-graph `traverse` over all four asserted
+edge kinds with honest `unresolved` targets, temporal `as_of`, blast-radius
+`affected` (centrality-ranked), and `diagnose`. Misses say which tokens
+were tried and where to look next.
 
-**Renamed** (old names still work, with a `DeprecationWarning` or a note on
-stderr, and are hidden from `--help`)
+**Analysis.** Twelve smell rules with confidence tiers and strictness
+profiles; deterministic token→MinHash→LSH→TED clone detection
+(byte-identical across processes); reachability dead code from an
+entry-point ladder (framework decorators, protocol members, public API,
+`pyproject` scripts, `__all__`) with evidence and distances — self-corpus
+findings fell 269 → 121 as resolution improved while recall held 99.97 %.
+CFG metrics, harmonic centrality, and a scaffolding/secrets scanner
+round it out.
+
+**Mutate.** Plan-then-apply with byte-span verification: every edit carries
+a content hash (stale writes rejected), the written file must parse
+(failures diagnose, never silently apply), docstrings survive body replace,
+and method renames cascade. Dry-run unless applied; the allow-list is
+root-anchored; the watcher's write guard skips the engine's own writes.
+
+**Surfaces.** 26 operations, one name each — `coderadar_<op>` (MCP),
+`coderadar <op>` (CLI), `CodeGraph.<op>()` — all calling one shared `ops`
+function, pinned by parity tests. CLI takes `--format json`, logs to
+stderr (exit 2 bad input, 1 otherwise), pipes UTF-8 everywhere; `status`
+reports project, config, store, and freshness.
+
+
+### Renamed in v0.11 (removed in 0.13)
+
+Old names still work with a `DeprecationWarning` or a stderr note, hidden from `--help`.
+Update client allow-lists and scripts that call tools by name: the 17 `codegraph_*` tools are now `coderadar_*`, and `node`/`affected` take `entity_id`.
 
 | Old | New |
 |-----|-----|
@@ -390,418 +413,8 @@ stderr, and are hidden from `--help`)
 | `CodeGraph.explore(start_id=…, max_depth=…)` (call-graph walk) | `CodeGraph.traverse` |
 | `CodeGraph.traverse(edge_types=…)` | `edge_kinds=…` |
 
-## v0.10.0 Highlights — precision
-
-The 0.10 release is one theme: **findings you can act on**. Every phase was
-measured against a corpus before and after, and the numbers are guarded by
-CI (the benchmark write-up was retired into the knowledge graph).
-
-| | before | after |
-|---|---|---|
-| Dead-code findings on this repo (449 functions) | 269 (60 %), 93 High | 121 (27 %), 2 High |
-| Extraction recall (call sites inside functions) | ~85 % | 99.97 % |
-| In-repo resolution rate (dogfood corpus) | 21.1 % | 23.0 % |
-| Resolution precision / recall | 100 % / 100 % | 100 % / 100 % |
-
-**Extraction & resolution (§1).** Attribute calls on `self`, typed locals and
-constructor results resolve to real edges instead of `external`; weak
-evidence (fixture-typed receivers, ambiguous chains) is weighted ×0.8 and
-never reported as "live for sure". Relative imports, aliases
-(`from x import a as b`), function-local imports and module-level
-initializers all produce edges now — each was a real missing-edge bug found
-by dogfooding.
-
-**Dead code (§2).** Overrides of external bases (Qt, Django, `unittest`,
-`abc`) and `Protocol` members are entry points; framework packs (pytest, Qt,
-click) are table-driven and opt-in; `pyproject.toml` scripts and `__all__`
-name callable API. Findings carry `evidence` and `nearest_root_distance`, so
-a 0.9 is checkable. `rta-dead` stays Speculative-only — it never claims High.
-
-**Library surface.** A package façade's public functions and public-class
-methods, a module a package re-exports (`import coderadar.lsp`), and any
-definition used as a decorator are roots. Findings that could go either way
-(value references, untyped receivers) are reported at the weakest tier with
-the reason, instead of claiming 0.9 or being silently dropped.
-
-**Query language (§3).** Keyword-prefixed identifiers parse; unknown fields
-and values fail with a human-readable message and a "did you mean";
-`methods`, `constants`, `entities`, `starts_with`/`ends_with` and row
-identity are queryable; `docs/query-language.md` is generated from the
-schema and drift-checked.
-
-**Mutation follow-through (§4).** Renaming a method rewrites attribute call
-sites and cascades base/override renames; unresolved sites are reported as
-`unverified_sites` instead of being silently skipped.
-
-**API ergonomics (§5).** Dotted qualified names (`pkg.mod.Class.method`),
-canonical forward-slash ids on every platform, line/column companions next
-to byte spans, a stale-handle guard that refuses to answer about a project
-the handle was not created for, and a store migration path for pre-0.10 id
-spellings (`coderadar store-repair`, cold start re-analyzes automatically).
-
-**Noise (§6).** Secret detection requires a value that looks like a
-credential (entropy or character-class mixing) and redacts the value, not
-the keyword; nested functions are not clone pairs; dict-literal tables are
-flagged `literal-table` instead of silently dropped; `long-parameter-list`
-counts positional-or-keyword parameters only, so Qt-style keyword-only
-constructors stop firing.
-
-> **Upgrading from 0.9.x:** stores written by 0.9.x use the old id spelling
-> (`./pkg/mod.py::x`). `load` refuses them with the migration hint;
-> `coderadar analyze` (or a cold start, which does it automatically)
-> re-keys the store (the 0.10 id canonicalization; plan retired into the knowledge graph).
-
-## v0.8 Feature Highlights — ledger-backed cold start + agent UX
-
-v0.8 makes the MCP server restart-proof and the mutation plans honest, driven by two field
-reports from live agent sessions (field reports and cold-start design retired into the knowledge graph):
-
-- **Ledger-backed cold start (P1).** `load_snapshot` replays the Macrame ledger instead of
-  re-indexing from scratch (`_ensure_graph` retired) — sub-second store load vs 10–15 s full
-  analyze on the benchmark repo. `LEDGER_REVISION` is stamped on both the load and analyze
-  paths, so `graph_stats()["revision"]` is a valid Stage 0.3 cache key either way.
-- **Incremental startup + reindex (P2-4).** `coderadar.coldstart.build_graph` loads the
-  store when present and `update_file`s only stale sources, falling back to full analyze
-  when there is no (or an unloadable) store. The MCP background index and `codegraph_reindex`
-  both use it — project switches stop paying full re-indexes.
-- **Project persistence across sessions (P2-3).** The last project per launch directory is
-  recorded in `~/.coderadar/mcp/last_projects.json`; a restarted `mcp serve` resumes it
-  without `--path` (explicit `--path` still wins).
-- **Multi-token search (P2-1).** `search_entities` scores per whitespace-split token with OR
-  semantics (name exact/prefix/contains tiers plus signature and docstring signals). Empty-query
-  kind enumeration (the visualizers' contract) is preserved; Python function *and* class
-  docstrings backfill onto their owners during extraction.
-- **Empty-result wording (P2-6).** Misses state which tokens were tried with OR semantics
-  and point at `codegraph_search_similar` / `codegraph_explore` instead of "try broader terms".
-- **`create_entity` signatures (P2-2).** Optional complete header
-  (`fn sync_status_text(store: &Store) -> String`) rendered verbatim with language-appropriate
-  body delimiters.
-- **Textual call-site backstop (P2-5).** Rename / signature-update / class-rename plans append
-  word-boundary `name(` occurrences the call graph couldn't resolve (module-level calls, macro
-  bodies, comments, strings) as unverified sites instead of silently missing them — the Dioxus
-  `rsx!` gap from the field reports is reported, not parsed (explicit non-goal).
-- **Shell-friendly entity IDs (E7).** Stored IDs keep OS-native separators (FK stability);
-  display renders forward slashes with the redundant `./` dropped, and every pasted variant
-  resolves back to the stored key.
-- **macrame-db 0.18 (schema v21, auto-rungs v15→v21 on open).** CodeRadar stores
-  compact namespaced metadata (`kind`, `file_path`, `content_hash`) in
-  `concepts.extra`, indexes the file path for precise stale-row cleanup, and
-  gives framework edges stable namespaced kinds such as
-  `synthetic:django:handles` instead of flattening their types. This is a
-  forward-only database upgrade: a 0.17 binary cannot open v21 or fold a
-  concept written by 0.18. Existing 0.17 concept content remains canonical and
-  is rewritten with `extra` on the next analyze. Existing no-op-write filtering
-  and the `MAX(seq_id)` ledger-revision stamp remain in place; see the
-  (integration notes retired into the knowledge graph) for the adopted fields
-  and the KV deferral.
-
-## v0.8.1–v0.8.14 Highlights — the dogfood batch
-
-CodeRadar indexed and mutated itself (207 files, every CLI command, all 22
-MCP tools); the review found four P0 defects in the mutation engine plus
-ten more findings, and each was fixed against a live repro on the repo
-(full record, including the two diagnoses the first pass got wrong, retired into the knowledge graph):
-
-- **Mutation safety (P0s).** Clone-detection panic fixed at its true root
-  (slot-space mapping, not the suspected off-by-one) with `catch_unwind` on
-  analysis entries; the allow-list is anchored (`src/` no longer matches
-  `.venv/…/src/…`) and gated at dry-run, not just apply; brace-language
-  body splices and signature-span rebasing apply cleanly with stale plans
-  healing (warning) instead of mangling; friendly errors replace raw Rust
-  debug structs.
-- **One canonical id form.** Entity ids are project-relative dot-prefix at
-  every write path — no more absolute/walk/update triple spellings breaking
-  store keys, call edges, and module lookups; analyze retires legacy rows.
-- **First-class exclusion.** One shared matcher across walker, star exports,
-  resolvers, watcher, and staleness; `exclude list|add|remove`,
-  `--exclude` one-shots, retraction on next analyze, effective stack in
-  `stats`. The star-export pass also stopped rglobbing `.venv` (17.6 s →
-  0.16 s), restoring the benchmark claims.
-- **Dead-code cross-language awareness.** `#[pyfunction]` bridge functions
-  are production roots; Rust `pub`-export detection is source-backed;
-  findings carry file+line.
-- **Store repair + single version source.** `coderadar store-repair`,
-  `init --force` ledger rebuild, v1-orphan auto-retirement; `--version`
-  agrees everywhere; first-call index heartbeats on stderr.
-- **Slop scan made loud.** Skip accounting with a stats footer, per-kind
-  caps, noise markers dropped — 15/15 across all graph provenances.
-
-## v0.8.15–v0.9.0 Highlights — the round-2 arc
-
-A second dogfood round swept all 22 CLI commands and all 22 MCP tools
-(104/118 green at v0.8.16 → **121/121 at v0.9.0**); every red became a
-tracked finding with a battery anchor (release notes retired into the knowledge graph):
-
-- **Index accuracy.** External callees are visible instead of silently
-  dropped; re-export chains resolve transitively (`from app import combine`
-  → `helpers.py::combine`, cycle-guarded); rename heals the whole chain —
-  import bindings rewrite link-by-link, scoped updates refresh imports,
-  rename-back restores byte-identical; synthetic edges never persist as
-  CALLS and stale edges retract; `new Store()`-style constructor calls
-  extract across TS/JS/Java/C#/C++.
-- **Strict, scriptable surfaces.** Unknown `--edges`/`--format` values and
-  garbage `as_of` timestamps error instead of rendering plausibly; CLI ids
-  canonicalize (`Unknown entity` vs empty); `query --format json`; all
-  logging goes to stderr (WARNING default, `CODERADAR_DEBUG=1` for DEBUG),
-  so stdout stays machine-readable; `diagnose --unresolved` names names;
-  env knobs (`CODERADAR_INDEX_WAIT/HEARTBEAT`) validate instead of crashing.
-- **Platform.** macrame-db 0.15 → 0.17 (schema v15→v19, libsql stays
-  0.9.30); `[project] exclude` honored on library paths with `exclude
-  list` layers + effect totals; `git-clean` agrees with `git status`;
-  watcher exclusions proven; Rust bridge attributes actually captured
-  (`#[pyfunction]` never reached the graph before) with `#[pymodule]`
-  added as a production root.
-
-## v0.9.1–v0.9.2 Highlights — CI reds closed + docs refresh
-
-- **Temporal traversal on aliased roots (v0.9.1).** Windows CI failed
-  `test_as_of_temporal_traversal` 3/3 runs (`got []`) while local +
-  Ubuntu passed: GitHub runners set `TEMP` with an 8.3 short component
-  (`C:\Users\RUNNER~1\…`), the walk spells paths as passed while
-  `INDEXED_ROOT` is filesystem-canonicalized, the lexical strip missed,
-  ids fell back to absolute form, and analyze retired all 3 fixture
-  concepts as orphans in the same run. `canonical_file_form` now
-  FS-canonicalizes once on a strip miss and retries (mismatch path only),
-  with verbatim-alias (Windows) and symlink-alias (unix) regression tests.
-- **Lint fully green.** The 951-error ruff backlog is cleaned to zero
-  against pinned `ruff@0.16.5` (fixture excludes, mechanical fixes,
-  per-site `noqa` where deliberate) — `cargo fmt` + clippy + ruff all pass.
-- **This refresh (v0.9.2).** Test counts 1119 → 1128 (369 Rust + 759
-  Python), query files 18 → 41 (one per Tier-1/2 language), Shell/SQL
-  de-duplicated out of the Tier-3 row (both ship `.scm` files in Tier 2).
-
-## v0.7.18 Feature Highlights — the fossil-mcp port
-
-v0.7.3 through v0.7.18 ported the best of fossil-mcp's detector suite onto CodeRadar's graph
-substrate — re-derived against CodeRadar types, not copied
-(improvement plan retired into the knowledge graph). Every stage
-shipped as an independently demoable increment with golden tests written the same day:
-
-- **Integrity hotfixes (Track H, v0.7.3–7).** `replace_body` now validates the file it *wrote*,
-  auto-rolls-back on parse failure, and preserves leading docstrings; mutation status is one
-  truth-sourced enum; build directories (`target/`, `node_modules/`, `dist/`) are default-excluded;
-  smell findings dedupe per entity version.
-- **Confidence scoring + strictness profiles (Stage 0, v0.7.8–10).** A single scoring module
-  (tiers Certain→Speculative, `combine()`, tier bands) backs every detector; closed 3-level
-  strictness profiles multiply baselines inside the smell engine.
-- **Dead-code detection (Stage 1, v0.7.11).** Entry-point ladder (mains, framework decorators,
-  dunder protocol methods, public API of unimported modules) → forward reachability → classifier.
-  Findings carry kind (`unreachable` | `transitively-dead` | `test-only`), confidence tier,
-  and removable line counts via `codegraph_dead_code` / `find_dead_code()`.
-- **Token-level clone detection (Stages 2+6.1, v0.7.12/16).** Normalized token streams → MinHash
-  + banded LSH → Type-1/2/3 funnel with union-find; candidate pairs verified by exact
-  Zhang–Shasha tree-edit distance (~150 LOC where fossil's APTED path decomposition is 1,200).
-  Rename-blind trees mean TED refines scores rather than rejecting them.
-- **Scaffolding & secrets scanner (Stage 3, v0.7.13).** Declarative detector tables for AI-generated
-  boilerplate plus a secrets scanner — pure Rust, no graph dependency.
-- **Structured CFG metrics (Stages 4+6.2, v0.7.14/17).** Synthesis CFG with typed edges; cyclomatic
-  = E−N+2 over the reachable subgraph; unreachable-block collection; a tri-state literal evaluator
-  powers a `dead-branch` rule. All behind `analysis.use_cfg_metrics` (default off) with honest
-  degradation when signal is absent.
-- **Harmonic centrality (Stage 5, v0.7.15).** Revision-keyed cached centrality over upstream BFS;
-  god-class/brain-method findings gain a normalized centrality signal; `affected()` ranks each
-  depth group by centrality and star-marks the top three.
-- **RTA-lite dispatch sharpening (Stage 6.3, v0.7.18).** Overrides whose ONLY liveness is virtual
-  dispatch on a class never constructed in the indexed root are re-flagged as `rta-dead` — the
-  weakest evidence tier, never demoting anything the base detector calls live. Python-exact scope
-  until real constructor resolution lands.
-
-The smell engine grew from 9 to 12 rules; Rust lib tests from ~250 to 303; Python tests past 519.
-
-## v0.7.2 Feature Highlights
-
-- **Runtime project switching** — the new `codegraph_set_project` MCP tool
-  (19 total) re-runs startup against a new root from inside a tool call:
-  that project's `.coderadar.toml` config and mutation policy take effect,
-  indexing restarts in the background, and an explicit switch outranks the
-  client's declared workspace for the rest of the connection. Unmarked roots
-  require `confirm=true`; switching to the current root is a no-op that says
-  so.
-- **`project_path` reads like agents mean it** — a file, subdirectory, or
-  root inside the served project is accepted via nearest-marker walk-up
-  (`resolve_selector`), replacing a byte-exact root comparison that refused
-  editor-tab paths and explored directories. Windows drive-letter casing can
-  no longer split one directory in two.
-- **Refusals name the way out** — "wrong project" replies point at
-  `codegraph_set_project` instead of telling the agent to edit mcp.json and
-  restart the server.
-- **One writable project at a time, unchanged** — mutation confinement
-  follows the switched root automatically: `analyze(root)` re-tightens
-  `INDEXED_ROOT`, so policy, stale-write hashes and rollback need no
-  redesign. E2E tests prove an escape-path mutation into the previous
-  project never touches disk.
-
-## v0.7.0 Feature Highlights
-
-The v0.7 improvement plan, start to finish — write-path correctness, temporal
-truth, scaling, dead-code retirement, configuration, and the MCP layer.
-
-- **Write path.** `update_signature` had never worked: it wrote a whole
-  `def f(a, b):` line into a span covering only `(a)`, so `apply` caught the
-  syntax error and rolled back every time. Rename now verifies its byte spans
-  before emitting edits, class rename is reachable, `apply_diff_update` stops
-  dropping parameters, and mutation policy is enforced at the FFI boundary
-  rather than trusting a plan that arrives as JSON.
-- **Real diffs.** Mutation previews are unified diffs that apply cleanly with
-  `patch`, replacing a positional line-by-line comparison that reported every
-  line after an insertion as changed.
-- **Temporal truth.** Removed entities and edges are retired in the ledger,
-  `persist_edges` is scoped to the changed file, deletions reach the graph, and
-  `graph_stats()` exposes `indexed_at` — the staleness banners read a key that
-  nothing had ever set, so every one of them was unreachable.
-- **Scaling.** Bulk write APIs remove whole-projection clones, resolution and
-  smell lookups are indexed, and query rows are built lazily.
-- **The GIL.** `analyze` and `update_file` release it. Held end to end, an
-  `asyncio.to_thread(analyze, ...)` froze the event loop for the entire index.
-- **Honest silence.** `analyze` reports extraction failures and panicked
-  workers instead of returning a count that cannot distinguish "nothing to do"
-  from "nothing worked".
-- **MCP.** Root resolution, background init, lazy `roots/list`, optional
-  `project_path`, lifecycle hygiene — see the MCP Server section above.
-- **Visualizers drew fiction.** Every renderer answered an empty or
-  unreadable graph with a hardcoded example — `BaseModel <|-- UserService`,
-  `auth.login --> db.query` — and returned it as a normal result with exit 0.
-  Both DOT renderers reached it *always*: they enumerated entities through a
-  `CodeGraph.search_entities` that does not exist, swallowed the
-  `AttributeError`, and fell through, so every DOT diagram ever produced was
-  demo data. The Mermaid side text-searched for the word "class", matching
-  `from dataclasses import dataclass`. Inheritance edges were read from
-  `callees_of` (call edges, not inheritance) and dependency edges pointed at
-  import-*statement* entities. All of it now reads the real indexes, and an
-  empty graph is an error naming what to do about it.
-- **Commands that answered nothing.** `rebuild` printed "Rebuilding..." and
-  returned without indexing. `status` printed "CodeRadar is running"
-  unconditionally — a health check that could not fail. `diagnose` printed
-  two headers and no rows, which reads as a clean bill of health rather than
-  a report that was never written. All three now report real numbers.
-  `mutations` was removed: it documented an "audit trail from MutationLog"
-  for a MutationLog that exists nowhere in the codebase.
-- **Guidance that named tools which don't exist.** `codegraph_as_of` told
-  the agent to use "`codegraph_query` with timestamp" and `search_entities`.
-  `codegraph_query` has no timestamp parameter and `search_entities` is not
-  a tool — an agent following that advice failed twice with no way to tell
-  the advice was wrong. A test now checks every tool name any message
-  mentions against the registered set.
-- **Two commands named `watch`.** Click registers by function name, so the
-  second definition silently replaced the first — and the losing one carried
-  the config activation, leaving the survivor running without ever reading
-  `.coderadar.toml`. The dead one is gone and the live one activates config
-  and indexes before watching.
-- **Exit codes that lied.** `coderadar update` printed "Fully applied:
-  False" and exited 0, so a script driving updates could not tell a failure
-  from a success. `git-clean` defaulted to reporting a clean worktree when
-  the check itself failed — the answer a caller is most likely to act on.
-- **Tier 1 was Python-shaped.** `extract_parameters` only knew the Python
-  grammar's node kinds, so every parameter of every PHP, Kotlin, C, C++, Go,
-  Java, Rust, Ruby and TypeScript function was dropped — a PHP method taking
-  `$name` was indexed as `hello()`. C and C++ hang the parameter list off the
-  declarator chain rather than the function node, so they found nothing even
-  by kind. The rendered keyword was hardcoded `def` for all of them, and
-  TypeScript's return type came back as `-> : string`. Signatures are what an
-  agent reads before calling `update_signature`.
-- **Dead entity fields.** `is_async`, `is_generator`, and `decorators` were
-  hardcoded `false`/empty at the single site that builds every function
-  entity, for every language — so `functions where is_async == true`, a
-  documented query, could never match, and `derive_function_kind` classified
-  every `@property` and `@staticmethod` as a plain method.
-- **A cold CLI.** The graph lives in the process that built it, so every
-  read-only command after `coderadar init` started empty and answered "No
-  graph loaded — run coderadar init first", which the user had just done.
-  They now index on demand until cold start from the ledger lands.
-- **Both graph walks.** `CodeGraph.explore()` read `target`/`source` keys off
-  rows that carry neither, so it raised `KeyError` for any entity that had
-  edges and looked correct only for entities that had none; it also
-  advertised `max_depth` while taking exactly one hop. `traverse()` treated
-  `edge_types=None` — documented as "all kinds" — as an empty kind list, and
-  the BFS loops over the kinds it is given, so the default walk returned the
-  start node and stopped.
-- **Configuration.** `.coderadar.toml` is read by something, key by key, and
-  `coderadar analyze` names any key it could not use. ~100 inert knobs were
-  removed rather than left looking load-bearing.
-- **~4,300 lines of dead code retired**, including the Stack Graphs
-  placeholder.
-- **857 tests, 0 failures** — 250 Rust + 607 Python, including an end-to-end
-  mutation suite (plan → apply → reindex → read the file back) and a
-  parametrised no-index suite that replaced fourteen assertions which could
-  not fail.
-
-## v0.6.6 Feature Highlights
-
-- **Base-resolution heuristics** — language-family filtering (TypeScript/JavaScript treated as one inheritance family), import-aware base resolution, and `@/`/`~/` → `src/` path-alias normalization. TypeScript `import { X, type T } from '...'` now parses correctly (previously misclassified as an empty module); ambiguous base candidates are surfaced via `index_edge_stats` (real-world: 4 → 0)
-- **Traversal honesty** — `traverse_unresolved` + an MCP warning reveal targets the walk couldn't follow instead of silently truncating; all four mutation renderers emit a loud ⚠️ `unverified_sites` warning; `traverse(as_of=<ts>)` now reads the Macrame bitemporal ledger (downstream)
-- **Correctness fixes** — edges were being asserted with the 9999 open sentinel as `valid_from` (breaking temporal reads); inline date math double-added the epoch offset (every timestamp was ~year 5910); `Class.methods` is now derived denormalization (query `method_count` returns real values); `get_smells` and `as_of` release the graph read lock before long-running work
-- **Smell golden tests** — exact-signal snapshots for deep-nesting, brain-method, excessive-returns, and a positive god-class fixture
-- **574 tests, 0 failures** — 207 Rust + 367 Python
-
-## v0.6.5 Feature Highlights
-
-- **Native Rust code-smell engine** — 9 structural smells (god-class, long-method, long-parameter-list, deep-nesting, data-class, high-cyclomatic-complexity, brain-method, excessive-returns, too-many-fields) with severity tiers, exposed via the `codegraph_get_smells` MCP tool (filter by `entity_id` and/or `rule_id`)
-- **AST metrics pass** — cyclomatic complexity, nesting depth, and return count computed during single-pass extraction (`Function.metrics`), so the engine needs no source re-parse; class-level roll-ups (WMC, max-method cyclomatic, CBO) derived from the resolved graph
-- **Class-field extraction** — class-level `@field` captures now populate `Class.fields` (previously always empty), unblocking the class-scope rules
-- **Generalized `traverse` binding** — native-Rust BFS across all 4 edge kinds (calls, imports, extends, overrides) with `py.allow_threads`, replacing the pure-Python fallback
-- **Resolve back-fill** — `subclasses`, `importers`, and `overrides` reverse indexes populated (previously silently empty); cross-file MRO; TS/JS `extends`/`implements` base capture; Module concepts emitted so IMPORTS edges persist to Macrame
-- **556 tests, 0 failures** — 200 Rust + 356 Python
-
-## v0.6.4 Feature Highlights
-
-- **Query engine fixed** — Pest `WHERE` clauses now match (atomic `path` rule yielded `Path([])`, non-silent `operand`/`value` wrappers fell through to a string-literal arm; `name == "x"` / `name contains "x"` / `caller_count > 0` all returned 0 rows). Fixed path parsing, operand/value recursion, and Int/Float mixed comparison arms.
-- **`and`/`or` chains fixed** — boolean folds panicked (`parts.remove(1)` assumed the keyword was a pest pair, but string literals are silent); rewritten as left-associative folds.
-- **`imports` query fixed** — `target_kind` is now derived from `ImportResolution` (function/class/module/import/external/wildcard/dynamic/unresolved) so `imports where target_kind == "external"` works.
-- **`traverse` edge filter fixed** — `codegraph_traverse` returned "No neighbors" because the fallback filtered entity `kind` ("function") against edge types ("calls"); now matches the edge type case-insensitively.
-- **Anonymous functions skipped** — anon callbacks no longer collapse to one empty-name `"file::"` entity; named functions stay accurate (calls still attributed to enclosing fn via stack frames).
-- **Query UX** — single-quoted strings now parse; empty-query prompt shows even without a loaded graph.
-- **531 tests, 0 failures** — 180 Rust + 351 Python (extended E2E + TestQueryTool with real-row assertions)
-
-## v0.6.3 Feature Highlights
-
-- **Mutation safety hardened** — stale-write rejection (every edit carries an xxh3_64 content hash of its span, verified before any write → `RejectedStale` on mismatch) and automatic rollback on tainted updates (backup → atomic write → tree-sitter post-parse → restore on introduced syntax errors)
-- **WriteGuard wired up** — mutation writes are suppressed in a shared process-wide guard so the file watcher doesn't re-index the engine's own writes
-- **create_entity fixed** — language-aware code rendering (Python/Rust/Go/JS/TS/Java/C#/PHP/Ruby), real byte spans for top/end anchors, project-relative path canonicalization
-- **Honest error reporting** — `update_file` surfaces `fully_applied=False` instead of swallowing failures; `search_similar` caches the embedding model
-- **524 tests, 0 failures** — 176 Rust + 348 Python
-
-## v0.6.0 Feature Highlights
-
-- **17 MCP tools** — full query surface: explore, search, node, affected, resolve, query (Pest), search_similar (embeddings), module_children, as_of (temporal), traverse (graph walk), replace_body, update_signature, rename, create_entity, compute_embeddings, reindex, update_file
-- **Embeddings pipeline** — compute + store + search_similar across ALL entity types (functions, classes, modules, imports, constants, type aliases); fastembed/BGE-small, xxHash dedup, auto-trigger on first search_similar call
-- **Mutation pipeline** — plan-review-apply via dry_run toggle; rename cascades to all references; create_entity with language-aware placement
-- **13 framework resolvers** — Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router
-- **41 languages** — 12 Tier 1, 29 Tier 2, 330+ Tier 3 via tree-sitter-language-pack 1.14
-- **509 tests, 0 failures** — 168 Rust + 341 Python, full E2E and MCP coverage
-
-## v0.5.7 Feature Highlights
-
-- **13 framework resolvers** — Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, **Rails**, **NestJS**, **Vue Router**, **React Router** — detect route registrations, model associations, controller callbacks, and navigation links across 7 languages
-- **10 new languages** — Bash, Dart, Protobuf, Dockerfile, SQL, HCL, CMake, GraphQL, Erlang, Haskell (28 languages total across 3 tiers)
-- **QueryPlanner** — natural-language intent classifier routing to MacrameQuery primitives
-- **476 tests, 0 failures** — 163 Rust + 313 Python, full E2E coverage
-
-## v0.5.6 Feature Highlights
-
-- **9 framework resolvers** — Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET — detect route registrations and synthesize handler edges across 6 languages
-- **10 new languages** — Bash, Dart, Protobuf, Dockerfile, SQL, HCL, CMake, GraphQL, Erlang, Haskell (28 languages total across 3 tiers)
-- **QueryPlanner** — natural-language intent classifier routing to MacrameQuery primitives
-- **451 tests, 0 failures** — 163 Rust + 288 Python, full E2E coverage
-
-## v0.5.4 Feature Highlights
-
-- **Single-pass cursor-driven extraction** — QueryCursor directly drives entity emission, eliminating the two-pass tag→walk pipeline. Inline fn-ref subtree scanning during function emission. **37% faster** on real-world TypeScript codebases.
-- **Parallel extraction pipeline** — 3-phase design: collect → parallel parse/tag/walk (fragment merge) → sequential projection commit.
-- **18-language query files** — per-language `.scm` queries with automated compile validation. C/C++ and TypeScript/JavaScript query files split to eliminate grammar mismatches.
-- **Query compilation caching** — `CompiledQuery` wraps pre-compiled queries + pre-indexed capture tags; compiles once per language, not per file.
-- **`grammar_kind` field** — raw tree-sitter node kind on every Class entity (e.g. `class_declaration/struct` for Swift)
-- **Function-as-value capture** — detects `self.on_click = handler`, callback assignments, return values, kwargs
-- **Cross-file fn-ref** — resolves imported names across module boundaries
-- **Noise filtering** — builtin type filter (70+ types), literal receiver filter, name stoplist (12 names)
-- **Docstring extraction** — preceding comment runs for all languages, not just `@docstring` captures
-- **Elixir `def`/`defp`** — precise extraction via predicate queries
-- **`__all__` detection** — `=`, `+=`, `.extend()`, `.append()` patterns
-- **`module.children()`** — resolves child entity IDs to full dicts
-- **Parameter annotations** — type annotations extracted and filtered for builtins
-- **Live file watcher** — `notify`-based debounced watcher with incremental re-indexing
-- **Graphviz visualizer** — call graph rendering with SCC cycle highlighting
-- **Scoped call resolution** — per-file resolution with caller/callee tracking
-- **Benchmark pipeline** — balanced (50 modules × 1000 calls) and heavy (100 modules × 4000 calls) correctness tests
+> **Upgrading from 0.9.x:** old-spelling stores are refused with the migration hint;
+> `reindex` (or a cold start, which does it automatically) re-keys them.
 
 ## Project Structure
 
