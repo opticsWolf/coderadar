@@ -109,7 +109,9 @@ class TestConfigLoading:
         from coderadar.config import EmbeddingConfig
         cfg = EmbeddingConfig()
         assert cfg.dimension == 384
-        assert cfg.truncated_dimension == 64
+        # §3.1 (DR-11): `truncated_dimension` is gone — nothing ever
+        # truncated, vectors store full width under the Rust write gate.
+        assert not hasattr(cfg, "truncated_dimension")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -227,7 +229,8 @@ class TestEmbeddingDedup:
         dedup = EmbeddingDedup()
         assert dedup.model_name == "BAAI/bge-small-en-v1.5"
         assert dedup.dimension == 384
-        assert dedup.truncated_dimension == 64
+        # §3.1 (DR-11): the dead truncation knob is gone with the config.
+        assert not hasattr(dedup, "truncated_dimension")
         assert dedup.batch_size == 32
 
     def test_metrics_start_at_zero(self):

@@ -84,6 +84,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(set_embedding, m)?)?;
     m.add_function(wrap_pyfunction!(set_embeddings_bulk, m)?)?;
     m.add_function(wrap_pyfunction!(clear_embeddings_for_file, m)?)?;
+    m.add_function(wrap_pyfunction!(clear_all_embeddings, m)?)?;
     m.add_function(wrap_pyfunction!(module_children, m)?)?;
     m.add_function(wrap_pyfunction!(set_module_star_exports, m)?)?;
     m.add_function(wrap_pyfunction!(set_module_star_exports_bulk, m)?)?;
@@ -3747,6 +3748,58 @@ fn find_scaffolding(
 #[pyfunction]
 fn search_similar(py: Python<'_>, query_vec: Vec<f64>, top_k: usize) -> PyResult<Vec<PyObject>> {
     with_graph(|_graph, snap| {
+        // DR-11 dimension gate (query side): mixed store widths or a query
+        // width the store never saw used to score 0.0 everywhere — ranked
+        // nonsense. Fail explicitly with the recompute remedy instead.
+        let mut dims: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for e in snap.functions.values() {
+            if !e.embedding.vec.is_empty() {
+                dims.insert(e.embedding.vec.len());
+            }
+        }
+        for e in snap.classes.values() {
+            if !e.embedding.vec.is_empty() {
+                dims.insert(e.embedding.vec.len());
+            }
+        }
+        for e in snap.modules.values() {
+            if !e.embedding.vec.is_empty() {
+                dims.insert(e.embedding.vec.len());
+            }
+        }
+        for e in snap.imports.values() {
+            if !e.embedding.vec.is_empty() {
+                dims.insert(e.embedding.vec.len());
+            }
+        }
+        for e in snap.constants.values() {
+            if !e.embedding.vec.is_empty() {
+                dims.insert(e.embedding.vec.len());
+            }
+        }
+        for e in snap.type_aliases.values() {
+            if !e.embedding.vec.is_empty() {
+                dims.insert(e.embedding.vec.len());
+            }
+        }
+        if dims.len() > 1 {
+            let widths: Vec<String> = dims.iter().map(|d| d.to_string()).collect();
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "embedding dimension mismatch: store holds mixed widths {} — \
+                 recompute from clean: compute_embeddings(recompute=True).",
+                widths.join(", ")
+            )));
+        }
+        if let Some(&stored) = dims.iter().next() {
+            if stored != query_vec.len() {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "embedding dimension mismatch: query is {}-dim but the store holds \
+                     {stored}-dim vectors (model switch at query time?). Recompute from clean: \
+                     compute_embeddings(recompute=True).",
+                    query_vec.len()
+                )));
+            }
+        }
         let mut scored: Vec<(f64, String)> = Vec::new();
 
         // Scan all entity maps for non-empty embeddings
@@ -3826,6 +3879,9 @@ fn search_similar(py: Python<'_>, query_vec: Vec<f64>, top_k: usize) -> PyResult
 
 /// Cosine similarity between two vectors.
 pub(crate) fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+    // The 0.0-on-mismatch guard is now unreachable defense-in-depth: both
+    // writers (`set_embeddings_bulk`) and readers (`search_similar`)
+    // enforce one dimension explicitly (DR-11).
     if a.len() != b.len() {
         return 0.0;
     }
@@ -4239,12 +4295,30 @@ fn set_embeddings_bulk(entries: Vec<(String, Vec<f64>, String)>) -> PyResult<PyO
     let graph = guard.as_mut().ok_or_else(|| {
         pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
     })?;
-    let (applied, missing) = graph.set_embeddings_bulk(entries);
+    let (applied, missing) = graph
+        .set_embeddings_bulk(entries)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
     let py = unsafe { Python::assume_gil_acquired() };
     let dict = PyDict::new(py);
     dict.set_item("ok", true)?;
     dict.set_item("applied", applied)?;
     dict.set_item("missing", missing)?;
+    Ok(dict.into())
+}
+
+/// Clear every stored embedding vector; returns `{"cleared"}`.
+///
+/// Maintenance primitive for the DR-11 model-switch story
+/// (`compute_embeddings(recompute=True)` calls this before regenerating).
+#[pyfunction]
+fn clear_all_embeddings(py: Python<'_>) -> PyResult<PyObject> {
+    let mut guard = GLOBAL_GRAPH.write();
+    let graph = guard.as_mut().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
+    })?;
+    let cleared = graph.clear_all_embeddings();
+    let dict = PyDict::new(py);
+    dict.set_item("cleared", cleared)?;
     Ok(dict.into())
 }
 

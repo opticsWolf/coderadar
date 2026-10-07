@@ -231,6 +231,15 @@ class TestRecoveryArgsMatch:
             "properties", {})
         assert "model_name" in props
 
+    def test_mcp_compute_embeddings_takes_recompute(self):
+        """DR-11: the model-switch flag is on the agent surface, not just ops."""
+        from coderadar.mcp.server import create_server
+
+        tools = {t.name: t for t in create_server(None)._tool_manager.list_tools()}
+        props = (tools["coderadar_compute_embeddings"].parameters or {}).get(
+            "properties", {})
+        assert "recompute" in props
+
 
 class TestSetProjectOpenProjectParity:
     """MCP `set_project` and `ops.open_project` agree (plan §1.x).

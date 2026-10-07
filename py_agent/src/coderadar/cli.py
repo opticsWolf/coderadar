@@ -556,12 +556,14 @@ def search_similar(query_text: str, top_k: int, fmt: str):
 @click.option("--model", "model_name", default=None,
               help="fastembed model (default: [embeddings] model in .coderadar.toml).")
 @click.option("--batch-size", default=32, show_default=True)
+@click.option("--recompute", is_flag=True, default=False,
+              help="Clear stored vectors first (required for a model switch).")
 @_format_option
-def compute_embeddings(model_name: str | None, batch_size: int, fmt: str):
+def compute_embeddings(model_name: str | None, batch_size: int, recompute: bool, fmt: str):
     """Compute embeddings for every indexed entity (MCP coderadar_compute_embeddings)."""
     from . import ops, render
     _enter_project()
-    _op(fmt, lambda: ops.compute_embeddings(model_name, batch_size),
+    _op(fmt, lambda: ops.compute_embeddings(model_name, batch_size, recompute),
         lambda metrics: render.compute_embeddings(
             metrics, search_similar="`coderadar search-similar`"))
 

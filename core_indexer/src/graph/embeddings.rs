@@ -22,11 +22,27 @@ impl CodeGraph {
             embedding.to_vec(),
             content_hash.to_string(),
         )];
-        let (_, missing) = self.set_embeddings_bulk(entries);
+        let (_, missing) = self.set_embeddings_bulk(entries)?;
         match missing.into_iter().next() {
             Some(id) => Err(format!("Entity not found: {}", id)),
             None => Ok(()),
         }
+    }
+
+    /// The vector dimension this projection already holds, if any.
+    ///
+    /// Derived from stored vectors (first non-empty wins) rather than kept
+    /// as a field, so pre-gate stores report what they actually contain.
+    /// `None` means no vectors yet — any dimension may write first.
+    fn embedding_dimension(&self) -> Option<usize> {
+        let snap = self.snapshot();
+        let mut lens = snap.functions.values().map(|e| &e.embedding);
+        let mut lens = lens.chain(snap.classes.values().map(|e| &e.embedding));
+        let mut lens = lens.chain(snap.modules.values().map(|e| &e.embedding));
+        let mut lens = lens.chain(snap.imports.values().map(|e| &e.embedding));
+        let mut lens = lens.chain(snap.constants.values().map(|e| &e.embedding));
+        let mut lens = lens.chain(snap.type_aliases.values().map(|e| &e.embedding));
+        lens.find_map(|e| (!e.vec.is_empty()).then_some(e.vec.len()))
     }
 
     /// Store many embeddings against a single projection clone.
@@ -35,12 +51,30 @@ impl CodeGraph {
     /// `set_embedding` over every entity, cloning the entire `ProjectedGraph`
     /// once per entity — 10,000 full clones on a 10k-entity project, which is
     /// the dominant cost of `coderadar init --with-embeddings`.
+    ///
+    /// DR-11 dimension gate: one projection holds one dimension. A
+    /// configured-model switch would otherwise mix vector widths silently
+    /// and every cosine would score 0.0 — ranked nonsense presented as
+    /// results. Mismatched entries fail the whole batch with an explicit
+    /// error (nothing is stored); recompute from clean instead.
     pub fn set_embeddings_bulk(
         &self,
         entries: Vec<(String, Vec<f64>, String)>,
-    ) -> (usize, Vec<String>) {
+    ) -> Result<(usize, Vec<String>), String> {
         if entries.is_empty() {
-            return (0, vec![]);
+            return Ok((0, vec![]));
+        }
+        if let Some(expected) = self.embedding_dimension() {
+            for (entity_id, embedding, _) in &entries {
+                if embedding.len() != expected {
+                    return Err(format!(
+                        "embedding dimension mismatch for {entity_id}: got {}-dim vectors, \
+                         store holds {expected}-dim vectors (model switch?). Recompute from clean: \
+                         compute_embeddings(recompute=True).",
+                        embedding.len()
+                    ));
+                }
+            }
         }
         let mut projection = (*self.snapshot()).clone();
         let mut applied = 0usize;
@@ -71,7 +105,44 @@ impl CodeGraph {
         }
 
         self.commit_projection(projection);
-        (applied, missing)
+        Ok((applied, missing))
+    }
+
+    /// Clear every stored embedding vector (DR-11 model-switch story).
+    ///
+    /// Keyed dedup hashes make a model switch regenerate everything, but
+    /// the dimension gate rejects the mixed batch first — so switching
+    /// models recomputes from clean via `compute_embeddings(recompute=True)`,
+    /// which calls this before regenerating. Returns the cleared count.
+    pub fn clear_all_embeddings(&self) -> usize {
+        let mut projection = (*self.snapshot()).clone();
+        let mut cleared = 0usize;
+        let mut sweep = |emb: &mut EmbeddingVec| {
+            if !emb.vec.is_empty() {
+                *emb = EmbeddingVec::default();
+                cleared += 1;
+            }
+        };
+        for e in projection.functions.values_mut() {
+            sweep(&mut Arc::make_mut(e).embedding);
+        }
+        for e in projection.classes.values_mut() {
+            sweep(&mut Arc::make_mut(e).embedding);
+        }
+        for e in projection.modules.values_mut() {
+            sweep(&mut Arc::make_mut(e).embedding);
+        }
+        for e in projection.imports.values_mut() {
+            sweep(&mut Arc::make_mut(e).embedding);
+        }
+        for e in projection.constants.values_mut() {
+            sweep(&mut Arc::make_mut(e).embedding);
+        }
+        for e in projection.type_aliases.values_mut() {
+            sweep(&mut Arc::make_mut(e).embedding);
+        }
+        self.commit_projection(projection);
+        cleared
     }
 
     /// Clear embedding vectors for all entities in a file.

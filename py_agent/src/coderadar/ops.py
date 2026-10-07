@@ -843,52 +843,137 @@ def _embedding_model():
     return _EMBED_MODEL
 
 
-def compute_embeddings(model_name: str | None = None, batch_size: int = 32) -> dict[str, int]:
+EMBED_KINDS = ("function", "class", "module", "import", "constant", "type_alias")
+
+
+def _collect_embed_targets(wanted_model: str) -> list:
+    """Every embeddable entity with its DR-11 keyed cache key.
+
+    Enumeration is exact-count, not top-K capped: per-kind totals come
+    from `graph_stats`, so an 11k-function project embeds 11k functions
+    (the old silent 10,000-per-kind cap is gone). The tree can move under
+    a watcher mid-collection, so a kind whose count shifted is re-collected
+    once with the fresh count (three passes max, then whatever stands).
+    """
+    from coderadar._core import graph_stats, search_entities
+    from .embedding import (
+        EmbedTarget,
+        compute_content_hash,
+        embed_body,
+        embed_cache_key,
+    )
+
+    targets: list = []
+    for _ in range(3):
+        counts = graph_stats()
+        per_kind = {
+            "function": counts.get("functions", 0),
+            "class": counts.get("classes", 0),
+            "module": counts.get("modules", 0),
+            "import": counts.get("imports", 0),
+            "constant": counts.get("constants", 0),
+            "type_alias": counts.get("type_aliases", 0),
+        }
+        fresh: list = []
+        for kind in EMBED_KINDS:
+            for entity in search_entities("", per_kind[kind], kind):
+                entity_id = entity.get("id", "")
+                if not entity_id:
+                    continue
+                body = embed_body(entity, kind)
+                fresh.append(EmbedTarget(
+                    entity_id=entity_id,
+                    body=body,
+                    content_hash=embed_cache_key(
+                        compute_content_hash(body.encode()), wanted_model),
+                    kind=kind,
+                ))
+        targets = fresh
+        recollected = graph_stats()
+        key_map = {"function": "functions", "class": "classes",
+                   "module": "modules", "import": "imports",
+                   "constant": "constants", "type_alias": "type_aliases"}
+        if all(recollected.get(key_map[k], 0) == per_kind[k] for k in EMBED_KINDS):
+            break
+    return targets
+
+
+def _stored_embedding_model() -> tuple[bool, str | None]:
+    """`(found, model)` for the vectors already in the projection.
+
+    `found` False means no vectors stored at all; a None model means
+    legacy bare-hash vectors (pre-key, always miss and re-embed once).
+    """
+    from coderadar._core import search_entities
+    from .embedding import stored_key_model
+    for kind in EMBED_KINDS:
+        for entity in search_entities("", 1, kind):
+            stored = entity.get("embedding_hash", "") or ""
+            if stored:
+                return True, stored_key_model(stored)
+    return False, None
+
+
+def compute_embeddings(model_name: str | None = None, batch_size: int = 32,
+                       recompute: bool = False) -> dict[str, int]:
     """Compute and store embeddings for all indexable entities.
 
-    Uses fastembed locally; unchanged entities are skipped by content hash.
+    Uses fastembed locally; unchanged entities are skipped by keyed content
+    hash (`{model}#pp{version}#{xxh3}` — a model switch or embed-text
+    change retires vectors by missing, never by silent reuse).
     `model_name` None takes the configured model, which is also what the
-    search path loads — a mismatch there silently breaks similarity.
+    search path loads.
+
+    A model switch needs `recompute=True`: the stored model is detected
+    from the keys and switching refuses without the flag (the Rust
+    dimension gate would reject the mixed batch anyway); with it, vectors
+    clear first and everything regenerates. Produced vectors are checked
+    against the configured dimension before storing — explicit error, never
+    mixed widths.
 
     Returns ``{"generated", "cached", "total", "errors"}``.
     """
     _require_index()
     from .embedding import (
         EmbeddingDedup,
-        EmbedTarget,
-        compute_content_hash,
         embedding_settings,
     )
 
     configured_model, dimension = embedding_settings()
-    dedup = EmbeddingDedup(model_name=model_name or configured_model,
+    wanted = model_name or configured_model
+    found, stored_model = _stored_embedding_model()
+    # Legacy bare-hash vectors (stored_model None) always proceed: same
+    # model, pre-key format — they miss by key and regenerate once, with
+    # the Rust dimension gate adjudicating any width surprise. Only an
+    # explicit model mismatch needs the recompute flag.
+    if found and stored_model is not None and stored_model != wanted and not recompute:
+        have = "legacy pre-key vectors" if stored_model is None else f"{stored_model} vectors"
+        raise EngineError(
+            f"store holds {have} but {wanted} requested: pass recompute=True "
+            "to clear and regenerate (full re-embed).")
+    if recompute:
+        from coderadar._core import clear_all_embeddings
+        clear_all_embeddings()
+    targets = _collect_embed_targets(wanted)
+
+    dedup = EmbeddingDedup(model_name=wanted,
                            dimension=dimension, batch_size=batch_size)
-    targets: list[EmbedTarget] = []
-
-    try:
-        from coderadar._core import search_entities
-        # Collect all embeddable entities across all kinds
-        for kind in ("function", "class", "module", "import", "constant", "type_alias"):
-            for entity in search_entities("", 10_000, kind):
-                entity_id = entity.get("id", "")
-                if not entity_id:
-                    continue
-                body = entity.get("signature", "") or entity.get("name", "") or ""
-                targets.append(EmbedTarget(
-                    entity_id=entity_id,
-                    body=body,
-                    content_hash=compute_content_hash(body.encode()),
-                    kind=kind,
-                ))
-    except ImportError:
-        return {"generated": 0, "cached": 0, "total": 0, "errors": 1}
-
     results = dedup.embed_batch(targets, db=None)
     cached = 0
     try:
         from coderadar._core import set_embeddings_bulk
     except ImportError:
         return {"generated": 0, "cached": 0, "total": len(targets), "errors": 1}
+
+    # Configured-dimension check before anything is stored: a [embedding]
+    # dimension that disagrees with the model output fails here explicitly
+    # instead of mixing widths the Rust gate then rejects opaquely.
+    for vec in results:
+        if vec is not None and len(vec) != dimension:
+            raise EngineError(
+                f"model {wanted} produced {len(vec)}-dim vectors but "
+                f"[embedding] dimension is {dimension}: fix the config or "
+                "the model name, then recompute.")
 
     # One call, one projection clone. Looping set_embedding cloned the
     # whole ProjectedGraph per entity — O(N²) on a project of any size.
@@ -901,7 +986,9 @@ def compute_embeddings(model_name: str | None = None, batch_size: int = 32) -> d
 
     try:
         report = set_embeddings_bulk(entries)
-    except RuntimeError:
+    except RuntimeError as e:
+        if "embedding dimension" in str(e):
+            raise EngineError(str(e)) from None
         return {"generated": 0, "cached": cached,
                 "total": len(targets), "errors": len(entries)}
 
@@ -933,11 +1020,19 @@ def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
 
     try:
         return _ss(embedding, min(top_k, 20))
-    except RuntimeError:
+    except RuntimeError as e:
+        if "embedding dimension" in str(e):
+            # A dimension conflict cannot be computed away (same model in,
+            # same widths out) — surface it, don't loop into a recompute.
+            raise EngineError(str(e)) from None
         # No embeddings in the index yet — compute them once and retry.
         try:
             compute_embeddings()
             return _ss(embedding, min(top_k, 20))
+        except EngineError:
+            # Explicit dimension/model errors stay explicit, never
+            # downgraded to "computing failed".
+            raise
         except Exception:  # noqa: BLE001 - auto-compute is best-effort, NoEmbeddings covers it
             raise NoEmbeddings("no embeddings found and computing them failed") from None
 

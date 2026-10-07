@@ -1,17 +1,25 @@
 """CodeRadar v3.6 — Embedding Package"""
 from .dedup import (
+    PREPROCESS_VERSION,
     EmbeddingDedup,
     EmbeddingUnavailable,
     EmbedTarget,
     compute_content_hash,
+    embed_body,
+    embed_cache_key,
+    stored_key_model,
 )
 
 __all__ = [
     "EmbedTarget",
     "EmbeddingDedup",
     "EmbeddingUnavailable",
+    "PREPROCESS_VERSION",
     "compute_content_hash",
+    "embed_body",
+    "embed_cache_key",
     "embedding_settings",
+    "stored_key_model",
 ]
 
 

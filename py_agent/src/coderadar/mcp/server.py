@@ -356,6 +356,7 @@ def create_server(graph: Any) -> MCPServer:
             "This is a prerequisite for coderadar_search_similar — without embeddings, "
             "semantic search returns 'no embeddings found'. Run once after indexing. "
             "Subsequent runs skip unchanged functions via content hash dedup. "
+            "A model switch needs recompute=true (clear + regenerate). "
             "Returns: {generated, cached, total, errors}."
         ),
         annotations={
@@ -368,13 +369,14 @@ def create_server(graph: Any) -> MCPServer:
     def coderadar_compute_embeddings(
         model_name: str | None = None,
         project_path: str | None = None,
+        recompute: bool = False,
     ) -> str:
         """Compute embeddings for semantic search."""
         mismatch = _wrong_project(project_path)
         if mismatch:
             return mismatch
 
-        return _compute_embeddings(graph, model_name)
+        return _compute_embeddings(graph, model_name, recompute)
 
     # ── coderadar_module_children — structural discovery ─────────────
 
@@ -1328,10 +1330,11 @@ def _query_graph(graph: Any, query: str) -> str:
     return render.query(query, rows)
 
 
-def _compute_embeddings(graph: Any, model_name: str | None = None) -> str:
+def _compute_embeddings(graph: Any, model_name: str | None = None,
+                        recompute: bool = False) -> str:
     """Compute embeddings for every indexed entity."""
     try:
-        metrics = ops.compute_embeddings(model_name)
+        metrics = ops.compute_embeddings(model_name, recompute=recompute)
     except ops.OpError as e:
         return _op_message(e)
     except Exception as e:  # noqa: BLE001 - MCP tool boundary returns errors, never raises

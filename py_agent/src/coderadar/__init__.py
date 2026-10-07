@@ -631,12 +631,15 @@ class CodeGraph:
         return ops.search_similar(query, top_k)
 
     def compute_embeddings(self, model_name: str | None = None,
-                           batch_size: int = 32) -> dict[str, int]:
+                           batch_size: int = 32,
+                           recompute: bool = False) -> dict[str, int]:
         """Compute and store embeddings for all indexable entities (MCP
         ``coderadar_compute_embeddings``). Returns ``{generated, cached,
-        total, errors}``; unchanged entities are skipped by content hash."""
+        total, errors}``; unchanged entities are skipped by keyed content
+        hash. A model switch needs ``recompute=True`` (clear + regenerate).
+        """
         from . import ops
-        return ops.compute_embeddings(model_name, batch_size)
+        return ops.compute_embeddings(model_name, batch_size, recompute)
 
     # ── Edits (dry run by default) ─────────────────────────────────────
     # Each returns {"plan": MutationPlan, "result": MutationResult | None,

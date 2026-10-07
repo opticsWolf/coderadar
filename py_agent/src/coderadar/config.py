@@ -83,7 +83,10 @@ class EmbeddingConfig(BaseModel):
     # the pair that already worked end to end.
     model: str = "BAAI/bge-small-en-v1.5"
     dimension: int = 384
-    truncated_dimension: int = 64
+    # `truncated_dimension` was removed in §3.1 (DR-11): nothing ever
+    # truncated — vectors store full width, one dimension per projection
+    # enforced by the Rust write gate. Old TOMLs naming it still load
+    # (pydantic ignores the unknown key).
     max_body_tokens: int = 2000
     batch_size: int = 32
 
