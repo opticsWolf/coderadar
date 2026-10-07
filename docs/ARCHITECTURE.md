@@ -420,11 +420,11 @@ ledger change (reverse-BFS over reconstructed state is available).
   architecture review + v0.12 plan trio (frozen research corpus), and
   `thoughts/coderadar-v0.12-impl/` (per-landing reasoning). GPU-indexed
   (`cuda`, fp16); register rows update same-session.
-- **This directory holds the live set only** (`v0.12-consolidated.md` =
+- **This directory holds the live set only** (`v0.12-architecture-implementation.md` =
   architecture baseline + plan + deviations diary, store-and-retention
   + query-language (generated) + smell reference + open-items + BUGS_QUIRKS +
   CHANGELOG). Removed content lives in OKFgraph — never deleted, only moved.
-- **`v0.12-consolidated.md` Part III** is the step-4 surface verdict and the
+- **`v0.12-architecture-implementation.md` Part III** is the step-4 surface verdict and the
   implementation diary: one name/behavior per op, CLI-only/API-only calls.
 - **Release process:** feature → bump → register → thought → dogfood
   self-host → gate → merge. `main` + tag push only on explicit release.
