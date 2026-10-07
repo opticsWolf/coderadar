@@ -103,6 +103,12 @@ impl ResolutionCache {
     }
 }
 
+impl Default for ResolutionCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

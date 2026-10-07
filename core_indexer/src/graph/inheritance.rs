@@ -151,7 +151,7 @@ impl CodeGraph {
             let changed = projection
                 .classes
                 .get(&cid)
-                .map_or(false, |c| c.methods != methods);
+                .is_some_and(|c| c.methods != methods);
             if changed {
                 if let Some(class) = projection.classes.get(&cid) {
                     let mut c = (**class).clone();

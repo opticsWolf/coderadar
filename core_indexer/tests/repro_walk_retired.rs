@@ -66,21 +66,25 @@ fn setup(rt: &tokio::runtime::Runtime) -> (tempfile::TempDir, Database, String) 
     let path = dir.path().join("repro.db");
     let db = rt.block_on(Database::open(&path)).unwrap();
     for id in [A, B] {
-        rt.block_on(db.upsert_concept(
-            ConceptUpsert::new(id, id)
-                .content(r#"{"meta_version": 2, "kind": "function"}"#)
-                .valid_from(T0.to_string())
-                .valid_to(TS_OPEN.to_string())
-                .retired(false),
-        ))
+        rt.block_on(
+            db.upsert_concept(
+                ConceptUpsert::new(id, id)
+                    .content(r#"{"meta_version": 2, "kind": "function"}"#)
+                    .valid_from(T0.to_string())
+                    .valid_to(TS_OPEN.to_string())
+                    .retired(false),
+            ),
+        )
         .unwrap();
     }
-    rt.block_on(db.assert_edge(
-        EdgeAssertion::new(A, B, "CALLS")
-            .valid_from(T0.to_string())
-            .weight(1.0)
-            .properties("{}"),
-    ))
+    rt.block_on(
+        db.assert_edge(
+            EdgeAssertion::new(A, B, "CALLS")
+                .valid_from(T0.to_string())
+                .weight(1.0)
+                .properties("{}"),
+        ),
+    )
     .unwrap();
     let t1 = rt.block_on(max_recorded(&db));
     assert!(
@@ -256,9 +260,7 @@ ORDER BY l.source_id, l.target_id, l.edge_type
         t1.clone().into(),
         0.0f64.into(),
     ];
-    let mut rows = rt
-        .block_on(db.read_conn().query(full_sql, params))
-        .unwrap();
+    let mut rows = rt.block_on(db.read_conn().query(full_sql, params)).unwrap();
     println!("--- hand-executed full loader SQL rows ---");
     while let Some(r) = rt.block_on(rows.next()).unwrap() {
         println!(
@@ -283,7 +285,13 @@ fn repro_reconstruct_state_at_own_timestamp() {
         .edges
         .iter()
         .filter(|e| e.valid_from.as_str() <= t1.as_str() && t1.as_str() < e.valid_to.as_str())
-        .map(|e| (e.source_id.clone(), e.target_id.clone(), e.edge_type.clone()))
+        .map(|e| {
+            (
+                e.source_id.clone(),
+                e.target_id.clone(),
+                e.edge_type.clone(),
+            )
+        })
         .collect();
     println!("reconstruct(t1) valid-open edges: {open:?}");
     assert!(

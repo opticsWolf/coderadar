@@ -181,7 +181,7 @@ pub fn direct_call_reachable(graph: &ProjectedGraph, roots: &HashSet<String>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{ReceiverShape, ResolvedCall};
+    use crate::types::ResolvedCall;
     use std::sync::Arc;
 
     fn method_func(id: &str, class: Option<&str>) -> crate::types::Function {

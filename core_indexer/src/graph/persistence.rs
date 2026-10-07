@@ -385,8 +385,7 @@ impl CodeGraph {
         scope: &str,
     ) -> Result<(usize, usize, usize), String> {
         let ts_now = now_iso8601();
-        let new_ids: std::collections::HashSet<&str> =
-            nodes.iter().map(|n| n.0.as_str()).collect();
+        let new_ids: std::collections::HashSet<&str> = nodes.iter().map(|n| n.0.as_str()).collect();
         let new_pairs: std::collections::HashSet<(&str, &str, &str)> = edges
             .iter()
             .map(|e| (e.0.as_str(), e.1.as_str(), e.2.as_str()))
@@ -484,7 +483,8 @@ impl CodeGraph {
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|(s, t, k, _)| {
-                    scope_ids.contains(s) && !new_pairs.contains(&(s.as_str(), t.as_str(), k.as_str()))
+                    scope_ids.contains(s)
+                        && !new_pairs.contains(&(s.as_str(), t.as_str(), k.as_str()))
                 })
                 .collect();
             if !stale.is_empty() {

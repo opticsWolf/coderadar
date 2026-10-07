@@ -36,11 +36,11 @@ impl CodeGraph {
     /// `None` means no vectors yet — any dimension may write first.
     fn embedding_dimension(&self) -> Option<usize> {
         let snap = self.snapshot();
-        let mut lens = snap.functions.values().map(|e| &e.embedding);
-        let mut lens = lens.chain(snap.classes.values().map(|e| &e.embedding));
-        let mut lens = lens.chain(snap.modules.values().map(|e| &e.embedding));
-        let mut lens = lens.chain(snap.imports.values().map(|e| &e.embedding));
-        let mut lens = lens.chain(snap.constants.values().map(|e| &e.embedding));
+        let lens = snap.functions.values().map(|e| &e.embedding);
+        let lens = lens.chain(snap.classes.values().map(|e| &e.embedding));
+        let lens = lens.chain(snap.modules.values().map(|e| &e.embedding));
+        let lens = lens.chain(snap.imports.values().map(|e| &e.embedding));
+        let lens = lens.chain(snap.constants.values().map(|e| &e.embedding));
         let mut lens = lens.chain(snap.type_aliases.values().map(|e| &e.embedding));
         lens.find_map(|e| (!e.vec.is_empty()).then_some(e.vec.len()))
     }
@@ -152,7 +152,7 @@ impl CodeGraph {
         // and backslashed spellings are kept as lookup fallbacks for stores
         // written before the migration.
         let canonical = super::module_resolution::canonical_file_form(file_path);
-        let normalized = file_path.replace('\\', "/").replace('/', "/");
+        let normalized = file_path.replace(['\\', '/'], "/");
         let normalized = normalized.trim_start_matches("./").to_string();
         let module_id_a = format!("{canonical}::module");
         let module_id_b = format!("./{normalized}::module");

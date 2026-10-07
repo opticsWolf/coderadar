@@ -131,7 +131,7 @@ fn test_star_exports_wildcard_import() {
         "consumer should transitively reach lib.py"
     );
 
-    for (_fid, func) in &snap.functions {
+    for func in snap.functions.values() {
         if func.name == "consumer" {
             let resolved: Vec<_> = func
                 .resolved_calls

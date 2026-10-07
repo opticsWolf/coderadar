@@ -1,6 +1,6 @@
 // ── Graph Config (§15) ──────────────────────────────────────────────────────
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct GraphConfig {
     pub project: ProjectConfig,
     pub database: DatabaseConfig,
@@ -15,23 +15,8 @@ pub struct GraphConfig {
     pub analysis: AnalysisConfig,
 }
 
-impl Default for GraphConfig {
-    fn default() -> Self {
-        Self {
-            project: ProjectConfig::default(),
-            database: DatabaseConfig::default(),
-            resolution: ResolutionConfig::default(),
-            import_graph: ImportGraphConfig::default(),
-            signature: SignatureConfig::default(),
-            mutation: MutationConfig::default(),
-            query: QueryConfig::default(),
-            analysis: AnalysisConfig::default(),
-        }
-    }
-}
-
 /// What `analyze` walks.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ProjectConfig {
     /// Subdirectories to index, relative to the project root. Empty (the
     /// default) walks the whole root, which is what every caller got before
@@ -41,14 +26,6 @@ pub struct ProjectConfig {
     /// Glob patterns to skip, on top of the `.gitignore` rules `ignore`
     /// already applies.
     pub exclude: Vec<String>,
-}
-impl Default for ProjectConfig {
-    fn default() -> Self {
-        Self {
-            roots: Vec::new(),
-            exclude: Vec::new(),
-        }
-    }
 }
 
 /// Built-in secret patterns for `[database] blob_exclude` (§1.9, DR-30).
@@ -226,17 +203,9 @@ impl Default for QueryConfig {
 }
 
 /// Analysis-engine refinements (Stage 4).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct AnalysisConfig {
     /// Refine cyclomatic complexity with CFG math and emit
     /// `intra-dead-statements` findings when bodies parse.
     pub use_cfg_metrics: bool,
-}
-
-impl Default for AnalysisConfig {
-    fn default() -> Self {
-        Self {
-            use_cfg_metrics: false,
-        }
-    }
 }

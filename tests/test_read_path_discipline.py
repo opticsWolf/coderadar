@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import os
 
-import pytest
-
 import coderadar
+import pytest
 from coderadar import _core, ops
 
 try:

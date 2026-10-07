@@ -82,7 +82,7 @@ pub struct DeadFinding {
 }
 
 /// Options for a detection run.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct DeadCodeOptions {
     /// Report functions that are live only from test code.
     pub include_test_only: bool,
@@ -90,15 +90,6 @@ pub struct DeadCodeOptions {
     /// to — never past — this directory, and `pyproject.toml` entry points
     /// are read from it. `None` keeps the immediate-parent rule only.
     pub root: Option<std::path::PathBuf>,
-}
-
-impl Default for DeadCodeOptions {
-    fn default() -> Self {
-        Self {
-            include_test_only: false,
-            root: None,
-        }
-    }
 }
 
 /// Ceiling for a finding whose liveness could go either way: an unresolvable
@@ -361,7 +352,7 @@ fn distance_to_dead_chain_head(graph: &ProjectedGraph, id: &str) -> Option<usize
 pub(crate) mod tests {
     use super::*;
     use crate::types::{ByteSpan, EmbeddingVec, Function, FunctionKind, SourceType};
-    use std::collections::{BTreeSet, HashMap};
+
     use std::path::PathBuf;
 
     pub(crate) fn func(id: &str, name: &str, module: &str) -> Function {
@@ -640,7 +631,7 @@ pub(crate) mod tests {
         m.classes = vec!["pkg/__init__.py::CodeGraph".into()];
         g.modules
             .insert("pkg/__init__.py::module".into(), std::sync::Arc::new(m));
-        let mut watch = func("pkg/__init__.py::watch", "watch", "pkg/__init__.py::module");
+        let watch = func("pkg/__init__.py::watch", "watch", "pkg/__init__.py::module");
         g.functions
             .insert(watch.id.clone(), std::sync::Arc::new(watch));
         let cls = crate::types::Class {

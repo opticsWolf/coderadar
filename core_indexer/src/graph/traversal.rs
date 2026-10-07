@@ -224,7 +224,7 @@ impl CodeGraph {
                             .imports
                             .iter()
                             .filter(|imp_id| {
-                                snap.imports.get(*imp_id).map_or(false, |i| {
+                                snap.imports.get(*imp_id).is_some_and(|i| {
                                     matches!(
                                         i.resolution,
                                         crate::types::ImportResolution::Unresolved

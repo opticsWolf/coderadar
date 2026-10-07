@@ -40,16 +40,11 @@ fn suffix_collision_fast_path_ranks_language_then_id() {
         );
     }
     // Cross-language collision: the importer's language decides.
-    let got = crate::graph::find_module_by_dotted_name(
-        &proj,
-        "config",
-        "pkg/user.py::module",
-    )
-    .expect("config must resolve for a Python importer");
+    let got = crate::graph::find_module_by_dotted_name(&proj, "config", "pkg/user.py::module")
+        .expect("config must resolve for a Python importer");
     assert_eq!(got, module_id("pkg/config.py"), "Python importer → .py");
-    let got =
-        crate::graph::find_module_by_dotted_name(&proj, "config", "src/config.rs::module")
-            .expect("config must resolve for a Rust importer");
+    let got = crate::graph::find_module_by_dotted_name(&proj, "config", "src/config.rs::module")
+        .expect("config must resolve for a Rust importer");
     assert_eq!(got, module_id("src/config.rs"), "Rust importer → .rs");
     // Unknown importer: deterministic smallest id, no luck involved.
     let got = crate::graph::find_module_by_dotted_name(&proj, "config", "")
@@ -70,10 +65,26 @@ fn suffix_collision_scan_path_agrees_with_fast_path() {
     let mut proj = collision_projection();
     proj.module_path_index.clear();
     for (query, importer, expect) in [
-        ("helpers", module_id(R2PROJ_HELPERS), module_id(R2PROJ_HELPERS)),
-        ("app.helpers", module_id(FIXTURE_HELPERS), module_id(R2PROJ_HELPERS)),
-        ("config", "pkg/user.py::module".to_string(), module_id("pkg/config.py")),
-        ("config", "src/config.rs::module".to_string(), module_id("src/config.rs")),
+        (
+            "helpers",
+            module_id(R2PROJ_HELPERS),
+            module_id(R2PROJ_HELPERS),
+        ),
+        (
+            "app.helpers",
+            module_id(FIXTURE_HELPERS),
+            module_id(R2PROJ_HELPERS),
+        ),
+        (
+            "config",
+            "pkg/user.py::module".to_string(),
+            module_id("pkg/config.py"),
+        ),
+        (
+            "config",
+            "src/config.rs::module".to_string(),
+            module_id("src/config.rs"),
+        ),
     ] {
         let got = crate::graph::find_module_by_dotted_name(&proj, query, &importer)
             .unwrap_or_else(|| panic!("{query:?} must resolve"));
@@ -87,7 +98,11 @@ fn double_persist_round_trip_retires_nothing() {
     // collision fixture: the second retraction must close zero rows and the
     // open edge set must be identical (sorted comparison).
     let (graph, _dir) = graph_with_temp_store();
-    index_source(&graph, "from .helpers import helper\n\nhelper()\n", "pkg/a.py");
+    index_source(
+        &graph,
+        "from .helpers import helper\n\nhelper()\n",
+        "pkg/a.py",
+    );
     index_source(&graph, "def helper(): pass\n", "pkg/helpers.py");
     index_source(&graph, "def helper(): pass\n", "other/helpers.py");
 

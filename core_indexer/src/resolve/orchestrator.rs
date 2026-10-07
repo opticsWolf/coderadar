@@ -304,7 +304,7 @@ impl ResolutionOrchestrator {
                         reason: UnresolvedReason::TypeInferenceRequired,
                         raw: call.clone(),
                     }
-                } else if prefix.chars().next().map_or(false, |c| c.is_uppercase()) {
+                } else if prefix.chars().next().is_some_and(|c| c.is_uppercase()) {
                     // Capitalized prefix → likely a class name
                     ResolvedCall::Method {
                         receiver: ReceiverShape::ClassRef(prefix.clone()),
@@ -472,6 +472,12 @@ impl ResolutionOrchestrator {
     ) {
         self.cache
             .invalidate_class_hierarchy(class_id, subclasses, max_depth);
+    }
+}
+
+impl Default for ResolutionOrchestrator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

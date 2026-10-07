@@ -130,7 +130,7 @@ def resolve_route(
               if s[:1] not in ("<", ":", "{") and s != "*"]
     try:
         route_candidates = searcher(" ".join(static) or path, limit * 2)
-    except Exception:  # noqa: BLE001, S112 - a bad searcher resolves nothing
+    except Exception:  # noqa: BLE001 - a bad searcher resolves nothing
         return results
     route_nodes = [
         r for r in route_candidates

@@ -97,9 +97,10 @@ class TestRenamedTools:
         ("stats", "status"),
     ])
     def test_old_spelling_prints_removal_notice(self, old, new):
-        from coderadar.cli import _renamed
         import io
         from contextlib import redirect_stderr
+
+        from coderadar.cli import _renamed
         buf = io.StringIO()
         with redirect_stderr(buf):
             _renamed(old, new)

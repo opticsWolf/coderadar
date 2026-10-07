@@ -40,10 +40,9 @@ fn test_resolve_class_hierarchy_populates_subclasses() {
 
     let b = projection.classes.values().find(|c| c.name == "B").unwrap();
     assert!(
-        b.resolved_bases.iter().any(|bid| projection
-            .classes
-            .get(bid)
-            .map_or(false, |bc| bc.name == "A")),
+        b.resolved_bases
+            .iter()
+            .any(|bid| projection.classes.get(bid).is_some_and(|bc| bc.name == "A")),
         "B.resolved_bases should resolve to A, got {:?}",
         b.resolved_bases
     );
@@ -93,9 +92,10 @@ fn test_resolve_imports_populates_importers() {
         .map(|m| m.imports.clone())
         .unwrap_or_default();
     let resolved_any = b_imports.iter().any(|imp_id| {
-        projection.imports.get(imp_id).map_or(false, |i| {
-            matches!(i.resolution, crate::types::ImportResolution::Module(_))
-        })
+        projection
+            .imports
+            .get(imp_id)
+            .is_some_and(|i| matches!(i.resolution, crate::types::ImportResolution::Module(_)))
     });
     assert!(
         resolved_any,
@@ -293,12 +293,9 @@ fn test_resolve_overrides_populates_overridden_by() {
         .iter()
         .find(|(_, f)| {
             f.name == "helper"
-                && f.parent_class.as_deref().map_or(false, |pc| {
-                    projection
-                        .classes
-                        .get(pc)
-                        .map_or(false, |c| c.name == "Base")
-                })
+                && f.parent_class
+                    .as_deref()
+                    .is_some_and(|pc| projection.classes.get(pc).is_some_and(|c| c.name == "Base"))
         })
         .map(|(id, _)| id.clone())
         .expect("Base.helper should be indexed");
@@ -316,11 +313,11 @@ fn test_resolve_overrides_populates_overridden_by() {
         .iter()
         .find(|(_, f)| {
             f.name == "helper"
-                && f.parent_class.as_deref().map_or(false, |pc| {
+                && f.parent_class.as_deref().is_some_and(|pc| {
                     projection
                         .classes
                         .get(pc)
-                        .map_or(false, |c| c.name == "Child")
+                        .is_some_and(|c| c.name == "Child")
                 })
         })
         .map(|(id, _)| id.clone())

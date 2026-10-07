@@ -9,10 +9,8 @@ implied by separate suites.
 
 from __future__ import annotations
 
-import pytest
-
 import coderadar
-from coderadar import ops
+import pytest
 
 try:
     from coderadar import _core as _c  # noqa: F401

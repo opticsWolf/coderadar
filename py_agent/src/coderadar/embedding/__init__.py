@@ -11,10 +11,10 @@ from .dedup import (
 )
 
 __all__ = [
+    "PREPROCESS_VERSION",
     "EmbedTarget",
     "EmbeddingDedup",
     "EmbeddingUnavailable",
-    "PREPROCESS_VERSION",
     "compute_content_hash",
     "embed_body",
     "embed_cache_key",

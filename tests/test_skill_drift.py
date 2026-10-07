@@ -16,8 +16,8 @@ import pytest
 SKILLS = Path(__file__).parent.parent / "skills"
 
 try:
-    from coderadar.mcp.server import create_server as _create_server
     from coderadar.cli import main as _main
+    from coderadar.mcp.server import create_server as _create_server
     _CORE = True
 except ImportError:  # pragma: no cover
     _CORE = False

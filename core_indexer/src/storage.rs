@@ -150,11 +150,7 @@ impl CodeGraphStore {
     /// (idempotent by construction). Re-put refreshes `put_at` without
     /// rewriting: 0 new bytes on unchanged-tree reindex (the DR-25
     /// zero-growth property). Every outcome feeds the cumulative counters.
-    pub fn put_source_blob(
-        &self,
-        file_path: &str,
-        bytes: &[u8],
-    ) -> macrame::Result<BlobOutcome> {
+    pub fn put_source_blob(&self, file_path: &str, bytes: &[u8]) -> macrame::Result<BlobOutcome> {
         let cfg = crate::active_config();
         if !cfg.database.store_source_blobs {
             return Ok(BlobOutcome::Disabled);
@@ -168,11 +164,7 @@ impl CodeGraphStore {
                 let _ = builder.add_line(None, pat);
             }
             if let Ok(matcher) = builder.build() {
-                if crate::path_excluded(
-                    &matcher,
-                    std::path::Path::new(&normalized),
-                    false,
-                ) {
+                if crate::path_excluded(&matcher, std::path::Path::new(&normalized), false) {
                     let outcome = BlobOutcome::SkippedExcluded;
                     record_blob_outcome(&outcome);
                     return Ok(outcome);
@@ -523,7 +515,10 @@ impl CodeGraphStore {
             has_span: content.get("span").is_some(),
             full_file: is_module,
             start_line: content.get("line").and_then(|v| v.as_u64()).unwrap_or(1),
-            end_line: content.get("exit_line").and_then(|v| v.as_u64()).unwrap_or(1),
+            end_line: content
+                .get("exit_line")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1),
             handler_id: content
                 .get("handler_id")
                 .and_then(|v| v.as_str())
@@ -538,10 +533,7 @@ impl CodeGraphStore {
     /// blobs copy them back (`blobs_restored`). The cold file is the
     /// `<store-stem>_archive.db` sibling — backup means the hot+cold pair,
     /// a hot-only copy is pointers (recorded digests, no bytes).
-    pub fn archive(
-        &self,
-        cutoff: &str,
-    ) -> macrame::Result<macrame::temporal::ArchiveReport> {
+    pub fn archive(&self, cutoff: &str) -> macrame::Result<macrame::temporal::ArchiveReport> {
         runtime().block_on(self.db.archive(cutoff))
     }
 
@@ -748,7 +740,7 @@ impl CodeGraphStore {
     /// the framework hook's scoped diff-retire.
     pub fn live_route_ids(&self) -> macrame::Result<Vec<String>> {
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
-        Ok(runtime().block_on(async {
+        runtime().block_on(async {
             let mut rows = conn
                 .query(
                     "SELECT id FROM concepts WHERE retired = 0 \
@@ -762,12 +754,12 @@ impl CodeGraphStore {
                 ids.push(row.get::<String>(0).unwrap_or_default());
             }
             Ok::<_, macrame::DbError>(ids)
-        })?)
+        })
     }
 
     pub fn live_route_ids_for_file(&self, file_path: &str) -> macrame::Result<Vec<String>> {
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
-        Ok(runtime().block_on(async {
+        runtime().block_on(async {
             let mut rows = conn
                 .query(
                     "SELECT id FROM concepts WHERE retired = 0 \
@@ -782,7 +774,7 @@ impl CodeGraphStore {
                 ids.push(row.get::<String>(0).unwrap_or_default());
             }
             Ok::<_, macrame::DbError>(ids)
-        })?)
+        })
     }
 
     /// Open non-structural edge triples with their `valid_from`, for the
@@ -794,7 +786,7 @@ impl CodeGraphStore {
         now: &str,
     ) -> macrame::Result<Vec<(String, String, String, String)>> {
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
-        Ok(runtime().block_on(async {
+        runtime().block_on(async {
             let mut rows = conn
                 .query(
                     "SELECT source_id, target_id, edge_type, valid_from \
@@ -814,7 +806,7 @@ impl CodeGraphStore {
                 ));
             }
             Ok::<_, macrame::DbError>(out)
-        })?)
+        })
     }
 
     /// Close open synthetic edge triples the framework hook no longer
@@ -1235,10 +1227,7 @@ fn record_blob_outcome(outcome: &BlobOutcome) {
 /// present on module concepts whose file bytes were blob-stored, absent on
 /// legacy generations and policy-skipped files. Absence is the signal;
 /// readers (`source_blob_of_extra`) treat missing and malformed alike.
-fn coderadar_extra(
-    content: &serde_json::Value,
-    source_blob: Option<&str>,
-) -> serde_json::Value {
+fn coderadar_extra(content: &serde_json::Value, source_blob: Option<&str>) -> serde_json::Value {
     let mut inner = serde_json::Map::new();
     inner.insert("format".to_string(), serde_json::json!(1));
     inner.insert(
@@ -1710,13 +1699,7 @@ pub fn build_v2_concepts_all(
         out.push(v2_upsert(&k.id, &k.name, constant_content(k), &now, None));
     }
     for t in projection.type_aliases.values() {
-        out.push(v2_upsert(
-            &t.id,
-            &t.name,
-            type_alias_content(t),
-            &now,
-            None,
-        ));
+        out.push(v2_upsert(&t.id, &t.name, type_alias_content(t), &now, None));
     }
     out
 }
@@ -1765,13 +1748,7 @@ pub fn build_v2_concepts_for_file(
     }
     for t in projection.type_aliases.values() {
         if t.id.starts_with(&prefix) {
-            out.push(v2_upsert(
-                &t.id,
-                &t.name,
-                type_alias_content(t),
-                &now,
-                None,
-            ));
+            out.push(v2_upsert(&t.id, &t.name, type_alias_content(t), &now, None));
         }
     }
     out
@@ -2833,8 +2810,14 @@ mod tests {
         assert!(!hits.is_empty());
         assert_eq!(hits[0].0, "graph.py::CodeGraph.rename");
         // Hostile input: safe empty, never an error or silent exclusion.
-        assert!(store.search_symbols("cats not dogs", 10, false).unwrap().is_empty());
-        assert!(store.search_symbols("say \"hi", 10, false).unwrap().is_empty());
+        assert!(store
+            .search_symbols("cats not dogs", 10, false)
+            .unwrap()
+            .is_empty());
+        assert!(store
+            .search_symbols("say \"hi", 10, false)
+            .unwrap()
+            .is_empty());
         assert!(store.search_symbols("", 10, false).unwrap().is_empty());
         assert!(store.search_symbols("   ", 10, false).unwrap().is_empty());
         // Retirement removes the hit: live-only, no history search.
@@ -2922,7 +2905,12 @@ mod tests {
         };
         assert_eq!(store.upsert_concepts_bulk(&[mk_qux()]).unwrap(), 1);
         let tombstone = mk_qux().retired(true);
-        assert_eq!(store.upsert_concepts_bulk(&[tombstone.clone()]).unwrap(), 1);
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(std::slice::from_ref(&tombstone))
+                .unwrap(),
+            1
+        );
         assert_eq!(store.upsert_concepts_bulk(&[tombstone]).unwrap(), 0);
         // Unhashable content always rewrites (safe direction).
         let bare = v2_upsert(
@@ -2932,7 +2920,12 @@ mod tests {
             &now,
             None,
         );
-        assert_eq!(store.upsert_concepts_bulk(&[bare.clone()]).unwrap(), 1);
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(std::slice::from_ref(&bare))
+                .unwrap(),
+            1
+        );
         assert_eq!(store.upsert_concepts_bulk(&[bare]).unwrap(), 1);
         // A meta_version-less row with matching hash still upgrades (the
         // v1-store upgrade path); afterwards it skips like any v2 row.
@@ -2949,7 +2942,12 @@ mod tests {
             &now,
             None,
         );
-        assert_eq!(store.upsert_concepts_bulk(&[modern.clone()]).unwrap(), 1);
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(std::slice::from_ref(&modern))
+                .unwrap(),
+            1
+        );
         assert_eq!(store.upsert_concepts_bulk(&[modern]).unwrap(), 0);
 
         // App metadata drift is a real concept change even when the content
@@ -3238,9 +3236,7 @@ mod tests {
         assert_eq!(store.upsert_concepts_bulk(&[concept]).unwrap(), 1);
         // The backdated write was recorded NOW, so a mid-past T sees
         // nothing — and knows it predates the recorded history.
-        let mid = store
-            .reconstruct("2020-06-15T12:00:00.000000Z")
-            .unwrap();
+        let mid = store.reconstruct("2020-06-15T12:00:00.000000Z").unwrap();
         assert!(
             !mid.concepts.contains_key("retro.py::module"),
             "recorded-now write must be invisible at a pre-recording T"
@@ -3273,15 +3269,13 @@ mod tests {
     #[test]
     fn source_blob_of_extra_reads_new_and_legacy() {
         let digest = "b".repeat(64);
-        let with = format!(
-            r#"{{"coderadar":{{"format":1,"source_blob":"{digest}"}}}}"#
-        );
-        assert_eq!(source_blob_of_extra(&with).as_deref(), Some(digest.as_str()));
-        // Legacy: no source_blob key.
+        let with = format!(r#"{{"coderadar":{{"format":1,"source_blob":"{digest}"}}}}"#);
         assert_eq!(
-            source_blob_of_extra(r#"{"coderadar":{"format":1}}"#),
-            None
+            source_blob_of_extra(&with).as_deref(),
+            Some(digest.as_str())
         );
+        // Legacy: no source_blob key.
+        assert_eq!(source_blob_of_extra(r#"{"coderadar":{"format":1}}"#), None);
         // Malformed: uppercase digest reads as absent.
         let bad = r#"{"coderadar":{"format":1,"source_blob":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}}"#;
         assert_eq!(source_blob_of_extra(bad), None);
@@ -3306,16 +3300,15 @@ mod tests {
         // Retry: same digest, and still exactly one blob row.
         let second = store.put_source_blob("a.py", bytes).unwrap();
         assert_eq!(second, first);
-        let n: i64 = runtime()
-            .block_on(async {
-                let mut rows = store
-                    .db
-                    .read_conn()
-                    .query("SELECT COUNT(*) FROM blobs", ())
-                    .await
-                    .unwrap();
-                rows.next().await.unwrap().unwrap().get(0).unwrap()
-            });
+        let n: i64 = runtime().block_on(async {
+            let mut rows = store
+                .db
+                .read_conn()
+                .query("SELECT COUNT(*) FROM blobs", ())
+                .await
+                .unwrap();
+            rows.next().await.unwrap().unwrap().get(0).unwrap()
+        });
         assert_eq!(n, 1, "content-addressed: one row for identical bytes");
         // And the bytes come back.
         let back: Vec<u8> = runtime()
@@ -3368,16 +3361,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = CodeGraphStore::open(dir.path().join("backfill.db")).unwrap();
         let now = now_iso8601();
-        let content =
-            serde_json::json!({"meta_version": 2, "kind": "module", "content_hash": "h"});
+        let content = serde_json::json!({"meta_version": 2, "kind": "module", "content_hash": "h"});
         // Legacy-shaped (no digest) vs current without digest: stable.
         let legacy = v2_upsert("m.py::module", "m", content.clone(), &now, None);
-        assert_eq!(store.upsert_concepts_bulk(&[legacy.clone()]).unwrap(), 1);
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(std::slice::from_ref(&legacy))
+                .unwrap(),
+            1
+        );
         assert_eq!(store.upsert_concepts_bulk(&[legacy]).unwrap(), 0);
         // Same content WITH a digest: changed (backfill), then stable.
         let digest = "c".repeat(64);
         let filled = v2_upsert("m.py::module", "m", content, &now, Some(&digest));
-        assert_eq!(store.upsert_concepts_bulk(&[filled.clone()]).unwrap(), 1);
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(std::slice::from_ref(&filled))
+                .unwrap(),
+            1
+        );
         assert_eq!(store.upsert_concepts_bulk(&[filled]).unwrap(), 0);
     }
 
@@ -3394,8 +3396,9 @@ mod tests {
         let digest = runtime().block_on(store.db.blob_put(bytes)).unwrap();
         assert_eq!(digest.len(), 64, "sha256 hex: {digest:?}");
         assert!(
-            digest.chars().all(|c| c.is_ascii_hexdigit()
-                && !c.is_ascii_uppercase()),
+            digest
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "lowercase hex: {digest:?}"
         );
         let back = runtime().block_on(store.db.blob_get(&digest)).unwrap();

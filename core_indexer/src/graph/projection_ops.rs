@@ -74,32 +74,32 @@ impl CodeGraph {
                 format!(".\\{}::", legacy.replace('/', "\\")),
             ];
             let matches = |id: &str| prefixes.iter().any(|p| id.starts_with(p.as_str()));
-            for (func_id, _) in projection.functions.iter() {
+            for func_id in projection.functions.keys() {
                 if matches(func_id) && !removed.contains(func_id) {
                     removed.insert(func_id.clone());
                 }
             }
-            for (class_id, _) in projection.classes.iter() {
+            for class_id in projection.classes.keys() {
                 if matches(class_id) && !removed.contains(class_id) {
                     removed.insert(class_id.clone());
                 }
             }
-            for (id, _) in projection.constants.iter() {
+            for id in projection.constants.keys() {
                 if matches(id) && !removed.contains(id) {
                     removed.insert(id.clone());
                 }
             }
-            for (id, _) in projection.type_aliases.iter() {
+            for id in projection.type_aliases.keys() {
                 if matches(id) && !removed.contains(id) {
                     removed.insert(id.clone());
                 }
             }
-            for (id, _) in projection.imports.iter() {
+            for id in projection.imports.keys() {
                 if matches(id) && !removed.contains(id) {
                     removed.insert(id.clone());
                 }
             }
-            for (id, _) in projection.modules.iter() {
+            for id in projection.modules.keys() {
                 if matches(id) && !removed.contains(id) {
                     removed.insert(id.clone());
                 }
@@ -107,9 +107,7 @@ impl CodeGraph {
             // §1.3: routes match by id prefix (file-prefixed ids) or by
             // the struct's file_path.
             for (id, r) in projection.routes.iter() {
-                if (matches(id)
-                    || r.file_path == file_path
-                    || r.file_path == lookup)
+                if (matches(id) || r.file_path == file_path || r.file_path == lookup)
                     && !removed.contains(id)
                 {
                     removed.insert(id.clone());
@@ -138,9 +136,9 @@ impl CodeGraph {
                 callers.retain(|cid| !removed.contains(cid));
                 !callers.is_empty()
             });
-            projection.synthetic_edges.retain(|(s, t)| {
-                !removed.contains(s) && !removed.contains(t)
-            });
+            projection
+                .synthetic_edges
+                .retain(|(s, t)| !removed.contains(s) && !removed.contains(t));
             self.retire_in_store(removed.iter());
             return removed;
         }
@@ -248,9 +246,9 @@ impl CodeGraph {
             !callers.is_empty()
         });
         // ... and the synthetic pair registry (keyed by pair, not endpoint).
-        projection.synthetic_edges.retain(|(s, t)| {
-            !removed.contains(s) && !removed.contains(t)
-        });
+        projection
+            .synthetic_edges
+            .retain(|(s, t)| !removed.contains(s) && !removed.contains(t));
 
         self.retire_in_store(removed.iter());
         removed
@@ -557,9 +555,7 @@ impl CodeGraph {
             let needs_insert = match unit {
                 ExtractedUnit::Function(f) => old_hashes
                     .get(&normalize_id(&f.id))
-                    .map_or(true, |(_, sig, body)| {
-                        f.signature_hash != *sig || f.body_hash != *body
-                    }),
+                    .is_none_or(|(_, sig, body)| f.signature_hash != *sig || f.body_hash != *body),
                 ExtractedUnit::Class(_) => !old_classes.contains(&normalize_id(&id)),
                 // R2-17: import ids are line-stable (`file::import@N`), so a
                 // binding edit on the same line (`combine` -> `combine_r2`)
@@ -713,7 +709,7 @@ impl CodeGraph {
                         id: module_id.clone(),
                         name: file_stem.to_string(),
                         path: std::path::PathBuf::from(file_path),
-                        language: language.clone(),
+                        language: *language,
                         package: None,
                         exports: vec![],
                         star_exports: None,
@@ -892,8 +888,7 @@ impl CodeGraph {
         // cold start parses back. Replaces the old pre-cascade v1
         // `persist_entities` flush.
         if let Some(ref store) = self.store {
-            let v2 =
-                crate::storage::build_v2_concepts_for_file(&projection, file_path, &digests);
+            let v2 = crate::storage::build_v2_concepts_for_file(&projection, file_path, &digests);
             let _ = store.upsert_concepts_bulk(&v2);
         }
         // Scoped: an edit to one file must not re-assert the project's whole
@@ -1042,7 +1037,7 @@ impl CodeGraph {
                         id: k.id.clone(),
                         name: k.name.clone(),
                         annotation: k.annotation.clone(),
-                        source: k.source.clone(),
+                        source: k.source,
                         default_value: k.default_value.clone(),
                         span: k.span,
                         name_span: k.name_span,
@@ -1058,7 +1053,7 @@ impl CodeGraph {
                         id: ta.id.clone(),
                         name: ta.name.clone(),
                         target: ta.target.clone(),
-                        source: ta.source.clone(),
+                        source: ta.source,
                         span: ta.span,
                         name_span: ta.name_span,
                         embedding: EmbeddingVec::default(),
@@ -1105,7 +1100,7 @@ impl CodeGraph {
             id: module_id.clone(),
             name: file_stem.to_string(),
             path: PathBuf::from(file_path),
-            language: language.clone(),
+            language: *language,
             package: None,
             exports: vec![],
             star_exports: None,

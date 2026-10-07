@@ -145,7 +145,7 @@ impl<'a> CursorExtractor<'a> {
                     None => continue,
                 };
                 let node = capture.node;
-                let node_id = node.id() as usize;
+                let node_id = node.id();
 
                 if !seen.insert(node_id) {
                     continue;
@@ -164,7 +164,7 @@ impl<'a> CursorExtractor<'a> {
 
     /// Pop frames whose end byte is before the given position.
     fn pop_frames(&mut self, byte_pos: usize) {
-        while self.frames.last().map_or(false, |f| byte_pos >= f.end_byte) {
+        while self.frames.last().is_some_and(|f| byte_pos >= f.end_byte) {
             let popped = self.frames.pop().unwrap();
             // Restore current_function_idx when leaving a function
             if popped.kind == EmittedKind::Function {
@@ -572,10 +572,8 @@ impl<'a> CursorExtractor<'a> {
             .any(|f| f.kind == EmittedKind::Class);
         let parent_class = if is_method {
             parent_class_from_frame.or_else(|| go_receiver_type.clone())
-        } else if let Some(ref recv) = go_receiver_type {
-            Some(recv.clone())
         } else {
-            None
+            go_receiver_type.clone()
         };
 
         let decorators = extract_decorators(node, self.source);

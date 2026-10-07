@@ -32,8 +32,9 @@ def _resolve_version() -> str:
     # wheels/sdists, where it agrees with the build). P2 reinstall-proof:
     # the MCP-serving venv resolves repo sources, so it reports the repo.
     try:
-        import tomllib
         from pathlib import Path
+
+        import tomllib
         _root = Path(__file__).resolve().parent.parent.parent.parent
         _pyproject = _root / "pyproject.toml"
         if _pyproject.is_file():
@@ -41,7 +42,7 @@ def _resolve_version() -> str:
                 _ver = tomllib.load(_f).get("project", {}).get("version", "")
             if _ver:
                 return _ver
-    except Exception:  # noqa: BLE001 - any read failure falls through to metadata
+    except Exception:  # noqa: BLE001, S110 - any read failure falls through to metadata
         pass
     def _tup(v: str) -> tuple:
         try:

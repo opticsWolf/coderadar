@@ -8,9 +8,8 @@ signature+docstring; enumeration is exact-count (no silent 10k cap).
 
 from __future__ import annotations
 
-import pytest
-
 import coderadar
+import pytest
 from coderadar import _core, ops
 from coderadar.embedding import (
     PREPROCESS_VERSION,
