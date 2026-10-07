@@ -37,6 +37,7 @@ __all__ = [
     "NotFound",
     "OpError",
     "affected",
+    "archive",
     "as_of",
     "blob_get",
     "callees",
@@ -588,6 +589,57 @@ def blob_get(digest: str) -> bytes | None:
             raise InvalidRequest(str(e)) from None
         raise EngineError(str(e)) from None
     return None if raw is None else bytes(raw)
+
+
+def archive(cutoff: str | None = None) -> dict:
+    """One archive session (§3.4, DR-25): move cold blobs + old ledger rows.
+
+    `cutoff` is a Macrame canonical UTC stamp: blobs last put before it
+    and named by no hot log entry move to `cold.blobs` (the
+    `<store-stem>_archive.db` sibling). Omitted → the file-based default
+    `[retention] archive_after_days` from `./.coderadar.toml` (cwd is the
+    project root in every entered flow). No TOML value → `InvalidRequest`;
+    garbage → `InvalidRequest`.
+
+    Returns `{links_archived, concepts_archived, log_entries_archived,
+    horizon, blobs_archived, blobs_restored, blob_scan_bytes, cutoff}`.
+    Reads never break: `blob_get` falls back to cold, and hot entries
+    naming cold-only blobs copy them back (`blobs_restored`). Backup is
+    the hot+cold pair — see `docs/store-and-retention.md`.
+    """
+    if cutoff is None:
+        cutoff = _retention_cutoff()
+    try:
+        from coderadar._core import archive as _archive
+        report = _archive(cutoff)
+    except ImportError as e:
+        raise NoExtension(str(e)) from None
+    except ValueError as e:  # garbage cutoff
+        raise InvalidRequest(str(e)) from None
+    except RuntimeError as e:
+        if "stored graph" in str(e):
+            raise InvalidRequest(str(e)) from None
+        raise EngineError(str(e)) from None
+    return dict(report)
+
+
+def _retention_cutoff() -> str:
+    """Cutoff stamp from `[retention] archive_after_days`, or raise."""
+    from datetime import datetime, timedelta, timezone
+    try:
+        from coderadar.config import load_config
+        days = load_config(Path.cwd()).retention.archive_after_days
+    except Exception as e:  # noqa: BLE001 - broken TOML is InvalidRequest
+        raise InvalidRequest(f"cannot read [retention] from .coderadar.toml: {e}") from None
+    if days is None:
+        raise InvalidRequest(
+            "no archive cutoff: pass cutoff=... or set "
+            "[retention] archive_after_days in .coderadar.toml"
+        )
+    if days < 0:
+        raise InvalidRequest(f"[retention] archive_after_days is negative: {days}")
+    stamp = datetime.now(timezone.utc) - timedelta(days=days)
+    return stamp.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def read_source(entity: dict) -> str | None:

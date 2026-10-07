@@ -698,6 +698,17 @@ class CodeGraph:
         from . import ops
         return ops.status()
 
+    def archive(self, cutoff: str | None = None) -> dict[str, Any]:
+        """One archive session at `cutoff` (§3.4, DR-25).
+
+        Moves blobs last-put before the cutoff and named by no hot log
+        entry to the `<store-stem>_archive.db` sibling, alongside archivable
+        ledger rows. Omitted `cutoff` reads `[retention] archive_after_days`
+        from `./.coderadar.toml`. Reads never break (cold fallback); backup
+        is the hot+cold pair — see `docs/store-and-retention.md`."""
+        from . import ops
+        return ops.archive(cutoff)
+
     # ── Update ─────────────────────────────────────────────────────────
 
     @_bound_to_loaded_project

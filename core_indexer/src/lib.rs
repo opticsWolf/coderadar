@@ -63,6 +63,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(search_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(blob_get, m)?)?;
     m.add_function(wrap_pyfunction!(entity_source_ref_at, m)?)?;
+    m.add_function(wrap_pyfunction!(archive, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
     m.add_function(wrap_pyfunction!(index_edge_stats, m)?)?;
@@ -2503,6 +2504,39 @@ fn entity_source_ref_at(
         }
         None => Ok(py.None()),
     }
+}
+
+/// One archive session at `cutoff` (§3.4, DR-25): `{links_archived,
+/// concepts_archived, log_entries_archived, horizon | None,
+/// blobs_archived, blobs_restored, blob_scan_bytes, cutoff}`. A garbage
+/// cutoff is a `ValueError`; a storeless graph is the honest error (there
+/// is no ledger to archive).
+#[pyfunction]
+#[pyo3(signature = (cutoff,))]
+fn archive(py: Python<'_>, cutoff: &str) -> PyResult<PyObject> {
+    let ts = normalize_timestamp(cutoff)?;
+    let (report, effective) = with_graph(|graph, _snap| {
+        let store = graph.store.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "archive needs a stored graph (analyze with create_store=True): \
+                 there is no ledger to archive",
+            )
+        })?;
+        let report = store
+            .archive(&ts)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
+        Ok((report, ts.clone()))
+    })?;
+    let d = PyDict::new(py);
+    d.set_item("links_archived", report.links_archived)?;
+    d.set_item("concepts_archived", report.concepts_archived)?;
+    d.set_item("log_entries_archived", report.log_entries_archived)?;
+    d.set_item("horizon", report.horizon)?;
+    d.set_item("blobs_archived", report.blobs_archived)?;
+    d.set_item("blobs_restored", report.blobs_restored)?;
+    d.set_item("blob_scan_bytes", report.blob_scan_bytes)?;
+    d.set_item("cutoff", effective)?;
+    Ok(d.into())
 }
 
 /// Search tokens from a free-text query: whitespace-split, surrounding

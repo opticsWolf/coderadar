@@ -531,6 +531,20 @@ impl CodeGraphStore {
         }))
     }
 
+    /// One archive session at `cutoff` (§3.4, DR-25): moves blobs last-put
+    /// before the cutoff and named by no hot log entry to `cold.blobs`,
+    /// alongside archivable links/concepts/log rows. Reads never break:
+    /// `blob_get` falls back to cold, and hot entries naming cold-only
+    /// blobs copy them back (`blobs_restored`). The cold file is the
+    /// `<store-stem>_archive.db` sibling — backup means the hot+cold pair,
+    /// a hot-only copy is pointers (recorded digests, no bytes).
+    pub fn archive(
+        &self,
+        cutoff: &str,
+    ) -> macrame::Result<macrame::temporal::ArchiveReport> {
+        runtime().block_on(self.db.archive(cutoff))
+    }
+
     /// The honest error for a store without the FTS index: names the table
     /// symptom and the `rebuild_fts` repair, never a silent empty.
     fn missing_fts_err(detail: &str) -> macrame::DbError {
