@@ -5,31 +5,116 @@ use crate::types::*;
 /// Normalize a file path string: convert backslashes to forward slashes,
 /// strip leading ./ or .\ for consistent keying.
 pub(crate) fn normalize_path_str(p: &str) -> String {
-    let s = p.trim_start_matches("./").trim_start_matches(".\\");
+    // Strip every leading `./` / `.\` layer (`./.\x.py` converges too);
+    // the old two-call chain only stripped one spelling once.
+    let mut s = p;
+    loop {
+        if let Some(rest) = s.strip_prefix("./") {
+            s = rest;
+            continue;
+        }
+        if let Some(rest) = s.strip_prefix(".\\") {
+            s = rest;
+            continue;
+        }
+        break;
+    }
     s.replace('\\', "/")
 }
 
-/// Lexically clean a path without touching the filesystem (no `canonicalize`:
-/// `update_file` mints ids for files that may not exist on disk yet when
-/// content is provided inline). Resolves `.` and `..` components.
-fn clean_lexical(p: &std::path::Path) -> std::path::PathBuf {
-    use std::path::Component;
-    let mut out = std::path::PathBuf::new();
-    for comp in p.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
+/// Whether a forward-slash spelling is absolute on any platform: POSIX
+/// `/…`, UNC `//…`, or a drive prefix (`C:/…`, bare `C:`).
+fn is_absolute_fwd(s: &str) -> bool {
+    if s.starts_with('/') {
+        return true;
+    }
+    let b = s.as_bytes();
+    b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':'
+}
+
+/// Lexically clean a forward-slash path without touching the filesystem
+/// (no `canonicalize`: `update_file` mints ids for files that may not
+/// exist on disk yet when content is provided inline). Resolves `.` and
+/// `..` components. Platform-independent: `std::path::components` treats
+/// `\` as a separator on Windows but as a filename char on POSIX, so the
+/// old `Path`-based cleaner never split `a\b` on Linux CI.
+fn clean_lexical_fwd(s: &str) -> String {
+    let (prefix, rest) = if let Some(rest) = s.strip_prefix("//") {
+        ("//".to_string(), rest)
+    } else if let Some(stripped) = s.strip_prefix('/') {
+        ("/".to_string(), stripped)
+    } else if s.len() >= 2 && s.as_bytes()[0].is_ascii_alphabetic() && s.as_bytes()[1] == b':' {
+        if s.len() >= 3 && s.as_bytes()[2] == b'/' {
+            (s[..3].to_string(), &s[3..])
+        } else if s.len() == 2 {
+            (s[..2].to_string(), "")
+        } else {
+            // Drive-relative (`C:foo`): keep the drive as the prefix.
+            (s[..2].to_string(), &s[2..])
+        }
+    } else {
+        (String::new(), s)
+    };
+    let absolute = !prefix.is_empty();
+    let mut parts: Vec<&str> = Vec::new();
+    for seg in rest.split('/') {
+        if seg.is_empty() || seg == "." {
+            continue;
+        } else if seg == ".." {
+            if parts.pop().is_none() {
+                // Beyond the root: absolute stays put, relative keeps `..`.
+                if !absolute {
+                    // `parts` cannot hold `..` via push of `seg` borrow?
+                    // Re-push as a literal (rest outlives the call).
+                    parts.push("..");
                 }
             }
-            c => out.push(c.as_os_str()),
+        } else {
+            parts.push(seg);
         }
     }
-    if out.as_os_str().is_empty() {
-        out.push(".");
+    if parts.is_empty() {
+        return if prefix.is_empty() {
+            ".".to_string()
+        } else {
+            prefix
+        };
     }
-    out
+    if prefix.is_empty() {
+        parts.join("/")
+    } else if prefix == "/" || prefix == "//" {
+        format!("{}{}", prefix, parts.join("/"))
+    } else if prefix.ends_with('/') {
+        // Drive root (`C:/`).
+        format!("{}{}", prefix, parts.join("/"))
+    } else {
+        // Bare drive (`C:`) + relative tail.
+        format!("{}/{}", prefix, parts.join("/"))
+    }
+}
+
+/// Strip a forward-slash absolute path by a forward-slash root with a
+/// separator boundary (`/foo` must not strip `/foobar/x`). Returns `None`
+/// for the root itself (the old `!r.empty` guard: the root mints absolute
+/// form, not an empty id).
+fn strip_root_fwd(abs: &str, root: &str) -> Option<String> {
+    if root == "/" {
+        let rest = abs.trim_start_matches('/');
+        return if rest.is_empty() {
+            None
+        } else {
+            Some(rest.to_string())
+        };
+    }
+    let root_trim = root.trim_end_matches('/');
+    if root_trim.is_empty() {
+        return None;
+    }
+    if abs == root_trim {
+        return None;
+    }
+    abs.strip_prefix(&format!("{root_trim}/"))
+        .map(str::to_string)
 }
 
 /// The ONE canonical file form for entity ids (F14 / items 12a, 16 / plan
@@ -59,49 +144,70 @@ pub(crate) fn canonical_file_form(path: &str) -> String {
 /// Inner funnel with the root injectable (unit tests must not touch the
 /// process-global `INDEXED_ROOT`; parallel tests share it).
 fn canonical_file_form_with_root(path: &str, root: &std::path::Path) -> String {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let p = std::path::Path::new(path);
-    let abs = if p.is_absolute() {
-        clean_lexical(p)
+    // Cross-platform (§5.1): `\` is a separator on every OS, not just
+    // Windows. The old `Path`-based cleaner treated `a\b` as one filename
+    // on Linux, so Windows spellings never converged there.
+    let root_fwd_raw = crate::fs::strip_verbatim_prefix(root.to_path_buf())
+        .to_string_lossy()
+        .replace('\\', "/");
+    let root_fwd = clean_lexical_fwd(&root_fwd_raw);
+    let path_fwd_raw = crate::fs::strip_verbatim_prefix(std::path::PathBuf::from(path))
+        .to_string_lossy()
+        .replace('\\', "/");
+    let cwd_fwd_raw = std::env::current_dir()
+        .map(|p| {
+            crate::fs::strip_verbatim_prefix(p)
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .unwrap_or_else(|_| ".".to_string());
+    let cwd_fwd = clean_lexical_fwd(&cwd_fwd_raw);
+    let abs_fwd = if is_absolute_fwd(&path_fwd_raw) {
+        clean_lexical_fwd(&path_fwd_raw)
     } else {
-        let via_cwd = clean_lexical(&cwd.join(p));
-        if via_cwd.starts_with(root) {
+        let join = |base: &str, rel: &str| -> String {
+            let base_trim = base.trim_end_matches('/');
+            if base_trim.is_empty() {
+                clean_lexical_fwd(rel)
+            } else {
+                clean_lexical_fwd(&format!("{base_trim}/{rel}"))
+            }
+        };
+        let via_cwd = join(&cwd_fwd, &path_fwd_raw);
+        if strip_root_fwd(&via_cwd, &root_fwd).is_some() || via_cwd == root_fwd {
             via_cwd
         } else {
-            clean_lexical(&root.join(p))
+            join(&root_fwd, &path_fwd_raw)
         }
     };
-    let rel = match abs.strip_prefix(root) {
-        Ok(r) if !r.as_os_str().is_empty() => r.to_path_buf(),
-        // Aliased root: the walk spells the path as passed (8.3 short
-        // names like C:\Users\RUNNER~1\… on CI, symlinks, verbatim
-        // `\\?\` form, on-disk case) while INDEXED_ROOT is
-        // filesystem-canonicalized — a lexical strip can never match
-        // those. Resolve through the FS once (mismatch path only, never
-        // the hot path) and retry before falling back to absolute form,
-        // which `retire_noncanonical_concepts` would close as an orphan
-        // (Windows CI's `test_as_of_temporal_traversal`: 3 concepts
-        // retired, as_of reads []).
-        _ => match std::fs::canonicalize(&abs) {
-            Ok(canon) => {
-                let canon = crate::fs::strip_verbatim_prefix(canon);
-                match canon.strip_prefix(root) {
-                    Ok(r) if !r.as_os_str().is_empty() => r.to_path_buf(),
-                    // Outside the root (or the root itself): absolute form.
-                    _ => return normalize_path_str(path),
-                }
+    if let Some(rel) = strip_root_fwd(&abs_fwd, &root_fwd) {
+        // Forward slashes on every platform (§5.1) and no `./` prefix:
+        // the id is a portable key, not a path a shell will run.
+        return rel;
+    }
+    // Aliased root: the walk spells the path as passed (8.3 short
+    // names like C:\Users\RUNNER~1\… on CI, symlinks, verbatim
+    // `\\?\` form, on-disk case) while INDEXED_ROOT is
+    // filesystem-canonicalized — a lexical strip can never match
+    // those. Resolve through the FS once (mismatch path only, never
+    // the hot path) and retry before falling back to absolute form,
+    // which `retire_noncanonical_concepts` would close as an orphan
+    // (Windows CI's `test_as_of_temporal_traversal`: 3 concepts
+    // retired, as_of reads []).
+    let abs_path = std::path::PathBuf::from(&abs_fwd);
+    match std::fs::canonicalize(&abs_path) {
+        Ok(canon) => {
+            let canon = crate::fs::strip_verbatim_prefix(canon);
+            match canon.strip_prefix(root) {
+                Ok(r) if !r.as_os_str().is_empty() => r.to_string_lossy().replace('\\', "/"),
+                // Outside the root (or the root itself): absolute form.
+                _ => normalize_path_str(path),
             }
-            // Unresolvable (update_file mints ids for files that may not
-            // exist yet): absolute form, as before.
-            _ => return normalize_path_str(path),
-        },
-    };
-    // Forward slashes on every platform (§5.1) and no `./` prefix: the id
-    // is a portable key, not a path a shell will run.
-    rel.components()
-        .map(|c| c.as_os_str().to_string_lossy().to_string())
-        .collect::<Vec<_>>()
-        .join("/")
+        }
+        // Unresolvable (update_file mints ids for files that may not
+        // exist yet): absolute form, as before.
+        _ => normalize_path_str(path),
+    }
 }
 
 /// Whether a concept-id file head is already canonical: relative, forward
