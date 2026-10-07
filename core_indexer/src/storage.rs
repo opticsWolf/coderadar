@@ -400,6 +400,73 @@ impl CodeGraphStore {
         Ok((guard, conn))
     }
 
+    /// FTS5 keyword search over concept text (§1.10, DR-34).
+    ///
+    /// Zero storage change: `concepts_fts` (title+content, trigger-maintained)
+    /// already indexes every v2 concept's JSON, so names, docstrings, file
+    /// paths and member lists are all searchable with no new write path.
+    /// Escaped-by-default (`raw=false` quotes each token via macrame's
+    /// `escape_fts5_query`, so hostile input like `cats not dogs` or an
+    /// unbalanced quote degrades to safe empty, never an error); `raw=true`
+    /// passes the MATCH expression through for power MATCH syntax.
+    /// Live-only: the engine filters retired rows, and history search is
+    /// out of scope — FTS indexes current rows, the ledger holds the past.
+    /// Empty queries short-circuit to `[]` without touching the store.
+    /// `top_k` clamps to [1, 50].
+    ///
+    /// Foreign/old stores may predate the FTS table: that is an honest
+    /// error naming `rebuild_fts`, never a silent empty.
+    pub fn search_symbols(
+        &self,
+        query: &str,
+        top_k: usize,
+        raw: bool,
+    ) -> macrame::Result<Vec<(String, f64)>> {
+        let top_k = top_k.clamp(1, 50);
+        let matched = if raw {
+            query.trim().to_string()
+        } else {
+            macrame::vector::escape_fts5_query(query)
+        };
+        if matched.is_empty() {
+            return Ok(Vec::new());
+        }
+        let res = (|| -> macrame::Result<Vec<(String, f64)>> {
+            let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+            runtime().block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT name FROM sqlite_master WHERE name='concepts_fts'",
+                        libsql::params![],
+                    )
+                    .await?;
+                if rows.next().await?.is_none() {
+                    return Err(Self::missing_fts_err("sqlite_master lists no concepts_fts"));
+                }
+                macrame::vector::keyword_search(&conn, &matched, top_k, None, None).await
+            })
+        })();
+        // Whatever layer notices the missing table (our pre-check, the
+        // MATCH itself, or open-time schema verification), the answer names
+        // the repair, never a bare table name or a silent empty.
+        res.map_err(|e| {
+            if format!("{e:?}").contains("concepts_fts") {
+                Self::missing_fts_err(&format!("{e:?}"))
+            } else {
+                e
+            }
+        })
+    }
+
+    /// The honest error for a store without the FTS index: names the table
+    /// symptom and the `rebuild_fts` repair, never a silent empty.
+    fn missing_fts_err(detail: &str) -> macrame::DbError {
+        macrame::DbError::Engine(libsql::Error::Misuse(format!(
+            "concepts_fts is absent (foreign/old store; {detail}): run \
+             Database::rebuild_fts() in macrame, then reindex, before keyword search",
+        )))
+    }
+
     /// Retire concepts and close every open edge that touches them.
     ///
     /// `retired: true` appeared nowhere in the codebase: a deleted function, a
@@ -2615,6 +2682,73 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = CodeGraphStore::open(dir.path().join("t.db")).unwrap();
         (dir, store)
+    }
+
+    /// §1.10 (DR-34): the spike probes pinned at the store level — top-1
+    /// for two natural queries, hostile-input safety, and retirement
+    /// removing a hit. Triggers keep `concepts_fts` current on upsert, so
+    /// no explicit rebuild is needed on this path.
+    #[test]
+    fn fts_search_symbols_pins_spike_probes() {
+        let (dir, store) = temp_store();
+        let now = now_iso8601();
+        let mk = |id: &str, content: &str| {
+            ConceptUpsert::new(id, id)
+                .content(content)
+                .valid_from(now.clone())
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)
+        };
+        store
+            .upsert_concepts_bulk(&[
+                mk(
+                    "watch.py::start_watcher",
+                    r#"{"meta_version": 2, "kind": "function", "name": "start_watcher", "file_path": "watch.py", "docstring": "Debounce the file watcher before restarting the index."}"#,
+                ),
+                mk(
+                    "graph.py::CodeGraph.rename",
+                    r#"{"meta_version": 2, "kind": "function", "name": "rename", "file_path": "graph.py", "docstring": "Rename a function via MutationEngine.plan_rename."}"#,
+                ),
+                mk(
+                    "svc.py::authenticate",
+                    r#"{"meta_version": 2, "kind": "function", "name": "authenticate", "file_path": "svc.py", "docstring": "Check the service token."}"#,
+                ),
+            ])
+            .unwrap();
+        // Spike probe 1: both terms only co-occur on the watcher.
+        let hits = store.search_symbols("watcher debounce", 10, false).unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].0, "watch.py::start_watcher");
+        // Spike probe 2: "function" is in every v2 JSON (IDF self-penalty)
+        // yet the entity also mentioning rename still ranks top-1.
+        let hits = store.search_symbols("rename function", 10, false).unwrap();
+        assert!(!hits.is_empty());
+        assert_eq!(hits[0].0, "graph.py::CodeGraph.rename");
+        // Hostile input: safe empty, never an error or silent exclusion.
+        assert!(store.search_symbols("cats not dogs", 10, false).unwrap().is_empty());
+        assert!(store.search_symbols("say \"hi", 10, false).unwrap().is_empty());
+        assert!(store.search_symbols("", 10, false).unwrap().is_empty());
+        assert!(store.search_symbols("   ", 10, false).unwrap().is_empty());
+        // Retirement removes the hit: live-only, no history search.
+        store
+            .retire_entities(&["watch.py::start_watcher".to_string()])
+            .unwrap();
+        let hits = store.search_symbols("watcher debounce", 10, false).unwrap();
+        assert!(hits.iter().all(|(id, _)| id != "watch.py::start_watcher"));
+        // A store without the FTS table names rebuild_fts, never empties.
+        // The diagnostic conn is readonly, so drop via a throwaway local
+        // connection against the live store (no reopen: `open` verifies the
+        // schema and would refuse the tampered file first).
+        let path = dir.path().join("t.db");
+        runtime().block_on(async {
+            let db = libsql::Builder::new_local(&path).build().await.unwrap();
+            let conn = db.connect().unwrap();
+            conn.execute("DROP TABLE concepts_fts", libsql::params![])
+                .await
+                .unwrap();
+        });
+        let err = store.search_symbols("watcher", 10, false).unwrap_err();
+        assert!(format!("{err:?}").contains("rebuild_fts"), "got: {err:?}");
     }
 
     /// One row per id, so the count is also an assertion that retirement

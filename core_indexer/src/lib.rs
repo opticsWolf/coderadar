@@ -60,6 +60,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lookup_entity_at, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entities_at, m)?)?;
     m.add_function(wrap_pyfunction!(blob_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(search_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
     m.add_function(wrap_pyfunction!(index_edge_stats, m)?)?;
@@ -2394,6 +2395,35 @@ fn blob_stats(py: Python<'_>) -> PyResult<PyObject> {
     out.set_item("skipped_oversize", stats.skipped_oversize)?;
     out.set_item("skipped_excluded", stats.skipped_excluded)?;
     out.set_item("bytes", stats.bytes)?;
+    Ok(out.into())
+}
+
+/// FTS5 keyword search over concept text (§1.10, DR-34): `{id, rank}`
+/// pairs, bm25 rank ascending (best-first). Escaped-by-default; `raw`
+/// passes MATCH through. Empty query → `[]` (the engine short-circuits
+/// before touching the store). Storeless graphs get the honest error —
+/// FTS lives in the ledger, and there is no ledger to read.
+#[pyfunction]
+#[pyo3(signature = (query, top_k=10, raw=false))]
+fn search_symbols(py: Python<'_>, query: &str, top_k: usize, raw: bool) -> PyResult<PyObject> {
+    let hits = with_graph(|graph, _snap| {
+        let store = graph.store.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "search_symbols needs a stored graph (analyze with create_store=True): \
+                 keyword search reads the ledger's FTS index, and a storeless graph has none",
+            )
+        })?;
+        store
+            .search_symbols(query, top_k, raw)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))
+    })?;
+    let out = PyList::empty(py);
+    for (id, rank) in hits {
+        let hit = PyDict::new(py);
+        hit.set_item("id", id)?;
+        hit.set_item("rank", rank)?;
+        out.append(hit)?;
+    }
     Ok(out.into())
 }
 

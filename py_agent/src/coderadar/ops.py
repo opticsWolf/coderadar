@@ -349,6 +349,40 @@ def search(query: str, kind: str | None = None, top_k: int = 10) -> list[dict]:
     return results[:top_k]
 
 
+def search_symbols(query: str, top_k: int = 10, raw: bool = False) -> list[dict]:
+    """FTS5 keyword search over concept text (§1.10, DR-34).
+
+    Finds symbols *mentioning* X (names, docstrings, file paths, member
+    lists — everything in the v2 concept JSON), ranked best-first by BM25
+    (`rank` is negative, ascending). Returns `[{id, rank}]`; hydrate via
+    :func:`node`. Zero storage change: the ledger's trigger-maintained
+    `concepts_fts` index already covers every concept.
+
+    Escaped by default: hostile input (`cats not dogs`, unbalanced quotes)
+    degrades to safe matches, never an error. `raw=True` passes the FTS5
+    MATCH expression through for power syntax. Live-only (retired concepts
+    never match); concept bodies stay in blobs, unindexed. Empty query →
+    `[]`. `top_k` clamps to [1, 50] in the engine.
+    """
+    _require_index()
+    try:
+        from coderadar._core import search_symbols as _search_symbols
+        return [
+            {"id": hit["id"], "rank": hit["rank"]}
+            for hit in _search_symbols(query, top_k, raw)
+        ]
+    except ImportError as e:
+        raise NoExtension(str(e)) from None
+    except RuntimeError as e:
+        # No graph loaded → NoIndex; a *storeless* graph → InvalidRequest
+        # (the request needs a ledger to read, unlike every projection
+        # query). The engine's message is pinned in `search_symbols`
+        # (lib.rs); this substring is the contract between the layers.
+        if "stored graph" in str(e):
+            raise InvalidRequest(str(e)) from None
+        raise NoIndex(str(e)) from None
+
+
 def node(entity_id: str, include_neighbors: bool = False) -> dict:
     """One entity's full record; with `include_neighbors`, plus its direct
     ``callers`` and ``callees`` lists."""
