@@ -3,22 +3,485 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="CodeRadar — live semantic graph of your codebase. Incremental, queryable, LLM-writable.">
 <title>CodeRadar — live semantic graph of your codebase</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 42rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.6; }
-  h1 { font-size: 2rem; } .tag { color: #555; } a { color: #0645ad; }
-  code { background: #f4f4f4; padding: .1rem .3rem; border-radius: .25rem; }
+  /* ── Tokens ─────────────────────────────────────────────── */
+  :root {
+    --main:   #3ee6ff;   /* radar cyan — the main color */
+    --tone-a: #8b5cf6;   /* violet — gradient tone 1 */
+    --tone-b: #f471d6;   /* magenta — gradient tone 2 */
+    --bg:     #05070d;
+    --bg-soft:#090d18;
+    --panel:  #0b1120;
+    --line:   rgba(62, 230, 255, .12);
+    --ink:    #e8f1ff;
+    --muted:  #93a1bd;
+    --grad-a: linear-gradient(120deg, var(--main), var(--tone-a));
+    --grad-b: linear-gradient(120deg, var(--main), var(--tone-b));
+    --grad-ab: linear-gradient(120deg, var(--tone-a), var(--tone-b));
+    --radius: 1rem;
+    --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; font-family: var(--font); color: var(--ink); background: var(--bg);
+    overflow-x: hidden; line-height: 1.6;
+  }
+  /* ambient aurora */
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none;
+    background:
+      radial-gradient(42rem 30rem at 12% -6%, rgba(139, 92, 246, .16), transparent 60%),
+      radial-gradient(46rem 32rem at 88% 4%, rgba(62, 230, 255, .10), transparent 60%),
+      radial-gradient(50rem 36rem at 50% 110%, rgba(244, 113, 214, .08), transparent 60%),
+      var(--bg);
+  }
+  ::selection { background: rgba(62, 230, 255, .28); }
+  a { color: var(--main); }
+  .wrap { max-width: 70rem; margin: 0 auto; padding: 0 clamp(1rem, 4vw, 2rem); }
+
+  /* ── Nav ────────────────────────────────────────────────── */
+  nav {
+    position: sticky; top: 0; z-index: 50;
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    background: rgba(5, 7, 13, .72); border-bottom: 1px solid var(--line);
+  }
+  nav .wrap { display: flex; align-items: center; gap: 1.25rem; height: 3.75rem; }
+  .brand { display: flex; align-items: center; gap: .6rem; font-weight: 800; letter-spacing: .02em;
+    color: var(--ink); text-decoration: none; font-size: 1.1rem; }
+  .brand .dot {
+    width: .9rem; height: .9rem; border-radius: 50%;
+    background: var(--grad-a); box-shadow: 0 0 1rem rgba(62, 230, 255, .8);
+    animation: pulse 2.6s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { box-shadow: 0 0 2rem rgba(139, 92, 246, .9); transform: scale(1.12); } }
+  nav .links { display: flex; gap: 1.1rem; margin-left: auto; }
+  nav .links a { color: var(--muted); text-decoration: none; font-size: .92rem; }
+  nav .links a:hover { color: var(--ink); }
+  .btn {
+    display: inline-block; text-decoration: none; font-weight: 700; color: #04121a !important;
+    background: var(--grad-a); padding: .65rem 1.3rem; border-radius: 999px;
+    box-shadow: 0 .4rem 1.4rem rgba(62, 230, 255, .25); transition: transform .2s, box-shadow .2s;
+    border: 0;
+  }
+  .btn:hover { transform: translateY(-2px); box-shadow: 0 .6rem 2rem rgba(139, 92, 246, .45); }
+  .btn.ghost {
+    color: var(--ink) !important; background: transparent;
+    border: 1px solid rgba(62, 230, 255, .35); box-shadow: none;
+  }
+  .btn.ghost:hover { border-color: var(--tone-b); box-shadow: 0 .4rem 1.4rem rgba(244, 113, 214, .25); }
+  nav .btn { padding: .45rem 1rem; font-size: .88rem; }
+  @media (max-width: 46rem) { nav .links a:not(.btn) { display: none; } }
+
+  /* ── Hero ───────────────────────────────────────────────── */
+  header.hero { position: relative; padding: clamp(3rem, 8vw, 6rem) 0 3rem; overflow: clip; }
+  #radar {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    opacity: .5; mask-image: radial-gradient(60% 90% at 50% 40%, #000 30%, transparent 75%);
+    -webkit-mask-image: radial-gradient(60% 90% at 50% 40%, #000 30%, transparent 75%);
+  }
+  .hero-inner { position: relative; text-align: center; }
+  .kicker {
+    display: inline-block; font-family: var(--mono); font-size: .8rem; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--main);
+    border: 1px solid var(--line); border-radius: 999px; padding: .3rem .9rem;
+    background: rgba(62, 230, 255, .06); margin-bottom: 1.2rem;
+  }
+  h1 {
+    font-size: clamp(2.4rem, 6.4vw, 4.4rem); line-height: 1.05; margin: 0 0 1rem;
+    letter-spacing: -0.02em;
+  }
+  h1 .grad {
+    background: var(--grad-a); -webkit-background-clip: text; background-clip: text; color: transparent;
+    animation: hue 7s ease-in-out infinite alternate; background-size: 200% 200%;
+  }
+  @keyframes hue { to { filter: hue-rotate(38deg); } }
+  .lede { color: var(--muted); font-size: clamp(1rem, 2.4vw, 1.25rem); max-width: 44rem; margin: 0 auto 2rem; }
+  .lede strong { color: var(--ink); }
+  .cta { display: flex; gap: .8rem; justify-content: center; flex-wrap: wrap; margin-bottom: 2rem; }
+  .install {
+    display: inline-flex; align-items: center; gap: .8rem; font-family: var(--mono);
+    background: var(--panel); border: 1px solid var(--line); border-radius: .8rem;
+    padding: .8rem 1rem; font-size: .95rem; max-width: 100%;
+  }
+  .install .pm { color: var(--tone-b); }
+  .install button {
+    font-family: var(--mono); font-size: .8rem; cursor: pointer; color: var(--main);
+    background: rgba(62, 230, 255, .08); border: 1px solid var(--line);
+    border-radius: .5rem; padding: .3rem .7rem;
+  }
+  .install button:hover { border-color: var(--main); }
+  .badges { display: flex; gap: .5rem; justify-content: center; flex-wrap: wrap; margin-top: 1.4rem; }
+  .badges img { height: 1.35rem; }
+
+  /* ── Stats ──────────────────────────────────────────────── */
+  .stats {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin: 3.5rem 0 0;
+    background: var(--line); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  }
+  .stat { background: rgba(11, 17, 32, .9); padding: 1.4rem .8rem; text-align: center; }
+  .stat b {
+    display: block; font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 800;
+    background: var(--grad-b); -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .stat span { color: var(--muted); font-size: .85rem; }
+  @media (max-width: 40rem) { .stats { grid-template-columns: repeat(2, 1fr); } }
+
+  /* ── Sections ───────────────────────────────────────────── */
+  section { padding: clamp(3rem, 7vw, 5.5rem) 0; }
+  h2 { font-size: clamp(1.6rem, 3.6vw, 2.4rem); letter-spacing: -0.01em; margin: 0 0 .4rem; text-align: center; }
+  h2 .grad { background: var(--grad-b); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .sub { color: var(--muted); text-align: center; max-width: 46rem; margin: 0 auto 2.4rem; }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  @media (max-width: 56rem) { .grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 36rem) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    position: relative; background: var(--panel); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 1.4rem; overflow: hidden;
+    transition: transform .25s, border-color .25s, box-shadow .25s;
+  }
+  .card::before {
+    content: ""; position: absolute; inset: 0 0 auto 0; height: 3px;
+    background: var(--grad-a); opacity: 0; transition: opacity .25s;
+  }
+  .card:nth-child(3n+2)::before { background: var(--grad-b); }
+  .card:nth-child(3n)::before { background: var(--grad-ab); }
+  .card:hover { transform: translateY(-4px); border-color: rgba(62, 230, 255, .4);
+    box-shadow: 0 1rem 2.4rem rgba(0, 0, 0, .5), 0 0 2rem rgba(139, 92, 246, .15); }
+  .card:hover::before { opacity: 1; }
+  .card .icon { font-size: 1.6rem; }
+  .card h3 { margin: .6rem 0 .4rem; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .92rem; }
+  .card code { font-family: var(--mono); font-size: .82rem; color: var(--main); }
+
+  /* ── Surfaces tabs ──────────────────────────────────────── */
+  .tabs { display: flex; gap: .5rem; justify-content: center; margin-bottom: 1.2rem; flex-wrap: wrap; }
+  .tabs button {
+    font: inherit; font-weight: 700; cursor: pointer; color: var(--muted);
+    background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: .5rem 1.2rem;
+  }
+  .tabs button[aria-selected="true"] { color: #04121a; background: var(--grad-a); border-color: transparent; }
+  .codecard {
+    background: #070b14; border: 1px solid var(--line); border-radius: var(--radius);
+    overflow: hidden; max-width: 46rem; margin: 0 auto;
+    box-shadow: 0 1.4rem 3rem rgba(0, 0, 0, .55);
+  }
+  .codecard .bar { display: flex; gap: .45rem; padding: .7rem 1rem; border-bottom: 1px solid var(--line); }
+  .codecard .bar i { width: .7rem; height: .7rem; border-radius: 50%; background: #26314d; }
+  .codecard .bar i:first-child { background: var(--tone-b); }
+  .codecard .bar i:nth-child(2) { background: var(--tone-a); }
+  .codecard .bar i:nth-child(3) { background: var(--main); }
+  .codecard pre { margin: 0; padding: 1.2rem 1.3rem; overflow-x: auto; font-family: var(--mono);
+    font-size: .86rem; line-height: 1.7; }
+  .tok-k { color: var(--tone-b); } .tok-s { color: var(--main); }
+  .tok-c { color: #5b6b8c; } .tok-f { color: var(--tone-a); }
+
+  /* ── Timeline (history) ─────────────────────────────────── */
+  .history {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: stretch;
+  }
+  @media (max-width: 52rem) { .history { grid-template-columns: 1fr; } }
+  .history .panel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 1.6rem;
+  }
+  .history h3 { margin-top: 0; }
+  .history ul { margin: .6rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: .94rem; }
+  .history li { margin: .35rem 0; }
+  .history li b { color: var(--ink); font-weight: 600; }
+  .history code { font-family: var(--mono); font-size: .82rem; color: var(--main); }
+
+  /* ── Docs ───────────────────────────────────────────────── */
+  .docs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  @media (max-width: 52rem) { .docs { grid-template-columns: 1fr; } }
+  .docs a {
+    display: block; text-decoration: none; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 1.4rem; transition: transform .25s, border-color .25s;
+  }
+  .docs a:hover { transform: translateY(-4px); border-color: var(--tone-a); }
+  .docs a h3 { margin: 0 0 .3rem; font-size: 1.05rem; }
+  .docs a h3 span { background: var(--grad-ab); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .docs a p { margin: 0; color: var(--muted); font-size: .9rem; }
+
+  footer { border-top: 1px solid var(--line); padding: 2rem 0 3rem; color: var(--muted);
+    font-size: .88rem; text-align: center; }
+  footer .grad { background: var(--grad-a); -webkit-background-clip: text; background-clip: text; color: transparent; font-weight: 700; }
+
+  /* ── Reveal on scroll ───────────────────────────────────── */
+  .rv { opacity: 0; transform: translateY(1.4rem); transition: opacity .7s ease, transform .7s ease; }
+  .rv.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .rv { opacity: 1; transform: none; }
+    html { scroll-behavior: auto; }
+  }
 </style>
 </head>
 <body>
-<h1>CodeRadar</h1>
-<p class="tag">Live semantic graph of your codebase — incremental, queryable, LLM-writable.</p>
-<p><code>pip install coderadar-rs</code> · 41 languages · MCP + CLI + Python, one name per operation.</p>
-<ul>
-  <li><a href="https://github.com/opticsWolf/coderadar">Repository</a></li>
-  <li><a href="https://pypi.org/project/coderadar-rs/">PyPI — coderadar-rs</a></li>
-  <li><a href="https://github.com/opticsWolf/coderadar/blob/main/docs/QUICKREF.md">Quick reference</a></li>
-  <li><a href="https://github.com/opticsWolf/coderadar/blob/main/docs/ARCHITECTURE.md">Architecture</a></li>
-</ul>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#top"><span class="dot"></span>CodeRadar</a>
+    <div class="links">
+      <a href="#features">Features</a>
+      <a href="#surfaces">Surfaces</a>
+      <a href="#history">History</a>
+      <a href="#docs">Docs</a>
+      <a class="btn" href="https://github.com/opticsWolf/coderadar">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <canvas id="radar" aria-hidden="true"></canvas>
+  <div class="wrap hero-inner">
+    <span class="kicker">v0.12 · history becomes real</span>
+    <h1>Your codebase,<br><span class="grad">on the radar.</span></h1>
+    <p class="lede">CodeRadar indexes your code into a <strong>live semantic graph</strong> —
+      entities, calls, routes, smells — and keeps <strong>every generation as history</strong>,
+      so agents and humans can explore, query, and rewrite with the past one lookup away.</p>
+    <div class="cta">
+      <a class="btn" href="https://github.com/opticsWolf/coderadar">Get started</a>
+      <a class="btn ghost" href="#surfaces">See it in action</a>
+    </div>
+    <div>
+      <span class="install"><span class="pm">$</span>&nbsp;pip install coderadar-rs
+        <button id="copy" type="button">copy</button></span>
+    </div>
+    <div class="badges">
+      <img alt="CI" src="https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg">
+      <img alt="PyPI" src="https://img.shields.io/pypi/v/coderadar-rs?label=pypi">
+      <img alt="languages" src="https://img.shields.io/badge/languages-41-brightgreen">
+      <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
+    </div>
+
+    <div class="stats rv">
+      <div class="stat"><b data-count="41">0</b><span>languages indexed</span></div>
+      <div class="stat"><b data-count="26">0</b><span>operations, one name each</span></div>
+      <div class="stat"><b data-count="1512">0</b><span>tests passing</span></div>
+      <div class="stat"><b data-count="3">0</b><span>surfaces: MCP · CLI · Python</span></div>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section id="features">
+    <h2 class="rv">Built for <span class="grad">agents that read code</span></h2>
+    <p class="sub rv">AST-only resolution at 100/100 precision-recall, an honesty-first error model,
+      and history stored as bytes — not vibes.</p>
+    <div class="grid">
+      <div class="card rv"><div class="icon">📡</div><h3>Semantic graph, 41 grammars</h3>
+        <p>Single-pass tree-sitter extraction across 12 Tier-1 languages. Imports, calls,
+        inheritance, and <code>route → handler</code> edges resolved through the L1–L4 cascade.</p></div>
+      <div class="card rv"><div class="icon">🕰️</div><h3>History as bytes</h3>
+        <p>Every generation stored as content-addressed blobs. <code>read_bytes</code> serves
+        exact source-at-T; diffs compute on read; cold bytes archive, never vanish.</p></div>
+      <div class="card rv"><div class="icon">🤝</div><h3>Honest by construction</h3>
+        <p>No capability fakes an answer. Missing graphs, absent blobs, and temporal
+        dead-ends raise named errors — <code>NoIndex · ContentUnavailable · TemporalUnsupported</code>.</p></div>
+      <div class="card rv"><div class="icon">🔍</div><h3>Query + keyword + vectors</h3>
+        <p>A real query language with a generated reference, millisecond FTS5
+        <code>search_symbols</code>, and Phase-1 embedding search with keyed, gated vectors.</p></div>
+      <div class="card rv"><div class="icon">✏️</div><h3>Guarded mutations</h3>
+        <p>Plan-then-apply rewrites with byte-span verification and post-write parse checks.
+        Dry-run unless applied; call-site cascades flagged, never silently skipped.</p></div>
+      <div class="card rv"><div class="icon">🩺</div><h3>Smells · clones · dead code</h3>
+        <p>Twelve smell rules, deterministic MinHash clone detection, and reachability-based
+        dead code that shrinks as resolution improves.</p></div>
+    </div>
+  </section>
+
+  <section id="surfaces">
+    <h2 class="rv">Three surfaces, <span class="grad">one name per op</span></h2>
+    <p class="sub rv">One fix in the shared op layer reaches MCP, CLI, and Python — pinned by parity tests.</p>
+    <div class="tabs rv" role="tablist">
+      <button role="tab" aria-selected="true" data-tab="cli">CLI</button>
+      <button role="tab" aria-selected="false" data-tab="mcp">MCP</button>
+      <button role="tab" aria-selected="false" data-tab="py">Python</button>
+    </div>
+    <div class="codecard rv">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <pre id="codepane"><code><span class="tok-c"># who calls the embedding gate?</span>
+$ coderadar callers core_indexer/graph/embeddings.py::dedup_key
+  <span class="tok-f">→ search_similar, compute_embeddings, 4 call sites</span>
+
+<span class="tok-c"># what breaks if this file changes?</span>
+$ coderadar affected py_agent/src/coderadar/ops.py --max-depth 2</code></pre>
+    </div>
+  </section>
+
+  <section id="history">
+    <h2 class="rv">The ledger <span class="grad">remembers</span></h2>
+    <p class="sub rv">A bitemporal Macrame ledger under the graph: facts carry world-time and learned-time,
+      so any recorded moment folds back into a readable state.</p>
+    <div class="history">
+      <div class="panel rv"><h3>Ask the past</h3>
+        <ul>
+          <li><b>Names at T</b> — <code>as_of(t)</code> reconstructs every symbol as it was.</li>
+          <li><b>Bytes at T</b> — <code>read_bytes(id)</code> returns exact file bytes, CRLF intact.</li>
+          <li><b>Diffs on read</b> — generations diffed live from blobs; nothing pre-rendered.</li>
+        </ul></div>
+      <div class="panel rv"><h3>Keep the present fast</h3>
+        <ul>
+          <li><b>Cold start</b> — load the ledger, refresh only changed files. Zero walks at steady state.</li>
+          <li><b>Retention</b> — <code>archive_after_days</code> moves cold bytes aside; reads never break.</li>
+          <li><b>Backup</b> — quiesce, checkpoint, copy hot + cold. Restore tested, not hoped.</li>
+        </ul></div>
+    </div>
+  </section>
+
+  <section id="docs">
+    <h2 class="rv">Read <span class="grad">deeper</span></h2>
+    <p class="sub rv">The repo docs are the live set — everything retired lives in the knowledge graph, never deleted.</p>
+    <div class="docs">
+      <a class="rv" href="https://github.com/opticsWolf/coderadar/blob/main/docs/ARCHITECTURE.md">
+        <h3><span>Architecture</span></h3><p>Layers, data model, pipeline, storage, honesty model, decision index.</p></a>
+      <a class="rv" href="https://github.com/opticsWolf/coderadar/blob/main/docs/QUICKREF.md">
+        <h3><span>Quick reference</span></h3><p>Everyday ops as CLI·MCP·Python triples, config cheat, troubleshooting.</p></a>
+      <a class="rv" href="https://github.com/opticsWolf/coderadar/blob/main/CHANGELOG.md">
+        <h3><span>Changelog</span></h3><p>Per-version record from v0.6 to v0.12 — blobs, FTS, routes, and all.</p></a>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span class="grad">CodeRadar</span> · MIT · <a href="https://github.com/opticsWolf/coderadar">repository</a> ·
+    <a href="https://pypi.org/project/coderadar-rs/">PyPI</a> · built with Rust + Python + Macrame
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ── Radar sweep ── */
+  var cv = document.getElementById("radar"), ctx = cv.getContext("2d");
+  var W = 0, H = 0, cx = 0, cy = 0, R = 0, ang = 0;
+  var blips = [];
+  function seed() {
+    blips = [];
+    var n = Math.max(14, Math.floor(W / 90));
+    for (var i = 0; i < n; i++) {
+      blips.push({
+        a: Math.random() * Math.PI * 2,
+        r: (0.12 + Math.random() * 0.8) * R,
+        tone: Math.random() < 0.55 ? "62,230,255" : (Math.random() < 0.5 ? "139,92,246" : "244,113,214"),
+        glow: 0
+      });
+    }
+  }
+  function size() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = cv.clientWidth; H = cv.clientHeight;
+    cv.width = W * dpr; cv.height = H * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    cx = W / 2; cy = H * 0.42; R = Math.min(W, H) * 0.46;
+    seed();
+  }
+  function ring(r, alpha) {
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.strokeStyle = "rgba(62,230,255," + alpha + ")"; ctx.lineWidth = 1; ctx.stroke();
+  }
+  function frame() {
+    ctx.clearRect(0, 0, W, H);
+    [0.25, 0.5, 0.75, 1].forEach(function (f) { ring(R * f, 0.10 + 0.05 * f); });
+    ctx.beginPath(); ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
+    ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R);
+    ctx.strokeStyle = "rgba(62,230,255,0.07)"; ctx.stroke();
+    /* sweep with trailing gradient */
+    for (var t = 0; t < 40; t++) {
+      var a = ang - t * 0.012;
+      ctx.beginPath(); ctx.moveTo(cx, cy);
+      ctx.arc(cx, cy, R, a, a + 0.012);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(62,230,255," + (0.10 * (1 - t / 40)) + ")";
+      ctx.fill();
+    }
+    ctx.beginPath(); ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(ang) * R, cy + Math.sin(ang) * R);
+    ctx.strokeStyle = "rgba(62,230,255,0.55)"; ctx.lineWidth = 1.5; ctx.stroke();
+    /* blips flare as the sweep passes */
+    blips.forEach(function (b) {
+      var d = (ang - b.a) % (Math.PI * 2);
+      if (d < 0) d += Math.PI * 2;
+      if (d < 0.5) b.glow = 1;
+      b.glow *= 0.965;
+      var x = cx + Math.cos(b.a) * b.r, y = cy + Math.sin(b.a) * b.r;
+      ctx.beginPath(); ctx.arc(x, y, 1.6 + b.glow * 2.6, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(" + b.tone + "," + (0.25 + b.glow * 0.75) + ")";
+      ctx.fill();
+      if (b.glow > 0.05) {
+        ctx.beginPath(); ctx.arc(x, y, (1.6 + b.glow * 2.6) * 3.2, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(" + b.tone + "," + (b.glow * 0.35) + ")";
+        ctx.stroke();
+      }
+    });
+    ang += 0.011;
+    if (!reduce) requestAnimationFrame(frame);
+  }
+  size();
+  window.addEventListener("resize", size);
+  if (reduce) { ang = 1.2; frame(); } else { frame(); }
+
+  /* ── Reveal on scroll ── */
+  var io = new IntersectionObserver(function (es) {
+    es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); } });
+  }, { threshold: 0.12 });
+  document.querySelectorAll(".rv").forEach(function (el) { io.observe(el); });
+
+  /* ── Animated counters ── */
+  var cio = new IntersectionObserver(function (es) {
+    es.forEach(function (e) {
+      if (!e.isIntersecting) return;
+      cio.unobserve(e.target);
+      var el = e.target, end = parseInt(el.dataset.count, 10), t0 = null;
+      if (reduce) { el.textContent = end.toLocaleString(); return; }
+      function tick(t) {
+        if (!t0) t0 = t;
+        var p = Math.min((t - t0) / 1400, 1), ease = 1 - Math.pow(1 - p, 3);
+        el.textContent = Math.round(end * ease).toLocaleString();
+        if (p < 1) requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    });
+  }, { threshold: 0.4 });
+  document.querySelectorAll("[data-count]").forEach(function (el) { cio.observe(el); });
+
+  /* ── Surface tabs ── */
+  var panes = {
+    cli: '<span class="tok-c"># who calls the embedding gate?</span>\n$ coderadar callers core_indexer/graph/embeddings.py::dedup_key\n  <span class="tok-f">→ search_similar, compute_embeddings, 4 call sites</span>\n\n<span class="tok-c"># what breaks if this file changes?</span>\n$ coderadar affected py_agent/src/coderadar/ops.py --max-depth 2',
+    mcp: '<span class="tok-c">// the same op, as an agent tool call</span>\ntools.<span class="tok-f">coderadar_callers</span>({\n  entity_id: <span class="tok-s">"core_indexer/graph/embeddings.py::dedup_key"</span>\n})\n<span class="tok-f">→ { callers: […], unresolved: [] }</span>\n\ntools.<span class="tok-f">coderadar_affected</span>({\n  file: <span class="tok-s">"py_agent/src/coderadar/ops.py"</span>, max_depth: <span class="tok-s">2</span>\n})',
+    py: '<span class="tok-c"># and from Python, with history attached</span>\ng = CodeGraph(<span class="tok-s">"."</span>)\ng.callers(<span class="tok-s">"core_indexer/graph/embeddings.py::dedup_key"</span>)\n\nsnap = g.as_of(<span class="tok-s">"2026-09-01T00:00:00Z"</span>)\nsnap.read_bytes(<span class="tok-s">"py_agent/src/coderadar/ops.py"</span>)  <span class="tok-c"># exact bytes at T</span>'
+  };
+  var pane = document.getElementById("codepane");
+  document.querySelectorAll(".tabs button").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      document.querySelectorAll(".tabs button").forEach(function (b) { b.setAttribute("aria-selected", "false"); });
+      btn.setAttribute("aria-selected", "true");
+      pane.innerHTML = panes[btn.dataset.tab];
+    });
+  });
+
+  /* ── Copy install ── */
+  document.getElementById("copy").addEventListener("click", function () {
+    var done = function (ok) {
+      var b = document.getElementById("copy");
+      b.textContent = ok ? "copied" : "select & copy";
+      setTimeout(function () { b.textContent = "copy"; }, 1600);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText("pip install coderadar-rs").then(function () { done(true); }, function () { done(false); });
+    } else { done(false); }
+  });
+})();
+</script>
 </body>
 </html>
