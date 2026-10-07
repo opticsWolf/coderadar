@@ -36,8 +36,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/opticsWolf/coderadar"
+Homepage = "https://opticswolf.github.io/coderadar/"
 Repository = "https://github.com/opticsWolf/coderadar"
+Documentation = "https://opticswolf.github.io/coderadar/"
 
 [project.optional-dependencies]
 dev = [

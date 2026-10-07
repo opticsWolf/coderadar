@@ -6,6 +6,7 @@
 [![Rust](https://img.shields.io/badge/rust-1.80%2B-orange)](https://www.rust-lang.org)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Languages](https://img.shields.io/badge/languages-41-brightgreen)]()
+[![Website](https://img.shields.io/badge/website-coderadar-blue)](https://opticswolf.github.io/coderadar/)
 
 [Homepage](https://github.com/opticsWolf/coderadar) · [Repository](https://github.com/opticsWolf/coderadar)
 
