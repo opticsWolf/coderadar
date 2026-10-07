@@ -131,8 +131,6 @@
   .install button:hover { border-color: var(--main); }
   .release-line { margin-top: 1rem; color: var(--faint); font-size: .85rem; }
   .release-line a { color: var(--muted); }
-  .badges { display: flex; gap: .5rem; justify-content: center; flex-wrap: wrap; margin-top: 1rem; }
-  .badges img { height: 1.35rem; }
 
   /* proof strip — metrics as data, not hero boxes */
   .proof {
@@ -156,12 +154,7 @@
   }
   h2 { font-size: clamp(1.6rem, 3.6vw, 2.4rem); letter-spacing: -0.01em;
     margin: 0 0 .4rem; text-align: center; text-wrap: balance; }
-  h2 .u-a { text-decoration: underline; text-decoration-color: var(--tone-a);
-    text-decoration-thickness: .08em; text-underline-offset: .14em; }
-  h2 .u-b { text-decoration: underline; text-decoration-color: var(--tone-b);
-    text-decoration-thickness: .08em; text-underline-offset: .14em; }
-  h2 .u-m { text-decoration: underline; text-decoration-color: var(--main);
-    text-decoration-thickness: .08em; text-underline-offset: .14em; }
+
   .sub { color: var(--muted); text-align: center; max-width: 48rem; margin: 0 auto 2.6rem; }
 
   /* ── Why rows (editorial, alternating) ──────────────────── */
@@ -360,12 +353,6 @@
         <button id="copy" type="button">copy</button></span>
     </div>
     <p class="release-line">v0.12 — history becomes real · <a href="https://github.com/opticsWolf/coderadar/blob/main/CHANGELOG.md">changelog</a></p>
-    <div class="badges">
-      <img alt="CI" src="https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg">
-      <img alt="PyPI" src="https://img.shields.io/pypi/v/coderadar-rs?label=pypi">
-      <img alt="languages" src="https://img.shields.io/badge/languages-41-brightgreen">
-      <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
-    </div>
 
     <p class="proof rv">
       <b data-count="41">0</b> languages <span class="sep">·</span>
@@ -380,7 +367,7 @@
 <main class="wrap">
 
   <section id="why">
-    <h2 class="rv">Why <span class="u-m">CodeRadar</span></h2>
+    <h2 class="rv">Why CodeRadar</h2>
     <p class="sub rv">Three bets no other code index makes at once: the past is data,
       the tool never bluffs, and one fix reaches every surface.</p>
 
@@ -456,7 +443,7 @@ g.callers(<span class="tok-s">"pkg/mod.py::handler"</span>)</code></pre>
   </section>
 
   <section id="capabilities" class="tint-a">
-    <h2 class="rv">Built for <span class="u-a">agents that read code</span></h2>
+    <h2 class="rv">Built for agents that read code</h2>
     <p class="sub rv">AST-only resolution at 100/100 precision-recall, an honesty-first error model,
       and history stored as bytes: not vibes.</p>
     <div class="bento">
@@ -496,7 +483,7 @@ g.callers(<span class="tok-s">"pkg/mod.py::handler"</span>)</code></pre>
   </section>
 
   <section id="surfaces">
-    <h2 class="rv">Three surfaces, <span class="u-m">one name per op</span></h2>
+    <h2 class="rv">Three surfaces, one name per op</h2>
     <p class="sub rv">One fix in the shared op layer reaches MCP, CLI, and Python — pinned by parity tests.</p>
     <div class="tabs rv" role="tablist" aria-label="Surface examples">
       <button role="tab" aria-selected="true" data-tab="cli">CLI</button>
@@ -517,7 +504,7 @@ $ coderadar affected py_agent/src/coderadar/ops.py --max-depth 2</code></pre>
   </section>
 
   <section id="history" class="tint-a">
-    <h2 class="rv">The ledger <span class="u-a">remembers</span></h2>
+    <h2 class="rv">The ledger remembers</h2>
     <p class="sub rv">A bitemporal Macrame ledger under the graph: facts carry world-time and learned-time,
       so any recorded moment folds back into a readable state.</p>
     <div class="history">
@@ -537,7 +524,7 @@ $ coderadar affected py_agent/src/coderadar/ops.py --max-depth 2</code></pre>
   </section>
 
   <section id="docs" class="tint-b">
-    <h2 class="rv">Read <span class="u-b">deeper</span></h2>
+    <h2 class="rv">Read deeper</h2>
     <p class="sub rv">The repo docs are the live set — everything retired lives in the knowledge graph, never deleted.</p>
     <div class="docs">
       <a class="rv" href="https://github.com/opticsWolf/coderadar/blob/main/docs/ARCHITECTURE.md">
