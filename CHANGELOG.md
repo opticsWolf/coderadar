@@ -1,10 +1,12 @@
 # CodeRadar Changelog
 
-Patch releases accumulate toward 0.12.0 (+0.0.1 per implemented feature,
+Patch releases accumulate toward the next minor (+0.0.1 per implemented feature,
 bump commit named in the feature's DR row). The v0.12 plan history lives
 in `docs/` (v1 frozen, consolidated trio authoritative).
 
-## Unreleased (toward 0.12.0)
+## Unreleased
+
+## 0.12.0 (2026-10-07)
 
 - P2 agent enablement: `skills/coderadar-mcp` + `skills/coderadar-cli`
   (repo source of truth, installed to `~/.pi/agent/skills`),
