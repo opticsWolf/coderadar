@@ -61,7 +61,7 @@ def _detecting_classes(root_path: Path) -> list:
         try:
             if cls().detect(root_path):
                 active.append(cls)
-        except Exception:  # noqa: BLE001 - one broken detector must not sink extraction
+        except Exception:  # noqa: BLE001, S112 - one broken detector must not sink extraction
             continue
     return active
 

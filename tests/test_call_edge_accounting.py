@@ -16,10 +16,9 @@ from __future__ import annotations
 
 import sqlite3
 
-import pytest
-
 import coderadar
-from coderadar import _core, ops
+import pytest
+from coderadar import _core
 
 try:
     from coderadar import _core as _c  # noqa: F401
@@ -72,7 +71,7 @@ def _ledger_calls(db_path) -> set:
 
 class TestAccounting:
     def test_invariant_closes(self, mixed):
-        g, _tmp = mixed
+        _, _tmp = mixed
         s = _core.graph_stats()
         assert s["call_edges"] == (
             s["asserted_call_edges"] + s["external_call_edges"]
@@ -80,13 +79,13 @@ class TestAccounting:
         )
 
     def test_asserted_equals_ledger(self, mixed):
-        g, tmp = mixed
+        _, tmp = mixed
         s = _core.graph_stats()
         db = tmp / ".coderadar" / "store" / "coderadar.db"
         assert s["asserted_call_edges"] == len(_ledger_calls(db)) == 1
 
     def test_buckets(self, mixed):
-        g, _tmp = mixed
+        _, _tmp = mixed
         s = _core.graph_stats()
         # run→helper asserted; run→external::missing_fn (os.getcwd drops
         # entirely — an external import call with no followable target);

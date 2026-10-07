@@ -175,7 +175,10 @@ pub(crate) fn rebuild_module_path_index(projection: &mut ProjectedGraph) {
                 tail.insert_str(0, seg);
                 // Sorted-id insertion order keeps every vec ascending, so
                 // query-time ranking is a stable pick-first with no sort.
-                index.entry(tail.clone()).or_default().push(module.id.clone());
+                index
+                    .entry(tail.clone())
+                    .or_default()
+                    .push(module.id.clone());
             }
         }
     }
@@ -194,12 +197,8 @@ fn pick_suffix_winner(
     let mut best: Option<&str> = None;
     let mut best_same_lang = false;
     for id in ids {
-        let same = importer_lang.is_some_and(|l| {
-            projection
-                .modules
-                .get(id)
-                .is_some_and(|m| m.language == l)
-        });
+        let same = importer_lang
+            .is_some_and(|l| projection.modules.get(id).is_some_and(|m| m.language == l));
         let better = match (same, best_same_lang) {
             (true, false) => true,
             (false, true) => false,
@@ -225,10 +224,8 @@ pub(crate) fn find_module_by_dotted_name(
     // 2.2: normalize common TS path aliases before suffix matching.
     // `@/...` and `~/...` conventionally map to `src/...` (Vite/Next/tsconfig).
     let normalized;
-    let dotted_name: &str = if dotted_name.starts_with("@/") {
-        normalized = format!("src/{}", &dotted_name[2..]);
-        &normalized
-    } else if dotted_name.starts_with("~/") {
+    // `@/` and `~/` are two spellings for the same `src/` root (one arm).
+    let dotted_name: &str = if dotted_name.starts_with("@/") || dotted_name.starts_with("~/") {
         normalized = format!("src/{}", &dotted_name[2..]);
         &normalized
     } else {
@@ -247,10 +244,7 @@ pub(crate) fn find_module_by_dotted_name(
     //
     // A graph with modules but an empty index is legacy or hand-built (unit
     // tests) — it keeps the full-scan behaviour below, unchanged.
-    let importer_lang = projection
-        .modules
-        .get(current_module)
-        .map(|m| m.language);
+    let importer_lang = projection.modules.get(current_module).map(|m| m.language);
     if projection.modules.is_empty() || !projection.module_path_index.is_empty() {
         for start in 0..segments.len() {
             let tail = segments[start..].join("/");
@@ -465,6 +459,37 @@ fn find_symbol_in_module_guarded(
     None
 }
 
+/// Resolve a canonical id-form path for disk IO (F14 follow-up): absolute
+/// passes through; relative resolves against the indexed root (the file
+/// itself decides via `exists()`, else its parent dir — tmp/backup targets
+/// do not exist yet), then CWD. Report keys stay in id form — only fs ops
+/// use the resolved path. Centralized here so analysis passes (clones,
+/// smells, scaffold, dead-code) share it with the mutation engine instead
+/// of each assuming CWD == indexed root.
+pub(crate) fn disk_path_for(path: &str) -> std::path::PathBuf {
+    let p = std::path::Path::new(path);
+    if p.is_absolute() {
+        return p.to_path_buf();
+    }
+    let root = crate::indexed_root();
+    let cand = root.join(p);
+    if cand.exists() {
+        return cand;
+    }
+    if let Some(parent) = cand.parent() {
+        if !parent.as_os_str().is_empty() && parent.exists() {
+            return cand;
+        }
+    }
+    std::env::current_dir().unwrap_or(root).join(p)
+}
+
+/// Read a project file by canonical id-form path: empty string when
+/// missing (callers treat unreadable as skip, never as crash).
+pub(crate) fn read_project_file(path: &str) -> String {
+    std::fs::read_to_string(disk_path_for(path)).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod canonical_form_tests {
     use super::*;
@@ -544,35 +569,4 @@ mod canonical_form_tests {
         assert!(!is_canonical_file_head("/home/proj/x.py")); // absolute (POSIX)
         assert!(!is_canonical_file_head("")); // empty
     }
-}
-
-/// Resolve a canonical id-form path for disk IO (F14 follow-up): absolute
-/// passes through; relative resolves against the indexed root (the file
-/// itself decides via `exists()`, else its parent dir — tmp/backup targets
-/// do not exist yet), then CWD. Report keys stay in id form — only fs ops
-/// use the resolved path. Centralized here so analysis passes (clones,
-/// smells, scaffold, dead-code) share it with the mutation engine instead
-/// of each assuming CWD == indexed root.
-pub(crate) fn disk_path_for(path: &str) -> std::path::PathBuf {
-    let p = std::path::Path::new(path);
-    if p.is_absolute() {
-        return p.to_path_buf();
-    }
-    let root = crate::indexed_root();
-    let cand = root.join(p);
-    if cand.exists() {
-        return cand;
-    }
-    if let Some(parent) = cand.parent() {
-        if !parent.as_os_str().is_empty() && parent.exists() {
-            return cand;
-        }
-    }
-    std::env::current_dir().unwrap_or(root).join(p)
-}
-
-/// Read a project file by canonical id-form path: empty string when
-/// missing (callers treat unreadable as skip, never as crash).
-pub(crate) fn read_project_file(path: &str) -> String {
-    std::fs::read_to_string(disk_path_for(path)).unwrap_or_default()
 }

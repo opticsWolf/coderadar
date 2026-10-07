@@ -448,17 +448,6 @@ impl<'a> TypeCtx<'a> {
         Some(id).filter(module_level)
     }
 
-    /// The method a call `path.name(...)` made inside function `fid` binds to.
-    /// Kept for the direct call-edge path; the value path (with evidence and
-    /// construction fallback) is `resolve_call_value`.
-    pub fn resolve_method_call(&self, fid: &str, path: &[String], name: &str) -> Option<EntityId> {
-        self.resolve_call_value(fid, path, name)
-            .and_then(|t| match t {
-                crate::types::CallTarget::Method(m, _) => Some(m),
-                crate::types::CallTarget::Ctor(_) => None,
-            })
-    }
-
     /// A call `path.name(...)` either resolves to a method (`Method`, with
     /// receiver evidence, plan v0.10 §1.2 step 3 / §2.4) or to a class
     /// construction (`Ctor`) when the receiver attribute is class-valued:

@@ -856,6 +856,7 @@ def _collect_embed_targets(wanted_model: str) -> list:
     once with the fresh count (three passes max, then whatever stands).
     """
     from coderadar._core import graph_stats, search_entities
+
     from .embedding import (
         EmbedTarget,
         compute_content_hash,
@@ -905,6 +906,7 @@ def _stored_embedding_model() -> tuple[bool, str | None]:
     legacy bare-hash vectors (pre-key, always miss and re-embed once).
     """
     from coderadar._core import search_entities
+
     from .embedding import stored_key_model
     for kind in EMBED_KINDS:
         for entity in search_entities("", 1, kind):
@@ -1289,7 +1291,7 @@ def open_project(path: str | Path, confirm: bool = False,
         try:
             from coderadar._core import graph_stats as _stats0
             stats = dict(_stats0())
-        except Exception:  # noqa: BLE001 - no index yet: empty stats
+        except Exception:  # noqa: BLE001, S110 - no index yet: empty stats
             pass
         return {
             "root": root,
@@ -1316,7 +1318,7 @@ def open_project(path: str | Path, confirm: bool = False,
             from coderadar._core import graph_stats as _stats2
             _coldstart.build_graph(root)
             stats = dict(_stats2())
-        except Exception as e:  # noqa: BLE001 - ensure failure is honest
+        except Exception as e:
             raise EngineError(f"project opens but the index will not build: {e}") from e
     return {
         "root": root,
@@ -1534,7 +1536,7 @@ def reindex(with_embeddings: bool = False, full: bool = False,
     try:
         from coderadar.config import activate_config as _activate_cfg
         _activate_cfg(Path(root))
-    except Exception:  # noqa: BLE001 - config must not fail the reindex
+    except Exception:  # noqa: BLE001, S110 - config must not fail the reindex
         pass
     try:
         from coderadar._core import graph_stats
@@ -1556,7 +1558,7 @@ def reindex(with_embeddings: bool = False, full: bool = False,
     try:
         import coderadar
         out["blobs"] = coderadar.blob_stats()
-    except Exception:  # noqa: BLE001 - stats must not fail the report
+    except Exception:  # noqa: BLE001, S110 - stats must not fail the report
         pass
     if with_embeddings:
         try:

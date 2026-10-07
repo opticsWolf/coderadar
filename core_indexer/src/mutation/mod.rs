@@ -13,7 +13,7 @@ pub mod write_guard;
 use std::collections::HashMap;
 
 use crate::mutation::edit::apply_edits_to_file;
-use crate::mutation::indent::{detect_indent_style, normalize_indent};
+use crate::mutation::indent::detect_indent_style;
 use crate::mutation::write_guard::WriteGuard;
 use crate::types::{ByteSpan, ParseQuality, ProjectedGraph, ResolvedCall};
 
@@ -568,7 +568,7 @@ impl MutationEngine {
         let line_text = |idx: usize| -> &str {
             let s = line_starts[idx];
             let e = line_starts.get(idx + 1).copied().unwrap_or(source.len());
-            source[s..e].trim_end_matches(|c| c == '\r' || c == '\n')
+            source[s..e].trim_end_matches(['\r', '\n'])
         };
         let def_idx = def_line.saturating_sub(1).min(n_lines - 1);
         let lo = def_idx.saturating_sub(3);
@@ -1247,6 +1247,10 @@ impl MutationEngine {
     /// tree-sitter — every identifier after the `import`/`export` keyword
     /// that is not an `as` alias. Star imports need nothing (runtime
     /// name-agnostic); `__all__` string literals stay for review.
+    /// Eight params (&self + context + three out-vectors): the rename needs
+    /// every index and every sink at once; a param struct would churn the
+    /// five callers for no behavior gain.
+    #[allow(clippy::too_many_arguments)]
     fn collect_import_binding_edits(
         &self,
         entity_id: &str,
@@ -2077,7 +2081,7 @@ impl MutationEngine {
         let mut files_written: Vec<String> = Vec::new();
         for (file_path, edits) in &by_file {
             let original = originals.get(file_path).cloned().unwrap_or_default();
-            let new_content = match apply_edits_to_file(&original, &edits) {
+            let new_content = match apply_edits_to_file(&original, edits) {
                 Ok(s) => s,
                 Err(e) => {
                     rollback_all(&backups);
@@ -2444,8 +2448,8 @@ fn signature_header(
 fn header_colon(source: &str, from: usize) -> Option<usize> {
     let bytes = source.as_bytes();
     let mut depth: i32 = 0;
-    for i in from..bytes.len() {
-        match bytes[i] {
+    for (i, b) in bytes.iter().enumerate().skip(from) {
+        match b {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth -= 1,
             b':' if depth <= 0 => return Some(i),
@@ -2497,7 +2501,7 @@ pub enum MutationError {
 mod tests {
     use super::*;
     use crate::graph::MutationConfig;
-    use crate::mutation::indent::IndentStyle;
+    use crate::mutation::indent::{normalize_indent, IndentStyle};
     use crate::types::ByteSpan;
     use std::path::Path;
     use std::sync::Arc;
@@ -2703,6 +2707,17 @@ mod tests {
     }
 
     #[test]
+    fn self_host_allow_list_covers_own_dirs_dr27() {
+        // DR-27: the self-host `.coderadar.toml` allow list must admit the
+        // repo's own sources (root-anchored); the store dir stays denied.
+        assert!(path_matches("core_indexer/src/lib.rs", "core_indexer/"));
+        assert!(path_matches("py_agent/src/coderadar/ops.py", "py_agent/"));
+        assert!(path_matches("tests/test_mcp.py", "tests/"));
+        assert!(!path_matches("py_agent/src/coderadar/ops.py", "src/"));
+        assert!(path_matches(".coderadar/store/coderadar.db", ".coderadar/"));
+    }
+
+    #[test]
     fn interior_fragments_still_match_at_depth() {
         // `/migrations/` keeps the anywhere-match — that is its purpose.
         assert!(path_matches("migrations/001.py", "/migrations/"));
@@ -2786,8 +2801,10 @@ mod tests {
         let path = dir.path().join("mod.py");
         std::fs::write(&path, "value = 1\n").unwrap();
 
-        let mut config = MutationConfig::default();
-        config.max_edits_per_plan = 1;
+        let config = MutationConfig {
+            max_edits_per_plan: 1,
+            ..Default::default()
+        };
         let mut eng = MutationEngine::new(config).with_project_root(dir.path());
 
         let mut over = hashed_plan(
@@ -2828,8 +2845,10 @@ mod tests {
         let path = dir.path().join("mod.py");
         std::fs::write(&path, "value = 1\n").unwrap();
 
-        let mut config = MutationConfig::default();
-        config.enabled = false;
+        let config = MutationConfig {
+            enabled: false,
+            ..Default::default()
+        };
         let mut eng = MutationEngine::new(config).with_project_root(dir.path());
         let plan = hashed_plan(
             &path.to_string_lossy(),
@@ -2847,8 +2866,10 @@ mod tests {
         std::fs::write(dir.path().join("src").join("ok.py"), "a = 1\n").unwrap();
         std::fs::write(dir.path().join("other.py"), "a = 1\n").unwrap();
 
-        let mut config = MutationConfig::default();
-        config.allow = vec!["src/".into()];
+        let config = MutationConfig {
+            allow: vec!["src/".into()],
+            ..Default::default()
+        };
 
         let inside = dir.path().join("src").join("ok.py");
         let mut eng = MutationEngine::new(config.clone()).with_project_root(dir.path());

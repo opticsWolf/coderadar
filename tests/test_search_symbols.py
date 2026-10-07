@@ -11,9 +11,8 @@ from __future__ import annotations
 import json
 import time
 
-import pytest
-
 import coderadar
+import pytest
 from coderadar import ops
 
 try:
@@ -158,6 +157,7 @@ class TestEdges:
         proc = subprocess.run(
             [sys.executable, "-c", probe.format(work=str(tmp_path))],
             capture_output=True, text=True, cwd=str(tmp_path),
+            check=False,  # failure is the assertion (nonzero + NoIndex)
         )
         assert proc.returncode != 0
         assert "NoIndex" in proc.stderr

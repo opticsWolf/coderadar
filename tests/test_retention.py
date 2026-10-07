@@ -16,13 +16,12 @@ import sqlite3
 import time
 from pathlib import Path
 
-import pytest
-
 import coderadar
+import pytest
 from coderadar import ops
 
 try:
-    from coderadar import _core  # noqa: F401
+    from coderadar import _core
     _CORE = True
 except ImportError:  # pragma: no cover
     _CORE = False
@@ -90,7 +89,7 @@ def generations(tmp_path, monkeypatch):
 
 class TestArchive:
     def test_report_shape(self, generations):
-        g, _t0, _t1, _digests = generations
+        _, _t0, _t1, _digests = generations
         report = ops.archive(FUTURE)
         assert set(report) == {"links_archived", "concepts_archived",
                                "log_entries_archived", "horizon",
@@ -102,7 +101,7 @@ class TestArchive:
     def test_cold_yet_readable(self, generations):
         g, t0, t1, digests = generations
         ops.archive(FUTURE)
-        hot, cold = _store_files(Path.cwd())
+        _, cold = _store_files(Path.cwd())
         assert cold.exists(), "archive must create the cold sibling"
         a_v1, _ = digests[("a.py::alpha", "v1")]
         # The PyO3 round-trip through the cold fallback, not just Rust.
@@ -173,7 +172,7 @@ class TestColdLoss:
 
 class TestBackup:
     def test_hot_cold_pair_restores_every_digest(self, generations, tmp_path):
-        g, t0, t1, digests = generations
+        _, t0, t1, digests = generations
         ops.archive(FUTURE)
         hot, cold = _store_files(Path.cwd())
         # Quiesced copy: the suite holds no writers (documented procedure).
@@ -195,7 +194,7 @@ class TestBackup:
         # blob addresses resolve to None, current reads still work (hot),
         # and archived-T reconstruction errors naming the missing half —
         # never a silent present-tense answer.
-        g, t0, t1, digests = generations
+        _, t0, t1, digests = generations
         ops.archive(FUTURE)
         hot, _cold = _store_files(Path.cwd())
         _checkpoint(hot)

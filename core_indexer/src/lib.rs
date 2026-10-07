@@ -3,6 +3,11 @@
 
 pub mod clones;
 pub mod extract;
+mod ffi_config;
+mod ffi_convert;
+mod ffi_git;
+mod ffi_synthetic;
+mod ffi_watcher;
 pub mod fs;
 pub mod graph;
 pub mod mutation;
@@ -17,10 +22,15 @@ pub mod types;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::ffi_convert::{
+    class_to_dict, constant_to_dict, entity_exists, entity_ref_to_dict, function_to_dict,
+    import_to_dict, module_to_dict, route_to_dict, type_alias_to_dict, unresolved_ref_to_dict,
+};
+
 use parking_lot::RwLock;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::graph::CodeGraph;
 use crate::graph::ImportGraph;
@@ -39,7 +49,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(update_file, m)?)?;
     m.add_function(wrap_pyfunction!(remove_file, m)?)?;
     {
-        use git_bindings::{git_blame, git_changed_files, git_worktree_clean};
+        use crate::ffi_git::{git_blame, git_changed_files, git_worktree_clean};
         m.add_function(wrap_pyfunction!(git_worktree_clean, m)?)?;
         m.add_function(wrap_pyfunction!(git_blame, m)?)?;
         m.add_function(wrap_pyfunction!(git_changed_files, m)?)?;
@@ -78,22 +88,37 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(indexed_root_py, m)?)?;
     m.add_function(wrap_pyfunction!(is_path_excluded, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar, m)?)?;
-    m.add_function(wrap_pyfunction!(register_synthetic_edge, m)?)?;
-    m.add_function(wrap_pyfunction!(register_synthetic_edges_bulk, m)?)?;
-    m.add_function(wrap_pyfunction!(register_synthetic_routes, m)?)?;
-    m.add_function(wrap_pyfunction!(set_embedding, m)?)?;
-    m.add_function(wrap_pyfunction!(set_embeddings_bulk, m)?)?;
-    m.add_function(wrap_pyfunction!(clear_embeddings_for_file, m)?)?;
-    m.add_function(wrap_pyfunction!(clear_all_embeddings, m)?)?;
-    m.add_function(wrap_pyfunction!(module_children, m)?)?;
-    m.add_function(wrap_pyfunction!(set_module_star_exports, m)?)?;
-    m.add_function(wrap_pyfunction!(set_module_star_exports_bulk, m)?)?;
-    m.add_function(wrap_pyfunction!(start_watcher, m)?)?;
-    m.add_function(wrap_pyfunction!(next_watcher_batch, m)?)?;
-    m.add_function(wrap_pyfunction!(next_watcher_batch_timeout, m)?)?;
-    m.add_function(wrap_pyfunction!(stop_watcher, m)?)?;
-    m.add_function(wrap_pyfunction!(set_config, m)?)?;
-    m.add_function(wrap_pyfunction!(get_config, m)?)?;
+    m.add_function(wrap_pyfunction!(ffi_synthetic::register_synthetic_edge, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        ffi_synthetic::register_synthetic_edges_bulk,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        ffi_synthetic::register_synthetic_routes,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(ffi_synthetic::set_embedding, m)?)?;
+    m.add_function(wrap_pyfunction!(ffi_synthetic::set_embeddings_bulk, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        ffi_synthetic::clear_embeddings_for_file,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(ffi_synthetic::clear_all_embeddings, m)?)?;
+    m.add_function(wrap_pyfunction!(ffi_synthetic::module_children, m)?)?;
+    m.add_function(wrap_pyfunction!(ffi_synthetic::set_module_star_exports, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        ffi_synthetic::set_module_star_exports_bulk,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(ffi_watcher::start_watcher, m)?)?;
+    m.add_function(wrap_pyfunction!(ffi_watcher::next_watcher_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        ffi_watcher::next_watcher_batch_timeout,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(ffi_watcher::stop_watcher, m)?)?;
+    m.add_function(wrap_pyfunction!(ffi_config::set_config, m)?)?;
+    m.add_function(wrap_pyfunction!(ffi_config::get_config, m)?)?;
     m.add_class::<PyCodeGraph>()?;
     m.add_class::<QueryIterator>()?;
     Ok(())
@@ -101,7 +126,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 // ── Internal state ─────────────────────────────────────────────────────────
 
-static GLOBAL_GRAPH: std::sync::LazyLock<RwLock<Option<CodeGraph>>> =
+pub(crate) static GLOBAL_GRAPH: std::sync::LazyLock<RwLock<Option<CodeGraph>>> =
     std::sync::LazyLock::new(|| RwLock::new(None));
 
 /// Root the current graph was indexed from.
@@ -129,7 +154,7 @@ pub(crate) fn indexed_root() -> std::path::PathBuf {
 /// settings reach `analyze`, the mutation policy and the resolver alike.
 /// Untouched, it *is* `GraphConfig::default()` — no config file means no
 /// behaviour change.
-static ACTIVE_CONFIG: std::sync::LazyLock<RwLock<Arc<graph::GraphConfig>>> =
+pub(crate) static ACTIVE_CONFIG: std::sync::LazyLock<RwLock<Arc<graph::GraphConfig>>> =
     std::sync::LazyLock::new(|| RwLock::new(Arc::new(graph::GraphConfig::default())));
 
 /// Ledger revision the current graph was materialized from — the
@@ -153,7 +178,7 @@ fn mutation_engine() -> mutation::MutationEngine {
     }
 }
 
-fn with_graph<F, R>(f: F) -> PyResult<R>
+pub(crate) fn with_graph<F, R>(f: F) -> PyResult<R>
 where
     F: FnOnce(&CodeGraph, &Arc<ProjectedGraph>) -> PyResult<R>,
 {
@@ -214,319 +239,13 @@ impl PyCodeGraph {
     fn query(&self, query_str: &str) -> PyResult<QueryIterator> {
         let graph = self.inner.read();
         let snapshot = graph.snapshot();
-        let parsed =
-            parse_query(query_str).map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        let parsed = parse_query(query_str).map_err(pyo3::exceptions::PyValueError::new_err)?;
         let rows = execute_query(&snapshot, &parsed);
         Ok(QueryIterator::new(rows))
     }
 }
 
-// ── Entity → Python dict helpers ──────────────────────────────────────────
-
-fn module_to_dict(py: Python<'_>, m: &Module) -> PyResult<PyObject> {
-    let dict = PyDict::new(py);
-    dict.set_item("id", &m.id)?;
-    dict.set_item("name", &m.name)?;
-    dict.set_item("kind", "module")?;
-    dict.set_item("file_path", m.path.to_string_lossy().to_string())?;
-    dict.set_item("language", format!("{:?}", m.language))?;
-    dict.set_item("parse_quality", format!("{:?}", m.parse_quality))?;
-    dict.set_item("classes", m.classes.clone())?;
-    dict.set_item("functions", m.functions.clone())?;
-    dict.set_item("imports", m.imports.clone())?;
-    dict.set_item("constants", m.constants.clone())?;
-    dict.set_item("type_aliases", m.type_aliases.clone())?;
-    dict.set_item("file_version", m.file_version)?;
-    dict.set_item("has_embedding", !m.embedding.vec.is_empty())?;
-    dict.set_item("embedding_hash", m.embedding.hash.clone())?;
-    Ok(dict.into())
-}
-
-fn class_to_dict(py: Python<'_>, c: &Class) -> PyResult<PyObject> {
-    let dict = PyDict::new(py);
-    dict.set_item("id", &c.id)?;
-    dict.set_item("name", &c.name)?;
-    dict.set_item("grammar_kind", &c.grammar_kind)?;
-    dict.set_item("kind", "class")?;
-    dict.set_item("parent_module", &c.parent_module)?;
-    // Extract file_path from entity ID (format: "file_path::Class.name")
-    if let Some(idx) = c.id.rfind("::") {
-        dict.set_item("file_path", &c.id[..idx])?;
-    }
-    if let Some(ref pc) = c.parent_class {
-        dict.set_item("parent_id", pc)?;
-    }
-    if let Some(ref doc) = c.docstring {
-        dict.set_item("docstring", doc)?;
-    }
-    dict.set_item("line", c.line)?;
-    dict.set_item("end_line", c.exit_line)?;
-    dict.set_item("start_line", c.line)?;
-    dict.set_item("decorators", c.decorators.clone())?;
-    dict.set_item("span_start", c.span.start)?;
-    dict.set_item("span_end", c.span.end)?;
-    dict.set_item("name_span_start", c.name_span.start)?;
-    dict.set_item("name_span_end", c.name_span.end)?;
-    let bases: Vec<String> = c.bases.iter().map(|b| b.name.clone()).collect();
-    dict.set_item("bases", bases)?;
-    dict.set_item("has_embedding", !c.embedding.vec.is_empty())?;
-    dict.set_item("embedding_hash", c.embedding.hash.clone())?;
-    Ok(dict.into())
-}
-
-fn function_to_dict(py: Python<'_>, f: &Function) -> PyResult<PyObject> {
-    let dict = PyDict::new(py);
-    dict.set_item("id", &f.id)?;
-    dict.set_item("name", &f.name)?;
-    dict.set_item("references", &f.resolved_refs)?;
-    dict.set_item(
-        "kind",
-        match f.kind {
-            crate::types::FunctionKind::Free => "function",
-            crate::types::FunctionKind::Method
-            | crate::types::FunctionKind::AbstractMethod
-            | crate::types::FunctionKind::DataclassSynthesized { .. } => "method",
-            crate::types::FunctionKind::StaticMethod | crate::types::FunctionKind::ClassMethod => {
-                "function"
-            }
-            crate::types::FunctionKind::Property
-            | crate::types::FunctionKind::PropertySetter
-            | crate::types::FunctionKind::PropertyDeleter
-            | crate::types::FunctionKind::CachedProperty => "method",
-        },
-    )?;
-    dict.set_item("parent_module", &f.parent_module)?;
-    // Extract file_path from entity ID (format: "file_path::qualified.name")
-    if let Some(idx) = f.id.rfind("::") {
-        dict.set_item("file_path", &f.id[..idx])?;
-    }
-    if let Some(ref pc) = f.parent_class {
-        dict.set_item("parent_id", pc)?;
-    }
-    if let Some(ref doc) = f.docstring {
-        dict.set_item("docstring", doc)?;
-    }
-    if let Some(ref ret) = f.return_type {
-        dict.set_item("return_type", ret)?;
-    }
-    dict.set_item("line", f.line)?;
-    dict.set_item("end_line", f.exit_line)?;
-    dict.set_item("start_line", f.line)?;
-    dict.set_item("decorators", f.decorators.clone())?;
-    dict.set_item("is_async", f.is_async)?;
-    dict.set_item("is_generator", f.is_generator)?;
-    dict.set_item("span_start", f.span.start)?;
-    dict.set_item("span_end", f.span.end)?;
-    dict.set_item("name_span_start", f.name_span.start)?;
-    dict.set_item("name_span_end", f.name_span.end)?;
-    // Set unconditionally, like every other *_to_dict: this branch left the
-    // key absent for un-embedded functions, so Python code reading
-    // entity["has_embedding"] raised KeyError for exactly the entities it
-    // was asking about.
-    dict.set_item("has_embedding", !f.embedding.vec.is_empty())?;
-    dict.set_item("embedding_hash", f.embedding.hash.clone())?;
-    // Build signature string from parameters
-    let params: Vec<String> = f
-        .parameters
-        .iter()
-        .map(|p| {
-            let mut s = p.name.clone();
-            if let Some(ref ann) = p.annotation {
-                s.push_str(": ");
-                s.push_str(ann);
-            }
-            if let Some(ref def) = p.default_value {
-                s.push_str(" = ");
-                s.push_str(def);
-            }
-            s
-        })
-        .collect();
-    let keyword = declaration_keyword(&f.id);
-    let sig = if keyword.is_empty() {
-        format!("{}({})", f.name, params.join(", "))
-    } else {
-        format!("{} {}({})", keyword, f.name, params.join(", "))
-    };
-    if let Some(ref ret) = f.return_type {
-        dict.set_item("signature", format!("{} -> {}", sig, ret))?;
-    } else {
-        dict.set_item("signature", sig)?;
-    }
-    Ok(dict.into())
-}
-
-/// The keyword a reader of this language expects in front of a signature.
-///
-/// Every signature was rendered `def name(...)` regardless of language, so
-/// a PHP method came back as `def hello()` — wrong for the eight of nine
-/// Tier-1 languages that are not Python, and misleading to an agent about
-/// to call `update_signature` with it.
-fn declaration_keyword(entity_id: &str) -> &'static str {
-    let path = entity_id.split("::").next().unwrap_or("");
-    let ext = path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
-    match ext.as_str() {
-        "py" | "pyi" => "def",
-        "rs" => "fn",
-        "go" => "func",
-        "php" => "function",
-        "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx" => "function",
-        "rb" => "def",
-        "kt" | "kts" | "swift" => "fun",
-        "lua" => "function",
-        "ex" | "exs" => "def",
-        // C, C++, Java, C# and friends write the return type instead of a
-        // keyword; an empty prefix is trimmed off below.
-        _ => "",
-    }
-}
-
-fn import_to_dict(py: Python<'_>, i: &Import) -> PyResult<PyObject> {
-    let dict = PyDict::new(py);
-    dict.set_item("id", &i.id)?;
-    dict.set_item("name", &i.raw)?;
-    dict.set_item("kind", "import")?;
-    dict.set_item("line", i.line)?;
-    dict.set_item("start_line", i.line)?;
-    dict.set_item("name_span_start", i.name_span.start)?;
-    dict.set_item("name_span_end", i.name_span.end)?;
-    dict.set_item("has_embedding", !i.embedding.vec.is_empty())?;
-    dict.set_item("embedding_hash", i.embedding.hash.clone())?;
-    Ok(dict.into())
-}
-
-fn constant_to_dict(py: Python<'_>, c: &Constant) -> PyResult<PyObject> {
-    let dict = PyDict::new(py);
-    dict.set_item("id", &c.id)?;
-    dict.set_item("name", &c.name)?;
-    dict.set_item("kind", "constant")?;
-    if let Some(ref ann) = c.annotation {
-        dict.set_item("annotation", ann)?;
-    }
-    dict.set_item("span_start", c.span.start)?;
-    dict.set_item("span_end", c.span.end)?;
-    dict.set_item("has_embedding", !c.embedding.vec.is_empty())?;
-    dict.set_item("embedding_hash", c.embedding.hash.clone())?;
-    Ok(dict.into())
-}
-
-fn type_alias_to_dict(py: Python<'_>, ta: &TypeAlias) -> PyResult<PyObject> {
-    let dict = PyDict::new(py);
-    dict.set_item("id", &ta.id)?;
-    dict.set_item("name", &ta.name)?;
-    dict.set_item("kind", "type_alias")?;
-    dict.set_item("target", &ta.target)?;
-    dict.set_item("span_start", ta.span.start)?;
-    dict.set_item("span_end", ta.span.end)?;
-    dict.set_item("has_embedding", !ta.embedding.vec.is_empty())?;
-    dict.set_item("embedding_hash", ta.embedding.hash.clone())?;
-    Ok(dict.into())
-}
-
-/// §1.3: a framework route to a dict. `name` is the URL pattern (what
-/// `resolve_route` substring-matches); `handler` is the edge target so
-/// resolve can attach it without a second lookup.
-fn route_to_dict(py: Python<'_>, r: &Route) -> PyResult<PyObject> {
-    let dict = PyDict::new(py);
-    dict.set_item("id", &r.id)?;
-    dict.set_item("name", &r.pattern)?;
-    dict.set_item("kind", "route")?;
-    dict.set_item("file_path", &r.file_path)?;
-    dict.set_item("handler", &r.handler_id)?;
-    dict.set_item("methods", &r.methods)?;
-    dict.set_item("framework", &r.framework)?;
-    Ok(dict.into())
-}
-
-// ── Entity References to Dict ──────────────────────────────────────────────
-
-/// Convert a thin entity reference (just ID + name + kind) to a dict.
-/// Used for callers_of / callees_of which return lists of EntityIds.
-/// Does the projection know this entity id, under any kind?
-///
-/// Cheaper than the `entity_ref_to_dict(...).is_none()` this replaced, which
-/// built a full PyDict — parameters, spans, decorators — only to drop it.
-fn entity_exists(snap: &ProjectedGraph, entity_id: &str) -> bool {
-    snap.functions.contains_key(entity_id)
-        || snap.classes.contains_key(entity_id)
-        || snap.modules.contains_key(entity_id)
-        || snap.imports.contains_key(entity_id)
-        || snap.constants.contains_key(entity_id)
-        || snap.type_aliases.contains_key(entity_id)
-        || snap.routes.contains_key(entity_id)
-}
-
-fn entity_ref_to_dict(py: Python<'_>, entity_id: &str, snap: &ProjectedGraph) -> Option<PyObject> {
-    // Try each entity type and also resolve file_path from parent module
-    if let Some(f) = snap.functions.get(entity_id) {
-        let dict = function_to_dict(py, f).ok()?;
-        // Resolve file_path from parent module
-        if let Ok(d) = dict.downcast_bound::<PyDict>(py) {
-            if let Some(m) = snap.modules.get(&f.parent_module) {
-                let _ = d.set_item("file_path", m.path.to_string_lossy().to_string());
-            }
-        }
-        Some(dict)
-    } else if let Some(c) = snap.classes.get(entity_id) {
-        let dict = class_to_dict(py, c).ok()?;
-        if let Ok(d) = dict.downcast_bound::<PyDict>(py) {
-            if let Some(m) = snap.modules.get(&c.parent_module) {
-                let _ = d.set_item("file_path", m.path.to_string_lossy().to_string());
-            }
-        }
-        Some(dict)
-    } else if let Some(m) = snap.modules.get(entity_id) {
-        module_to_dict(py, m).ok()
-    } else if let Some(i) = snap.imports.get(entity_id) {
-        import_to_dict(py, i).ok()
-    } else if let Some(k) = snap.constants.get(entity_id) {
-        constant_to_dict(py, k).ok()
-    } else if let Some(ta) = snap.type_aliases.get(entity_id) {
-        type_alias_to_dict(py, ta).ok()
-    } else if let Some(r) = snap.routes.get(entity_id) {
-        route_to_dict(py, r).ok()
-    } else {
-        None
-    }
-}
-
-/// Classify a call-graph id with no concept row (pure half of the R2-1
-/// fallback; unit-tested below without needing a Python interpreter).
-///
-/// `external::{name}` covers builtins, third-party imports, and Issue-9
-/// re-export-chain targets alike -- all "outside the indexed project".
-/// Anything else without a concept row is a symbolic heuristic target
-/// (`Date::now`-style) the resolver invented, reported as `unresolved`.
-fn unresolved_ref_kind(entity_id: &str) -> &'static str {
-    if let Some(name) = entity_id.strip_prefix("external::") {
-        if crate::resolve::orchestrator::is_python_builtin(name) {
-            "builtin"
-        } else {
-            "external"
-        }
-    } else {
-        "unresolved"
-    }
-}
-
-/// Minimal dict for a call-graph id with no concept row.
-///
-/// `callees_of` / `callers_of` / `traverse` used to drop these silently
-/// (`entity_ref_to_dict` -> `None` -> skipped), so `run -> combine`
-/// (resolved to `external::combine` via the re-export chain) presented as
-/// "run calls nothing". The edge exists -- only the presentation dropped
-/// it. R2-1 materializes the honest answer instead: id, derived name, and
-/// the external/builtin/unresolved kind. Every downstream consumer
-/// (CLI, MCP, visualizers) reads these keys via `.get()` with defaults,
-/// so the sparse shape is safe.
-fn unresolved_ref_to_dict(py: Python<'_>, entity_id: &str) -> PyObject {
-    let dict = PyDict::new(py);
-    let name = entity_id.rsplit("::").next().unwrap_or(entity_id);
-    let _ = dict.set_item("id", entity_id);
-    let _ = dict.set_item("name", name);
-    let _ = dict.set_item("kind", unresolved_ref_kind(entity_id));
-    dict.into()
-}
+// Entity → dict converters live in ffi/convert.rs (DR-28 split).
 
 /// Where the Macrame store file goes for `root`.
 ///
@@ -1049,7 +768,7 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         } else {
             // Sort by source size descending, then round-robin across threads
             // so large files (e.g. 300KB+ TypeScript) don't all land on one thread.
-            tasks.sort_by(|a, b| b.source.len().cmp(&a.source.len()));
+            tasks.sort_by_key(|a| std::cmp::Reverse(a.source.len()));
             let import_graph_ref = &graph.import_graph;
 
             type ChunkResult = Vec<(
@@ -1169,11 +888,11 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                 graph.commit_projection(proj);
             }
         } // if !tasks.is_empty()
-        // §1.9 put-then-assert, part 1: every file's bytes hit the blob
-        // store while sources are still in memory. Digests are asserted
-        // into module concepts at the v2 flush below — a crash between
-        // leaves orphan blobs at worst (bounded, documented), never a
-        // live digest pointing at absent bytes; retry converges.
+          // §1.9 put-then-assert, part 1: every file's bytes hit the blob
+          // store while sources are still in memory. Digests are asserted
+          // into module concepts at the v2 flush below — a crash between
+          // leaves orphan blobs at worst (bounded, documented), never a
+          // live digest pointing at absent bytes; retry converges.
         if let Some(ref store) = graph.store {
             for task in &tasks {
                 match store.put_source_blob(&task.path, task.source.as_bytes()) {
@@ -1368,78 +1087,14 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
 #[pyfunction]
 fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {
     with_graph(|_graph, snap| {
-        let parsed =
-            parse_query(query_str).map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        let parsed = parse_query(query_str).map_err(pyo3::exceptions::PyValueError::new_err)?;
         let rows = execute_query(snap, &parsed);
         let results: Vec<PyObject> = rows.into_iter().map(|r| r.to_pyobject(py)).collect();
         Ok(results.into_pyobject(py).unwrap().into_any().unbind())
     })
 }
 
-// ── Git Operations ────────────────────────────────────────────────────────
-
-mod git_bindings {
-    use pyo3::prelude::*;
-    use pyo3::types::PyDict;
-
-    /// `{"clean": bool}` — `git status` semantics: modified and untracked
-    /// files make the tree dirty, ignored files never do. Reports clean when
-    /// git cannot tell.
-    #[pyfunction]
-    pub fn git_worktree_clean(py: Python<'_>, repo_path: &str) -> PyResult<PyObject> {
-        let clean = crate::fs::git::is_worktree_clean(repo_path).unwrap_or(true);
-        let dict = PyDict::new(py);
-        dict.set_item("clean", clean)?;
-        Ok(dict.into())
-    }
-
-    /// Blame for one file as run-length rows `{line, count, author, commit}`:
-    /// `count` consecutive lines starting at `line` share an author and commit.
-    #[pyfunction]
-    pub fn git_blame(py: Python<'_>, repo_path: &str, file_path: &str) -> PyResult<Vec<PyObject>> {
-        match crate::fs::git::blame_file(repo_path, file_path) {
-            Ok(lines) => {
-                let rows: Vec<PyObject> = lines
-                    .iter()
-                    .map(|l| {
-                        let d = PyDict::new(py);
-                        let _ = d.set_item("line", l.line_number);
-                        let _ = d.set_item("count", l.line_count);
-                        let _ = d.set_item("author", &l.author);
-                        let _ = d.set_item("commit", &l.commit);
-                        d.into()
-                    })
-                    .collect();
-                Ok(rows)
-            }
-            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "git blame failed: {:?}",
-                e
-            ))),
-        }
-    }
-
-    /// Repo-relative paths changed between two committed revisions (any
-    /// rev syntax: HEAD~1, branch, tag, oid). `new_oid=None` means HEAD.
-    /// Raises `RuntimeError` on an unknown revision.
-    #[pyfunction]
-    pub fn git_changed_files(
-        _py: Python<'_>,
-        repo_path: &str,
-        old_oid: Option<&str>,
-        new_oid: Option<&str>,
-    ) -> PyResult<Vec<String>> {
-        // R2-6: revision strings pass through unresolved; unknown ones
-        // error (UnknownRevision) instead of diffing empty.
-        match crate::fs::git::changed_files_between(repo_path, old_oid, new_oid) {
-            Ok(files) => Ok(files),
-            Err(e) => Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "git diff failed: {:?}",
-                e
-            ))),
-        }
-    }
-}
+// Git bindings live in ffi/git.rs (DR-28 split).
 
 // ── update_file() ──────────────────────────────────────────────────────────
 
@@ -1909,353 +1564,7 @@ fn plan_to_dict(py: Python<'_>, plan: &mutation::MutationPlan) -> PyResult<PyObj
     Ok(dict.into())
 }
 
-// -- Configuration (plan section 3) -----------------------------------------
-
-/// Fetch a sub-table, or None when absent. A non-table value is an error.
-fn cfg_section<'py>(
-    parent: &Bound<'py, PyDict>,
-    key: &str,
-) -> PyResult<Option<Bound<'py, PyDict>>> {
-    match parent.get_item(key)? {
-        None => Ok(None),
-        Some(v) => v.downcast_into::<PyDict>().map(Some).map_err(|_| {
-            pyo3::exceptions::PyTypeError::new_err(format!(
-                "config section '{}' must be a table",
-                key
-            ))
-        }),
-    }
-}
-
-/// Fetch and convert one key, naming the dotted path when the type is wrong.
-fn cfg_value<'py, T: FromPyObject<'py>>(
-    section: &Bound<'py, PyDict>,
-    key: &str,
-    path: &str,
-) -> PyResult<Option<T>> {
-    match section.get_item(key)? {
-        None => Ok(None),
-        Some(v) => v.extract::<T>().map(Some).map_err(|e| {
-            pyo3::exceptions::PyTypeError::new_err(format!("config '{}': {}", path, e))
-        }),
-    }
-}
-
-/// Every leaf path in a nested config dict, dotted.
-fn cfg_leaf_paths(d: &Bound<'_, PyDict>, prefix: &str, out: &mut Vec<String>) {
-    for (k, v) in d.iter() {
-        let key = k.extract::<String>().unwrap_or_default();
-        let path = if prefix.is_empty() {
-            key
-        } else {
-            format!("{}.{}", prefix, key)
-        };
-        match v.downcast_into::<PyDict>() {
-            Ok(sub) => cfg_leaf_paths(&sub, &path, out),
-            Err(_) => out.push(path),
-        }
-    }
-}
-
-/// Push a `.coderadar.toml`-shaped dict into the process configuration.
-///
-/// The Python layer owns loading and schema validation (pydantic gives better
-/// errors than anything worth writing here); this maps the result onto
-/// `GraphConfig` for every consumer in the process.
-///
-/// Returns `{"applied": {...}, "ignored": [...]}`. `applied` is what landed on
-/// `GraphConfig`; `ignored` names keys the caller sent that map to nothing, so
-/// a config full of aspirational knobs reports itself instead of appearing to
-/// work. Of the applied keys, the ones a consumer actually reads today are the
-/// `mutation.*` policy gate and `resolution.import_graph.*`; the rest are
-/// carried on `GraphConfig` but not yet read by any live path.
-#[pyfunction]
-fn set_config(py: Python<'_>, cfg: &Bound<'_, PyDict>) -> PyResult<PyObject> {
-    let mut c = graph::GraphConfig::default();
-    let applied = PyDict::new(py);
-    let mut consumed: HashSet<String> = HashSet::new();
-
-    macro_rules! take {
-        ($section:expr, $key:literal, $path:literal, $target:expr, $ty:ty) => {
-            if let Some(v) = cfg_value::<$ty>(&$section, $key, $path)? {
-                applied.set_item($path, v.clone())?;
-                $target = v;
-            }
-            consumed.insert($path.to_string());
-        };
-    }
-
-    if let Some(proj) = cfg_section(cfg, "project")? {
-        take!(proj, "roots", "project.roots", c.project.roots, Vec<String>);
-        take!(
-            proj,
-            "exclude",
-            "project.exclude",
-            c.project.exclude,
-            Vec<String>
-        );
-    }
-
-    if let Some(db) = cfg_section(cfg, "database")? {
-        take!(db, "path", "database.path", c.database.path, String);
-        take!(
-            db,
-            "store_source_blobs",
-            "database.store_source_blobs",
-            c.database.store_source_blobs,
-            bool
-        );
-        // Merge, not replace: user patterns UNION the built-in secret
-        // defaults (see SECRET_BLOB_EXCLUDE_DEFAULTS) so adding one pattern
-        // can never silently drop the secret belt. Full off is the
-        // kill-switch above, not an empty list.
-        if let Some(extra) = cfg_value::<Vec<String>>(&db, "blob_exclude", "database.blob_exclude")? {
-            let mut merged = c.database.blob_exclude.clone();
-            for pat in extra {
-                if !merged.contains(&pat) {
-                    merged.push(pat);
-                }
-            }
-            merged.sort();
-            applied.set_item("database.blob_exclude", merged.clone())?;
-            c.database.blob_exclude = merged;
-            consumed.insert("database.blob_exclude".to_string());
-        }
-    }
-
-    if let Some(res) = cfg_section(cfg, "resolution")? {
-        take!(
-            res,
-            "min_confidence",
-            "resolution.min_confidence",
-            c.resolution.min_confidence,
-            f32
-        );
-
-        if let Some(ig) = cfg_section(&res, "import_graph")? {
-            take!(
-                ig,
-                "max_import_depth",
-                "resolution.import_graph.max_import_depth",
-                c.import_graph.max_import_depth,
-                usize
-            );
-            take!(
-                ig,
-                "include_same_package",
-                "resolution.import_graph.include_same_package",
-                c.import_graph.include_same_package,
-                bool
-            );
-            take!(
-                ig,
-                "max_wildcard_hops",
-                "resolution.import_graph.max_wildcard_hops",
-                c.import_graph.max_wildcard_hops,
-                u8
-            );
-        }
-        if let Some(sig) = cfg_section(&res, "signature")? {
-            take!(
-                sig,
-                "min_score",
-                "resolution.signature.min_score",
-                c.signature.min_score,
-                f32
-            );
-            take!(
-                sig,
-                "name_weight",
-                "resolution.signature.name_weight",
-                c.signature.name_weight,
-                f32
-            );
-            take!(
-                sig,
-                "arity_weight",
-                "resolution.signature.arity_weight",
-                c.signature.arity_weight,
-                f32
-            );
-            take!(
-                sig,
-                "proximity_weight",
-                "resolution.signature.proximity_weight",
-                c.signature.proximity_weight,
-                f32
-            );
-            take!(
-                sig,
-                "ambiguous_name_ceiling",
-                "resolution.signature.ambiguous_name_ceiling",
-                c.signature.ambiguous_name_ceiling,
-                usize
-            );
-        }
-    }
-
-    if let Some(an) = cfg_section(cfg, "analysis")? {
-        take!(
-            an,
-            "use_cfg_metrics",
-            "analysis.use_cfg_metrics",
-            c.analysis.use_cfg_metrics,
-            bool
-        );
-    }
-
-    if let Some(m) = cfg_section(cfg, "mutation")? {
-        take!(m, "enabled", "mutation.enabled", c.mutation.enabled, bool);
-        take!(
-            m,
-            "default_dry_run",
-            "mutation.default_dry_run",
-            c.mutation.default_dry_run,
-            bool
-        );
-        take!(
-            m,
-            "max_files_per_plan",
-            "mutation.max_files_per_plan",
-            c.mutation.max_files_per_plan,
-            usize
-        );
-        take!(
-            m,
-            "max_edits_per_plan",
-            "mutation.max_edits_per_plan",
-            c.mutation.max_edits_per_plan,
-            usize
-        );
-        take!(
-            m,
-            "max_body_tokens",
-            "mutation.max_body_tokens",
-            c.mutation.max_body_tokens,
-            usize
-        );
-        take!(
-            m,
-            "backup_retention_hours",
-            "mutation.backup_retention_hours",
-            c.mutation.backup_retention_hours,
-            u64
-        );
-        take!(
-            m,
-            "post_verify",
-            "mutation.post_verify",
-            c.mutation.post_verify,
-            bool
-        );
-        take!(
-            m,
-            "max_repair_attempts",
-            "mutation.max_repair_attempts",
-            c.mutation.max_repair_attempts,
-            u32
-        );
-        take!(
-            m,
-            "require_clean_git",
-            "mutation.require_clean_git",
-            c.mutation.require_clean_git,
-            bool
-        );
-        take!(m, "allow", "mutation.allow", c.mutation.allow, Vec<String>);
-        take!(m, "deny", "mutation.deny", c.mutation.deny, Vec<String>);
-    }
-
-    if let Some(q) = cfg_section(cfg, "query")? {
-        take!(q, "max_depth", "query.max_depth", c.query.max_depth, usize);
-        take!(
-            q,
-            "default_top_k",
-            "query.default_top_k",
-            c.query.default_top_k,
-            usize
-        );
-        take!(
-            q,
-            "cache_ttl_seconds",
-            "query.cache_ttl_seconds",
-            c.query.cache_ttl_seconds,
-            u64
-        );
-        take!(
-            q,
-            "cache_max_size",
-            "query.cache_max_size",
-            c.query.cache_max_size,
-            usize
-        );
-        take!(
-            q,
-            "use_rust_graph_for_traversal",
-            "query.use_rust_graph_for_traversal",
-            c.query.use_rust_graph_for_traversal,
-            bool
-        );
-    }
-
-    let mut leaves = Vec::new();
-    cfg_leaf_paths(cfg, "", &mut leaves);
-    let mut ignored: Vec<String> = leaves
-        .into_iter()
-        .filter(|p| !consumed.contains(p))
-        .collect();
-    ignored.sort();
-
-    *ACTIVE_CONFIG.write() = Arc::new(c);
-
-    let out = PyDict::new(py);
-    out.set_item("applied", applied)?;
-    out.set_item("ignored", ignored)?;
-    Ok(out.into())
-}
-
-/// The configuration currently in force, as a dict.
-#[pyfunction]
-fn get_config(py: Python<'_>) -> PyResult<PyObject> {
-    let c = active_config();
-    let out = PyDict::new(py);
-
-    let project = PyDict::new(py);
-    project.set_item("roots", c.project.roots.clone())?;
-    project.set_item("exclude", c.project.exclude.clone())?;
-    out.set_item("project", project)?;
-
-    let database = PyDict::new(py);
-    database.set_item("path", c.database.path.clone())?;
-    database.set_item("store_source_blobs", c.database.store_source_blobs)?;
-    database.set_item("blob_exclude", c.database.blob_exclude.clone())?;
-    out.set_item("database", database)?;
-
-    let resolution = PyDict::new(py);
-    resolution.set_item("min_confidence", c.resolution.min_confidence)?;
-    let import_graph = PyDict::new(py);
-    import_graph.set_item("max_import_depth", c.import_graph.max_import_depth)?;
-    import_graph.set_item("include_same_package", c.import_graph.include_same_package)?;
-    import_graph.set_item("max_wildcard_hops", c.import_graph.max_wildcard_hops)?;
-    resolution.set_item("import_graph", import_graph)?;
-    out.set_item("resolution", resolution)?;
-
-    let mutation = PyDict::new(py);
-    mutation.set_item("enabled", c.mutation.enabled)?;
-    mutation.set_item("default_dry_run", c.mutation.default_dry_run)?;
-    mutation.set_item("max_files_per_plan", c.mutation.max_files_per_plan)?;
-    mutation.set_item("max_edits_per_plan", c.mutation.max_edits_per_plan)?;
-    mutation.set_item("require_clean_git", c.mutation.require_clean_git)?;
-    mutation.set_item("allow", c.mutation.allow.clone())?;
-    mutation.set_item("deny", c.mutation.deny.clone())?;
-    out.set_item("mutation", mutation)?;
-
-    let analysis = PyDict::new(py);
-    analysis.set_item("use_cfg_metrics", c.analysis.use_cfg_metrics)?;
-    out.set_item("analysis", analysis)?;
-
-    Ok(out.into())
-}
+// Config bindings live in ffi/config.rs (DR-28 split).
 
 // ── Read Path ──────────────────────────────────────────────────────────────
 
@@ -2312,9 +1621,7 @@ fn entities_at(
     let store = {
         let guard = GLOBAL_GRAPH.read();
         let graph = guard.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err(
-                "No graph loaded — run coderadar init first",
-            )
+            pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
         })?;
         graph.store.clone().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err(
@@ -2322,13 +1629,9 @@ fn entities_at(
             )
         })?
     };
-    let state = py
-        .allow_threads(|| store.reconstruct(&ts))
-        .map_err(|e| {
-            pyo3::exceptions::PyRuntimeError::new_err(format!(
-                "reconstruct({ts:?}) failed: {e:?}"
-            ))
-        })?;
+    let state = py.allow_threads(|| store.reconstruct(&ts)).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("reconstruct({ts:?}) failed: {e:?}"))
+    })?;
     let predates = state.predates_recorded_history;
     let (projection, _stats) = projection_from_state(&state).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("projection at {ts:?} failed: {e}"))
@@ -2472,11 +1775,7 @@ fn blob_get(py: Python<'_>, digest: &str) -> PyResult<PyObject> {
 /// caller's (`Snapshot` resolves via `find` first).
 #[pyfunction]
 #[pyo3(signature = (entity_id, timestamp))]
-fn entity_source_ref_at(
-    py: Python<'_>,
-    entity_id: &str,
-    timestamp: &str,
-) -> PyResult<PyObject> {
+fn entity_source_ref_at(py: Python<'_>, entity_id: &str, timestamp: &str) -> PyResult<PyObject> {
     let ts = normalize_timestamp(timestamp)?;
     let found = with_graph(|graph, _snap| {
         let store = graph.store.as_ref().ok_or_else(|| {
@@ -2784,7 +2083,7 @@ fn search_entities(
         );
 
         // Sort by score descending, take top_k
-        results.sort_by(|a, b| b.0.cmp(&a.0));
+        results.sort_by_key(|a| std::cmp::Reverse(a.0));
         results.truncate(top_k);
 
         Ok(results.into_iter().map(|(_, d)| d).collect())
@@ -3025,8 +2324,7 @@ fn traverse(
                 "as_of projection at {ts_owned:?} failed: {e}"
             ))
         })?;
-        let reached =
-            bfs_over_state(&state, &start_owned, max_depth, &edge_types, &ts_owned);
+        let reached = bfs_over_state(&state, &start_owned, max_depth, &edge_types, &ts_owned);
         let mut results = Vec::with_capacity(reached.len());
         for (id, depth, ek) in reached {
             // R2-1: materialize non-concept nodes instead of dropping them.
@@ -3107,48 +2405,13 @@ fn bfs_over_state(
         }
         for e in state.edges.iter().filter(|e| {
             e.source_id == cur
-                && (edge_types.is_empty()
-                    || edge_types.iter().any(|k| k == &e.edge_type))
+                && (edge_types.is_empty() || edge_types.iter().any(|k| k == &e.edge_type))
                 && e.valid_from.as_str() <= ts
                 && ts < e.valid_to.as_str()
         }) {
             if visited.insert(e.target_id.clone()) {
                 out.push((e.target_id.clone(), depth + 1, e.edge_type.clone()));
                 queue.push((e.target_id.clone(), depth + 1));
-            }
-        }
-    }
-    out
-}
-
-/// BFS over a Macrame `Subgraph` to recover (node, depth, edge_type) tuples.
-/// `Subgraph` stores topology + edge types but not BFS depth, so depth is
-/// recomputed here (the live path uses this instead of the in-memory BFS).
-fn subgraph_bfs(
-    sub: &macrame::graph::Subgraph,
-    start: &str,
-    max_depth: usize,
-) -> Vec<(String, usize, String)> {
-    use std::collections::{HashSet, VecDeque};
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: VecDeque<(String, usize)> = VecDeque::new();
-    let mut out: Vec<(String, usize, String)> = Vec::new();
-    if !sub.contains_node(start) {
-        return out;
-    }
-    visited.insert(start.to_string());
-    queue.push_back((start.to_string(), 0usize));
-    out.push((start.to_string(), 0usize, String::new()));
-    while let Some((cur, depth)) = queue.pop_front() {
-        if depth >= max_depth {
-            continue;
-        }
-        for edge in sub.out_edges(&cur) {
-            let target = edge.node(sub).to_string();
-            let etype = edge.edge_type(sub).to_string();
-            if visited.insert(target.clone()) {
-                out.push((target.clone(), depth + 1, etype));
-                queue.push_back((target, depth + 1));
             }
         }
     }
@@ -3319,15 +2582,14 @@ fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
         dict.set_item("route_edges", route_edges)?;
         dict.set_item("file_count", snap.file_to_modules.len())?;
         // Total call edges
-        let total_calls: usize =
-            snap.callees_by_caller.values().map(|s| s.len()).sum();
+        let total_calls: usize = snap.callees_by_caller.values().map(|s| s.len()).sum();
         dict.set_item("call_edges", total_calls)?;
         dict.set_item("asserted_call_edges", asserted)?;
         dict.set_item("external_call_edges", external)?;
         dict.set_item("unresolved_call_edges", unresolved)?;
         // Ledger revision this graph was materialized from (Stage 0.3 cache
         // key); None for graphs produced by `analyze` (fresh, unrevisioned).
-        dict.set_item("revision", LEDGER_REVISION.read().clone())?;
+        dict.set_item("revision", *LEDGER_REVISION.read())?;
         // Unix seconds of the last projection commit; 0.0 means never indexed.
         // The MCP staleness banner reads this.
         dict.set_item("indexed_at", graph.indexed_at())?;
@@ -3454,10 +2716,8 @@ fn entity_name_of(entity_id: &str, snap: &ProjectedGraph) -> Option<String> {
         Some(f.name.clone())
     } else if let Some(c) = snap.classes.get(entity_id) {
         Some(c.name.clone())
-    } else if let Some(m) = snap.modules.get(entity_id) {
-        Some(m.name.clone())
     } else {
-        None
+        snap.modules.get(entity_id).map(|m| m.name.clone())
     }
 }
 
@@ -3864,11 +3124,10 @@ fn search_similar(py: Python<'_>, query_vec: Vec<f64>, top_k: usize) -> PyResult
                             .get(&id)
                             .and_then(|ta| type_alias_to_dict(py, ta).ok())
                     });
-                dict.map(|d| {
+                dict.inspect(|d| {
                     if let Ok(dict) = d.downcast_bound::<PyDict>(py) {
                         let _ = dict.set_item("similarity", sim);
                     }
-                    d
                 })
             })
             .collect();
@@ -4090,365 +3349,14 @@ fn store_repair(py: Python<'_>, db_path: &str) -> PyResult<PyObject> {
     Ok(dict.into())
 }
 
-// ── File Watcher Bindings ──────────────────────────────────────────────
+// File watcher bindings live in ffi/watcher.rs (DR-28 split).
 
-static GLOBAL_WATCHER: std::sync::LazyLock<
-    std::sync::Mutex<Option<crate::fs::watcher::FileWatcher>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
-
-/// Start the file watcher on the given paths. Must have run analyze() first.
-///
-/// `debounce_ms` was accepted by `coderadar watch --debounce` and by
-/// `CodeGraph.watch(...)`, stored, and never read: this binding took only
-/// `paths`, so every watcher ran at the 100 ms default no matter what the
-/// user asked for. Same for `max_file_size_bytes`, which the config declared
-/// and nothing enforced (plan §1.4).
-#[pyfunction]
-#[pyo3(signature = (paths, debounce_ms=None, max_file_size_bytes=None))]
-fn start_watcher(
-    paths: Vec<String>,
-    debounce_ms: Option<u64>,
-    max_file_size_bytes: Option<u64>,
-) -> PyResult<()> {
-    use crate::fs::watcher::{FileWatcher, WatcherConfig};
-    let defaults = WatcherConfig::default();
-    // Item 7: the watcher filters with the same baseline + the user's own
-    // `[project] exclude`, so an excluded folder never triggers updates.
-    let mut exclude_patterns = defaults.exclude_patterns.clone();
-    exclude_patterns.extend(active_config().project.exclude.iter().cloned());
-    let config = WatcherConfig {
-        watch_paths: paths,
-        exclude_patterns,
-        debounce_ms: debounce_ms.unwrap_or(defaults.debounce_ms),
-        max_file_size_bytes: max_file_size_bytes.unwrap_or(defaults.max_file_size_bytes),
-        ..defaults
-    };
-    let watcher = FileWatcher::start(config)
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{:?}", e)))?;
-    let mut guard = GLOBAL_WATCHER.lock().unwrap();
-    *guard = Some(watcher);
-    Ok(())
-}
-
-/// Get the next batch of file changes (blocks until events arrive).
-#[pyfunction]
-fn next_watcher_batch() -> PyResult<Option<Vec<(String, String)>>> {
-    // Take the watcher out of the global, call next_batch, put it back
-    let mut guard = GLOBAL_WATCHER.lock().unwrap();
-    if guard.is_none() {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "Watcher not started",
-        ));
-    }
-    let watcher = guard.take().unwrap();
-    drop(guard);
-
-    let batch = watcher.next_batch();
-
-    // Put the watcher back
-    let mut guard = GLOBAL_WATCHER.lock().unwrap();
-    *guard = Some(watcher);
-
-    Ok(batch.map(|b| {
-        b.changes
-            .into_iter()
-            .map(|c| (c.path, format!("{:?}", c.kind)))
-            .collect()
-    }))
-}
-
-/// Stop the file watcher.
-#[pyfunction]
-fn stop_watcher() -> PyResult<()> {
-    let mut guard = GLOBAL_WATCHER.lock().unwrap();
-    *guard = None;
-    Ok(())
-}
-
-/// Get the next batch with a timeout (ms). Returns None if timeout expires.
-#[pyfunction]
-fn next_watcher_batch_timeout(timeout_ms: u64) -> PyResult<Option<Vec<(String, String)>>> {
-    let mut guard = GLOBAL_WATCHER.lock().unwrap();
-    if guard.is_none() {
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "Watcher not started",
-        ));
-    }
-    let watcher = guard.take().unwrap();
-    drop(guard);
-
-    let batch = watcher.next_batch_timeout(timeout_ms);
-
-    let mut guard = GLOBAL_WATCHER.lock().unwrap();
-    *guard = Some(watcher);
-
-    Ok(batch.map(|b| {
-        b.changes
-            .into_iter()
-            .map(|c| (c.path, format!("{:?}", c.kind)))
-            .collect()
-    }))
-}
-
-// ── v3.6: Synthetic Edge Registration ────────────────────────────────────
-
-/// Register a synthetic edge from framework resolvers (Django/Flask/FastAPI).
-///
-/// Framework resolvers produce edges like route→handler that aren't
-/// tree-sitter-extracted. This function merges them into the live graph
-/// so agents can trace them via callers_of / callees_of / explore.
-#[pyfunction]
-fn register_synthetic_edge(source_id: &str, target_id: &str, kind: &str) -> PyResult<PyObject> {
-    let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut().ok_or_else(|| {
-        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
-    })?;
-    graph
-        .register_synthetic_edge(source_id, target_id, kind)
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-    let py = unsafe { Python::assume_gil_acquired() };
-    let dict = PyDict::new(py);
-    dict.set_item("ok", true)?;
-    Ok(dict.into())
-}
-
-/// Register framework routes (§1.3, DR-10): nodes + route→handler edges
-/// with scoped diff-retire, in one projection commit.
-///
-/// `nodes` are `(id, pattern, file_path, handler_id, methods, framework)`;
-/// `edges` are `(source_id, target_id, kind)`; `scope` is `"full"` or a
-/// root-relative file path. Returns `{routes_upserted, routes_retired,
-/// pairs_retired}`.
-#[pyfunction]
-fn register_synthetic_routes(
-    nodes: Vec<(String, String, String, String, Vec<String>, String)>,
-    edges: Vec<(String, String, String)>,
-    scope: &str,
-) -> PyResult<PyObject> {
-    let py = unsafe { Python::assume_gil_acquired() };
-    let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut().ok_or_else(|| {
-        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
-    })?;
-    let (upserted, retired, pairs) = graph
-        .register_synthetic_routes(nodes, edges, scope)
-        .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
-    let dict = PyDict::new(py);
-    dict.set_item("ok", true)?;
-    dict.set_item("routes_upserted", upserted)?;
-    dict.set_item("routes_retired", retired)?;
-    dict.set_item("pairs_retired", pairs)?;
-    Ok(dict.into())
-}
-
-/// Register many synthetic edges in one pass.
-///
-/// `edges` is a list of `(source_id, target_id, kind)`. The framework
-/// resolvers emit one edge per route/handler pair; the single-edge call clones
-/// the whole projection each time.
-#[pyfunction]
-fn register_synthetic_edges_bulk(edges: Vec<(String, String, String)>) -> PyResult<PyObject> {
-    let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut().ok_or_else(|| {
-        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
-    })?;
-    let registered = graph
-        .register_synthetic_edges_bulk(edges)
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-    let py = unsafe { Python::assume_gil_acquired() };
-    let dict = PyDict::new(py);
-    dict.set_item("ok", true)?;
-    dict.set_item("registered", registered)?;
-    Ok(dict.into())
-}
-
-/// Store an embedding vector on a function entity in the projected graph.
-///
-/// Called from Python's compute_embeddings() pipeline. The embedding is
-/// written directly into the in-memory Function.embedding field, making it
-/// immediately available for search_similar() queries.
-/// content_hash: xxHash64 hex of the entity body — used for incremental dedup.
-#[pyfunction]
-fn set_embedding(entity_id: &str, embedding: Vec<f64>, content_hash: &str) -> PyResult<PyObject> {
-    let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut().ok_or_else(|| {
-        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
-    })?;
-    graph
-        .set_embedding(entity_id, &embedding, content_hash)
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-    let py = unsafe { Python::assume_gil_acquired() };
-    let dict = PyDict::new(py);
-    dict.set_item("ok", true)?;
-    Ok(dict.into())
-}
-
-/// Store many embeddings in one pass.
-///
-/// `entries` is a list of `(entity_id, embedding, content_hash)`. Each
-/// `set_embedding` call clones the entire projection, so embedding N entities
-/// one at a time is O(N²); this clones once. Returns `applied` and the ids
-/// that matched no entity.
-#[pyfunction]
-fn set_embeddings_bulk(entries: Vec<(String, Vec<f64>, String)>) -> PyResult<PyObject> {
-    let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut().ok_or_else(|| {
-        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
-    })?;
-    let (applied, missing) = graph
-        .set_embeddings_bulk(entries)
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-    let py = unsafe { Python::assume_gil_acquired() };
-    let dict = PyDict::new(py);
-    dict.set_item("ok", true)?;
-    dict.set_item("applied", applied)?;
-    dict.set_item("missing", missing)?;
-    Ok(dict.into())
-}
-
-/// Clear every stored embedding vector; returns `{"cleared"}`.
-///
-/// Maintenance primitive for the DR-11 model-switch story
-/// (`compute_embeddings(recompute=True)` calls this before regenerating).
-#[pyfunction]
-fn clear_all_embeddings(py: Python<'_>) -> PyResult<PyObject> {
-    let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut().ok_or_else(|| {
-        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
-    })?;
-    let cleared = graph.clear_all_embeddings();
-    let dict = PyDict::new(py);
-    dict.set_item("cleared", cleared)?;
-    Ok(dict.into())
-}
-
-/// Resolve a module's children (classes, functions) to full entity dicts.
-///
-/// Module dicts carry EntityId lists for `classes`, `functions`, etc.
-/// This function resolves those IDs to the full entity representation.
-#[pyfunction]
-fn module_children(py: Python<'_>, module_id: &str) -> PyResult<PyObject> {
-    with_graph(|_graph, snap| {
-        let module = snap.modules.get(module_id).ok_or_else(|| {
-            pyo3::exceptions::PyKeyError::new_err(format!("Module not found: {}", module_id))
-        })?;
-
-        let dict = PyDict::new(py);
-        dict.set_item("module_id", module_id)?;
-
-        // Resolve classes
-        let classes: Vec<PyObject> = module
-            .classes
-            .iter()
-            .filter_map(|cid| {
-                snap.classes
-                    .get(cid)
-                    .and_then(|c| class_to_dict(py, c).ok())
-            })
-            .collect();
-        dict.set_item("classes", classes)?;
-
-        // Resolve functions
-        let functions: Vec<PyObject> = module
-            .functions
-            .iter()
-            .filter_map(|fid| {
-                snap.functions
-                    .get(fid)
-                    .and_then(|f| function_to_dict(py, f).ok())
-            })
-            .collect();
-        dict.set_item("functions", functions)?;
-
-        // Resolve imports
-        let imports: Vec<PyObject> = module
-            .imports
-            .iter()
-            .filter_map(|iid| {
-                snap.imports.get(iid).map(|i| {
-                    let d = PyDict::new(py);
-                    let _ = d.set_item("id", &i.id);
-                    let _ = d.set_item("raw", &i.raw);
-                    let _ = d.set_item("kind", format!("{:?}", i.kind));
-                    let _ = d.set_item("line", i.line);
-                    d.into()
-                })
-            })
-            .collect();
-        dict.set_item("imports", imports)?;
-
-        // Resolve constants
-        let constants: Vec<PyObject> = module
-            .constants
-            .iter()
-            .filter_map(|cid| {
-                snap.constants.get(cid).map(|c| {
-                    let d = PyDict::new(py);
-                    let _ = d.set_item("id", &c.id);
-                    let _ = d.set_item("name", &c.name);
-                    d.into()
-                })
-            })
-            .collect();
-        dict.set_item("constants", constants)?;
-
-        Ok(dict.into())
-    })
-}
-
-/// Drop every stored embedding for the entities of one file (called before
-/// re-embedding it). Returns `{"ok": True}`; raises `RuntimeError` when no
-/// graph is loaded.
-#[pyfunction]
-fn clear_embeddings_for_file(py: Python<'_>, file_path: &str) -> PyResult<PyObject> {
-    let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard
-        .as_mut()
-        .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("No graph loaded"))?;
-    graph.clear_embeddings_for_file(file_path);
-    let dict = PyDict::new(py);
-    dict.set_item("ok", true)?;
-    Ok(dict.into())
-}
-
-/// v0.5: Set a module's `__all__` star-export names list.
-/// Called from Python after static `__all__` analysis (exports.py).
-/// Enables resolution of `from X import *` wildcard imports.
-#[pyfunction]
-fn set_module_star_exports(module_id: &str, names: Vec<String>) -> PyResult<PyObject> {
-    let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut().ok_or_else(|| {
-        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
-    })?;
-    graph.set_module_star_exports(module_id, names);
-    let py = unsafe { Python::assume_gil_acquired() };
-    let dict = PyDict::new(py);
-    dict.set_item("ok", true)?;
-    Ok(dict.into())
-}
-
-/// Set `__all__` for many modules in one pass.
-///
-/// `entries` is a list of `(module_id, names)`. The per-module call clones the
-/// whole projection each time; analyze() has one module with `__all__` per
-/// file, so that is a clone per file.
-#[pyfunction]
-fn set_module_star_exports_bulk(entries: Vec<(String, Vec<String>)>) -> PyResult<PyObject> {
-    let mut guard = GLOBAL_GRAPH.write();
-    let graph = guard.as_mut().ok_or_else(|| {
-        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar analyze first")
-    })?;
-    let applied = graph.set_module_star_exports_bulk(entries);
-    let py = unsafe { Python::assume_gil_acquired() };
-    let dict = PyDict::new(py);
-    dict.set_item("ok", true)?;
-    dict.set_item("applied", applied)?;
-    Ok(dict.into())
-}
+// Synthetic registration bindings live in ffi/synthetic.rs (DR-28 split).
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ffi_convert::unresolved_ref_kind;
     use crate::graph::ProjectConfig;
     use crate::types::{
         ByteSpan, FunctionKind, FunctionMetrics, Parameter, ParseQuality, SourceType,
@@ -4465,7 +3373,6 @@ mod tests {
         assert!(err.contains("calls"), "lists supported kinds: {err}");
     }
 
-    #[test]
     /// Plan 5.1: only the two spellings the old canonical form minted count
     /// as migration candidates — a name-like head or an outside-root path is
     /// odd, not legacy, and must not trigger a re-analyze.

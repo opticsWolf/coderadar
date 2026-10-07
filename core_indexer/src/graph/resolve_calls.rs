@@ -5,6 +5,15 @@ use crate::types::*;
 
 use super::receiver_types::MethodsByClass;
 
+/// What one function resolution produces: bound calls, plain edge pairs,
+/// and edge pairs with receiver evidence. Factored out for
+/// `type_complexity` (clippy 0).
+type ResolveOutcome = (
+    Vec<crate::types::ResolvedCall>,
+    Vec<(String, String)>,
+    Vec<((String, String), crate::types::ReceiverEvidence)>,
+);
+
 impl CodeGraph {
     /// Run the resolution cascade on all functions, or scoped to a single file.
     /// When `scope_file` is Some, only clears and rebuilds edges for functions
@@ -129,6 +138,9 @@ impl CodeGraph {
     ///
     /// Technique adopted from CodeGraph's per-file resolution in
     /// resolve/index.ts (MIT license, https://github.com/opticsWolf/codegraph).
+    /// Eight params because resolution needs every index at once; bundling
+    /// them into a struct would churn every caller for no behavior gain.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_one_function(
         func_id: &str,
         calls: &[crate::types::UnresolvedRef],
@@ -138,11 +150,7 @@ impl CodeGraph {
         projection: &ProjectedGraph,
         import_graph: &ImportGraph,
         orchestrator: &mut crate::resolve::orchestrator::ResolutionOrchestrator,
-    ) -> (
-        Vec<crate::types::ResolvedCall>,
-        Vec<(String, String)>,
-        Vec<((String, String), crate::types::ReceiverEvidence)>,
-    ) {
+    ) -> ResolveOutcome {
         let mut edge_pairs = Vec::new();
         let mut evidence_pairs: Vec<((String, String), crate::types::ReceiverEvidence)> =
             Vec::new();
@@ -673,9 +681,8 @@ impl CodeGraph {
             Vec<(String, String)>,
             Vec<((String, String), crate::types::ReceiverEvidence)>,
         );
-        let results: Vec<ResolveResult>;
 
-        if all_work.len() > 50 {
+        let results: Vec<ResolveResult> = if all_work.len() > 50 {
             // Cap at 4: benchmarking shows the cross-file benchmark (1 heavy
             // item + 995 empty) doesn't benefit from parallelism, but real
             // codebases with balanced call distribution will. The cap prevents
@@ -683,7 +690,7 @@ impl CodeGraph {
             let num_threads = std::thread::available_parallelism()
                 .map(|n| n.get().min(4))
                 .unwrap_or(2);
-            let chunk_size = (all_work.len() + num_threads - 1) / num_threads;
+            let chunk_size = all_work.len().div_ceil(num_threads);
             let results_mutex = std::sync::Mutex::new(Vec::<ResolveResult>::new());
             let projection_ro: &ProjectedGraph = projection; // shared borrow
             let methods_ref: &MethodsByClass = &methods_by_class;
@@ -719,7 +726,7 @@ impl CodeGraph {
                 }
             });
             // projection_ro borrow ends — projection is exclusively mutable again
-            results = results_mutex.into_inner().unwrap();
+            results_mutex.into_inner().unwrap()
         } else {
             // Small work set — sequential (avoid thread overhead)
             let mut results_vec = Vec::new();
@@ -736,8 +743,8 @@ impl CodeGraph {
                 );
                 results_vec.push((fid.clone(), rc, ep, ev));
             }
-            results = results_vec;
-        }
+            results_vec
+        };
 
         // Phase C: Apply results to projection (sequential)
         for (func_id, resolved, edge_pairs, evidence_pairs) in &results {

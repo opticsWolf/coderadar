@@ -47,11 +47,13 @@ fn test_set_embeddings_bulk_applies_every_entry() {
         "math.py",
     );
 
-    let (applied, missing) = graph.set_embeddings_bulk(vec![
+    let Ok((applied, missing)) = graph.set_embeddings_bulk(vec![
         ("math.py::add".into(), vec![0.1, 0.2], "h1".into()),
         ("math.py::sub".into(), vec![0.3, 0.4], "h2".into()),
         ("math.py::Calc".into(), vec![0.5, 0.6], "h3".into()),
-    ]);
+    ]) else {
+        panic!("DR-11 write gate rejected a uniform batch");
+    };
 
     assert_eq!(applied, 3);
     assert!(missing.is_empty());
@@ -75,10 +77,12 @@ fn test_set_embeddings_bulk_reports_unknown_ids_without_dropping_the_rest() {
     let graph = CodeGraph::new(GraphConfig::default());
     index_source(&graph, "def add(a, b): return a + b\n", "math.py");
 
-    let (applied, missing) = graph.set_embeddings_bulk(vec![
+    let Ok((applied, missing)) = graph.set_embeddings_bulk(vec![
         ("math.py::ghost".into(), vec![9.9], "h".into()),
         ("math.py::add".into(), vec![0.1], "h".into()),
-    ]);
+    ]) else {
+        panic!("DR-11 write gate rejected a uniform batch");
+    };
 
     assert_eq!(applied, 1);
     assert_eq!(missing, vec!["math.py::ghost".to_string()]);
@@ -165,7 +169,7 @@ fn test_bulk_writes_are_no_ops_when_empty() {
     index_source(&graph, "def add(a, b): return a + b\n", "math.py");
     let before = graph.snapshot();
 
-    assert_eq!(graph.set_embeddings_bulk(vec![]), (0, vec![]));
+    assert_eq!(graph.set_embeddings_bulk(vec![]), Ok((0, vec![])));
     assert_eq!(graph.set_module_star_exports_bulk(vec![]), 0);
     assert_eq!(graph.register_synthetic_edges_bulk(vec![]).unwrap(), 0);
 
@@ -216,14 +220,34 @@ fn test_set_embedding_overwrites_existing() {
     graph
         .set_embedding("math.py::add", &[0.1], "abc123")
         .unwrap();
-    // Overwrite with different vector
+    // Overwrite with a same-width vector
     graph
-        .set_embedding("math.py::add", &[0.9, 0.8, 0.7], "abc123")
+        .set_embedding("math.py::add", &[0.9], "def456")
         .unwrap();
 
     let snap = graph.snapshot();
     let add = snap.functions.get("math.py::add").unwrap();
-    assert_eq!(add.embedding.vec, vec![0.9, 0.8, 0.7]);
+    assert_eq!(add.embedding.vec, vec![0.9]);
+}
+
+#[test]
+fn test_set_embedding_rejects_width_change() {
+    // DR-11 dimension gate: one projection, one dimension. A width change
+    // fails explicitly (recompute-from-clean remedy) and stores nothing.
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(&graph, "def add(a, b): return a + b\n", "math.py");
+
+    graph
+        .set_embedding("math.py::add", &[0.1], "abc123")
+        .unwrap();
+    let err = graph
+        .set_embedding("math.py::add", &[0.9, 0.8, 0.7], "abc123")
+        .expect_err("width change must fail");
+    assert!(err.contains("embedding dimension mismatch"), "{err}");
+    assert!(err.contains("recompute=True"), "{err}");
+    let snap = graph.snapshot();
+    let add = snap.functions.get("math.py::add").unwrap();
+    assert_eq!(add.embedding.vec, vec![0.1]);
 }
 #[test]
 fn test_search_similar_after_set_embedding() {

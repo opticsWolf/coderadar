@@ -13,13 +13,12 @@ import hashlib
 import sqlite3
 import time
 
-import pytest
-
 import coderadar
+import pytest
 from coderadar import ops
 
 try:
-    from coderadar import _core  # noqa: F401
+    from coderadar import _core
     _CORE = True
 except ImportError:  # pragma: no cover
     _CORE = False
@@ -111,7 +110,7 @@ class TestRawBytes:
         g, t0, _t1 = history
         raw = g.as_of(t0).read_bytes("two.py::alpha")
         assert b"\r\n" in raw, "CRLF must survive bit-for-bit"
-        assert "café".encode("utf-8") in raw, "non-ASCII must survive bit-for-bit"
+        assert "café".encode() in raw, "non-ASCII must survive bit-for-bit"
         assert raw in TWO
         assert b"def beta" not in raw, "slice must not leak the sibling"
 
@@ -214,7 +213,7 @@ def _find_route_id(obj):
 
 class TestBlobGet:
     def test_round_trip(self, history):
-        g, t0, _t1 = history
+        _, t0, _t1 = history
         ref = _core.entity_source_ref_at("one.py::greet", t0)
         assert ops.blob_get(ref["digest"]) == ONE_V1
 

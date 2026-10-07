@@ -216,14 +216,15 @@ pub struct EntryPoints {
 }
 
 /// Detect entry points. Cheapest-first ladder:
-/// 1. conventional mains (free functions),
-/// 2. decorator-driven framework entries (production vs test tables),
-/// 3. dunder protocol methods (invoked by the runtime),
-/// 3c. overrides of external bases — virtual dispatch from code outside the
-///     indexed root (Qt `eventFilter`, Django `View.get`, `TestCase.setUp`),
-/// 3d. interface declarations — `typing.Protocol` members and
-///     `@abstractmethod` declarations are contract, not deletable code,
-/// 4. public top-level API of modules nobody imports (library surface).
+///
+///   1. conventional mains (free functions),
+///   2. decorator-driven framework entries (production vs test tables),
+///   3. dunder protocol methods (invoked by the runtime), including
+///      overrides of external bases (Qt `eventFilter`, Django
+///      `View.get`, `TestCase.setUp`) and interface declarations
+///      (`typing.Protocol` members, `@abstractmethod` — contract, not
+///      deletable code),
+///   4. public top-level API of modules nobody imports (library surface).
 pub fn detect_entry_points(graph: &ProjectedGraph, root: Option<&Path>) -> EntryPoints {
     let mut production = HashSet::new();
     // Functions some other function passes around as a value (callbacks).

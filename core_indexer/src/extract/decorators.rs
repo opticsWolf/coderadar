@@ -71,9 +71,11 @@ pub fn is_dataclass_decorator(decorator: &str) -> bool {
     decorator.starts_with("@dataclass")
 }
 
+/// One synthesized dataclass method: name + (param, default) pairs.
+type DataclassMethod = (&'static str, Vec<(&'static str, Option<&'static str>)>);
+
 /// Synthesized methods that dataclass decorators generate.
-pub fn dataclass_synthesized_methods(
-) -> Vec<(&'static str, Vec<(&'static str, Option<&'static str>)>)> {
+pub fn dataclass_synthesized_methods() -> Vec<DataclassMethod> {
     vec![
         ("__init__", vec![("self", None), ("*", None)]),
         ("__repr__", vec![("self", None)]),

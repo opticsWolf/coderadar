@@ -1126,6 +1126,8 @@ def _print_effective_excludes() -> None:
     except OSError:
         pass
     console.print("[bold]Effective excludes[/bold] (baseline + [project] exclude + .gitignore):")
+    console.print("[dim]Effect counts use the baseline+config matcher; "
+                    ".gitignore is honored at walk level and listed, not counted.[/dim]")
     for pat in baseline:
         console.print(f"  [dim]baseline[/dim]  {pat}")
     for pat in user:

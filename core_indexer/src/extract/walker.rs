@@ -513,7 +513,7 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
                 name: dotted,
                 path: vec![],
                 line: id.start_position().row + 1,
-                col: id.start_position().column as usize,
+                col: id.start_position().column,
                 name_span: node_span(id),
             })
         })
@@ -699,9 +699,9 @@ pub fn emit_call_for_node(
                 "field"
             } else if n.kind() == "member_expression" {
                 "property"
-            } else if n.kind() == "call" {
-                "method"
-            } else if n.kind() == "chained_method_call" {
+            } else if n.kind() == "call" || n.kind() == "chained_method_call" {
+                // Same grammar shape (method + receiver) under two node
+                // kinds; one arm, not two identical ones.
                 "method"
             } else if n.kind() == "member_access_expression" {
                 "name"
@@ -714,9 +714,7 @@ pub fn emit_call_for_node(
                 "value"
             } else if n.kind() == "member_expression" {
                 "object"
-            } else if n.kind() == "call" {
-                "receiver"
-            } else if n.kind() == "chained_method_call" {
+            } else if n.kind() == "call" || n.kind() == "chained_method_call" {
                 "receiver"
             } else if n.kind() == "member_access_expression" {
                 "expression"
@@ -740,7 +738,7 @@ pub fn emit_call_for_node(
                 .to_string();
             if !is_stoplisted(&method) {
                 let call_receiver =
-                    n.kind() == "attribute" && object_node.map_or(false, |c| c.kind() == "call");
+                    n.kind() == "attribute" && object_node.is_some_and(|c| c.kind() == "call");
                 let path = if call_receiver {
                     receiver_segments(object_node, source)
                 } else if object.is_empty() {
@@ -1004,11 +1002,8 @@ fn parameter_name(node: Node, source: &str) -> String {
         // declarators hold it as a plain child rather than a field — taking
         // the node's text there yields "& name" instead of "name".
         let mut current = named;
-        loop {
-            match current.child_by_field_name("declarator") {
-                Some(inner) => current = inner,
-                None => break,
-            }
+        while let Some(inner) = current.child_by_field_name("declarator") {
+            current = inner;
         }
         if current.kind() == "identifier" {
             if let Ok(text) = current.utf8_text(source.as_bytes()) {

@@ -49,7 +49,7 @@ def project(tmp_path, monkeypatch):
 
 
 def test_analyze_stores_blob_and_asserts_digest(project, tmp_path):
-    g, db = project
+    _, db = project
     stats = blob_stats()
     assert stats["stored"] == 1
     assert stats["skipped_oversize"] == 0
@@ -79,7 +79,7 @@ def test_reindex_reports_blob_counts(project, tmp_path):
     import time
 
     (tmp_path / "a.py").write_text("def f():\n    return 9\n")
-    db = tmp_path / ".coderadar" / "store" / "coderadar.db"
+    _db = tmp_path / ".coderadar" / "store" / "coderadar.db"
     fresh = time.time()
     os.utime(tmp_path / "a.py", (fresh + 5, fresh + 5))
     out = ops.reindex()
@@ -115,7 +115,7 @@ def test_update_file_reports_blob_outcome(project):
 def test_secret_default_gets_graph_but_no_blob(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "mysecret.py").write_text(V1)
-    g = analyze(".", create_store=True)
+    _ = analyze(".", create_store=True)
     stats = blob_stats()
     assert stats["skipped_excluded"] == 1
     assert stats["stored"] == 0

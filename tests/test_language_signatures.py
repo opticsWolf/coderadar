@@ -59,6 +59,20 @@ CASES = [
          '    return name;\n}\n'
      ),
      "hello", "name", ""),
+    ("s.c",
+     (
+         'char *hello(const char *name) {\n'
+         '    return (char *)name;\n}\n'
+     ),
+     "hello", "name", ""),
+    ("s.cs",
+     (
+         'class C {\n'
+         '    string Hello(string name) {\n'
+         '        return name;\n'
+         '    }\n}\n'
+     ),
+     "Hello", "name", ""),
 ]
 
 IDS = [c[0] for c in CASES]

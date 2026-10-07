@@ -31,6 +31,20 @@ use self::tokens::{tokenize_body, Mode};
 
 const SHINGLE_K: usize = 6;
 
+/// Fingerprint memo: content-hash → (fp, tree-hash, minhash, shingles,
+/// labeled tree, weight). Factored out for `type_complexity` (clippy 0).
+type FingerprintMemo = std::collections::HashMap<
+    u64,
+    (
+        u64,
+        u64,
+        Arc<MinHash>,
+        Arc<std::collections::HashSet<u64>>,
+        Arc<Option<apted::LabeledTree>>,
+        f64,
+    ),
+>;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CloneType {
     Type1,
@@ -175,17 +189,7 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
 
     // Fingerprint pass (memoized by content_hash within this run). The tree
     // memo shares the key: `None` = unverifiable (parse failure or size cap).
-    let mut memo: HashMap<
-        u64,
-        (
-            u64,
-            u64,
-            Arc<MinHash>,
-            Arc<std::collections::HashSet<u64>>,
-            Arc<Option<apted::LabeledTree>>,
-            f64,
-        ),
-    > = HashMap::new();
+    let mut memo: FingerprintMemo = HashMap::new();
     let mut fps: Vec<Fp> = Vec::new();
     let mut trees: HashMap<EntityId, Arc<Option<apted::LabeledTree>>> = HashMap::new();
     let mut assigned: std::collections::HashSet<EntityId> = std::collections::HashSet::new();
@@ -302,7 +306,7 @@ pub fn detect_clones(graph: &ProjectedGraph, options: CloneOptions) -> Vec<Clone
     }
 
     let mut uf: Vec<usize> = (0..pool.len()).collect();
-    fn find(uf: &mut Vec<usize>, x: usize) -> usize {
+    fn find(uf: &mut [usize], x: usize) -> usize {
         debug_assert!(
             x < uf.len(),
             "find: slot {} out of bounds (len {})",
@@ -458,7 +462,10 @@ fn cmp_groups(a: &CloneGroup, b: &CloneGroup) -> std::cmp::Ordering {
 fn cmp_instances(a: &[CloneInstance], b: &[CloneInstance]) -> std::cmp::Ordering {
     a.iter()
         .map(|i| (&i.file, i.span.start, i.span.end, &i.entity_id))
-        .cmp(b.iter().map(|i| (&i.file, i.span.start, i.span.end, &i.entity_id)))
+        .cmp(
+            b.iter()
+                .map(|i| (&i.file, i.span.start, i.span.end, &i.entity_id)),
+        )
 }
 
 fn build_group(ty: CloneType, similarity: f64, fps: &[Fp], members: &[usize]) -> CloneGroup {
@@ -519,7 +526,7 @@ mod tests {
 
     #[test]
     fn minhash_estimates_jaccard() {
-        let s1: Vec<u64> = (0..200).map(|i| ((i as u64) * 2654435761u64)).collect();
+        let s1: Vec<u64> = (0..200).map(|i| (i as u64) * 2654435761u64).collect();
         let s2: Vec<u64> = s1.iter().map(|v| v + 7).collect(); // fully disjoint
         let m1 = MinHash::of(s1.iter().copied());
         let m2 = MinHash::of(s2.iter().copied());
@@ -643,7 +650,6 @@ def ",
 
     #[test]
     fn detect_finds_type1_and_type2_on_fixture_dir() {
-        use crate::graph::deadcode;
         let dir = tempfile::tempdir().unwrap();
         let src_path = dir.path().join("dup.py");
         let src: &str = "def clone_a(x):

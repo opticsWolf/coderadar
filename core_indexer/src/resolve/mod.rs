@@ -1,5 +1,7 @@
-// CodeRadar v3.6 — Resolution Module
-// Cascade: Import → Signature → Embedding (Stack Graphs + LSP deferred, D1/D2)
+// CodeRadar — Resolution Module
+// Cascade: L1 Import Graph → L2 Signature Match → L3 Embedding / L4 LSP
+// (both Python-side, deferred). The Stack Graphs placeholder layer is gone;
+// layers are numbered as they run (see orchestrator.rs header).
 pub mod cache;
 pub mod import_graph;
 pub mod orchestrator;

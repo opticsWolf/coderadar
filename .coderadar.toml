@@ -28,7 +28,6 @@ path = ".coderadar/store/coderadar.db"
 # `compute_embeddings` and by the MCP search path, via `embedding_settings`.
 model = "BAAI/bge-small-en-v1.5"
 dimension = 384
-truncated_dimension = 64
 max_body_tokens = 2000
 batch_size = 32
 
@@ -42,6 +41,9 @@ max_file_size_bytes = 1048576
 # arriving as arbitrary JSON is checked against these before any file is read
 # or written.
 enabled = true
+# DR-27: dry-run stays ON until D18 (self-hosting) lands. The whole chain
+# is dry-by-default by signature (tool_router, MCP, CLI); this key states
+# the intent so flipping it is a deliberate, reviewable moment — not drift.
 default_dry_run = true
 max_files_per_plan = 100
 max_edits_per_plan = 500
@@ -50,7 +52,12 @@ backup_retention_hours = 24
 post_verify = true
 max_repair_attempts = 3
 require_clean_git = false
-allow = ["src/", "lib/", "tests/", "scripts/"]
+# DR-27 self-hosting allow-list: the repo's own dirs. Leading-directory
+# patterns are ROOT-ANCHORED — the old generic "src/" matched none of
+# them (py_agent/src/ is not src/).
+allow = ["core_indexer/", "py_agent/", "tests/"]
+# DENY WINS: checked before allow in the engine — a path matching both is
+# refused. There is no exception mechanism; remove the deny entry instead.
 deny = [".git/", ".coderadar/", "/migrations/", "/*.lock", "/generated/"]
 
 [resolution]

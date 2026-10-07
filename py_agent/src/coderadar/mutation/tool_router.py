@@ -2,6 +2,10 @@
 
 Routes LLM tool calls to the appropriate Rust planner: replace_entity_body,
 update_signature, rename_symbol, create_entity.
+
+P4 wire-or-cut verdict (v0.12): KEPT as the P2 tool-call seam. Tested
+but unwired today; P2 skills route agent tool calls through
+ToolRouter.route — cutting it now would be churn, not hygiene.
 """
 
 from __future__ import annotations

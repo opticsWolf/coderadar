@@ -11,20 +11,12 @@ use std::sync::Arc;
 /// Wrapper around Vec<f64> that defaults to empty.
 /// Embedding vector with content-hash for deduplication.
 /// Hash is xxHash64 hex of entity body; empty = no embedding stored.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct EmbeddingVec {
     pub vec: Vec<f64>,
     pub hash: String,
 }
 
-impl Default for EmbeddingVec {
-    fn default() -> Self {
-        EmbeddingVec {
-            vec: vec![],
-            hash: String::new(),
-        }
-    }
-}
 // Stable dotted-path identity, e.g. "src/auth.py::UserService.create".
 // Used as Macrame concept IDs and ProjectedGraph hashmap keys.
 
@@ -129,16 +121,10 @@ pub enum SymbolId {
 
 // ── ByteSpan (§3.3) ─────────────────────────────────────────────────────────
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug, Serialize, Deserialize, Default)]
 pub struct ByteSpan {
     pub start: usize,
     pub end: usize, // exclusive
-}
-
-impl Default for ByteSpan {
-    fn default() -> Self {
-        Self { start: 0, end: 0 }
-    }
 }
 
 impl ByteSpan {
@@ -171,7 +157,7 @@ pub fn line_col_at(source: &[u8], offset: usize) -> (usize, usize) {
 }
 
 /// Slice a source string by a ByteSpan, verifying UTF-8 char boundaries.
-pub fn slice_span<'a>(source: &'a str, span: ByteSpan) -> Result<&'a str, SpanError> {
+pub fn slice_span(source: &str, span: ByteSpan) -> Result<&str, SpanError> {
     if span.start > source.len() || span.end > source.len() {
         return Err(SpanError::OutOfBounds);
     }
@@ -1230,7 +1216,7 @@ impl Function {
             kind: f.kind.clone(),
             is_async: f.is_async,
             is_generator: f.is_generator,
-            source: f.source.clone(),
+            source: f.source,
             signature_hash: f.signature_hash,
             body_hash: f.body_hash,
             metrics: f.metrics,
@@ -1273,14 +1259,14 @@ impl Class {
                 .map(|ef| Field {
                     name: ef.name.clone(),
                     annotation: ef.annotation.clone(),
-                    source: ef.source.clone(),
+                    source: ef.source,
                     default_value: ef.default_value.clone(),
                     is_class_var: ef.is_class_var,
                     span: ef.name_span,
                     name_span: ef.name_span,
                 })
                 .collect(),
-            source: c.source.clone(),
+            source: c.source,
             decorators: c.decorators.clone(),
             effective: EffectiveClass::Plain,
             is_type_checking_only: c.is_type_checking_only,
@@ -1499,7 +1485,7 @@ pub struct ProjectedGraph {
     pub imports_by_importer: HashMap<EntityId, BTreeSet<EntityId>>,
     pub callers_by_callee: HashMap<EntityId, BTreeSet<EntityId>>,
     pub callees_by_caller: HashMap<EntityId, BTreeSet<EntityId>>,
-    /// Receiver-typing provenance (plan §1.2 step 3, §2.4): 	`(callee -> caller)`
+    /// Receiver-typing provenance (plan §1.2 step 3, §2.4):     `(callee -> caller)`
     /// → how the call edge was inferred. In-memory only — the ledger persists
     /// `resolved_calls`, not inference provenance — so a cold start loses the
     /// tags and the §2.4 weighting then degrades to "strong" (no ×0.8). Never

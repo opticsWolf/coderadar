@@ -1469,7 +1469,7 @@ def analyze(root: str, create_store: bool = False, exclude: list | None = None) 
         from coderadar import framework as _framework
 
         _framework.run_framework_extraction(root)
-    except Exception:  # noqa: BLE001 - extraction must never fail analyze
+    except Exception:  # noqa: BLE001, S110 - extraction must never fail analyze
         pass
 
     return CodeGraph()
@@ -1619,8 +1619,6 @@ __all__ = [
     "BatchContext",
     "CodeGraph",
     "CodeRadarError",
-    "blob_stats",
-    "ops",
     "MutationEdit",
     "MutationError",
     "MutationPlan",
@@ -1634,7 +1632,9 @@ __all__ = [
     "UpdateReport",
     "Watcher",
     "analyze",
+    "blob_stats",
     "load",
+    "ops",
     "watch",
 ]
 
