@@ -458,6 +458,79 @@ impl CodeGraphStore {
         })
     }
 
+    /// Raw blob bytes by digest (§3.0, DR-25): the `blob_get` half of the
+    /// PyO3 round-trip. `None` = valid address, no bytes (never put, or the
+    /// bytes are gone) — the Python layer adds the at-T context and raises
+    /// `ContentUnavailable` there, keeping `None` distinct from
+    /// "not in the graph at T". Malformed digests refuse via
+    /// `validate_digest`; cold-archived blobs resolve through macrame's
+    /// hot→cold fallback, so archive never breaks a read.
+    pub fn blob_get(&self, digest: &str) -> macrame::Result<Option<Vec<u8>>> {
+        macrame::blob::validate_digest(digest)?;
+        runtime().block_on(self.db.blob_get(digest))
+    }
+
+    /// Where one entity's bytes live at one timestamp (§3.0, DR-25).
+    ///
+    /// One `reconstruct(T)` over the ledger: the entity concept's content
+    /// JSON gives `file_path` + byte `span` + line range, the file's module
+    /// concept at T gives the `source_blob` digest from its extra. `None`
+    /// = not in the graph at T (never asserted, not yet, or retired) — the
+    /// same answer as `lookup_entity_at`, never an error. `digest=None` =
+    /// no blob recorded (pre-blob generation, excluded, oversize, or
+    /// disabled); `has_span=false` = synthetic (routes) with no source
+    /// bytes. Takes the id as given — spelling resolution is the caller's
+    /// (`Snapshot` resolves via `find` first).
+    pub fn entity_source_ref_at(
+        &self,
+        entity_id: &str,
+        timestamp: &str,
+    ) -> macrame::Result<Option<SourceRef>> {
+        let state = self.reconstruct(timestamp)?;
+        let concept = match state.concepts.get(entity_id) {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+        let content: serde_json::Value = serde_json::from_str(&concept.content).map_err(|e| {
+            macrame::DbError::Engine(libsql::Error::Misuse(format!(
+                "concept {entity_id} has unparseable content at {timestamp}: {e}",
+            )))
+        })?;
+        let file_path = content
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                macrame::DbError::Engine(libsql::Error::Misuse(format!(
+                    "concept {entity_id} has no file_path at {timestamp}",
+                )))
+            })?;
+        let span = span_of(&content, "span");
+        let is_module = content
+            .get("kind")
+            .and_then(|v| v.as_str())
+            .is_some_and(|k| k == "module");
+        let module_id = format!("{file_path}::module");
+        let digest = state
+            .concepts
+            .get(&module_id)
+            .and_then(|m| source_blob_of_extra(&m.extra));
+        Ok(Some(SourceRef {
+            id: entity_id.to_string(),
+            file_path: file_path.to_string(),
+            digest,
+            span_start: span.start,
+            span_end: span.end,
+            has_span: content.get("span").is_some(),
+            full_file: is_module,
+            start_line: content.get("line").and_then(|v| v.as_u64()).unwrap_or(1),
+            end_line: content.get("exit_line").and_then(|v| v.as_u64()).unwrap_or(1),
+            handler_id: content
+                .get("handler_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+        }))
+    }
+
     /// The honest error for a store without the FTS index: names the table
     /// symptom and the `rebuild_fts` repair, never a silent empty.
     fn missing_fts_err(detail: &str) -> macrame::DbError {
@@ -1092,6 +1165,27 @@ pub fn reset_blob_stats() {
     if let Ok(mut stats) = BLOB_STATS.lock() {
         *stats = BlobStats::default();
     }
+}
+
+/// Where one entity's bytes live at one timestamp (§3.0 read path).
+///
+/// `digest=None` = no blob recorded for the file at T; `has_span=false` =
+/// the concept carries no source span (synthetic routes). Modules carry no
+/// span either, but they ARE the file: `full_file=true` means the whole
+/// blob, no slicing (file-bytes-at-T, plan §3.0). `handler_id` is populated
+/// for routes so the honest error can name the fallback.
+#[derive(Clone, Debug)]
+pub struct SourceRef {
+    pub id: String,
+    pub file_path: String,
+    pub digest: Option<String>,
+    pub span_start: usize,
+    pub span_end: usize,
+    pub has_span: bool,
+    pub full_file: bool,
+    pub start_line: u64,
+    pub end_line: u64,
+    pub handler_id: Option<String>,
 }
 
 /// Snapshot the cumulative counters for the report surfaces.

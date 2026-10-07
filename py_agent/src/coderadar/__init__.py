@@ -1206,6 +1206,128 @@ class Snapshot:
         except RuntimeError as e:
             raise ops.EngineError(str(e)) from None
 
+    def read_bytes(self, entity_id: str, start: int | None = None,
+                   end: int | None = None) -> bytes | None:
+        """Exact source bytes for one entity as of T (§3.0 raw-byte path).
+
+        `None` = not in the graph at T (same answer as :meth:`find`, never
+        an error). Otherwise the file bytes recorded at T, sliced to the
+        entity's at-T byte span — CRLF, non-ASCII, everything preserved
+        bit-for-bit. Module ids (`{file}::module`) read the whole file
+        (file-bytes-at-T); entity spans are tree-sitter node extents, so a
+        trailing line break belongs to no entity. `start`/`end` narrow to
+        a sub-range of the returned bytes (outside = `InvalidRequest`).
+
+        Raises `ops.ContentUnavailable` (never a silent present-tense
+        answer) when the entity is in the graph at T but its bytes cannot
+        be served: no blob recorded (pre-blob generation, excluded,
+        oversize, disabled — the message says how to check), recorded
+        digest unresolvable (bytes gone), or a synthetic without a source
+        span (routes name their handler instead).
+        """
+        entity, raw, _ref = self._read_raw(entity_id)
+        if entity is None or raw is None:
+            return None
+        if start is None and end is None:
+            return raw
+        lo = 0 if start is None else start
+        hi = len(raw) if end is None else end
+        if not (0 <= lo <= hi <= len(raw)):
+            from . import ops
+            raise ops.InvalidRequest(
+                f"range [{lo}, {hi}] is outside {entity['id']}'s "
+                f"{len(raw)}-byte span at {self._timestamp}"
+            )
+        return raw[lo:hi]
+
+    def read_source(self, entity_id: str) -> str | None:
+        """Line-numbered source for one entity as of T (§3.0 display path).
+
+        `None` = not in the graph at T; `ContentUnavailable` propagates
+        when the bytes are missing. Decodes the raw at-T bytes as UTF-8
+        (`errors="replace"` — display decodes lossy, :meth:`read_bytes`
+        is exact), slices the entity's at-T line range, and prefixes
+        line numbers: the same presentation as `ops.read_source`, but
+        from recorded bytes, never the disk.
+        """
+        entity, raw, ref = self._read_raw(entity_id)
+        if entity is None or raw is None:
+            return None
+        if ref.get("full_file"):
+            ref_start, ref_end = 1, len(raw.decode("utf-8", errors="replace").splitlines())
+        else:
+            ref_start = int(ref.get("start_line", 1))
+            ref_end = int(ref.get("end_line", ref_start))
+        text = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        si = max(0, ref_start - 1)
+        ei = min(len(lines), ref_end)
+        return "".join(f"{i + 1}\t{lines[i]}\n" for i in range(si, ei))
+
+    def _read_raw(
+        self, entity_id: str
+    ) -> tuple[dict[str, Any] | None, bytes | None, dict[str, Any] | None]:
+        """`(entity-at-T, exact bytes, source ref)` shared by the readers.
+
+        `(None, None, None)` = not in the graph at T. Raises
+        `ContentUnavailable` for in-graph-but-byteless.
+        """
+        from . import ops
+        entity = self.find(entity_id)
+        if entity is None:
+            return None, None, None
+        try:
+            from coderadar._core import blob_get as _blob_get
+            from coderadar._core import entity_source_ref_at as _ref_at
+            ref = _ref_at(entity["id"], self._timestamp)
+        except ValueError as e:  # normalized at construction; defensive
+            raise ops.InvalidRequest(str(e)) from None
+        except RuntimeError as e:
+            raise ops.EngineError(str(e)) from None
+        if ref is None:  # vanished between the two folds; answer as absent
+            return None, None, None
+        digest = ref.get("digest")
+        if not digest:
+            raise ops.ContentUnavailable(
+                f"no source blob recorded for {ref.get('file_path')} "
+                f"at {self._timestamp} (predates blob storage, or the file "
+                f"was excluded, oversize, or blobs disabled — "
+                f"coderadar.blob_stats() shows this session's puts/skips)"
+            )
+        if not ref.get("has_span") and not ref.get("full_file"):
+            handler = ref.get("handler_id")
+            hint = f"; read its handler {handler} instead" if handler else ""
+            raise ops.ContentUnavailable(
+                f"{ref.get('id')} is a synthetic route with no source span{hint}"
+            )
+        try:
+            blob = _blob_get(digest)
+        except ValueError as e:  # recorded digest malformed: ledger corrupt
+            raise ops.ContentUnavailable(
+                f"recorded digest {digest!r} for {ref.get('file_path')} "
+                f"at {self._timestamp} is malformed: {e}"
+            ) from None
+        except RuntimeError as e:
+            raise ops.EngineError(str(e)) from None
+        if blob is None:
+            raise ops.ContentUnavailable(
+                f"source blob {digest} for {ref.get('file_path')} "
+                f"at {self._timestamp} is recorded but unresolvable "
+                f"(bytes gone — restore the hot+cold backup pair)"
+            )
+        raw = bytes(blob)
+        if ref.get("full_file"):
+            # Modules are the file: whole blob, no slicing (file-bytes-at-T).
+            return entity, raw, ref
+        lo, hi = int(ref["span_start"]), int(ref["span_end"])
+        if not (0 <= lo <= hi <= len(raw)):
+            raise ops.ContentUnavailable(
+                f"recorded span [{lo}, {hi}] for {ref.get('id')} exceeds "
+                f"blob bytes ({len(raw)} at digest {digest}): ledger and "
+                f"blob disagree"
+            )
+        return entity, raw[lo:hi], ref
+
     def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
         """Deprecated spelling of :meth:`callers` (which refuses: raises)."""
         _deprecated("Snapshot.callers_of", "Snapshot.callers")

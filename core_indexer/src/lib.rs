@@ -61,6 +61,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lookup_entities_at, m)?)?;
     m.add_function(wrap_pyfunction!(blob_stats, m)?)?;
     m.add_function(wrap_pyfunction!(search_symbols, m)?)?;
+    m.add_function(wrap_pyfunction!(blob_get, m)?)?;
+    m.add_function(wrap_pyfunction!(entity_source_ref_at, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
     m.add_function(wrap_pyfunction!(index_edge_stats, m)?)?;
@@ -2425,6 +2427,82 @@ fn search_symbols(py: Python<'_>, query: &str, top_k: usize, raw: bool) -> PyRes
         out.append(hit)?;
     }
     Ok(out.into())
+}
+
+/// Raw blob bytes by digest (§3.0, DR-25): `bytes | None`. `None` = valid
+/// address, no bytes (never put, or gone) — the at-T layer maps that to
+/// `ContentUnavailable` with timestamp context. A malformed digest is a
+/// `ValueError`; a storeless graph is the honest error (blobs live in the
+/// ledger, and there is no ledger to read).
+#[pyfunction]
+fn blob_get(py: Python<'_>, digest: &str) -> PyResult<PyObject> {
+    // Validate before touching the store so a malformed address is
+    // deterministically a ValueError (→ `InvalidRequest`), not whatever
+    // the engine would report.
+    if macrame::blob::validate_digest(digest).is_err() {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "malformed blob digest {digest:?}: expected 64 lowercase hex characters"
+        )));
+    }
+    let bytes = with_graph(|graph, _snap| {
+        let store = graph.store.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "blob_get needs a stored graph (analyze with create_store=True): \
+                 blobs live in the ledger, and a storeless graph has none",
+            )
+        })?;
+        store
+            .blob_get(digest)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))
+    })?;
+    match bytes {
+        Some(b) => Ok(pyo3::types::PyBytes::new(py, &b).into()),
+        None => Ok(py.None()),
+    }
+}
+
+/// Where one entity's bytes live at one timestamp (§3.0, DR-25):
+/// `{id, file_path, digest | None, span_start, span_end, has_span,
+/// full_file, start_line, end_line, handler_id | None} | None`. `None` = not in the
+/// graph at T — the same answer as `lookup_entity_at`, never an error. A
+/// garbage timestamp is a `ValueError`; a missing graph or store is a
+/// `RuntimeError`. Takes the id as given: spelling resolution is the
+/// caller's (`Snapshot` resolves via `find` first).
+#[pyfunction]
+#[pyo3(signature = (entity_id, timestamp))]
+fn entity_source_ref_at(
+    py: Python<'_>,
+    entity_id: &str,
+    timestamp: &str,
+) -> PyResult<PyObject> {
+    let ts = normalize_timestamp(timestamp)?;
+    let found = with_graph(|graph, _snap| {
+        let store = graph.store.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "No persistent store — temporal lookup needs a .coderadar store",
+            )
+        })?;
+        store
+            .entity_source_ref_at(entity_id, &ts)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))
+    })?;
+    match found {
+        Some(r) => {
+            let d = PyDict::new(py);
+            d.set_item("id", r.id)?;
+            d.set_item("file_path", r.file_path)?;
+            d.set_item("digest", r.digest)?;
+            d.set_item("span_start", r.span_start)?;
+            d.set_item("span_end", r.span_end)?;
+            d.set_item("has_span", r.has_span)?;
+            d.set_item("full_file", r.full_file)?;
+            d.set_item("start_line", r.start_line)?;
+            d.set_item("end_line", r.end_line)?;
+            d.set_item("handler_id", r.handler_id)?;
+            Ok(d.into())
+        }
+        None => Ok(py.None()),
+    }
 }
 
 /// Search tokens from a free-text query: whitespace-split, surrounding

@@ -26,6 +26,7 @@ __all__ = [
     "OPERATIONS",
     "SEARCH_KINDS",
     "TRAVERSE_DIRECTIONS",
+    "ContentUnavailable",
     "EngineError",
     "InvalidRequest",
     "MissingDependency",
@@ -37,6 +38,7 @@ __all__ = [
     "OpError",
     "affected",
     "as_of",
+    "blob_get",
     "callees",
     "callers",
     "canonical_entity_id",
@@ -148,6 +150,17 @@ class NoEmbeddings(OpError):
 
 class MutationFailed(OpError):
     """An edit could not be planned or applied; nothing was written."""
+
+
+class ContentUnavailable(OpError):
+    """The entity is in the graph, but its bytes cannot be served (§3.0).
+
+    Distinct from `None` ("not in the graph at T", a data answer) and
+    from `TemporalUnsupported` ("cannot be looked up at T"): this is
+    "in the graph, content missing" — no blob recorded (pre-blob
+    generation, excluded, oversize, disabled), or recorded-but-unresolvable
+    (bytes gone), or a synthetic without a source span (routes).
+    The message always says which, and names the recovery."""
 
 
 def _require_index(*kinds: str) -> None:
@@ -551,6 +564,30 @@ def resolve_names(names: Sequence[str]) -> list[dict]:
                 results.append(c)
                 seen.add(c["id"])
     return results
+
+
+def blob_get(digest: str) -> bytes | None:
+    """Raw blob bytes by content digest (§3.0, DR-25).
+
+    `bytes` for a recorded address; `None` = valid address, no bytes
+    (never put, or gone — the at-T layer maps that to `ContentUnavailable`
+    with timestamp context). Malformed digests raise `InvalidRequest`.
+    Cold-archived blobs resolve transparently (macrame hot→cold fallback),
+    so archive never breaks a read. No `_require_index`: a digest address
+    needs the store, not entities.
+    """
+    try:
+        from coderadar._core import blob_get as _blob_get
+        raw = _blob_get(digest)
+    except ImportError as e:
+        raise NoExtension(str(e)) from None
+    except ValueError as e:  # malformed digest
+        raise InvalidRequest(str(e)) from None
+    except RuntimeError as e:
+        if "stored graph" in str(e):
+            raise InvalidRequest(str(e)) from None
+        raise EngineError(str(e)) from None
+    return None if raw is None else bytes(raw)
 
 
 def read_source(entity: dict) -> str | None:
