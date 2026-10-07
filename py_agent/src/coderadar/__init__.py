@@ -26,10 +26,23 @@ _FALLBACK_VERSION = "0.11.0"
 
 
 def _resolve_version() -> str:
-    # Source-tree constant is authoritative in a checkout: an editable
-    # install freezes metadata at install time (stale 0.7.20 proved this),
-    # so when metadata and source disagree the NEWER wins. In a proper
-    # release flow both agree after reinstall.
+    # Source tree is authoritative in a checkout: pyproject.toml is read
+    # first (an editable install freezes metadata at install time — stale
+    # 0.7.20 proved it — so metadata is only a fallback for installed
+    # wheels/sdists, where it agrees with the build). P2 reinstall-proof:
+    # the MCP-serving venv resolves repo sources, so it reports the repo.
+    try:
+        import tomllib
+        from pathlib import Path
+        _root = Path(__file__).resolve().parent.parent.parent.parent
+        _pyproject = _root / "pyproject.toml"
+        if _pyproject.is_file():
+            with open(_pyproject, "rb") as _f:
+                _ver = tomllib.load(_f).get("project", {}).get("version", "")
+            if _ver:
+                return _ver
+    except Exception:  # noqa: BLE001 - any read failure falls through to metadata
+        pass
     def _tup(v: str) -> tuple:
         try:
             return tuple(int(p) for p in v.split("."))

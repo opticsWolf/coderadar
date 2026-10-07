@@ -186,3 +186,18 @@ cost a debugging round-trip.
 3. Re-read project config on `reindex`, or expose effective config (#3).
 4. Preserve docstrings on body replace (#4) and normalize entity-ID lookup (#5).
 5. Align Pest grammar/docs (#6), fix misleading error guidance (#7), surface indexing progress (#8), dedupe smells (#9).
+
+## v0.12 disposition (release gate)
+
+| # | Verdict | Evidence |
+|---|---|---|
+| 1 | Fixed (root cause) | `normalize_body_for_splice` re-based: base from lines[1..], line 0 trimmed (was: base incl. line 0 → double indent + Applied-unparseable). Rust regression `test_body_replacement_flush_first_line_no_double_indent`. Post-write diagnostic already existed (`verify_parse_introduced_error`); rollback-instead-of-diagnose carried (apply-semantics change, needs own design) |
+| 2 | Fixed | `render.mutation_applied`: header/status/file/graph derive from `result.status` (single source; comment cites this entry) |
+| 3 | Fixed | DR-31 + reindex `_activate`: probed exclude-change → reindex retracts (2→1 functions) |
+| 4 | Fixed | `has_leading_docstring` plan warning fires (probed); removal is flagged, never silent |
+| 5 | Fixed | Canonical forward-slash ids + legacy fallbacks; probed both spellings resolve |
+| 6 | Fixed | Tool descriptions advertise working forms (`==`, plural kinds); advertised examples parse (probed) |
+| 7 | Fixed | `_wrong_project` directs to `coderadar_set_project`; no second-server advice |
+| 8 | Fixed | `ensure_ready` bounded wait + warming-vs-hung log signal (F9) |
+| 9 | Fixed | Smell engine dedupes to one per (rule, entity) (`smells/engine.rs`) |
+| 10 | Carried | harness-side `mcpScript` prefixing; P2 `coderadar-mcp` skill documents canonical `coderadar_*` names |

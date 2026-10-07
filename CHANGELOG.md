@@ -6,6 +6,16 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased (toward 0.12.0)
 
+- P2 agent enablement: `skills/coderadar-mcp` + `skills/coderadar-cli`
+  (repo source of truth, installed to `~/.pi/agent/skills`),
+  drift-tested against the tool registry (`test_skill_drift.py`);
+  `codegraph-init` retired aside. Serving install verified current
+  (version now resolves from pyproject.toml: 0.11.14 in both venvs).
+  Old CLI spellings carry the 0.13-removal notice (pinned).
+- Release-gate history proof: `as_of(before/after)` → old/new names AND
+  bytes in one flow (`test_release_gate_history.py`).
+- BUGS_QUIRKS triage: 9/10 fixed-with-evidence (#1 root-caused: re-base
+  from lines[1..] + regression test; #10 carried, harness-side).
 - §3.2 read-path discipline pinned E2E (unchanged-tree reindex: revision
   stable, `indexed_at` never advances, 0 new blob bytes); §3.3 upstream
   traversal NO-GO for 0.12 with evidence (no ledger in-edges in Macrame

@@ -389,7 +389,11 @@ def _op(fmt: str, call, text) -> None:
 
 
 def _renamed(old: str, new: str) -> None:
-    click.echo(f"`coderadar {old}` is now `coderadar {new}`.", err=True)
+    click.echo(
+        f"`coderadar {old}` is now `coderadar {new}` "
+        "(the old spelling is removed in 0.13).",
+        err=True,
+    )
 
 
 def _text_arg(value: str | None) -> str | None:

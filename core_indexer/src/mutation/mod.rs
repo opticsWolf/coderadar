@@ -636,9 +636,15 @@ impl MutationEngine {
         }
         let body_column: &str = prefix;
 
-        // Incoming base = smallest leading whitespace over non-blank lines.
-        let incoming_base = new_body
+        // Incoming base = smallest leading whitespace over non-blank lines
+        // AFTER the first. Line 0 inherits its column from the prefix, so
+        // its own leading whitespace is meaningless — and counting it (the
+        // old rule) double-indented every later line whenever line 0 sat at
+        // column 0 (BUGS_QUIRKS #1: Applied + unparseable). Line 0 is
+        // trimmed, the rest are re-based to the body column.
+        let rest_base = new_body
             .lines()
+            .skip(1)
             .filter(|l| !l.trim().is_empty())
             .map(|l| l.chars().take_while(|c| *c == ' ' || *c == '\t').count())
             .min()
@@ -653,11 +659,11 @@ impl MutationEngine {
                 out_lines.push(String::new());
                 continue;
             }
-            let stripped: String = raw.chars().skip(incoming_base).collect();
             if i == 0 {
                 // First line inherits whatever the prefix already provides.
-                out_lines.push(stripped);
+                out_lines.push(raw.trim_start().to_string());
             } else {
+                let stripped: String = raw.chars().skip(rest_base).collect();
                 out_lines.push(format!("{}{}", body_column, stripped));
             }
         }
@@ -3100,6 +3106,72 @@ mod tests {
                 body
             );
         }
+    }
+
+    #[test]
+    fn test_body_replacement_flush_first_line_no_double_indent() {
+        // BUGS_QUIRKS #1 root cause (v0.12): the incoming base used to
+        // include line 0, so a naturally written body (first line flush,
+        // rest relative) double-indented every later line and applied an
+        // unparseable file with status Applied. Line 0's own indent is
+        // meaningless (the prefix positions it); the base comes from the
+        // rest.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("m.py");
+        let src = "def f(a):\n    return a\n";
+        std::fs::write(&path, src).unwrap();
+
+        let start = src.find("return a").unwrap();
+        let mut g = crate::smells::engine::tests::empty_graph();
+        let mut f = crate::graph::deadcode::tests::func("m.py::f", "f", "m.py::module");
+        f.body_span = ByteSpan {
+            start,
+            end: start + 8,
+        };
+        g.functions.insert("m.py::f".into(), Arc::new(f));
+        g.modules.insert(
+            "m.py::module".into(),
+            Arc::new(crate::types::Module {
+                id: "m.py::module".into(),
+                name: "m".into(),
+                path: path.clone(),
+                language: crate::types::Language::Python,
+                package: None,
+                exports: vec![],
+                star_exports: None,
+                uses: Vec::new(),
+                resolved_uses: Vec::new(),
+                attr_reads: Vec::new(),
+                classes: vec![],
+                functions: vec![],
+                imports: vec![],
+                constants: vec![],
+                type_aliases: vec![],
+                parse_quality: crate::types::ParseQuality::Clean,
+                content_hash: 0,
+                embedding: Default::default(),
+                file_version: 0,
+            }),
+        );
+
+        let mut eng = MutationEngine::new(MutationConfig::default());
+        let plan = eng
+            .plan_body_replacement(
+                "m.py::f",
+                "x = 1\n    y = 2\n    return y\n",
+                None,
+                true,
+                &g,
+            )
+            .unwrap();
+        let p2 = eng.apply(&plan);
+        assert_eq!(p2.status, MutationStatus::Applied);
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            written, "def f(a):\n    x = 1\n    y = 2\n    return y\n",
+            "{written}"
+        );
+        assert!(!parse_has_error(crate::types::Language::Python, written.as_bytes()).unwrap());
     }
 
     #[test]
