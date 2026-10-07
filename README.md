@@ -1,4 +1,4 @@
-# CodeRadar v0.11.0
+# CodeRadar v0.12.0
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -39,7 +39,7 @@ Head-to-head benchmarks (N=5 median, lower is better):
 | CodeRadar self | 84 | Python+Rust | 554ms | 1,434ms | **0.39×** (faster) |
 | codegraph-main | 558 | TypeScript | 12,232ms | 6,970ms | 1.75× |
 
-CodeRadar wins on small-to-medium Python/Rust projects due to zero runtime boot overhead. On large TypeScript codebases, CodeGraph's hand-written per-language Rust walkers and flat-buffer emission are still faster than the generic `.scm`-query engine, but the gap narrowed from 2.77× to 1.75×. See [performance-roadmap.md](docs/performance-roadmap.md) for the optimization backlog.
+CodeRadar wins on small-to-medium Python/Rust projects due to zero runtime boot overhead. On large TypeScript codebases, CodeGraph's hand-written per-language Rust walkers and flat-buffer emission are still faster than the generic `.scm`-query engine, but the gap narrowed from 2.77× to 1.75×. The optimization backlog lives in `docs/open-items.md` §2.8 (the old `performance-roadmap.md` was retired into the knowledge graph).
 
 ## Architecture
 
@@ -57,8 +57,8 @@ Rust Core (ProjectedGraph, Tree-sitter 41-lang, Parallel Extraction,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 1359 passing (413 Rust + 946 Python; 1 Python skipped) |
-| **Operations** | 23, one name each: MCP tool `coderadar_<op>`, CLI command `coderadar <op>` (hyphenated), `CodeGraph.<op>()` — explore, node, search, affected, resolve, query, search_similar, compute_embeddings, module_children, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, replace_body, update_signature, rename, create_entity, reindex, update_file, status, set_project (CLI: `-C`) |
+| **Tests** | 1512 passing (434 Rust + 1078 Python) |
+| **Operations** | One name per graph operation on every surface that serves it: MCP tool `coderadar_<op>`, CLI command `coderadar <op>` (hyphenated), `CodeGraph.<op>()` — explore, node, search, affected, resolve, query, search_similar, compute_embeddings, module_children, callers, callees, diagnose, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, replace_body, update_signature, rename, create_entity, reindex, update_file, status, set_project (CLI: `-C`). `search_symbols` (keyword search) and `archive` (retention) are Python-API-only by design; `visualize`, `shell`, `git`, `exclude`, `watch`, `init`, `load-snapshot`, `store-repair` stay CLI-side (local-process concerns) — see the step-4 surface verdict in the v0.12 deviations log |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
 | **Agents** | MCP server over stdio — finds the project root, indexes in the background, and exits with its client |
@@ -342,6 +342,43 @@ stderr, and are hidden from `--help`)
 | `coderadar stats` | `coderadar status` |
 | `coderadar blame` / `git-clean` / `git-diff` | `coderadar git blame` / `git is-clean` / `git diff` |
 | `coderadar traverse --depth/--edges` | `--max-depth/--edge-kinds` |
+
+## v0.12.0 Highlights — history becomes real
+
+Source history, keyword search, framework routes, Rust resolution, and
+agent enablement — the full v0.12 plan per its release gate (see
+`CHANGELOG.md`).
+
+- **Source history in blobs (DR-25).** Every indexed generation puts its
+  bytes as SHA-256 content-addressed blobs (`macrame-db` 0.19); the digest
+  rides `extra.coderadar.source_blob`, diffs compute on read.
+  `Snapshot.read_bytes` serves exact bytes-at-T (CRLF included), `read_source`
+  the display form; missing blobs are `ContentUnavailable`, distinct from
+  absent-at-T. `[retention] archive_after_days` moves cold bytes to a
+  sibling archive file (hot+cold backup + restore tested); analyze never
+  auto-archives. Default-on-with-notice (DR-30): blob counts on every
+  report surface are the notice; kill-switch
+  `[database] store_source_blobs=false`.
+- **FTS5 keyword search (DR-34).** `search_symbols()` over
+  trigger-maintained `concepts_fts` — escaped-by-default, live-only,
+  single-digit milliseconds; Python-API-only by design.
+- **Framework routes (DR-10).** Routes are canonical `route` concepts with
+  persisted route→handler edges; `resolve /users/:id` follows them, with
+  zero tree walks at steady state.
+- **Rust cross-module resolution (DR-13).** `use` parsing (groups, globs,
+  aliases, `crate`/`super`/`self` roots) + `::` call chains; `Self::assoc`
+  and `Enum::Variant` resolve; self-corpus asserted edges 999 → 1320,
+  dead-code findings 100 → 57.
+- **Embeddings Phase 1 (DR-11).** Model id + preprocessing in the dedup key,
+  write/query dimension gates, `recompute` flag on every surface;
+  persistence stays 0.13.
+- **Agent enablement (P2).** `skills/coderadar-mcp` + `skills/coderadar-cli`
+  (repo source of truth, registry drift-tested), release-gate history proof
+  (`as_of` → old/new names *and* bytes), read-path discipline pinned.
+- **Upstream fix.** `macrame-db` 0.19.1 repairs the historical loader
+  (opticsWolf/Macrame#3) via the bitemporal composition; the rename-fixture
+  reproducer is green and un-ignored, production stays on the state fold by
+  decision.
 | `CodeGraph.find` | `CodeGraph.node` |
 | `CodeGraph.callers_of` / `callees_of` | `callers` / `callees` |
 | `CodeGraph.plan_body_replacement` / `plan_signature_update` | `plan_replace_body` / `plan_update_signature` |
@@ -352,7 +389,7 @@ stderr, and are hidden from `--help`)
 
 The 0.10 release is one theme: **findings you can act on**. Every phase was
 measured against a corpus before and after, and the numbers are guarded by
-CI ([docs/precision-benchmark.md](docs/precision-benchmark.md)).
+CI (the benchmark write-up was retired into the knowledge graph).
 
 | | before | after |
 |---|---|---|
@@ -407,13 +444,12 @@ constructors stop firing.
 > **Upgrading from 0.9.x:** stores written by 0.9.x use the old id spelling
 > (`./pkg/mod.py::x`). `load` refuses them with the migration hint;
 > `coderadar analyze` (or a cold start, which does it automatically)
-> re-keys the store. See [§5.1](docs/v0.10-precision-plan.md).
+> re-keys the store (the 0.10 id canonicalization; plan retired into the knowledge graph).
 
 ## v0.8 Feature Highlights — ledger-backed cold start + agent UX
 
 v0.8 makes the MCP server restart-proof and the mutation plans honest, driven by two field
-reports from live agent sessions (see [`docs/v0.8-p2-agent-ux-guide.md`](docs/v0.8-p2-agent-ux-guide.md);
-cold-start design in [`docs/v0.8-p1-cold-start-design.md`](docs/v0.8-p1-cold-start-design.md)):
+reports from live agent sessions (field reports and cold-start design retired into the knowledge graph):
 
 - **Ledger-backed cold start (P1).** `load_snapshot` replays the Macrame ledger instead of
   re-indexing from scratch (`_ensure_graph` retired) — sub-second store load vs 10–15 s full
@@ -451,7 +487,7 @@ cold-start design in [`docs/v0.8-p1-cold-start-design.md`](docs/v0.8-p1-cold-sta
   concept written by 0.18. Existing 0.17 concept content remains canonical and
   is rewritten with `extra` on the next analyze. Existing no-op-write filtering
   and the `MAX(seq_id)` ledger-revision stamp remain in place; see the
-  [integration notes](docs/macrame-0.18-integration.md) for the adopted fields
+  (integration notes retired into the knowledge graph) for the adopted fields
   and the KV deferral.
 
 ## v0.8.1–v0.8.14 Highlights — the dogfood batch
@@ -459,8 +495,7 @@ cold-start design in [`docs/v0.8-p1-cold-start-design.md`](docs/v0.8-p1-cold-sta
 CodeRadar indexed and mutated itself (207 files, every CLI command, all 22
 MCP tools); the review found four P0 defects in the mutation engine plus
 ten more findings, and each was fixed against a live repro on the repo
-(see [`docs/dogfood-review-2026-09.md`](docs/dogfood-review-2026-09.md) for
-the full record, including the two diagnoses the first pass got wrong):
+(full record, including the two diagnoses the first pass got wrong, retired into the knowledge graph):
 
 - **Mutation safety (P0s).** Clone-detection panic fixed at its true root
   (slot-space mapping, not the suspected off-by-one) with `catch_unwind` on
@@ -490,8 +525,7 @@ the full record, including the two diagnoses the first pass got wrong):
 
 A second dogfood round swept all 22 CLI commands and all 22 MCP tools
 (104/118 green at v0.8.16 → **121/121 at v0.9.0**); every red became a
-tracked finding with a battery anchor (see
-[`docs/road_to_v0.9.0.md`](docs/road_to_v0.9.0.md), [`docs/v0.9.0-release-notes.md`](docs/v0.9.0-release-notes.md)):
+tracked finding with a battery anchor (release notes retired into the knowledge graph):
 
 - **Index accuracy.** External callees are visible instead of silently
   dropped; re-export chains resolve transitively (`from app import combine`
@@ -535,7 +569,7 @@ tracked finding with a battery anchor (see
 
 v0.7.3 through v0.7.18 ported the best of fossil-mcp's detector suite onto CodeRadar's graph
 substrate — re-derived against CodeRadar types, not copied
-(see [`docs/fossil-mcp-improvement-plan.md`](docs/fossil-mcp-improvement-plan.md)). Every stage
+(improvement plan retired into the knowledge graph). Every stage
 shipped as an independently demoable increment with golden tests written the same day:
 
 - **Integrity hotfixes (Track H, v0.7.3–7).** `replace_body` now validates the file it *wrote*,
@@ -796,7 +830,7 @@ py_agent/src/coderadar/    # Python layer
     lsp/                   # Persistent LSP warm pool
     mutation/              # Tool router for LLM
     mcp/                   # MCP server
-      server.py            #   22 tools + guidance
+      server.py            #   25 tools + guidance
       roots.py             #   project-root ladder and marker walk-up
       startup.py           #   background index, ensure_ready()
       lazy.py              #   roots/list retry on the first tool call
@@ -805,7 +839,7 @@ py_agent/src/coderadar/    # Python layer
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Specifications + code review + performance roadmap
-tests/                     # 759 Python tests (E2E incl. dead-code/clones/scaffold/CFG/
+tests/                     # 1078 Python tests (E2E incl. dead-code/clones/scaffold/CFG/
                            #   centrality/dead-branch/RTA goldens, mutation E2E, MCP,
                            #   framework resolvers, ingest parity, benchmarks)
   mcp/                     # Root resolution, background init, lifecycle, project_path
@@ -813,7 +847,7 @@ tests/                     # 759 Python tests (E2E incl. dead-code/clones/scaffo
 
 ## Configuration
 
-`.coderadar.toml` at the project root is the only configuration file; `coderadar init` writes a starter one. Every key in it is read by something, and `coderadar analyze` prints a line naming any key it could not use, so a stale or misspelled setting says so instead of sitting silent.
+`.coderadar.toml` at the project root is the only configuration file; `coderadar init` writes a starter one. Every key in it is read by something, and `coderadar reindex` prints a line naming any key it could not use, so a stale or misspelled setting says so instead of sitting silent.
 
 ```toml
 # .coderadar.toml
@@ -825,6 +859,17 @@ exclude = ["**/__pycache__/**", "**/.venv/**"]
 
 [database]
 path = ".coderadar/store/coderadar.db"
+# Source-blob write path (§1.9, default-on-with-notice per DR-30):
+# blob counts on every report surface are the notice; `false` is the
+# kill-switch. `blob_exclude` unions with the secret belt (*.env et al).
+store_source_blobs = true
+# blob_exclude = ["**/secrets/**"]
+
+[retention]
+# Days-hot cutoff (§3.4): archive blobs older than this on explicit
+# `CodeGraph.archive()` / `ops.archive()` only — analyze never
+# auto-archives. Unset (default) means no file default.
+# archive_after_days = 30
 
 [embedding]
 # Indexing and search must name the same model: a dimension mismatch produces

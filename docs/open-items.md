@@ -20,13 +20,14 @@ Sources reconciled:
 
 ---
 
-## 1. Found by the v0.7 release smoke-check, not yet fixed
+## 1. Found by the v0.7 release smoke-check — all resolved by v0.12.0
 
 These are the items the four smoke passes (`b140cbf`, `acadb64`, `d269768`,
-`93b82f9`) surfaced and deliberately did **not** act on, because each is a
-scope decision rather than a bug fix.
+`93b82f9`) surfaced and deliberately did **not** act on, because each was a
+scope decision rather than a bug fix. Each carries its v0.12.0 status below;
+the diagnosis text stands as the record.
 
-### 1.1 `explore()` can only follow call edges — **the honesty is new, the gap is not**
+### 1.1 `explore()` could only follow call edges — **superseded in v0.12.0**
 
 [`__init__.py`](../py_agent/src/coderadar/__init__.py) ·
 `EDGE_KIND_CALLS = "calls"`
@@ -44,6 +45,10 @@ does not call it.
 **Shape of the fix:** route `explore` through `_core.traverse` and delete the
 Python BFS, the same move `traversal-matrix.md` step B made for `executor.py`.
 `explore` is one of the four primary MCP tools, so this is agent-visible.
+
+> **Status (v0.12.0):** modern `explore` returns names/files/relationships
+> via `ops.explore`; the old call-graph walk survives only as the deprecated
+> `explore(start_id=…)` path pointing at `traverse`. No action.
 
 ### 1.2 Every CLI invocation re-indexes the project
 
@@ -63,6 +68,10 @@ The real fix is cold-start from the Macrame ledger — see §2.1. `_ensure_graph
 is the interim state and should be documented as such, not left to look like
 the design.
 
+> **Status (v0.12.0): resolved.** Ledger cold start shipped (v0.8) and the
+> cheap-path discipline is pinned (§3.2: stale load + changed-files-only,
+> `full`/config forces re-walk). No action.
+
 ### 1.3 C and C# are the two Tier-1 languages with no signature test
 
 [`tests/test_language_signatures.py`](../tests/test_language_signatures.py)
@@ -72,6 +81,10 @@ PHP, JavaScript, TypeScript, Kotlin, Go, Rust, Ruby, Java, C++. **C and C#
 are absent.** C matters most: `93b82f9`'s finding was precisely that C and C++
 hang the parameter list off the declarator chain rather than the function
 node, so C is the sibling of the case that broke, tested only by proxy.
+
+> **Status (v0.12.0): resolved.** `tests/test_language_signatures.py`
+> `CASES` covers all 12 Tier-1 languages including `s.c` and `s.cs`.
+> No action.
 
 ### 1.4 Three packages are reachable only from tests
 
@@ -95,6 +108,9 @@ are what run. The code stays and the claim goes, so the remaining question for
 `agent/` and `tool_router.py` are still open on cut-or-wire, and neither is
 sold in the README.
 
+> **Status (v0.12.0): decided (DR-16).** All three kept as named seams
+> with wiring triggers in their headers. No action.
+
 This is the same call §3 and §4 of the v0.7 plan made twice already (~100 inert
 config knobs, ~4,300 lines of dead code, the `mutations` CLI command): **wire
 it or cut it.** Tests that exercise only a package's `graph=None` path are what
@@ -108,36 +124,44 @@ publishes to PyPI as `coderadar-rs`; the four smoke-pass commits between
 `export`/`update` exit codes, visualizers now failing where they used to draw)
 and a consumer has no single place to read that.
 
+> **Status (v0.12.0): resolved.** `CHANGELOG.md` exists and carries 0.12.0.
+> No action.
+
 ---
 
-## 2. Deferred by the plans, still deferred
+## 2. Deferred by the plans, still deferred (except §2.1, landed)
 
-Carried forward verbatim in intent; re-verified as still open.
+Carried forward verbatim in intent; re-verified against v0.12.0 — §2.1 landed,
+the rest still open.
 
-### 2.1 Cold-start from the Macrame ledger — Phase 3B
+### 2.1 Cold-start from the Macrame ledger — Phase 3B **(done in v0.8/v0.12)**
 
 *(`v0.7-improvement-plan.md` "out of scope"; `v1-readiness-plan.md`
 "Explicitly Deferred"; `traversal-matrix.md` §3)*
 
-[`lib.rs:1772`](../core_indexer/src/lib.rs#L1772) `export_snapshot` and
-[`lib.rs:1781`](../core_indexer/src/lib.rs#L1781) `load_snapshot` both raise
-`PyNotImplementedError`; [`__init__.py:767`](../py_agent/src/coderadar/__init__.py#L767)
-`load()` does the same. The honesty pass (matrix step A) is done — they fail
-loudly and the CLI exits 1. The feature is not.
+Pre-v0.8, `export_snapshot`/`load_snapshot`/`load()` raised
+`PyNotImplementedError` (honest, CLI exit 1). Since v0.8 `load_snapshot`
+replays the ledger and `coderadar.coldstart.build_graph` loads-then-refreshes;
+§3.2 pins the discipline. `export_snapshot` remains unimplemented by design
+(snapshots are digests, never bytes — see `store-and-retention.md`).
 
-**This is now the highest-value open item**, because §1.2 made it load-bearing:
-every session re-analyzes from source, and every CLI command pays for it.
+**This was the highest-value open item**, because §1.2 made it load-bearing.
+Landed: ledger cold start (v0.8 `da185b8`) + §3.2 read-path discipline pinned
+in v0.12. No action.
 
 ### 2.2 `as_of` upstream and bidirectional traversal
 
 *(`v1-readiness-plan.md` §2.5)*
 
-[`lib.rs:1397`](../core_indexer/src/lib.rs#L1397) raises
-`PyNotImplementedError` for `direction` in `{"in", "both"}` with an `as_of`
-timestamp — Macrame's `TraversalBuilder` is out-edge-only. Downstream `as_of`
-works and is round-trip tested. The limitation is honest and covered by
-`test_as_of_upstream_and_both_rejected`; it is a real hole in the temporal
-claim nonetheless.
+Pre-v0.12, `direction` in `{"in", "both"}` with an `as_of` timestamp raised
+(`test_as_of_upstream_and_both_rejected`) — Macrame's builder was out-edge-only
+and downstream `as_of` was round-trip tested but upstream was a hole.
+
+> **Status (v0.12.0): decided, not built (§3.3 NO-GO, DR-9).** Temporal
+> topology reads the reconstructed state (`bfs_over_state`); `query` and
+> upstream temporal walks raise `TemporalUnsupported` honestly instead of
+> answering from the live graph. Re-check triggers: first agent trace blocked
+> on callers-at-T, or Macrame reverse-edge support. No action.
 
 ### 2.3 Arg-span indexing for the `update_signature` call-site cascade
 
@@ -219,6 +243,10 @@ as advisory so it could land without a 1,300-item cleanup blocking it — but
 backlog was never cleared.
 
 An advisory lint job that has never once been green is a job nobody reads.
+
+> **Status (v0.12.0): resolved (P4).** Clippy 0 (`--all-targets`, `-D warnings`),
+> `cargo fmt` clean, `ruff check` clean (format not adopted), CI lint leg
+> flipped to blocking. No action.
 
 ### 3.2 The test-debt pattern behind all four smoke passes
 
