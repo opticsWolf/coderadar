@@ -16,6 +16,11 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
   bytes in one flow (`test_release_gate_history.py`).
 - BUGS_QUIRKS triage: 9/10 fixed-with-evidence (#1 root-caused: re-base
   from lines[1..] + regression test; #10 carried, harness-side).
+- §0.3 Rust cross-module resolution (DR-13): `use` parsing + `::` chains +
+  `crate`/`super`/`self` roots + `Self::`/`Enum::Variant` + glob binding;
+  fixture 1/6 → 6/6 in-repo, self corpus asserted 999 → 1320,
+  dead-code 100 → 57 (`tests/test_rust_cross_module.py`). Trait-impl
+  method attribution explicitly out of scope (stays external).
 - macrame-db 0.19.1 uptake (no bump: dep patch, no user-facing change):
   `hydrate_historical` + `AttributeMode` fix upstream #3 through the
   bitemporal composition; `repro_walk_retired.rs` re-proven on a rename

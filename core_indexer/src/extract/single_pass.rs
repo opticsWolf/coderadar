@@ -16,7 +16,7 @@ use crate::extract::walker::{
     classify_class_like, derive_function_kind, detect_async, detect_generator, emit_call_for_node,
     extract_base_classes, extract_class_name, extract_decorators, extract_function_name,
     extract_go_receiver_type, extract_parameters, make_entity_id, parse_import_from_statement,
-    parse_import_statement,
+    parse_import_statement, parse_rust_use,
 };
 use crate::types::*;
 
@@ -668,44 +668,56 @@ impl<'a> CursorExtractor<'a> {
             end: node.end_byte(),
         };
 
-        let kind = match node.kind() {
-            "import_statement" => parse_import_statement(node, self.source),
-            "import_from_statement" => parse_import_from_statement(node, self.source),
-            _ => ImportKind::ModuleImport {
+        // Rust `use` parses to potentially TWO readings (item vs module
+        // tail); every other form yields exactly one kind.
+        let kinds: Vec<ImportKind> = match node.kind() {
+            "import_statement" => vec![parse_import_statement(node, self.source)],
+            "import_from_statement" => vec![parse_import_from_statement(node, self.source)],
+            "use_declaration" => parse_rust_use(node, self.source),
+            _ => vec![ImportKind::ModuleImport {
                 module: text.clone(),
                 alias: None,
-            },
+            }],
         };
 
         // Collect imported names for fn_ref resolution
-        match &kind {
-            ImportKind::FromImport { names, .. } | ImportKind::RelativeImport { names, .. } => {
-                for (name, alias) in names {
-                    self.fn_names.insert(name.clone());
+        for kind in &kinds {
+            match kind {
+                ImportKind::FromImport { names, .. } | ImportKind::RelativeImport { names, .. } => {
+                    for (name, alias) in names {
+                        self.fn_names.insert(name.clone());
+                        if let Some(a) = alias {
+                            self.fn_names.insert(a.clone());
+                        }
+                    }
+                }
+                ImportKind::ModuleImport { alias, module, .. } => {
+                    self.fn_names.insert(module.clone());
                     if let Some(a) = alias {
                         self.fn_names.insert(a.clone());
                     }
                 }
+                _ => {}
             }
-            ImportKind::ModuleImport { alias, module, .. } => {
-                self.fn_names.insert(module.clone());
-                if let Some(a) = alias {
-                    self.fn_names.insert(a.clone());
-                }
-            }
-            _ => {}
         }
 
-        let entity_id = make_entity_id(self.file_path, &format!("import@{}", line));
-
-        self.units.push(ExtractedUnit::Import(ExtractedImport {
-            id: entity_id,
-            raw: text,
-            kind,
-            line,
-            is_type_only: false,
-            name_span,
-        }));
+        // `use a::b::c;` can legitimately yield two units for one line;
+        // the second takes a suffixed id so same-line imports stay unique.
+        for (unit_no, kind) in kinds.into_iter().enumerate() {
+            let entity_id = if unit_no == 0 {
+                make_entity_id(self.file_path, &format!("import@{}", line))
+            } else {
+                make_entity_id(self.file_path, &format!("import@{}#{}", line, unit_no))
+            };
+            self.units.push(ExtractedUnit::Import(ExtractedImport {
+                id: entity_id,
+                raw: text.clone(),
+                kind,
+                line,
+                is_type_only: false,
+                name_span,
+            }));
+        }
     }
 
     fn emit_impl(&mut self, node: Node) {

@@ -185,6 +185,77 @@ pub(crate) fn rebuild_module_path_index(projection: &mut ProjectedGraph) {
     projection.module_path_index = index;
 }
 
+/// Resolve a Rust module path (`::` chains from `use` or call sites) to a
+/// module entity (DR-13 §0.3). `src_mod` arrives dotted (`super.alpha` —
+/// the extractor normalizes `::` to `.`). Roots: `crate`/`self` strip to a
+/// crate-relative tail (the suffix match below is root-independent, so no
+/// crate-root lookup is needed); leading `super`s walk up from the
+/// importer's file directory (file-modules cover real code; inline
+/// `mod x {}` inside another file resolves against the file's directory
+/// instead — documented miss, not silent wrongness: the suffix still has
+/// to match a real module file). Anything else is already crate-relative
+/// (`mod beta;` makes `beta::run` callable with no `use`) or an extern
+/// crate (matches nothing → external, correctly).
+///
+/// Sibling-or-self tails (`helper` in the importing file) are NOT modules
+/// and never match — the caller falls back to sibling lookup for those.
+///
+/// Based on the Python L2–L3 import cascade (same file); the Rust half it
+/// never got. Algorithm intentionally mirrors `find_module_by_dotted_name`
+/// and delegates the actual suffix match to it.
+pub(crate) fn find_rust_module(
+    projection: &ProjectedGraph,
+    src_mod: &str,
+    importer_file: &std::path::Path,
+    current_module: &str,
+) -> Option<String> {
+    let mut segs: Vec<&str> = src_mod.split('.').collect();
+    while segs.first().is_some_and(|s| *s == "crate" || *s == "self") {
+        segs.remove(0);
+    }
+    let mut supers = 0usize;
+    while segs.first().is_some_and(|s| *s == "super") {
+        segs.remove(0);
+        supers += 1;
+    }
+    if segs.is_empty() {
+        return None;
+    }
+    if supers > 0 {
+        // Walk up from the importing file's directory. `parent()` of the
+        // empty dir (a top-level file like `beta.rs`) is None, not "" —
+        // and anything past the representable root is unknowable — so a
+        // depleted walk falls back to the bare tail: the suffix match
+        // below tries every tail anyway.
+        let mut dir = importer_file.parent();
+        for _ in 0..supers {
+            match dir {
+                Some(d) if !d.as_os_str().is_empty() => dir = d.parent(),
+                _ => {
+                    dir = None;
+                    break;
+                }
+            }
+        }
+        let dotted = match dir {
+            Some(d) => {
+                // Absolute prefixes are harmless: the suffix match below
+                // tries every tail, so only the trailing segments have
+                // to be right.
+                let ds = d.to_string_lossy().replace('\\', "/");
+                if ds.is_empty() {
+                    segs.join(".")
+                } else {
+                    format!("{}.{}", ds.replace('/', "."), segs.join("."))
+                }
+            }
+            None => segs.join("."),
+        };
+        return find_module_by_dotted_name(projection, &dotted, current_module);
+    }
+    find_module_by_dotted_name(projection, &segs.join("."), current_module)
+}
+
 /// Rank one suffix key's candidates (DR-14): same language as the importing
 /// module first — a Python import never means a Rust file and vice versa —
 /// smallest module id second. Order-robust: true for index vecs (ascending)
