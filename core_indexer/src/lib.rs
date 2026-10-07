@@ -3278,20 +3278,52 @@ fn graph_stats(py: Python<'_>) -> PyResult<PyObject> {
         dict.set_item("constants", snap.constants.len())?;
         dict.set_item("type_aliases", snap.type_aliases.len())?;
         // §1.3: framework routes + their handler edges (reindex stats and
-        // the init report count them; `call_edges` keeps counting every
-        // index pair as before).
+        // the init report count them).
         dict.set_item("routes", snap.routes.len())?;
-        let route_edges: usize = snap
-            .routes
-            .keys()
-            .filter_map(|id| snap.callees_by_caller.get(id))
-            .map(|s| s.len())
-            .sum();
+        // DR-32 counting truth: `call_edges` counts every index pair, but
+        // the ledger only holds the asserted share. The projection follows
+        // three populations the ledger never asserted — route→handler
+        // follows (§1.3), `external::` halves (R2-1: builtins, third-party,
+        // re-export targets), and symbolic unresolved targets — so the
+        // invariant `call_edges == asserted + external + unresolved +
+        // route_edges` closes the gap from the stats alone, with
+        // `asserted_call_edges` equal to live ledger CALLS rows.
+        let has_row = |id: &str| {
+            snap.functions.contains_key(id)
+                || snap.classes.contains_key(id)
+                || snap.modules.contains_key(id)
+                || snap.imports.contains_key(id)
+                || snap.constants.contains_key(id)
+                || snap.type_aliases.contains_key(id)
+                || snap.routes.contains_key(id)
+        };
+        let mut asserted = 0usize;
+        let mut external = 0usize;
+        let mut unresolved = 0usize;
+        let mut route_edges = 0usize;
+        for (caller, callees) in snap.callees_by_caller.iter() {
+            let is_route = snap.routes.contains_key(caller.as_str());
+            for callee in callees {
+                if is_route {
+                    route_edges += 1;
+                } else if callee.starts_with("external::") {
+                    external += 1;
+                } else if has_row(callee) {
+                    asserted += 1;
+                } else {
+                    unresolved += 1;
+                }
+            }
+        }
         dict.set_item("route_edges", route_edges)?;
         dict.set_item("file_count", snap.file_to_modules.len())?;
         // Total call edges
-        let total_calls: usize = snap.callees_by_caller.values().map(|s| s.len()).sum();
+        let total_calls: usize =
+            snap.callees_by_caller.values().map(|s| s.len()).sum();
         dict.set_item("call_edges", total_calls)?;
+        dict.set_item("asserted_call_edges", asserted)?;
+        dict.set_item("external_call_edges", external)?;
+        dict.set_item("unresolved_call_edges", unresolved)?;
         // Ledger revision this graph was materialized from (Stage 0.3 cache
         // key); None for graphs produced by `analyze` (fresh, unrevisioned).
         dict.set_item("revision", LEDGER_REVISION.read().clone())?;
