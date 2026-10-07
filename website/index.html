@@ -140,9 +140,14 @@
   .proof b { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 700; }
   .proof .sep { margin: 0 .7em; color: var(--main); font-weight: 700; }
   .proof .fnote { display: block; margin-top: .6rem; font-size: .78rem; color: var(--faint); }
+  @media (max-width: 40rem) {
+    header.hero { padding-bottom: 2.25rem; }
+    .proof { margin-top: 2.2rem; }
+  }
 
   /* ── Sections ───────────────────────────────────────────── */
-  section { padding: clamp(3.5rem, 7vw, 5.5rem) 0; position: relative; }
+  section { padding: clamp(3rem, 5.5vw, 4.5rem) 0; position: relative; }
+  section[id] { scroll-margin-top: 1rem; }
   section.tint-a::before, section.tint-b::before {
     content: ""; position: absolute; inset: 0; pointer-events: none;
   }
@@ -195,7 +200,12 @@
   .mini .bar i:nth-child(2) { background: var(--tone-a); }
   .mini .bar i:nth-child(3) { background: var(--main); }
   .mini pre { margin: 0; padding: 1.1rem 1.25rem; overflow-x: auto; font-family: var(--mono);
-    font-size: .84rem; line-height: 1.7; }
+    font-size: .84rem; line-height: 1.7; scrollbar-width: thin; scrollbar-color: #64748f transparent; }
+  .mini pre::-webkit-scrollbar:horizontal, .codecard pre::-webkit-scrollbar:horizontal { height: .35rem; }
+  .mini pre::-webkit-scrollbar-track:horizontal, .codecard pre::-webkit-scrollbar-track:horizontal { background: transparent; }
+  .mini pre::-webkit-scrollbar-thumb:horizontal, .codecard pre::-webkit-scrollbar-thumb:horizontal {
+    background: #64748f; border-radius: 999px;
+  }
   .tok-k { color: var(--tone-b); } .tok-s { color: var(--main); }
   .tok-c { color: var(--faint); } .tok-f { color: var(--tone-a); }
 
