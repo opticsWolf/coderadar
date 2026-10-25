@@ -147,6 +147,16 @@ pub struct PersistReport {
     pub healed: bool,
 }
 
+/// What one model-table read returned (DR-11 slice 3).
+/// `dimension` is the table's declared width; 0 with no rows means the
+/// table is absent (fresh store), not that the model is zero-width.
+#[derive(Debug)]
+pub struct ModelVectors {
+    pub model_table: String,
+    pub dimension: usize,
+    pub rows: Vec<(String, Vec<f32>)>,
+}
+
 impl CodeGraphStore {
     /// Open or create a Macrame database at `path`.
     pub fn open(path: impl AsRef<Path>) -> macrame::Result<Self> {
@@ -511,11 +521,17 @@ impl CodeGraphStore {
         rows: &[(String, String)],
     ) -> macrame::Result<PersistReport> {
         let model = macrame_model_name(model_raw)?;
-        let mut memory: Vec<(String, Vec<f32>)> = Vec::new();
+        // (id, f32 vector, dedup hash): the hash rides along so the
+        // ledger flush below can record provenance without re-reading it.
+        let mut memory: Vec<(String, Vec<f32>, String)> = Vec::new();
         {
             let mut collect = |id: &String, emb: &EmbeddingVec| {
                 if !emb.vec.is_empty() {
-                    memory.push((id.clone(), emb.vec.iter().map(|x| *x as f32).collect()));
+                    memory.push((
+                        id.clone(),
+                        emb.vec.iter().map(|x| *x as f32).collect(),
+                        emb.hash.clone(),
+                    ));
                 }
             };
             for (id, e) in &projection.functions {
@@ -537,9 +553,9 @@ impl CodeGraphStore {
                 collect(id, &e.embedding);
             }
         }
-        let uniform_dim = |vs: &[(String, Vec<f32>)]| -> macrame::Result<usize> {
+        let uniform_dim = |vs: &[(String, Vec<f32>, String)]| -> macrame::Result<usize> {
             let mut dim = 0usize;
-            for (id, v) in vs {
+            for (id, v, _) in vs {
                 if dim == 0 {
                     dim = v.len();
                 } else if v.len() != dim {
@@ -553,14 +569,18 @@ impl CodeGraphStore {
             }
             Ok(dim)
         };
-        let write_all = |vs: &[(String, Vec<f32>)]| -> macrame::Result<usize> {
+        let write_all = |vs: &[(String, Vec<f32>, String)]| -> macrame::Result<usize> {
             let dim = uniform_dim(vs)?;
             if dim == 0 {
                 return Ok(0);
             }
             runtime().block_on(self.db.register_model(&model, dim))?;
+            let plain: Vec<(String, Vec<f32>)> = vs
+                .iter()
+                .map(|(id, v, _)| (id.clone(), v.clone()))
+                .collect();
             runtime()
-                .block_on(self.db.upsert_embeddings(&model, vs.to_vec()))
+                .block_on(self.db.upsert_embeddings(&model, plain))
                 .map_err(|e| {
                     // BulkInterrupted carries the written count; the cause is
                     // what the caller answers. A foreign-key failure means
@@ -581,10 +601,10 @@ impl CodeGraphStore {
                 })
         };
         if !rows.is_empty() {
-            let mut fresh: Vec<(String, Vec<f32>)> = Vec::with_capacity(rows.len());
-            for (id, _hash) in rows {
-                match memory.iter().find(|(mid, _)| mid == id) {
-                    Some((_, v)) => fresh.push((id.clone(), v.clone())),
+            let mut fresh: Vec<(String, Vec<f32>, String)> = Vec::with_capacity(rows.len());
+            for (id, hash) in rows {
+                match memory.iter().find(|(mid, _, _)| mid == id) {
+                    Some((_, v, _)) => fresh.push((id.clone(), v.clone(), hash.clone())),
                     None => {
                         return Err(macrame::DbError::InvalidId {
                             id: id.clone(),
@@ -597,6 +617,19 @@ impl CodeGraphStore {
             }
             let dim = uniform_dim(&fresh)?;
             let persisted = write_all(&fresh)?;
+            // The S1 contract: compute never touches files, so without this
+            // flush a restart loses hashes (the ledger keeps the last
+            // flushed generation) and warm dedup regenerates everything
+            // the table already holds. Fail-open with a diagnostic:
+            // vectors are durable already, and the next persist heals.
+            if let Err(e) = self.flush_embedding_hashes(
+                &fresh
+                    .iter()
+                    .map(|(id, _, h)| (id.clone(), h.clone()))
+                    .collect::<Vec<_>>(),
+            ) {
+                eprintln!("[diag] embedding hash flush failed: {e:?}");
+            }
             return Ok(PersistReport {
                 model_table: model.table(),
                 dimension: dim,
@@ -614,35 +647,40 @@ impl CodeGraphStore {
             });
         }
         let dim = uniform_dim(&memory)?;
-        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
-        let table_exists: bool = {
-            let mut rows = runtime()
-                .block_on(conn.query(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
-                    vec![libsql::Value::Text(model.table())],
-                ))
-                .map_err(macrame::DbError::Engine)?;
-            runtime()
-                .block_on(rows.next())
-                .map_err(macrame::DbError::Engine)?
-                .is_some()
-        };
-        let table_count: i64 = if table_exists {
-            let mut rows = runtime()
-                .block_on(conn.query(
-                    &format!("SELECT COUNT(*) FROM {}", model.table()),
-                    Vec::<libsql::Value>::new(),
-                ))
-                .map_err(macrame::DbError::Engine)?;
-            match runtime()
-                .block_on(rows.next())
-                .map_err(macrame::DbError::Engine)?
-            {
-                Some(row) => row.get::<i64>(0).map_err(macrame::DbError::Engine)?,
-                None => 0,
+        // Scoped: the diagnostic lock is process-wide and non-reentrant —
+        // it must drop before the heal write below re-enters the store
+        // through flush_embedding_hashes (same-thread relock deadlocks).
+        let table_count: i64 = {
+            let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+            let table_exists: bool = {
+                let mut rows = runtime()
+                    .block_on(conn.query(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
+                        vec![libsql::Value::Text(model.table())],
+                    ))
+                    .map_err(macrame::DbError::Engine)?;
+                runtime()
+                    .block_on(rows.next())
+                    .map_err(macrame::DbError::Engine)?
+                    .is_some()
+            };
+            if table_exists {
+                let mut rows = runtime()
+                    .block_on(conn.query(
+                        &format!("SELECT COUNT(*) FROM {}", model.table()),
+                        Vec::<libsql::Value>::new(),
+                    ))
+                    .map_err(macrame::DbError::Engine)?;
+                match runtime()
+                    .block_on(rows.next())
+                    .map_err(macrame::DbError::Engine)?
+                {
+                    Some(row) => row.get::<i64>(0).map_err(macrame::DbError::Engine)?,
+                    None => 0,
+                }
+            } else {
+                0
             }
-        } else {
-            0
         };
         if table_count == memory.len() as i64 {
             return Ok(PersistReport {
@@ -653,12 +691,141 @@ impl CodeGraphStore {
             });
         }
         let persisted = write_all(&memory)?;
+        // Heal rewrites vectors; the ledger hashes come along for the same
+        // S1 reason as the fresh path above.
+        if let Err(e) = self.flush_embedding_hashes(
+            &memory
+                .iter()
+                .map(|(id, _, h)| (id.clone(), h.clone()))
+                .collect::<Vec<_>>(),
+        ) {
+            eprintln!("[diag] embedding hash flush failed: {e:?}");
+        }
         Ok(PersistReport {
             model_table: model.table(),
             dimension: dim,
             persisted,
             healed: true,
         })
+    }
+
+    /// Read a model's whole vector table back (DR-11 slice 3). Missing
+    /// table = honest empty (fresh store), never an error — the caller
+    /// decides what absence means. A non-blob cell or undecodable bytes
+    /// fail loudly naming the table: silent skips here become phantom
+    /// search misses downstream.
+    pub fn read_model_vectors(&self, model_raw: &str) -> macrame::Result<ModelVectors> {
+        let model = macrame_model_name(model_raw)?;
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        let (dim, rows) = runtime().block_on(async {
+            let mut probe = conn
+                .query(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
+                    vec![libsql::Value::Text(model.table())],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            if probe
+                .next()
+                .await
+                .map_err(macrame::DbError::Engine)?
+                .is_none()
+            {
+                return Ok::<_, macrame::DbError>((0usize, Vec::new()));
+            }
+            let dim = macrame::vector::declared_dimension(&conn, &model).await?;
+            let mut q = conn
+                .query(
+                    &format!("SELECT concept_id, embedding FROM {}", model.table()),
+                    Vec::<libsql::Value>::new(),
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut rows: Vec<(String, Vec<f32>)> = Vec::new();
+            while let Some(row) = q.next().await.map_err(macrame::DbError::Engine)? {
+                let id: String = row.get(0).map_err(macrame::DbError::Engine)?;
+                let cell: libsql::Value = row.get(1).map_err(macrame::DbError::Engine)?;
+                let bytes = match cell {
+                    libsql::Value::Blob(b) => b,
+                    other => {
+                        return Err(macrame::DbError::InvalidId {
+                            id: model.table(),
+                            reason: format!("embedding cell for {id} is not a blob ({other:?})"),
+                        });
+                    }
+                };
+                let vec = macrame::vector::EmbeddingCodec::decode(&bytes).map_err(|e| {
+                    macrame::DbError::InvalidId {
+                        id: model.table(),
+                        reason: format!("cannot decode embedding for {id}: {e:?}"),
+                    }
+                })?;
+                rows.push((id, vec));
+            }
+            Ok::<_, macrame::DbError>((dim, rows))
+        })?;
+        Ok(ModelVectors {
+            model_table: model.table(),
+            dimension: dim,
+            rows,
+        })
+    }
+
+    /// Write `embedding_hash` into stored concept JSON for `(id, hash)`
+    /// pairs (DR-11 slice 3). Read-modify-write preserving title and
+    /// retired: only the `embedding_hash` key changes. `extra` is
+    /// recomputed for non-modules (its content-hash mirror would go stale)
+    /// and preserved for modules (it carries the source-blob digest, which
+    /// cannot be recomputed here). Unconditional write — it bypasses
+    /// `filter_unchanged`, which is blind to this key on source-hashed
+    /// kinds — so callers must bound the set (fresh or heal set only).
+    /// Already-correct rows are skipped; returns concepts written.
+    fn flush_embedding_hashes(&self, pairs: &[(String, String)]) -> macrame::Result<usize> {
+        if pairs.is_empty() {
+            return Ok(0);
+        }
+        let ids: Vec<String> = pairs.iter().map(|(id, _)| id.clone()).collect();
+        let current = self.fetch_current_states(&ids)?;
+        let hashes: std::collections::HashMap<&str, &str> = pairs
+            .iter()
+            .map(|(id, h)| (id.as_str(), h.as_str()))
+            .collect();
+        let now = now_iso8601();
+        let mut concepts = Vec::new();
+        for (id, (title, content, extra, retired)) in &current {
+            let Some(hash) = hashes.get(id.as_str()) else {
+                continue;
+            };
+            let mut v: serde_json::Value = match serde_json::from_str(content) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[diag] embedding hash flush skips {id}: content is not JSON ({e})");
+                    continue;
+                }
+            };
+            if v.get("embedding_hash").and_then(|h| h.as_str()) == Some(hash) {
+                continue;
+            }
+            v["embedding_hash"] = serde_json::json!(hash);
+            let is_module = v.get("kind").and_then(|k| k.as_str()) == Some("module");
+            let new_extra = if is_module {
+                extra.clone()
+            } else {
+                coderadar_extra(&v, None).to_string()
+            };
+            concepts.push(
+                macrame::ConceptUpsert::new(id.clone(), title.clone())
+                    .content(v.to_string())
+                    .extra(new_extra)
+                    .valid_from(now.clone())
+                    .valid_to(TS_OPEN.to_string())
+                    .retired(*retired),
+            );
+        }
+        if concepts.is_empty() {
+            return Ok(0);
+        }
+        Ok(runtime().block_on(self.db.write_concepts(concepts))?)
     }
 
     /// Raw blob bytes by digest (§3.0, DR-25): the `blob_get` half of the
@@ -1873,11 +2040,14 @@ fn import_content(i: &Import) -> serde_json::Value {
     v["import_kind"] = serde_json::json!(i.kind.to_json());
     v["is_type_only"] = serde_json::json!(&i.is_type_only);
     v["name_span"] = serde_json::json!(&i.name_span);
+    v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
     // DR-11: the dedup key rides the ledger (vectors persist separately).
+    // AFTER the gate hash: the gate covers source facts, and the hash is
+    // derived state flushed by its own path — so a hash-only difference
+    // never rewrites, and a hash-less fresh walk never wipes a stored hash.
     if !i.embedding.hash.is_empty() {
         v["embedding_hash"] = serde_json::json!(&i.embedding.hash);
     }
-    v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
     v
 }
 
@@ -1889,11 +2059,12 @@ fn constant_content(c: &Constant) -> serde_json::Value {
     v["default_value"] = serde_json::json!(&c.default_value);
     v["span"] = serde_json::json!(&c.span);
     v["name_span"] = serde_json::json!(&c.name_span);
-    // DR-11: the dedup key rides the ledger (vectors persist separately).
+    v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
+    // DR-11: the dedup key rides the ledger — after the gate hash, as
+    // above: derived state must not move the source-facts gate.
     if !c.embedding.hash.is_empty() {
         v["embedding_hash"] = serde_json::json!(&c.embedding.hash);
     }
-    v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
     v
 }
 
@@ -1904,11 +2075,12 @@ fn type_alias_content(t: &TypeAlias) -> serde_json::Value {
     v["source"] = serde_json::json!(&t.source);
     v["span"] = serde_json::json!(&t.span);
     v["name_span"] = serde_json::json!(&t.name_span);
-    // DR-11: the dedup key rides the ledger (vectors persist separately).
+    v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
+    // DR-11: the dedup key rides the ledger — after the gate hash, as
+    // above: derived state must not move the source-facts gate.
     if !t.embedding.hash.is_empty() {
         v["embedding_hash"] = serde_json::json!(&t.embedding.hash);
     }
-    v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
     v
 }
 
@@ -2895,6 +3067,63 @@ pub fn edge_properties_json(props: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DR-11 slice 3: persist flushes hashes into concept JSON, because
+    /// compute never touches files and the ledger would otherwise keep
+    /// the last flushed (hash-less) generation.
+    #[test]
+    fn persist_flushes_embedding_hashes_to_concepts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("h.db")).unwrap();
+        let graph = crate::graph::CodeGraph::new(crate::graph::GraphConfig::default());
+        graph
+            .index_file(
+                "def add(a, b):\n    return a + b\n",
+                "math.py",
+                &crate::types::Language::Python,
+            )
+            .unwrap();
+        graph
+            .set_embeddings_bulk(vec![(
+                "math.py::add".into(),
+                vec![0.5; 4],
+                "m#pp1#x".into(),
+            )])
+            .unwrap();
+        // Concept row must exist first (FK), with hash-less content.
+        let now = now_iso8601();
+        store
+            .upsert_concepts_bulk(&[ConceptUpsert::new("math.py::add", "math.py::add")
+                .content("{\"kind\":\"function\",\"name\":\"add\",\"content_hash\":\"abc\"}")
+                .valid_from(now)
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)])
+            .unwrap();
+        let before = store
+            .fetch_current_states(&["math.py::add".to_string()])
+            .unwrap();
+        assert!(!before["math.py::add"].1.contains("embedding_hash"));
+        // Persist writes vectors AND flushes the hash into the concept.
+        let snap = graph.snapshot();
+        let report = store
+            .persist_projection_embeddings(
+                "BAAI/bge-small-en-v1.5",
+                &snap,
+                &[("math.py::add".to_string(), "m#pp1#x".to_string())],
+            )
+            .unwrap();
+        assert_eq!(report.persisted, 1);
+        let after = store
+            .fetch_current_states(&["math.py::add".to_string()])
+            .unwrap();
+        let content = &after["math.py::add"].1;
+        assert!(
+            content.contains("\"embedding_hash\":\"m#pp1#x\""),
+            "{content}"
+        );
+        // The gate annotation is untouched: the hash is derived state.
+        assert!(content.contains("\"content_hash\":\"abc\""), "{content}");
+    }
 
     // Regression: the "now" pitfall. macrame-db 0.12's
     // `timestamp::normalize` (src/util/timestamp.rs) accepts ONLY the

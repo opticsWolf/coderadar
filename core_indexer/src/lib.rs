@@ -105,6 +105,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(ffi_synthetic::clear_all_embeddings, m)?)?;
     m.add_function(wrap_pyfunction!(persist_embeddings, m)?)?;
+    m.add_function(wrap_pyfunction!(rehydrate_embeddings, m)?)?;
     m.add_function(wrap_pyfunction!(ffi_synthetic::module_children, m)?)?;
     m.add_function(wrap_pyfunction!(ffi_synthetic::set_module_star_exports, m)?)?;
     m.add_function(wrap_pyfunction!(
@@ -3033,6 +3034,99 @@ fn persist_embeddings(
     out.set_item("model", report.model_table)?;
     out.set_item("dimension", report.dimension)?;
     out.set_item("healed", report.healed)?;
+    Ok(out.into())
+}
+
+/// Refill in-memory vectors from the ledger's per-model table (DR-11
+/// slice 3): `{rehydrated, skipped_no_hash, skipped_present,
+/// skipped_unknown, table_rows, model, dimension}`. Only entities whose
+/// ledger hash is present but whose memory vector is empty are filled —
+/// hashes are the provenance, and pre-S1 rows (hash empty) stay out
+/// rather than load unverifiable vectors. Missing table = honest zeros.
+/// Storeless graphs get the honest error.
+#[pyfunction]
+fn rehydrate_embeddings(py: Python<'_>, model: &str) -> PyResult<PyObject> {
+    let (done, skipped_no_hash, skipped_present, skipped_unknown, table_rows, model_table, dim) =
+        with_graph(|graph, snap| {
+            let store = graph.store.as_ref().ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(
+                    "rehydrate_embeddings needs a stored graph (analyze with create_store=True): \
+                     there is no ledger to read vectors back from",
+                )
+            })?;
+            let mv = store
+                .read_model_vectors(model)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
+            let by_id: std::collections::HashMap<&str, &[f32]> = mv
+                .rows
+                .iter()
+                .map(|(id, v)| (id.as_str(), v.as_slice()))
+                .collect();
+            let mut entries: Vec<(String, Vec<f64>, String)> = Vec::new();
+            let mut skipped_no_hash = 0usize;
+            let mut skipped_present = 0usize;
+            let mut consider = |id: &String, vec: &[f64], hash: &str| {
+                if let Some(table_vec) = by_id.get(id.as_str()) {
+                    if !vec.is_empty() {
+                        skipped_present += 1;
+                    } else if hash.is_empty() {
+                        skipped_no_hash += 1;
+                    } else {
+                        entries.push((
+                            id.clone(),
+                            table_vec.iter().map(|x| *x as f64).collect(),
+                            hash.to_string(),
+                        ));
+                    }
+                }
+            };
+            for (id, e) in &snap.functions {
+                consider(id, &e.embedding.vec, &e.embedding.hash);
+            }
+            for (id, e) in &snap.classes {
+                consider(id, &e.embedding.vec, &e.embedding.hash);
+            }
+            for (id, e) in &snap.modules {
+                consider(id, &e.embedding.vec, &e.embedding.hash);
+            }
+            for (id, e) in &snap.imports {
+                consider(id, &e.embedding.vec, &e.embedding.hash);
+            }
+            for (id, e) in &snap.constants {
+                consider(id, &e.embedding.vec, &e.embedding.hash);
+            }
+            for (id, e) in &snap.type_aliases {
+                consider(id, &e.embedding.vec, &e.embedding.hash);
+            }
+            let found = entries.len() + skipped_no_hash + skipped_present;
+            let skipped_unknown = mv.rows.len().saturating_sub(found);
+            let (done, missing) = graph
+                .set_embeddings_bulk(entries)
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            if !missing.is_empty() {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "rehydrate race: {} entities vanished between snapshot and write — retry",
+                    missing.len()
+                )));
+            }
+            Ok((
+                done,
+                skipped_no_hash,
+                skipped_present,
+                skipped_unknown,
+                mv.rows.len(),
+                mv.model_table,
+                mv.dimension,
+            ))
+        })?;
+    let out = PyDict::new(py);
+    out.set_item("rehydrated", done)?;
+    out.set_item("skipped_no_hash", skipped_no_hash)?;
+    out.set_item("skipped_present", skipped_present)?;
+    out.set_item("skipped_unknown", skipped_unknown)?;
+    out.set_item("table_rows", table_rows)?;
+    out.set_item("model", model_table)?;
+    out.set_item("dimension", dim)?;
     Ok(out.into())
 }
 

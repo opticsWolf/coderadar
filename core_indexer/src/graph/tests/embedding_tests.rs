@@ -447,3 +447,48 @@ fn test_persist_projection_embeddings_writes_heals_and_gates() {
         .unwrap_err();
     assert!(format!("{err:?}").contains("flush v2 concepts"), "{err:?}");
 }
+
+#[test]
+fn test_read_model_vectors_roundtrips_and_misses_honestly() {
+    use crate::storage::CodeGraphStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodeGraphStore::open(dir.path().join("v.db")).unwrap();
+    // Missing table = honest empty (fresh store), never an error.
+    let miss = store.read_model_vectors("BAAI/bge-small-en-v1.5").unwrap();
+    assert!(miss.rows.is_empty());
+    assert_eq!(miss.dimension, 0);
+    // Round trip through persist: f64 → f32 → f64 within float error.
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(&graph, "def add(a, b): return a + b\n", "math.py");
+    graph
+        .set_embeddings_bulk(vec![(
+            "math.py::add".into(),
+            vec![0.5; 8],
+            "m#pp1#x".into(),
+        )])
+        .unwrap();
+    let now = crate::storage::now_iso8601();
+    store
+        .upsert_concepts_bulk(
+            &[macrame::ConceptUpsert::new("math.py::add", "math.py::add")
+                .content("{\"kind\":\"function\"}")
+                .valid_from(now)
+                .valid_to(crate::storage::TS_OPEN.to_string())
+                .retired(false)],
+        )
+        .unwrap();
+    let snap = graph.snapshot();
+    store
+        .persist_projection_embeddings(
+            "BAAI/bge-small-en-v1.5",
+            &snap,
+            &[("math.py::add".to_string(), "m#pp1#x".to_string())],
+        )
+        .unwrap();
+    let got = store.read_model_vectors("BAAI/bge-small-en-v1.5").unwrap();
+    assert_eq!(got.dimension, 8);
+    assert_eq!(got.model_table, "embeddings_baai_bge_small_en_v1_5");
+    assert_eq!(got.rows.len(), 1);
+    assert_eq!(got.rows[0].0, "math.py::add");
+    assert!(got.rows[0].1.iter().all(|x| (*x as f64 - 0.5).abs() < 1e-6));
+}
