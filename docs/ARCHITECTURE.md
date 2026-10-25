@@ -330,8 +330,10 @@ across MCP/CLI/Python (8 tests); latency gates history-aware
   (carried half).
 - Byte-span verification: edits apply at tree-sitter spans, with
   first-line indent re-basing (`normalize_body_for_splice`).
-- `update_signature` warns `unverified_sites` — call-site cascade needs
-  arg-span indexing (§2.3).
+- `update_signature` rewrites the definition plus call sites with recorded
+  arg spans — explicit `call_site_values` verbatim, `inject_defaults`
+  synthesized for pure-addition Python signatures; anything else stays in
+  `unverified_sites` for review (§2.3 landed on dev_0.13).
 - Self-hosting: `[mutation] allow` is root-anchored and pinned, deny-wins,
   `default_dry_run = true` until the D18 fix (DR-27).
 
@@ -481,9 +483,10 @@ in kb.db). Statuses at v0.12.0:
 
 ## 17. Open items & non-goals
 
-Live list: `open-items.md` (all §1 + §2.1 + §3.1 resolved in v0.12;
-§2.3 arg-spans, §2.4 smell-metric approximations, §2.5 path maps, §2.6 edge
-kinds, §2.8 TS throughput, §2.9 SQLite internals, §2.10 hybrid search still
+Live list: `open-items.md` (§2.3 landed on dev_0.13 — extraction, ledger
+`call_sites`, cascade edits, inject synthesis; all §1 + §2.1 + §3.1 resolved
+in v0.12; §2.4 smell-metric approximations, §2.5 path maps, §2.6 edge kinds,
+§2.8 TS throughput, §2.9 SQLite internals, §2.10 hybrid search still
 deferred; §2.2/§2.7 decided). Bugs/quirks:
 `CODERADAR_BUGS_QUIRKS.md` (9 fixed, #10 harness-side carried,
 #1 rollback half needs apply-semantics design).

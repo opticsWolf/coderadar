@@ -171,6 +171,18 @@ Mitigated for v1 by §2.4's `unverified_sites` warning, and further by v0.7
 §0.1's byte-span verification. Still the reason `update_signature` cannot
 rewrite its own call sites.
 
+> **Status (dev_0.13): landed in four slices.** `UnresolvedRef.args_span`
+> indexed at extraction (`walker`/`single_pass` via `call_args_span`),
+> persisted as function-concept `call_sites` (parallel to
+> `resolved_calls`) with cold-start rehydrate, consumed by
+> `plan_signature_update` two ways: explicit `call_site_values` become
+> real edits on disk verification, and `inject_defaults` synthesizes
+> `name=default` keywords for pure-addition Python signatures. Removals,
+> reorderings, required params, non-Python callers and stale spans keep
+> manual review. `update-file` needed no change (re-extraction carries
+> spans; scoped re-resolution keeps `calls ∥ resolved_calls` aligned).
+> Commits `d535cf5`, `5888633`, `37c8f0b` (+ wording `dada196`).
+
 ### 2.4 Smell-metric approximations
 
 *(`v1-readiness-plan.md` "Explicitly Deferred")*
