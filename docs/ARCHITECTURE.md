@@ -170,7 +170,9 @@ side never touches ledger handles.
   `{model}#pp{PREPROCESS_VERSION}#{xxh3}`, write/query dimension gates,
   embed-what = signature + docstring, `recompute` flag on every surface.
   Default model `BAAI/bge-small-en-v1.5`, dim 384, single process-wide
-  agreement. Persistence is 0.13.
+  agreement, per-model tables (`embeddings_<model>`, DiskANN) + ledger
+  hashes + cold-start rehydrate + RRF hybrid, all landed on dev_0.13
+  (DR-11 slices 1–4).
 - **`mutation/`** — apply pipeline with post-write parse validation and
   auto-diagnose (rollback needs its own design: BUGS_QUIRKS #1-half).
   `tool_router.py` is a named seam for P2 routing (DR-16).
@@ -288,8 +290,8 @@ One store directory, four artifacts:
   ("stored graph"), missing table → `Engine(Misuse)` naming
   `concepts_fts` + `rebuild_fts`. 1s latency gate; single-digit ms live
   (DR-34).
-- **Vectors (Phase 1).** Keyed dedup, dim gates, exact-count enumeration,
-  zero storage over the FTS table. Persistence is 0.13 (DR-11).
+- **Vectors (Phase 1 → persisted dev_0.13).** Keyed dedup, dim gates, exact-count enumeration,
+  zero storage over the FTS table. Per-model tables + rehydrate + hybrid landed (DR-11).
 - **Macrame 0.19.1.** `hydrate_historical` + `AttributeMode::{Current,
   AtTime, Omit}` repaired the historical loader (upstream #3); production
   stays on the state fold by decision. `load_subgraph_with(traversal, ts,
@@ -454,7 +456,7 @@ in kb.db). Statuses at v0.12.0:
 | DR-8 | Two-pass → single-pass extraction | closed |
 | DR-9 | Snapshot honesty: fold-at-T + `bfs_over_state` + raisers; §3.3 NO-GO | closed |
 | DR-10 | Framework routes as canonical concepts | closed (v0.11.9) |
-| DR-11 | Embeddings Phase 1 (keyed, gated); persistence → 0.13 | closed/carried |
+| DR-11 | Embeddings Phase 1 (keyed, gated); persistence landed dev_0.13 (slices 1–4) | closed |
 | DR-12 | Clone determinism (canonical order) | closed (v0.11.6) |
 | DR-13 | Rust cross-module resolution | closed (v0.11.15) |
 | DR-14 | Same-language smallest-id suffix winner | closed (v0.11.2) |
@@ -484,9 +486,10 @@ in kb.db). Statuses at v0.12.0:
 ## 17. Open items & non-goals
 
 Live list: `open-items.md` (§2.3 landed on dev_0.13 — extraction, ledger
-`call_sites`, cascade edits, inject synthesis; all §1 + §2.1 + §3.1 resolved
+`call_sites`, cascade edits, inject synthesis; §2.10 landed on dev_0.13 —
+model tables, rehydrate, hybrid RRF; all §1 + §2.1 + §3.1 resolved
 in v0.12; §2.4 smell-metric approximations, §2.5 path maps, §2.6 edge kinds,
-§2.8 TS throughput, §2.9 SQLite internals, §2.10 hybrid search still
+§2.8 TS throughput, §2.9 SQLite internals still
 deferred; §2.2/§2.7 decided). Bugs/quirks:
 `CODERADAR_BUGS_QUIRKS.md` (9 fixed, #10 harness-side carried,
 #1 rollback half needs apply-semantics design).

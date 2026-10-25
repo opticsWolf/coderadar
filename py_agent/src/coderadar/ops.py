@@ -1068,6 +1068,76 @@ def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
             raise NoEmbeddings("no embeddings found and computing them failed") from None
 
 
+def search_hybrid(query: str | Sequence[float], top_k: int = 10,
+                  query_text: str = "") -> list[dict]:
+    """Hybrid keyword+vector search: RRF fusion of BM25 and cosine arms.
+
+    `query` is natural language (embedded locally with fastembed; the same
+    text feeds the keyword arm) or a ready embedding vector (then
+    `query_text` feeds the keyword arm, and empty text means vector-only
+    ranking). Results carry ``score`` (fused RRF — scale-free, ranks are
+    the signal) plus per-arm ``vector_rank``/``keyword_rank`` (`None` =
+    that arm did not return the hit). At most 20 results.
+    """
+    from coderadar._core import search_hybrid as _sh
+    from coderadar.embedding import embedding_settings
+    _require_index()
+    if isinstance(query, str):
+        if not query.strip():
+            raise InvalidRequest("Please provide a natural-language query for hybrid search.")
+        text = query
+        try:
+            embedding = list(next(iter(_embedding_model().embed([query]))))
+        except ImportError:
+            raise MissingDependency("fastembed") from None
+        except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+            raise EngineError(f"Embedding failed: {e}") from None
+    else:
+        text, embedding = query_text, list(query)
+    if not text.strip() and not embedding:
+        raise InvalidRequest("Hybrid search needs query text, a query vector, or both.")
+    configured, _dimension = embedding_settings()
+
+    def run() -> list[dict]:
+        rows = _sh(configured, text, embedding, min(top_k, 20))
+        # search_symbols-shaped ids are unreadable alone; join the display
+        # fields the projection already holds (best-effort: id-only fallback).
+        try:
+            from coderadar._core import lookup_entity
+        except ImportError:
+            return rows
+        for r in rows:
+            try:
+                ent = lookup_entity(r["id"])
+            except Exception:  # noqa: BLE001 - id-only fallback, see above
+                ent = None
+            if ent:
+                r["name"] = ent.get("name", r["id"])
+                r["kind"] = ent.get("kind", "?")
+                r["file_path"] = ent.get("file_path", "?")
+        return rows
+
+    try:
+        return run()
+    except RuntimeError as e:
+        msg = str(e)
+        if "embedding dimension" in msg or "DimMismatch" in msg:
+            # A dimension conflict cannot be computed away (same model in,
+            # same widths out) — surface it, don't loop into a recompute.
+            raise EngineError(msg) from None
+        if "ModelNotRegistered" not in msg:
+            raise EngineError(msg) from None
+        # No persisted vectors for this model — compute them once and
+        # retry (mirrors search_similar's auto-compute).
+        try:
+            compute_embeddings()
+            return run()
+        except EngineError:
+            raise
+        except Exception:  # noqa: BLE001 - auto-compute is best-effort, NoEmbeddings covers it
+            raise NoEmbeddings("no persisted vectors found and computing them failed") from None
+
+
 # ── Temporal ──────────────────────────────────────────────────────────────
 
 def _graph():

@@ -195,3 +195,19 @@ class TestRehydrate:
         assert rep["skipped_no_hash"] == 0, rep
         rows = ops.search_similar("compute the alpha", 3)
         assert rows and rows[0]["id"] == "a.py::alpha"
+
+
+class TestHybrid:
+    def test_hybrid_fuses_both_arms(self, tiny):
+        ops.compute_embeddings()
+        rows = ops.search_hybrid("compute the alpha", 3)
+        assert rows and rows[0]["id"] == "a.py::alpha"
+        top = rows[0]
+        assert {"id", "score", "vector_rank", "keyword_rank",
+                "name", "kind"} <= set(top)
+        assert top["vector_rank"] is not None
+        assert top["keyword_rank"] is not None
+
+    def test_hybrid_rejects_empty_query(self, tiny):
+        with pytest.raises(ops.InvalidRequest):
+            ops.search_hybrid("   ")

@@ -492,3 +492,97 @@ fn test_read_model_vectors_roundtrips_and_misses_honestly() {
     assert_eq!(got.rows[0].0, "math.py::add");
     assert!(got.rows[0].1.iter().all(|x| (*x as f64 - 0.5).abs() < 1e-6));
 }
+
+#[test]
+fn test_search_hybrid_fuses_keyword_and_vector_arms() {
+    use crate::storage::CodeGraphStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodeGraphStore::open(dir.path().join("h.db")).unwrap();
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(
+        &graph,
+        "def start_watcher():\n    \"\"\"Debounce the file watcher before restarting.\"\"\"\n    pass\n",
+        "watch.py",
+    );
+    index_source(
+        &graph,
+        "def rename(old, new):\n    \"\"\"Rename a function via plan_rename.\"\"\"\n    pass\n",
+        "graph.py",
+    );
+    index_source(
+        &graph,
+        "def authenticate():\n    \"\"\"Check the service token.\"\"\"\n    pass\n",
+        "svc.py",
+    );
+    graph
+        .set_embeddings_bulk(vec![
+            (
+                "watch.py::start_watcher".into(),
+                vec![1.0, 0.0, 0.0, 0.0],
+                "m#pp1#a".into(),
+            ),
+            (
+                "graph.py::rename".into(),
+                vec![0.0, 1.0, 0.0, 0.0],
+                "m#pp1#b".into(),
+            ),
+            (
+                "svc.py::authenticate".into(),
+                vec![0.9, 0.1, 0.0, 0.0],
+                "m#pp1#c".into(),
+            ),
+        ])
+        .unwrap();
+    // Concept rows carry the text the keyword arm reads; ids must match
+    // the entity ids or the vector arm's join finds nothing.
+    let now = crate::storage::now_iso8601();
+    let mk = |id: &str, doc: &str| {
+        macrame::ConceptUpsert::new(id, id)
+            .content(format!("{{\"kind\":\"function\",\"docstring\":\"{doc}\"}}"))
+            .valid_from(now.clone())
+            .valid_to(crate::storage::TS_OPEN.to_string())
+            .retired(false)
+    };
+    store
+        .upsert_concepts_bulk(&[
+            mk(
+                "watch.py::start_watcher",
+                "Debounce the file watcher before restarting.",
+            ),
+            mk("graph.py::rename", "Rename a function via plan_rename."),
+            mk("svc.py::authenticate", "Check the service token."),
+        ])
+        .unwrap();
+    let snap = graph.snapshot();
+    store
+        .persist_projection_embeddings(
+            "test_hybrid",
+            &snap,
+            &[
+                ("watch.py::start_watcher".to_string(), "m#pp1#a".to_string()),
+                ("graph.py::rename".to_string(), "m#pp1#b".to_string()),
+                ("svc.py::authenticate".to_string(), "m#pp1#c".to_string()),
+            ],
+        )
+        .unwrap();
+    // Query text matches only the watcher; the query vector is the
+    // watcher's own vector. Fusion must rank the both-arms hit first,
+    // then the vector-only hits in cosine order.
+    let hits = store
+        .search_hybrid("test_hybrid", "watcher debounce", &[1.0, 0.0, 0.0, 0.0], 10)
+        .unwrap();
+    assert_eq!(hits.len(), 3, "{hits:?}");
+    assert_eq!(hits[0].concept_id, "watch.py::start_watcher");
+    assert!(hits[0].vector_rank.is_some() && hits[0].keyword_rank.is_some());
+    assert_eq!(hits[1].concept_id, "svc.py::authenticate");
+    assert_eq!(hits[2].concept_id, "graph.py::rename");
+    assert!(hits[2].keyword_rank.is_none(), "{hits:?}");
+    // Empty query both sides = empty, never an FTS syntax error.
+    let empty = store.search_hybrid("test_hybrid", "  ", &[], 10).unwrap();
+    assert!(empty.is_empty());
+    // A vector without a table names the repair, not bare storage noise.
+    let err = store
+        .search_hybrid("no_such_model", "watcher", &[1.0, 0.0, 0.0, 0.0], 10)
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("no_such_model"), "{err:?}");
+}

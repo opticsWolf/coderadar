@@ -732,6 +732,23 @@ def search_similar(query: str, results: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def search_hybrid(query: str, results: list[dict]) -> str:
+    if not results:
+        return f"No hybrid results found for '{query}'."
+    lines = [f"## Hybrid Search: `{query}`", f"Found {len(results)} result(s)", ""]
+    for i, r in enumerate(results, 1):
+        arms = []
+        if r.get("vector_rank") is not None:
+            arms.append(f"vector #{r['vector_rank']}")
+        if r.get("keyword_rank") is not None:
+            arms.append(f"keyword #{r['keyword_rank']}")
+        lines.append(f"{i}. `{r.get('name', r.get('id', '?'))}` ({r.get('kind', '?')}) — "
+                     f"RRF {r.get('score', 0.0):.4f} ({', '.join(arms) or 'no arm'})")
+        lines.append(f"   File: `{r.get('file_path', '?')}`")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def fastembed_missing(compute: str = "`coderadar_compute_embeddings`") -> str:
     """Missing-dependency notice (MCP tool name by default, CLI spelling
     at the CLI call site)."""

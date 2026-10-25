@@ -557,6 +557,18 @@ def search_similar(query_text: str, top_k: int, fmt: str):
         lambda rows: render.search_similar(query_text, rows))
 
 
+@main.command(name="search-hybrid")
+@click.argument("query_text")
+@click.option("--top-k", default=10, show_default=True)
+@_format_option
+def search_hybrid(query_text: str, top_k: int, fmt: str):
+    """Hybrid keyword+vector search (RRF fusion; MCP coderadar_search_hybrid)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.search_hybrid(query_text, top_k),
+        lambda rows: render.search_hybrid(query_text, rows))
+
+
 @main.command(name="compute-embeddings")
 @click.option("--model", "model_name", default=None,
               help="fastembed model (default: [embeddings] model in .coderadar.toml).")

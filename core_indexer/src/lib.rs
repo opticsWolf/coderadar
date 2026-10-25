@@ -106,6 +106,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ffi_synthetic::clear_all_embeddings, m)?)?;
     m.add_function(wrap_pyfunction!(persist_embeddings, m)?)?;
     m.add_function(wrap_pyfunction!(rehydrate_embeddings, m)?)?;
+    m.add_function(wrap_pyfunction!(search_hybrid, m)?)?;
     m.add_function(wrap_pyfunction!(ffi_synthetic::module_children, m)?)?;
     m.add_function(wrap_pyfunction!(ffi_synthetic::set_module_star_exports, m)?)?;
     m.add_function(wrap_pyfunction!(
@@ -3127,6 +3128,42 @@ fn rehydrate_embeddings(py: Python<'_>, model: &str) -> PyResult<PyObject> {
     out.set_item("table_rows", table_rows)?;
     out.set_item("model", model_table)?;
     out.set_item("dimension", dim)?;
+    Ok(out.into())
+}
+
+/// Hybrid keyword+vector search (DR-11 slice 4 / §2.10): `{id, score,
+/// vector_rank, keyword_rank}` fused by macrame's `HybridSearch` (RRF_K=60,
+/// depth `max(5×top_k,50)`), `top_k` clamped to [1, 50]. Storeless graphs
+/// and missing vector tables get honest errors naming the repair.
+#[pyfunction]
+#[pyo3(signature = (model, query_text, query_vec, top_k = 10))]
+fn search_hybrid(
+    py: Python<'_>,
+    model: &str,
+    query_text: &str,
+    query_vec: Vec<f64>,
+    top_k: usize,
+) -> PyResult<PyObject> {
+    let hits = with_graph(|graph, _snap| {
+        let store = graph.store.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "search_hybrid needs a stored graph (analyze with create_store=True): \
+                 hybrid search reads the ledger's FTS index and vector tables",
+            )
+        })?;
+        store
+            .search_hybrid(model, query_text, &query_vec, top_k)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))
+    })?;
+    let out = PyList::empty(py);
+    for h in hits {
+        let hit = PyDict::new(py);
+        hit.set_item("id", h.concept_id)?;
+        hit.set_item("score", h.score)?;
+        hit.set_item("vector_rank", h.vector_rank)?;
+        hit.set_item("keyword_rank", h.keyword_rank)?;
+        out.append(hit)?;
+    }
     Ok(out.into())
 }
 

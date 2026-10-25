@@ -51,6 +51,7 @@ Need more? Call it again with more specific names.
 
 - `coderadar_search` — find symbols by keyword when you don't know the name
 - `coderadar_search_similar` — semantic search (embeddings via `coderadar_compute_embeddings`, computed on first use)
+- `coderadar_search_hybrid` — RRF-fused keyword + semantic search, with per-arm rank evidence
 - `coderadar_node` — one entity's details and neighbours; `coderadar_module_children` — a module's contents
 - `coderadar_affected` — transitive callers (blast radius), centrality-ranked; `coderadar_callers` / `coderadar_callees` — direct 1-hop neighbours
 - `coderadar_traverse` — any edge kind, upstream or downstream
@@ -390,6 +391,35 @@ def create_server(graph: Any) -> MCPServer:
             return mismatch
 
         return _search_similar(graph, query, top_k)
+
+    # ── coderadar_search_hybrid — RRF fusion of keyword + vector ──────
+
+    @mcp.tool(
+        description=(
+            "Hybrid search: RRF-fused keyword (BM25) and semantic (vector) "
+            "search over one embedding model. Returns fused ranks with "
+            "per-arm evidence (vector_rank/keyword_rank). "
+            "Use when neither exact terms nor pure similarity suffice. "
+            "Auto-computes embeddings on first call if no vectors exist."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_search_hybrid(
+        query: str,
+        top_k: int = 10,
+        project_path: str | None = None,
+    ) -> str:
+        """RRF-fused keyword + semantic search."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _search_hybrid(graph, query, top_k)
 
     # ── coderadar_compute_embeddings — generate embedding vectors ────
 
@@ -1401,6 +1431,22 @@ def _search_similar(graph: Any, query: str, top_k: int) -> str:
     except ops.OpError as e:
         return _op_message(e)
     return render.search_similar(query, results)
+
+
+@requires_index
+def _search_hybrid(graph: Any, query: str, top_k: int) -> str:
+    """Hybrid RRF keyword + semantic search."""
+    try:
+        results = ops.search_hybrid(query, top_k)
+    except ops.MissingDependency:
+        return render.fastembed_missing()
+    except ops.NoEmbeddings:
+        return render.no_embeddings()
+    except ops.EngineError as e:
+        return str(e)
+    except ops.OpError as e:
+        return _op_message(e)
+    return render.search_hybrid(query, results)
 
 
 def _module_children(graph: Any, module_id: str) -> str:

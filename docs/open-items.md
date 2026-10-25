@@ -248,6 +248,13 @@ with what vanishes on reload — the same half-applied-bound trap Macrame's
 `as_of_valid` docs warn about. Land after DR-11 persistence (0.13), then fuse
 with per-arm `depth` reads and deterministic `score-desc/id-asc` ordering.
 
+> **Status (dev_0.13): landed with DR-11 slices 1–4.** Per-model tables
+> (`embeddings_<model>`, DiskANN) persist vectors; `search_hybrid` fuses
+> via macrame's `HybridSearch` (default depth, RRF_K=60) over the store's
+> diagnostic connection, surfaced as `ops.search_hybrid` (auto-compute
+> retry mirroring `search_similar`), MCP `coderadar_search_hybrid`, and
+> CLI `search-hybrid`. Commits `1c84de4`, `ea948fd`, `48d9bfc` + this one.
+
 ---
 
 ## 3. Engineering hygiene

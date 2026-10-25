@@ -828,6 +828,71 @@ impl CodeGraphStore {
         Ok(runtime().block_on(self.db.write_concepts(concepts))?)
     }
 
+    /// Hybrid keyword+vector search (DR-11 slice 4 / §2.10): RRF fusion
+    /// (`RRF_K=60`, depth `max(5×top_k,50)`) of the FTS5 keyword arm and
+    /// the DiskANN vector arm over one model's table. `top_k` clamps to
+    /// [1, 50]; empty text AND empty vector short-circuit to `[]`.
+    /// Escaped-by-default like `search_symbols`. A query vector is
+    /// required — hybrid without the vector arm is just `search_symbols`.
+    /// Unregistered model / missing FTS are honest errors naming the
+    /// repair (`compute_embeddings` / `rebuild_fts`), never silent empties.
+    pub fn search_hybrid(
+        &self,
+        model_raw: &str,
+        query_text: &str,
+        query_vec: &[f64],
+        top_k: usize,
+    ) -> macrame::Result<Vec<macrame::vector::HybridHit>> {
+        let model = macrame_model_name(model_raw)?;
+        let top_k = top_k.clamp(1, 50);
+        if query_text.trim().is_empty() && query_vec.is_empty() {
+            return Ok(Vec::new());
+        }
+        if query_vec.is_empty() {
+            return Err(macrame::DbError::InvalidId {
+                id: model.table(),
+                reason: "search_hybrid needs a query vector — hybrid without the \
+                         vector arm is search_symbols"
+                    .to_string(),
+            });
+        }
+        let vec_f32: Vec<f32> = query_vec.iter().map(|x| *x as f32).collect();
+        let res = (|| -> macrame::Result<Vec<macrame::vector::HybridHit>> {
+            let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+            runtime().block_on(async {
+                let mut probe = conn
+                    .query(
+                        "SELECT name FROM sqlite_master WHERE name='concepts_fts'",
+                        Vec::<libsql::Value>::new(),
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                if probe
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .is_none()
+                {
+                    return Err(Self::missing_fts_err("sqlite_master lists no concepts_fts"));
+                }
+                macrame::vector::HybridSearch::new(model, query_text.trim(), vec_f32)
+                    .top_k(top_k)
+                    .execute(&conn)
+                    .await
+            })
+        })();
+        // Whatever layer notices the missing table (our pre-check, the
+        // MATCH itself, or open-time schema verification), the answer names
+        // the repair, never a bare table name or a silent empty.
+        res.map_err(|e| {
+            if format!("{e:?}").contains("concepts_fts") {
+                Self::missing_fts_err(&format!("{e:?}"))
+            } else {
+                e
+            }
+        })
+    }
+
     /// Raw blob bytes by digest (§3.0, DR-25): the `blob_get` half of the
     /// PyO3 round-trip. `None` = valid address, no bytes (never put, or the
     /// bytes are gone) — the Python layer adds the at-T context and raises
