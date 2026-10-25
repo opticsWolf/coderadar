@@ -178,7 +178,7 @@ class TestSimilarityStillWorks:
 
 
 class TestRehydrate:
-    def test_rehydrate_after_reanalyze(self, tiny):
+    def test_rehydrate_after_restart(self, tiny):
         from coderadar.embedding import embedding_settings
         first = ops.compute_embeddings()
         assert first["persisted"] == first["total"] > 0
@@ -186,14 +186,16 @@ class TestRehydrate:
         # Simulate a restart: a fresh analyze rebuilds memory (vectors
         # gone) while the ledger keeps hashes (slices 1+3 flush) and the
         # table keeps vectors (slice 2). The re-analyze flush must not
-        # wipe stored hashes (gate annotations exclude derived state).
+        # wipe stored hashes (gate annotations exclude derived state) —
+        # so a cold load restores them and rehydrate refills the vecs.
         coderadar.analyze(".", create_store=True)
+        coderadar.load(str(tiny / ".coderadar" / "store" / "coderadar.db"), ".")
         assert _core.lookup_entity("a.py::alpha")["embedding_hash"]
         assert not _core.lookup_entity("a.py::alpha").get("has_embedding")
         rep = _core.rehydrate_embeddings(model)
         assert rep["rehydrated"] == first["total"], rep
         assert rep["skipped_no_hash"] == 0, rep
-        rows = ops.search_similar("compute the alpha", 3)
+        rows = ops.search_hybrid("compute the alpha", 3)
         assert rows and rows[0]["id"] == "a.py::alpha"
 
 
