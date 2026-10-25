@@ -151,7 +151,7 @@ impl CodeGraph {
     /// All candidate classes for a base name, in resolution priority order.
     /// `resolve_base_by_name` and the ambiguity findings (2.1b) both read
     /// this; the latter needs the full candidate set, not just the winner.
-    pub(super) fn base_candidates(
+    pub(crate) fn base_candidates(
         projection: &ProjectedGraph,
         base_name: &str,
         current_module: &str,

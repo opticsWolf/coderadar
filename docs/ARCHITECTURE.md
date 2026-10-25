@@ -491,7 +491,8 @@ Live list: `open-items.md` (§2.3 landed on dev_0.13 — extraction, ledger
 model tables, rehydrate, hybrid RRF; §2.6 slice A landed on dev —
 IMPLEMENTS split from EXTENDS (TS/Java/C#/PHP), traverse both directions;
 all §1 + §2.1 + §3.1 resolved
-in v0.12; §2.4 smell-metric approximations, §2.5 path maps, §2.6 remainder
+in v0.12; §2.4 landed on dev — field-type-aware CBO (cyclomatic already
+AST-based); §2.5 path maps, §2.6 remainder
 (references/decorates/instantiates, Go/Kotlin/Protocol interfaces),
 §2.8 TS throughput, §2.9 SQLite internals still
 deferred; §2.2/§2.7 decided). Bugs/quirks:

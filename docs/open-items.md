@@ -192,6 +192,16 @@ field-type-aware CBO deferred. Now covered by golden snapshots
 (`v1-readiness-plan.md` §3.2), so the approximations are pinned rather than
 drifting.
 
+> **Status (dev): landed.** The "substring cyclomatic" premise is stale:
+> Phase 4.1 computes cyclomatic/nesting/returns from AST decision points
+> (`smells/metrics.rs`), not substring matching. The remaining half --
+> field-type-aware CBO -- now ships: `coupling_between_objects` unions
+> field-annotation type names resolved through the base tiers
+> (same-module, import-aware, global-unique); stdlib names have no
+> candidates and are skipped like external bases, ambiguous/self
+> annotations couple to nothing. Golden pins hold (god-class fixture has
+> no annotated fields; CBO stays 5.0).
+
 ### 2.5 Full `tsconfig.json` / `pyproject.toml` path-map parsing
 
 *(`v1-readiness-plan.md` §2.2, "Defer: post-v1")*
