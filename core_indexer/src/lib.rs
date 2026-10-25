@@ -1082,7 +1082,7 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
 /// Unknown fields are rejected with the available list rather than silently
 /// matching nothing. Raises `ValueError` on a parse error.
 ///
-/// Full field reference: `docs/query-language.md` (generated from the
+/// Full field reference: `coderadar docs query-language` (generated from the
 /// grammar and schema, so it cannot drift).
 #[pyfunction]
 fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {

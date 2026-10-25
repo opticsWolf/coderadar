@@ -19,7 +19,8 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
   `skills://coderadar-cli`), so an MCP-only client can discover them without
   a repo checkout. CLI/MCP help now spell out the one surface exception:
   `coderadar_set_project` is `-C/--project` on the CLI. Release artifacts
-  are gated on all bundled assets (`scripts/verify_bundled_assets.py`).
+  are gated on all bundled assets (`scripts/verify_bundled_assets.py`), and
+  the Rust doc generator writes the packaged copy.
 
 ## 0.12.0 (2026-10-07)
 
