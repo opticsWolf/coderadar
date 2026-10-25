@@ -1542,6 +1542,10 @@ fn module_content(m: &Module) -> serde_json::Value {
     if !m.attr_reads.is_empty() {
         v["attr_reads"] = serde_json::json!(&m.attr_reads);
     }
+    // DR-11: the dedup key rides the ledger (vectors persist separately).
+    if !m.embedding.hash.is_empty() {
+        v["embedding_hash"] = serde_json::json!(&m.embedding.hash);
+    }
     v
 }
 
@@ -1568,6 +1572,10 @@ fn class_content(c: &Class) -> serde_json::Value {
     v["name_span"] = serde_json::json!(&c.name_span);
     v["body_span"] = serde_json::json!(&c.body_span);
     v["decorators_span"] = serde_json::json!(&c.decorators_span);
+    // DR-11: the dedup key rides the ledger (vectors persist separately).
+    if !c.embedding.hash.is_empty() {
+        v["embedding_hash"] = serde_json::json!(&c.embedding.hash);
+    }
     v
 }
 
@@ -1627,6 +1635,12 @@ fn function_content(f: &Function) -> serde_json::Value {
     if !f.resolved_refs.is_empty() {
         v["resolved_refs"] = serde_json::json!(&f.resolved_refs);
     }
+    // DR-11: the dedup key rides the ledger (vectors persist separately).
+    // Cold start restores it so warm dedup skips without vectors loaded.
+    // Omitted when empty; missing key reads back as empty.
+    if !f.embedding.hash.is_empty() {
+        v["embedding_hash"] = serde_json::json!(&f.embedding.hash);
+    }
     v
 }
 
@@ -1648,6 +1662,10 @@ fn import_content(i: &Import) -> serde_json::Value {
     v["import_kind"] = serde_json::json!(i.kind.to_json());
     v["is_type_only"] = serde_json::json!(&i.is_type_only);
     v["name_span"] = serde_json::json!(&i.name_span);
+    // DR-11: the dedup key rides the ledger (vectors persist separately).
+    if !i.embedding.hash.is_empty() {
+        v["embedding_hash"] = serde_json::json!(&i.embedding.hash);
+    }
     v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
     v
 }
@@ -1660,6 +1678,10 @@ fn constant_content(c: &Constant) -> serde_json::Value {
     v["default_value"] = serde_json::json!(&c.default_value);
     v["span"] = serde_json::json!(&c.span);
     v["name_span"] = serde_json::json!(&c.name_span);
+    // DR-11: the dedup key rides the ledger (vectors persist separately).
+    if !c.embedding.hash.is_empty() {
+        v["embedding_hash"] = serde_json::json!(&c.embedding.hash);
+    }
     v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
     v
 }
@@ -1671,6 +1693,10 @@ fn type_alias_content(t: &TypeAlias) -> serde_json::Value {
     v["source"] = serde_json::json!(&t.source);
     v["span"] = serde_json::json!(&t.span);
     v["name_span"] = serde_json::json!(&t.name_span);
+    // DR-11: the dedup key rides the ledger (vectors persist separately).
+    if !t.embedding.hash.is_empty() {
+        v["embedding_hash"] = serde_json::json!(&t.embedding.hash);
+    }
     v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
     v
 }
@@ -1927,7 +1953,10 @@ fn parse_v2_module(id: &str, v: &serde_json::Value) -> std::result::Result<Modul
         parse_quality: ParseQuality::from_json(&parse_quality).map_err(|e| v2_err(id, &e))?,
         file_version: v.get("file_version").and_then(|x| x.as_u64()).unwrap_or(1),
         content_hash: hex_u64(v, "content_hash", id)?,
-        embedding: EmbeddingVec::default(),
+        embedding: EmbeddingVec {
+            vec: Vec::new(),
+            hash: opt_str(v, "embedding_hash").unwrap_or_default(),
+        },
     })
 }
 
@@ -1965,7 +1994,10 @@ fn parse_v2_class(id: &str, v: &serde_json::Value) -> std::result::Result<Class,
         name_span: span_of(v, "name_span"),
         body_span: span_of(v, "body_span"),
         decorators_span: span_opt_of(v, "decorators_span"),
-        embedding: EmbeddingVec::default(),
+        embedding: EmbeddingVec {
+            vec: Vec::new(),
+            hash: opt_str(v, "embedding_hash").unwrap_or_default(),
+        },
     })
 }
 
@@ -2019,7 +2051,10 @@ fn parse_v2_function(id: &str, v: &serde_json::Value) -> std::result::Result<Fun
         params_span: span_of(v, "params_span"),
         body_span: span_of(v, "body_span"),
         decorators_span: span_opt_of(v, "decorators_span"),
-        embedding: EmbeddingVec::default(),
+        embedding: EmbeddingVec {
+            vec: Vec::new(),
+            hash: opt_str(v, "embedding_hash").unwrap_or_default(),
+        },
     })
 }
 
@@ -2037,7 +2072,10 @@ fn parse_v2_import(id: &str, v: &serde_json::Value) -> std::result::Result<Impor
         line: req_u64(v, "line", id)? as usize,
         is_type_only: req_bool(v, "is_type_only"),
         name_span: span_of(v, "name_span"),
-        embedding: EmbeddingVec::default(),
+        embedding: EmbeddingVec {
+            vec: Vec::new(),
+            hash: opt_str(v, "embedding_hash").unwrap_or_default(),
+        },
     })
 }
 
@@ -2050,7 +2088,10 @@ fn parse_v2_constant(id: &str, v: &serde_json::Value) -> std::result::Result<Con
         default_value: opt_str(v, "default_value"),
         span: span_of(v, "span"),
         name_span: span_of(v, "name_span"),
-        embedding: EmbeddingVec::default(),
+        embedding: EmbeddingVec {
+            vec: Vec::new(),
+            hash: opt_str(v, "embedding_hash").unwrap_or_default(),
+        },
     })
 }
 
@@ -2062,7 +2103,10 @@ fn parse_v2_type_alias(id: &str, v: &serde_json::Value) -> std::result::Result<T
         source: source_of(v, id)?,
         span: span_of(v, "span"),
         name_span: span_of(v, "name_span"),
-        embedding: EmbeddingVec::default(),
+        embedding: EmbeddingVec {
+            vec: Vec::new(),
+            hash: opt_str(v, "embedding_hash").unwrap_or_default(),
+        },
     })
 }
 
@@ -2461,6 +2505,37 @@ mod concept_v2_tests {
         v.as_object_mut().unwrap().remove("call_sites");
         match parse_v2_concept(&f.id, &v.to_string()).unwrap() {
             V2Entity::Function(got) => assert!(got.calls.is_empty()),
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    /// DR-11 slice 1: the dedup key rides the ledger; vectors do not.
+    /// Missing key (pre-DR-11 store) reads back as empty.
+    #[test]
+    fn embedding_hash_roundtrips_without_vectors() {
+        let mut f = sample_function();
+        f.embedding.hash = "bge#pp1#abc123".to_string();
+        f.embedding.vec = vec![0.1, 0.2];
+        let json = function_content(&f).to_string();
+        assert!(
+            !json.contains("\"vec\""),
+            "vectors must not ride the ledger"
+        );
+        match parse_v2_concept(&f.id, &json).unwrap() {
+            V2Entity::Function(got) => {
+                assert_eq!(got.embedding.hash, "bge#pp1#abc123");
+                assert!(
+                    got.embedding.vec.is_empty(),
+                    "vectors rehydrate from the model table, not the ledger"
+                );
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+        // Untouched fixture: no key written, empty back.
+        let plain = function_content(&sample_function()).to_string();
+        assert!(!plain.contains("embedding_hash"));
+        match parse_v2_concept(&sample_function().id, &plain).unwrap() {
+            V2Entity::Function(got) => assert!(got.embedding.hash.is_empty()),
             other => panic!("expected Function, got {other:?}"),
         }
     }
