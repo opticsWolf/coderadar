@@ -642,6 +642,7 @@ pub(crate) mod tests {
             parent_class: None,
             bases: vec![],
             resolved_bases: vec![],
+            resolved_interfaces: vec![],
             mro: vec![],
             mro_error: false,
             methods: vec![],

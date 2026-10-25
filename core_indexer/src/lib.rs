@@ -512,7 +512,10 @@ fn retire_excluded_concepts(
 /// CALLS pairs registered as synthetic are EXCLUDED — their ledger life is
 /// under the synthetic kind, so a CALLS-kind row for the same pair is
 /// pre-R2-2 pollution and must be retracted, not kept.
-fn stale_edge_keep_set(
+///
+/// `pub(crate)` for the persistence round-trip test (§2.6): the same
+/// keep set must cover IMPLEMENTS triples.
+pub(crate) fn stale_edge_keep_set(
     projection: &ProjectedGraph,
 ) -> std::collections::HashSet<(String, String, String)> {
     let mut keep = std::collections::HashSet::new();
@@ -534,6 +537,12 @@ fn stale_edge_keep_set(
     for (cid, class) in projection.classes.iter() {
         for base_id in class.resolved_bases.iter() {
             keep.insert((cid.clone(), base_id.clone(), "EXTENDS".to_string()));
+        }
+        // §2.6: IMPLEMENTS pairs are structural too — without this the
+        // reconciler would retract the edges `persist_edges_scoped`
+        // just asserted.
+        for iface_id in class.resolved_interfaces.iter() {
+            keep.insert((cid.clone(), iface_id.clone(), "IMPLEMENTS".to_string()));
         }
     }
     for (override_fid, base_fid) in projection.overrides_base.iter() {
@@ -2154,6 +2163,7 @@ fn callees_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
 ///   - `calls`    → callers_by_callee / callees_by_caller
 ///   - `imports`  → importers (upstream) / imports_by_importer (downstream)
 ///   - `extends`  → subclasses (upstream) / Class.resolved_bases (downstream)
+///   - `implements` → implementers (upstream) / Class.resolved_interfaces (downstream)
 ///   - `overrides`→ overridden_by (upstream) / overrides_base (downstream)
 ///
 /// Direction accepts both vocabularies: `in`/`upstream`, `out`/`downstream`,
@@ -2171,7 +2181,7 @@ fn callees_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
 /// not "none of them" — every docstring above this boundary says so, and the
 /// BFS loops over the kinds it is given, so an empty list used to walk
 /// nowhere and return only the start node.
-const ALL_EDGE_KINDS: [&str; 4] = ["calls", "extends", "imports", "overrides"];
+const ALL_EDGE_KINDS: [&str; 5] = ["calls", "extends", "implements", "imports", "overrides"];
 
 /// R2-9: reject unknown edge kinds with a naming-names error instead of
 /// walking nowhere and reporting "No results". Pure; unit-tested below.
@@ -2179,7 +2189,7 @@ fn validate_edge_kinds(kinds: &[String]) -> Result<(), String> {
     for k in kinds {
         if !ALL_EDGE_KINDS.contains(&k.as_str()) {
             return Err(format!(
-                "Unknown edge kind `{k}` (expected calls, imports, extends, \
+                "Unknown edge kind `{k}` (expected calls, imports, extends, implements, \
                  overrides; `inherits` is an alias for `extends`)"
             ));
         }
@@ -2210,7 +2220,7 @@ fn normalize_edge_kinds(edge_kinds: &[String]) -> Vec<String> {
 }
 
 /// Breadth-first walk from `start_id` over `edge_kinds` (empty = all kinds:
-/// calls, imports, extends, overrides). `direction` is `in`/`upstream`,
+/// calls, imports, extends, implements, overrides). `direction` is `in`/`upstream`,
 /// `out`/`downstream` or `both`; `as_of` reads the graph as it was at a past
 /// timestamp. Returns one dict per reached node.
 #[pyfunction]

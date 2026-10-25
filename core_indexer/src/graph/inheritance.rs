@@ -6,11 +6,15 @@ use super::CodeGraph;
 use crate::types::*;
 
 impl CodeGraph {
-    /// Resolve class inheritance: fill `Class.resolved_bases` and invert
-    /// into the `subclasses` reverse index. Clears `subclasses` first
-    /// (idempotent rebuild). Same-module + global-unique heuristic.
+    /// Resolve class inheritance: fill `Class.resolved_bases` (class
+    /// targets) and `Class.resolved_interfaces` (interface targets —
+    /// §2.6: previously folded into EXTENDS, now IMPLEMENTS), inverting
+    /// into the `subclasses` and `implementers` reverse indexes. Clears
+    /// both indexes first (idempotent rebuild). Same-module +
+    /// global-unique heuristic.
     pub fn resolve_class_hierarchy(&self, projection: &mut ProjectedGraph) {
         projection.subclasses.clear();
+        projection.implementers.clear();
         projection.ambiguous_bases.clear();
         let class_ids: Vec<String> = projection.classes.keys().cloned().collect();
 
@@ -44,30 +48,60 @@ impl CodeGraph {
                 }
             }
 
-            // Write back resolved_bases (only if changed — avoid needless clones)
-            let existing = projection
+            // Partition by target declaration: interfaces implement,
+            // classes extend (§2.6). EXTENDS vs IMPLEMENTS is decided by
+            // the target's declaration, not the clause spelling — so
+            // `class C : B, IDisposable` (C#) and `implements I` against a
+            // class (test FakeWorker) keep their honest kind. The borrow
+            // ends before the write-back below.
+            let (resolved_bases, resolved_ifaces): (Vec<String>, Vec<String>) = resolved
+                .into_iter()
+                .partition(|id| !Self::is_interface_target(projection, id));
+            // Write back (only if changed — avoid needless clones).
+            let (existing_bases, existing_ifaces) = projection
                 .classes
                 .get(cid)
-                .map(|c| c.resolved_bases.clone())
+                .map(|c| (c.resolved_bases.clone(), c.resolved_interfaces.clone()))
                 .unwrap_or_default();
-            if existing != resolved {
+            if existing_bases != resolved_bases || existing_ifaces != resolved_ifaces {
                 if let Some(class) = projection.classes.get(cid) {
                     let mut c = (**class).clone();
-                    c.resolved_bases = resolved.clone();
+                    c.resolved_bases = resolved_bases.clone();
+                    c.resolved_interfaces = resolved_ifaces.clone();
                     projection
                         .classes
                         .insert(cid.clone(), std::sync::Arc::new(c));
                 }
             }
-            // Invert: base → subclasses
-            for base_id in &resolved {
+            // Invert: base → subclasses, interface → implementers.
+            for base_id in &resolved_bases {
                 projection
                     .subclasses
                     .entry(base_id.clone())
                     .or_default()
                     .insert(cid.clone());
             }
+            for iface_id in &resolved_ifaces {
+                projection
+                    .implementers
+                    .entry(iface_id.clone())
+                    .or_default()
+                    .insert(cid.clone());
+            }
         }
+    }
+
+    /// Interface test for the §2.6 partition: true when `id` names a
+    /// class entity whose declaration is an interface
+    /// (`Class::is_interface` — TS/Java/C#/PHP `interface_declaration`).
+    /// Unknown ids (externals) are never interfaces: they stay unresolved
+    /// and produce no edge, as before.
+    fn is_interface_target(projection: &ProjectedGraph, id: &str) -> bool {
+        projection
+            .classes
+            .get(id)
+            .map(|c| c.is_interface())
+            .unwrap_or(false)
     }
 
     /// Resolve imports: set `Import.resolution` (module-level) and build the

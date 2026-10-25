@@ -15,13 +15,13 @@
 //!    target, Method → method id, Builtin/External → `external::{name}`,
 //!    Unresolved → nothing.
 //! 2. Ledger edges whose kind is **not** structural (CALLS / IMPORTS /
-//!    EXTENDS / OVERRIDES) — i.e. synthetic framework edges registered
+//!    EXTENDS / IMPLEMENTS / OVERRIDES) — i.e. synthetic framework edges registered
 //!    under their original kind. They land in the same call indices,
 //!    exactly as `register_synthetic_edges_bulk` does in memory.
 //!
 //! Structural edges are never read at load: `importers` is rebuilt by
-//! `resolve_imports`, EXTENDS by `resolve_class_hierarchy` (via
-//! `resolved_bases`), OVERRIDES by `resolve_overrides` (via
+//! `resolve_imports`, EXTENDS/IMPLEMENTS by `resolve_class_hierarchy` (via
+//! `resolved_bases`/`resolved_interfaces`), OVERRIDES by `resolve_overrides` (via
 //! `overrides_base`). Ledger CALLS edges are a strict subset of (1) —
 //! the persister skips external/builtin targets — so skipping them loses
 //! nothing.
@@ -99,6 +99,7 @@ pub fn projection_from_state(
         callees_by_caller: HashMap::new(),
         call_evidence: HashMap::new(),
         subclasses: HashMap::new(),
+        implementers: HashMap::new(),
         overridden_by: HashMap::new(),
         overrides_base: HashMap::new(),
         ambiguous_bases: Vec::new(),
@@ -181,7 +182,7 @@ pub fn projection_from_state(
 
 /// Structural edge kinds written by `persist_edges_scoped`. Excluded from
 /// ledger restoration (see module docs).
-const STRUCTURAL_EDGE_KINDS: &[&str] = &["CALLS", "IMPORTS", "EXTENDS", "OVERRIDES"];
+const STRUCTURAL_EDGE_KINDS: &[&str] = &["CALLS", "IMPORTS", "EXTENDS", "IMPLEMENTS", "OVERRIDES"];
 
 /// Restore the CALLS reverse indices from `Function.resolved_calls`
 /// (see module docs for the pair rules).
@@ -291,6 +292,7 @@ mod tests {
             callees_by_caller: HashMap::new(),
             call_evidence: HashMap::new(),
             subclasses: HashMap::new(),
+            implementers: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
             ambiguous_bases: Vec::new(),
@@ -332,6 +334,7 @@ mod tests {
                 source: SourceType::Impl,
                 bases: Vec::new(),
                 resolved_bases: vec![],
+                resolved_interfaces: vec![],
                 mro: Vec::new(),
                 mro_error: false,
                 methods: vec!["a.py::C.run".to_string()],

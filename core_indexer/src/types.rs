@@ -930,6 +930,12 @@ pub struct Class {
     pub parent_class: Option<EntityId>,
     pub bases: Vec<UnresolvedRef>,
     pub resolved_bases: Vec<EntityId>,
+    /// Bases that resolved to an *interface* declaration (`is_interface`)
+    /// rather than a class. Partitioned out of `resolved_bases` by
+    /// `resolve_class_hierarchy` (§2.6): EXTENDS edges assert class
+    /// inheritance, IMPLEMENTS edges assert interface implementation —
+    /// previously folded together and indistinguishable in traversal.
+    pub resolved_interfaces: Vec<EntityId>,
     pub mro: Vec<MroNode>,
     pub mro_error: bool,
     pub methods: Vec<EntityId>,
@@ -1262,6 +1268,16 @@ impl Function {
 }
 
 impl Class {
+    /// True when this entity declares an interface rather than a class:
+    /// the `.scm` taggers capture `interface_declaration` as `@class`
+    /// (TypeScript, Java, C#, PHP), and `emit_class` keeps the raw node
+    /// kind in `grammar_kind`. Go `type X interface{...}`, Kotlin
+    /// `interface`, and Python `Protocol` bases are not detected yet —
+    /// their implementations resolve as EXTENDS (documented §2.6 gap).
+    pub fn is_interface(&self) -> bool {
+        self.grammar_kind == "interface_declaration"
+    }
+
     /// Build a projected `Class` from an extracted one. See
     /// [`Function::from_extracted`] for why the ids are parameters.
     pub fn from_extracted(
@@ -1278,6 +1294,7 @@ impl Class {
             parent_class,
             bases: c.bases.clone(),
             resolved_bases: vec![],
+            resolved_interfaces: vec![],
             mro: vec![],
             mro_error: false,
             methods: vec![],
@@ -1520,6 +1537,10 @@ pub struct ProjectedGraph {
     /// tagged edges (plain `name()` calls) count as strong.
     pub call_evidence: HashMap<(EntityId, EntityId), ReceiverEvidence>,
     pub subclasses: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Reverse interface index: interface → set of implementing classes.
+    /// Symmetric to `subclasses`; built by `resolve_class_hierarchy` from
+    /// `resolved_interfaces`; powers upstream `implements` traversal.
+    pub implementers: HashMap<EntityId, BTreeSet<EntityId>>,
     pub overridden_by: HashMap<EntityId, BTreeSet<EntityId>>,
     /// Forward override index: override method → (single) base method it
     /// overrides. Absent = no override detected. Downstream traversal of

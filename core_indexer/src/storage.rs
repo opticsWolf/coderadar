@@ -1392,14 +1392,14 @@ impl CodeGraphStore {
     /// Synthetic-kind rows are NOT touched — the register path owns them.
     ///
     /// `keep` holds the fresh projection's (source, target, kind) triples
-    /// for the four structural kinds, with CALLS pairs minus
+    /// for the five structural kinds, with CALLS pairs minus
     /// `synthetic_edges` (built by `stale_edge_keep_set` in lib.rs).
     /// Returns the number of edges retired.
     pub fn retire_stale_edges(
         &self,
         keep: &std::collections::HashSet<(String, String, String)>,
     ) -> macrame::Result<usize> {
-        const STRUCTURAL: [&str; 4] = ["CALLS", "IMPORTS", "EXTENDS", "OVERRIDES"];
+        const STRUCTURAL: [&str; 5] = ["CALLS", "IMPORTS", "EXTENDS", "IMPLEMENTS", "OVERRIDES"];
         let ts = now_iso8601();
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         let stale: Vec<(String, String, String, String)> = runtime().block_on(async {
@@ -2424,6 +2424,7 @@ fn parse_v2_class(id: &str, v: &serde_json::Value) -> std::result::Result<Class,
         bases: deser_or_default(v, "bases"),
         // Cascade-rebuilt, never persisted:
         resolved_bases: vec![],
+        resolved_interfaces: vec![],
         mro: vec![],
         mro_error: false,
         methods: vec![],
@@ -2669,6 +2670,7 @@ mod concept_v2_tests {
                 args_span: None,
             }],
             resolved_bases: vec![],
+            resolved_interfaces: vec![],
             mro: vec![],
             mro_error: false,
             methods: vec![],

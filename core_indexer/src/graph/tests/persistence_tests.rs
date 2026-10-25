@@ -580,3 +580,44 @@ fn namespaced_synthetic_edge_kind_is_persisted_verbatim() {
         .iter()
         .any(|(s, t, kind)| { s == source && t == target && kind == "synthetic:django:handles" }));
 }
+
+#[test]
+fn test_persist_edges_asserts_implements_kind() {
+    // §2.6: the interface-implementation fact reaches the ledger as an
+    // IMPLEMENTS edge (read back via open_edge_triples), and the
+    // reconciler keeps it — stale_edge_keep_set must include the pair or
+    // retire_stale_edges would close what persist just asserted.
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(
+        &graph,
+        "interface Shape { area(): number; }\n\
+         class Circle implements Shape { area(): number { return 0; } }\n",
+        "shapes.ts",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    graph.compute_all_mro(&mut projection);
+    graph.resolve_class_hierarchy(&mut projection);
+    let persisted = graph
+        .persist_edges(&projection)
+        .expect("persist_edges should succeed");
+    assert_eq!(persisted, 1, "only the IMPLEMENTS edge should persist");
+    let store = graph.store.as_ref().expect("temp store attached");
+    let now = crate::storage::now_iso8601();
+    let triples = store.open_edge_triples(&now).expect("read back edges");
+    assert_eq!(
+        triples,
+        vec![(
+            "shapes.ts::Circle".to_string(),
+            "shapes.ts::Shape".to_string(),
+            "IMPLEMENTS".to_string()
+        )],
+        "ledger must carry the IMPLEMENTS triple, got {triples:?}"
+    );
+    // Reconciliation round-trip: the same keep set a fresh analyze builds
+    // must not retire the edge.
+    let keep = crate::stale_edge_keep_set(&projection);
+    let retired = store
+        .retire_stale_edges(&keep)
+        .expect("retire should succeed");
+    assert_eq!(retired, 0, "IMPLEMENTS edge must survive reconciliation");
+}

@@ -253,3 +253,60 @@ fn test_traverse_inherits_alias_for_extends() {
         .iter()
         .any(|(id, _, _)| proj.classes.get(id).is_some_and(|c| c.name == "A")));
 }
+
+#[test]
+fn test_traverse_implements_both_directions() {
+    // §2.6: `implements` walks resolved_interfaces downstream and the
+    // implementers reverse index upstream; `extends` no longer leaks
+    // interface implementations.
+    let proj = snapshot_from(&[(
+        "interface Shape { area(): number; }\n\
+         class Circle implements Shape { area(): number { return 0; } }\n\
+         class Sub extends Circle { }\n",
+        "shapes.ts",
+    )]);
+    let cls = |name: &str| {
+        proj.classes
+            .values()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("{name} should be indexed"))
+            .id
+            .clone()
+    };
+    let (shape, circle, sub) = (cls("Shape"), cls("Circle"), cls("Sub"));
+    let kinds = vec!["implements".to_string()];
+
+    let down = CodeGraph::traverse_bfs(&proj, &circle, 5, &kinds, false, true);
+    let down_ids: Vec<&str> = down.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert!(
+        down_ids.contains(&shape.as_str()),
+        "Circle implements Shape: {down_ids:?}"
+    );
+    assert!(
+        !down_ids.contains(&sub.as_str()),
+        "Sub is not an interface: {down_ids:?}"
+    );
+
+    let up = CodeGraph::traverse_bfs(&proj, &shape, 5, &kinds, true, false);
+    let up_ids: Vec<&str> = up.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert!(
+        up_ids.contains(&circle.as_str()),
+        "Shape implemented by Circle: {up_ids:?}"
+    );
+    assert!(
+        !up_ids.contains(&sub.as_str()),
+        "Sub extends, not implements: {up_ids:?}"
+    );
+
+    // The extends arm is now interface-free.
+    let ext = CodeGraph::traverse_bfs(&proj, &sub, 5, &["extends".to_string()], false, true);
+    let ext_ids: Vec<&str> = ext.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert!(
+        ext_ids.contains(&circle.as_str()),
+        "Sub extends Circle: {ext_ids:?}"
+    );
+    assert!(
+        !ext_ids.contains(&shape.as_str()),
+        "Shape is not a base class: {ext_ids:?}"
+    );
+}

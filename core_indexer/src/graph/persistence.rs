@@ -236,6 +236,33 @@ impl CodeGraph {
             }
         }
 
+        // IMPLEMENTS edges: class → interface (§2.6). `resolved_interfaces`
+        // holds only interface declarations (resolve_class_hierarchy
+        // partitions by target kind); same FK/scope guards as EXTENDS.
+        for (cid, class) in projection.classes.iter() {
+            for iface_id in class.resolved_interfaces.iter() {
+                if !in_scope(cid, iface_id) {
+                    continue;
+                }
+                if dangling(cid, iface_id) {
+                    continue;
+                }
+                if open.contains(&edge_key(cid, iface_id, "IMPLEMENTS")) {
+                    edge_count += 1;
+                    continue;
+                }
+                batch.push(
+                    EdgeAssertion::new(cid.as_str(), iface_id.as_str(), "IMPLEMENTS")
+                        .valid_from(ts_now.as_str())
+                        .weight(1.0),
+                );
+                edge_count += 1;
+                if batch.len() >= 200 {
+                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                }
+            }
+        }
+
         // OVERRIDES edges: override method → base method.
         for (override_fid, base_fid) in projection.overrides_base.iter() {
             if !in_scope(override_fid, base_fid) {

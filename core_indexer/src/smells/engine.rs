@@ -392,6 +392,7 @@ pub(crate) mod tests {
             callees_by_caller: HashMap::new(),
             call_evidence: HashMap::new(),
             subclasses: HashMap::new(),
+            implementers: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
             ambiguous_bases: Vec::new(),

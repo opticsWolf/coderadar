@@ -68,6 +68,16 @@ impl CodeGraph {
                     }
                 }
             }
+            "implements" => {
+                if up {
+                    push_set(snap.implementers.get(id));
+                }
+                if down {
+                    if let Some(c) = snap.classes.get(id) {
+                        out.extend(c.resolved_interfaces.iter().cloned());
+                    }
+                }
+            }
             "overrides" => {
                 if up {
                     push_set(snap.overridden_by.get(id));

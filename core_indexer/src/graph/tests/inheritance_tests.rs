@@ -358,3 +358,84 @@ fn test_builtin_type_bases_filtered() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn test_implements_partitioned_by_target_declaration() {
+    // §2.6: a base resolving to an interface declaration implements;
+    // a base resolving to a class extends — decided by the target, not
+    // the clause spelling. (FakeWorker pins the negative: `implements`
+    // against a *class* stays EXTENDS.)
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(
+        &graph,
+        "interface Shape { area(): number; }\n\
+         class Circle implements Shape { area(): number { return 0; } }\n\
+         class Sub extends Circle { }\n",
+        "shapes.ts",
+    );
+    index_source(
+        &graph,
+        "interface Drawable { }\nclass Sprite implements Drawable { }\n",
+        "game.java",
+    );
+    index_source(
+        &graph,
+        "interface IDisposable { }\nclass Base { }\nclass C : Base, IDisposable { }\n",
+        "prog.cs",
+    );
+    index_source(
+        &graph,
+        "<?php interface Countable { }\nclass Bag implements Countable { }\n",
+        "bag.php",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    graph.compute_all_mro(&mut projection);
+    graph.resolve_class_hierarchy(&mut projection);
+
+    let get = |name: &str| {
+        projection
+            .classes
+            .values()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("{name} should be indexed"))
+    };
+    let circle = get("Circle");
+    assert!(circle.resolved_bases.is_empty(), "{circle:?}");
+    assert_eq!(
+        circle.resolved_interfaces,
+        vec!["shapes.ts::Shape".to_string()]
+    );
+    let sub = get("Sub");
+    assert_eq!(sub.resolved_bases, vec!["shapes.ts::Circle".to_string()]);
+    assert!(sub.resolved_interfaces.is_empty());
+    let sprite = get("Sprite");
+    assert_eq!(
+        sprite.resolved_interfaces,
+        vec!["game.java::Drawable".to_string()],
+        "{sprite:?}"
+    );
+    let prog_c = get("C");
+    assert_eq!(
+        prog_c.resolved_bases,
+        vec!["prog.cs::Base".to_string()],
+        "{prog_c:?}"
+    );
+    assert_eq!(
+        prog_c.resolved_interfaces,
+        vec!["prog.cs::IDisposable".to_string()],
+        "{prog_c:?}"
+    );
+    let bag = get("Bag");
+    assert_eq!(
+        bag.resolved_interfaces,
+        vec!["bag.php::Countable".to_string()],
+        "{bag:?}"
+    );
+    // Reverse index mirrors subclasses for the upstream direction.
+    let impls = projection
+        .implementers
+        .get("shapes.ts::Shape")
+        .expect("Shape should have implementers");
+    assert!(impls.contains("shapes.ts::Circle"));
+    assert!(!projection.subclasses.contains_key("shapes.ts::Shape"));
+}

@@ -644,18 +644,41 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
     //   Python:  class_definition → `superclasses:` → argument_list of identifiers
     //   TS/JS:   class_declaration → class_heritage → `extends_clause value:`
     //            + `implements_clause` (comma-separated children)
-    //   Java/Kt: `superclass:` field directly on the class node
+    //   Java/Kt: `superclass:` field directly on the class node;
+    //            Java `implements` lives in `super_interfaces:` (§2.6)
+    //   C#:      class_declaration → `base_list` (mixed classes+interfaces,
+    //            split later by target declaration — §2.6)
     // So walk the node's descendants and pull base nodes from every source.
     let mut base_nodes: Vec<Node> = Vec::new();
     let mut dfs: Vec<Node> = vec![node];
     while let Some(n) = dfs.pop() {
-        // (a) Direct base fields — Python `superclasses`, Java/Kotlin `superclass`.
-        let fields: [Option<Node>; 3] = [
+        // (a) Direct base fields — Python `superclasses`, Java/Kotlin
+        // `superclass`, Java `super_interfaces` (§2.6).
+        let fields: [Option<Node>; 4] = [
             n.child_by_field_name("superclasses"),
             n.child_by_field_name("superclass"),
+            n.child_by_field_name("super_interfaces"),
             n.child_by_field_name("bases"),
         ];
         for f in fields.into_iter().flatten() {
+            // Java `super_interfaces` wraps its types in a `type_list`,
+            // so no direct child is a base node — descend for that field
+            // only. (Descending generally would swallow keyword call
+            // args like `metaclass=M` as bases.)
+            if f.kind() == "super_interfaces" {
+                let mut stack = vec![f];
+                while let Some(x) = stack.pop() {
+                    let mut c = x.walk();
+                    for k in x.children(&mut c) {
+                        if is_base_node_kind(k.kind()) {
+                            base_nodes.push(k);
+                        } else {
+                            stack.push(k);
+                        }
+                    }
+                }
+                continue;
+            }
             let mut c = f.walk();
             let kids: Vec<Node> = f.children(&mut c).collect();
             let base_kids: Vec<Node> = kids
@@ -676,9 +699,43 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
                     base_nodes.push(v);
                 }
             }
-            "implements_clause" => {
+            "implements_clause" | "class_interface_clause" => {
+                // TS `implements X, Y` / PHP `implements X` — comma-
+                // separated children, `name` in PHP (§2.6).
                 let mut c = n.walk();
                 base_nodes.extend(n.children(&mut c).filter(|k| is_base_node_kind(k.kind())));
+            }
+            // (b2) Java `super_interfaces` — same shape as C# base lists
+            // (wrapper + type children); the child carries no field name
+            // in language-pack's grammar, so match by kind (§2.6).
+            "super_interfaces" => {
+                let mut stack = vec![n];
+                while let Some(x) = stack.pop() {
+                    let mut c = x.walk();
+                    for k in x.children(&mut c) {
+                        if is_base_node_kind(k.kind()) {
+                            base_nodes.push(k);
+                        } else {
+                            stack.push(k);
+                        }
+                    }
+                }
+            }
+            // (c) C# mixed base lists — `class C : Base, IDisposable`.
+            // Collected unfolded; resolve_class_hierarchy splits classes
+            // (EXTENDS) from interfaces (IMPLEMENTS) by target kind (§2.6).
+            "base_list" => {
+                let mut stack = vec![n];
+                while let Some(x) = stack.pop() {
+                    let mut c = x.walk();
+                    for k in x.children(&mut c) {
+                        if is_base_node_kind(k.kind()) {
+                            base_nodes.push(k);
+                        } else {
+                            stack.push(k);
+                        }
+                    }
+                }
             }
             _ => {}
         }
