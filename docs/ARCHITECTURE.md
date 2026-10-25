@@ -114,7 +114,7 @@ CodeRadar/
     agent/graphrag.py           # named seam → P2 context work
     lsp/pool.py                 # named seam → L4 override (DR-2/DR-16)
     skills/coderadar-{mcp,cli}/  # bundled agent skill truth (P2, wheel)
-  tests/                        # 1078 Python tests + Rust 434 (lib + integ)
+  tests/                        # 1109 Python tests + Rust 434 (lib + integ)
   docs/                         # live set only (see §15)
 ```
 
@@ -390,7 +390,7 @@ with documented pending consumers.
 
 ## 13. Quality gates & release policy
 
-- **Tests:** 1512 (434 Rust incl. 5 integration + 1078 Python). Gate bundle:
+- **Tests:** 1543 (434 Rust incl. 5 integration + 1109 Python). Gate bundle:
   release-gate history, read-path discipline, call-edge accounting, snapshot
   honesty, surface parity, skill drift, Rust cross-module, blob reads +
   2 latency gates.
@@ -482,8 +482,9 @@ in kb.db). Statuses at v0.12.0:
 ## 17. Open items & non-goals
 
 Live list: `open-items.md` (all §1 + §2.1 + §3.1 resolved in v0.12;
-§2.3 arg-spans, §2.5 path maps, §2.6 edge kinds, §2.8 TS throughput, §2.9
-SQLite internals still deferred; §2.2/§2.7 decided). Bugs/quirks:
+§2.3 arg-spans, §2.4 smell-metric approximations, §2.5 path maps, §2.6 edge
+kinds, §2.8 TS throughput, §2.9 SQLite internals still deferred;
+§2.2/§2.7 decided). Bugs/quirks:
 `CODERADAR_BUGS_QUIRKS.md` (9 fixed, #10 harness-side carried,
 #1 rollback half needs apply-semantics design).
 
