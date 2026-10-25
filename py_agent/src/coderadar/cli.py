@@ -715,8 +715,8 @@ def replace_body(entity_id: str, new_body: str, expected_hash: str | None, apply
 @_format_option
 def update_signature(entity_id: str, new_signature: str, inject_defaults: bool,
                      apply: bool, fmt: str):
-    """Change a signature; call sites are listed for review
-    (MCP coderadar_update_signature)."""
+    """Change a signature; call sites with supplied values are rewritten,
+    the rest are listed for review (MCP coderadar_update_signature)."""
     from . import ops
     _enter_project()
     _edit(fmt, lambda: ops.update_signature(entity_id, new_signature, inject_defaults,

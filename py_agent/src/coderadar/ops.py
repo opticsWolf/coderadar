@@ -1379,7 +1379,9 @@ def replace_body(entity_id: str, new_body: str, expected_hash: str | None = None
 def update_signature(entity_id: str, new_signature: str, inject_defaults: bool = False,
                      dry_run: bool = True, *, graph: Any = None) -> dict:
     """Change a function/method signature. The definition is rewritten;
-    call sites come back as ``plan.unverified_sites`` for manual review."""
+    call sites with explicit `call_site_values` and a recorded arg span
+    become real edits (§2.3); the rest come back as
+    ``plan.unverified_sites`` for manual review."""
     _require_index()
     g = graph or _graph()
     return _edit(lambda: g.plan_update_signature(

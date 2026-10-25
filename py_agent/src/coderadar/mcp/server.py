@@ -772,9 +772,9 @@ def create_server(graph: Any) -> MCPServer:
             "Change a function/method signature. "
             "With dry_run=True: shows the signature change and all affected call sites. "
             "With dry_run=False: writes the definition change AND updates the graph. "
-            "NOTE: the definition signature is edited automatically, but call sites are "
-            "returned as unverified_sites (with line numbers) for manual review — "
-            "call-site argument spans are not indexed, so they cannot be auto-edited safely."
+            "NOTE: the definition signature is edited automatically; call sites with "
+            "explicit per-caller values and a recorded arg span (§2.3) are edited too, "
+            "the rest are returned as unverified_sites (with line numbers) for manual review."
             " " + _ENTITY_ID_GRAMMAR
         ),
         annotations={
