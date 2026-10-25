@@ -204,9 +204,10 @@ Internal: `EmbeddingVec`, `ProjectedGraph`.
 | `contains` | yes (structural) | module → members |
 | `calls` | yes | asserted + external + unresolved + route shares (DR-32) |
 | `imports` | yes | incl. `FromImport` / `ModuleImport` / `StarImport` / `RelativeImport` |
-| `extends` | yes | `IMPLEMENTS` folded in (DR-24, open-items §2.6) |
+| `extends` | yes | classes only (since dev: interfaces split to IMPLEMENTS, §2.6) |
 | `overrides` | yes | |
-| `implements` `references` `decorates` `instantiates` | declared, unpopulated | open-items §2.6 |
+| `implements` | yes (dev) | partitioned by target declaration; TS/Java/C#/PHP |
+| `references` `decorates` `instantiates` | declared, unpopulated | open-items §2.6 |
 
 `graph_stats` breaks out asserted / external / unresolved / route shares —
 the outer number and the ledger rows disagree by category, never by loss
@@ -469,7 +470,7 @@ in kb.db). Statuses at v0.12.0:
 | DR-21 | Precision over coverage (v0.10) | closed |
 | DR-22 | Deprecations live until 0.13 | carried |
 | DR-23 | TS throughput gap accepted | carried |
-| DR-24 | IMPLEMENTS folded into extends | carried |
+| DR-24 | IMPLEMENTS folded into extends — unfolded on dev (§2.6 slice A) | closed |
 | DR-25 | Source history in blobs (§0.6/§1.9/§3.0/§3.4) | closed |
 | DR-26 | Version policy +0.0.1/feature | open (process) |
 | DR-27 | Self-host allow-list, deny-wins, dry-run | closed |
@@ -487,8 +488,11 @@ in kb.db). Statuses at v0.12.0:
 
 Live list: `open-items.md` (§2.3 landed on dev_0.13 — extraction, ledger
 `call_sites`, cascade edits, inject synthesis; §2.10 landed on dev_0.13 —
-model tables, rehydrate, hybrid RRF; all §1 + §2.1 + §3.1 resolved
-in v0.12; §2.4 smell-metric approximations, §2.5 path maps, §2.6 edge kinds,
+model tables, rehydrate, hybrid RRF; §2.6 slice A landed on dev —
+IMPLEMENTS split from EXTENDS (TS/Java/C#/PHP), traverse both directions;
+all §1 + §2.1 + §3.1 resolved
+in v0.12; §2.4 smell-metric approximations, §2.5 path maps, §2.6 remainder
+(references/decorates/instantiates, Go/Kotlin/Protocol interfaces),
 §2.8 TS throughput, §2.9 SQLite internals still
 deferred; §2.2/§2.7 decided). Bugs/quirks:
 `CODERADAR_BUGS_QUIRKS.md` (9 fixed, #10 harness-side carried,

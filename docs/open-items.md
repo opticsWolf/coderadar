@@ -213,6 +213,19 @@ or not at all.
 `extends`, so Java/Go/TypeScript interface relationships are indistinguishable
 from class inheritance in a traversal.
 
+> **Status (dev): slice A landed.** `resolve_class_hierarchy` partitions
+> resolved bases by target declaration — interface declarations
+> (`interface_declaration` grammar kind: TypeScript, Java, C#, PHP) land in
+> `Class.resolved_interfaces` + the `implementers` reverse index and persist
+> as IMPLEMENTS edges (keep-set and STRUCTURAL lists cover the fifth kind);
+> `traverse` walks `implements` both directions. Extraction extended where
+> `implements` was missed entirely (Java `super_interfaces`, C# `base_list`,
+> PHP `class_interface_clause`; matched by node kind — field names are
+> unreliable across grammar versions). MRO still folds (reads unresolved
+> `bases`). Remaining: `references`/`decorates`/`instantiates` still
+> declared-unpopulated; Go/Kotlin/Protocol interfaces undetected (resolve
+> as EXTENDS — documented gap). Commit `e3eb350` (+ this one).
+
 ### 2.7 Stack Graphs / L1 resolution
 
 *(`v0.7-improvement-plan.md` "out of scope")*

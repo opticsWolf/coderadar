@@ -591,7 +591,7 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Traverse the graph from a starting entity along specified edge kinds. "
             "Direction: 'downstream' (callees), 'upstream' (callers), 'both'. "
-            "Edge kinds: 'calls', 'imports', 'inherits' (alias 'extends'), 'overrides'; "
+            "Edge kinds: 'calls', 'imports', 'inherits' (alias 'extends'), 'implements', 'overrides'; "
             "default all. Returns a tree of linked entities. "
             "Use for custom flow analysis beyond explore/affected."
             " " + _ENTITY_ID_GRAMMAR

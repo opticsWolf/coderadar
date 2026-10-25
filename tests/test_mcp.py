@@ -863,6 +863,26 @@ class TestTraverse:
         result = _traverse(None, "nonexistent::ghost", "both", None, 3)
         assert "not found" in result.lower() or "codegraph" in result.lower()
 
+    def test_traverse_implements_kind(self, tmp_path, monkeypatch):
+        # §2.6: `implements` walks interface implementations; `extends`
+        # no longer leaks them. Needs a built _core with slice A.
+        import coderadar
+        from coderadar import ops
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "shapes.ts").write_text(
+            "interface Shape { area(): number; }\n"
+            "class Circle implements Shape { area(): number { return 0; } }\n"
+            "class Sub extends Circle { }\n")
+        coderadar.analyze(".", create_store=True)
+        down = ops.traverse("shapes.ts::Circle", "downstream", ["implements"])
+        assert "shapes.ts::Shape" in [r["id"] for r in down["results"]]
+        assert all(r["edge_type"] == "implements" for r in down["results"] if r["depth"] > 0)
+        up = ops.traverse("shapes.ts::Shape", "upstream", ["implements"])
+        assert "shapes.ts::Circle" in [r["id"] for r in up["results"]]
+        ext = ops.traverse("shapes.ts::Sub", "downstream", ["extends"])
+        ext_ids = [r["id"] for r in ext["results"]]
+        assert "shapes.ts::Circle" in ext_ids and "shapes.ts::Shape" not in ext_ids
+
 
 class TestUninitializedIndex:
     """The primary tools before any index exists.
