@@ -950,6 +950,45 @@ impl MutationEngine {
         // Caller file contents, read once per caller for span verification.
         let mut caller_sources: HashMap<String, String> = HashMap::new();
 
+        // §2.3 step 4 (inject_defaults): a pure addition of defaulted params
+        // can be synthesized at call sites as `name=default` keywords.
+        // Anything else — removals, reorderings, added params without
+        // defaults, unparseable signatures — keeps the manual-review path.
+        let new_params = parse_sig_params(new_signature);
+        let old_param_names: Vec<&str> = fn_entity
+            .parameters
+            .iter()
+            .filter(|p| !p.is_varargs && !p.is_kwargs)
+            .map(|p| p.name.as_str())
+            .collect();
+        let new_param_names: Vec<&str> =
+            new_params.iter().map(|(n, _)| n.as_str()).collect();
+        let common_old: Vec<&str> = old_param_names
+            .iter()
+            .filter(|n| new_param_names.contains(n))
+            .copied()
+            .collect();
+        let common_new: Vec<&str> = new_param_names
+            .iter()
+            .filter(|n| old_param_names.contains(n))
+            .copied()
+            .collect();
+        let removed: Vec<&str> = old_param_names
+            .iter()
+            .filter(|n| !new_param_names.contains(n))
+            .copied()
+            .collect();
+        let added: Vec<(String, String)> = new_params
+            .iter()
+            .filter(|(n, _)| !old_param_names.contains(&n.as_str()))
+            .filter_map(|(n, d)| d.clone().map(|v| (n.clone(), v)))
+            .collect();
+        let added_incomplete = new_params
+            .iter()
+            .any(|(n, d)| !old_param_names.contains(&n.as_str()) && d.is_none());
+        let inject_synthesizable =
+            common_old == common_new && removed.is_empty() && !added_incomplete;
+
         for caller_id in &callers {
             if let Some(caller_fn) = projection.functions.get(caller_id) {
                 let caller_file = module_file_path(projection, &caller_fn.parent_module);
@@ -1018,10 +1057,78 @@ impl MutationEngine {
                             }),
                         }
                     } else if inject_defaults {
-                        warnings.push(format!(
-                            "Call site in {} line {} — inject default args manually",
-                            caller_file, line
-                        ));
+                        // §2.3 step 4: synthesize `name=default` keywords for
+                        // pure-addition signatures at Python call sites (the
+                        // only call syntax where `name=value` is valid).
+                        // Annotations/defaults-only changes need no call edit.
+                        let caller_lang = projection
+                            .functions
+                            .get(caller_id)
+                            .and_then(|f| projection.modules.get(&f.parent_module))
+                            .map(|m| m.language);
+                        if inject_synthesizable
+                            && caller_lang == Some(crate::types::Language::Python)
+                            && !added.is_empty()
+                        {
+                            let source = match caller_sources.get(caller_id.as_str()) {
+                                Some(s) => s.clone(),
+                                None => {
+                                    let s = read_project_file(&caller_file);
+                                    caller_sources.insert(caller_id.clone(), s.clone());
+                                    s
+                                }
+                            };
+                            let bytes = source.as_bytes();
+                            let span_ok = args_span.is_some_and(|sp| {
+                                sp.end <= bytes.len()
+                                    && sp.end > sp.start + 1
+                                    && bytes[sp.start] == b'('
+                                    && bytes[sp.end - 1] == b')'
+                            });
+                            match (args_span, span_ok) {
+                                (Some(sp), true) => {
+                                    let inner =
+                                        source[sp.start + 1..sp.end - 1].trim().to_string();
+                                    if inner.contains("**") {
+                                        warnings.push(format!(
+                                            "Call site in {} line {} — kwargs unpacking; inject default args manually",
+                                            caller_file, line
+                                        ));
+                                    } else {
+                                        let missing: Vec<String> = added
+                                            .iter()
+                                            .filter(|(n, _)| !has_kwarg(&inner, n))
+                                            .map(|(n, d)| format!("{n}={d}"))
+                                            .collect();
+                                        if !missing.is_empty() {
+                                            let replacement = if inner.is_empty() {
+                                                format!("({})", missing.join(", "))
+                                            } else {
+                                                format!(
+                                                    "({inner}, {})",
+                                                    missing.join(", ")
+                                                )
+                                            };
+                                            edits.push(MutationEdit {
+                                                file: caller_file.clone(),
+                                                span: sp,
+                                                replacement,
+                                                expected_hash: hash_span(bytes, sp),
+                                            });
+                                        }
+                                    }
+                                }
+                                _ => warnings.push(format!(
+                                    "Call site in {} line {} — inject default args manually",
+                                    caller_file, line
+                                )),
+                            }
+                        } else {
+                            warnings.push(format!(
+                                "Call site in {} line {} — inject default args manually",
+                                caller_file, line
+                            ));
+                        }
                     } else {
                         unverified.push(UnverifiedSite {
                             file: caller_file.clone(),
@@ -2520,6 +2627,208 @@ fn signature_name(new_signature: &str) -> Option<&str> {
     }
 }
 
+/// Split a parameter-list inner (`a, b: int = 2, *args`) on top-level commas.
+/// Bracket- and string-aware so defaults like `d={"k": (1, 2)}` survive.
+fn split_top_level(inner: &str) -> Vec<&str> {
+    let bytes = inner.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth: i32 = 0;
+    let mut quote: Option<u8> = None;
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+        } else if b == b'\'' || b == b'"' {
+            quote = Some(b);
+        } else if b == b'(' || b == b'[' || b == b'{' {
+            depth += 1;
+        } else if b == b')' || b == b']' || b == b'}' {
+            depth -= 1;
+        } else if b == b',' && depth == 0 {
+            parts.push(&inner[start..i]);
+            start = i + 1;
+        }
+        i += 1;
+    }
+    parts.push(&inner[start..]);
+    parts
+}
+
+/// Parse one `name [= default]` (annotation stripped) from a parameter part.
+/// Returns `None` for markers (`/`, `*`), varargs (`*a`, `**kw`) and
+/// destructured params (`{a}`, `[a]`) — none of them are synthesizable names.
+fn parse_sig_param(part: &str) -> Option<(String, Option<String>)> {
+    let p = part.trim();
+    if p.is_empty() || p == "/" || p == "*" {
+        return None;
+    }
+    if p.starts_with('*') || p.starts_with('{') || p.starts_with('[') || p.starts_with('(') {
+        return None;
+    }
+    // First top-level `=` that is a default separator (not ==, !=, <=,
+    // >=, =>). String-aware via the same scan as the comma split.
+    let bytes = p.as_bytes();
+    let mut depth: i32 = 0;
+    let mut quote: Option<u8> = None;
+    let mut eq_at: Option<usize> = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+        } else if b == b'\'' || b == b'"' {
+            quote = Some(b);
+        } else if b == b'(' || b == b'[' || b == b'{' {
+            depth += 1;
+        } else if b == b')' || b == b']' || b == b'}' {
+            depth -= 1;
+        } else if b == b'=' && depth == 0 {
+            let prev = if i > 0 { bytes[i - 1] } else { 0 };
+            let next = if i + 1 < bytes.len() { bytes[i + 1] } else { 0 };
+            if !matches!(prev, b'=' | b'!' | b'<' | b'>') && !matches!(next, b'=' | b'>') {
+                eq_at = Some(i);
+                break;
+            }
+        }
+        i += 1;
+    }
+    let (name_half, default) = match eq_at {
+        Some(e) => {
+            let d = p[e + 1..].trim();
+            (p[..e].trim(), if d.is_empty() { None } else { Some(d.to_string()) })
+        }
+        None => (p, None),
+    };
+    // Strip annotation: first top-level `:` (slices `a[1:2]` live deeper).
+    let mut name_end = name_half.len();
+    {
+        let nb = name_half.as_bytes();
+        let mut depth: i32 = 0;
+        let mut qi: Option<u8> = None;
+        let mut k = 0;
+        while k < nb.len() {
+            let b = nb[k];
+            if let Some(q) = qi {
+                if b == q {
+                    qi = None;
+                }
+            } else if b == b'\'' || b == b'"' {
+                qi = Some(b);
+            } else if b == b'[' || b == b'(' || b == b'{' {
+                depth += 1;
+            } else if b == b']' || b == b')' || b == b'}' {
+                depth -= 1;
+            } else if b == b':' && depth == 0 {
+                name_end = k;
+                break;
+            }
+            k += 1;
+        }
+    }
+    let name = name_half[..name_end].trim().trim_end_matches('?').to_string();
+    if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
+        return None;
+    }
+    Some((name, default))
+}
+
+/// Parse a new signature's parameter list into `(name, default)` pairs
+/// (§2.3 step 4). Unparseable input yields no params, which downstream
+/// treats as "cannot synthesize" — never as "no change".
+fn parse_sig_params(new_signature: &str) -> Vec<(String, Option<String>)> {
+    let open = match new_signature.find('(') {
+        Some(i) => i,
+        None => return Vec::new(),
+    };
+    let bytes = new_signature.as_bytes();
+    let mut depth: i32 = 0;
+    let mut quote: Option<u8> = None;
+    let mut close: Option<usize> = None;
+    let mut i = open;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b == q {
+                quote = None;
+            }
+        } else if b == b'\'' || b == b'"' {
+            quote = Some(b);
+        } else if b == b'(' || b == b'[' || b == b'{' {
+            depth += 1;
+        } else if b == b')' || b == b']' || b == b'}' {
+            depth -= 1;
+            if depth == 0 {
+                close = Some(i);
+                break;
+            }
+            if depth < 0 {
+                return Vec::new();
+            }
+        }
+        i += 1;
+    }
+    let close = match close {
+        Some(c) => c,
+        None => return Vec::new(),
+    };
+    split_top_level(&new_signature[open + 1..close])
+        .into_iter()
+        .filter_map(parse_sig_param)
+        .collect()
+}
+
+/// Whether call-arg text already passes `name=` as a keyword (`==`, `=>`
+/// and bare same-name values do not count — only the duplicate-kwarg risk).
+fn has_kwarg(args_inner: &str, name: &str) -> bool {
+    let bytes = args_inner.as_bytes();
+    let n = name.as_bytes();
+    if n.is_empty() {
+        return false;
+    }
+    let mut i = 0;
+    while i + n.len() <= bytes.len() {
+        if &bytes[i..i + n.len()] == n {
+            let before_ok = i == 0
+                || {
+                    let b = bytes[i - 1];
+                    !(b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
+                };
+            if before_ok {
+                let mut j = i + n.len();
+                while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'=' {
+                    let next = if j + 1 < bytes.len() { bytes[j + 1] } else { 0 };
+                    if next != b'=' && next != b'>' {
+                        return true;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
 #[derive(Debug)]
 pub enum MutationError {
     EntityNotFound(String),
@@ -3820,6 +4129,162 @@ mod tests {
                 "{:?}",
                 plan.unverified_sites
             );
+        }
+
+        /// §2.3 step 4: `inject_defaults` appends added defaulted params
+        /// as keywords at Python call sites with recorded spans.
+        #[test]
+        fn inject_defaults_appends_new_defaulted_param() {
+            let dir = tempfile::tempdir().unwrap();
+            let (projection, file) = indexed_projection(dir.path());
+            let entity_id = format!("{}::target_fn", file);
+
+            let plan = engine()
+                .plan_signature_update(
+                    &entity_id,
+                    "def target_fn(p=0):",
+                    &HashMap::new(),
+                    true,
+                    true,
+                    &projection,
+                )
+                .unwrap();
+
+            assert_eq!(plan.edits.len(), 2, "{:?}", plan.edits);
+            let src = std::fs::read_to_string(&file).unwrap();
+            let applied =
+                crate::mutation::edit::apply_edits_to_file(&src, &plan.edits).unwrap();
+            assert!(applied.contains("def target_fn(p=0):"));
+            assert!(applied.contains("return target_fn(p=0)"));
+            assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+            // Module-level call (line 8) stays textual-only.
+            assert_eq!(textual_sites(&plan).len(), 1);
+        }
+
+        /// §2.3 step 4: an added param WITHOUT a default cannot be
+        /// synthesized — the warning path stands.
+        #[test]
+        fn inject_defaults_with_required_param_warns() {
+            let dir = tempfile::tempdir().unwrap();
+            let (projection, file) = indexed_projection(dir.path());
+            let entity_id = format!("{}::target_fn", file);
+
+            let plan = engine()
+                .plan_signature_update(
+                    &entity_id,
+                    "def target_fn(p):",
+                    &HashMap::new(),
+                    true,
+                    true,
+                    &projection,
+                )
+                .unwrap();
+
+            assert_eq!(plan.edits.len(), 1, "only the definition");
+            assert!(
+                plan.warnings.iter().any(|w| w.contains("inject default")),
+                "{:?}",
+                plan.warnings
+            );
+        }
+
+        /// §2.3 step 4: removals are not synthesized (positional calls
+        /// would silently break) — manual review instead.
+        #[test]
+        fn inject_defaults_with_removed_param_warns() {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("r.py");
+            std::fs::write(
+                &file,
+                "def target_fn(a, b):\n    return a\n\n\ndef direct_caller():\n    return target_fn(1, 2)\n",
+            )
+            .unwrap();
+            let file_str = file.to_string_lossy().to_string();
+            let graph = CodeGraph::new(GraphConfig::default());
+            graph
+                .index_file(
+                    &std::fs::read_to_string(&file).unwrap(),
+                    &file_str,
+                    &Language::Python,
+                )
+                .unwrap();
+            let mut projection = (*graph.snapshot()).clone();
+            graph.resolve_all_calls(&mut projection);
+            let entity_id = format!("{}::target_fn", file_str);
+
+            let plan = engine()
+                .plan_signature_update(
+                    &entity_id,
+                    "def target_fn(a):",
+                    &HashMap::new(),
+                    true,
+                    true,
+                    &projection,
+                )
+                .unwrap();
+
+            assert_eq!(plan.edits.len(), 1, "only the definition");
+            assert!(
+                plan.warnings.iter().any(|w| w.contains("inject default")),
+                "{:?}",
+                plan.warnings
+            );
+        }
+
+        /// §2.3 step 4: synthesis is Python call syntax only — other
+        /// languages keep the warning path even for pure additions.
+        #[test]
+        fn inject_defaults_skips_non_python_callers() {
+            let dir = tempfile::tempdir().unwrap();
+            let (projection, file) = indexed_rs_projection(dir.path());
+            let entity_id = format!("{}::target_fn", file);
+
+            let plan = engine()
+                .plan_signature_update(
+                    &entity_id,
+                    "fn target_fn(p: i32 = 0)",
+                    &HashMap::new(),
+                    true,
+                    true,
+                    &projection,
+                )
+                .unwrap();
+
+            assert_eq!(plan.edits.len(), 1, "only the definition");
+            assert!(
+                plan.warnings.iter().any(|w| w.contains("inject default")),
+                "{:?}",
+                plan.warnings
+            );
+        }
+
+        #[test]
+        fn sig_params_parse_names_defaults_and_skips() {
+            let got = parse_sig_params("def f(a, b: int = 2, *args, c, d=4, **kw):");
+            assert_eq!(
+                got,
+                vec![
+                    ("a".to_string(), None),
+                    ("b".to_string(), Some("2".to_string())),
+                    ("c".to_string(), None),
+                    ("d".to_string(), Some("4".to_string())),
+                ]
+            );
+            assert!(parse_sig_params("not a signature").is_empty());
+            let nested = parse_sig_params("def f(a, d={\"k\": (1, 2)}):");
+            assert_eq!(nested.len(), 2);
+            assert_eq!(nested[1].0, "d");
+            assert_eq!(nested[1].1.as_deref(), Some("{\"k\": (1, 2)}"));
+        }
+
+        #[test]
+        fn has_kwarg_matches_only_keyword_form() {
+            assert!(has_kwarg("1, q=5", "q"));
+            assert!(has_kwarg("1, q = 5", "q"));
+            assert!(!has_kwarg("1, 2", "q"));
+            assert!(!has_kwarg("quick(1)", "q"));
+            assert!(!has_kwarg("a==b", "a"));
+            assert!(!has_kwarg("f(x => 1)", "x"));
         }
 
         /// §2.3 step 3: no recorded span (pre-§2.3 index) falls back to the
