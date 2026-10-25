@@ -79,6 +79,60 @@ fn test_index_file_and_update_file_agree_on_spans() {
     assert_eq!(via_index.parameters.len(), via_update.parameters.len());
 }
 
+/// §2.3 step 3 (update-file): a caller edit re-extracts with arg spans
+/// and scoped re-resolution keeps `calls` ∥ `resolved_calls` aligned, so
+/// the cascade sees spans for calls added after the initial index.
+#[test]
+fn test_update_file_refreshes_call_arg_spans() {
+    let graph = CodeGraph::new(GraphConfig::default());
+    graph
+        .update_file(
+            "calls.py",
+            Some("def target_fn(a):\n    return a\n\ndef direct_caller():\n    return target_fn(1)\n"),
+            None,
+        )
+        .unwrap();
+    let first = graph
+        .snapshot()
+        .functions
+        .get(&canon_id("calls.py", "direct_caller"))
+        .cloned()
+        .unwrap();
+    assert_eq!(first.calls.len(), first.resolved_calls.len());
+    let span = first.calls[0].args_span.expect("span indexed");
+    assert_eq!(
+        &"def target_fn(a):\n    return a\n\ndef direct_caller():\n    return target_fn(1)\n"[span.start..span.end],
+        "(1)"
+    );
+
+    graph
+        .update_file(
+            "calls.py",
+            Some("def target_fn(a):\n    return a\n\ndef direct_caller():\n    return target_fn(1)\n\ndef second_caller():\n    return target_fn(2, 3)\n"),
+            None,
+        )
+        .unwrap();
+    let snap = graph.snapshot();
+    let second = snap
+        .functions
+        .get(&canon_id("calls.py", "second_caller"))
+        .cloned()
+        .unwrap();
+    assert_eq!(second.calls.len(), second.resolved_calls.len());
+    let span = second.calls[0].args_span.expect("span re-resolved");
+    assert_eq!(
+        &"def target_fn(a):\n    return a\n\ndef direct_caller():\n    return target_fn(1)\n\ndef second_caller():\n    return target_fn(2, 3)\n"[span.start..span.end],
+        "(2, 3)"
+    );
+    // Pre-existing caller keeps its span through the scoped pass.
+    let first_again = snap
+        .functions
+        .get(&canon_id("calls.py", "direct_caller"))
+        .cloned()
+        .unwrap();
+    assert!(first_again.calls[0].args_span.is_some());
+}
+
 /// A body edit that leaves the signature alone must still reach the graph.
 #[test]
 fn test_update_file_reindexes_a_changed_function() {

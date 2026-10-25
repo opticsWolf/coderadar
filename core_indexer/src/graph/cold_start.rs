@@ -554,7 +554,7 @@ mod tests {
         assert_eq!(f.resolved_calls.len(), 2);
         assert_eq!(f.kind, FunctionKind::Free);
         assert_eq!(f.parent_module, "a.py::module");
-        assert!(f.calls.is_empty()); // raw refs never persisted
+        assert!(f.calls.is_empty()); // fixture wrote no call_sites (§2.3)
         let m = &g.modules["a.py::module"];
         assert_eq!(m.path, PathBuf::from("a.py"));
         assert_eq!(m.classes, vec!["a.py::C".to_string()]);

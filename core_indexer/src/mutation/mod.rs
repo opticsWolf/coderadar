@@ -947,6 +947,9 @@ impl MutationEngine {
             return Err(MutationError::TooManyFiles(callers.len()));
         }
 
+        // Caller file contents, read once per caller for span verification.
+        let mut caller_sources: HashMap<String, String> = HashMap::new();
+
         for caller_id in &callers {
             if let Some(caller_fn) = projection.functions.get(caller_id) {
                 let caller_file = module_file_path(projection, &caller_fn.parent_module);
@@ -965,16 +968,55 @@ impl MutationEngine {
 
                     // resolved_calls is parallel to calls — use index i for line/col
                     let line = caller_fn.calls.get(i).map(|c| c.line as u32).unwrap_or(0);
+                    let args_span = caller_fn.calls.get(i).and_then(|c| c.args_span);
 
                     if let Some(kv_value) = call_site_values.get(caller_id) {
-                        // No arg span is stored in the graph — surface for manual review
-                        unverified.push(UnverifiedSite {
-                            file: caller_file.clone(),
-                            line,
-                            snippet: format!("call to {} — new args: {}", entity_id, kv_value),
-                            reason: "Call-site arg span unavailable; apply arg change manually"
-                                .into(),
+                        // §2.3 step 3: with recorded arg spans, an explicit
+                        // per-caller value becomes a real edit. Without a
+                        // span (pre-§2.3 index, macro body) or when the span
+                        // no longer holds `(…)` on disk, fall back to review.
+                        let source = match caller_sources.get(caller_id.as_str()) {
+                            Some(s) => s.clone(),
+                            None => {
+                                let s = read_project_file(&caller_file);
+                                caller_sources.insert(caller_id.clone(), s.clone());
+                                s
+                            }
+                        };
+                        let bytes = source.as_bytes();
+                        let span_ok = args_span.is_some_and(|sp| {
+                            sp.end <= bytes.len()
+                                && sp.end > sp.start + 1
+                                && bytes[sp.start] == b'('
+                                && bytes[sp.end - 1] == b')'
                         });
+                        match (args_span, span_ok) {
+                            (Some(sp), true) => {
+                                let trimmed = kv_value.trim();
+                                let replacement = if trimmed.starts_with('(')
+                                    && trimmed.ends_with(')')
+                                {
+                                    trimmed.to_string()
+                                } else {
+                                    format!("({trimmed})")
+                                };
+                                edits.push(MutationEdit {
+                                    file: caller_file.clone(),
+                                    span: sp,
+                                    replacement,
+                                    expected_hash: hash_span(bytes, sp),
+                                });
+                            }
+                            _ => unverified.push(UnverifiedSite {
+                                file: caller_file.clone(),
+                                line,
+                                snippet: format!(
+                                    "call to {} — new args: {}",
+                                    entity_id, kv_value
+                                ),
+                                reason: "Call-site arg span unavailable or stale; apply arg change manually".into(),
+                            }),
+                        }
                     } else if inject_defaults {
                         warnings.push(format!(
                             "Call site in {} line {} — inject default args manually",
@@ -3732,6 +3774,90 @@ mod tests {
             assert_eq!(sites.len(), 1, "{:?}", plan.unverified_sites);
             assert_eq!(sites[0].file, file);
             assert_eq!(sites[0].line, 8);
+        }
+
+        /// §2.3 step 3: an explicit per-caller value plus a recorded arg
+        /// span becomes a real call-site edit (not an unverified site).
+        #[test]
+        fn signature_update_with_values_rewrites_call_args() {
+            let dir = tempfile::tempdir().unwrap();
+            let (projection, file) = indexed_projection(dir.path());
+            let entity_id = format!("{}::target_fn", file);
+            let caller_id = format!("{}::direct_caller", file);
+
+            let mut values = HashMap::new();
+            values.insert(caller_id, "0".to_string());
+            let plan = engine()
+                .plan_signature_update(
+                    &entity_id,
+                    "def target_fn(p: int):",
+                    &values,
+                    false,
+                    true,
+                    &projection,
+                )
+                .unwrap();
+
+            // Definition edit + one call-site edit covering the old `()`.
+            assert_eq!(plan.edits.len(), 2, "{:?}", plan.edits);
+            let src = std::fs::read_to_string(&file).unwrap();
+            let call_edit = plan
+                .edits
+                .iter()
+                .find(|e| e.replacement == "(0)")
+                .expect("call-site edit missing");
+            assert_eq!(&src[call_edit.span.start..call_edit.span.end], "()");
+            let applied =
+                crate::mutation::edit::apply_edits_to_file(&src, &plan.edits).unwrap();
+            assert!(applied.contains("def target_fn(p: int):"));
+            assert!(applied.contains("return target_fn(0)"));
+            // The module-level call (line 8) is still textual-only.
+            let sites = textual_sites(&plan);
+            assert_eq!(sites.len(), 1, "{:?}", plan.unverified_sites);
+            assert!(
+                !plan.unverified_sites.iter().any(|s| s.reason
+                    == "Call-site arg span unavailable or stale; apply arg change manually"),
+                "{:?}",
+                plan.unverified_sites
+            );
+        }
+
+        /// §2.3 step 3: no recorded span (pre-§2.3 index) falls back to the
+        /// old unverified report instead of guessing bytes.
+        #[test]
+        fn signature_update_without_span_falls_back_to_unverified() {
+            let dir = tempfile::tempdir().unwrap();
+            let (projection, file) = indexed_projection(dir.path());
+            let entity_id = format!("{}::target_fn", file);
+            let caller_id = format!("{}::direct_caller", file);
+            // Strip spans to simulate a pre-§2.3 graph.
+            let mut stripped = projection.clone();
+            if let Some(f) = stripped.functions.get(&caller_id) {
+                let mut c = (**f).clone();
+                for call in &mut c.calls {
+                    call.args_span = None;
+                }
+                stripped.functions.insert(caller_id.clone(), std::sync::Arc::new(c));
+            }
+            let mut values = HashMap::new();
+            values.insert(caller_id, "0".to_string());
+            let plan = engine()
+                .plan_signature_update(
+                    &entity_id,
+                    "def target_fn(p: int):",
+                    &values,
+                    false,
+                    true,
+                    &stripped,
+                )
+                .unwrap();
+            assert_eq!(plan.edits.len(), 1, "only the definition edit");
+            assert!(
+                plan.unverified_sites.iter().any(|s| s.reason
+                    == "Call-site arg span unavailable or stale; apply arg change manually"),
+                "{:?}",
+                plan.unverified_sites
+            );
         }
 
         #[test]

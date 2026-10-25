@@ -1603,6 +1603,26 @@ fn function_content(f: &Function) -> serde_json::Value {
     // Post-resolution state: the ONLY call data the ledger keeps. Cold
     // start rebuilds the call indices from this (see cold_start).
     v["resolved_calls"] = serde_json::json!(&f.resolved_calls);
+    // §2.3 step 2: raw call sites ride alongside, parallel to
+    // `resolved_calls` (same order). Cold start rehydrates `Function.calls`
+    // from this so arg spans survive reload (unlike `call_evidence`).
+    // Omitted when empty to keep the ledger small; missing key reads back
+    // as empty (pre-§2.3 stores degrade to the unverified fallback).
+    if !f.calls.is_empty() {
+        let sites: Vec<CallSiteSpan> = f
+            .calls
+            .iter()
+            .map(|c| CallSiteSpan {
+                name: c.name.clone(),
+                path: c.path.clone(),
+                line: c.line,
+                col: c.col,
+                name_span: c.name_span,
+                args_span: c.args_span,
+            })
+            .collect();
+        v["call_sites"] = serde_json::json!(&sites);
+    }
     // Callback and template-method liveness, kept for the same reason.
     if !f.resolved_refs.is_empty() {
         v["resolved_refs"] = serde_json::json!(&f.resolved_refs);
@@ -1961,9 +1981,20 @@ fn parse_v2_function(id: &str, v: &serde_json::Value) -> std::result::Result<Fun
         parent_class: opt_str(v, "parent_class"),
         parameters: deser_or_default(v, "parameters"),
         return_type: opt_str(v, "return_type"),
-        // Raw per-call-site refs are deliberately NOT persisted (design);
-        // cold start skips resolve_all_calls.
-        calls: vec![],
+        // §2.3 step 2: raw call sites now ride the ledger as `call_sites`
+        // (parallel to `resolved_calls`). Missing key = pre-§2.3 store →
+        // empty, preserving the old unverified-fallback behavior.
+        calls: deser_or_default::<Vec<CallSiteSpan>>(v, "call_sites")
+            .into_iter()
+            .map(|s| UnresolvedRef {
+                name: s.name,
+                path: s.path,
+                line: s.line,
+                col: s.col,
+                name_span: s.name_span,
+                args_span: s.args_span,
+            })
+            .collect(),
         resolved_calls: deser_or_default(v, "resolved_calls"),
         decorators: str_list(v, "decorators"),
         setter_of: None,
@@ -2381,7 +2412,7 @@ mod concept_v2_tests {
                 assert_eq!(got.return_type, f.return_type);
                 assert_eq!(got.kind, f.kind);
                 assert_eq!(got.resolved_calls, f.resolved_calls);
-                assert!(got.calls.is_empty(), "raw call sites are not persisted");
+                assert_eq!(got.calls, f.calls, "raw call sites now persist (§2.3)");
                 assert_eq!(got.resolved_refs, f.resolved_refs);
                 assert_eq!(got.is_async, f.is_async);
                 assert_eq!(got.is_generator, f.is_generator);
@@ -2396,6 +2427,40 @@ mod concept_v2_tests {
                 assert_eq!(got.body_span, f.body_span);
                 assert_eq!(got.decorators_span, f.decorators_span);
             }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    /// §2.3 step 2: arg spans survive the ledger round-trip, and a
+    /// pre-§2.3 concept without `call_sites` still parses to empty calls.
+    #[test]
+    fn call_sites_roundtrip_preserves_arg_spans() {
+        let mut f = sample_function();
+        f.calls = vec![UnresolvedRef {
+            name: "greet".into(),
+            path: vec![],
+            line: 3,
+            col: 11,
+            name_span: ByteSpan { start: 20, end: 25 },
+            args_span: Some(ByteSpan { start: 25, end: 33 }),
+        }];
+        let json = function_content(&f).to_string();
+        assert!(json.contains("call_sites"), "non-empty calls persist");
+        match parse_v2_concept(&f.id, &json).unwrap() {
+            V2Entity::Function(got) => {
+                assert_eq!(got.calls, f.calls);
+                assert_eq!(
+                    got.calls[0].args_span,
+                    Some(ByteSpan { start: 25, end: 33 })
+                );
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+        // Missing key (pre-§2.3 store) → empty, never an error.
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v.as_object_mut().unwrap().remove("call_sites");
+        match parse_v2_concept(&f.id, &v.to_string()).unwrap() {
+            V2Entity::Function(got) => assert!(got.calls.is_empty()),
             other => panic!("expected Function, got {other:?}"),
         }
     }

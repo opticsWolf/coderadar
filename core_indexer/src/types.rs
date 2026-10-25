@@ -818,6 +818,27 @@ pub struct UnresolvedRef {
     pub args_span: Option<ByteSpan>,
 }
 
+/// Persisted per-call-site record (§2.3 step 2): the raw `UnresolvedRef`
+/// minus resolution. Stored as `call_sites` in the function concept JSON
+/// (parallel to `resolved_calls`, same order) so cold start rehydrates
+/// `Function.calls` with full fidelity — line/col/name/args survive reload
+/// instead of dying like `call_evidence`. Old concepts without the key
+/// rehydrate to empty (pre-§2.3 behavior: unverified fallback).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CallSiteSpan {
+    pub name: String,
+    #[serde(default)]
+    pub path: Vec<String>,
+    #[serde(default)]
+    pub line: usize,
+    #[serde(default)]
+    pub col: usize,
+    #[serde(default)]
+    pub name_span: ByteSpan,
+    #[serde(default)]
+    pub args_span: Option<ByteSpan>,
+}
+
 /// Evidence for the type of a name inside one function: `m = Manager()`,
 /// `self.ser: Serializer = ...`, `x = make()`. Flow-insensitive; the resolver
 /// turns `rhs` / `annotation` into a class when it needs a receiver's type.
