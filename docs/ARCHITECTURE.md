@@ -316,7 +316,7 @@ taxonomy — each is a behavior contract, not a string:
 Release-gate proofs (§0.1(b), P2): `as_of` returns old/new names **and**
 bytes; 0 retirements on unchanged trees; blob bytes round-trip; parity
 across MCP/CLI/Python (8 tests); latency gates history-aware
-(1.5s + 20µs/log-row + 60s hang guard, DR-33).
+(1.5s + 20µs/log-row on a warmed second run, 60s hang guard, DR-33).
 
 ---
 
