@@ -156,9 +156,10 @@ def main(ctx: click.Context, project: str | None):
 
     Indexes symbols and call edges incrementally so agents and developers can
     query, explore and safely rewrite code. `coderadar mcp serve` exposes the
-    same graph to MCP clients: every MCP tool `coderadar_<op>` is the
-    command `coderadar <op>` here (underscores become hyphens), with
-    `--format json` for scripts.
+    same graph to MCP clients: every graph op `coderadar_<op>` has the CLI
+    command `coderadar <op>` (underscores become hyphens), except
+    `coderadar_set_project`, which is `-C/--project` here. Graph commands
+    take `--format json` for scripts.
     """
     ctx.meta[_PROJECT_KEY] = str(Path(project).resolve()) if project else None
     # Piped output is read by programs that expect UTF-8; on Windows it
@@ -506,8 +507,8 @@ def resolve(name: str, limit: int, fmt: str):
 def query(query_string: str, fmt: str):
     """Run a graph query (MCP coderadar_query).
 
-    Example: `functions where caller_count == 0`; the language is in
-    docs/query-language.md."""
+    Example: `functions where caller_count == 0`; `coderadar docs query-language`
+    prints the full language and field reference."""
     from . import ops, render
     _enter_project()
     _ensure_graph()
@@ -1338,6 +1339,105 @@ def diagnose(unresolved: bool, low_confidence: bool):
     _ensure_graph()
     console.print(render.diagnose(
         ops.diagnose(unresolved=unresolved, low_confidence=low_confidence)))
+
+
+@main.command()
+@click.argument("name", required=False)
+def docs(name: str | None):
+    """Print a reference document bundled with this install.
+
+    Run without NAME to list the bundled references.
+    `coderadar docs query-language` prints the query language and every
+    selectable field.
+    """
+    from .docs import DocNotFound, doc_description, doc_names, doc_text
+
+    if name is None:
+        for doc in doc_names():
+            console.print(f"[cyan]{doc}[/cyan]  {doc_description(doc)}")
+        return
+    try:
+        text = doc_text(name)
+    except DocNotFound as exc:
+        raise click.ClickException(str(exc.args[0])) from exc
+    click.echo(text, nl=False)
+
+
+@main.group()
+def skills():
+    """Agent skill packs bundled with this install."""
+
+
+@skills.command(name="list")
+def skills_list():
+    """List the bundled skills and what triggers them."""
+    from .skills import iter_skills
+
+    table = Table(title="Bundled skills")
+    table.add_column("Skill", no_wrap=True)
+    table.add_column("Trigger (frontmatter description)", overflow="fold")
+    for name, description in iter_skills():
+        table.add_row(name, description)
+    console.print(table)
+    console.print("[dim]Install with `coderadar skills install`.[/dim]")
+
+
+@skills.command(name="show")
+@click.argument("name")
+def skills_show(name: str):
+    """Print one bundled SKILL.md verbatim."""
+    from .skills import SkillNotFound, skill_text
+
+    try:
+        text = skill_text(name)
+    except SkillNotFound as exc:
+        raise click.ClickException(str(exc.args[0])) from exc
+    click.echo(text, nl=False)
+
+
+@skills.command(name="install")
+@click.option("--dest", "destinations", multiple=True, type=click.Path(file_okay=False),
+              help="Skills directory to install into (repeatable). Default: "
+                   "~/.claude/skills and ~/.config/opencode/skills.")
+@click.option("--project", is_flag=True,
+              help="Install into ./.claude/skills and ./.opencode/skills instead.")
+@click.option("--skill", "names", multiple=True,
+              help="Only this skill (repeatable). Default: every bundled skill.")
+@click.option("--force", is_flag=True, help="Overwrite existing skill directories.")
+def skills_install(destinations: tuple[str, ...], project: bool, names: tuple[str, ...],
+                   force: bool):
+    """Copy the bundled skills into agent discovery directories.
+
+    A wheel ships the files but no harness reads site-packages directly:
+    this command puts `SKILL.md` where Claude Code, OpenCode and friends look
+    for it. Re-running is non-destructive unless --force is passed.
+    """
+    from .skills import SkillNotFound, default_destinations
+    from .skills import install as install_skills
+
+    if destinations and project:
+        raise click.UsageError("--dest and --project are mutually exclusive")
+    targets = (
+        tuple(Path(d) for d in destinations)
+        if destinations
+        else default_destinations(project=project)
+    )
+    try:
+        results = [
+            result
+            for target in targets
+            for result in install_skills(target, names=names or None, force=force)
+        ]
+    except SkillNotFound as exc:
+        raise click.ClickException(str(exc.args[0])) from exc
+
+    for result in results:
+        console.print(f"[green]{result.status:<9}[/green] {result.path}")
+    skipped = sum(result.status == "skipped" for result in results)
+    if skipped:
+        console.print(
+            f"[yellow]{skipped} skill(s) already present; use --force to overwrite.[/yellow]"
+        )
 
 
 @main.group()

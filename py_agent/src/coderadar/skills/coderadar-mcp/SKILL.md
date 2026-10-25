@@ -27,6 +27,12 @@ this changes, what did this look like at time T, where are the smells.
    otherwise, so prefer passing `projectPath` explicitly).
 2. No store: use the `coderadar-cli` skill (`coderadar init`) first,
    then come back here.
+3. The agent-facing docs ship in the wheel as MCP resources:
+   `skills://coderadar-mcp`, `skills://coderadar-cli` and
+   `docs://query-language`. On the shell the same text is
+   `coderadar skills show <name>`, `coderadar skills install` and
+   `coderadar docs query-language` (`--project`, `--dest` for other
+   harnesses).
 
 ## Tools (all take an optional `projectPath`)
 
@@ -34,7 +40,7 @@ this changes, what did this look like at time T, where are the smells.
 |---|---|
 | `coderadar_explore` | "how does X work" — guided structural tour |
 | `coderadar_search` / `coderadar_node` | symbol search / one node's facts |
-| `coderadar_query` | Pest structural queries |
+| `coderadar_query` | Pest structural queries (reference: `docs://query-language`) |
 | `coderadar_callers` / `coderadar_callees` | upstream / downstream edges |
 | `coderadar_traverse` | bounded walk from an id |
 | `coderadar_resolve` | name → bound entity (incl. `/route` paths) |

@@ -26,6 +26,8 @@ import structlog
 from mcp.server import MCPServer
 
 from coderadar import ops, render
+from coderadar.docs import doc_description, doc_text
+from coderadar.skills import skill_description, skill_text
 
 logger = structlog.get_logger(__name__)
 
@@ -52,7 +54,7 @@ Need more? Call it again with more specific names.
 - `coderadar_node` — one entity's details and neighbours; `coderadar_module_children` — a module's contents
 - `coderadar_affected` — transitive callers (blast radius), centrality-ranked; `coderadar_callers` / `coderadar_callees` — direct 1-hop neighbours
 - `coderadar_traverse` — any edge kind, upstream or downstream
-- `coderadar_query` — structured queries, e.g. `functions where caller_count == 0` (docs/query-language.md)
+- `coderadar_query` — structured queries, e.g. `functions where caller_count == 0` (full reference: resource `docs://query-language`)
 - `coderadar_as_of` — the graph at a past timestamp
 - `coderadar_resolve` — framework references: routes (`/users/:id`), `*Model` / `*View` names
 - `coderadar_get_smells`, `coderadar_dead_code`, `coderadar_find_clones`, `coderadar_find_scaffolding` — quality findings. Dead code is ranked evidence, not proof: check `coderadar_affected` before deleting.
@@ -75,6 +77,14 @@ served and how fresh the index is.
 - **No index for a project?** Use built-in tools. Indexing is the user's decision: mention `coderadar init`, don't run it.
 - **"Indexing in progress" is not an error.** Retry in a few seconds rather than falling back to grep.
 
+## Skill packs
+
+`coderadar-mcp` and `coderadar-cli` ship inside this package and are
+readable as the resources `skills://coderadar-mcp` and
+`skills://coderadar-cli`. Run `coderadar skills show <name>` to print either
+file, or `coderadar skills install` to copy both into Claude Code / OpenCode
+discovery directories.
+
 ## One project at a time
 
 The server serves one project. Every tool takes an optional `project_path`:
@@ -82,8 +92,10 @@ a path inside the served project is accepted, another project is refused
 with the reason. `coderadar_set_project` switches wholesale (config re-read,
 background re-index, earlier event ids invalid).
 
-The same operations exist on the shell under the same names, hyphenated
+The same graph ops exist on the shell under the same names, hyphenated
 (`coderadar explore`, `coderadar get-smells`, `coderadar status`, ...).
+Project switching is the one exception: the CLI spells it `-C/--project`,
+because one CLI process serves one root.
 """
 
 
@@ -117,6 +129,39 @@ def create_server(graph: Any) -> MCPServer:
         version=__version__,
         instructions=SERVER_INSTRUCTIONS,
     )
+
+    # Agent-facing documents that ship in the wheel. Resources (not tools)
+    # keep the 26-tool surface intact while letting an MCP-only host read the
+    # skill packs and the query-language reference without a repo checkout.
+    @mcp.resource(
+        "skills://coderadar-mcp",
+        name="coderadar-mcp",
+        description=skill_description("coderadar-mcp"),
+        mime_type="text/markdown",
+    )
+    def _skill_mcp() -> str:
+        """The coderadar-mcp agent skill pack."""
+        return skill_text("coderadar-mcp")
+
+    @mcp.resource(
+        "skills://coderadar-cli",
+        name="coderadar-cli",
+        description=skill_description("coderadar-cli"),
+        mime_type="text/markdown",
+    )
+    def _skill_cli() -> str:
+        """The coderadar-cli agent skill pack."""
+        return skill_text("coderadar-cli")
+
+    @mcp.resource(
+        "docs://query-language",
+        name="query-language",
+        description=doc_description("query-language"),
+        mime_type="text/markdown",
+    )
+    def _query_language() -> str:
+        """Query language and field reference."""
+        return doc_text("query-language")
 
     # `roots/list` is a server-to-client request and MCP gives the server no
     # `initialize` hook to send one from — awaiting one during the handshake
@@ -296,7 +341,7 @@ def create_server(graph: Any) -> MCPServer:
             "Every row carries id, file_path, kind and parent_id, so a hit can be "
             "fed to coderadar_affected / coderadar_rename. Unknown fields are "
             "rejected with the available list instead of returning nothing. "
-            "Full field reference: docs/query-language.md."
+            "Full field reference: resource docs://query-language."
         ),
         annotations={
             "read_only_hint": True,

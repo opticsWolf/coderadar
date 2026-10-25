@@ -104,6 +104,12 @@ coderadar visualize call-graph --format graphviz -o calls.dot
 
 # Serve the graph to an MCP client (Claude Code, Cursor, ...)
 coderadar mcp serve
+
+# Install the bundled agent skill packs (Claude Code, OpenCode, ...)
+coderadar skills install
+
+# Read a bundled reference (query language + every selectable field)
+coderadar docs query-language
 ```
 
 > **0.13 removal notice.** The old CLI spellings (`analyze`, `rebuild`,
@@ -332,9 +338,12 @@ agent enablement — the full v0.12 plan per its release gate (see
 - **Embeddings Phase 1 (DR-11).** Model id + preprocessing in the dedup key,
   write/query dimension gates, `recompute` flag on every surface;
   persistence stays 0.13.
-- **Agent enablement (P2).** `skills/coderadar-mcp` + `skills/coderadar-cli`
-  (repo source of truth, registry drift-tested), release-gate history proof
-  (`as_of` → old/new names *and* bytes), read-path discipline pinned.
+- **Agent enablement (P2).** `coderadar/skills/coderadar-mcp` +
+  `coderadar/skills/coderadar-cli` (source of truth, bundled in the wheel,
+  registry drift-tested); `coderadar skills install` copies both packs into
+  `~/.claude/skills` and `~/.config/opencode/skills` (`--dest`/`--project`
+  for other harnesses). Release-gate history proof (`as_of` → old/new names
+  *and* bytes), read-path discipline pinned.
 - **Upstream fix.** `macrame-db` 0.19.1 repairs the historical loader
   (opticsWolf/Macrame#3) via the bitemporal composition; the rename-fixture
   reproducer is green and un-ignored, production stays on the state fold by
@@ -445,6 +454,7 @@ py_agent/src/coderadar/    # Python layer
     resolvers/             # 13 framework resolvers: Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router
     embedding/             # Content-addressed dedup
     agent/                 # GraphRAG query pipeline
+    docs/                  # Bundled references (query-language.md)
     lsp/                   # Persistent LSP warm pool
     mutation/              # Tool router for LLM
     mcp/                   # MCP server
@@ -454,13 +464,15 @@ py_agent/src/coderadar/    # Python layer
       lazy.py              #   roots/list retry on the first tool call
       lifecycle.py         #   handshake timeout, parent watchdog, teardown
     query/                 # Query planner + templates + cache
+    skills/                # Agent skill packs (SKILL.md), bundled in the wheel
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Live doc set: ARCHITECTURE.md (system design),
                            #   QUICKREF.md (operator cheat sheet), v0.12 trio +
-                           #   deviations, store-and-retention, query-language
-                           #   (generated), smell reference, open-items,
-                           #   BUGS_QUIRKS. Retired docs live in OKFgraph.
+                           #   deviations, store-and-retention, smell reference,
+                           #   open-items, BUGS_QUIRKS. Retired docs live in
+                           #   OKFgraph. The generated query-language reference
+                           #   ships in the package (`coderadar docs`).
 tests/                     # 1078 Python tests (E2E incl. dead-code/clones/scaffold/CFG/
                            #   centrality/dead-branch/RTA goldens, mutation E2E, MCP,
                            #   framework resolvers, ingest parity, benchmarks)

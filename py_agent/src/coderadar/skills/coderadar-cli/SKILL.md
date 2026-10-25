@@ -1,6 +1,6 @@
 ---
 name: coderadar-cli
-description: Use the CodeRadar CLI in a terminal for codebase intelligence: init, status, reindex, query, traverse, callers/callees, and mutations on an indexed project. Use when MCP is unavailable, for scripting, or to create/refresh the .coderadar/ store the coderadar-mcp skill queries. Teaches current command names (old analyze/rebuild/update/stats spellings print a 0.13-removal notice).
+description: Use the CodeRadar CLI in a terminal for codebase intelligence: init, status, reindex, query, traverse, callers/callees, and mutations on an indexed project. Use when MCP is unavailable, for scripting, or to create/refresh the .coderadar/ store the coderadar-mcp skill queries. Teaches current command names (old analyze/rebuild/update/stats spellings print a 0.13-removal notice) and installs the bundled MCP + CLI skill packs (`coderadar skills install`).
 ---
 
 # CodeRadar CLI
@@ -27,6 +27,13 @@ coderadar status          # what is indexed, how stale
 `status` reports `store_fresh`: `false` means reindex (cheap path loads
 the store and updates changed files only).
 
+## Skills
+
+The CLI ships its own agent skill packs. `coderadar skills list` names them,
+`coderadar skills show <name>` prints one, and `coderadar skills install`
+copies both into `~/.claude/skills` and `~/.config/opencode/skills`
+(`--project` for repo-local, `--dest` for another harness).
+
 ## Commands
 
 ```bash
@@ -46,7 +53,21 @@ coderadar compute-embeddings       # build vectors; --recompute to switch models
 coderadar diagnose                 # unresolved / ambiguous edges
 coderadar status                   # freshness + counts
 coderadar exclude list             # effective excludes (baseline+config counted)
+
+# Mutations are dry-run unless --apply; review the diff first.
+coderadar replace-body <id> '<body>'             # '-' reads stdin
+coderadar update-signature <id> '<signature>'    # --inject-defaults for call sites
+coderadar rename <id> <new_name>
+coderadar create-entity <file> <language> <kind> <name> '<body>'
 ```
+
+`coderadar --help` lists the full surface, including `explore`, `search`,
+`node`, `affected`, `as-of`, `module-children`, `get-smells`, `dead-code`,
+`find-clones`, `find-scaffolding`, and local-process commands (`git`,
+`shell`, `visualize`, `watch`, `load-snapshot`, `store-repair`, `mcp`).
+
+`coderadar docs query-language` prints the full query language and every
+selectable field (also the MCP resource `docs://query-language`).
 
 Mutations are dry-run by default; pass `--apply` (or the tool's
 `dry_run=false` equivalent) only after reviewing the diff.
@@ -62,6 +83,8 @@ group now.
 ## Notes
 
 - Entity ids are root-relative (`a.py::alpha`); the walk root sets the prefix.
+- MCP `coderadar_set_project` has no separate CLI command: use `-C/--project`
+  (`coderadar -C ../other status`). One process serves one root.
 - Keep using normal file tools for raw reads; use the graph for structure.
 - History (as-of/bytes-at-T) and retention (`archive`) are API/MCP-first;
   the CLI covers the live graph.

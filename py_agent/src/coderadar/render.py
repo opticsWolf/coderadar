@@ -687,7 +687,7 @@ def query_usage() -> str:
             "  - functions where name starts_with 'test_'\n"
             "  - imports where import_kind == 'from'\n"
             "Entities: modules, classes, functions, methods, constants, entities, "
-            "imports, calls, fields. Full field reference: docs/query-language.md")
+            "imports, calls, fields. Full field reference: coderadar docs query-language")
 
 
 def query(query: str, rows: list[dict], limit: int | None = 30) -> str:

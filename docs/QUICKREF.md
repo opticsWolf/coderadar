@@ -1,8 +1,9 @@
 # CodeRadar Quick Reference
 
 > v0.12.0 · Full design: `ARCHITECTURE.md` · Agent skills:
-> `../skills/coderadar-{mcp,cli}/SKILL.md` (repo truth) · Query language:
-> `query-language.md` (generated — read it, don't guess fields).
+> `coderadar/skills/coderadar-{mcp,cli}/SKILL.md` (bundled; install with
+> `coderadar skills install`) · Query language:
+> `coderadar docs query-language` (generated — read it, don't guess fields).
 
 ## Setup
 
@@ -12,6 +13,7 @@ uv run maturin develop       # rebuild coderadar._core after Rust changes
 coderadar init               # write starter .coderadar.toml
 coderadar reindex            # index / refresh (incremental by default)
 coderadar status             # graph + store health
+coderadar skills install     # copy bundled skills into agent dirs
 ```
 
 Multi-project: **one server + `coderadar_set_project`** (or `coderadar -C DIR …`).

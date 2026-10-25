@@ -6,6 +6,21 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Skills ship in the wheel: `skills/` moved to
+  `py_agent/src/coderadar/skills/` (package data, read through
+  `importlib.resources`), so `pip install coderadar-rs` delivers the same
+  `SKILL.md` files the drift tests read. `coderadar skills list|show|install`
+  copies both packs into `~/.claude/skills` and `~/.config/opencode/skills`
+  (`--project`, `--dest`, `--force`).
+- The query-language reference moved inside the package
+  (`py_agent/src/coderadar/docs/query-language.md`): `coderadar docs
+  query-language` prints it, and MCP hosts can read `docs://query-language`.
+  Both skill packs are MCP resources too (`skills://coderadar-mcp`,
+  `skills://coderadar-cli`), so an MCP-only client can discover them without
+  a repo checkout. CLI/MCP help now spell out the one surface exception:
+  `coderadar_set_project` is `-C/--project` on the CLI. Release artifacts
+  are gated on all bundled assets (`scripts/verify_bundled_assets.py`).
+
 ## 0.12.0 (2026-10-07)
 
 - P2 agent enablement: `skills/coderadar-mcp` + `skills/coderadar-cli`

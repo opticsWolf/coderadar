@@ -2,21 +2,19 @@
 
 Covers what the Rust unit tests cannot: the query runs against a real index
 built by `analyze()`, rows carry identity, the documented field list is the
-one the parser accepts, and the documented examples in
-`docs/query-language.md` actually execute.
+one the parser accepts, and the documented examples in the bundled
+query-language reference (`coderadar docs query-language`) actually execute.
 """
 
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import coderadar
 import pytest
+from coderadar.docs import doc_text
 
 pytestmark = pytest.mark.usefixtures("indexed_repo")
-
-DOCS_PATH = Path(__file__).resolve().parent.parent / "docs" / "query-language.md"
 
 APP_PY = '''\
 """Small app used by the query-language tests."""
@@ -298,7 +296,7 @@ def test_aggregate_rows_are_marked_as_groups(graph):
 
 def documented_fields() -> dict[str, list[str]]:
     """Parse the generated reference into {entity: [field, ...]}."""
-    text = DOCS_PATH.read_text(encoding="utf-8")
+    text = doc_text("query-language")
     sections: dict[str, list[str]] = {}
     current = None
     for line in text.splitlines():
@@ -312,16 +310,16 @@ def documented_fields() -> dict[str, list[str]]:
 
 def documented_examples() -> list[str]:
     """The fenced example block from the reference."""
-    text = DOCS_PATH.read_text(encoding="utf-8")
+    text = doc_text("query-language")
     block = re.search(r"## Examples\n\n```\n(.*?)```", text, re.DOTALL)
-    assert block, "docs/query-language.md has no Examples block"
+    assert block, "the bundled query-language reference has no Examples block"
     return [line for line in block.group(1).splitlines() if line.strip()]
 
 
 def test_docs_cover_every_entity_kind(graph):
     documented = documented_fields()
     for entity in ["modules", "classes", "functions", "methods", "constants", "entities", "imports", "calls", "fields"]:
-        assert entity in documented, f"{entity} missing from docs/query-language.md"
+        assert entity in documented, f"{entity} missing from the bundled query-language reference"
         assert documented[entity], f"{entity} has no documented fields"
 
 

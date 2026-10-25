@@ -334,7 +334,7 @@ class CodeGraph:
             for cls in graph.query("classes where inherits_from contains 'BaseModel'"):
                 print(cls["id"], cls["name"])
 
-        Full field reference: ``docs/query-language.md``.
+        Full field reference: ``coderadar docs query-language``.
         """
         try:
             from coderadar._core import query_graph as _query_graph

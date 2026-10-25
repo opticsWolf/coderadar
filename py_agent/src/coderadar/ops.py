@@ -810,7 +810,7 @@ def traverse(entity_id: str, direction: str = "both",
 
 def query(query: str) -> list[dict]:
     """Run a graph query: ``<entity> [select ...] [where ...] [group by ...]
-    [order by ...] [limit N]`` (see docs/query-language.md). Every row
+    [order by ...] [limit N]`` (see ``coderadar docs query-language``). Every row
     carries ``id``, ``file_path``, ``kind`` and ``parent_id``. A malformed
     query or unknown field raises InvalidRequest naming the problem."""
     if not query.strip():

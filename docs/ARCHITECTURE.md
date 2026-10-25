@@ -37,7 +37,7 @@ Five ideas explain most of the design:
 ```
 ┌─ Surfaces ──────────────────────────────────────────────┐
 │  MCP server (26 coderadar_* tools)  ·  CLI (click)       │
-│  Python: CodeGraph facade  ·  skills/coderadar-{mcp,cli} │
+│  Python: CodeGraph facade  ·  coderadar/skills (bundled) │
 └───────────────────────┬─────────────────────────────────┘
                         │  one shared op layer
 ┌─ Python agent ────────▼─────────────────────────────────┐
@@ -113,7 +113,7 @@ CodeRadar/
     project_state.py            # cwd-rooted serving state, reindex-on-demand
     agent/graphrag.py           # named seam → P2 context work
     lsp/pool.py                 # named seam → L4 override (DR-2/DR-16)
-  skills/coderadar-{mcp,cli}/   # in-repo agent skill truth (P2)
+    skills/coderadar-{mcp,cli}/  # bundled agent skill truth (P2, wheel)
   tests/                        # 1078 Python tests + Rust 434 (lib + integ)
   docs/                         # live set only (see §15)
 ```
@@ -162,8 +162,10 @@ side never touches ledger handles.
 - **`resolvers` + `framework`** — the L2–L4 cascade (imports → framework
   routes → signatures) over the Rust-resolved base. Routes are canonical
   `route` concepts with persisted route→handler edges (DR-10).
-- **`query/`** — client for the query language (`query-language.md`
-  is generated from the grammar; drift is a test failure).
+- **`query/`** — client for the query language (the bundled
+  `coderadar/docs/query-language.md` is generated from the grammar; drift is
+  a test failure. Read it with `coderadar docs query-language` or the MCP
+  resource `docs://query-language`).
 - **`embedding/`** — Phase 1 contract (DR-11): dedup key
   `{model}#pp{PREPROCESS_VERSION}#{xxh3}`, write/query dimension gates,
   embed-what = signature + docstring, `recompute` flag on every surface.
@@ -368,8 +370,8 @@ By design, not by omission: `search_symbols` + `archive` are Python-API-only
 `load-snapshot`, `store-repair`, `--delete` are CLI-only (local-process
 concerns); `set_project` is `-C/--project` on the CLI with no Python form
 (it works on the cwd). Proven by `test_surface_parity.py` + `test_mcp.py` +
-`test_skill_drift.py` (skills are repo truth; old spellings warn until 0.13,
-DR-22).
+`test_skill_drift.py` (skills are package data, so the wheel ships what
+the tests read; old spellings warn until 0.13, DR-22).
 
 ---
 
@@ -421,9 +423,11 @@ ledger change (reverse-BFS over reconstructed state is available).
   `thoughts/coderadar-v0.12-impl/` (per-landing reasoning). GPU-indexed
   (`cuda`, fp16); register rows update same-session.
 - **This directory holds the live set only** (`v0.12-architecture-implementation.md` =
-  architecture baseline + plan + deviations diary, store-and-retention
-  + query-language (generated) + smell reference + open-items + BUGS_QUIRKS +
-  CHANGELOG). Removed content lives in OKFgraph — never deleted, only moved.
+  architecture baseline + plan + deviations diary, store-and-retention +
+  smell reference + open-items + BUGS_QUIRKS + CHANGELOG). The generated
+  query-language reference ships inside the package
+  (`py_agent/src/coderadar/docs/`, `coderadar docs query-language`). Removed
+  content lives in OKFgraph — never deleted, only moved.
 - **`v0.12-architecture-implementation.md` Part III** is the step-4 surface verdict and the
   implementation diary: one name/behavior per op, CLI-only/API-only calls.
 - **Release process:** feature → bump → register → thought → dogfood
