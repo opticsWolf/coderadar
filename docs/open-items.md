@@ -222,6 +222,20 @@ programme.
 *(`v1-readiness-plan.md` "Explicitly Deferred" — "high-risk, explicitly
 post-v1")*
 
+### 2.10 Hybrid search (RRF fusion) — blocked on vector persistence (DR-11 → 0.13)
+
+*(`docs/v0.12-architecture-implementation.md` §1.10: explicit non-goal)*
+
+Macrame (`macrame-db-0.19.1 `vector/hybrid.rs`) ships three arms: `keyword_search`
+(FTS5 BM25, wired as `search_symbols`), `search_vector` (DiskANN cosine) and
+`HybridSearch` (RRF fusion, `RRF_K=60`, `depth=max(5×top_k,50)`). CodeRadar wires
+only the keyword arm; the vector arm is Phase-1 in-memory cosine over
+`EmbeddingVec` (`lib.rs:search_similar`), which dies on restart by design.
+Fusing `keyword + vector` before vectors persist would fuse what is true now
+with what vanishes on reload — the same half-applied-bound trap Macrame's
+`as_of_valid` docs warn about. Land after DR-11 persistence (0.13), then fuse
+with per-arm `depth` reads and deterministic `score-desc/id-asc` ordering.
+
 ---
 
 ## 3. Engineering hygiene
@@ -296,7 +310,7 @@ Recorded so they are not re-raised:
 | Bucket | Items | Blocking a 0.7.0 tag? |
 |---|---|---|
 | §1 smoke-check residue | 5 | No — all are scope decisions, none is a defect |
-| §2 planned deferrals | 9 | No — deferred deliberately, honestly failing where user-visible |
+| §2 planned deferrals | 10 | No — deferred deliberately, honestly failing where user-visible |
 | §3 hygiene | 2 | No |
 
 Nothing in this list is a correctness defect on a documented path. The v0.7

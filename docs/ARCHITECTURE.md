@@ -483,8 +483,8 @@ in kb.db). Statuses at v0.12.0:
 
 Live list: `open-items.md` (all §1 + §2.1 + §3.1 resolved in v0.12;
 §2.3 arg-spans, §2.4 smell-metric approximations, §2.5 path maps, §2.6 edge
-kinds, §2.8 TS throughput, §2.9 SQLite internals still deferred;
-§2.2/§2.7 decided). Bugs/quirks:
+kinds, §2.8 TS throughput, §2.9 SQLite internals, §2.10 hybrid search still
+deferred; §2.2/§2.7 decided). Bugs/quirks:
 `CODERADAR_BUGS_QUIRKS.md` (9 fixed, #10 harness-side carried,
 #1 rollback half needs apply-semantics design).
 
