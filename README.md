@@ -62,7 +62,7 @@ Rust _core (single-pass extraction, 41 grammars, resolve cascade L1-L4,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 1541 tests (434 Rust + 1107 Python) |
+| **Tests** | 1543 tests (434 Rust + 1109 Python) |
 | **Operations** | One name per graph operation on every surface that serves it: MCP tool `coderadar_<op>`, CLI command `coderadar <op>` (hyphenated), `CodeGraph.<op>()` — 26 ops (25 graph operations + `set_project` project switching, CLI: `-C`): explore, node, search, affected, resolve, query, search_similar, compute_embeddings, module_children, callers, callees, diagnose, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, replace_body, update_signature, rename, create_entity, reindex, update_file, status, set_project. `search_symbols` (keyword search) and `archive` (retention) are Python-API-only by design; `visualize`, `shell`, `git`, `exclude`, `watch`, `init`, `load-snapshot`, `store-repair` stay CLI-side (local-process concerns) — see the step-4 surface verdict in the v0.12 deviations log |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
@@ -352,7 +352,7 @@ agent enablement — the full v0.12 plan per its release gate (see
 ## Feature highlights — v0.5 → v0.11
 
 Everything below shipped before v0.12 and still holds. Per-version detail
-lives in `CHANGELOG.md`; the numbers are CI-guarded (1541 tests and
+lives in `CHANGELOG.md`; the numbers are CI-guarded (1543 tests and
 counting, clippy/ruff/fmt green and blocking, 100/100 resolution
 precision-recall on the benchmark corpus).
 
@@ -473,7 +473,7 @@ docs/                      # Live doc set: ARCHITECTURE.md (system design),
                            #   open-items, BUGS_QUIRKS. Retired docs live in
                            #   OKFgraph. The generated query-language reference
                            #   ships in the package (`coderadar docs`).
-tests/                     # 1107 Python tests (E2E incl. dead-code/clones/scaffold/CFG/
+tests/                     # 1109 Python tests (E2E incl. dead-code/clones/scaffold/CFG/
                            #   centrality/dead-branch/RTA goldens, mutation E2E, MCP,
                            #   framework resolvers, ingest parity, benchmarks)
   mcp/                     # Root resolution, background init, lifecycle, project_path

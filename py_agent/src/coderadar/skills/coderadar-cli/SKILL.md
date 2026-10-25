@@ -34,43 +34,112 @@ The CLI ships its own agent skill packs. `coderadar skills list` names them,
 copies both into `~/.claude/skills` and `~/.config/opencode/skills`
 (`--project` for repo-local, `--dest` for another harness).
 
-## Commands
+## Command reference
+
+Form: `coderadar [-C DIR] <command> [ARGS] [OPTIONS]`. `-C/--project`
+picks the root (nearest `.coderadar` marker otherwise). Most graph
+commands and all mutations take `--format json` for scripts; `query` also
+takes `table`. `callers`, `callees` and `diagnose` print text only.
+
+Entity ids are root-relative: `path/to/file.py::Class.method`,
+`path/to/file.py::module`. Absolute paths, backslashes and a leading `./`
+are accepted too.
+
+### Read the graph
 
 ```bash
-coderadar -C <path> <command>      # run against another root
-coderadar reindex                  # cheap refresh (changed files only)
-coderadar reindex --full           # full walk, on demand only
-coderadar update-file <path>       # sync one file
-coderadar query '<pest>'           # structural query
-coderadar traverse <id>            # bounded walk
-coderadar callers <id>             # upstream
-coderadar callees <id>             # downstream
-coderadar resolve '<name>'         # bind a name (routes: "/users/:id")
-# keyword search over symbol text is API-only (ops.search_symbols) —
-# the CLI/MCP binding is deferred; use search-similar here.
-coderadar search-similar '<text>'  # semantic (needs embeddings)
-coderadar compute-embeddings       # build vectors; --recompute to switch models
-coderadar diagnose                 # unresolved / ambiguous edges
-coderadar status                   # freshness + counts
-coderadar exclude list             # effective excludes (baseline+config counted)
-
-# Mutations are dry-run unless --apply; review the diff first.
-coderadar replace-body <id> '<body>'             # '-' reads stdin
-coderadar update-signature <id> '<signature>'    # --inject-defaults for call sites
-coderadar rename <id> <new_name>
-coderadar create-entity <file> <language> <kind> <name> '<body>'
+coderadar explore [SYMBOL]... [-q TEXT] [--direction both|upstream|downstream] [--max-files 8]
+coderadar search QUERY [--kind function|class|type_alias|constant|module|import] [--top-k 10]
+coderadar node ENTITY_ID [--neighbors]
+coderadar query 'functions where caller_count == 0' [--format text|table|json]
+coderadar traverse ENTITY_ID [--direction both|upstream|downstream|in|out] \
+                    [--edge-kinds calls,imports,extends,overrides] [--max-depth 3]
+coderadar callers ENTITY_ID                  # one hop up; transitive = affected
+coderadar callees ENTITY_ID                  # one hop down
+coderadar affected ENTITY_ID [--max-depth 5] # transitive callers, the blast radius
+coderadar resolve '/users/:id' [--limit 5]   # routes, *Model / *View names
+coderadar as-of TIMESTAMP [SYMBOL]... [-q TEXT]   # names at T, not bytes at T
+coderadar module-children MODULE_ID          # e.g. 'pkg/app.py::module'
+coderadar diagnose [--unresolved] [--low-confidence]
 ```
 
-`coderadar --help` lists the full surface, including `explore`, `search`,
-`node`, `affected`, `as-of`, `module-children`, `get-smells`, `dead-code`,
-`find-clones`, `find-scaffolding`, and local-process commands (`git`,
-`shell`, `visualize`, `watch`, `load-snapshot`, `store-repair`, `mcp`).
+`traverse` caps `--max-depth` at 10; `--direction` aliases are `out`
+(downstream) and `in` (upstream); `--edge-kinds` is comma-separated and
+accepts `inherits` for `extends`.
 
-`coderadar docs query-language` prints the full query language and every
-selectable field (also the MCP resource `docs://query-language`).
+### Quality and search
 
-Mutations are dry-run by default; pass `--apply` (or the tool's
-`dry_run=false` equivalent) only after reviewing the diff.
+```bash
+coderadar get-smells [--entity-id ID] [--rule-id RULE] [--strictness strict|normal|loose]
+coderadar dead-code [--min-confidence 0.6] [--include-test-reachable] [--max-findings 100]
+coderadar find-clones [--min-lines 10] [--min-similarity 0.8] [--max-groups 100]
+coderadar find-scaffolding [--include-secrets] [--max-findings 100]
+coderadar search-similar 'error handling' [--top-k 10]   # needs embeddings
+coderadar compute-embeddings [--model NAME] [--batch-size 32] [--recompute]
+coderadar status [--format json]
+```
+
+Rule ids for `--rule-id`: `god-class`, `long-method`,
+`long-parameter-list`, `deep-nesting`, `data-class`,
+`high-cyclomatic-complexity`, `brain-method`, `excessive-returns`,
+`too-many-fields`, `dead-code`, `dead-branch`, `intra-dead-statements`.
+`--recompute` is required when switching embedding models. Keyword search
+over symbol text is API-only (`ops.search_symbols`); this surface has
+`search` (name/description) and `search-similar` (semantic).
+
+### Index and store
+
+```bash
+coderadar init [PATH] [--force]
+coderadar reindex [--full] [--exclude PATTERN]... [--with-embeddings]
+coderadar update-file FILE [--content TEXT|-]     # deleted file: dropped from graph
+coderadar exclude add|remove PATTERN              # writes [project] exclude
+coderadar exclude list                            # user patterns + baseline
+coderadar load-snapshot SNAPSHOT [--root PATH]
+coderadar store-repair [--db PATH] [--delete]
+coderadar watch [PATH]... [--debounce 100]
+```
+
+`--exclude` is one-shot and implies `--full`. `--with-embeddings` also
+builds vectors for `search-similar`. `init` is the only command that
+creates the store; everything else assumes it exists.
+
+### Mutations
+
+```bash
+coderadar replace-body ID BODY|'-' [--expected-hash H] [--apply]
+coderadar update-signature ID 'def f(x, y=1)' [--inject-defaults] [--apply]
+coderadar rename ID NEW_NAME [--apply]
+coderadar create-entity FILE LANGUAGE KIND NAME BODY|'-' [--decorator D]... \
+                         [--anchor end|top|ENTITY_ID] [--signature 'def f(x)'] [--apply]
+```
+
+Without `--apply` each mutation prints the diff and writes nothing;
+`--expected-hash` refuses the edit if the entity changed since you read
+it. `replace-body` replaces the body only (no `def` line, no decorators)
+and re-bases indentation. `update-signature` edits the definition and
+lists call sites as unverified — it cannot rewrite argument spans.
+`create-entity` renders the header from `--signature` when given,
+otherwise from `name`.
+
+### Local process
+
+```bash
+coderadar shell
+coderadar visualize hierarchy|dependencies|call-graph [ARGS]... [-o FILE] \
+                    [--format mermaid|graphviz|dot]   # default: mermaid
+coderadar mcp serve [--path DIR]
+coderadar git blame FILE [--repo DIR]
+coderadar git is-clean [REPO]
+coderadar git diff [REPO] [--old OID] [--new OID]
+coderadar docs [NAME]
+coderadar skills list|show NAME|install [--dest DIR]... [--project] [--skill NAME]... [--force]
+```
+
+`coderadar --help` lists the full surface; `coderadar <command> --help`
+gives the exact flags for one command. `coderadar docs query-language`
+prints the full query language and every selectable field (also the MCP
+resource `docs://query-language`).
 
 ## Renamed (do not teach the old spellings)
 

@@ -65,6 +65,14 @@ class TestMcpSkillDrift:
         # DR-11 surface proof: the model-switch flag must be discoverable.
         assert "recompute" in _skill("coderadar-mcp")
 
+    def test_every_tool_has_a_call_signature(self):
+        # The skill is the agent's only reference: a tool named in the table
+        # but with no argument shape is a tool the agent has to guess at.
+        tools = {t.name for t in _create_server(None)._tool_manager.list_tools()}
+        text = _skill("coderadar-mcp")
+        missing = sorted(name for name in tools if f"{name}(" not in text)
+        assert not missing, f"skill documents no signature for: {missing}"
+
     def test_hidden_old_spellings_not_taught_as_tools(self):
         assert "coderadar_analyze" not in _skill("coderadar-mcp")
 
@@ -86,6 +94,17 @@ class TestCliSkillDrift:
     def test_search_symbols_marked_api_only(self):
         # §1.10 binding is deferred: the skill must say so, not imply a CLI.
         assert "API-only" in _skill("coderadar-cli")
+
+    def test_every_top_level_command_is_documented(self):
+        # Hidden legacy spellings are exempt; every current command must be
+        # taught, so a new command cannot ship without its syntax.
+        text = _skill("coderadar-cli")
+        missing = sorted(
+            name
+            for name, cmd in _main.commands.items()
+            if not getattr(cmd, "hidden", False) and f"coderadar {name}" not in text
+        )
+        assert not missing, f"CLI skill teaches no syntax for: {missing}"
 
     def test_old_spellings_carry_the_notice(self):
         text = _skill("coderadar-cli")

@@ -20,7 +20,10 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
   a repo checkout. CLI/MCP help now spell out the one surface exception:
   `coderadar_set_project` is `-C/--project` on the CLI. Release artifacts
   are gated on all bundled assets (`scripts/verify_bundled_assets.py`), and
-  the Rust doc generator writes the packaged copy.
+  the Rust doc generator writes the packaged copy. Both packs now carry a
+  per-command/per-tool reference (arguments, flags, defaults, edge-kind and
+  rule-id lists) next to the task guidance, and drift tests fail when a
+  command ships undocumented or a tool ships without a call signature.
 
 ## 0.12.0 (2026-10-07)
 

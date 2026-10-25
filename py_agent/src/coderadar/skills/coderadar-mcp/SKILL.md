@@ -24,7 +24,7 @@ this changes, what did this look like at time T, where are the smells.
 1. The project needs a `.coderadar/store/coderadar.db`. Check with
    `coderadar_status` (or `coderadar_set_project` with a `project_path`
    to point at the repo — the server follows its working directory
-   otherwise, so prefer passing `projectPath` explicitly).
+   otherwise, so prefer passing `project_path` explicitly).
 2. No store: use the `coderadar-cli` skill (`coderadar init`) first,
    then come back here.
 3. The agent-facing docs ship in the wheel as MCP resources:
@@ -34,7 +34,7 @@ this changes, what did this look like at time T, where are the smells.
    `coderadar docs query-language` (`--project`, `--dest` for other
    harnesses).
 
-## Tools (all take an optional `projectPath`)
+## Tools (all take an optional `project_path`)
 
 | Tool | Ask it |
 |---|---|
@@ -56,6 +56,80 @@ this changes, what did this look like at time T, where are the smells.
 | `coderadar_reindex` (`full`) / `coderadar_update_file` | refresh; full walk only on demand |
 | `coderadar_status` / `coderadar_set_project` | freshness + root switching |
 | `coderadar_replace_body` / `coderadar_update_signature` / `coderadar_rename` / `coderadar_create_entity` | mutations — `dry_run=true` default, review, then apply |
+
+## Call signatures
+
+Every tool takes `project_path` to name the repo (default: the project the
+server serves); `coderadar_set_project` is the only one where it is
+required. Defaults shown.
+
+Entity ids: `path/to/file.py::Qualified.name`, methods as
+`File::Class.member`, modules as `File::module`. Root-relative, forward
+slashes, no `./`. `external::name` marks a callee outside the index.
+
+### Read
+
+```python
+coderadar_explore(query="", symbols=[], direction="both", max_files=8)
+coderadar_search(query, kind=None, top_k=10)      # kind: function|class|type_alias|constant|module|import
+coderadar_node(entity_id, include_neighbors=False)
+coderadar_query(query)                            # <entity> [select] [where] [group by] [order by] [limit]
+coderadar_traverse(entity_id, direction="both", edge_kinds=None, max_depth=3)
+coderadar_callers(entity_id)                      # 1 hop upstream
+coderadar_callees(entity_id)                      # 1 hop downstream
+coderadar_affected(entity_id, max_depth=5)        # transitive blast radius
+coderadar_resolve(name, limit=5)                  # '/users/:id', '*Model', '*View'
+coderadar_as_of(timestamp, query="", symbols=[])  # names at T, not bytes at T
+coderadar_module_children(module_id)              # '{file_path}::module'
+coderadar_diagnose(unresolved=True, low_confidence=True)
+coderadar_status()
+```
+
+`traverse` directions are `downstream` / `upstream` / `both`; edge kinds
+are `calls`, `imports`, `extends` (alias `inherits`), `overrides` — all
+when omitted. `max_depth` defaults to 3.
+
+### Quality and search
+
+```python
+coderadar_get_smells(entity_id=None, rule_id=None, strictness="normal")
+coderadar_dead_code(min_confidence=0.6, include_test_reachable=False, max_findings=100)
+coderadar_find_clones(min_lines=10, min_similarity=0.8, max_groups=100)
+coderadar_find_scaffolding(include_secrets=False, max_findings=100)
+coderadar_search_similar(query, top_k=10)
+coderadar_compute_embeddings(model_name=None, recompute=False)
+```
+
+Smell rule ids: `god-class`, `long-method`, `long-parameter-list`,
+`deep-nesting`, `data-class`, `high-cyclomatic-complexity`,
+`brain-method`, `excessive-returns`, `too-many-fields`, `dead-code`,
+`dead-branch`, `intra-dead-statements`. Strictness is `strict` |
+`normal` | `loose`.
+
+### Index and project
+
+```python
+coderadar_reindex(with_embeddings=False, full=False)
+coderadar_update_file(file_path, content=None)    # content omitted -> read from disk
+coderadar_set_project(project_path, confirm=False)  # confirm only for markerless dirs
+```
+
+### Mutations (`dry_run=True` default)
+
+```python
+coderadar_replace_body(entity_id, new_body, expected_hash=None, dry_run=True)
+coderadar_update_signature(entity_id, new_signature, inject_defaults=False, dry_run=True)
+coderadar_rename(entity_id, new_name, dry_run=True)
+coderadar_create_entity(file_path, language, kind, name, body,
+                        decorators=None, anchor="end", signature=None, dry_run=True)
+```
+
+`replace_body` takes the body only (no `def` line, no decorators) and
+re-bases indentation; `expected_hash` refuses a stale edit. `update_signature`
+edits the definition and returns call sites as `unverified_sites` — it
+cannot rewrite argument spans. `create_entity` renders the header from
+`signature` when given, otherwise from `name`; `anchor` is `end`, `top`,
+or an entity id to insert after.
 
 ## Honesty contracts (do not work around these)
 
