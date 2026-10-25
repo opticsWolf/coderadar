@@ -316,3 +316,134 @@ fn test_set_embedding_empty_vector() {
         "Empty embedding should be stored as empty"
     );
 }
+
+// ── DR-11 slice 2: persistence ───────────────────────────────────────
+// Per-model tables (`embeddings_<model>`, DiskANN) are the durable home;
+// the ledger carries only the dedup hash (slice 1).
+
+#[test]
+fn test_macrame_model_name_normalizes_fastembed_ids() {
+    use crate::storage::macrame_model_name;
+    assert_eq!(
+        macrame_model_name("BAAI/bge-small-en-v1.5")
+            .unwrap()
+            .table(),
+        "embeddings_baai_bge_small_en_v1_5"
+    );
+    assert_eq!(
+        macrame_model_name("nomic_v1").unwrap().table(),
+        "embeddings_nomic_v1"
+    );
+    // Leading digit, empty, too long: honest errors naming the raw id.
+    for bad in ["", "1abc", &"a".repeat(49)] {
+        let err = macrame_model_name(bad).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("InvalidModelName"),
+            "{bad:?} gave {err:?}"
+        );
+    }
+}
+
+#[test]
+fn test_persist_projection_embeddings_writes_heals_and_gates() {
+    use crate::storage::CodeGraphStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodeGraphStore::open(dir.path().join("v.db")).unwrap();
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(&graph, "def add(a, b): return a + b\n", "math.py");
+    graph
+        .set_embeddings_bulk(vec![(
+            "math.py::add".into(),
+            vec![0.5; 8],
+            "m#pp1#x".into(),
+        )])
+        .unwrap();
+    let snap = graph.snapshot();
+    // The model table references concepts: rows need their concept rows,
+    // exactly as the production flush writes v2 concepts before vectors.
+    let now = crate::storage::now_iso8601();
+    let mk = |id: &str| {
+        macrame::ConceptUpsert::new(id, id)
+            .content("{\"kind\":\"function\"}")
+            .valid_from(now.clone())
+            .valid_to(crate::storage::TS_OPEN.to_string())
+            .retired(false)
+    };
+    store
+        .upsert_concepts_bulk(&[mk("math.py::add"), mk("sub.py::sub")])
+        .unwrap();
+    // Fresh writes: rows listed, vectors read from the projection.
+    let report = store
+        .persist_projection_embeddings(
+            "BAAI/bge-small-en-v1.5",
+            &snap,
+            &[("math.py::add".to_string(), "m#pp1#x".to_string())],
+        )
+        .unwrap();
+    assert_eq!(report.persisted, 1);
+    assert_eq!(report.model_table, "embeddings_baai_bge_small_en_v1_5");
+    assert_eq!(report.dimension, 8);
+    assert!(!report.healed);
+    // Empty entries + agreeing table = no-op (cached reruns stay cheap).
+    let again = store
+        .persist_projection_embeddings("BAAI/bge-small-en-v1.5", &snap, &[])
+        .unwrap();
+    assert_eq!(again.persisted, 0);
+    assert!(!again.healed);
+    // Empty entries + staged-only memory = heal (crash-window recovery).
+    index_source(&graph, "def sub(a, b): return a - b\n", "sub.py");
+    graph
+        .set_embeddings_bulk(vec![("sub.py::sub".into(), vec![0.1; 8], "m#pp1#z".into())])
+        .unwrap();
+    let snap2 = graph.snapshot();
+    let healed = store
+        .persist_projection_embeddings("BAAI/bge-small-en-v1.5", &snap2, &[])
+        .unwrap();
+    assert_eq!(healed.persisted, 2, "{healed:?}");
+    assert!(healed.healed);
+    // A listed id with no in-memory vector refuses loudly.
+    let err = store
+        .persist_projection_embeddings(
+            "BAAI/bge-small-en-v1.5",
+            &snap2,
+            &[("nope::missing".to_string(), "h".to_string())],
+        )
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("no in-memory vector"),
+        "{err:?}"
+    );
+    // Mixed memory widths refuse before any write (DimMismatch).
+    let mut projection = (*graph.snapshot()).clone();
+    for (id, width) in [("math.py::add", 4), ("sub.py::sub", 8)] {
+        if let Some(f) = projection.functions.get(id) {
+            let mut updated = (**f).clone();
+            updated.embedding.vec = vec![0.2; width];
+            projection
+                .functions
+                .insert(id.to_string(), std::sync::Arc::new(updated));
+        }
+    }
+    let err = store
+        .persist_projection_embeddings(
+            "BAAI/bge-small-en-v1.5",
+            &projection,
+            &[
+                ("math.py::add".to_string(), "m#pp1#x".to_string()),
+                ("sub.py::sub".to_string(), "m#pp1#z".to_string()),
+            ],
+        )
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("DimMismatch"), "{err:?}");
+    // Vectors for concepts the ledger never recorded refuse with the
+    // repair, never bare SQLite 787.
+    let fresh = CodeGraphStore::open(dir.path().join("fresh.db")).unwrap();
+    let err = fresh
+        .persist_projection_embeddings(
+            "BAAI/bge-small-en-v1.5",
+            &snap2,
+            &[("sub.py::sub".to_string(), "m#pp1#z".to_string())],
+        )
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("flush v2 concepts"), "{err:?}");
+}

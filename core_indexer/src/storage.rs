@@ -114,6 +114,39 @@ fn runtime() -> &'static Runtime {
     &RUNTIME
 }
 
+/// Normalize a Python-side embedding model id to a macrame [`ModelName`]
+/// (DR-11 slice 2).
+///
+/// fastembed ids (`BAAI/bge-small-en-v1.5`) are not bare identifiers and
+/// SQLite cannot bind a table name, so the mapping is total and pinned:
+/// lowercase, every non-`[a-z0-9]` char becomes `_`, then `ModelName`
+/// enforces leading-letter + ≤48 chars. Distinct raw ids CAN collide
+/// (`a-b` vs `a/b` → `a_b`); a same-dimension collision would share a
+/// table, which is why every persist/rehydrate answer reports the derived
+/// table name. The error carries the RAW id (what was configured), not
+/// the normalized form.
+pub fn macrame_model_name(raw: &str) -> macrame::Result<macrame::vector::ModelName> {
+    let normalized: String = raw
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    macrame::vector::ModelName::new(&normalized)
+        .map_err(|_| macrame::DbError::InvalidModelName(raw.to_string()))
+}
+
+/// What one persist run wrote (DR-11 slice 2). `healed` marks the
+/// count-gate path: no new vectors this run, but the table disagreed with
+/// memory (crash between memory commit and table write, or staged vectors
+/// that never persisted), so the whole memory set was rewritten.
+#[derive(Debug)]
+pub struct PersistReport {
+    pub model_table: String,
+    pub dimension: usize,
+    pub persisted: usize,
+    pub healed: bool,
+}
+
 impl CodeGraphStore {
     /// Open or create a Macrame database at `path`.
     pub fn open(path: impl AsRef<Path>) -> macrame::Result<Self> {
@@ -447,6 +480,184 @@ impl CodeGraphStore {
             } else {
                 e
             }
+        })
+    }
+
+    /// Persist embedding vectors to the ledger's per-model table (DR-11
+    /// slice 2). `rows` are `(id, hash)` pairs for vectors written to
+    /// memory this run — the vectors themselves are read from `projection`
+    /// (they already live there; passing them back across FFI would copy
+    /// megabytes pointlessly). A listed id with no in-memory vector is an
+    /// honest error, never a silent skip.
+    ///
+    /// Empty `rows` + matching table count = no-op. Empty `rows` +
+    /// missing/divergent table = heal (rewrite the whole memory set): the
+    /// crash window between memory commit and table write cannot be atomic
+    /// across two systems, so it is healable instead — and a full regen
+    /// with matching counts that somehow skipped persist is repaired by
+    /// `compute_embeddings(recompute=True)`, stated here rather than
+    /// discovered. No memory rows at all = nothing registered (tables are
+    /// never created empty).
+    ///
+    /// Stale-row note: rows are upserted, never deleted — macrame has no
+    /// vector delete. Edits clear memory + ledger hash immediately and the
+    /// next compute regenerates and overwrites; deletions retire the
+    /// concept, which the ANN/hybrid arm filters. Between edit and
+    /// recompute the table serves last-computed vectors.
+    pub fn persist_projection_embeddings(
+        &self,
+        model_raw: &str,
+        projection: &ProjectedGraph,
+        rows: &[(String, String)],
+    ) -> macrame::Result<PersistReport> {
+        let model = macrame_model_name(model_raw)?;
+        let mut memory: Vec<(String, Vec<f32>)> = Vec::new();
+        {
+            let mut collect = |id: &String, emb: &EmbeddingVec| {
+                if !emb.vec.is_empty() {
+                    memory.push((id.clone(), emb.vec.iter().map(|x| *x as f32).collect()));
+                }
+            };
+            for (id, e) in &projection.functions {
+                collect(id, &e.embedding);
+            }
+            for (id, e) in &projection.classes {
+                collect(id, &e.embedding);
+            }
+            for (id, e) in &projection.modules {
+                collect(id, &e.embedding);
+            }
+            for (id, e) in &projection.imports {
+                collect(id, &e.embedding);
+            }
+            for (id, e) in &projection.constants {
+                collect(id, &e.embedding);
+            }
+            for (id, e) in &projection.type_aliases {
+                collect(id, &e.embedding);
+            }
+        }
+        let uniform_dim = |vs: &[(String, Vec<f32>)]| -> macrame::Result<usize> {
+            let mut dim = 0usize;
+            for (id, v) in vs {
+                if dim == 0 {
+                    dim = v.len();
+                } else if v.len() != dim {
+                    return Err(macrame::DbError::DimMismatch {
+                        got: v.len(),
+                        expected: dim,
+                        model: model.to_string(),
+                    });
+                }
+                let _ = id;
+            }
+            Ok(dim)
+        };
+        let write_all = |vs: &[(String, Vec<f32>)]| -> macrame::Result<usize> {
+            let dim = uniform_dim(vs)?;
+            if dim == 0 {
+                return Ok(0);
+            }
+            runtime().block_on(self.db.register_model(&model, dim))?;
+            runtime()
+                .block_on(self.db.upsert_embeddings(&model, vs.to_vec()))
+                .map_err(|e| {
+                    // BulkInterrupted carries the written count; the cause is
+                    // what the caller answers. A foreign-key failure means
+                    // vectors for concepts the ledger never recorded — name
+                    // the repair (flush v2 concepts first), never bare 787.
+                    let cause = e.cause;
+                    if format!("{cause:?}").contains("FOREIGN KEY") {
+                        macrame::DbError::InvalidId {
+                            id: model.table(),
+                            reason: "persist found vectors for concepts the ledger never \
+                                     recorded — flush v2 concepts (analyze/update_file) \
+                                     before persisting embeddings"
+                                .to_string(),
+                        }
+                    } else {
+                        cause
+                    }
+                })
+        };
+        if !rows.is_empty() {
+            let mut fresh: Vec<(String, Vec<f32>)> = Vec::with_capacity(rows.len());
+            for (id, _hash) in rows {
+                match memory.iter().find(|(mid, _)| mid == id) {
+                    Some((_, v)) => fresh.push((id.clone(), v.clone())),
+                    None => {
+                        return Err(macrame::DbError::InvalidId {
+                            id: id.clone(),
+                            reason: "persist lists an id with no in-memory vector \
+                                     (cleared between set and persist?)"
+                                .to_string(),
+                        });
+                    }
+                }
+            }
+            let dim = uniform_dim(&fresh)?;
+            let persisted = write_all(&fresh)?;
+            return Ok(PersistReport {
+                model_table: model.table(),
+                dimension: dim,
+                persisted,
+                healed: false,
+            });
+        }
+        // No fresh rows: verify the table agrees with memory, heal if not.
+        if memory.is_empty() {
+            return Ok(PersistReport {
+                model_table: model.table(),
+                dimension: 0,
+                persisted: 0,
+                healed: false,
+            });
+        }
+        let dim = uniform_dim(&memory)?;
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        let table_exists: bool = {
+            let mut rows = runtime()
+                .block_on(conn.query(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
+                    vec![libsql::Value::Text(model.table())],
+                ))
+                .map_err(macrame::DbError::Engine)?;
+            runtime()
+                .block_on(rows.next())
+                .map_err(macrame::DbError::Engine)?
+                .is_some()
+        };
+        let table_count: i64 = if table_exists {
+            let mut rows = runtime()
+                .block_on(conn.query(
+                    &format!("SELECT COUNT(*) FROM {}", model.table()),
+                    Vec::<libsql::Value>::new(),
+                ))
+                .map_err(macrame::DbError::Engine)?;
+            match runtime()
+                .block_on(rows.next())
+                .map_err(macrame::DbError::Engine)?
+            {
+                Some(row) => row.get::<i64>(0).map_err(macrame::DbError::Engine)?,
+                None => 0,
+            }
+        } else {
+            0
+        };
+        if table_count == memory.len() as i64 {
+            return Ok(PersistReport {
+                model_table: model.table(),
+                dimension: dim,
+                persisted: 0,
+                healed: false,
+            });
+        }
+        let persisted = write_all(&memory)?;
+        Ok(PersistReport {
+            model_table: model.table(),
+            dimension: dim,
+            persisted,
+            healed: true,
         })
     }
 

@@ -933,7 +933,11 @@ def compute_embeddings(model_name: str | None = None, batch_size: int = 32,
     against the configured dimension before storing — explicit error, never
     mixed widths.
 
-    Returns ``{"generated", "cached", "total", "errors"}``.
+    Returns ``{"generated", "cached", "total", "errors", "persisted"}``.
+    ``persisted`` counts rows written to the ledger's per-model vector
+    table this run: 0 when everything was cached and the table agrees, or
+    on storeless graphs where vectors stay memory-only (no ledger to
+    persist them to).
     """
     _require_index()
     from .embedding import (
@@ -965,7 +969,8 @@ def compute_embeddings(model_name: str | None = None, batch_size: int = 32,
     try:
         from coderadar._core import set_embeddings_bulk
     except ImportError:
-        return {"generated": 0, "cached": 0, "total": len(targets), "errors": 1}
+        return {"generated": 0, "cached": 0, "total": len(targets), "errors": 1,
+                "persisted": 0}
 
     # Configured-dimension check before anything is stored: a [embedding]
     # dimension that disagrees with the model output fails here explicitly
@@ -992,10 +997,34 @@ def compute_embeddings(model_name: str | None = None, batch_size: int = 32,
         if "embedding dimension" in str(e):
             raise EngineError(str(e)) from None
         return {"generated": 0, "cached": cached,
-                "total": len(targets), "errors": len(entries)}
+                "total": len(targets), "errors": len(entries),
+                "persisted": 0}
+
+    # DR-11 slice 2: the memory write above is not durable — persist the
+    # fresh vectors to the ledger's per-model table (vectors stay in the
+    # projection; only (id, hash) pairs cross FFI). Empty entries still
+    # call through: the Rust side heals a missing/divergent table from
+    # memory. Storeless graphs skip (memory-only, documented above); a
+    # stale `_core` without the symbol degrades the same way.
+    persisted = 0
+    try:
+        from coderadar._core import persist_embeddings
+    except ImportError:
+        pass
+    else:
+        try:
+            pres = persist_embeddings(wanted, [(e[0], e[2]) for e in entries])
+        except RuntimeError as e:
+            if "stored graph" in str(e):
+                pass
+            else:
+                raise EngineError(str(e)) from None
+        else:
+            persisted = int(pres.get("persisted", 0))
 
     return {"generated": int(report.get("applied", 0)), "cached": cached,
-            "total": len(targets), "errors": len(report.get("missing", []))}
+            "total": len(targets), "errors": len(report.get("missing", [])),
+            "persisted": persisted}
 
 
 def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:

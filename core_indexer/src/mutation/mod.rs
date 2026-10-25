@@ -961,8 +961,7 @@ impl MutationEngine {
             .filter(|p| !p.is_varargs && !p.is_kwargs)
             .map(|p| p.name.as_str())
             .collect();
-        let new_param_names: Vec<&str> =
-            new_params.iter().map(|(n, _)| n.as_str()).collect();
+        let new_param_names: Vec<&str> = new_params.iter().map(|(n, _)| n.as_str()).collect();
         let common_old: Vec<&str> = old_param_names
             .iter()
             .filter(|n| new_param_names.contains(n))
@@ -1087,8 +1086,7 @@ impl MutationEngine {
                             });
                             match (args_span, span_ok) {
                                 (Some(sp), true) => {
-                                    let inner =
-                                        source[sp.start + 1..sp.end - 1].trim().to_string();
+                                    let inner = source[sp.start + 1..sp.end - 1].trim().to_string();
                                     if inner.contains("**") {
                                         warnings.push(format!(
                                             "Call site in {} line {} — kwargs unpacking; inject default args manually",
@@ -1104,10 +1102,7 @@ impl MutationEngine {
                                             let replacement = if inner.is_empty() {
                                                 format!("({})", missing.join(", "))
                                             } else {
-                                                format!(
-                                                    "({inner}, {})",
-                                                    missing.join(", ")
-                                                )
+                                                format!("({inner}, {})", missing.join(", "))
                                             };
                                             edits.push(MutationEdit {
                                                 file: caller_file.clone(),
@@ -2709,7 +2704,14 @@ fn parse_sig_param(part: &str) -> Option<(String, Option<String>)> {
     let (name_half, default) = match eq_at {
         Some(e) => {
             let d = p[e + 1..].trim();
-            (p[..e].trim(), if d.is_empty() { None } else { Some(d.to_string()) })
+            (
+                p[..e].trim(),
+                if d.is_empty() {
+                    None
+                } else {
+                    Some(d.to_string())
+                },
+            )
         }
         None => (p, None),
     };
@@ -2739,7 +2741,10 @@ fn parse_sig_param(part: &str) -> Option<(String, Option<String>)> {
             k += 1;
         }
     }
-    let name = name_half[..name_end].trim().trim_end_matches('?').to_string();
+    let name = name_half[..name_end]
+        .trim()
+        .trim_end_matches('?')
+        .to_string();
     if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') {
         return None;
     }
@@ -2806,11 +2811,10 @@ fn has_kwarg(args_inner: &str, name: &str) -> bool {
     let mut i = 0;
     while i + n.len() <= bytes.len() {
         if &bytes[i..i + n.len()] == n {
-            let before_ok = i == 0
-                || {
-                    let b = bytes[i - 1];
-                    !(b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
-                };
+            let before_ok = i == 0 || {
+                let b = bytes[i - 1];
+                !(b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
+            };
             if before_ok {
                 let mut j = i + n.len();
                 while j < bytes.len() && bytes[j].is_ascii_whitespace() {
@@ -4116,8 +4120,7 @@ mod tests {
                 .find(|e| e.replacement == "(0)")
                 .expect("call-site edit missing");
             assert_eq!(&src[call_edit.span.start..call_edit.span.end], "()");
-            let applied =
-                crate::mutation::edit::apply_edits_to_file(&src, &plan.edits).unwrap();
+            let applied = crate::mutation::edit::apply_edits_to_file(&src, &plan.edits).unwrap();
             assert!(applied.contains("def target_fn(p: int):"));
             assert!(applied.contains("return target_fn(0)"));
             // The module-level call (line 8) is still textual-only.
@@ -4152,8 +4155,7 @@ mod tests {
 
             assert_eq!(plan.edits.len(), 2, "{:?}", plan.edits);
             let src = std::fs::read_to_string(&file).unwrap();
-            let applied =
-                crate::mutation::edit::apply_edits_to_file(&src, &plan.edits).unwrap();
+            let applied = crate::mutation::edit::apply_edits_to_file(&src, &plan.edits).unwrap();
             assert!(applied.contains("def target_fn(p=0):"));
             assert!(applied.contains("return target_fn(p=0)"));
             assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
@@ -4302,7 +4304,9 @@ mod tests {
                 for call in &mut c.calls {
                     call.args_span = None;
                 }
-                stripped.functions.insert(caller_id.clone(), std::sync::Arc::new(c));
+                stripped
+                    .functions
+                    .insert(caller_id.clone(), std::sync::Arc::new(c));
             }
             let mut values = HashMap::new();
             values.insert(caller_id, "0".to_string());

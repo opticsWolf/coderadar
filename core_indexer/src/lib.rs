@@ -104,6 +104,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(ffi_synthetic::clear_all_embeddings, m)?)?;
+    m.add_function(wrap_pyfunction!(persist_embeddings, m)?)?;
     m.add_function(wrap_pyfunction!(ffi_synthetic::module_children, m)?)?;
     m.add_function(wrap_pyfunction!(ffi_synthetic::set_module_star_exports, m)?)?;
     m.add_function(wrap_pyfunction!(
@@ -3001,6 +3002,38 @@ fn find_scaffolding(
         results.push(dict.into());
     }
     Ok(results)
+}
+
+/// Persist in-memory embedding vectors to the ledger's per-model table
+/// (DR-11 slice 2): `{persisted, model, dimension, healed}`. `entries`
+/// are `(id, hash)` pairs for vectors set this run — the vectors are read
+/// from the projection, not passed back. Storeless graphs get the honest
+/// error (vectors stay memory-only without a ledger). Empty entries +
+/// agreeing table = no-op; empty entries + missing/divergent table = heal.
+#[pyfunction]
+#[pyo3(signature = (model, entries))]
+fn persist_embeddings(
+    py: Python<'_>,
+    model: &str,
+    entries: Vec<(String, String)>,
+) -> PyResult<PyObject> {
+    let report = with_graph(|graph, snap| {
+        let store = graph.store.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "persist_embeddings needs a stored graph (analyze with create_store=True): \
+                 vectors are memory-only without a ledger to persist them to",
+            )
+        })?;
+        store
+            .persist_projection_embeddings(model, snap, &entries)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))
+    })?;
+    let out = PyDict::new(py);
+    out.set_item("persisted", report.persisted)?;
+    out.set_item("model", report.model_table)?;
+    out.set_item("dimension", report.dimension)?;
+    out.set_item("healed", report.healed)?;
+    Ok(out.into())
 }
 
 /// Vector similarity search against entity embeddings.

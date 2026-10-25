@@ -101,7 +101,8 @@ fn test_update_file_refreshes_call_arg_spans() {
     assert_eq!(first.calls.len(), first.resolved_calls.len());
     let span = first.calls[0].args_span.expect("span indexed");
     assert_eq!(
-        &"def target_fn(a):\n    return a\n\ndef direct_caller():\n    return target_fn(1)\n"[span.start..span.end],
+        &"def target_fn(a):\n    return a\n\ndef direct_caller():\n    return target_fn(1)\n"
+            [span.start..span.end],
         "(1)"
     );
 

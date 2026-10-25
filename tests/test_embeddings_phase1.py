@@ -66,9 +66,11 @@ class TestKeyedDedup:
         first = ops.compute_embeddings()
         assert first["generated"] == first["total"] > 0
         assert first["errors"] == 0
+        assert first["persisted"] == first["total"]
         second = ops.compute_embeddings()
         assert second == {"generated": 0, "cached": first["total"],
-                          "total": first["total"], "errors": 0}
+                          "total": first["total"], "errors": 0,
+                          "persisted": 0}
 
     def test_legacy_bare_hash_regenerates_once(self, tiny):
         ops.compute_embeddings()
@@ -86,10 +88,6 @@ class TestKeyedDedup:
         assert rerun["generated"] == 0
 
     def test_docstring_change_rotates_key(self, tiny):
-        # Vectors are projection-side (ledger persistence is 0.13), so the
-        # precise docstring assertion is key rotation, not regen counts:
-        # alpha's key must change (docstring is IN the embed text) while
-        # beta's key stays stable across an incremental file update.
         ops.compute_embeddings()
         alpha_before = _core.lookup_entity("a.py::alpha")["embedding_hash"]
         beta_before = _core.lookup_entity("a.py::beta")["embedding_hash"]
@@ -99,9 +97,10 @@ class TestKeyedDedup:
         coderadar.CodeGraph().update_file("a.py")
         report = ops.compute_embeddings()
         # The file's vectors cleared on update; both regenerate, the
-        # untouched module stays cached.
+        # untouched module stays cached — and the regenerated rows persist.
         assert report["generated"] == 2
         assert report["cached"] == report["total"] - 2
+        assert report["persisted"] == 2
         alpha_after = _core.lookup_entity("a.py::alpha")["embedding_hash"]
         beta_after = _core.lookup_entity("a.py::beta")["embedding_hash"]
         assert alpha_after != alpha_before
