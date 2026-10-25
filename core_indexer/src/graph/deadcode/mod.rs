@@ -730,6 +730,7 @@ pub(crate) mod tests {
                 line: 1,
                 col: 0,
                 name_span: ByteSpan { start: 0, end: 5 },
+                args_span: None,
             },
         }];
         g.functions

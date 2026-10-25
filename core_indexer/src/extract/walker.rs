@@ -710,6 +710,7 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
                 line: id.start_position().row + 1,
                 col: id.start_position().column,
                 name_span: node_span(id),
+                args_span: None,
             })
         })
         .collect()
@@ -785,6 +786,27 @@ pub(crate) fn node_span(node: Node) -> ByteSpan {
     }
 }
 
+/// Byte range of a call node's argument list, for `UnresolvedRef::args_span`
+/// (§2.3). Tries field names across grammars (`arguments`, `argument_list`,
+/// `args`), then falls back to the first child whose kind mentions argument.
+/// Returns `None` when the call has no argument node (e.g. a bare receiver
+/// with no parens recorded) — callers store `None`, never an empty span.
+pub fn call_args_span(node: Node) -> Option<ByteSpan> {
+    for field in ["arguments", "argument_list", "args"] {
+        if let Some(n) = node.child_by_field_name(field) {
+            return Some(node_span(n));
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let k = child.kind();
+        if k.contains("argument") || k == "args" || k == "actual_parameters" {
+            return Some(node_span(child));
+        }
+    }
+    None
+}
+
 pub(crate) fn receiver_segments(node: Option<Node>, source: &str) -> Vec<String> {
     let Some(n) = node else { return vec![] };
     let text = |x: Node| x.utf8_text(source.as_bytes()).unwrap_or("").to_string();
@@ -850,6 +872,7 @@ pub fn emit_call_for_node(
             line,
             col: col as usize,
             name_span: name_node.map(node_span).unwrap_or_default(),
+            args_span: call_args_span(node),
         });
         return;
     }
@@ -876,6 +899,7 @@ pub fn emit_call_for_node(
                     line,
                     col: col as usize,
                     name_span: node_span(n),
+                    args_span: call_args_span(node),
                 });
             }
         }
@@ -893,6 +917,7 @@ pub fn emit_call_for_node(
                         line,
                         col: col as usize,
                         name_span: node_span(n),
+                        args_span: call_args_span(node),
                     });
                 }
             }
@@ -967,6 +992,7 @@ pub fn emit_call_for_node(
                     line,
                     col: col as usize,
                     name_span: method_node.map(node_span).unwrap_or_default(),
+                    args_span: call_args_span(node),
                 });
             }
         }
@@ -986,6 +1012,7 @@ pub fn emit_call_for_node(
                                 line,
                                 col: col as usize,
                                 name_span: node_span(parent),
+                                args_span: call_args_span(node),
                             });
                         }
                     }

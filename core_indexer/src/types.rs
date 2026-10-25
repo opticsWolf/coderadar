@@ -809,6 +809,13 @@ pub struct UnresolvedRef {
     /// empty span as "no name position known", not as offset zero.
     #[serde(default)]
     pub name_span: ByteSpan,
+    /// Byte range of the call's argument list, including parens
+    /// (`(x, y)` in `save_state(x, y)`). `None` = not recorded (refs that
+    /// are not calls, or snapshots written before §2.3). Consumers must
+    /// treat `None` as "no arg position known" and fall back to the
+    /// `unverified_sites` path, never as an empty edit.
+    #[serde(default)]
+    pub args_span: Option<ByteSpan>,
 }
 
 /// Evidence for the type of a name inside one function: `m = Manager()`,

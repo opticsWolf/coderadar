@@ -45,6 +45,7 @@ fn call_ref(node: Node, src: &str) -> Option<UnresolvedRef> {
         line: node.start_position().row + 1,
         col: node.start_position().column,
         name_span: node_span(name_node),
+        args_span: crate::extract::walker::call_args_span(node),
     })
 }
 
@@ -841,6 +842,7 @@ fn ref_of(node: Node, source: &str) -> Option<UnresolvedRef> {
         line: node.start_position().row + 1,
         col: node.start_position().column,
         name_span: node_span(name_node),
+        args_span: None,
     })
 }
 
@@ -1048,6 +1050,19 @@ mod call_name_span_tests {
             &src.as_bytes()[reference.name_span.start..reference.name_span.end],
             b"greet"
         );
+    }
+
+    /// §2.3: the call's argument list is recorded so `update_signature`
+    /// can rewrite call sites instead of reporting them unverified.
+    #[test]
+    fn bare_call_records_the_args_span() {
+        let src = "def f():\n    return greet(1, x=2)\n";
+        let tree = python_tree(src);
+        let call = first_node_of_kind(tree.root_node(), "call").expect("call");
+        let reference = call_ref(call, src).expect("bare calls are extracted");
+
+        let args = reference.args_span.expect("calls record their args");
+        assert_eq!(&src.as_bytes()[args.start..args.end], b"(1, x=2)");
     }
 
     /// Function-as-value references (`map(save_state, xs)`) are renamed too,
