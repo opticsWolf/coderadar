@@ -1,6 +1,6 @@
 # CodeRadar Architecture
 
-> **Living document.** Baseline: v0.12.0 (`dev_0.12`), `macrame-db` 0.19.1,
+> **Living document.** Baseline: v0.13.0 (`dev`), `macrame-db` 0.19.1,
 > store schema v22. Update with feature commits the way `CHANGELOG.md` is
 > updated — a section that describes behavior the code no longer has is a bug.
 > Design *history* (why things are the way they are) lives in the
@@ -412,7 +412,7 @@ with documented pending consumers.
 
 ## 13. Quality gates & release policy
 
-- **Tests:** 1667 (503 Rust incl. 5 integration + 1164 Python, 1 skipped). Gate bundle:
+- **Tests:** 1660 (503 Rust incl. 5 integration + 1157 Python, 1 skipped). Gate bundle:
   release-gate history, read-path discipline, call-edge accounting, snapshot
   honesty, surface parity, skill drift, Rust cross-module, blob reads +
   2 latency gates.
@@ -421,7 +421,7 @@ with documented pending consumers.
 - **Version policy (DR-26, process-open):** `pyproject.toml` + workspace
   `Cargo.toml` together, +0.0.1 per implemented feature, one bump commit
   named in the feature's DR row. Spec/test/verification-only and dep
-  patches: no bump. Minor cut accumulates (0.12.0).
+  patches: no bump. Minor cut accumulates (0.13.0).
 - **Register currency is a release-gate input:** DR rows update the same
   session as the code.
 
@@ -460,7 +460,7 @@ ledger change (reverse-BFS over reconstructed state is available).
 ## 16. Decision index
 
 Full rationale per row lives in the register (`coderadar-decision-register`
-in kb.db). Statuses at v0.12.0:
+in kb.db). Statuses at v0.13.0:
 
 | ID | Decision | Status |
 |---|---|---|
@@ -485,7 +485,7 @@ in kb.db). Statuses at v0.12.0:
 | DR-19 | Canonical ids + store migration | closed |
 | DR-20 | fossil-mcp detector port (TED, tiers) | closed |
 | DR-21 | Precision over coverage (v0.10) | closed |
-| DR-22 | Deprecations live until 0.13 | carried |
+| DR-22 | Deprecations removed in 0.13 (CLI `6d88cb4`, Python `aa90f92`) | closed |
 | DR-23 | TS throughput gap accepted | carried |
 | DR-24 | IMPLEMENTS folded into extends — unfolded on dev (§2.6 slice A) | closed |
 | DR-25 | Source history in blobs (§0.6/§1.9/§3.0/§3.4) | closed |

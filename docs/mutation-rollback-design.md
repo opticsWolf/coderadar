@@ -7,8 +7,8 @@ as-built contract: guarded compensation plus verified synchronization for
 synchronization outcomes.
 **Landing:** design `0c2493a`; implementation `4d5cb1c`; version bump
 `8fa427b`; OKFgraph register concept `coderadar-decision-register` row
-DR-35. Verified: Rust 503 tests, Python 1164 passed + 1 skipped, round-2
-battery 123/123.
+DR-35. Verified: Rust 503 tests, Python 1156 passed + 1 skipped, round-2
+battery 121/121.
 **Closes:** the carried semantics note in `docs/CODERADAR_BUGS_QUIRKS.md` #1,
 and corrects the stale rollback descriptions in `docs/ARCHITECTURE.md` §§4/9.
 **Scope:** `replace_body`, `update_signature`, `rename`, and `create_entity`,

@@ -1,6 +1,6 @@
 # CodeRadar Quick Reference
 
-> v0.12.0 · Full design: `ARCHITECTURE.md` · Agent skills:
+> v0.13.0 · Full design: `ARCHITECTURE.md` · Agent skills:
 > `coderadar/skills/coderadar-{mcp,cli}/SKILL.md` (bundled; install with
 > `coderadar skills install`) · Query language:
 > `coderadar docs query-language` (generated — read it, don't guess fields).
