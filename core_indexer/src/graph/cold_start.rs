@@ -3,7 +3,8 @@
 //! Rebuilds an in-memory [`ProjectedGraph`] from a Macrame-ledger
 //! [`MaterializedState`]. Concept JSON v2 (see `crate::storage`) carries
 //! post-resolution *base* state; the resolution cascade
-//! (imports → class methods → MRO → hierarchy → overrides) is re-run by
+//! (imports → class methods → MRO → hierarchy → decorators →
+//! instantiations → references → overrides) is re-run by
 //! the caller on the returned projection, mirroring `analyze_inner`
 //! (lib.rs) minus `resolve_all_calls` — `resolved_calls` are already
 //! carried on each function.
@@ -15,13 +16,18 @@
 //!    target, Method → method id, Builtin/External → `external::{name}`,
 //!    Unresolved → nothing.
 //! 2. Ledger edges whose kind is **not** structural (CALLS / IMPORTS /
-//!    EXTENDS / OVERRIDES) — i.e. synthetic framework edges registered
+//!    EXTENDS / IMPLEMENTS / DECORATES / INSTANTIATES / REFERENCES /
+//!    OVERRIDES) — i.e. synthetic framework edges registered
 //!    under their original kind. They land in the same call indices,
 //!    exactly as `register_synthetic_edges_bulk` does in memory.
 //!
 //! Structural edges are never read at load: `importers` is rebuilt by
-//! `resolve_imports`, EXTENDS by `resolve_class_hierarchy` (via
-//! `resolved_bases`), OVERRIDES by `resolve_overrides` (via
+//! `resolve_imports`, EXTENDS/IMPLEMENTS by `resolve_class_hierarchy` (via
+//! `resolved_bases`/`resolved_interfaces`), DECORATES by `resolve_decorators`
+//! (via `resolved_decorators`/`decorated_by`), INSTANTIATES by
+//! `resolve_instantiations` (via Constructor targets → `instantiated_by`),
+//! REFERENCES by `resolve_references` (via `resolved_refs` → `referenced_by`),
+//! OVERRIDES by `resolve_overrides` (via
 //! `overrides_base`). Ledger CALLS edges are a strict subset of (1) —
 //! the persister skips external/builtin targets — so skipping them loses
 //! nothing.
@@ -99,6 +105,11 @@ pub fn projection_from_state(
         callees_by_caller: HashMap::new(),
         call_evidence: HashMap::new(),
         subclasses: HashMap::new(),
+        implementers: HashMap::new(),
+        instantiated_by: HashMap::new(),
+        referenced_by: HashMap::new(),
+        path_maps: crate::graph::path_maps::PathMaps::default(),
+        decorated_by: HashMap::new(),
         overridden_by: HashMap::new(),
         overrides_base: HashMap::new(),
         ambiguous_bases: Vec::new(),
@@ -181,7 +192,16 @@ pub fn projection_from_state(
 
 /// Structural edge kinds written by `persist_edges_scoped`. Excluded from
 /// ledger restoration (see module docs).
-const STRUCTURAL_EDGE_KINDS: &[&str] = &["CALLS", "IMPORTS", "EXTENDS", "OVERRIDES"];
+const STRUCTURAL_EDGE_KINDS: &[&str] = &[
+    "CALLS",
+    "IMPORTS",
+    "EXTENDS",
+    "IMPLEMENTS",
+    "DECORATES",
+    "INSTANTIATES",
+    "REFERENCES",
+    "OVERRIDES",
+];
 
 /// Restore the CALLS reverse indices from `Function.resolved_calls`
 /// (see module docs for the pair rules).
@@ -291,6 +311,11 @@ mod tests {
             callees_by_caller: HashMap::new(),
             call_evidence: HashMap::new(),
             subclasses: HashMap::new(),
+            implementers: HashMap::new(),
+            instantiated_by: HashMap::new(),
+            referenced_by: HashMap::new(),
+            path_maps: crate::graph::path_maps::PathMaps::default(),
+            decorated_by: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
             ambiguous_bases: Vec::new(),
@@ -332,6 +357,8 @@ mod tests {
                 source: SourceType::Impl,
                 bases: Vec::new(),
                 resolved_bases: vec![],
+                resolved_interfaces: vec![],
+                resolved_decorators: vec![],
                 mro: Vec::new(),
                 mro_error: false,
                 methods: vec!["a.py::C.run".to_string()],
@@ -370,6 +397,7 @@ mod tests {
                 bindings: Vec::new(),
                 refs: Vec::new(),
                 resolved_refs: Vec::new(),
+                resolved_decorators: vec![],
                 line: 12,
                 exit_line: 20,
                 docstring: Some("the foo".to_string()),
@@ -414,6 +442,7 @@ mod tests {
                 bindings: Vec::new(),
                 refs: Vec::new(),
                 resolved_refs: Vec::new(),
+                resolved_decorators: vec![],
                 line: 22,
                 exit_line: 30,
                 docstring: None,
@@ -554,7 +583,7 @@ mod tests {
         assert_eq!(f.resolved_calls.len(), 2);
         assert_eq!(f.kind, FunctionKind::Free);
         assert_eq!(f.parent_module, "a.py::module");
-        assert!(f.calls.is_empty()); // raw refs never persisted
+        assert!(f.calls.is_empty()); // fixture wrote no call_sites (§2.3)
         let m = &g.modules["a.py::module"];
         assert_eq!(m.path, PathBuf::from("a.py"));
         assert_eq!(m.classes, vec!["a.py::C".to_string()]);

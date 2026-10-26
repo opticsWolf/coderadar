@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import click
 from rich.console import Console
@@ -156,9 +156,10 @@ def main(ctx: click.Context, project: str | None):
 
     Indexes symbols and call edges incrementally so agents and developers can
     query, explore and safely rewrite code. `coderadar mcp serve` exposes the
-    same graph to MCP clients: every MCP tool `coderadar_<op>` is the
-    command `coderadar <op>` here (underscores become hyphens), with
-    `--format json` for scripts.
+    same graph to MCP clients: every graph op `coderadar_<op>` has the CLI
+    command `coderadar <op>` (underscores become hyphens), except
+    `coderadar_set_project`, which is `-C/--project` here. Graph commands
+    take `--format json` for scripts.
     """
     ctx.meta[_PROJECT_KEY] = str(Path(project).resolve()) if project else None
     # Piped output is read by programs that expect UTF-8; on Windows it
@@ -388,14 +389,6 @@ def _op(fmt: str, call, text) -> None:
     _emit(fmt, result, text)
 
 
-def _renamed(old: str, new: str) -> None:
-    click.echo(
-        f"`coderadar {old}` is now `coderadar {new}` "
-        "(the old spelling is removed in 0.13).",
-        err=True,
-    )
-
-
 def _text_arg(value: str | None) -> str | None:
     """'-' reads the value from stdin."""
     return sys.stdin.read() if value == "-" else value
@@ -506,8 +499,8 @@ def resolve(name: str, limit: int, fmt: str):
 def query(query_string: str, fmt: str):
     """Run a graph query (MCP coderadar_query).
 
-    Example: `functions where caller_count == 0`; the language is in
-    docs/query-language.md."""
+    Example: `functions where caller_count == 0`; `coderadar docs query-language`
+    prints the full language and field reference."""
     from . import ops, render
     _enter_project()
     _ensure_graph()
@@ -556,6 +549,18 @@ def search_similar(query_text: str, top_k: int, fmt: str):
         lambda rows: render.search_similar(query_text, rows))
 
 
+@main.command(name="search-hybrid")
+@click.argument("query_text")
+@click.option("--top-k", default=10, show_default=True)
+@_format_option
+def search_hybrid(query_text: str, top_k: int, fmt: str):
+    """Hybrid keyword+vector search (RRF fusion; MCP coderadar_search_hybrid)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.search_hybrid(query_text, top_k),
+        lambda rows: render.search_hybrid(query_text, rows))
+
+
 @main.command(name="compute-embeddings")
 @click.option("--model", "model_name", default=None,
               help="fastembed model (default: [embeddings] model in .coderadar.toml).")
@@ -602,13 +607,13 @@ def as_of(timestamp: str, symbols: tuple, query_text: str, fmt: str):
 @main.command()
 @click.argument("entity_id")
 @click.option("--direction", default="both", show_default=True,
-              type=click.Choice(["downstream", "upstream", "both", "out", "in"]),
-              help="upstream = callers, importers, subclasses; downstream = callees, "
-              "imports, bases (out/in are aliases).")
-@click.option("--edge-kinds", "--edges", "edge_kinds", default=None,
+              type=click.Choice(["downstream", "upstream", "both"]),
+              help="upstream = callers, importers, subclasses, implementers, instantiators, referrers; "
+              "downstream = callees, imports, bases, interfaces, decorators, constructed.")
+@click.option("--edge-kinds", "edge_kinds", default=None,
               help="Comma-separated: calls, imports, extends (alias inherits), "
-              "overrides. Default: all of them.")
-@click.option("--max-depth", "--depth", "max_depth", default=3, show_default=True,
+              "implements, decorates, instantiates, references, overrides. Default: all of them.")
+@click.option("--max-depth", "max_depth", default=3, show_default=True,
               help="At most 10.")
 @_format_option
 def traverse(entity_id: str, direction: str, edge_kinds: str | None, max_depth: int,
@@ -684,9 +689,44 @@ def _edit(fmt: str, call) -> None:
     _ensure_graph()
     try:
         outcome = call()
+    except ops.MutationFailed as e:
+        click.echo(render.mutation_error(str(e)), err=True)
+        raise SystemExit(_mutation_failure_exit_code(e)) from None
     except ops.OpError as e:
         _fail(e)
+    except Exception as e:  # noqa: BLE001 - surfaced as MutationFailed
+        failure = ops.MutationFailed(str(e))
+        click.echo(render.mutation_error(str(failure)), err=True)
+        raise SystemExit(_mutation_failure_exit_code(failure)) from None
     _emit(fmt, outcome, lambda o: render.edit(o, apply_hint=APPLY_HINT))
+    raise SystemExit(_mutation_exit_code(outcome))
+
+
+def _mutation_failure_exit_code(error: BaseException) -> int:
+    """CLI exit contract for a mutation that never produced a result.
+
+    Plan-time stale/policy refusals carry the same 2 as the structured
+    `RejectedStale`/`RejectedPolicy` outcomes; other planning failures stay 1.
+    """
+    text = f"{type(error).__name__}: {error}"
+    if any(marker in text for marker in ("PolicyViolation", "RejectedPolicy",
+                                          "policy rejected", "allow list")):
+        return 2
+    if any(marker in text for marker in ("StaleIndex", "HashMismatch", "RejectedStale",
+                                          "stale edit rejected", "content changed since planning")):
+        return 2
+    return 1
+
+
+def _mutation_exit_code(outcome: Any) -> int:
+    """CLI exit contract: 0 Applied/dry-run; 1 incomplete/rollback; 2 refusal."""
+    result = outcome.get("result") if isinstance(outcome, dict) else getattr(outcome, "result", None)
+    status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
+    if result is None or status == "Applied":
+        return 0
+    if status in ("RejectedStale", "RejectedPolicy"):
+        return 2
+    return 1
 
 
 @main.command(name="replace-body")
@@ -714,8 +754,8 @@ def replace_body(entity_id: str, new_body: str, expected_hash: str | None, apply
 @_format_option
 def update_signature(entity_id: str, new_signature: str, inject_defaults: bool,
                      apply: bool, fmt: str):
-    """Change a signature; call sites are listed for review
-    (MCP coderadar_update_signature)."""
+    """Change a signature; call sites with supplied values are rewritten,
+    the rest are listed for review (MCP coderadar_update_signature)."""
     from . import ops
     _enter_project()
     _edit(fmt, lambda: ops.update_signature(entity_id, new_signature, inject_defaults,
@@ -838,47 +878,6 @@ def _status(fmt: str, load: bool) -> None:
         _print_effective_excludes()
 
 
-# ── Old names (hidden; they still work) ──────────────────────────────────
-
-@main.command(hidden=True)
-@click.argument("path", type=click.Path(exists=True, file_okay=False), default=".")
-@click.option("--exclude", "excludes", multiple=True)
-def analyze(path: str, excludes: tuple):
-    """Old name of `coderadar -C PATH reindex --full`."""
-    _renamed("analyze", "reindex --full")
-    _enter_project(project=path, walk=False)
-    _reindex(True, excludes, False, "text")
-
-
-@main.command(hidden=True)
-@click.argument("path", type=click.Path(exists=True, file_okay=False), default=".")
-@click.option("--full", is_flag=True)
-@click.option("--exclude", "excludes", multiple=True)
-def rebuild(path: str, full: bool, excludes: tuple):
-    """Old name of `coderadar -C PATH reindex --full`."""
-    _renamed("rebuild", "reindex --full")
-    _enter_project(project=path, walk=False)
-    _reindex(True, excludes, False, "text")
-
-
-@main.command(hidden=True)
-@click.argument("file", type=click.Path())
-@click.option("--content", default=None)
-def update(file: str, content: str | None):
-    """Old name of `coderadar update-file`."""
-    _renamed("update", "update-file")
-    (file,) = _enter_project(file)
-    _update_file(file, content, "text")
-
-
-@main.command(hidden=True)
-def stats():
-    """Old name of `coderadar status` (always loads the graph)."""
-    _renamed("stats", "status")
-    _enter_project()
-    _status("text", load=True)
-
-
 # ── Git ──────────────────────────────────────────────────────────────────
 
 @main.group()
@@ -952,19 +951,6 @@ def git_diff(repo: str, old_oid: str | None, new_oid: str | None):
     console.print(f"[bold]{len(files)} changed files:[/bold]")
     for f in files:
         console.print(f"  {f}")
-
-
-def _hidden_alias(command: click.Command, old: str, new: str) -> None:
-    def callback(*args, **kwargs):
-        _renamed(old, new)
-        return command.callback(*args, **kwargs)
-    main.add_command(click.Command(old, params=command.params, callback=callback,
-                                   hidden=True, help=f"Old name of `coderadar {new}`."))
-
-
-_hidden_alias(git_blame, "blame", "git blame")
-_hidden_alias(git_is_clean, "git-clean", "git is-clean")
-_hidden_alias(git_diff, "git-diff", "git diff")
 
 
 @main.command()
@@ -1338,6 +1324,105 @@ def diagnose(unresolved: bool, low_confidence: bool):
     _ensure_graph()
     console.print(render.diagnose(
         ops.diagnose(unresolved=unresolved, low_confidence=low_confidence)))
+
+
+@main.command()
+@click.argument("name", required=False)
+def docs(name: str | None):
+    """Print a reference document bundled with this install.
+
+    Run without NAME to list the bundled references.
+    `coderadar docs query-language` prints the query language and every
+    selectable field.
+    """
+    from .docs import DocNotFound, doc_description, doc_names, doc_text
+
+    if name is None:
+        for doc in doc_names():
+            console.print(f"[cyan]{doc}[/cyan]  {doc_description(doc)}")
+        return
+    try:
+        text = doc_text(name)
+    except DocNotFound as exc:
+        raise click.ClickException(str(exc.args[0])) from exc
+    click.echo(text, nl=False)
+
+
+@main.group()
+def skills():
+    """Agent skill packs bundled with this install."""
+
+
+@skills.command(name="list")
+def skills_list():
+    """List the bundled skills and what triggers them."""
+    from .skills import iter_skills
+
+    table = Table(title="Bundled skills")
+    table.add_column("Skill", no_wrap=True)
+    table.add_column("Trigger (frontmatter description)", overflow="fold")
+    for name, description in iter_skills():
+        table.add_row(name, description)
+    console.print(table)
+    console.print("[dim]Install with `coderadar skills install`.[/dim]")
+
+
+@skills.command(name="show")
+@click.argument("name")
+def skills_show(name: str):
+    """Print one bundled SKILL.md verbatim."""
+    from .skills import SkillNotFound, skill_text
+
+    try:
+        text = skill_text(name)
+    except SkillNotFound as exc:
+        raise click.ClickException(str(exc.args[0])) from exc
+    click.echo(text, nl=False)
+
+
+@skills.command(name="install")
+@click.option("--dest", "destinations", multiple=True, type=click.Path(file_okay=False),
+              help="Skills directory to install into (repeatable). Default: "
+                   "~/.claude/skills and ~/.config/opencode/skills.")
+@click.option("--project", is_flag=True,
+              help="Install into ./.claude/skills and ./.opencode/skills instead.")
+@click.option("--skill", "names", multiple=True,
+              help="Only this skill (repeatable). Default: every bundled skill.")
+@click.option("--force", is_flag=True, help="Overwrite existing skill directories.")
+def skills_install(destinations: tuple[str, ...], project: bool, names: tuple[str, ...],
+                   force: bool):
+    """Copy the bundled skills into agent discovery directories.
+
+    A wheel ships the files but no harness reads site-packages directly:
+    this command puts `SKILL.md` where Claude Code, OpenCode and friends look
+    for it. Re-running is non-destructive unless --force is passed.
+    """
+    from .skills import SkillNotFound, default_destinations
+    from .skills import install as install_skills
+
+    if destinations and project:
+        raise click.UsageError("--dest and --project are mutually exclusive")
+    targets = (
+        tuple(Path(d) for d in destinations)
+        if destinations
+        else default_destinations(project=project)
+    )
+    try:
+        results = [
+            result
+            for target in targets
+            for result in install_skills(target, names=names or None, force=force)
+        ]
+    except SkillNotFound as exc:
+        raise click.ClickException(str(exc.args[0])) from exc
+
+    for result in results:
+        console.print(f"[green]{result.status:<9}[/green] {result.path}")
+    skipped = sum(result.status == "skipped" for result in results)
+    if skipped:
+        console.print(
+            f"[yellow]{skipped} skill(s) already present; use --force to overwrite.[/yellow]"
+        )
 
 
 @main.group()

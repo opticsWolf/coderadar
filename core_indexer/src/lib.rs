@@ -104,6 +104,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(ffi_synthetic::clear_all_embeddings, m)?)?;
+    m.add_function(wrap_pyfunction!(persist_embeddings, m)?)?;
+    m.add_function(wrap_pyfunction!(rehydrate_embeddings, m)?)?;
+    m.add_function(wrap_pyfunction!(search_hybrid, m)?)?;
     m.add_function(wrap_pyfunction!(ffi_synthetic::module_children, m)?)?;
     m.add_function(wrap_pyfunction!(ffi_synthetic::set_module_star_exports, m)?)?;
     m.add_function(wrap_pyfunction!(
@@ -176,6 +179,26 @@ fn mutation_engine() -> mutation::MutationEngine {
         Some(root) => engine.with_project_root(root),
         None => engine,
     }
+}
+
+/// Process-wide per-root disk-attempt mutexes.
+///
+/// `apply_mutation` may be called directly, bypassing the Python facade's
+/// operation lock. Serializing disk phases here guarantees two
+/// same-process attempts cannot share unique artifacts (their ids already
+/// differ) or interleave read/prepare/backup/install/verify/compensation.
+/// Lock ordering is deliberate: acquire this root lock BEFORE `with_graph`
+/// takes the global graph read guard. Never acquire it while holding
+/// `GLOBAL_GRAPH.write()`.
+static DISK_ATTEMPT_LOCKS: std::sync::LazyLock<
+    dashmap::DashMap<PathBuf, Arc<parking_lot::Mutex<()>>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn disk_attempt_lock_for(root: PathBuf) -> Arc<parking_lot::Mutex<()>> {
+    DISK_ATTEMPT_LOCKS
+        .entry(root)
+        .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
+        .clone()
 }
 
 pub(crate) fn with_graph<F, R>(f: F) -> PyResult<R>
@@ -335,7 +358,11 @@ fn is_path_excluded(path: &str, exclude: Option<Vec<String>>) -> bool {
 /// `roots` keeps. `exclude` patterns are gitignore-syntax globs applied on
 /// top of the `.gitignore` rules `ignore` already reads. `extra` is the
 /// one-shot `--exclude` / `analyze(exclude=[…])` layer for the run.
-fn project_walk(root: &str, project: &graph::ProjectConfig, extra: &[String]) -> ignore::Walk {
+pub(crate) fn project_walk(
+    root: &str,
+    project: &graph::ProjectConfig,
+    extra: &[String],
+) -> ignore::Walk {
     let root_path = std::path::Path::new(root);
     let mut builder = match project.roots.first() {
         Some(first) => ignore::WalkBuilder::new(root_path.join(first)),
@@ -509,7 +536,10 @@ fn retire_excluded_concepts(
 /// CALLS pairs registered as synthetic are EXCLUDED — their ledger life is
 /// under the synthetic kind, so a CALLS-kind row for the same pair is
 /// pre-R2-2 pollution and must be retracted, not kept.
-fn stale_edge_keep_set(
+///
+/// `pub(crate)` for the persistence round-trip test (§2.6): the same
+/// keep set must cover IMPLEMENTS triples.
+pub(crate) fn stale_edge_keep_set(
     projection: &ProjectedGraph,
 ) -> std::collections::HashSet<(String, String, String)> {
     let mut keep = std::collections::HashSet::new();
@@ -532,6 +562,12 @@ fn stale_edge_keep_set(
         for base_id in class.resolved_bases.iter() {
             keep.insert((cid.clone(), base_id.clone(), "EXTENDS".to_string()));
         }
+        // §2.6: IMPLEMENTS pairs are structural too — without this the
+        // reconciler would retract the edges `persist_edges_scoped`
+        // just asserted.
+        for iface_id in class.resolved_interfaces.iter() {
+            keep.insert((cid.clone(), iface_id.clone(), "IMPLEMENTS".to_string()));
+        }
     }
     for (override_fid, base_fid) in projection.overrides_base.iter() {
         keep.insert((
@@ -539,6 +575,28 @@ fn stale_edge_keep_set(
             base_fid.clone(),
             "OVERRIDES".to_string(),
         ));
+    }
+    // §2.6 slice C: DECORATES pairs are structural too.
+    for (fid, f) in projection.functions.iter() {
+        for dec_id in f.resolved_decorators.iter() {
+            keep.insert((fid.clone(), dec_id.clone(), "DECORATES".to_string()));
+        }
+        // §2.6 slice D: INSTANTIATES pairs are structural too —
+        // Constructor targets read off resolved_calls.
+        for rc in f.resolved_calls.iter() {
+            if let crate::types::ResolvedCall::Constructor(class_id) = rc {
+                keep.insert((fid.clone(), class_id.clone(), "INSTANTIATES".to_string()));
+            }
+        }
+        // §2.6 slice E: REFERENCES pairs are structural too.
+        for target in f.resolved_refs.iter() {
+            keep.insert((fid.clone(), target.clone(), "REFERENCES".to_string()));
+        }
+    }
+    for (cid, class) in projection.classes.iter() {
+        for dec_id in class.resolved_decorators.iter() {
+            keep.insert((cid.clone(), dec_id.clone(), "DECORATES".to_string()));
+        }
     }
     keep
 }
@@ -930,12 +988,21 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         // per lookup once this suffix index is built; without it the cascade
         // scans every module per import (v0.8 P1: 8.3s of the 46s benchmark).
         crate::graph::rebuild_module_path_index(&mut projection);
+        // §2.5: project path maps (tsconfig/pyproject) precede import
+        // resolution — aliases rewrite specifiers before suffix matching.
+        // Slice B: every nested config is discovered, each anchored to
+        // its own dir; nearest-scope-wins at query time.
+        projection.path_maps =
+            crate::graph::path_maps::PathMaps::discover(root, &config.project, extra_excludes);
         graph.resolve_imports(&mut projection);
         graph.populate_class_methods(&mut projection);
         graph.compute_all_mro(&mut projection);
         graph.resolve_class_hierarchy(&mut projection);
         graph.resolve_overrides(&mut projection);
+        graph.resolve_decorators(&mut projection);
         graph.resolve_all_calls(&mut projection);
+        graph.resolve_instantiations(&mut projection);
+        graph.resolve_references(&mut projection);
         // Concept JSON v2 flush — post-cascade, pre-edge (FK order).
         // Part 2 of put-then-assert: digests computed above are asserted
         // here. A degraded put (no digest) keeps graph coverage and
@@ -1082,7 +1149,7 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
 /// Unknown fields are rejected with the available list rather than silently
 /// matching nothing. Raises `ValueError` on a parse error.
 ///
-/// Full field reference: `docs/query-language.md` (generated from the
+/// Full field reference: `coderadar docs query-language` (generated from the
 /// grammar and schema, so it cannot drift).
 #[pyfunction]
 fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {
@@ -1137,6 +1204,10 @@ fn update_file(
     // "Fully applied" means the file parsed cleanly and the graph took
     // every entity in it; a recovered parse is a partial update.
     dict.set_item("fully_applied", outcome.parse_errors == 0)?;
+    dict.set_item("source_hash", outcome.source_hash)?;
+    dict.set_item("update_error", outcome.update_error.clone())?;
+    dict.set_item("persistence_error", outcome.persistence_error.clone())?;
+    dict.set_item("blob_error", outcome.blob_error.clone())?;
     dict.set_item("entities_added", outcome.entities_added)?;
     dict.set_item("entities_removed", outcome.entities_removed)?;
     dict.set_item("affected_files", outcome.affected_files)?;
@@ -1430,9 +1501,11 @@ fn plan_create_entity(
     })
 }
 
-/// Apply a mutation plan (the JSON form of a plan dict) atomically: every
-/// edit's `expected_hash` is checked first, and a write that leaves a file
-/// unparseable is rolled back.
+/// Apply a mutation plan (the JSON form of a plan dict).
+///
+/// This boundary reports the honest disk outcome (`disk_status`), not a
+/// premature public `Applied`. The Python facade performs synchronous graph
+/// synchronization and only then constructs the final public status.
 #[pyfunction]
 fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
@@ -1483,15 +1556,58 @@ fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
         warnings: Vec::new(),
     };
 
+    let disk_lock_root = INDEXED_ROOT
+        .read()
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let disk_lock = disk_attempt_lock_for(disk_lock_root);
+    let _disk_attempt_guard = disk_lock.lock();
     with_graph(|_graph, _snap| {
         let mut engine = mutation_engine();
         let result = engine.apply(&plan);
         let dict = PyDict::new(py);
-        dict.set_item(
-            "applied",
-            matches!(result.status, mutation::MutationStatus::Applied),
-        )?;
-        dict.set_item("status", format!("{:?}", result.status))?;
+        dict.set_item("disk_status", format!("{:?}", result.disk_status))?;
+        dict.set_item("attempt_id", result.attempt_id)?;
+        let failure = |failure: &Option<mutation::MutationFailure>| -> PyResult<PyObject> {
+            match failure {
+                Some(failure) => {
+                    let detail = PyDict::new(py);
+                    detail.set_item("stage", failure.stage)?;
+                    detail.set_item("code", failure.code)?;
+                    detail.set_item("message", &failure.message)?;
+                    Ok(detail.into())
+                }
+                None => Ok(py.None()),
+            }
+        };
+        dict.set_item("primary", failure(&result.primary)?)?;
+        dict.set_item("failure", failure(&result.failure)?)?;
+        let files: Vec<PyObject> = result
+            .files
+            .iter()
+            .map(|file| {
+                let detail = PyDict::new(py);
+                let _ = detail.set_item("file", &file.file);
+                let _ = detail.set_item("state", format!("{:?}", file.state));
+                let _ = detail.set_item("pre_hash", &file.pre_hash);
+                let _ = detail.set_item("installed_hash", file.installed_hash.clone());
+                let _ = detail.set_item("final_hash", file.final_hash.clone());
+                let _ = detail.set_item("expected_hash", file.expected_hash.clone());
+                let _ = detail.set_item("recovery_path", file.recovery_path.clone());
+                let error = match &file.error {
+                    Some(error) => {
+                        let detail = PyDict::new(py);
+                        let _ = detail.set_item("code", error.code);
+                        let _ = detail.set_item("message", &error.message);
+                        detail.into()
+                    }
+                    None => py.None(),
+                };
+                let _ = detail.set_item("error", error);
+                detail.into()
+            })
+            .collect();
+        dict.set_item("files", files)?;
         dict.set_item("files_written", result.files_written)?;
         dict.set_item(
             "errors",
@@ -1501,10 +1617,14 @@ fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
                 .map(|e| format!("{}:{} — {}", e.file, e.line, e.message))
                 .collect::<Vec<_>>(),
         )?;
-        dict.set_item(
-            "backup_path",
-            result.backup_path.clone().unwrap_or_default(),
-        )?;
+        dict.set_item("backup_path", result.backup_path.clone())?;
+        let sync = PyDict::new(py);
+        sync.set_item("state", "NotAttempted")?;
+        sync.set_item("attempted_files", Vec::<String>::new())?;
+        sync.set_item("updated_files", Vec::<String>::new())?;
+        sync.set_item("errors", Vec::<PyObject>::new())?;
+        sync.set_item("warnings", Vec::<PyObject>::new())?;
+        dict.set_item("sync", sync)?;
         Ok(dict.into())
     })
 }
@@ -2151,6 +2271,7 @@ fn callees_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
 ///   - `calls`    → callers_by_callee / callees_by_caller
 ///   - `imports`  → importers (upstream) / imports_by_importer (downstream)
 ///   - `extends`  → subclasses (upstream) / Class.resolved_bases (downstream)
+///   - `implements` → implementers (upstream) / Class.resolved_interfaces (downstream)
 ///   - `overrides`→ overridden_by (upstream) / overrides_base (downstream)
 ///
 /// Direction accepts both vocabularies: `in`/`upstream`, `out`/`downstream`,
@@ -2168,7 +2289,16 @@ fn callees_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
 /// not "none of them" — every docstring above this boundary says so, and the
 /// BFS loops over the kinds it is given, so an empty list used to walk
 /// nowhere and return only the start node.
-const ALL_EDGE_KINDS: [&str; 4] = ["calls", "extends", "imports", "overrides"];
+const ALL_EDGE_KINDS: [&str; 8] = [
+    "calls",
+    "decorates",
+    "extends",
+    "implements",
+    "imports",
+    "instantiates",
+    "overrides",
+    "references",
+];
 
 /// R2-9: reject unknown edge kinds with a naming-names error instead of
 /// walking nowhere and reporting "No results". Pure; unit-tested below.
@@ -2176,8 +2306,8 @@ fn validate_edge_kinds(kinds: &[String]) -> Result<(), String> {
     for k in kinds {
         if !ALL_EDGE_KINDS.contains(&k.as_str()) {
             return Err(format!(
-                "Unknown edge kind `{k}` (expected calls, imports, extends, \
-                 overrides; `inherits` is an alias for `extends`)"
+                "Unknown edge kind `{k}` (expected calls, imports, extends, implements, decorates, \
+                 instantiates, overrides, references; `inherits` is an alias for `extends`)"
             ));
         }
     }
@@ -2207,7 +2337,7 @@ fn normalize_edge_kinds(edge_kinds: &[String]) -> Vec<String> {
 }
 
 /// Breadth-first walk from `start_id` over `edge_kinds` (empty = all kinds:
-/// calls, imports, extends, overrides). `direction` is `in`/`upstream`,
+/// calls, imports, extends, implements, overrides). `direction` is `in`/`upstream`,
 /// `out`/`downstream` or `both`; `as_of` reads the graph as it was at a past
 /// timestamp. Returns one dict per reached node.
 #[pyfunction]
@@ -3003,12 +3133,266 @@ fn find_scaffolding(
     Ok(results)
 }
 
+/// Persist in-memory embedding vectors to the ledger's per-model table
+/// (DR-11 slice 2): `{persisted, model, dimension, healed}`. `entries`
+/// are `(id, hash)` pairs for vectors set this run — the vectors are read
+/// from the projection, not passed back. Storeless graphs get the honest
+/// error (vectors stay memory-only without a ledger). Empty entries +
+/// agreeing table = no-op; empty entries + missing/divergent table = heal.
+#[pyfunction]
+#[pyo3(signature = (model, entries))]
+fn persist_embeddings(
+    py: Python<'_>,
+    model: &str,
+    entries: Vec<(String, String)>,
+) -> PyResult<PyObject> {
+    let report = with_graph(|graph, snap| {
+        let store = graph.store.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "persist_embeddings needs a stored graph (analyze with create_store=True): \
+                 vectors are memory-only without a ledger to persist them to",
+            )
+        })?;
+        store
+            .persist_projection_embeddings(model, snap, &entries)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))
+    })?;
+    let out = PyDict::new(py);
+    out.set_item("persisted", report.persisted)?;
+    out.set_item("model", report.model_table)?;
+    out.set_item("dimension", report.dimension)?;
+    out.set_item("healed", report.healed)?;
+    Ok(out.into())
+}
+
+/// Refill in-memory vectors from the ledger's per-model table (DR-11
+/// slice 3): `{rehydrated, skipped_no_hash, skipped_present,
+/// skipped_unknown, table_rows, model, dimension}`. Only entities whose
+/// ledger hash is present but whose memory vector is empty are filled —
+/// hashes are the provenance, and pre-S1 rows (hash empty) stay out
+/// rather than load unverifiable vectors. Missing table = honest zeros.
+/// Storeless graphs get the honest error.
+#[pyfunction]
+fn rehydrate_embeddings(py: Python<'_>, model: &str) -> PyResult<PyObject> {
+    let (done, skipped_no_hash, skipped_present, skipped_unknown, table_rows, model_table, dim) =
+        with_graph(|graph, snap| {
+            let store = graph.store.as_ref().ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(
+                    "rehydrate_embeddings needs a stored graph (analyze with create_store=True): \
+                     there is no ledger to read vectors back from",
+                )
+            })?;
+            let mv = store
+                .read_model_vectors(model)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
+            let by_id: std::collections::HashMap<&str, &[f32]> = mv
+                .rows
+                .iter()
+                .map(|(id, v)| (id.as_str(), v.as_slice()))
+                .collect();
+            let mut entries: Vec<(String, Vec<f64>, String)> = Vec::new();
+            let mut skipped_no_hash = 0usize;
+            let mut skipped_present = 0usize;
+            let mut consider = |id: &String, vec: &[f64], hash: &str| {
+                if let Some(table_vec) = by_id.get(id.as_str()) {
+                    if !vec.is_empty() {
+                        skipped_present += 1;
+                    } else if hash.is_empty() {
+                        skipped_no_hash += 1;
+                    } else {
+                        entries.push((
+                            id.clone(),
+                            table_vec.iter().map(|x| *x as f64).collect(),
+                            hash.to_string(),
+                        ));
+                    }
+                }
+            };
+            for (id, e) in &snap.functions {
+                consider(id, &e.embedding.vec, &e.embedding.hash);
+            }
+            for (id, e) in &snap.classes {
+                consider(id, &e.embedding.vec, &e.embedding.hash);
+            }
+            for (id, e) in &snap.modules {
+                consider(id, &e.embedding.vec, &e.embedding.hash);
+            }
+            for (id, e) in &snap.imports {
+                consider(id, &e.embedding.vec, &e.embedding.hash);
+            }
+            for (id, e) in &snap.constants {
+                consider(id, &e.embedding.vec, &e.embedding.hash);
+            }
+            for (id, e) in &snap.type_aliases {
+                consider(id, &e.embedding.vec, &e.embedding.hash);
+            }
+            let found = entries.len() + skipped_no_hash + skipped_present;
+            let skipped_unknown = mv.rows.len().saturating_sub(found);
+            let (done, missing) = graph
+                .set_embeddings_bulk(entries)
+                .map_err(pyo3::exceptions::PyRuntimeError::new_err)?;
+            if !missing.is_empty() {
+                return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "rehydrate race: {} entities vanished between snapshot and write — retry",
+                    missing.len()
+                )));
+            }
+            Ok((
+                done,
+                skipped_no_hash,
+                skipped_present,
+                skipped_unknown,
+                mv.rows.len(),
+                mv.model_table,
+                mv.dimension,
+            ))
+        })?;
+    let out = PyDict::new(py);
+    out.set_item("rehydrated", done)?;
+    out.set_item("skipped_no_hash", skipped_no_hash)?;
+    out.set_item("skipped_present", skipped_present)?;
+    out.set_item("skipped_unknown", skipped_unknown)?;
+    out.set_item("table_rows", table_rows)?;
+    out.set_item("model", model_table)?;
+    out.set_item("dimension", dim)?;
+    Ok(out.into())
+}
+
+/// Hybrid keyword+vector search (DR-11 slice 4 / §2.10): `{id, score,
+/// vector_rank, keyword_rank}` fused by macrame's `HybridSearch` (RRF_K=60,
+/// depth `max(5×top_k,50)`), `top_k` clamped to [1, 50]. Storeless graphs
+/// and missing vector tables get honest errors naming the repair.
+#[pyfunction]
+#[pyo3(signature = (model, query_text, query_vec, top_k = 10))]
+fn search_hybrid(
+    py: Python<'_>,
+    model: &str,
+    query_text: &str,
+    query_vec: Vec<f64>,
+    top_k: usize,
+) -> PyResult<PyObject> {
+    let hits = with_graph(|graph, _snap| {
+        let store = graph.store.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "search_hybrid needs a stored graph (analyze with create_store=True): \
+                 hybrid search reads the ledger's FTS index and vector tables",
+            )
+        })?;
+        store
+            .search_hybrid(model, query_text, &query_vec, top_k)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))
+    })?;
+    let out = PyList::empty(py);
+    for h in hits {
+        let hit = PyDict::new(py);
+        hit.set_item("id", h.concept_id)?;
+        hit.set_item("score", h.score)?;
+        hit.set_item("vector_rank", h.vector_rank)?;
+        hit.set_item("keyword_rank", h.keyword_rank)?;
+        out.append(hit)?;
+    }
+    Ok(out.into())
+}
+
 /// Vector similarity search against entity embeddings.
-/// Uses cosine similarity against stored embedding vectors.
+///
+/// DR-11 epilogue: the persisted per-model table is the source of truth,
+/// not the in-memory vecs. After `analyze()` memory vecs are empty by
+/// design (vectors live in the ledger tables) — the old memory-only scan
+/// came back empty and forced a recompute. The single registered model
+/// table at the query width is scanned instead; no table at this width
+/// (or no store) falls back to the legacy memory scan, which preserves
+/// `set_embeddings_bulk`-without-persist flows and honest emptiness
+/// (Python auto-computes on `[]`).
 /// Scans ALL entity types (functions, classes, modules, imports, constants, type aliases).
 #[pyfunction]
 fn search_similar(py: Python<'_>, query_vec: Vec<f64>, top_k: usize) -> PyResult<Vec<PyObject>> {
-    with_graph(|_graph, snap| {
+    with_graph(|graph, snap| {
+        if let Some(store) = graph.store.as_ref() {
+            match store
+                .model_tables_at_dim(query_vec.len())
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))
+            {
+                Ok(hits) if hits.len() == 1 => {
+                    return table_search_similar(py, store, snap, &hits[0], &query_vec, top_k);
+                }
+                Ok(hits) if hits.len() > 1 => {
+                    let tables: Vec<String> =
+                        hits.iter().map(|m| format!("embeddings_{m}")).collect();
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "embedding dimension {} matches {} model tables ({}) — one model per store is the contract. \
+                         Recompute from clean with a single model: compute_embeddings(recompute=True).",
+                        query_vec.len(),
+                        tables.len(),
+                        tables.join(", ")
+                    )));
+                }
+                // No table at this width, or the diagnostic read failed:
+                // the memory scan below is the old behavior exactly.
+                Ok(_) | Err(_) => {}
+            }
+        }
+        memory_search_similar(py, snap, &query_vec, top_k)
+    })
+}
+
+/// Score one persisted model table's rows against the query (DR-11 epilogue).
+///
+/// The finder already matched the declared dimension; re-check against the
+/// rows read (cheap race-proofing — a concurrent recompute with another
+/// model between the two reads must error, never score across widths).
+fn table_search_similar(
+    py: Python<'_>,
+    store: &crate::storage::CodeGraphStore,
+    snap: &ProjectedGraph,
+    model_inner: &str,
+    query_vec: &[f64],
+    top_k: usize,
+) -> PyResult<Vec<PyObject>> {
+    let mv = store
+        .read_model_vectors(model_inner)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
+    if mv.rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    if mv.dimension != query_vec.len() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "embedding dimension mismatch: query is {}-dim but {} holds {}-dim vectors \
+             (model switch at query time?). Recompute from clean: compute_embeddings(recompute=True).",
+            query_vec.len(),
+            mv.model_table,
+            mv.dimension
+        )));
+    }
+    let scored = rank_table_rows(query_vec, &mv.rows);
+    Ok(materialize_scored(py, snap, scored, top_k))
+}
+
+/// Pure cosine ranking over one model table's rows (DR-11 epilogue).
+/// Kept interpreter-free so lib tests can pin the ordering without
+/// a Python interpreter; the FFI arms only materialize its output.
+pub(crate) fn rank_table_rows(
+    query_vec: &[f64],
+    rows: &[(String, Vec<f32>)],
+) -> Vec<(f64, String)> {
+    rows.iter()
+        .map(|(id, v)| {
+            let v64: Vec<f64> = v.iter().map(|x| *x as f64).collect();
+            (cosine_similarity(query_vec, &v64), id.clone())
+        })
+        .collect()
+}
+
+/// Legacy in-memory scan: the pre-epilogue `search_similar` body, kept as
+/// the no-table fallback (storeless graphs, `set_embeddings_bulk` flows
+/// that never persisted, honest emptiness for Python's auto-compute).
+fn memory_search_similar(
+    py: Python<'_>,
+    snap: &ProjectedGraph,
+    query_vec: &[f64],
+    top_k: usize,
+) -> PyResult<Vec<PyObject>> {
+    {
         // DR-11 dimension gate (query side): mixed store widths or a query
         // width the store never saw used to score 0.0 everywhere — ranked
         // nonsense. Fail explicitly with the recompute remedy instead.
@@ -3066,7 +3450,7 @@ fn search_similar(py: Python<'_>, query_vec: Vec<f64>, top_k: usize) -> PyResult
         // Scan all entity maps for non-empty embeddings
         let collect = |scored: &mut Vec<(f64, String)>, id: &str, emb: &EmbeddingVec| {
             if !emb.vec.is_empty() {
-                let sim = cosine_similarity(&query_vec, &emb.vec);
+                let sim = cosine_similarity(query_vec, &emb.vec);
                 scored.push((sim, id.to_string()));
             }
         };
@@ -3090,51 +3474,61 @@ fn search_similar(py: Python<'_>, query_vec: Vec<f64>, top_k: usize) -> PyResult
             collect(&mut scored, id, &ta.embedding);
         }
 
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(top_k);
+        Ok(materialize_scored(py, snap, scored, top_k))
+    }
+}
 
-        let results: Vec<PyObject> = scored
-            .into_iter()
-            .filter_map(|(sim, id)| {
-                let dict: Option<PyObject> = snap
-                    .functions
-                    .get(&id)
-                    .and_then(|f| function_to_dict(py, f).ok())
-                    .or_else(|| {
-                        snap.classes
-                            .get(&id)
-                            .and_then(|c| class_to_dict(py, c).ok())
-                    })
-                    .or_else(|| {
-                        snap.modules
-                            .get(&id)
-                            .and_then(|m| module_to_dict(py, m).ok())
-                    })
-                    .or_else(|| {
-                        snap.imports
-                            .get(&id)
-                            .and_then(|i| import_to_dict(py, i).ok())
-                    })
-                    .or_else(|| {
-                        snap.constants
-                            .get(&id)
-                            .and_then(|c| constant_to_dict(py, c).ok())
-                    })
-                    .or_else(|| {
-                        snap.type_aliases
-                            .get(&id)
-                            .and_then(|ta| type_alias_to_dict(py, ta).ok())
-                    });
-                dict.inspect(|d| {
-                    if let Ok(dict) = d.downcast_bound::<PyDict>(py) {
-                        let _ = dict.set_item("similarity", sim);
-                    }
+/// Rank, truncate and materialize scored ids (shared tail of the table
+/// and memory arms). Ids missing from the snapshot are dropped: a table
+/// row for a pruned entity scores but cannot display.
+fn materialize_scored(
+    py: Python<'_>,
+    snap: &ProjectedGraph,
+    scored: Vec<(f64, String)>,
+    top_k: usize,
+) -> Vec<PyObject> {
+    let mut scored = scored;
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(top_k);
+    scored
+        .into_iter()
+        .filter_map(|(sim, id)| {
+            let dict: Option<PyObject> = snap
+                .functions
+                .get(&id)
+                .and_then(|f| function_to_dict(py, f).ok())
+                .or_else(|| {
+                    snap.classes
+                        .get(&id)
+                        .and_then(|c| class_to_dict(py, c).ok())
                 })
+                .or_else(|| {
+                    snap.modules
+                        .get(&id)
+                        .and_then(|m| module_to_dict(py, m).ok())
+                })
+                .or_else(|| {
+                    snap.imports
+                        .get(&id)
+                        .and_then(|i| import_to_dict(py, i).ok())
+                })
+                .or_else(|| {
+                    snap.constants
+                        .get(&id)
+                        .and_then(|c| constant_to_dict(py, c).ok())
+                })
+                .or_else(|| {
+                    snap.type_aliases
+                        .get(&id)
+                        .and_then(|ta| type_alias_to_dict(py, ta).ok())
+                });
+            dict.inspect(|d| {
+                if let Ok(dict) = d.downcast_bound::<PyDict>(py) {
+                    let _ = dict.set_item("similarity", sim);
+                }
             })
-            .collect();
-
-        Ok(results)
-    })
+        })
+        .collect()
 }
 
 /// Cosine similarity between two vectors.
@@ -3255,11 +3649,24 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             // `persist_edges` (the ledger already is the truth).
             let config = active_config();
             let graph = CodeGraph::new((*config).clone()).with_store(store);
+            // §2.5: re-discover path maps at load so an edited tsconfig /
+            // pyproject takes effect on the next cold start without a
+            // re-analyze. `root` absent ⇒ empty maps (old behaviour).
+            if let Some(r) = root {
+                projection.path_maps = crate::graph::path_maps::PathMaps::discover(
+                    r,
+                    &config.project,
+                    &[],
+                );
+            }
             graph.resolve_imports(&mut projection);
             graph.populate_class_methods(&mut projection);
             graph.compute_all_mro(&mut projection);
             graph.resolve_class_hierarchy(&mut projection);
             graph.resolve_overrides(&mut projection);
+            graph.resolve_decorators(&mut projection);
+            graph.resolve_instantiations(&mut projection);
+            graph.resolve_references(&mut projection);
             graph.commit_projection(projection);
 
             // `commit_projection` stamped "now"; the honest value is the
@@ -3680,6 +4087,7 @@ mod tests {
             bindings: Vec::new(),
             refs: Vec::new(),
             resolved_refs: Vec::new(),
+            resolved_decorators: vec![],
             line: 1,
             exit_line: 2,
             docstring: None,

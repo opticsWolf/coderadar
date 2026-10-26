@@ -191,8 +191,8 @@ cost a debugging round-trip.
 
 | # | Verdict | Evidence |
 |---|---|---|
-| 1 | Fixed (root cause) | `normalize_body_for_splice` re-based: base from lines[1..], line 0 trimmed (was: base incl. line 0 → double indent + Applied-unparseable). Rust regression `test_body_replacement_flush_first_line_no_double_indent`. Post-write diagnostic already existed (`verify_parse_introduced_error`); rollback-instead-of-diagnose carried (apply-semantics change, needs own design) |
-| 2 | Fixed | `render.mutation_applied`: header/status/file/graph derive from `result.status` (single source; comment cites this entry) |
+| 1 | Fixed (root cause + contract) | `normalize_body_for_splice` re-based: base from lines[1..], line 0 trimmed (was: base incl. line 0 → double indent + Applied-unparseable). Rust regression `test_body_replacement_flush_first_line_no_double_indent`. DR-35 implements guarded compensation + verified sync (`Applied`/`RolledBack`/`ApplyIncomplete`/`RollbackIncomplete`); see `mutation-rollback-design.md` §4 |
+| 2 | Fixed | `render.mutation_applied`: header/status/file/graph/failure/sync derive from `result.status` plus structured outcomes (six statuses; `syntax_errors` carries syntax diagnostics only) |
 | 3 | Fixed | DR-31 + reindex `_activate`: probed exclude-change → reindex retracts (2→1 functions) |
 | 4 | Fixed | `has_leading_docstring` plan warning fires (probed); removal is flagged, never silent |
 | 5 | Fixed | Canonical forward-slash ids + legacy fallbacks; probed both spellings resolve |

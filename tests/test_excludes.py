@@ -13,6 +13,7 @@ import pytest
 from click.testing import CliRunner
 from coderadar.cli import main
 from coderadar.excludes import FALLBACK_BASELINE, is_excluded, iter_project_files
+from coderadar.ops import NotFound
 
 try:
     import coderadar._core  # noqa: F401
@@ -123,8 +124,9 @@ def test_config_change_forces_full_reindex(tmp_path):
     (tmp_path / "big").mkdir()
     (tmp_path / "big" / "drop.py").write_text("def d():\n    pass\n")
     analyze(str(tmp_path), create_store=True)
-    assert build_graph(str(tmp_path)).find("big/drop.py::module") is not None
+    assert build_graph(str(tmp_path)).node("big/drop.py::module") is not None
     (tmp_path / ".coderadar.toml").write_text('[project]\nexclude = ["big/"]\n')
     g = build_graph(str(tmp_path))
-    assert g.find("big/drop.py::module") is None
-    assert g.find("keep.py::module") is not None
+    with pytest.raises(NotFound):
+        g.node("big/drop.py::module")
+    assert g.node("keep.py::module") is not None

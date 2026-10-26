@@ -110,22 +110,17 @@ check(SEC, "init-twice-refuses-or-ok", rc == 0 and ("already" in out.lower() or 
 rc, out = cli("init", "--force")
 check(SEC, "init-force", rc == 0, out[:200])
 
-rc, out = cli("analyze")
-check(SEC, "analyze", rc == 0, out[:200])
+rc, out = cli("reindex", "--full")
+check(SEC, "reindex", rc == 0, out[:200])
 
 rc, out = cli("status")
 check(SEC, "status", rc == 0 and ("index" in out.lower() or "store" in out.lower() or "fresh" in out.lower()), out[:300])
 
-rc, out = cli("stats")
-check(SEC, "stats", rc == 0 and ("function" in out.lower() or "entit" in out.lower() or "concept" in out.lower()), out[:300])
-
-rc, out = cli("rebuild")
-check(SEC, "rebuild", rc == 0, out[:200])
-rc, out = cli("rebuild", "--full")
-check(SEC, "rebuild-full-flag", rc == 0, out[:120])
-rc, out = cli("rebuild", "--exclude", "ignored/")
-check(SEC, "rebuild-one-shot-exclude", rc == 0, out[:200])
-# NOTE: the in-process graph is stale after CLI-side rebuilds — re-analyze
+rc, out = cli("reindex", "--full")
+check(SEC, "reindex-full-flag", rc == 0, out[:120])
+rc, out = cli("reindex", "--full", "--exclude", "ignored/")
+check(SEC, "reindex-one-shot-exclude", rc == 0, out[:200])
+# NOTE: the in-process graph is stale after CLI-side reindexes — re-analyze
 # (which picks up .coderadar.toml excludes) before asserting effect.
 
 # discover a real id for the id-taking commands
@@ -146,16 +141,16 @@ check(SEC, "query-filtered", rc == 0 and "combine" in out, out[:200])
 rc, out = cli("query", "frobnicate {{{")
 check(SEC, "query-syntax-error", "error" in out.lower() or "fail" in out.lower() or "invalid" in out.lower() or "parse" in out.lower(), out[:200])
 
-for direction in ("out", "in", "both"):
-    rc, out = cli("traverse", run_id, "--depth", "2", "--direction", direction)
+for direction in ("downstream", "upstream", "both"):
+    rc, out = cli("traverse", run_id, "--max-depth", "2", "--direction", direction)
     check(SEC, f"traverse-{direction}", rc == 0, out[:150])
-rc, out = cli("traverse", run_id, "--edges", "calls")
+rc, out = cli("traverse", run_id, "--edge-kinds", "calls")
 check(SEC, "traverse-edges-calls", rc == 0, out[:150])
-rc, out = cli("traverse", run_id, "--edges", "bogus_edge_kind")
+rc, out = cli("traverse", run_id, "--edge-kinds", "bogus_edge_kind")
 # R2 finding: unknown edge kind silently yields "No results" (rc 0)
 # instead of an error. Documenting actual behavior here.
 check(SEC, "traverse-bad-edge-kind-errors", "error" in out.lower() or "unknown" in out.lower() or "invalid" in out.lower(), out[:200])
-rc, out = cli("traverse", "no/such.py::missing", "--depth", "2")
+rc, out = cli("traverse", "no/such.py::missing", "--max-depth", "2")
 check(SEC, "traverse-bad-id", rc == 0 or "error" in out.lower() or "no " in out.lower() or "unknown" in out.lower() or "not found" in out.lower(), out[:200])
 
 rc, out = cli("callers", helpers_id)
@@ -164,6 +159,32 @@ rc, out = cli("callees", run_id)
 check(SEC, "callees", rc == 0 and ("combine" in out or "callee" in out.lower() or "no callee" in out.lower()), out[:300])
 rc, out = cli("callers", "no/such.py::missing")
 check(SEC, "callers-bad-id", "no " in out.lower() or "not found" in out.lower() or "unknown" in out.lower() or "0" in out or rc == 0, out[:200])
+
+# DR-35: mutation dry runs stay exit 0; outside-root creates are policy
+# refusals (exit 2), not silent no-ops.
+_probe_dir = os.path.join(FIX, "src")
+_probe_file = os.path.join(_probe_dir, "r2_cli_exit_probe.py")
+os.makedirs(_probe_dir, exist_ok=True)
+with open(_probe_file, "w", encoding="utf-8") as _fh:
+    _fh.write("def probe():\n    return 1\n")
+try:
+    rc, out = cli("replace-body", "src/r2_cli_exit_probe.py::probe", "pass")
+    check(SEC, "mutation-dry-run-rc0", rc == 0 and "DRY RUN" in out, out[:200])
+    _outside = os.path.join(tempfile.gettempdir(), f"r2_outside_root_{os.getpid()}.py")
+    with open(_outside, "w", encoding="utf-8") as _fh:
+        _fh.write("secret = 1\n")
+    try:
+        rc, out = cli("create-entity", _outside, "python", "function", "r2_outside", "return 1", "--apply")
+        with open(_outside, encoding="utf-8") as _fh:
+            _outside_after = _fh.read()
+        check(SEC, "mutation-outside-root-rc2", rc == 2 and "Mutation Rejected" in out and "Policy" in out and _outside_after == "secret = 1\n", f"rc={rc} {out[:200]}")
+    finally:
+        try:
+            os.remove(_outside)
+        except OSError:
+            pass
+finally:
+    shutil.rmtree(_probe_dir, ignore_errors=True)
 
 rc, out = cli("diagnose")
 check(SEC, "diagnose", rc == 0, out[:200])
@@ -179,7 +200,7 @@ rc, out = cli("exclude", "add", "ignored/")
 check(SEC, "exclude-add", rc == 0, out[:200])
 rc, out = cli("exclude", "list")
 check(SEC, "exclude-list-has-ignored", rc == 0 and "ignored" in out, out[:300])
-rc, out = cli("rebuild")
+rc, out = cli("reindex", "--full")
 # fresh-process view: the in-process global accumulates across ops, so the
 # exclude effect must be measured in a clean interpreter (R2-5).
 par3 = subprocess.run(
@@ -207,39 +228,39 @@ check(SEC, "exclude-add-back", rc == 0, out[:120])
 
 with open(os.path.join(FIX, "main.py"), encoding="utf-8") as _fh:
     _main_content = _fh.read()
-rc, out = cli("update", "main.py", "--content", _main_content)
-check(SEC, "update-noop-content", rc == 0, out[:200])
-rc, out = cli("update", "does/not/exist.py", "--content", "x = 1")
-check(SEC, "update-missing-file", rc != 0 or "error" in out.lower() or "not" in out.lower() or "no " in out.lower(), out[:200])
+rc, out = cli("update-file", "main.py", "--content", _main_content)
+check(SEC, "update-file-noop-content", rc == 0, out[:200])
+rc, out = cli("update-file", "does/not/exist.py", "--content", "x = 1")
+check(SEC, "update-file-missing", rc != 0 or "error" in out.lower() or "not" in out.lower() or "no " in out.lower(), out[:200])
 
 rc, out = cli("store-repair")
 check(SEC, "store-repair", rc == 0, out[:300])
 rc, out = cli("store-repair", "--db", os.path.join(FIX, "no-such-store.db"))
 check(SEC, "store-repair-bad-db", "error" in out.lower() or "not" in out.lower() or "no " in out.lower() or "fail" in out.lower() or rc != 0, out[:200])
 
-rc, out = cli("blame", "main.py")
-check(SEC, "blame", rc == 0 and ("r2" in out or "@" in out or "main.py" in out or "|" in out), out[:300])
-rc, out = cli("blame", "does/not/exist.py")
-check(SEC, "blame-missing", "error" in out.lower() or "not" in out.lower() or "no " in out.lower() or "fail" in out.lower() or rc != 0, out[:200])
+rc, out = cli("git", "blame", "main.py")
+check(SEC, "git-blame", rc == 0 and ("r2" in out or "@" in out or "main.py" in out or "|" in out), out[:300])
+rc, out = cli("git", "blame", "does/not/exist.py")
+check(SEC, "git-blame-missing", "error" in out.lower() or "not" in out.lower() or "no " in out.lower() or "fail" in out.lower() or rc != 0, out[:200])
 
 git("add", "-A")
 git("commit", "-qm", "r2 generated files")
-rc, out = cli("git-clean")
-check(SEC, "git-clean-when-clean", rc == 0 and "clean" in out.lower() and "uncommitted" not in out.lower(), out[:200])
+rc, out = cli("git", "is-clean")
+check(SEC, "git-is-clean-when-clean", rc == 0 and "clean" in out.lower() and "uncommitted" not in out.lower(), out[:200])
 with open(os.path.join(FIX, "dirty_probe.txt"), "w") as f:
     f.write("dirty\n")
-rc, out = cli("git-clean")
-check(SEC, "git-clean-when-dirty", "dirty" in out.lower() or "uncommitted" in out.lower() or "not clean" in out.lower() or "modified" in out.lower() or "untracked" in out.lower() or rc != 0, out[:200])
+rc, out = cli("git", "is-clean")
+check(SEC, "git-is-clean-when-dirty", "dirty" in out.lower() or "uncommitted" in out.lower() or "not clean" in out.lower() or "modified" in out.lower() or "untracked" in out.lower() or rc != 0, out[:200])
 git("add", "-A")
 git("commit", "-qm", "r2 second commit")
 
-rc, out = cli("git-diff", "--old", "HEAD")
+rc, out = cli("git", "diff", "--old", "HEAD")
 check(SEC, "git-diff-head-clean", rc == 0 and "no changed" in out.lower(), out[:200])
 _old = git("rev-parse", "HEAD~1").stdout.strip()
 _new = git("rev-parse", "HEAD").stdout.strip()
-rc, out = cli("git-diff", "--old", _old, "--new", _new)
+rc, out = cli("git", "diff", "--old", _old, "--new", _new)
 check(SEC, "git-diff-two-commits", rc == 0 and "dirty_probe" in out, out[:200])
-rc, out = cli("git-diff", "--old", "deadbeef" * 5)
+rc, out = cli("git", "diff", "--old", "deadbeef" * 5)
 # R2 finding: unknown revision prints the same "No changed files" as a
 # genuinely empty diff instead of an error.
 check(SEC, "git-diff-bad-oid-errors", rc != 0 or "error" in out.lower() or "unknown" in out.lower() or "invalid" in out.lower() or "not found" in out.lower(), out[:200])
@@ -256,8 +277,8 @@ rc, out = cli("visualize", "call-graph", run_id, "--format", "not-a-format")
 # "no edges" path) instead of an error listing supported formats.
 check(SEC, "visualize-bad-format-errors", rc != 0 or "error" in out.lower() or "unknown" in out.lower() or "support" in out.lower() or "format" in out.lower(), out[:200])
 
-rc, out = cli("shell", input_text="help\nstats\nexit\n", timeout=180)
-check(SEC, "shell-help-stats-exit", rc == 0 and ("Commands" in out or "commands" in out), out[:300])
+rc, out = cli("shell", input_text="help\nstatus\nexit\n", timeout=180)
+check(SEC, "shell-help-status-exit", rc == 0 and ("Commands" in out or "commands" in out), out[:300])
 rc, out = cli("shell", input_text="query functions where name contains 'combine'\nexit\n", timeout=180)
 check(SEC, "shell-query", rc == 0 and "combine" in out, out[:300])
 
@@ -309,8 +330,8 @@ try:
     names = []
     if tools_r and "result" in tools_r:
         names = [t.get("name", "") for t in tools_r["result"].get("tools", [])]
-    check(SEC, "mcp-tools-list-22", len(names) == 22, f"got {len(names)}: {names[:5]}")
-    ok22 = len(names) == 22
+    check(SEC, "mcp-tools-list-27", len(names) == 27, f"got {len(names)}: {names[:5]}")
+    ok22 = len(names) == 27
     if ok22:
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
               "params": {"name": "coderadar_search", "arguments": {"query": "combine", "top_k": 3}}})
@@ -457,12 +478,13 @@ check(SEC, "callers-canonical", isinstance(c1, list), f"n={len(c1) if isinstance
 cal = callees_of(RUN_ID)
 names = [c.get("name", c.get("id", "")) for c in cal] if isinstance(cal, list) else []
 check(SEC, "run-callees-include-combine-or-external", any("combine" in n for n in names), str(names)[:200])
-# R2-1 anchor, repointed v0.8.21: run has NO external callee anymore since
-# Issue 9 resolves combine -> helpers::combine (correctly). Probe a
-# genuinely-external call instead: makeStore -> new Store() (external::Store).
+# makeStore -> new Store() now resolves same-file (store.ts defines and
+# exports Store) instead of staying external:: — the old anchor assumed a
+# genuinely-external call, but same-file constructor resolution is the
+# better behavior. Pin the resolved id, not the external spelling.
 _ms_ext = next((h["id"] for h in search_entities("makeStore", 5, "function")), "")
 _ms_cal = callees_of(_ms_ext) if _ms_ext else []
-check(SEC, "external-callee-visible", any("external" in str(c.get("id", "")) for c in (_ms_cal if isinstance(_ms_cal, list) else [])), str([c.get("id", "?") for c in (_ms_cal if isinstance(_ms_cal, list) else [])])[:250])
+check(SEC, "samesite-ctor-resolves", any(c.get("id", "") == "store.ts::Store" for c in (_ms_cal if isinstance(_ms_cal, list) else [])), str([c.get("id", "?") for c in (_ms_cal if isinstance(_ms_cal, list) else [])])[:250])
 # Issue 9 probe: does run -> helpers.combine resolve naturally?
 resolved_helpers = any("helpers" in str(c.get("id", "")) for c in (cal if isinstance(cal, list) else []))
 check(SEC, "issue9-reexport-resolves", resolved_helpers, str(names)[:250])
@@ -562,3 +584,5 @@ for sec, name, status, detail in results:
     if status != "PASS":
         log(f"  FAIL {sec}/{name} — {detail}")
 log("FAIL-LIST-END")
+# CI gates on the exit code (manual runs just read the log).
+sys.exit(0 if npass == len(results) else 1)

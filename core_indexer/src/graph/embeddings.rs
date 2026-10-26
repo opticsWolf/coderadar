@@ -146,8 +146,9 @@ impl CodeGraph {
     }
 
     /// Clear embedding vectors for all entities in a file.
-    /// Called after mutation to invalidate stale embeddings.
-    pub fn clear_embeddings_for_file(&self, file_path: &str) {
+    /// Called after mutation to invalidate stale embeddings. Returns the
+    /// number of in-memory vectors actually cleared.
+    pub fn clear_embeddings_for_file(&self, file_path: &str) -> usize {
         // Canonical ids are forward-slash root-relative (§5.1); the dot-prefixed
         // and backslashed spellings are kept as lookup fallbacks for stores
         // written before the migration.
@@ -159,6 +160,13 @@ impl CodeGraph {
         let module_id_c = format!(".\\{}::module", normalized.replace('/', "\\"));
         let candidates = [&module_id_a, &module_id_b, &module_id_c];
         let mut projection = (*self.snapshot()).clone();
+        let mut cleared = 0usize;
+        let mut sweep = |embedding: &mut EmbeddingVec| {
+            if !embedding.vec.is_empty() {
+                *embedding = EmbeddingVec::default();
+                cleared += 1;
+            }
+        };
         for candidate in &candidates {
             if let Some(module) = projection.modules.get(*candidate) {
                 let ids: Vec<String> = module
@@ -172,25 +180,26 @@ impl CodeGraph {
                     .collect();
                 for id in &ids {
                     if let Some(f) = projection.functions.get_mut(id) {
-                        std::sync::Arc::make_mut(f).embedding = EmbeddingVec::default();
+                        sweep(&mut std::sync::Arc::make_mut(f).embedding);
                     }
                     if let Some(c) = projection.classes.get_mut(id) {
-                        std::sync::Arc::make_mut(c).embedding = EmbeddingVec::default();
+                        sweep(&mut std::sync::Arc::make_mut(c).embedding);
                     }
                     if let Some(i) = projection.imports.get_mut(id) {
-                        std::sync::Arc::make_mut(i).embedding = EmbeddingVec::default();
+                        sweep(&mut std::sync::Arc::make_mut(i).embedding);
                     }
                     if let Some(c) = projection.constants.get_mut(id) {
-                        std::sync::Arc::make_mut(c).embedding = EmbeddingVec::default();
+                        sweep(&mut std::sync::Arc::make_mut(c).embedding);
                     }
                     if let Some(ta) = projection.type_aliases.get_mut(id) {
-                        std::sync::Arc::make_mut(ta).embedding = EmbeddingVec::default();
+                        sweep(&mut std::sync::Arc::make_mut(ta).embedding);
                     }
                 }
                 break;
             }
         }
         self.commit_projection(projection);
+        cleared
     }
 
     /// v0.5: Set a module's `__all__` star-export names list.

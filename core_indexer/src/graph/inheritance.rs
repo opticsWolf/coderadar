@@ -6,11 +6,15 @@ use super::CodeGraph;
 use crate::types::*;
 
 impl CodeGraph {
-    /// Resolve class inheritance: fill `Class.resolved_bases` and invert
-    /// into the `subclasses` reverse index. Clears `subclasses` first
-    /// (idempotent rebuild). Same-module + global-unique heuristic.
+    /// Resolve class inheritance: fill `Class.resolved_bases` (class
+    /// targets) and `Class.resolved_interfaces` (interface targets —
+    /// §2.6: previously folded into EXTENDS, now IMPLEMENTS), inverting
+    /// into the `subclasses` and `implementers` reverse indexes. Clears
+    /// both indexes first (idempotent rebuild). Same-module +
+    /// global-unique heuristic.
     pub fn resolve_class_hierarchy(&self, projection: &mut ProjectedGraph) {
         projection.subclasses.clear();
+        projection.implementers.clear();
         projection.ambiguous_bases.clear();
         let class_ids: Vec<String> = projection.classes.keys().cloned().collect();
 
@@ -44,30 +48,204 @@ impl CodeGraph {
                 }
             }
 
-            // Write back resolved_bases (only if changed — avoid needless clones)
-            let existing = projection
+            // Partition by target declaration: interfaces implement,
+            // classes extend (§2.6). EXTENDS vs IMPLEMENTS is decided by
+            // the target's declaration, not the clause spelling — so
+            // `class C : B, IDisposable` (C#) and `implements I` against a
+            // class (test FakeWorker) keep their honest kind. The borrow
+            // ends before the write-back below.
+            let (resolved_bases, resolved_ifaces): (Vec<String>, Vec<String>) = resolved
+                .into_iter()
+                .partition(|id| !Self::is_interface_target(projection, id));
+            // Write back (only if changed — avoid needless clones).
+            let (existing_bases, existing_ifaces) = projection
                 .classes
                 .get(cid)
-                .map(|c| c.resolved_bases.clone())
+                .map(|c| (c.resolved_bases.clone(), c.resolved_interfaces.clone()))
                 .unwrap_or_default();
-            if existing != resolved {
+            if existing_bases != resolved_bases || existing_ifaces != resolved_ifaces {
                 if let Some(class) = projection.classes.get(cid) {
                     let mut c = (**class).clone();
-                    c.resolved_bases = resolved.clone();
+                    c.resolved_bases = resolved_bases.clone();
+                    c.resolved_interfaces = resolved_ifaces.clone();
                     projection
                         .classes
                         .insert(cid.clone(), std::sync::Arc::new(c));
                 }
             }
-            // Invert: base → subclasses
-            for base_id in &resolved {
+            // Invert: base → subclasses, interface → implementers.
+            for base_id in &resolved_bases {
                 projection
                     .subclasses
                     .entry(base_id.clone())
                     .or_default()
                     .insert(cid.clone());
             }
+            for iface_id in &resolved_ifaces {
+                projection
+                    .implementers
+                    .entry(iface_id.clone())
+                    .or_default()
+                    .insert(cid.clone());
+            }
         }
+    }
+
+    /// Interface test for the §2.6 partition: true when `id` names a
+    /// class entity whose declaration is an interface
+    /// (`Class::is_interface` — TS/Java/C#/PHP `interface_declaration`).
+    /// Unknown ids (externals) are never interfaces: they stay unresolved
+    /// and produce no edge, as before.
+    fn is_interface_target(projection: &ProjectedGraph, id: &str) -> bool {
+        projection
+            .classes
+            .get(id)
+            .map(|c| c.is_interface())
+            .unwrap_or(false)
+    }
+
+    /// Resolve decorators: fill `resolved_decorators` on functions and
+    /// classes, inverting into the `decorated_by` reverse index (§2.6
+    /// slice C). Clears the index first (idempotent rebuild). Decorator
+    /// text (`@lru_cache`, `@app.route("/x")`, `#[derive(Debug)]`) is
+    /// reduced to a name by `decorator_name`, then resolved through the
+    /// same three tiers as bases (same-module → import-aware →
+    /// global-unique in the caller's language family) over classes *and*
+    /// functions. Unique hit only — builtins (`@property`), ambiguous
+    /// and unresolvable names leave no edge, exactly like externals.
+    pub fn resolve_decorators(&self, projection: &mut ProjectedGraph) {
+        projection.decorated_by.clear();
+        // (entity id, parent module, decorator texts): classes and
+        // functions both carry decorators.
+        let mut work: Vec<(String, String, Vec<String>)> = Vec::new();
+        for (fid, f) in &projection.functions {
+            if !f.decorators.is_empty() {
+                work.push((fid.clone(), f.parent_module.clone(), f.decorators.clone()));
+            }
+        }
+        for (cid, c) in &projection.classes {
+            if !c.decorators.is_empty() {
+                work.push((cid.clone(), c.parent_module.clone(), c.decorators.clone()));
+            }
+        }
+        let mut resolved_by: HashMap<String, Vec<String>> = HashMap::new();
+        for (id, module, decorators) in &work {
+            let mut resolved: Vec<String> = Vec::new();
+            for dec in decorators {
+                let name = decorator_name(dec);
+                if name.is_empty() {
+                    continue;
+                }
+                // Full dotted path first, then the leaf
+                // (`app.route` resolves like a qualified base).
+                let leaf = name.rsplit('.').next().unwrap_or(name);
+                for cand in [name, leaf] {
+                    let mut hits = Self::decorator_candidates(projection, cand, module);
+                    hits.retain(|hit| hit != id);
+                    if hits.len() == 1 {
+                        let hit = hits.into_iter().next().unwrap_or_default();
+                        if !hit.is_empty() && !resolved.contains(&hit) {
+                            resolved.push(hit);
+                        }
+                        break;
+                    }
+                }
+            }
+            resolved_by.insert(id.clone(), resolved);
+        }
+        for (id, resolved) in &resolved_by {
+            if let Some(f) = projection.functions.get(id) {
+                if f.resolved_decorators != *resolved {
+                    let mut updated = (**f).clone();
+                    updated.resolved_decorators = resolved.clone();
+                    projection.functions.insert(id.clone(), Arc::new(updated));
+                }
+            } else if let Some(c) = projection.classes.get(id) {
+                if c.resolved_decorators != *resolved {
+                    let mut updated = (**c).clone();
+                    updated.resolved_decorators = resolved.clone();
+                    projection.classes.insert(id.clone(), Arc::new(updated));
+                }
+            }
+            for dec_id in resolved {
+                projection
+                    .decorated_by
+                    .entry(dec_id.clone())
+                    .or_default()
+                    .insert(id.clone());
+            }
+        }
+    }
+
+    /// Candidate decorator targets (classes or functions) with the same
+    /// three tiers as `base_candidates`: same-module exact, import-aware,
+    /// global-unique in the caller's language family. The tiers run over
+    /// the union of both maps — a class and a function sharing one name
+    /// in the same module is ambiguous (2 hits), not a coin flip.
+    fn decorator_candidates(
+        projection: &ProjectedGraph,
+        name: &str,
+        current_module: &str,
+    ) -> Vec<String> {
+        // (1) same-module exact match over classes and functions.
+        let same_mod: Vec<String> = projection
+            .classes
+            .iter()
+            .filter(|(_, c)| c.name == name && c.parent_module == current_module)
+            .map(|(id, _)| id.clone())
+            .chain(
+                projection
+                    .functions
+                    .iter()
+                    .filter(|(_, f)| f.name == name && f.parent_module == current_module)
+                    .map(|(id, _)| id.clone()),
+            )
+            .collect();
+        if !same_mod.is_empty() {
+            return same_mod;
+        }
+        // (2) import-aware: the caller imported this exact name; the
+        // target module holds a unique class-or-function with that name.
+        for target in &Self::import_target_modules(projection, name, current_module) {
+            let mut found: Vec<String> = Vec::new();
+            for (id, c) in &projection.classes {
+                if c.name == name && &c.parent_module == target {
+                    found.push(id.clone());
+                }
+            }
+            for (id, f) in &projection.functions {
+                if f.name == name && &f.parent_module == target {
+                    found.push(id.clone());
+                }
+            }
+            if found.len() == 1 {
+                return found;
+            }
+        }
+        // (3) global fallback, filtered to the caller's language family.
+        let caller_lang = projection.modules.get(current_module).map(|m| m.language);
+        let mut out: Vec<String> = Vec::new();
+        for (id, c) in &projection.classes {
+            if c.name != name {
+                continue;
+            }
+            let candidate_lang = projection.modules.get(&c.parent_module).map(|m| m.language);
+            match (caller_lang, candidate_lang) {
+                (Some(cl), Some(cl2)) if !cl.same_family(&cl2) => {}
+                _ => out.push(id.clone()),
+            }
+        }
+        for (id, f) in &projection.functions {
+            if f.name != name {
+                continue;
+            }
+            let candidate_lang = projection.modules.get(&f.parent_module).map(|m| m.language);
+            match (caller_lang, candidate_lang) {
+                (Some(cl), Some(cl2)) if !cl.same_family(&cl2) => {}
+                _ => out.push(id.clone()),
+            }
+        }
+        out
     }
 
     /// Resolve imports: set `Import.resolution` (module-level) and build the
@@ -230,5 +408,45 @@ impl CodeGraph {
                 }
             }
         }
+    }
+}
+
+/// Reduce decorator text to a resolvable name (§2.6 slice C).
+///
+/// Handles the spellings extraction produces: Python/TS/Java `@name`,
+/// dotted `@app.route`, applied `@deco(args)` (arguments are not part of
+/// the identity), Rust `#[derive(Debug)]`, C# `[TestCase(\"x\")]`.
+/// Returns `\"\"` when nothing name-like remains — the caller skips it.
+fn decorator_name(text: &str) -> &str {
+    let mut t = text.trim();
+    t = t.strip_prefix('@').unwrap_or(t);
+    t = t.strip_prefix('#').unwrap_or(t);
+    t = t.strip_prefix('[').unwrap_or(t);
+    t = t.trim_end_matches(']');
+    // Arguments (and Rust generics) are not identity: `@deco(args)`,
+    // `#[derive(Debug)]`, `@Component({...})`.
+    t = t.split(['(', '<']).next().unwrap_or(t);
+    t = t.trim_end_matches('!');
+    t.trim()
+}
+
+#[cfg(test)]
+mod decorator_name_tests {
+    use super::decorator_name;
+
+    #[test]
+    fn decorator_text_reduces_to_names() {
+        assert_eq!(decorator_name("@property"), "property");
+        assert_eq!(
+            decorator_name("@functools.lru_cache"),
+            "functools.lru_cache"
+        );
+        assert_eq!(decorator_name("@app.route(\"/x\")"), "app.route");
+        assert_eq!(decorator_name("@Component({selector: 'a'})"), "Component");
+        assert_eq!(decorator_name("#[derive(Debug)]"), "derive");
+        assert_eq!(decorator_name("#[pyfunction]"), "pyfunction");
+        assert_eq!(decorator_name("[TestCase(\"x\")]"), "TestCase");
+        assert_eq!(decorator_name("@"), "");
+        assert_eq!(decorator_name("  "), "");
     }
 }

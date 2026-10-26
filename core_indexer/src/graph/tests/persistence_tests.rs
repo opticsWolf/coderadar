@@ -580,3 +580,166 @@ fn namespaced_synthetic_edge_kind_is_persisted_verbatim() {
         .iter()
         .any(|(s, t, kind)| { s == source && t == target && kind == "synthetic:django:handles" }));
 }
+
+#[test]
+fn test_persist_edges_asserts_implements_kind() {
+    // §2.6: the interface-implementation fact reaches the ledger as an
+    // IMPLEMENTS edge (read back via open_edge_triples), and the
+    // reconciler keeps it — stale_edge_keep_set must include the pair or
+    // retire_stale_edges would close what persist just asserted.
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(
+        &graph,
+        "interface Shape { area(): number; }\n\
+         class Circle implements Shape { area(): number { return 0; } }\n",
+        "shapes.ts",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    graph.compute_all_mro(&mut projection);
+    graph.resolve_class_hierarchy(&mut projection);
+    let persisted = graph
+        .persist_edges(&projection)
+        .expect("persist_edges should succeed");
+    assert_eq!(persisted, 1, "only the IMPLEMENTS edge should persist");
+    let store = graph.store.as_ref().expect("temp store attached");
+    let now = crate::storage::now_iso8601();
+    let triples = store.open_edge_triples(&now).expect("read back edges");
+    assert_eq!(
+        triples,
+        vec![(
+            "shapes.ts::Circle".to_string(),
+            "shapes.ts::Shape".to_string(),
+            "IMPLEMENTS".to_string()
+        )],
+        "ledger must carry the IMPLEMENTS triple, got {triples:?}"
+    );
+    // Reconciliation round-trip: the same keep set a fresh analyze builds
+    // must not retire the edge.
+    let keep = crate::stale_edge_keep_set(&projection);
+    let retired = store
+        .retire_stale_edges(&keep)
+        .expect("retire should succeed");
+    assert_eq!(retired, 0, "IMPLEMENTS edge must survive reconciliation");
+}
+
+#[test]
+fn test_persist_edges_asserts_decorates_kind() {
+    // §2.6 slice C: the decorator-application fact reaches the ledger as
+    // a DECORATES edge, and the reconciler keeps it — stale_edge_keep_set
+    // must include the pair or retire_stale_edges would close what persist
+    // just asserted.
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(&graph, "def validate(fn):\n    return fn\n", "helpers.py");
+    index_source(
+        &graph,
+        "from helpers import validate\n\n@validate\ndef alpha():\n    pass\n",
+        "app.py",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    graph.resolve_imports(&mut projection);
+    graph.resolve_decorators(&mut projection);
+    let persisted = graph
+        .persist_edges(&projection)
+        .expect("persist_edges should succeed");
+    assert_eq!(persisted, 2, "IMPORTS + DECORATES edges should persist");
+    let store = graph.store.as_ref().expect("temp store attached");
+    let now = crate::storage::now_iso8601();
+    let triples = store.open_edge_triples(&now).expect("read back edges");
+    assert!(
+        triples.contains(&(
+            "app.py::alpha".to_string(),
+            "helpers.py::validate".to_string(),
+            "DECORATES".to_string()
+        )),
+        "ledger must carry the DECORATES triple, got {triples:?}"
+    );
+    let keep = crate::stale_edge_keep_set(&projection);
+    let retired = store
+        .retire_stale_edges(&keep)
+        .expect("retire should succeed");
+    assert_eq!(retired, 0, "DECORATES edge must survive reconciliation");
+}
+
+#[test]
+fn test_persist_edges_asserts_instantiates_kind() {
+    // §2.6 slice D: a constructor invocation persists as INSTANTIATES
+    // (function → class) alongside its CALLS edge — overlap, not
+    // partition — and the reconciler keeps it.
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(
+        &graph,
+        "class Engine:\n    def __init__(self):\n        pass\n",
+        "eng.py",
+    );
+    index_source(
+        &graph,
+        "from eng import Engine\n\ndef build():\n    return Engine()\n",
+        "app.py",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    graph.resolve_imports(&mut projection);
+    graph.resolve_all_calls(&mut projection);
+    graph.resolve_instantiations(&mut projection);
+    let persisted = graph
+        .persist_edges(&projection)
+        .expect("persist_edges should succeed");
+    assert!(
+        persisted >= 2,
+        "CALLS/IMPORTS + INSTANTIATES should persist, got {persisted}"
+    );
+    let store = graph.store.as_ref().expect("temp store attached");
+    let now = crate::storage::now_iso8601();
+    let triples = store.open_edge_triples(&now).expect("read back edges");
+    assert!(
+        triples.contains(&(
+            "app.py::build".to_string(),
+            "eng.py::Engine".to_string(),
+            "INSTANTIATES".to_string()
+        )),
+        "ledger must carry the INSTANTIATES triple, got {triples:?}"
+    );
+    let keep = crate::stale_edge_keep_set(&projection);
+    let retired = store
+        .retire_stale_edges(&keep)
+        .expect("retire should succeed");
+    assert_eq!(retired, 0, "INSTANTIATES edge must survive reconciliation");
+}
+
+#[test]
+fn test_persist_edges_asserts_references_kind() {
+    // §2.6 slice E: a function-valued reference persists as REFERENCES
+    // (holder → target) and the reconciler keeps it. The CALLS arm from
+    // the same holder stays silent — validated at traverse level.
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(
+        &graph,
+        "def greeter():\n    pass\n\ndef get_handler():\n    return greeter\n",
+        "handlers.py",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    graph.resolve_all_calls(&mut projection);
+    graph.resolve_references(&mut projection);
+    let persisted = graph
+        .persist_edges(&projection)
+        .expect("persist_edges should succeed");
+    assert!(
+        persisted >= 1,
+        "REFERENCES edge should persist, got {persisted}"
+    );
+    let store = graph.store.as_ref().expect("temp store attached");
+    let now = crate::storage::now_iso8601();
+    let triples = store.open_edge_triples(&now).expect("read back edges");
+    assert!(
+        triples.contains(&(
+            "handlers.py::get_handler".to_string(),
+            "handlers.py::greeter".to_string(),
+            "REFERENCES".to_string()
+        )),
+        "ledger must carry the REFERENCES triple, got {triples:?}"
+    );
+    let keep = crate::stale_edge_keep_set(&projection);
+    let retired = store
+        .retire_stale_edges(&keep)
+        .expect("retire should succeed");
+    assert_eq!(retired, 0, "REFERENCES edge must survive reconciliation");
+}

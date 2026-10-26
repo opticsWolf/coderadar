@@ -72,10 +72,16 @@ class TestNames:
                 gaps[op] = sorted(missing)
         assert gaps == {}
 
-    def test_old_cli_names_still_work_but_are_hidden(self):
+    def test_old_cli_names_are_removed_in_v013(self):
         for old in ("analyze", "rebuild", "update", "stats", "blame", "git-clean", "git-diff"):
-            assert old in main.commands, old
-            assert main.commands[old].hidden, old
+            assert old not in main.commands, old
+
+    def test_old_python_names_are_removed_in_v013(self):
+        for old in ("find", "callers_of", "callees_of",
+                    "plan_body_replacement", "plan_signature_update"):
+            assert not hasattr(coderadar.CodeGraph, old), old
+        for old in ("callers_of", "callees_of", "explore"):
+            assert not hasattr(coderadar.Snapshot, old), old
 
 
 SOURCE = '''\
@@ -148,6 +154,32 @@ class TestCli:
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["edge_kinds"] in (None, [])
 
+    def test_mutation_dry_run_exits_0_and_writes_nothing(self, project):
+        target = project / "pkg" / "mod.py"
+        before = target.read_text(encoding="utf-8")
+        dry = _run("replace-body", "pkg/mod.py::helper", "return 2")
+
+        assert dry.exit_code == 0, dry.output
+        assert "DRY RUN" in dry.output
+        assert target.read_text(encoding="utf-8") == before
+
+    def test_mutation_plan_policy_refusal_exits_2_and_writes_nothing(self, project):
+        outsider = project.parent / f"outside_{os.getpid()}.py"
+        outsider.write_text("secret = 1\n", encoding="utf-8")
+        try:
+            refused = _run(
+                "create-entity", str(outsider), "python", "function",
+                "probe", "return 1", "--apply",
+            )
+        finally:
+            after = outsider.read_text(encoding="utf-8")
+            outsider.unlink()
+
+        assert refused.exit_code == 2, refused.output
+        assert "Mutation Rejected" in refused.output
+        assert "Policy" in refused.output
+        assert after == "secret = 1\n"
+
     def test_edits_are_dry_runs_unless_applied(self, project):
         target = project / "pkg" / "mod.py"
         dry = _run("rename", "pkg/mod.py::helper", "assist")
@@ -170,11 +202,11 @@ class TestCli:
         assert result.exit_code == 0, result.output
         assert "File Removed" in result.stdout
 
-    def test_an_old_name_says_its_new_one(self, project):
+    def test_a_removed_name_is_not_a_command(self, project):
         result = _run("stats")
 
-        assert result.exit_code == 0, result.output
-        assert "coderadar status" in result.stderr
+        assert result.exit_code == 2, result.output
+        assert "No such command" in result.output
 
 
 @pytest.mark.skipif(not _CORE, reason="Rust _core extension not built")

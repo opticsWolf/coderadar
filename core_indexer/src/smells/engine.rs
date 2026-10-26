@@ -264,8 +264,30 @@ pub fn metrics_for_class(
     m
 }
 
+/// Candidate type names inside a field annotation: identifiers and dotted
+/// paths (`Customer`, `list[Customer]`, `dict[str, pkg.Item]`,
+/// `Customer | None`, `"ForwardRef"`). Anything unresolvable is skipped
+/// by the caller — no builtin list is needed because stdlib names have no
+/// class candidates, exactly like external bases.
+fn field_type_names(annotation: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut cur = String::new();
+    for ch in annotation.chars() {
+        if ch.is_alphanumeric() || ch == '_' || ch == '.' {
+            cur.push(ch);
+        } else if !cur.is_empty() {
+            names.push(std::mem::take(&mut cur));
+        }
+    }
+    if !cur.is_empty() {
+        names.push(cur);
+    }
+    names
+}
+
 /// Coupling Between Objects: distinct other classes this class depends on,
-/// via resolved bases and resolved call targets of its methods.
+/// via resolved bases, field-type annotations (§2.4), and resolved call
+/// targets of its methods.
 fn coupling_between_objects(
     c: &Class,
     graph: &ProjectedGraph,
@@ -276,6 +298,37 @@ fn coupling_between_objects(
     for b in &c.resolved_bases {
         if b != &c.id {
             coupled.insert(b.clone());
+        }
+    }
+
+    // Field-type coupling: a field annotated with a class name couples to
+    // that class (`customer: Customer` uses Customer). Candidates resolve
+    // through the same tiers as bases (same-module → import-aware →
+    // global-unique); stdlib names simply have no candidates and are
+    // skipped, exactly like external bases. Ambiguous or self annotations
+    // couple to nothing — CBO counts attributable coupling only.
+    for f in &c.fields {
+        if let Some(ann) = &f.annotation {
+            for name in field_type_names(ann) {
+                // Full dotted path first, then the leaf (`pkg.Customer`
+                // resolves like a qualified base).
+                let leaf = name.rsplit('.').next().unwrap_or(&name);
+                let mut hit: Option<EntityId> = None;
+                for cand in [name.as_str(), leaf] {
+                    let mut xs =
+                        crate::graph::CodeGraph::base_candidates(graph, cand, &c.parent_module);
+                    xs.retain(|id| id != &c.id);
+                    if xs.len() == 1 {
+                        hit = Some(xs.into_iter().next().unwrap_or_default());
+                        break;
+                    }
+                }
+                if let Some(id) = hit {
+                    if !id.is_empty() {
+                        coupled.insert(id);
+                    }
+                }
+            }
         }
     }
 
@@ -392,6 +445,11 @@ pub(crate) mod tests {
             callees_by_caller: HashMap::new(),
             call_evidence: HashMap::new(),
             subclasses: HashMap::new(),
+            implementers: HashMap::new(),
+            decorated_by: HashMap::new(),
+            instantiated_by: HashMap::new(),
+            referenced_by: HashMap::new(),
+            path_maps: crate::graph::path_maps::PathMaps::default(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
             ambiguous_bases: Vec::new(),
@@ -571,5 +629,104 @@ pub(crate) mod tests {
             finding_key(&mk("./src/a.py::f")),
             finding_key(&mk("./src/b.py::f"))
         );
+    }
+}
+
+#[cfg(test)]
+mod field_cbo_tests {
+    use super::*;
+    use crate::types::{EffectiveClass, Field, ParseQuality, SourceType};
+    use std::sync::Arc;
+
+    fn test_class(id: &str, name: &str, module: &str, fields: Vec<Field>) -> Class {
+        Class {
+            id: id.into(),
+            name: name.into(),
+            grammar_kind: "class_definition".into(),
+            parent_module: module.into(),
+            parent_class: None,
+            bases: vec![],
+            resolved_bases: vec![],
+            resolved_interfaces: vec![],
+            resolved_decorators: vec![],
+            mro: vec![],
+            mro_error: false,
+            methods: vec![],
+            fields,
+            source: SourceType::Impl,
+            decorators: vec![],
+            effective: EffectiveClass::Plain,
+            is_type_checking_only: false,
+            line: 1,
+            exit_line: 2,
+            docstring: None,
+            parse_quality: ParseQuality::Clean,
+            content_hash: 0,
+            span: ByteSpan { start: 0, end: 10 },
+            name_span: ByteSpan { start: 0, end: 4 },
+            body_span: ByteSpan { start: 10, end: 10 },
+            decorators_span: None,
+            embedding: crate::types::EmbeddingVec::default(),
+        }
+    }
+
+    fn field(annotation: &str) -> Field {
+        Field {
+            name: "x".into(),
+            annotation: Some(annotation.into()),
+            source: SourceType::Impl,
+            default_value: None,
+            is_class_var: false,
+            span: ByteSpan { start: 0, end: 1 },
+            name_span: ByteSpan { start: 0, end: 1 },
+        }
+    }
+
+    #[test]
+    fn test_cbo_counts_resolvable_field_types() {
+        // §2.4: `customer: Customer` couples Order to Customer; stdlib
+        // names, self-annotations and ambiguous names couple to nothing.
+        let mut g = super::tests::empty_graph();
+        let customer = test_class("a.py::Customer", "Customer", "a.py::module", vec![]);
+        let other = test_class("b.py::Customer", "Customer", "b.py::module", vec![]);
+        let order = test_class(
+            "a.py::Order",
+            "Order",
+            "a.py::module",
+            vec![
+                field("Customer"),
+                field("list[Customer] | None"),
+                field("str"),
+                field("Order"),
+            ],
+        );
+        for c in [customer, other, order.clone()] {
+            g.classes.insert(c.id.clone(), Arc::new(c));
+        }
+        let methods: MethodsByClass = Default::default();
+        // Same-module Customer is the unique hit; the b.py namesake makes
+        // the global fallback ambiguous — but same-module tier wins first,
+        // so Order couples exactly once.
+        assert_eq!(coupling_between_objects(&order, &g, &methods), 1);
+    }
+
+    #[test]
+    fn test_cbo_ignores_ambiguous_and_unknown_field_types() {
+        let mut g = super::tests::empty_graph();
+        // Two same-named classes in DIFFERENT modules, user in a third:
+        // no tier yields a unique hit.
+        let c1 = test_class("a.py::Item", "Item", "a.py::module", vec![]);
+        let c2 = test_class("b.py::Item", "Item", "b.py::module", vec![]);
+        let user = test_class(
+            "c.py::Cart",
+            "Cart",
+            "c.py::module",
+            vec![field("Item"), field("NoSuchType"), field("dict[str, int]")],
+        );
+        for c in [c1, c2, user.clone()] {
+            g.classes.insert(c.id.clone(), Arc::new(c));
+        }
+        let methods: MethodsByClass = Default::default();
+        assert_eq!(coupling_between_objects(&user, &g, &methods), 0);
     }
 }

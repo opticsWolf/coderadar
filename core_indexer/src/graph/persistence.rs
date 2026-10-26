@@ -236,6 +236,143 @@ impl CodeGraph {
             }
         }
 
+        // IMPLEMENTS edges: class → interface (§2.6). `resolved_interfaces`
+        // holds only interface declarations (resolve_class_hierarchy
+        // partitions by target kind); same FK/scope guards as EXTENDS.
+        for (cid, class) in projection.classes.iter() {
+            for iface_id in class.resolved_interfaces.iter() {
+                if !in_scope(cid, iface_id) {
+                    continue;
+                }
+                if dangling(cid, iface_id) {
+                    continue;
+                }
+                if open.contains(&edge_key(cid, iface_id, "IMPLEMENTS")) {
+                    edge_count += 1;
+                    continue;
+                }
+                batch.push(
+                    EdgeAssertion::new(cid.as_str(), iface_id.as_str(), "IMPLEMENTS")
+                        .valid_from(ts_now.as_str())
+                        .weight(1.0),
+                );
+                edge_count += 1;
+                if batch.len() >= 200 {
+                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                }
+            }
+        }
+
+        // DECORATES edges (§2.6 slice C): decorated → decorator, for
+        // functions and classes. `resolved_decorators` holds unique tier
+        // hits only; same FK/scope guards as EXTENDS.
+        for (fid, f) in projection.functions.iter() {
+            for dec_id in f.resolved_decorators.iter() {
+                if !in_scope(fid, dec_id) {
+                    continue;
+                }
+                if dangling(fid, dec_id) {
+                    continue;
+                }
+                if open.contains(&edge_key(fid, dec_id, "DECORATES")) {
+                    edge_count += 1;
+                    continue;
+                }
+                batch.push(
+                    EdgeAssertion::new(fid.as_str(), dec_id.as_str(), "DECORATES")
+                        .valid_from(ts_now.as_str())
+                        .weight(1.0),
+                );
+                edge_count += 1;
+                if batch.len() >= 200 {
+                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                }
+            }
+        }
+        for (cid, class) in projection.classes.iter() {
+            for dec_id in class.resolved_decorators.iter() {
+                if !in_scope(cid, dec_id) {
+                    continue;
+                }
+                if dangling(cid, dec_id) {
+                    continue;
+                }
+                if open.contains(&edge_key(cid, dec_id, "DECORATES")) {
+                    edge_count += 1;
+                    continue;
+                }
+                batch.push(
+                    EdgeAssertion::new(cid.as_str(), dec_id.as_str(), "DECORATES")
+                        .valid_from(ts_now.as_str())
+                        .weight(1.0),
+                );
+                edge_count += 1;
+                if batch.len() >= 200 {
+                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                }
+            }
+        }
+
+        // INSTANTIATES edges (§2.6 slice D): function → class it
+        // constructs. Read off `resolved_calls` (`Constructor` targets
+        // carry the class id); a constructor invocation both calls
+        // (`__init__`/class, CALLS) and instantiates (class) — overlap,
+        // not partition. Same FK/scope guards as CALLS.
+        for (fid, f) in projection.functions.iter() {
+            for rc in f.resolved_calls.iter() {
+                let crate::types::ResolvedCall::Constructor(class_id) = rc else {
+                    continue;
+                };
+                if !in_scope(fid, class_id) {
+                    continue;
+                }
+                if dangling(fid, class_id) {
+                    continue;
+                }
+                if open.contains(&edge_key(fid, class_id, "INSTANTIATES")) {
+                    edge_count += 1;
+                    continue;
+                }
+                batch.push(
+                    EdgeAssertion::new(fid.as_str(), class_id.as_str(), "INSTANTIATES")
+                        .valid_from(ts_now.as_str())
+                        .weight(1.0),
+                );
+                edge_count += 1;
+                if batch.len() >= 200 {
+                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                }
+            }
+        }
+
+        // REFERENCES edges (§2.6 slice E): function → entity it holds
+        // as a value (callbacks, dispatch tables). Deliberately not
+        // CALLS — passing a function as a value is not calling it.
+        // Same FK/scope guards as the other structural loops.
+        for (fid, f) in projection.functions.iter() {
+            for target in f.resolved_refs.iter() {
+                if !in_scope(fid, target) {
+                    continue;
+                }
+                if dangling(fid, target) {
+                    continue;
+                }
+                if open.contains(&edge_key(fid, target, "REFERENCES")) {
+                    edge_count += 1;
+                    continue;
+                }
+                batch.push(
+                    EdgeAssertion::new(fid.as_str(), target.as_str(), "REFERENCES")
+                        .valid_from(ts_now.as_str())
+                        .weight(1.0),
+                );
+                edge_count += 1;
+                if batch.len() >= 200 {
+                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                }
+            }
+        }
+
         // OVERRIDES edges: override method → base method.
         for (override_fid, base_fid) in projection.overrides_base.iter() {
             if !in_scope(override_fid, base_fid) {

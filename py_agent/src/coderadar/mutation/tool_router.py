@@ -10,7 +10,7 @@ ToolRouter.route — cutting it now would be churn, not hygiene.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
 import structlog
@@ -77,6 +77,26 @@ class ToolRouter:
                 error=str(e),
             )
 
+    @staticmethod
+    def _mutation_payload(result: Any, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = asdict(result)
+        if extra:
+            payload.update(extra)
+        return payload
+
+    @staticmethod
+    def _mutation_error(result: Any) -> str | None:
+        if result.status == "Applied":
+            return None
+        parts: list[str] = []
+        failure = result.failure or result.primary
+        if failure is not None:
+            parts.append(f"{failure.stage}/{failure.code} — {failure.message}")
+        for entry in result.sync.errors:
+            parts.append(f"{entry.get('stage', '?')}/{entry.get('code', '?')} — {entry.get('message', '')}")
+        parts.extend(str(error) for error in result.syntax_errors)
+        return "\n".join(part for part in parts if part) or f"mutation did not apply: {result.status}"
+
     def _handle_body_replacement(self, call: ToolCall) -> ToolResult:
         """replace_entity_body: entity_id, new_body, expected_hash?"""
         args = call.arguments
@@ -93,13 +113,8 @@ class ToolRouter:
                 return ToolResult(
                     call_id=call.call_id,
                     success=result.status == "Applied",
-                    result={
-                        "status": result.status,
-                        "files_written": result.files_written,
-                        "syntax_errors": result.syntax_errors,
-                    },
-                    error=None if result.status == "Applied"
-                    else "\n".join(str(e) for e in result.syntax_errors),
+                    result=self._mutation_payload(result),
+                    error=self._mutation_error(result),
                 )
             return ToolResult(
                 call_id=call.call_id, success=True,
@@ -128,11 +143,8 @@ class ToolRouter:
                 return ToolResult(
                     call_id=call.call_id,
                     success=result.status == "Applied",
-                    result={
-                        "status": result.status,
-                        "files_written": result.files_written,
-                        "unverified_sites": plan.unverified_sites,
-                    },
+                    result=self._mutation_payload(result, {"unverified_sites": plan.unverified_sites}),
+                    error=self._mutation_error(result),
                 )
             return ToolResult(
                 call_id=call.call_id, success=True,
@@ -162,10 +174,8 @@ class ToolRouter:
                 return ToolResult(
                     call_id=call.call_id,
                     success=result.status == "Applied",
-                    result={
-                        "status": result.status,
-                        "files_written": result.files_written,
-                    },
+                    result=self._mutation_payload(result),
+                    error=self._mutation_error(result),
                 )
             return ToolResult(
                 call_id=call.call_id, success=True,
@@ -195,11 +205,8 @@ class ToolRouter:
                 return ToolResult(
                     call_id=call.call_id,
                     success=result.status == "Applied",
-                    result={
-                        "status": result.status,
-                        "files_written": result.files_written,
-                        "warnings": plan.warnings,
-                    },
+                    result=self._mutation_payload(result, {"warnings": plan.warnings}),
+                    error=self._mutation_error(result),
                 )
             return ToolResult(
                 call_id=call.call_id, success=True,

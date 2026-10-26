@@ -223,17 +223,18 @@ pub(crate) fn module_children(py: Python<'_>, module_id: &str) -> PyResult<PyObj
 }
 
 /// Drop every stored embedding for the entities of one file (called before
-/// re-embedding it). Returns `{"ok": True}`; raises `RuntimeError` when no
-/// graph is loaded.
+/// re-embedding it). Returns `{"ok": True, "cleared": N}`; raises
+/// `RuntimeError` when no graph is loaded.
 #[pyfunction]
 pub(crate) fn clear_embeddings_for_file(py: Python<'_>, file_path: &str) -> PyResult<PyObject> {
     let mut guard = GLOBAL_GRAPH.write();
     let graph = guard
         .as_mut()
         .ok_or_else(|| pyo3::exceptions::PyRuntimeError::new_err("No graph loaded"))?;
-    graph.clear_embeddings_for_file(file_path);
+    let cleared = graph.clear_embeddings_for_file(file_path);
     let dict = PyDict::new(py);
     dict.set_item("ok", true)?;
+    dict.set_item("cleared", cleared)?;
     Ok(dict.into())
 }
 

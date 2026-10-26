@@ -305,12 +305,12 @@
       <span class="install"><span class="pm">$</span>&nbsp;pip install coderadar-rs
         <button id="copy" type="button">copy</button></span>
     </div>
-    <p class="release-line">v0.12 — history becomes real · <a href="https://github.com/opticsWolf/coderadar/blob/main/CHANGELOG.md">changelog</a></p>
+    <p class="release-line">v0.13 — guarded mutation compensation · <a href="https://github.com/opticsWolf/coderadar/blob/main/CHANGELOG.md">changelog</a></p>
 
     <p class="proof rv">
       <b data-count="41">0</b> languages <span class="sep">·</span>
-      <b data-count="26">0</b> operations, one name each <span class="sep">·</span>
-      <b data-count="1512">0</b> tests passing <span class="sep">·</span>
+      <b data-count="27">0</b> operations, one name each <span class="sep">·</span>
+      <b data-count="1660">0</b> tests passing <span class="sep">·</span>
       <b>100/100</b> resolution precision-recall
       <span class="fnote">measured on the self-hosted corpus, guarded by CI — not claimed, proven</span>
     </p>
@@ -367,14 +367,14 @@ use <span class="tok-s">as_of</span> + <span class="tok-s">read_bytes</span> for
     <div class="why-row rv">
       <div class="why-copy">
         <h3><span class="k-magenta">One op,</span> every agent surface</h3>
-        <p>26 operations share one name across MCP, CLI, and Python, all calling one
+        <p>27 operations share one name across MCP, CLI, and Python, all calling one
           shared function, pinned by parity tests. A fix in the op layer lands
-          everywhere at once, and agent skills ship in the repo, drift-tested
-          against the registry.</p>
+          everywhere at once, and agent skills ship inside the package (and the
+          wheel), drift-tested against the registry.</p>
         <ul>
-          <li><strong>26 <code>coderadar_*</code> tools</strong>: one prefix, allow-list friendly</li>
+          <li><strong>27 <code>coderadar_*</code> tools</strong>: one prefix, allow-list friendly</li>
           <li><strong>CLI for every op</strong>: JSON out, stderr + exit codes, dry-run by default</li>
-          <li><strong>Skills in-repo</strong>: <code>skills/coderadar-mcp</code> is the source of truth</li>
+          <li><strong>Skills bundled</strong>: <code>coderadar skills install</code> drops both packs into Claude Code / OpenCode</li>
         </ul>
       </div>
       <div class="mini magenta"><div class="bar"><i></i><i></i><i></i></div>
@@ -485,9 +485,9 @@ $ coderadar affected py_agent/src/coderadar/ops.py --max-depth 2</code></pre>
       <a class="rv" href="https://github.com/opticsWolf/coderadar/blob/main/docs/QUICKREF.md">
         <h3>Quick reference</h3><p>Everyday ops as CLI·MCP·Python triples, config cheat, troubleshooting.</p></a>
       <a class="rv" href="https://github.com/opticsWolf/coderadar/blob/main/CHANGELOG.md">
-        <h3>Changelog</h3><p>Per-version record from v0.5.4 to v0.12 — cold start, smells, blobs, FTS, routes.</p></a>
-      <a class="rv" href="https://github.com/opticsWolf/coderadar/tree/main/skills">
-        <h3>Agent skills</h3><p>Repo-truth MCP + CLI skill packs, drift-tested — drop into any agent harness.</p></a>
+        <h3>Changelog</h3><p>Per-version record from v0.5.4 to v0.13 — cold start, smells, blobs, FTS, routes.</p></a>
+      <a class="rv" href="https://github.com/opticsWolf/coderadar/tree/main/py_agent/src/coderadar/skills">
+        <h3>Agent skills</h3><p>Wheel-bundled MCP + CLI skill packs, drift-tested — <code>coderadar skills install</code>.</p></a>
     </div>
   </section>
 

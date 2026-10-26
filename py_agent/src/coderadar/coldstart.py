@@ -188,6 +188,22 @@ def _indexed_config_changed(root: Path) -> bool:
     return old_mtime is not None and mtime is not None and mtime != old_mtime
 
 
+def _rehydrate_best_effort() -> None:
+    """Refill in-memory vectors from the ledger (DR-11 slice 3).
+
+    Best-effort by design: a missing table (fresh store), a storeless
+graph, or a stale `_core` all mean "nothing to refill" — cold start
+    must never fail because vectors could not load, for the same reason
+    one bad file does not sink the whole start (see above).
+    """
+    try:
+        from coderadar._core import rehydrate_embeddings
+        from coderadar.embedding import embedding_settings
+        rehydrate_embeddings(embedding_settings()[0])
+    except Exception:  # noqa: BLE001, S110 - see docstring
+        pass
+
+
 def build_graph(root: str | Path = ".", create_store: bool = False):
     """A current CodeGraph for `root`, the cheap way to get one.
 
@@ -239,6 +255,7 @@ def build_graph(root: str | Path = ".", create_store: bool = False):
                     # performs the v1 -> v2 upgrade; do not report the load
                     # error — analyze succeeding is the answer.
                     coderadar.analyze(root_str, create_store=create_store)
+                    _rehydrate_best_effort()
                     return graph
                 # BUGS_QUIRKS #3 (DR-31): a `.coderadar.toml` change alone
                 # never marked the store stale — the cheap path loaded old
@@ -250,6 +267,7 @@ def build_graph(root: str | Path = ".", create_store: bool = False):
                 # file after the toml edit and defeat mtime comparison.
                 if _indexed_config_changed(resolved):
                     coderadar.analyze(root_str, create_store=create_store)
+                    _rehydrate_best_effort()
                     return graph
                 if not store_is_fresh(resolved, db):
                     for stale in stale_source_files(resolved, db):
@@ -264,8 +282,10 @@ def build_graph(root: str | Path = ".", create_store: bool = False):
                             # the whole cold start: everything else is current
                             # and the next update_file can retry this one.
                             continue
+                _rehydrate_best_effort()
                 return graph
             coderadar.analyze(root_str, create_store=create_store)
+            _rehydrate_best_effort()
             return graph
         finally:
             if moved:

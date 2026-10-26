@@ -84,7 +84,7 @@ __all__ = [
 #: bound to the project it was loaded for.
 OPERATIONS = (
     "explore", "node", "search", "affected", "resolve", "query",
-    "search_similar", "compute_embeddings", "module_children", "as_of",
+    "search_similar", "search_hybrid", "compute_embeddings", "module_children", "as_of",
     "traverse", "get_smells", "dead_code", "find_clones", "find_scaffolding",
     "replace_body", "update_signature", "rename", "create_entity",
     "reindex", "update_file", "status", "set_project",
@@ -758,10 +758,10 @@ def traverse(entity_id: str, direction: str = "both",
              edge_kinds: Sequence[str] | None = None, max_depth: int = 3) -> dict:
     """Breadth-first walk from `entity_id` along any edge kinds.
 
-    `direction` is ``downstream`` (callees, imports, bases), ``upstream``
-    (callers, importers, subclasses) or ``both``; ``out`` / ``in`` are
+    `direction` is ``downstream`` (callees, imports, bases, interfaces, decorators, constructed, referenced), ``upstream``
+    (callers, importers, subclasses, implementers, decorated, instantiators, referrers) or ``both``; ``out`` / ``in`` are
     accepted as aliases. `edge_kinds` is any of ``calls``, ``imports``,
-    ``inherits`` (alias ``extends``), ``overrides``; None means all. Depth
+    ``inherits`` (alias ``extends``), ``implements``, ``decorates``, ``instantiates``, ``references``, ``overrides``; None means all. Depth
     is capped at 10.
 
     Returns ``{"entity", "entity_id", "direction", "max_depth",
@@ -810,7 +810,7 @@ def traverse(entity_id: str, direction: str = "both",
 
 def query(query: str) -> list[dict]:
     """Run a graph query: ``<entity> [select ...] [where ...] [group by ...]
-    [order by ...] [limit N]`` (see docs/query-language.md). Every row
+    [order by ...] [limit N]`` (see ``coderadar docs query-language``). Every row
     carries ``id``, ``file_path``, ``kind`` and ``parent_id``. A malformed
     query or unknown field raises InvalidRequest naming the problem."""
     if not query.strip():
@@ -933,7 +933,11 @@ def compute_embeddings(model_name: str | None = None, batch_size: int = 32,
     against the configured dimension before storing — explicit error, never
     mixed widths.
 
-    Returns ``{"generated", "cached", "total", "errors"}``.
+    Returns ``{"generated", "cached", "total", "errors", "persisted"}``.
+    ``persisted`` counts rows written to the ledger's per-model vector
+    table this run: 0 when everything was cached and the table agrees, or
+    on storeless graphs where vectors stay memory-only (no ledger to
+    persist them to).
     """
     _require_index()
     from .embedding import (
@@ -965,7 +969,8 @@ def compute_embeddings(model_name: str | None = None, batch_size: int = 32,
     try:
         from coderadar._core import set_embeddings_bulk
     except ImportError:
-        return {"generated": 0, "cached": 0, "total": len(targets), "errors": 1}
+        return {"generated": 0, "cached": 0, "total": len(targets), "errors": 1,
+                "persisted": 0}
 
     # Configured-dimension check before anything is stored: a [embedding]
     # dimension that disagrees with the model output fails here explicitly
@@ -992,10 +997,34 @@ def compute_embeddings(model_name: str | None = None, batch_size: int = 32,
         if "embedding dimension" in str(e):
             raise EngineError(str(e)) from None
         return {"generated": 0, "cached": cached,
-                "total": len(targets), "errors": len(entries)}
+                "total": len(targets), "errors": len(entries),
+                "persisted": 0}
+
+    # DR-11 slice 2: the memory write above is not durable — persist the
+    # fresh vectors to the ledger's per-model table (vectors stay in the
+    # projection; only (id, hash) pairs cross FFI). Empty entries still
+    # call through: the Rust side heals a missing/divergent table from
+    # memory. Storeless graphs skip (memory-only, documented above); a
+    # stale `_core` without the symbol degrades the same way.
+    persisted = 0
+    try:
+        from coderadar._core import persist_embeddings
+    except ImportError:
+        pass
+    else:
+        try:
+            pres = persist_embeddings(wanted, [(e[0], e[2]) for e in entries])
+        except RuntimeError as e:
+            if "stored graph" in str(e):
+                pass
+            else:
+                raise EngineError(str(e)) from None
+        else:
+            persisted = int(pres.get("persisted", 0))
 
     return {"generated": int(report.get("applied", 0)), "cached": cached,
-            "total": len(targets), "errors": len(report.get("missing", []))}
+            "total": len(targets), "errors": len(report.get("missing", [])),
+            "persisted": persisted}
 
 
 def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
@@ -1003,16 +1032,19 @@ def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
 
     `query` is natural language (embedded locally with fastembed; at most
     20 results, and embeddings are computed on first use) or a ready
-    embedding vector. Results carry ``similarity``, ``name``, ``kind`` and
+    embedding vector. Candidates come from the persisted model table, so a
+    fresh analyze (empty in-memory vectors) answers without a recompute;
+    raw vectors never trigger the auto-compute — without a matching table
+    they return []. Results carry ``similarity``, ``name``, ``kind`` and
     the file.
     """
     from coderadar._core import search_similar as _ss
+    if isinstance(query, str) and not query.strip():
+        raise InvalidRequest("Please provide a natural-language query for semantic search.")
     if not isinstance(query, str):
         return _ss(list(query), top_k)
 
     _require_index()
-    if not query.strip():
-        raise InvalidRequest("Please provide a natural-language query for semantic search.")
     try:
         embedding = list(next(iter(_embedding_model().embed([query]))))
     except ImportError:
@@ -1039,6 +1071,76 @@ def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
             raise NoEmbeddings("no embeddings found and computing them failed") from None
 
 
+def search_hybrid(query: str | Sequence[float], top_k: int = 10,
+                  query_text: str = "") -> list[dict]:
+    """Hybrid keyword+vector search: RRF fusion of BM25 and cosine arms.
+
+    `query` is natural language (embedded locally with fastembed; the same
+    text feeds the keyword arm) or a ready embedding vector (then
+    `query_text` feeds the keyword arm, and empty text means vector-only
+    ranking). Results carry ``score`` (fused RRF — scale-free, ranks are
+    the signal) plus per-arm ``vector_rank``/``keyword_rank`` (`None` =
+    that arm did not return the hit). At most 20 results.
+    """
+    from coderadar._core import search_hybrid as _sh
+    from coderadar.embedding import embedding_settings
+    _require_index()
+    if isinstance(query, str):
+        if not query.strip():
+            raise InvalidRequest("Please provide a natural-language query for hybrid search.")
+        text = query
+        try:
+            embedding = list(next(iter(_embedding_model().embed([query]))))
+        except ImportError:
+            raise MissingDependency("fastembed") from None
+        except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+            raise EngineError(f"Embedding failed: {e}") from None
+    else:
+        text, embedding = query_text, list(query)
+    if not text.strip() and not embedding:
+        raise InvalidRequest("Hybrid search needs query text, a query vector, or both.")
+    configured, _dimension = embedding_settings()
+
+    def run() -> list[dict]:
+        rows = _sh(configured, text, embedding, min(top_k, 20))
+        # search_symbols-shaped ids are unreadable alone; join the display
+        # fields the projection already holds (best-effort: id-only fallback).
+        try:
+            from coderadar._core import lookup_entity
+        except ImportError:
+            return rows
+        for r in rows:
+            try:
+                ent = lookup_entity(r["id"])
+            except Exception:  # noqa: BLE001 - id-only fallback, see above
+                ent = None
+            if ent:
+                r["name"] = ent.get("name", r["id"])
+                r["kind"] = ent.get("kind", "?")
+                r["file_path"] = ent.get("file_path", "?")
+        return rows
+
+    try:
+        return run()
+    except RuntimeError as e:
+        msg = str(e)
+        if "embedding dimension" in msg or "DimMismatch" in msg:
+            # A dimension conflict cannot be computed away (same model in,
+            # same widths out) — surface it, don't loop into a recompute.
+            raise EngineError(msg) from None
+        if "ModelNotRegistered" not in msg:
+            raise EngineError(msg) from None
+        # No persisted vectors for this model — compute them once and
+        # retry (mirrors search_similar's auto-compute).
+        try:
+            compute_embeddings()
+            return run()
+        except EngineError:
+            raise
+        except Exception:  # noqa: BLE001 - auto-compute is best-effort, NoEmbeddings covers it
+            raise NoEmbeddings("no persisted vectors found and computing them failed") from None
+
+
 # ── Temporal ──────────────────────────────────────────────────────────────
 
 def _graph():
@@ -1060,10 +1162,10 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     for present-tense search). Bytes-at-T rides source blobs (§3.0: use
     `Snapshot.read_bytes` / `read_source` for entity bytes at T.
     """
-    _require_index()
     if not timestamp:
         raise InvalidRequest(
             "Please provide an ISO 8601 timestamp (e.g. '2025-01-15T10:00:00Z').")
+    _require_index()
     # R2-10 + §0.1(a): one normalization truth (Macrame canonical UTC) for
     # every temporal entry point — `datetime.fromisoformat` used to accept
     # offsets/naive stamps Macrame then rejects downstream.
@@ -1346,10 +1448,10 @@ def find_scaffolding(include_secrets: bool = False, max_findings: int = 100) -> 
 
 # ── Edits ─────────────────────────────────────────────────────────────────
 # Each edit plans first; with dry_run=False the plan is applied, which
-# writes the file and updates the graph together. The result is
+# writes the file and synchronously updates the graph. The result is
 # ``{"plan": MutationPlan, "result": MutationResult | None, "note": str}``;
-# ``result`` is None for a dry run. Any failure raises MutationFailed with
-# the engine's message — nothing was written.
+# ``result`` is None for a dry run. Expected operational outcomes return a
+# structured `MutationResult`; interface misuse and `OpError`s raise.
 
 def _edit(plan_fn, dry_run: bool, graph: Any, note: str = "") -> dict:
     try:
@@ -1379,7 +1481,9 @@ def replace_body(entity_id: str, new_body: str, expected_hash: str | None = None
 def update_signature(entity_id: str, new_signature: str, inject_defaults: bool = False,
                      dry_run: bool = True, *, graph: Any = None) -> dict:
     """Change a function/method signature. The definition is rewritten;
-    call sites come back as ``plan.unverified_sites`` for manual review."""
+    call sites with explicit `call_site_values` and a recorded arg span
+    become real edits (§2.3); the rest come back as
+    ``plan.unverified_sites`` for manual review."""
     _require_index()
     g = graph or _graph()
     return _edit(lambda: g.plan_update_signature(
@@ -1573,9 +1677,9 @@ def update_file(file_path: str, content: str | None = None, *, graph: Any = None
     deleted from disk is dropped from the graph. Returns the
     `coderadar.UpdateReport` (``removed`` / ``entities_removed`` for a
     deletion, ``fully_applied`` False for a recovered parse)."""
-    _require_index()
-    if not file_path.strip():
+    if not isinstance(file_path, str) or not file_path.strip():
         raise InvalidRequest("Please provide a file path.")
+    _require_index()
     try:
         return (graph or _graph()).update_file(file_path, content)
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError

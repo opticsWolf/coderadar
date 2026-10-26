@@ -370,6 +370,7 @@ pub(crate) mod tests {
             bindings: Vec::new(),
             refs: Vec::new(),
             resolved_refs: Vec::new(),
+            resolved_decorators: vec![],
             line: 1,
             exit_line: 2,
             docstring: None,
@@ -642,6 +643,8 @@ pub(crate) mod tests {
             parent_class: None,
             bases: vec![],
             resolved_bases: vec![],
+            resolved_interfaces: vec![],
+            resolved_decorators: vec![],
             mro: vec![],
             mro_error: false,
             methods: vec![],
@@ -730,6 +733,7 @@ pub(crate) mod tests {
                 line: 1,
                 col: 0,
                 name_span: ByteSpan { start: 0, end: 5 },
+                args_span: None,
             },
         }];
         g.functions

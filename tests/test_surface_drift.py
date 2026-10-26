@@ -44,7 +44,8 @@ def test_smells_description_lists_every_rule():
 
 def test_edge_kinds_match_the_engine():
     lib = (ROOT / "core_indexer/src/lib.rs").read_text(encoding="utf-8")
-    kinds = set(re.search(r"ALL_EDGE_KINDS: \[&str; \d+\] = \[([^\]]+)\]", lib).group(1).replace('"', "").replace(" ", "").split(","))
+    kinds = set(re.search(r"ALL_EDGE_KINDS: \[&str; \d+\] = \[([^\]]+)\]", lib).group(1).replace('"', "").split(","))
+    kinds = {k.strip() for k in kinds if k.strip()}
     cli_help = CliRunner().invoke(main, ["traverse", "--help"]).output
     mcp_desc = _tools()["coderadar_traverse"].description
     for text in (cli_help, mcp_desc):

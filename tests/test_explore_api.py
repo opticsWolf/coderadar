@@ -1,14 +1,10 @@
-"""CodeGraph.explore() walks the call graph and reports real ids.
+"""CodeGraph.traverse() walks any edge kinds and reports real ids.
 
-This existed to be found: `explore()` read `e["target"]` and `e["source"]`
-off rows that `callees_of`/`callers_of` never produced — those return
-*entities*, keyed `id`/`name`/`kind`. So the method raised KeyError for any
-entity with edges, and looked fine only for entities with none. It also
-advertised `max_depth` while hardcoding one hop, and filtered `edge_kinds`
-against the entity kind ("function", "method"), so asking for "calls"
-returned nothing at all.
-
-Every assertion below is one of those four.
+The legacy `explore(start_id=...)` call-graph walk was removed in 0.13:
+it only followed call edges, reported `{entity_id, edge_kind, direction,
+depth}` rows, and filtered `edge_kinds` against entity kinds. What remains
+is the canonical `traverse(entity_id, direction, edge_kinds, max_depth)`
+returning whole entity rows keyed `id` plus `depth` and `edge_type`.
 """
 
 from __future__ import annotations
@@ -63,69 +59,11 @@ def _id(name: str) -> str:
 
 
 def _names(rows):
-    """Bare names of the reached entities.
-
-    explore() reports `entity_id`; traverse() returns whole entity rows
-    keyed `id`. Both are handled so the two walks can be asserted alike.
-    """
+    """Bare names of the reached entities (traverse rows keyed `id`)."""
     return {
         (row.get("entity_id") or row["id"]).rsplit("::", 1)[-1]
         for row in rows
     }
-
-
-@pytest.mark.filterwarnings("ignore::DeprecationWarning")
-class TestExplore:
-    """The deprecated call-graph walk (`start_id=`, in/out directions,
-    `max_depth`) keeps working until it is removed."""
-
-    def test_it_returns_rows_instead_of_raising(self, project):
-        with pytest.warns(DeprecationWarning):
-            rows = coderadar.CodeGraph().explore(start_id=_id("middle"), direction="both")
-
-        assert rows, "an entity with a caller and a callee explored to nothing"
-        for row in rows:
-            assert set(row) == {"entity_id", "edge_kind", "direction", "depth"}
-
-    def test_it_walks_out_to_the_requested_depth(self, project):
-        graph = coderadar.CodeGraph()
-
-        one = graph.explore(_id("top"), direction="out", max_depth=1)
-        two = graph.explore(_id("top"), direction="out", max_depth=2)
-
-        assert _names(one) == {"middle"}
-        assert _names(two) == {"middle", "leaf"}
-        assert {r["depth"] for r in two} == {1, 2}
-
-    def test_it_walks_in_as_well(self, project):
-        rows = coderadar.CodeGraph().explore(
-            _id("leaf"), direction="in", max_depth=2)
-
-        assert _names(rows) == {"middle", "top"}
-        assert all(r["direction"] == "in" for r in rows)
-
-    def test_the_start_is_never_reported_as_its_own_neighbour(self, project):
-        start = _id("middle")
-        rows = coderadar.CodeGraph().explore(start, direction="both", max_depth=3)
-
-        assert start not in {r["entity_id"] for r in rows}
-
-    def test_asking_for_calls_does_not_come_back_empty(self, project):
-        rows = coderadar.CodeGraph().explore(
-            _id("top"), direction="out", max_depth=1, edge_kinds=["calls"])
-
-        assert _names(rows) == {"middle"}
-        assert all(r["edge_kind"] == "calls" for r in rows)
-
-    def test_asking_for_a_kind_this_walk_cannot_follow_says_so(self, project):
-        # Better an honest empty than silently pretending imports were walked.
-        rows = coderadar.CodeGraph().explore(
-            _id("top"), direction="out", edge_kinds=["imports"])
-
-        assert rows == []
-
-    def test_zero_depth_goes_nowhere(self, project):
-        assert coderadar.CodeGraph().explore(_id("top"), max_depth=0) == []
 
 
 class TestTraverseDefaults:

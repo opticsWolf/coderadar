@@ -1,6 +1,6 @@
 # CodeRadar Architecture
 
-> **Living document.** Baseline: v0.12.0 (`dev_0.12`), `macrame-db` 0.19.1,
+> **Living document.** Baseline: v0.13.0 (`dev`), `macrame-db` 0.19.1,
 > store schema v22. Update with feature commits the way `CHANGELOG.md` is
 > updated — a section that describes behavior the code no longer has is a bug.
 > Design *history* (why things are the way they are) lives in the
@@ -36,8 +36,8 @@ Five ideas explain most of the design:
 
 ```
 ┌─ Surfaces ──────────────────────────────────────────────┐
-│  MCP server (26 coderadar_* tools)  ·  CLI (click)       │
-│  Python: CodeGraph facade  ·  skills/coderadar-{mcp,cli} │
+│  MCP server (27 coderadar_* tools)  ·  CLI (click)       │
+│  Python: CodeGraph facade  ·  coderadar/skills (bundled) │
 └───────────────────────┬─────────────────────────────────┘
                         │  one shared op layer
 ┌─ Python agent ────────▼─────────────────────────────────┐
@@ -101,7 +101,7 @@ CodeRadar/
     __init__.py                 # CodeGraph facade, Snapshot, errors
     ops.py                      # OPERATIONS: validated shared op layer
     cli.py                      # click CLI (graph ops + local-only cmds)
-    mcp/server.py               # 26 tools, thin over ops
+    mcp/server.py               # 27 tools, thin over ops
     coldstart.py                # ledger load + changed-files refresh
     config.py                   # .coderadar.toml (pydantic, §12)
     resolvers/ framework.py     # L2–L4 cascade + framework routes (DR-10)
@@ -113,8 +113,8 @@ CodeRadar/
     project_state.py            # cwd-rooted serving state, reindex-on-demand
     agent/graphrag.py           # named seam → P2 context work
     lsp/pool.py                 # named seam → L4 override (DR-2/DR-16)
-  skills/coderadar-{mcp,cli}/   # in-repo agent skill truth (P2)
-  tests/                        # 1078 Python tests + Rust 434 (lib + integ)
+    skills/coderadar-{mcp,cli}/  # bundled agent skill truth (P2, wheel)
+  tests/                        # 1109 Python tests + Rust 434 (lib + integ)
   docs/                         # live set only (see §15)
 ```
 
@@ -154,7 +154,7 @@ side never touches ledger handles.
   already-serving means cwd-rooted; `reindex` on demand; `ensure_ready`
   bounded wait with warming-vs-hung log signal. `Snapshot` objects serve
   history: `read_bytes` (exact bytes-at-T) vs `read_source` (display form).
-- **`ops`** — `OPERATIONS` (26 names) with validated arguments and the
+- **`ops`** — `OPERATIONS` (27 names) with validated arguments and the
   shared error taxonomy. One fix here reaches MCP + CLI + Python.
 - **`coldstart`** — `build_graph`: load the ledger, then refresh only
   changed files. Stale load + changed-files-only is the pinned discipline
@@ -162,15 +162,21 @@ side never touches ledger handles.
 - **`resolvers` + `framework`** — the L2–L4 cascade (imports → framework
   routes → signatures) over the Rust-resolved base. Routes are canonical
   `route` concepts with persisted route→handler edges (DR-10).
-- **`query/`** — client for the query language (`query-language.md`
-  is generated from the grammar; drift is a test failure).
+- **`query/`** — client for the query language (the bundled
+  `coderadar/docs/query-language.md` is generated from the grammar; drift is
+  a test failure. Read it with `coderadar docs query-language` or the MCP
+  resource `docs://query-language`).
 - **`embedding/`** — Phase 1 contract (DR-11): dedup key
   `{model}#pp{PREPROCESS_VERSION}#{xxh3}`, write/query dimension gates,
   embed-what = signature + docstring, `recompute` flag on every surface.
   Default model `BAAI/bge-small-en-v1.5`, dim 384, single process-wide
-  agreement. Persistence is 0.13.
-- **`mutation/`** — apply pipeline with post-write parse validation and
-  auto-diagnose (rollback needs its own design: BUGS_QUIRKS #1-half).
+  agreement, per-model tables (`embeddings_<model>`, DiskANN) + ledger
+  hashes + cold-start rehydrate + RRF hybrid, all landed on dev_0.13
+  (DR-11 slices 1–4).
+- **`mutation/`** — guarded disk attempts with post-write verification,
+  installed-only compensation, and facade-verified synchronization (public
+  `Applied`/`RolledBack`/`RejectedStale`/`RejectedPolicy`/
+  `ApplyIncomplete`/`RollbackIncomplete`; BUGS_QUIRKS #1, DR-35).
   `tool_router.py` is a named seam for P2 routing (DR-16).
 - **`render` / `visualizers`** — human and JSON output; diagrams fail loudly
   instead of drawing fiction (open-items §3.2 lineage).
@@ -178,7 +184,7 @@ side never touches ledger handles.
   cwd-rooted serving state.
 - **`agent/graphrag.py`, `lsp/pool.py`** — kept as named seams with wiring
   triggers in their headers (DR-16); neither is on any hot path.
-- **`mcp/server.py`** — 26 tools, thin over `ops`, plus server instructions
+- **`mcp/server.py`** — 27 tools, thin over `ops`, plus server instructions
   (language count, staleness guidance — README-tested).
 - **`cli.py`** — graph ops plus local-only commands (`init`, `visualize`,
   `shell`, `git`, `exclude`, `watch`, `load-snapshot`, `store-repair`,
@@ -193,16 +199,19 @@ side never touches ledger handles.
 (Django/Flask/FastAPI/Express/Rails route → handler), `type_alias`.
 Internal: `EmbeddingVec`, `ProjectedGraph`.
 
-**Edges** — nine kinds exist, four are asserted by the backfill:
+**Edges** — all nine kinds are populated (`contains` structurally, the other eight asserted):
 
 | Kind | Populated? | Notes |
 |---|---|---|
 | `contains` | yes (structural) | module → members |
 | `calls` | yes | asserted + external + unresolved + route shares (DR-32) |
 | `imports` | yes | incl. `FromImport` / `ModuleImport` / `StarImport` / `RelativeImport` |
-| `extends` | yes | `IMPLEMENTS` folded in (DR-24, open-items §2.6) |
+| `extends` | yes | classes only (since dev: interfaces split to IMPLEMENTS, §2.6) |
 | `overrides` | yes | |
-| `implements` `references` `decorates` `instantiates` | declared, unpopulated | open-items §2.6 |
+| `implements` | yes (dev) | partitioned by target declaration; TS/Java/C#/PHP |
+| `decorates` | yes (dev) | unique tier hits over classes+fns; builtins/ambiguous none |
+| `instantiates` | yes (dev) | Constructor targets; overlaps CALLS, does not partition |
+| `references` | yes (dev) | resolved_refs (callbacks/values); never CALLS — kind list complete |
 
 `graph_stats` breaks out asserted / external / unresolved / route shares —
 the outer number and the ledger rows disagree by category, never by loss
@@ -286,8 +295,8 @@ One store directory, four artifacts:
   ("stored graph"), missing table → `Engine(Misuse)` naming
   `concepts_fts` + `rebuild_fts`. 1s latency gate; single-digit ms live
   (DR-34).
-- **Vectors (Phase 1).** Keyed dedup, dim gates, exact-count enumeration,
-  zero storage over the FTS table. Persistence is 0.13 (DR-11).
+- **Vectors (Phase 1 → persisted dev_0.13).** Keyed dedup, dim gates, exact-count enumeration,
+  zero storage over the FTS table. Per-model tables + rehydrate + hybrid landed (DR-11).
 - **Macrame 0.19.1.** `hydrate_historical` + `AttributeMode::{Current,
   AtTime, Omit}` repaired the historical loader (upstream #3); production
   stays on the state fold by decision. `load_subgraph_with(traversal, ts,
@@ -314,22 +323,37 @@ taxonomy — each is a behavior contract, not a string:
 Release-gate proofs (§0.1(b), P2): `as_of` returns old/new names **and**
 bytes; 0 retirements on unchanged trees; blob bytes round-trip; parity
 across MCP/CLI/Python (8 tests); latency gates history-aware
-(1.5s + 20µs/log-row + 60s hang guard, DR-33).
+(1.5s + 20µs/log-row on a warmed second run, 60s hang guard, DR-33).
 
 ---
 
 ## 9. Mutations
 
-`plan_*` (pure, reviewable) → `apply_mutation` (guarded write):
+`plan_*` (pure, reviewable) → `apply_mutation` (guarded disk attempt) →
+facade-verified synchronization:
 
-- Write guard: backup → atomic write → post-parse → restore on failure.
-  The written file is validated to parse (BUGS_QUIRKS #1 root cause fixed);
-  auto-rollback on introduced errors needs its own apply-semantics design
-  (carried half).
+- Disk attempt: unique attempt id, full-file pre-hashes, verified backups,
+  late full-hash stale checks, per-file atomic temp+rename visibility, and
+  post-write tree-sitter verification. Compensation restores only files
+  this attempt installed, only while current bytes still match the installed
+  hash, through atomic restore plus read-back verification; backups survive
+  every incomplete recovery (DR-35).
+- Public statuses: `Applied` needs installed bytes, clean verification, and
+  synchronized graph/persistence/derived-data state; `RolledBack` needs
+  complete verified restoration plus restored-state sync (or zero installs);
+  stale/policy refusals stay distinct; incomplete verification or sync is
+  `ApplyIncomplete` or `RollbackIncomplete`, with named recovery actions
+  and retained recovery paths.
+- Synchronization is the facade's synchronous `update_file` pass over the
+  disk attempt's exact expected bytes (with the multi-file second pass for
+  cross-file convergence), not a watcher event. No mutation rows are added
+  to the Macrame ledger; a restored resync is a new old-bytes generation.
 - Byte-span verification: edits apply at tree-sitter spans, with
   first-line indent re-basing (`normalize_body_for_splice`).
-- `update_signature` warns `unverified_sites` — call-site cascade needs
-  arg-span indexing (§2.3).
+- `update_signature` rewrites the definition plus call sites with recorded
+  arg spans — explicit `call_site_values` verbatim, `inject_defaults`
+  synthesized for pure-addition Python signatures; anything else stays in
+  `unverified_sites` for review (§2.3 landed on dev_0.13).
 - Self-hosting: `[mutation] allow` is root-anchored and pinned, deny-wins,
   `default_dry_run = true` until the D18 fix (DR-27).
 
@@ -356,8 +380,8 @@ across MCP/CLI/Python (8 tests); latency gates history-aware
 
 ## 11. Surfaces & parity
 
-`ops.OPERATIONS` = 26 names. By group: **read** (explore, node, search,
-affected, resolve, query, search_similar, module_children, callers, callees,
+`ops.OPERATIONS` = 27 names. By group: **read** (explore, node, search,
+affected, resolve, query, search_similar, search_hybrid, module_children, callers, callees,
 diagnose, as_of, traverse); **analysis** (get_smells, dead_code, find_clones,
 find_scaffolding, compute_embeddings); **write** (replace_body,
 update_signature, rename, create_entity, reindex, update_file); **project**
@@ -368,8 +392,8 @@ By design, not by omission: `search_symbols` + `archive` are Python-API-only
 `load-snapshot`, `store-repair`, `--delete` are CLI-only (local-process
 concerns); `set_project` is `-C/--project` on the CLI with no Python form
 (it works on the cwd). Proven by `test_surface_parity.py` + `test_mcp.py` +
-`test_skill_drift.py` (skills are repo truth; old spellings warn until 0.13,
-DR-22).
+`test_skill_drift.py` (skills are package data, so the wheel ships what
+the tests read; CLI and Python deprecated spellings removed in 0.13, DR-22).
 
 ---
 
@@ -388,7 +412,7 @@ with documented pending consumers.
 
 ## 13. Quality gates & release policy
 
-- **Tests:** 1512 (434 Rust incl. 5 integration + 1078 Python). Gate bundle:
+- **Tests:** 1660 (503 Rust incl. 5 integration + 1157 Python, 1 skipped). Gate bundle:
   release-gate history, read-path discipline, call-edge accounting, snapshot
   honesty, surface parity, skill drift, Rust cross-module, blob reads +
   2 latency gates.
@@ -397,7 +421,7 @@ with documented pending consumers.
 - **Version policy (DR-26, process-open):** `pyproject.toml` + workspace
   `Cargo.toml` together, +0.0.1 per implemented feature, one bump commit
   named in the feature's DR row. Spec/test/verification-only and dep
-  patches: no bump. Minor cut accumulates (0.12.0).
+  patches: no bump. Minor cut accumulates (0.13.0).
 - **Register currency is a release-gate input:** DR rows update the same
   session as the code.
 
@@ -421,9 +445,11 @@ ledger change (reverse-BFS over reconstructed state is available).
   `thoughts/coderadar-v0.12-impl/` (per-landing reasoning). GPU-indexed
   (`cuda`, fp16); register rows update same-session.
 - **This directory holds the live set only** (`v0.12-architecture-implementation.md` =
-  architecture baseline + plan + deviations diary, store-and-retention
-  + query-language (generated) + smell reference + open-items + BUGS_QUIRKS +
-  CHANGELOG). Removed content lives in OKFgraph — never deleted, only moved.
+  architecture baseline + plan + deviations diary, store-and-retention +
+  smell reference + open-items + BUGS_QUIRKS + CHANGELOG). The generated
+  query-language reference ships inside the package
+  (`py_agent/src/coderadar/docs/`, `coderadar docs query-language`). Removed
+  content lives in OKFgraph — never deleted, only moved.
 - **`v0.12-architecture-implementation.md` Part III** is the step-4 surface verdict and the
   implementation diary: one name/behavior per op, CLI-only/API-only calls.
 - **Release process:** feature → bump → register → thought → dogfood
@@ -434,7 +460,7 @@ ledger change (reverse-BFS over reconstructed state is available).
 ## 16. Decision index
 
 Full rationale per row lives in the register (`coderadar-decision-register`
-in kb.db). Statuses at v0.12.0:
+in kb.db). Statuses at v0.13.0:
 
 | ID | Decision | Status |
 |---|---|---|
@@ -448,7 +474,7 @@ in kb.db). Statuses at v0.12.0:
 | DR-8 | Two-pass → single-pass extraction | closed |
 | DR-9 | Snapshot honesty: fold-at-T + `bfs_over_state` + raisers; §3.3 NO-GO | closed |
 | DR-10 | Framework routes as canonical concepts | closed (v0.11.9) |
-| DR-11 | Embeddings Phase 1 (keyed, gated); persistence → 0.13 | closed/carried |
+| DR-11 | Embeddings Phase 1 (keyed, gated); persistence landed dev_0.13 (slices 1–4) | closed |
 | DR-12 | Clone determinism (canonical order) | closed (v0.11.6) |
 | DR-13 | Rust cross-module resolution | closed (v0.11.15) |
 | DR-14 | Same-language smallest-id suffix winner | closed (v0.11.2) |
@@ -459,9 +485,9 @@ in kb.db). Statuses at v0.12.0:
 | DR-19 | Canonical ids + store migration | closed |
 | DR-20 | fossil-mcp detector port (TED, tiers) | closed |
 | DR-21 | Precision over coverage (v0.10) | closed |
-| DR-22 | Deprecations live until 0.13 | carried |
+| DR-22 | Deprecations removed in 0.13 (CLI `6d88cb4`, Python `aa90f92`) | closed |
 | DR-23 | TS throughput gap accepted | carried |
-| DR-24 | IMPLEMENTS folded into extends | carried |
+| DR-24 | IMPLEMENTS folded into extends — unfolded on dev (§2.6 slice A) | closed |
 | DR-25 | Source history in blobs (§0.6/§1.9/§3.0/§3.4) | closed |
 | DR-26 | Version policy +0.0.1/feature | open (process) |
 | DR-27 | Self-host allow-list, deny-wins, dry-run | closed |
@@ -472,16 +498,27 @@ in kb.db). Statuses at v0.12.0:
 | DR-32 | Call-edge accounting (category error) | closed (v0.11.13) |
 | DR-33 | History-aware load gate | re-baselined |
 | DR-34 | FTS5 keyword search | closed (v0.11.10) |
+| DR-35 | Guarded mutation compensation + explicit sync outcomes (BUGS_QUIRKS #1) | closed (dev; implemented `4d5cb1c`, bumped `8fa427b`) |
 
 ---
 
 ## 17. Open items & non-goals
 
-Live list: `open-items.md` (all §1 + §2.1 + §3.1 resolved in v0.12;
-§2.3 arg-spans, §2.5 path maps, §2.6 edge kinds, §2.8 TS throughput, §2.9
-SQLite internals still deferred; §2.2/§2.7 decided). Bugs/quirks:
+Live list: `open-items.md` (§2.3 landed on dev_0.13 — extraction, ledger
+`call_sites`, cascade edits, inject synthesis; §2.10 landed on dev_0.13 —
+model tables, rehydrate, hybrid RRF; §2.6 slice A landed on dev —
+IMPLEMENTS split from EXTENDS (TS/Java/C#/PHP), traverse both directions;
+all §1 + §2.1 + §3.1 resolved
+in v0.12; §2.4 landed on dev — field-type-aware CBO (cyclomatic already
+AST-based); §2.5 path maps, §2.6 done on dev (all 8 assertable kinds;
+detection gaps closed: Go/Kotlin/Protocol/Swift interfaces,
+Java annotations descended + `@interface` tagged, C# attributes;
+remaining micro-gaps: Go struct embedding, PHP attributes),
+§2.8 TS throughput, §2.9 SQLite internals still
+deferred; §2.2/§2.7 decided). Bugs/quirks:
 `CODERADAR_BUGS_QUIRKS.md` (9 fixed, #10 harness-side carried,
-#1 rollback half needs apply-semantics design).
+#1 apply-semantics implemented on dev: guarded compensation + explicit
+synchronization outcomes, DR-35).
 
 ---
 

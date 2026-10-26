@@ -67,6 +67,26 @@ impl CodeGraph {
 
     /// C3 linearization: L[C] = C + merge(L[B1],...,L[Bn], [B1,...,Bn])
     fn compute_c3_mro(&self, projection: &ProjectedGraph, class_id: &str) -> Vec<MroNode> {
+        let mut visiting = Vec::new();
+        self.compute_c3_mro_guarded(projection, class_id, &mut visiting)
+    }
+
+    /// `compute_c3_mro` with a visiting set: inheritance cycles (a class
+    /// listed — directly or transitively — as its own base, via a type
+    /// argument, a same-name shadow, or genuinely cyclic source) stop
+    /// here instead of recursing forever (§2.8 torture.kt: Windows stack
+    /// overflow aborting `analyze`). The class still lands in its own
+    /// MRO; the cyclic link is simply not unfolded.
+    fn compute_c3_mro_guarded(
+        &self,
+        projection: &ProjectedGraph,
+        class_id: &str,
+        visiting: &mut Vec<String>,
+    ) -> Vec<MroNode> {
+        if visiting.iter().any(|v| v == class_id) {
+            return vec![MroNode::Class(class_id.to_string())];
+        }
+        visiting.push(class_id.to_string());
         let class = match projection.classes.get(class_id) {
             Some(c) => c.clone(),
             None => return vec![MroNode::Class(class_id.to_string())],
@@ -87,7 +107,7 @@ impl CodeGraph {
             .map(|base| {
                 let resolved = Self::resolve_base_by_name(projection, &base.name, &parent_module);
                 match resolved {
-                    Some(id) => self.compute_c3_mro(projection, &id),
+                    Some(id) => self.compute_c3_mro_guarded(projection, &id, visiting),
                     None => vec![MroNode::External {
                         name: base.name.clone(),
                     }],
@@ -110,6 +130,7 @@ impl CodeGraph {
         let merged = c3_merge(merge_lists);
         let mut result = vec![MroNode::Class(class_id.to_string())];
         result.extend(merged);
+        visiting.pop();
         result
     }
 
@@ -151,7 +172,7 @@ impl CodeGraph {
     /// All candidate classes for a base name, in resolution priority order.
     /// `resolve_base_by_name` and the ambiguity findings (2.1b) both read
     /// this; the latter needs the full candidate set, not just the winner.
-    pub(super) fn base_candidates(
+    pub(crate) fn base_candidates(
         projection: &ProjectedGraph,
         base_name: &str,
         current_module: &str,
@@ -198,14 +219,44 @@ impl CodeGraph {
         base_name: &str,
         current_module: &str,
     ) -> Option<String> {
-        let module = projection.modules.get(current_module)?;
+        let targets = Self::import_target_modules(projection, base_name, current_module);
+        for target in &targets {
+            let mut found: Option<String> = None;
+            for (id, c) in &projection.classes {
+                if c.name == base_name && &c.parent_module == target {
+                    if found.is_some() {
+                        return None;
+                    } // 2+ in target → ambiguous
+                    found = Some(id.clone());
+                }
+            }
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
+    }
+
+    /// The modules an imported symbol comes from (§2.6 slice C reuse).
+    ///
+    /// Shared tier-2 lookup: the caller's module imports `name` (named
+    /// from-imports only — module/star/side imports do not name a specific
+    /// symbol, so they can't disambiguate). Returns every resolution target
+    /// in import order; callers try each in turn, exactly as the original
+    /// single-kind tier did.
+    pub(crate) fn import_target_modules(
+        projection: &ProjectedGraph,
+        name: &str,
+        current_module: &str,
+    ) -> Vec<EntityId> {
+        let mut targets = Vec::new();
+        let Some(module) = projection.modules.get(current_module) else {
+            return targets;
+        };
         for imp_id in &module.imports {
-            let imp = match projection.imports.get(imp_id) {
-                Some(i) => i,
-                None => continue,
+            let Some(imp) = projection.imports.get(imp_id) else {
+                continue;
             };
-            // Named imports carry the symbol we can match; module/star/side
-            // imports do not name a specific class, so they can't disambiguate.
             let names: Vec<&str> = match &imp.kind {
                 crate::types::ImportKind::FromImport { names, .. }
                 | crate::types::ImportKind::RelativeImport { names, .. } => {
@@ -213,24 +264,13 @@ impl CodeGraph {
                 }
                 _ => Vec::new(),
             };
-            if !names.contains(&base_name) {
+            if !names.contains(&name) {
                 continue;
             }
             if let crate::types::ImportResolution::Module(target) = &imp.resolution {
-                let mut found: Option<String> = None;
-                for (id, c) in &projection.classes {
-                    if c.name == base_name && &c.parent_module == target {
-                        if found.is_some() {
-                            return None;
-                        } // 2+ in target → ambiguous
-                        found = Some(id.clone());
-                    }
-                }
-                if found.is_some() {
-                    return found;
-                }
+                targets.push(target.clone());
             }
         }
-        None
+        targets
     }
 }

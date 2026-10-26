@@ -687,7 +687,7 @@ def query_usage() -> str:
             "  - functions where name starts_with 'test_'\n"
             "  - imports where import_kind == 'from'\n"
             "Entities: modules, classes, functions, methods, constants, entities, "
-            "imports, calls, fields. Full field reference: docs/query-language.md")
+            "imports, calls, fields. Full field reference: coderadar docs query-language")
 
 
 def query(query: str, rows: list[dict], limit: int | None = 30) -> str:
@@ -728,6 +728,23 @@ def search_similar(query: str, results: list[dict]) -> str:
         doc = r.get("docstring")
         if doc:
             lines.append(f"   {doc[:120]}{'...' if len(doc) > 120 else ''}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def search_hybrid(query: str, results: list[dict]) -> str:
+    if not results:
+        return f"No hybrid results found for '{query}'."
+    lines = [f"## Hybrid Search: `{query}`", f"Found {len(results)} result(s)", ""]
+    for i, r in enumerate(results, 1):
+        arms = []
+        if r.get("vector_rank") is not None:
+            arms.append(f"vector #{r['vector_rank']}")
+        if r.get("keyword_rank") is not None:
+            arms.append(f"keyword #{r['keyword_rank']}")
+        lines.append(f"{i}. `{r.get('name', r.get('id', '?'))}` ({r.get('kind', '?')}) — "
+                     f"RRF {r.get('score', 0.0):.4f} ({', '.join(arms) or 'no arm'})")
+        lines.append(f"   File: `{r.get('file_path', '?')}`")
         lines.append("")
     return "\n".join(lines)
 
@@ -894,51 +911,143 @@ def mutation_plan(plan: Any) -> str:
     return "\n".join(lines)
 
 
+def _result_field(result: Any, name: str, default: Any = None) -> Any:
+    if isinstance(result, dict):
+        return result.get(name, default)
+    return getattr(result, name, default)
+
+
+def _format_mutation_failure(failure: Any) -> str | None:
+    if failure is None:
+        return None
+    stage = _result_field(failure, "stage", "?")
+    code = _result_field(failure, "code", "?")
+    message = _result_field(failure, "message", "")
+    return f"{stage}/{code} — {message}"
+
+
 def mutation_applied(result: Any, unverified_sites: list | None = None) -> str:
     """A MutationResult — truthfully, whatever the outcome.
 
     BUGS_QUIRKS #2: this used to print "## Mutation Applied" and "Graph has
     been updated" even for rejections, while a separate status line said
     RejectedPolicy and the file was untouched. The header, the state claims,
-    and the status now derive from one source: result.status.
+    the failure, the per-file outcomes, the sync summary, and the status now
+    derive from one source. "Graph updated: yes" appears only when the
+    result itself proves required synchronization completed.
     """
-    status = str(getattr(result, "status", ""))
-    files_written = list(getattr(result, "files_written", []) or [])
+    status = str(_result_field(result, "status", ""))
+    files_written = list(_result_field(result, "files_written", []) or [])
+    syntax_errors = list(_result_field(result, "syntax_errors", []) or [])
+    file_outcomes = list(_result_field(result, "files", []) or [])
+    sync = _result_field(result, "sync", None)
+    sync_state = _result_field(sync, "state", None) if sync is not None else None
     applied = status == "Applied"
+    # A bare status without a sync object predates the sync contract. Do not
+    # downgrade legacy Applied renderings; any new result carries its sync.
+    graph_updated = applied and (sync is None or sync_state == "Synchronized")
 
     header = {
         "Applied": "## Mutation Applied",
         "RolledBack": "## Mutation Rolled Back",
         "RejectedStale": "## Mutation Rejected — Stale",
         "RejectedPolicy": "## Mutation Rejected — Policy",
+        "ApplyIncomplete": "## Mutation Incomplete — Graph Sync Failed",
+        "RollbackIncomplete": "## Mutation Incomplete — Rollback Incomplete",
     }.get(status, f"## Mutation Result — {status or 'Unknown'}")
 
     lines = [header, ""]
     lines.append(f"- **Status:** {status}")
     lines.append(f"- **File written:** {'yes' if files_written else 'no'}")
-    lines.append(
-        f"- **Graph updated:** {'yes' if applied else 'no — nothing changed'}"
-    )
+    if graph_updated:
+        lines.append("- **Graph updated:** yes")
+    elif applied or status in ("ApplyIncomplete", "RollbackIncomplete"):
+        lines.append("- **Graph updated:** no — synchronization did not complete")
+    else:
+        lines.append("- **Graph updated:** no — nothing changed")
     if files_written:
         lines.append(f"- **Files written:** {len(files_written)}")
         for f in files_written:
             lines.append(f"  - `{f}`")
-    if result.syntax_errors:
-        lines.append(f"- **Syntax errors:** {len(result.syntax_errors)}")
-        for e in result.syntax_errors[:5]:
+    failure_text = _format_mutation_failure(_result_field(result, "failure", None))
+    if failure_text is None:
+        failure_text = _format_mutation_failure(_result_field(result, "primary", None))
+    if failure_text:
+        lines.append(f"- **Failure:** {failure_text}")
+    if file_outcomes:
+        lines.append(f"- **File outcomes:** {len(file_outcomes)}")
+        for entry in file_outcomes:
+            state = _result_field(entry, "state", "?")
+            name = _result_field(entry, "file", "?")
+            detail = _format_mutation_failure(_result_field(entry, "error", None))
+            recovery = _result_field(entry, "recovery_path", None)
+            text = f"  - `{name}` — {state}"
+            if detail:
+                text += f" ({detail})"
+            if recovery:
+                text += f" [recovery: `{recovery}`]"
+            lines.append(text)
+    if sync is not None and sync_state is not None:
+        lines.append(f"- **Sync:** {sync_state}")
+        for error in list(_result_field(sync, "errors", []) or [])[:5]:
+            if isinstance(error, dict):
+                lines.append(
+                    f"  - `{error.get('file', '?')}` — "
+                    f"{error.get('stage', '?')}/{error.get('code', '?')} — "
+                    f"{error.get('message', '')}"
+                )
+            else:
+                lines.append(f"  - {error}")
+        for warning in list(_result_field(sync, "warnings", []) or [])[:5]:
+            if isinstance(warning, dict):
+                lines.append(
+                    f"  - warning `{warning.get('file', '?')}` — "
+                    f"{warning.get('stage', '?')}/{warning.get('code', '?')} — "
+                    f"{warning.get('message', '')}"
+                )
+            else:
+                lines.append(f"  - warning: {warning}")
+    if syntax_errors:
+        lines.append(f"- **Syntax errors:** {len(syntax_errors)}")
+        for e in syntax_errors[:5]:
             if isinstance(e, dict):
                 where = f"{e.get('file', '?')}:{e.get('line', 0)}:{e.get('column', 0)}"
                 lines.append(f"  - `{where}` — {e.get('message', '')}")
             else:
                 lines.append(f"  - {e}")
-    if getattr(result, "backup_path", None):
-        lines.append(f"- **Backup:** `{result.backup_path}`")
+    recovery_paths: list[str] = []
+    for entry in file_outcomes:
+        recovery = _result_field(entry, "recovery_path", None)
+        if recovery and recovery not in recovery_paths:
+            recovery_paths.append(str(recovery))
+    backup_path = _result_field(result, "backup_path", None)
+    if backup_path and backup_path not in recovery_paths:
+        recovery_paths.append(str(backup_path))
+    if backup_path:
+        lines.append(f"- **Backup:** `{backup_path}`")
+    if recovery_paths and status in ("ApplyIncomplete", "RollbackIncomplete"):
+        lines.append(f"- **Recovery paths:** {len(recovery_paths)}")
+        for recovery in recovery_paths:
+            lines.append(f"  - `{recovery}`")
     if not applied:
         lines.append("")
         if status == "RejectedStale":
             lines.append(
                 "The file changed since planning — call the plan tool again to "
                 "re-read the current content, then apply the fresh plan."
+            )
+        elif status == "ApplyIncomplete":
+            lines.append(
+                "The valid source was left in place, but graph or persistence "
+                "synchronization did not complete. Repair the named sync problem "
+                "with `coderadar_update_file`/`coderadar_reindex`; do not blindly "
+                "apply the old plan."
+            )
+        elif status == "RollbackIncomplete":
+            lines.append(
+                "Compensation or restored-state synchronization could not be proven "
+                "complete. Stop automatic retries, inspect the per-file states and "
+                "retained recovery paths above, recover manually, then resync."
             )
         else:
             lines.append("No changes were kept. Address the reason above and re-plan.")

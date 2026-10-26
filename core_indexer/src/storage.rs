@@ -114,6 +114,49 @@ fn runtime() -> &'static Runtime {
     &RUNTIME
 }
 
+/// Normalize a Python-side embedding model id to a macrame [`ModelName`]
+/// (DR-11 slice 2).
+///
+/// fastembed ids (`BAAI/bge-small-en-v1.5`) are not bare identifiers and
+/// SQLite cannot bind a table name, so the mapping is total and pinned:
+/// lowercase, every non-`[a-z0-9]` char becomes `_`, then `ModelName`
+/// enforces leading-letter + ≤48 chars. Distinct raw ids CAN collide
+/// (`a-b` vs `a/b` → `a_b`); a same-dimension collision would share a
+/// table, which is why every persist/rehydrate answer reports the derived
+/// table name. The error carries the RAW id (what was configured), not
+/// the normalized form.
+pub fn macrame_model_name(raw: &str) -> macrame::Result<macrame::vector::ModelName> {
+    let normalized: String = raw
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    macrame::vector::ModelName::new(&normalized)
+        .map_err(|_| macrame::DbError::InvalidModelName(raw.to_string()))
+}
+
+/// What one persist run wrote (DR-11 slice 2). `healed` marks the
+/// count-gate path: no new vectors this run, but the table disagreed with
+/// memory (crash between memory commit and table write, or staged vectors
+/// that never persisted), so the whole memory set was rewritten.
+#[derive(Debug)]
+pub struct PersistReport {
+    pub model_table: String,
+    pub dimension: usize,
+    pub persisted: usize,
+    pub healed: bool,
+}
+
+/// What one model-table read returned (DR-11 slice 3).
+/// `dimension` is the table's declared width; 0 with no rows means the
+/// table is absent (fresh store), not that the model is zero-width.
+#[derive(Debug)]
+pub struct ModelVectors {
+    pub model_table: String,
+    pub dimension: usize,
+    pub rows: Vec<(String, Vec<f32>)>,
+}
+
 impl CodeGraphStore {
     /// Open or create a Macrame database at `path`.
     pub fn open(path: impl AsRef<Path>) -> macrame::Result<Self> {
@@ -436,6 +479,440 @@ impl CodeGraphStore {
                     return Err(Self::missing_fts_err("sqlite_master lists no concepts_fts"));
                 }
                 macrame::vector::keyword_search(&conn, &matched, top_k, None, None).await
+            })
+        })();
+        // Whatever layer notices the missing table (our pre-check, the
+        // MATCH itself, or open-time schema verification), the answer names
+        // the repair, never a bare table name or a silent empty.
+        res.map_err(|e| {
+            if format!("{e:?}").contains("concepts_fts") {
+                Self::missing_fts_err(&format!("{e:?}"))
+            } else {
+                e
+            }
+        })
+    }
+
+    /// Persist embedding vectors to the ledger's per-model table (DR-11
+    /// slice 2). `rows` are `(id, hash)` pairs for vectors written to
+    /// memory this run — the vectors themselves are read from `projection`
+    /// (they already live there; passing them back across FFI would copy
+    /// megabytes pointlessly). A listed id with no in-memory vector is an
+    /// honest error, never a silent skip.
+    ///
+    /// Empty `rows` + matching table count = no-op. Empty `rows` +
+    /// missing/divergent table = heal (rewrite the whole memory set): the
+    /// crash window between memory commit and table write cannot be atomic
+    /// across two systems, so it is healable instead — and a full regen
+    /// with matching counts that somehow skipped persist is repaired by
+    /// `compute_embeddings(recompute=True)`, stated here rather than
+    /// discovered. No memory rows at all = nothing registered (tables are
+    /// never created empty).
+    ///
+    /// Stale-row note: rows are upserted, never deleted — macrame has no
+    /// vector delete. Edits clear memory + ledger hash immediately and the
+    /// next compute regenerates and overwrites; deletions retire the
+    /// concept, which the ANN/hybrid arm filters. Between edit and
+    /// recompute the table serves last-computed vectors.
+    pub fn persist_projection_embeddings(
+        &self,
+        model_raw: &str,
+        projection: &ProjectedGraph,
+        rows: &[(String, String)],
+    ) -> macrame::Result<PersistReport> {
+        let model = macrame_model_name(model_raw)?;
+        // (id, f32 vector, dedup hash): the hash rides along so the
+        // ledger flush below can record provenance without re-reading it.
+        let mut memory: Vec<(String, Vec<f32>, String)> = Vec::new();
+        {
+            let mut collect = |id: &String, emb: &EmbeddingVec| {
+                if !emb.vec.is_empty() {
+                    memory.push((
+                        id.clone(),
+                        emb.vec.iter().map(|x| *x as f32).collect(),
+                        emb.hash.clone(),
+                    ));
+                }
+            };
+            for (id, e) in &projection.functions {
+                collect(id, &e.embedding);
+            }
+            for (id, e) in &projection.classes {
+                collect(id, &e.embedding);
+            }
+            for (id, e) in &projection.modules {
+                collect(id, &e.embedding);
+            }
+            for (id, e) in &projection.imports {
+                collect(id, &e.embedding);
+            }
+            for (id, e) in &projection.constants {
+                collect(id, &e.embedding);
+            }
+            for (id, e) in &projection.type_aliases {
+                collect(id, &e.embedding);
+            }
+        }
+        let uniform_dim = |vs: &[(String, Vec<f32>, String)]| -> macrame::Result<usize> {
+            let mut dim = 0usize;
+            for (id, v, _) in vs {
+                if dim == 0 {
+                    dim = v.len();
+                } else if v.len() != dim {
+                    return Err(macrame::DbError::DimMismatch {
+                        got: v.len(),
+                        expected: dim,
+                        model: model.to_string(),
+                    });
+                }
+                let _ = id;
+            }
+            Ok(dim)
+        };
+        let write_all = |vs: &[(String, Vec<f32>, String)]| -> macrame::Result<usize> {
+            let dim = uniform_dim(vs)?;
+            if dim == 0 {
+                return Ok(0);
+            }
+            runtime().block_on(self.db.register_model(&model, dim))?;
+            let plain: Vec<(String, Vec<f32>)> = vs
+                .iter()
+                .map(|(id, v, _)| (id.clone(), v.clone()))
+                .collect();
+            runtime()
+                .block_on(self.db.upsert_embeddings(&model, plain))
+                .map_err(|e| {
+                    // BulkInterrupted carries the written count; the cause is
+                    // what the caller answers. A foreign-key failure means
+                    // vectors for concepts the ledger never recorded — name
+                    // the repair (flush v2 concepts first), never bare 787.
+                    let cause = e.cause;
+                    if format!("{cause:?}").contains("FOREIGN KEY") {
+                        macrame::DbError::InvalidId {
+                            id: model.table(),
+                            reason: "persist found vectors for concepts the ledger never \
+                                     recorded — flush v2 concepts (analyze/update_file) \
+                                     before persisting embeddings"
+                                .to_string(),
+                        }
+                    } else {
+                        cause
+                    }
+                })
+        };
+        if !rows.is_empty() {
+            let mut fresh: Vec<(String, Vec<f32>, String)> = Vec::with_capacity(rows.len());
+            for (id, hash) in rows {
+                match memory.iter().find(|(mid, _, _)| mid == id) {
+                    Some((_, v, _)) => fresh.push((id.clone(), v.clone(), hash.clone())),
+                    None => {
+                        return Err(macrame::DbError::InvalidId {
+                            id: id.clone(),
+                            reason: "persist lists an id with no in-memory vector \
+                                     (cleared between set and persist?)"
+                                .to_string(),
+                        });
+                    }
+                }
+            }
+            let dim = uniform_dim(&fresh)?;
+            let persisted = write_all(&fresh)?;
+            // The S1 contract: compute never touches files, so without this
+            // flush a restart loses hashes (the ledger keeps the last
+            // flushed generation) and warm dedup regenerates everything
+            // the table already holds. Fail-open with a diagnostic:
+            // vectors are durable already, and the next persist heals.
+            if let Err(e) = self.flush_embedding_hashes(
+                &fresh
+                    .iter()
+                    .map(|(id, _, h)| (id.clone(), h.clone()))
+                    .collect::<Vec<_>>(),
+            ) {
+                eprintln!("[diag] embedding hash flush failed: {e:?}");
+            }
+            return Ok(PersistReport {
+                model_table: model.table(),
+                dimension: dim,
+                persisted,
+                healed: false,
+            });
+        }
+        // No fresh rows: verify the table agrees with memory, heal if not.
+        if memory.is_empty() {
+            return Ok(PersistReport {
+                model_table: model.table(),
+                dimension: 0,
+                persisted: 0,
+                healed: false,
+            });
+        }
+        let dim = uniform_dim(&memory)?;
+        // Scoped: the diagnostic lock is process-wide and non-reentrant —
+        // it must drop before the heal write below re-enters the store
+        // through flush_embedding_hashes (same-thread relock deadlocks).
+        let table_count: i64 = {
+            let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+            let table_exists: bool = {
+                let mut rows = runtime()
+                    .block_on(conn.query(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
+                        vec![libsql::Value::Text(model.table())],
+                    ))
+                    .map_err(macrame::DbError::Engine)?;
+                runtime()
+                    .block_on(rows.next())
+                    .map_err(macrame::DbError::Engine)?
+                    .is_some()
+            };
+            if table_exists {
+                let mut rows = runtime()
+                    .block_on(conn.query(
+                        &format!("SELECT COUNT(*) FROM {}", model.table()),
+                        Vec::<libsql::Value>::new(),
+                    ))
+                    .map_err(macrame::DbError::Engine)?;
+                match runtime()
+                    .block_on(rows.next())
+                    .map_err(macrame::DbError::Engine)?
+                {
+                    Some(row) => row.get::<i64>(0).map_err(macrame::DbError::Engine)?,
+                    None => 0,
+                }
+            } else {
+                0
+            }
+        };
+        if table_count == memory.len() as i64 {
+            return Ok(PersistReport {
+                model_table: model.table(),
+                dimension: dim,
+                persisted: 0,
+                healed: false,
+            });
+        }
+        let persisted = write_all(&memory)?;
+        // Heal rewrites vectors; the ledger hashes come along for the same
+        // S1 reason as the fresh path above.
+        if let Err(e) = self.flush_embedding_hashes(
+            &memory
+                .iter()
+                .map(|(id, _, h)| (id.clone(), h.clone()))
+                .collect::<Vec<_>>(),
+        ) {
+            eprintln!("[diag] embedding hash flush failed: {e:?}");
+        }
+        Ok(PersistReport {
+            model_table: model.table(),
+            dimension: dim,
+            persisted,
+            healed: true,
+        })
+    }
+
+    /// Read a model's whole vector table back (DR-11 slice 3). Missing
+    /// table = honest empty (fresh store), never an error — the caller
+    /// decides what absence means. A non-blob cell or undecodable bytes
+    /// fail loudly naming the table: silent skips here become phantom
+    /// search misses downstream.
+    pub fn read_model_vectors(&self, model_raw: &str) -> macrame::Result<ModelVectors> {
+        let model = macrame_model_name(model_raw)?;
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        let (dim, rows) = runtime().block_on(async {
+            let mut probe = conn
+                .query(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?1",
+                    vec![libsql::Value::Text(model.table())],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            if probe
+                .next()
+                .await
+                .map_err(macrame::DbError::Engine)?
+                .is_none()
+            {
+                return Ok::<_, macrame::DbError>((0usize, Vec::new()));
+            }
+            let dim = macrame::vector::declared_dimension(&conn, &model).await?;
+            let mut q = conn
+                .query(
+                    &format!("SELECT concept_id, embedding FROM {}", model.table()),
+                    Vec::<libsql::Value>::new(),
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut rows: Vec<(String, Vec<f32>)> = Vec::new();
+            while let Some(row) = q.next().await.map_err(macrame::DbError::Engine)? {
+                let id: String = row.get(0).map_err(macrame::DbError::Engine)?;
+                let cell: libsql::Value = row.get(1).map_err(macrame::DbError::Engine)?;
+                let bytes = match cell {
+                    libsql::Value::Blob(b) => b,
+                    other => {
+                        return Err(macrame::DbError::InvalidId {
+                            id: model.table(),
+                            reason: format!("embedding cell for {id} is not a blob ({other:?})"),
+                        });
+                    }
+                };
+                let vec = macrame::vector::EmbeddingCodec::decode(&bytes).map_err(|e| {
+                    macrame::DbError::InvalidId {
+                        id: model.table(),
+                        reason: format!("cannot decode embedding for {id}: {e:?}"),
+                    }
+                })?;
+                rows.push((id, vec));
+            }
+            Ok::<_, macrame::DbError>((dim, rows))
+        })?;
+        Ok(ModelVectors {
+            model_table: model.table(),
+            dimension: dim,
+            rows,
+        })
+    }
+
+    /// Tables registered for one embedding width (DR-11 epilogue).
+    ///
+    /// `search_similar` must name its vector arm without Python passing a
+    /// model: tables whose declared dimension matches the query width are
+    /// candidates. Returns inner normalized model names, feedable back
+    /// into `read_model_vectors` (normalization is idempotent). A store
+    /// with no embedding tables yields empty, never an error — the caller
+    /// falls back to the legacy memory scan.
+    pub fn model_tables_at_dim(&self, dim: usize) -> macrame::Result<Vec<String>> {
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut q = conn
+                .query(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'embeddings\\_%' ESCAPE '\\'",
+                    Vec::<libsql::Value>::new(),
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut hits = Vec::new();
+            while let Some(row) = q.next().await.map_err(macrame::DbError::Engine)? {
+                let table: String = row.get(0).map_err(macrame::DbError::Engine)?;
+                let inner = table
+                    .strip_prefix("embeddings_")
+                    .unwrap_or(&table)
+                    .to_string();
+                let model = macrame_model_name(&inner)?;
+                if macrame::vector::declared_dimension(&conn, &model).await? == dim {
+                    hits.push(inner);
+                }
+            }
+            Ok(hits)
+        })
+    }
+
+    /// Write `embedding_hash` into stored concept JSON for `(id, hash)`
+    /// pairs (DR-11 slice 3). Read-modify-write preserving title and
+    /// retired: only the `embedding_hash` key changes. `extra` is
+    /// recomputed for non-modules (its content-hash mirror would go stale)
+    /// and preserved for modules (it carries the source-blob digest, which
+    /// cannot be recomputed here). Unconditional write — it bypasses
+    /// `filter_unchanged`, which is blind to this key on source-hashed
+    /// kinds — so callers must bound the set (fresh or heal set only).
+    /// Already-correct rows are skipped; returns concepts written.
+    fn flush_embedding_hashes(&self, pairs: &[(String, String)]) -> macrame::Result<usize> {
+        if pairs.is_empty() {
+            return Ok(0);
+        }
+        let ids: Vec<String> = pairs.iter().map(|(id, _)| id.clone()).collect();
+        let current = self.fetch_current_states(&ids)?;
+        let hashes: std::collections::HashMap<&str, &str> = pairs
+            .iter()
+            .map(|(id, h)| (id.as_str(), h.as_str()))
+            .collect();
+        let now = now_iso8601();
+        let mut concepts = Vec::new();
+        for (id, (title, content, extra, retired)) in &current {
+            let Some(hash) = hashes.get(id.as_str()) else {
+                continue;
+            };
+            let mut v: serde_json::Value = match serde_json::from_str(content) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[diag] embedding hash flush skips {id}: content is not JSON ({e})");
+                    continue;
+                }
+            };
+            if v.get("embedding_hash").and_then(|h| h.as_str()) == Some(hash) {
+                continue;
+            }
+            v["embedding_hash"] = serde_json::json!(hash);
+            let is_module = v.get("kind").and_then(|k| k.as_str()) == Some("module");
+            let new_extra = if is_module {
+                extra.clone()
+            } else {
+                coderadar_extra(&v, None).to_string()
+            };
+            concepts.push(
+                macrame::ConceptUpsert::new(id.clone(), title.clone())
+                    .content(v.to_string())
+                    .extra(new_extra)
+                    .valid_from(now.clone())
+                    .valid_to(TS_OPEN.to_string())
+                    .retired(*retired),
+            );
+        }
+        if concepts.is_empty() {
+            return Ok(0);
+        }
+        Ok(runtime().block_on(self.db.write_concepts(concepts))?)
+    }
+
+    /// Hybrid keyword+vector search (DR-11 slice 4 / §2.10): RRF fusion
+    /// (`RRF_K=60`, depth `max(5×top_k,50)`) of the FTS5 keyword arm and
+    /// the DiskANN vector arm over one model's table. `top_k` clamps to
+    /// [1, 50]; empty text AND empty vector short-circuit to `[]`.
+    /// Escaped-by-default like `search_symbols`. A query vector is
+    /// required — hybrid without the vector arm is just `search_symbols`.
+    /// Unregistered model / missing FTS are honest errors naming the
+    /// repair (`compute_embeddings` / `rebuild_fts`), never silent empties.
+    pub fn search_hybrid(
+        &self,
+        model_raw: &str,
+        query_text: &str,
+        query_vec: &[f64],
+        top_k: usize,
+    ) -> macrame::Result<Vec<macrame::vector::HybridHit>> {
+        let model = macrame_model_name(model_raw)?;
+        let top_k = top_k.clamp(1, 50);
+        if query_text.trim().is_empty() && query_vec.is_empty() {
+            return Ok(Vec::new());
+        }
+        if query_vec.is_empty() {
+            return Err(macrame::DbError::InvalidId {
+                id: model.table(),
+                reason: "search_hybrid needs a query vector — hybrid without the \
+                         vector arm is search_symbols"
+                    .to_string(),
+            });
+        }
+        let vec_f32: Vec<f32> = query_vec.iter().map(|x| *x as f32).collect();
+        let res = (|| -> macrame::Result<Vec<macrame::vector::HybridHit>> {
+            let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+            runtime().block_on(async {
+                let mut probe = conn
+                    .query(
+                        "SELECT name FROM sqlite_master WHERE name='concepts_fts'",
+                        Vec::<libsql::Value>::new(),
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                if probe
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .is_none()
+                {
+                    return Err(Self::missing_fts_err("sqlite_master lists no concepts_fts"));
+                }
+                macrame::vector::HybridSearch::new(model, query_text.trim(), vec_f32)
+                    .top_k(top_k)
+                    .execute(&conn)
+                    .await
             })
         })();
         // Whatever layer notices the missing table (our pre-check, the
@@ -949,14 +1426,23 @@ impl CodeGraphStore {
     /// Synthetic-kind rows are NOT touched — the register path owns them.
     ///
     /// `keep` holds the fresh projection's (source, target, kind) triples
-    /// for the four structural kinds, with CALLS pairs minus
+    /// for the five structural kinds, with CALLS pairs minus
     /// `synthetic_edges` (built by `stale_edge_keep_set` in lib.rs).
     /// Returns the number of edges retired.
     pub fn retire_stale_edges(
         &self,
         keep: &std::collections::HashSet<(String, String, String)>,
     ) -> macrame::Result<usize> {
-        const STRUCTURAL: [&str; 4] = ["CALLS", "IMPORTS", "EXTENDS", "OVERRIDES"];
+        const STRUCTURAL: [&str; 8] = [
+            "CALLS",
+            "IMPORTS",
+            "EXTENDS",
+            "IMPLEMENTS",
+            "DECORATES",
+            "INSTANTIATES",
+            "REFERENCES",
+            "OVERRIDES",
+        ];
         let ts = now_iso8601();
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         let stale: Vec<(String, String, String, String)> = runtime().block_on(async {
@@ -1542,6 +2028,10 @@ fn module_content(m: &Module) -> serde_json::Value {
     if !m.attr_reads.is_empty() {
         v["attr_reads"] = serde_json::json!(&m.attr_reads);
     }
+    // DR-11: the dedup key rides the ledger (vectors persist separately).
+    if !m.embedding.hash.is_empty() {
+        v["embedding_hash"] = serde_json::json!(&m.embedding.hash);
+    }
     v
 }
 
@@ -1568,6 +2058,10 @@ fn class_content(c: &Class) -> serde_json::Value {
     v["name_span"] = serde_json::json!(&c.name_span);
     v["body_span"] = serde_json::json!(&c.body_span);
     v["decorators_span"] = serde_json::json!(&c.decorators_span);
+    // DR-11: the dedup key rides the ledger (vectors persist separately).
+    if !c.embedding.hash.is_empty() {
+        v["embedding_hash"] = serde_json::json!(&c.embedding.hash);
+    }
     v
 }
 
@@ -1603,9 +2097,35 @@ fn function_content(f: &Function) -> serde_json::Value {
     // Post-resolution state: the ONLY call data the ledger keeps. Cold
     // start rebuilds the call indices from this (see cold_start).
     v["resolved_calls"] = serde_json::json!(&f.resolved_calls);
+    // §2.3 step 2: raw call sites ride alongside, parallel to
+    // `resolved_calls` (same order). Cold start rehydrates `Function.calls`
+    // from this so arg spans survive reload (unlike `call_evidence`).
+    // Omitted when empty to keep the ledger small; missing key reads back
+    // as empty (pre-§2.3 stores degrade to the unverified fallback).
+    if !f.calls.is_empty() {
+        let sites: Vec<CallSiteSpan> = f
+            .calls
+            .iter()
+            .map(|c| CallSiteSpan {
+                name: c.name.clone(),
+                path: c.path.clone(),
+                line: c.line,
+                col: c.col,
+                name_span: c.name_span,
+                args_span: c.args_span,
+            })
+            .collect();
+        v["call_sites"] = serde_json::json!(&sites);
+    }
     // Callback and template-method liveness, kept for the same reason.
     if !f.resolved_refs.is_empty() {
         v["resolved_refs"] = serde_json::json!(&f.resolved_refs);
+    }
+    // DR-11: the dedup key rides the ledger (vectors persist separately).
+    // Cold start restores it so warm dedup skips without vectors loaded.
+    // Omitted when empty; missing key reads back as empty.
+    if !f.embedding.hash.is_empty() {
+        v["embedding_hash"] = serde_json::json!(&f.embedding.hash);
     }
     v
 }
@@ -1629,6 +2149,13 @@ fn import_content(i: &Import) -> serde_json::Value {
     v["is_type_only"] = serde_json::json!(&i.is_type_only);
     v["name_span"] = serde_json::json!(&i.name_span);
     v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
+    // DR-11: the dedup key rides the ledger (vectors persist separately).
+    // AFTER the gate hash: the gate covers source facts, and the hash is
+    // derived state flushed by its own path — so a hash-only difference
+    // never rewrites, and a hash-less fresh walk never wipes a stored hash.
+    if !i.embedding.hash.is_empty() {
+        v["embedding_hash"] = serde_json::json!(&i.embedding.hash);
+    }
     v
 }
 
@@ -1641,6 +2168,11 @@ fn constant_content(c: &Constant) -> serde_json::Value {
     v["span"] = serde_json::json!(&c.span);
     v["name_span"] = serde_json::json!(&c.name_span);
     v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
+    // DR-11: the dedup key rides the ledger — after the gate hash, as
+    // above: derived state must not move the source-facts gate.
+    if !c.embedding.hash.is_empty() {
+        v["embedding_hash"] = serde_json::json!(&c.embedding.hash);
+    }
     v
 }
 
@@ -1652,6 +2184,11 @@ fn type_alias_content(t: &TypeAlias) -> serde_json::Value {
     v["span"] = serde_json::json!(&t.span);
     v["name_span"] = serde_json::json!(&t.name_span);
     v[annotation::CONTENT_HASH] = serde_json::json!(json_content_hash(&v));
+    // DR-11: the dedup key rides the ledger — after the gate hash, as
+    // above: derived state must not move the source-facts gate.
+    if !t.embedding.hash.is_empty() {
+        v["embedding_hash"] = serde_json::json!(&t.embedding.hash);
+    }
     v
 }
 
@@ -1907,7 +2444,10 @@ fn parse_v2_module(id: &str, v: &serde_json::Value) -> std::result::Result<Modul
         parse_quality: ParseQuality::from_json(&parse_quality).map_err(|e| v2_err(id, &e))?,
         file_version: v.get("file_version").and_then(|x| x.as_u64()).unwrap_or(1),
         content_hash: hex_u64(v, "content_hash", id)?,
-        embedding: EmbeddingVec::default(),
+        embedding: EmbeddingVec {
+            vec: Vec::new(),
+            hash: opt_str(v, "embedding_hash").unwrap_or_default(),
+        },
     })
 }
 
@@ -1927,6 +2467,8 @@ fn parse_v2_class(id: &str, v: &serde_json::Value) -> std::result::Result<Class,
         bases: deser_or_default(v, "bases"),
         // Cascade-rebuilt, never persisted:
         resolved_bases: vec![],
+        resolved_interfaces: vec![],
+        resolved_decorators: vec![],
         mro: vec![],
         mro_error: false,
         methods: vec![],
@@ -1945,7 +2487,10 @@ fn parse_v2_class(id: &str, v: &serde_json::Value) -> std::result::Result<Class,
         name_span: span_of(v, "name_span"),
         body_span: span_of(v, "body_span"),
         decorators_span: span_opt_of(v, "decorators_span"),
-        embedding: EmbeddingVec::default(),
+        embedding: EmbeddingVec {
+            vec: Vec::new(),
+            hash: opt_str(v, "embedding_hash").unwrap_or_default(),
+        },
     })
 }
 
@@ -1961,15 +2506,27 @@ fn parse_v2_function(id: &str, v: &serde_json::Value) -> std::result::Result<Fun
         parent_class: opt_str(v, "parent_class"),
         parameters: deser_or_default(v, "parameters"),
         return_type: opt_str(v, "return_type"),
-        // Raw per-call-site refs are deliberately NOT persisted (design);
-        // cold start skips resolve_all_calls.
-        calls: vec![],
+        // §2.3 step 2: raw call sites now ride the ledger as `call_sites`
+        // (parallel to `resolved_calls`). Missing key = pre-§2.3 store →
+        // empty, preserving the old unverified-fallback behavior.
+        calls: deser_or_default::<Vec<CallSiteSpan>>(v, "call_sites")
+            .into_iter()
+            .map(|s| UnresolvedRef {
+                name: s.name,
+                path: s.path,
+                line: s.line,
+                col: s.col,
+                name_span: s.name_span,
+                args_span: s.args_span,
+            })
+            .collect(),
         resolved_calls: deser_or_default(v, "resolved_calls"),
         decorators: str_list(v, "decorators"),
         setter_of: None,
         bindings: Vec::new(),
         refs: Vec::new(),
         resolved_refs: str_list(v, "resolved_refs"),
+        resolved_decorators: vec![],
         line: req_u64(v, "line", id)? as usize,
         exit_line: req_u64(v, "exit_line", id)? as usize,
         docstring: opt_str(v, "docstring"),
@@ -1988,7 +2545,10 @@ fn parse_v2_function(id: &str, v: &serde_json::Value) -> std::result::Result<Fun
         params_span: span_of(v, "params_span"),
         body_span: span_of(v, "body_span"),
         decorators_span: span_opt_of(v, "decorators_span"),
-        embedding: EmbeddingVec::default(),
+        embedding: EmbeddingVec {
+            vec: Vec::new(),
+            hash: opt_str(v, "embedding_hash").unwrap_or_default(),
+        },
     })
 }
 
@@ -2006,7 +2566,10 @@ fn parse_v2_import(id: &str, v: &serde_json::Value) -> std::result::Result<Impor
         line: req_u64(v, "line", id)? as usize,
         is_type_only: req_bool(v, "is_type_only"),
         name_span: span_of(v, "name_span"),
-        embedding: EmbeddingVec::default(),
+        embedding: EmbeddingVec {
+            vec: Vec::new(),
+            hash: opt_str(v, "embedding_hash").unwrap_or_default(),
+        },
     })
 }
 
@@ -2019,7 +2582,10 @@ fn parse_v2_constant(id: &str, v: &serde_json::Value) -> std::result::Result<Con
         default_value: opt_str(v, "default_value"),
         span: span_of(v, "span"),
         name_span: span_of(v, "name_span"),
-        embedding: EmbeddingVec::default(),
+        embedding: EmbeddingVec {
+            vec: Vec::new(),
+            hash: opt_str(v, "embedding_hash").unwrap_or_default(),
+        },
     })
 }
 
@@ -2031,7 +2597,10 @@ fn parse_v2_type_alias(id: &str, v: &serde_json::Value) -> std::result::Result<T
         source: source_of(v, id)?,
         span: span_of(v, "span"),
         name_span: span_of(v, "name_span"),
-        embedding: EmbeddingVec::default(),
+        embedding: EmbeddingVec {
+            vec: Vec::new(),
+            hash: opt_str(v, "embedding_hash").unwrap_or_default(),
+        },
     })
 }
 
@@ -2143,8 +2712,11 @@ mod concept_v2_tests {
                 line: 2,
                 col: 0,
                 name_span: Default::default(),
+                args_span: None,
             }],
             resolved_bases: vec![],
+            resolved_interfaces: vec![],
+            resolved_decorators: vec![],
             mro: vec![],
             mro_error: false,
             methods: vec![],
@@ -2213,6 +2785,7 @@ mod concept_v2_tests {
                         line: 5,
                         col: 8,
                         name_span: Default::default(),
+                        args_span: None,
                     },
                 },
             ],
@@ -2221,6 +2794,7 @@ mod concept_v2_tests {
             bindings: Vec::new(),
             refs: Vec::new(),
             resolved_refs: Vec::new(),
+            resolved_decorators: vec![],
             line: 12,
             exit_line: 20,
             docstring: Some("H.".into()),
@@ -2379,7 +2953,7 @@ mod concept_v2_tests {
                 assert_eq!(got.return_type, f.return_type);
                 assert_eq!(got.kind, f.kind);
                 assert_eq!(got.resolved_calls, f.resolved_calls);
-                assert!(got.calls.is_empty(), "raw call sites are not persisted");
+                assert_eq!(got.calls, f.calls, "raw call sites now persist (§2.3)");
                 assert_eq!(got.resolved_refs, f.resolved_refs);
                 assert_eq!(got.is_async, f.is_async);
                 assert_eq!(got.is_generator, f.is_generator);
@@ -2394,6 +2968,71 @@ mod concept_v2_tests {
                 assert_eq!(got.body_span, f.body_span);
                 assert_eq!(got.decorators_span, f.decorators_span);
             }
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    /// §2.3 step 2: arg spans survive the ledger round-trip, and a
+    /// pre-§2.3 concept without `call_sites` still parses to empty calls.
+    #[test]
+    fn call_sites_roundtrip_preserves_arg_spans() {
+        let mut f = sample_function();
+        f.calls = vec![UnresolvedRef {
+            name: "greet".into(),
+            path: vec![],
+            line: 3,
+            col: 11,
+            name_span: ByteSpan { start: 20, end: 25 },
+            args_span: Some(ByteSpan { start: 25, end: 33 }),
+        }];
+        let json = function_content(&f).to_string();
+        assert!(json.contains("call_sites"), "non-empty calls persist");
+        match parse_v2_concept(&f.id, &json).unwrap() {
+            V2Entity::Function(got) => {
+                assert_eq!(got.calls, f.calls);
+                assert_eq!(
+                    got.calls[0].args_span,
+                    Some(ByteSpan { start: 25, end: 33 })
+                );
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+        // Missing key (pre-§2.3 store) → empty, never an error.
+        let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        v.as_object_mut().unwrap().remove("call_sites");
+        match parse_v2_concept(&f.id, &v.to_string()).unwrap() {
+            V2Entity::Function(got) => assert!(got.calls.is_empty()),
+            other => panic!("expected Function, got {other:?}"),
+        }
+    }
+
+    /// DR-11 slice 1: the dedup key rides the ledger; vectors do not.
+    /// Missing key (pre-DR-11 store) reads back as empty.
+    #[test]
+    fn embedding_hash_roundtrips_without_vectors() {
+        let mut f = sample_function();
+        f.embedding.hash = "bge#pp1#abc123".to_string();
+        f.embedding.vec = vec![0.1, 0.2];
+        let json = function_content(&f).to_string();
+        assert!(
+            !json.contains("\"vec\""),
+            "vectors must not ride the ledger"
+        );
+        match parse_v2_concept(&f.id, &json).unwrap() {
+            V2Entity::Function(got) => {
+                assert_eq!(got.embedding.hash, "bge#pp1#abc123");
+                assert!(
+                    got.embedding.vec.is_empty(),
+                    "vectors rehydrate from the model table, not the ledger"
+                );
+            }
+            other => panic!("expected Function, got {other:?}"),
+        }
+        // Untouched fixture: no key written, empty back.
+        let plain = function_content(&sample_function()).to_string();
+        assert!(!plain.contains("embedding_hash"));
+        match parse_v2_concept(&sample_function().id, &plain).unwrap() {
+            V2Entity::Function(got) => assert!(got.embedding.hash.is_empty()),
             other => panic!("expected Function, got {other:?}"),
         }
     }
@@ -2542,6 +3181,63 @@ pub fn edge_properties_json(props: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DR-11 slice 3: persist flushes hashes into concept JSON, because
+    /// compute never touches files and the ledger would otherwise keep
+    /// the last flushed (hash-less) generation.
+    #[test]
+    fn persist_flushes_embedding_hashes_to_concepts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("h.db")).unwrap();
+        let graph = crate::graph::CodeGraph::new(crate::graph::GraphConfig::default());
+        graph
+            .index_file(
+                "def add(a, b):\n    return a + b\n",
+                "math.py",
+                &crate::types::Language::Python,
+            )
+            .unwrap();
+        graph
+            .set_embeddings_bulk(vec![(
+                "math.py::add".into(),
+                vec![0.5; 4],
+                "m#pp1#x".into(),
+            )])
+            .unwrap();
+        // Concept row must exist first (FK), with hash-less content.
+        let now = now_iso8601();
+        store
+            .upsert_concepts_bulk(&[ConceptUpsert::new("math.py::add", "math.py::add")
+                .content("{\"kind\":\"function\",\"name\":\"add\",\"content_hash\":\"abc\"}")
+                .valid_from(now)
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)])
+            .unwrap();
+        let before = store
+            .fetch_current_states(&["math.py::add".to_string()])
+            .unwrap();
+        assert!(!before["math.py::add"].1.contains("embedding_hash"));
+        // Persist writes vectors AND flushes the hash into the concept.
+        let snap = graph.snapshot();
+        let report = store
+            .persist_projection_embeddings(
+                "BAAI/bge-small-en-v1.5",
+                &snap,
+                &[("math.py::add".to_string(), "m#pp1#x".to_string())],
+            )
+            .unwrap();
+        assert_eq!(report.persisted, 1);
+        let after = store
+            .fetch_current_states(&["math.py::add".to_string()])
+            .unwrap();
+        let content = &after["math.py::add"].1;
+        assert!(
+            content.contains("\"embedding_hash\":\"m#pp1#x\""),
+            "{content}"
+        );
+        // The gate annotation is untouched: the hash is derived state.
+        assert!(content.contains("\"content_hash\":\"abc\""), "{content}");
+    }
 
     // Regression: the "now" pitfall. macrame-db 0.12's
     // `timestamp::normalize` (src/util/timestamp.rs) accepts ONLY the

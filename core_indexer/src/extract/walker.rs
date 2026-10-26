@@ -33,6 +33,46 @@ pub fn classify_class_like(node: Node) -> &'static str {
     "class"
 }
 
+/// Interface test at extraction: true when `node` (a class-like the
+/// tagger captured as `@class.def`) declares an interface rather than a
+/// class. Covers what `Class::is_interface` cannot see from the raw
+/// `interface_declaration` kind alone (§2.6 detection gaps):
+///   Go `type I interface { ... }` — a `type_spec` whose type is
+///     `interface_type` (struct types and aliases return false);
+///   Kotlin `interface Foo` — a `class_declaration` with the `interface`
+///     keyword child (`class`/`object` return false);
+///   Python `class P(Protocol)` / `class P(typing.Protocol)` — the
+///     `Protocol` base (a local non-typing namesake would also match;
+///     same-name shadowing is accepted, as with stdlib base skipping).
+/// `emit_class` records a hit as a `/interface`-suffixed `grammar_kind`,
+/// which round-trips through concept JSON, so cold-start re-partitioning
+/// sees it. Go struct embedding (`struct { I }`) is deliberately out:
+/// anonymous fields are promotion, not inheritance.
+pub fn class_declares_interface(node: Node, bases: &[crate::types::UnresolvedRef]) -> bool {
+    let mut cursor = node.walk();
+    let kids: Vec<Node> = node.children(&mut cursor).collect();
+    match node.kind() {
+        // Go: `type I interface { ... }` — a `type_spec` whose type is
+        // `interface_type` (struct types and aliases return false).
+        "type_declaration" => kids.iter().any(|c| {
+            if c.kind() != "type_spec" {
+                return false;
+            }
+            let mut inner = c.walk();
+            let grand: Vec<Node> = c.children(&mut inner).collect();
+            grand.iter().any(|t| t.kind() == "interface_type")
+        }),
+        // Kotlin: `interface Foo` — the `interface` keyword child
+        // (`class` / `object` return false).
+        "class_declaration" => kids.iter().any(|c| c.kind() == "interface"),
+        // Python: `class P(Protocol)` / `class P(typing.Protocol)`.
+        "class_definition" => bases
+            .iter()
+            .any(|b| b.name == "Protocol" || b.name.ends_with(".Protocol")),
+        _ => false,
+    }
+}
+
 /// Parse an `import_statement` node: `import os`, `import os.path as p`
 /// Parse an `import_statement` node. Handles bare `import foo` /
 /// `import foo as bar` plus the TS/JS forms `import { ... } from '...'`,
@@ -628,6 +668,14 @@ pub fn extract_function_name(node: Node, source: &str) -> String {
 
 /// Extract base classes from a class node's superclass/heritage fields.
 pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
+    /// Type-argument wrappers are never descended into: `Comparable<SubK>`
+    /// contributes `Comparable`, never the argument `SubK`. Collecting the
+    /// argument would list the class itself as its own base and send MRO
+    /// into infinite recursion (§2.8 torture.kt). Covers Kotlin/Java/TS
+    /// `type_arguments` and C# `type_argument_list`.
+    fn descendable(k: &tree_sitter::Node) -> bool {
+        !matches!(k.kind(), "type_arguments" | "type_argument_list")
+    }
     fn is_base_node_kind(k: &str) -> bool {
         matches!(
             k,
@@ -644,18 +692,41 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
     //   Python:  class_definition → `superclasses:` → argument_list of identifiers
     //   TS/JS:   class_declaration → class_heritage → `extends_clause value:`
     //            + `implements_clause` (comma-separated children)
-    //   Java/Kt: `superclass:` field directly on the class node
+    //   Java/Kt: `superclass:` field directly on the class node;
+    //            Java `implements` lives in `super_interfaces:` (§2.6)
+    //   C#:      class_declaration → `base_list` (mixed classes+interfaces,
+    //            split later by target declaration — §2.6)
     // So walk the node's descendants and pull base nodes from every source.
     let mut base_nodes: Vec<Node> = Vec::new();
     let mut dfs: Vec<Node> = vec![node];
     while let Some(n) = dfs.pop() {
-        // (a) Direct base fields — Python `superclasses`, Java/Kotlin `superclass`.
-        let fields: [Option<Node>; 3] = [
+        // (a) Direct base fields — Python `superclasses`, Java/Kotlin
+        // `superclass`, Java `super_interfaces` (§2.6).
+        let fields: [Option<Node>; 4] = [
             n.child_by_field_name("superclasses"),
             n.child_by_field_name("superclass"),
+            n.child_by_field_name("super_interfaces"),
             n.child_by_field_name("bases"),
         ];
         for f in fields.into_iter().flatten() {
+            // Java `super_interfaces` wraps its types in a `type_list`,
+            // so no direct child is a base node — descend for that field
+            // only. (Descending generally would swallow keyword call
+            // args like `metaclass=M` as bases.)
+            if f.kind() == "super_interfaces" {
+                let mut stack = vec![f];
+                while let Some(x) = stack.pop() {
+                    let mut c = x.walk();
+                    for k in x.children(&mut c) {
+                        if is_base_node_kind(k.kind()) {
+                            base_nodes.push(k);
+                        } else if descendable(&k) {
+                            stack.push(k);
+                        }
+                    }
+                }
+                continue;
+            }
             let mut c = f.walk();
             let kids: Vec<Node> = f.children(&mut c).collect();
             let base_kids: Vec<Node> = kids
@@ -676,9 +747,73 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
                     base_nodes.push(v);
                 }
             }
-            "implements_clause" => {
+            "implements_clause" | "class_interface_clause" => {
+                // TS `implements X, Y` / PHP `implements X` — comma-
+                // separated children, `name` in PHP (§2.6).
                 let mut c = n.walk();
                 base_nodes.extend(n.children(&mut c).filter(|k| is_base_node_kind(k.kind())));
+            }
+            // (b2) Java `super_interfaces` — same shape as C# base lists
+            // (wrapper + type children); the child carries no field name
+            // in language-pack's grammar, so match by kind (§2.6).
+            "super_interfaces" => {
+                let mut stack = vec![n];
+                while let Some(x) = stack.pop() {
+                    let mut c = x.walk();
+                    for k in x.children(&mut c) {
+                        if is_base_node_kind(k.kind()) {
+                            base_nodes.push(k);
+                        } else if descendable(&k) {
+                            stack.push(k);
+                        }
+                    }
+                }
+            }
+            // (c) C# mixed base lists — `class C : Base, IDisposable`.
+            // Collected unfolded; resolve_class_hierarchy splits classes
+            // (EXTENDS) from interfaces (IMPLEMENTS) by target kind (§2.6).
+            // Kotlin `delegation_specifier` (`class Bar : Foo`, `Foo()`)
+            // has the same unfold shape (§2.6 gap fix).
+            "base_list" | "delegation_specifier" => {
+                let mut stack = vec![n];
+                while let Some(x) = stack.pop() {
+                    let mut c = x.walk();
+                    for k in x.children(&mut c) {
+                        if is_base_node_kind(k.kind()) {
+                            base_nodes.push(k);
+                        } else if descendable(&k) {
+                            stack.push(k);
+                        }
+                    }
+                }
+            }
+            // (d) Go embedded interfaces — `type J interface { I; M() }`:
+            // the embedded `I` sits in a `type_elem` wrapper (qualified
+            // `pkg.I`, unions, and `~T` terms unfold the same way), while
+            // method signatures nest inside `method_elem`. Seed the stack
+            // with every direct child EXCEPT `method_elem`, then unfold —
+            // parameter types never leak into bases. Go struct embedding
+            // (`struct{ I }`) stays out: anonymous fields are promotion,
+            // not inheritance.
+            "interface_type" => {
+                let mut c = n.walk();
+                let mut stack: Vec<Node> = n
+                    .children(&mut c)
+                    .filter(|k| k.kind() != "method_elem")
+                    .collect();
+                while let Some(x) = stack.pop() {
+                    if is_base_node_kind(x.kind()) {
+                        base_nodes.push(x);
+                        continue;
+                    }
+                    if !descendable(&x) {
+                        continue;
+                    }
+                    let mut c = x.walk();
+                    for k in x.children(&mut c) {
+                        stack.push(k);
+                    }
+                }
             }
             _ => {}
         }
@@ -710,6 +845,7 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
                 line: id.start_position().row + 1,
                 col: id.start_position().column,
                 name_span: node_span(id),
+                args_span: None,
             })
         })
         .collect()
@@ -785,6 +921,27 @@ pub(crate) fn node_span(node: Node) -> ByteSpan {
     }
 }
 
+/// Byte range of a call node's argument list, for `UnresolvedRef::args_span`
+/// (§2.3). Tries field names across grammars (`arguments`, `argument_list`,
+/// `args`), then falls back to the first child whose kind mentions argument.
+/// Returns `None` when the call has no argument node (e.g. a bare receiver
+/// with no parens recorded) — callers store `None`, never an empty span.
+pub fn call_args_span(node: Node) -> Option<ByteSpan> {
+    for field in ["arguments", "argument_list", "args"] {
+        if let Some(n) = node.child_by_field_name(field) {
+            return Some(node_span(n));
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        let k = child.kind();
+        if k.contains("argument") || k == "args" || k == "actual_parameters" {
+            return Some(node_span(child));
+        }
+    }
+    None
+}
+
 pub(crate) fn receiver_segments(node: Option<Node>, source: &str) -> Vec<String> {
     let Some(n) = node else { return vec![] };
     let text = |x: Node| x.utf8_text(source.as_bytes()).unwrap_or("").to_string();
@@ -850,6 +1007,7 @@ pub fn emit_call_for_node(
             line,
             col: col as usize,
             name_span: name_node.map(node_span).unwrap_or_default(),
+            args_span: call_args_span(node),
         });
         return;
     }
@@ -876,6 +1034,7 @@ pub fn emit_call_for_node(
                     line,
                     col: col as usize,
                     name_span: node_span(n),
+                    args_span: call_args_span(node),
                 });
             }
         }
@@ -893,6 +1052,7 @@ pub fn emit_call_for_node(
                         line,
                         col: col as usize,
                         name_span: node_span(n),
+                        args_span: call_args_span(node),
                     });
                 }
             }
@@ -967,6 +1127,7 @@ pub fn emit_call_for_node(
                     line,
                     col: col as usize,
                     name_span: method_node.map(node_span).unwrap_or_default(),
+                    args_span: call_args_span(node),
                 });
             }
         }
@@ -986,6 +1147,7 @@ pub fn emit_call_for_node(
                                 line,
                                 col: col as usize,
                                 name_span: node_span(parent),
+                                args_span: call_args_span(node),
                             });
                         }
                     }
@@ -1069,13 +1231,23 @@ pub fn extract_decorators(node: Node, source: &str) -> Vec<String> {
     fn collect(parent: Node, source: &str, out: &mut Vec<String>) {
         let mut cursor = parent.walk();
         for child in parent.children(&mut cursor) {
-            // `decorator` (Python) and `attribute_item` (Rust `#[...]`,
-            // e.g. `#[pyfunction]` — the FFI bridge dead-code analysis
-            // must see it).
-            if child.kind() == "decorator" || child.kind() == "attribute_item" {
-                if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                    out.push(text.trim().to_string());
+            match child.kind() {
+                // Python `@x`, Rust `#[...]`, TS `@Injectable`, Java
+                // `@Override` / `@SuppressWarnings(..)`, C# `[Test]`
+                // (inner `attribute` node text).
+                "decorator" | "attribute_item" | "marker_annotation" | "annotation"
+                | "attribute" => {
+                    if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                        out.push(text.trim().to_string());
+                    }
                 }
+                // Java/Kotlin `modifiers` wrap annotations next to
+                // keywords (`public`, `static` — ignored by the match);
+                // C# `attribute_list` wraps `[..]` attributes. Neither
+                // wrapper can contain a nested declaration, so one-level
+                // recursion cannot misattribute another item's decorator.
+                "modifiers" | "attribute_list" => collect(child, source, out),
+                _ => {}
             }
         }
     }
@@ -1340,15 +1512,18 @@ mod decorator_capture_tests {
     use super::*;
 
     fn decorators_of(src: &str) -> Vec<String> {
-        let lang = crate::graph::CodeGraph::ts_language(&crate::types::Language::Rust)
-            .expect("rust grammar");
+        decorators_of_kind(src, crate::types::Language::Rust, "function_item")
+    }
+
+    fn decorators_of_kind(src: &str, lang: crate::types::Language, kind: &str) -> Vec<String> {
+        let ts = crate::graph::CodeGraph::ts_language(&lang).expect("grammar");
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&lang).unwrap();
+        parser.set_language(&ts).unwrap();
         let tree = parser.parse(src, None).unwrap();
         let root = tree.root_node();
         let mut stack = vec![root];
         while let Some(n) = stack.pop() {
-            if n.kind() == "function_item" {
+            if n.kind() == kind {
                 return extract_decorators(n, src);
             }
             let mut cursor = n.walk();
@@ -1356,7 +1531,7 @@ mod decorator_capture_tests {
                 stack.push(child);
             }
         }
-        panic!("no function_item in {src:?}");
+        panic!("no {kind} in {src:?}");
     }
 
     #[test]
@@ -1386,6 +1561,51 @@ mod decorator_capture_tests {
         );
         // Bare fn: nothing, and importantly no panic.
         assert!(decorators_of("fn f() {}\n").is_empty());
+    }
+
+    #[test]
+    fn java_annotations_are_captured() {
+        // §2.6 gap: Java annotations hide under `modifiers` — marker,
+        // valued, and method-level forms.
+        use crate::types::Language::Java;
+        assert_eq!(
+            decorators_of_kind("@Deprecated public class C {}\n", Java, "class_declaration"),
+            vec!["@Deprecated"]
+        );
+        assert_eq!(
+            decorators_of_kind(
+                "public class C { @SuppressWarnings(\"all\") public void m() {} }\n",
+                Java,
+                "method_declaration"
+            ),
+            vec!["@SuppressWarnings(\"all\")"]
+        );
+        assert_eq!(
+            decorators_of_kind(
+                "@Route(\"/x\") public class C {}\n",
+                Java,
+                "class_declaration"
+            ),
+            vec!["@Route(\"/x\")"]
+        );
+    }
+
+    #[test]
+    fn csharp_attributes_are_captured() {
+        // §2.6 gap (drive-by): C# attributes live in `attribute_list`.
+        use crate::types::Language::CSharp;
+        assert_eq!(
+            decorators_of_kind("[MyAttr] public class C {}\n", CSharp, "class_declaration"),
+            vec!["MyAttr"]
+        );
+        assert_eq!(
+            decorators_of_kind(
+                "public class C { [Test] public void M() {} }\n",
+                CSharp,
+                "method_declaration"
+            ),
+            vec!["Test"]
+        );
     }
 }
 

@@ -1,8 +1,9 @@
 # CodeRadar Quick Reference
 
-> v0.12.0 · Full design: `ARCHITECTURE.md` · Agent skills:
-> `../skills/coderadar-{mcp,cli}/SKILL.md` (repo truth) · Query language:
-> `query-language.md` (generated — read it, don't guess fields).
+> v0.13.0 · Full design: `ARCHITECTURE.md` · Agent skills:
+> `coderadar/skills/coderadar-{mcp,cli}/SKILL.md` (bundled; install with
+> `coderadar skills install`) · Query language:
+> `coderadar docs query-language` (generated — read it, don't guess fields).
 
 ## Setup
 
@@ -12,6 +13,7 @@ uv run maturin develop       # rebuild coderadar._core after Rust changes
 coderadar init               # write starter .coderadar.toml
 coderadar reindex            # index / refresh (incremental by default)
 coderadar status             # graph + store health
+coderadar skills install     # copy bundled skills into agent dirs
 ```
 
 Multi-project: **one server + `coderadar_set_project`** (or `coderadar -C DIR …`).
@@ -36,8 +38,7 @@ Never run two servers on one store — the second gets `DB_LOCKED`.
 | Refresh one file | `coderadar update-file F` | `coderadar_update_file` | `g.update_file("…")` |
 
 Mutations are **dry-run unless applied**; the written file must parse or the
-run fails loudly. Old spellings (`analyze`, `explore(start_id=…)`) warn and
-die in 0.13.
+run fails loudly. Old CLI and Python spellings were removed in 0.13.
 
 ## Query language (essentials)
 
@@ -80,10 +81,10 @@ default_dry_run = true
 | `… concepts_fts … rebuild_fts` | FTS table missing/tampered → `store-repair`, then reindex |
 | `TemporalUnsupported` on callers-at-T | decided NO-GO (§3.3) — restructure the question to live graph + `as_of` names/bytes |
 | `InvalidRequest: stored graph` | keyword search needs a served (stored) graph → `reindex` first |
-| DeprecationWarning on old names | rename to the canonical op; removals land in 0.13 |
+| AttributeError on a removed name | use the canonical op; CLI + Python removals landed in 0.13 |
 
 ## Version notes
 
 +0.0.1 per feature (`pyproject` + workspace `Cargo.toml`, one bump commit).
-Specs, tests, dep patches: no bump. Current: **0.12.0**, `macrame-db` 0.19.1,
+Specs, tests, dep patches: no bump. Current: **0.13.0**, `macrame-db` 0.19.1,
 store schema v22. `../CHANGELOG.md` is the per-version record.

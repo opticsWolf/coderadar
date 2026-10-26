@@ -92,7 +92,7 @@ def _fid(name):
 
 def test_clear_embeddings_for_file_runs(project):
     result = _core.clear_embeddings_for_file("mod.py")
-    assert result == {"ok": True}
+    assert result == {"ok": True, "cleared": 0}
 
 
 def test_traverse_unresolved_defaults_to_every_edge_kind(project):

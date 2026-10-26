@@ -77,6 +77,45 @@ impl CodeGraph {
         self.resolve_calls_scoped(projection, None);
     }
 
+    /// Build the `instantiated_by` reverse index from `resolved_calls`
+    /// (§2.6 slice D). A `Constructor(class_id)` entry means the function
+    /// instantiates that class — downstream `instantiates` traversal reads
+    /// the calls directly; upstream reads this index. Clears first
+    /// (idempotent rebuild). Runs after every call-resolution cascade:
+    /// analyze, update-file, cold-start load, and the test helper.
+    pub fn resolve_instantiations(&self, projection: &mut ProjectedGraph) {
+        projection.instantiated_by.clear();
+        for (fid, f) in &projection.functions {
+            for rc in &f.resolved_calls {
+                if let crate::types::ResolvedCall::Constructor(class_id) = rc {
+                    projection
+                        .instantiated_by
+                        .entry(class_id.clone())
+                        .or_default()
+                        .insert(fid.clone());
+                }
+            }
+        }
+    }
+
+    /// Build the `referenced_by` reverse index from `resolved_refs`
+    /// (§2.6 slice E). A `resolved_refs` entry means the function holds
+    /// the target as a value (callback, dispatch table) — a reference,
+    /// never a call. Clears first (idempotent rebuild). Runs after every
+    /// call-resolution cascade, same sites as `resolve_instantiations`.
+    pub fn resolve_references(&self, projection: &mut ProjectedGraph) {
+        projection.referenced_by.clear();
+        for (fid, f) in &projection.functions {
+            for target in &f.resolved_refs {
+                projection
+                    .referenced_by
+                    .entry(target.clone())
+                    .or_default()
+                    .insert(fid.clone());
+            }
+        }
+    }
+
     /// Resolve every function's `refs` (callbacks passed as values) to the
     /// functions they name, storing the result on `resolved_refs`. These are
     /// deliberately not call edges; dead-code treats them as liveness.

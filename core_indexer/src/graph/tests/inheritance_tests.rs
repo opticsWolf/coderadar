@@ -358,3 +358,202 @@ fn test_builtin_type_bases_filtered() {
             .collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn test_implements_partitioned_by_target_declaration() {
+    // §2.6: a base resolving to an interface declaration implements;
+    // a base resolving to a class extends — decided by the target, not
+    // the clause spelling. (FakeWorker pins the negative: `implements`
+    // against a *class* stays EXTENDS.)
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(
+        &graph,
+        "interface Shape { area(): number; }\n\
+         class Circle implements Shape { area(): number { return 0; } }\n\
+         class Sub extends Circle { }\n",
+        "shapes.ts",
+    );
+    index_source(
+        &graph,
+        "interface Drawable { }\nclass Sprite implements Drawable { }\n",
+        "game.java",
+    );
+    index_source(
+        &graph,
+        "interface IDisposable { }\nclass Base { }\nclass C : Base, IDisposable { }\n",
+        "prog.cs",
+    );
+    index_source(
+        &graph,
+        "<?php interface Countable { }\nclass Bag implements Countable { }\n",
+        "bag.php",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    graph.compute_all_mro(&mut projection);
+    graph.resolve_class_hierarchy(&mut projection);
+
+    let get = |name: &str| {
+        projection
+            .classes
+            .values()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("{name} should be indexed"))
+    };
+    let circle = get("Circle");
+    assert!(circle.resolved_bases.is_empty(), "{circle:?}");
+    assert_eq!(
+        circle.resolved_interfaces,
+        vec!["shapes.ts::Shape".to_string()]
+    );
+    let sub = get("Sub");
+    assert_eq!(sub.resolved_bases, vec!["shapes.ts::Circle".to_string()]);
+    assert!(sub.resolved_interfaces.is_empty());
+    let sprite = get("Sprite");
+    assert_eq!(
+        sprite.resolved_interfaces,
+        vec!["game.java::Drawable".to_string()],
+        "{sprite:?}"
+    );
+    let prog_c = get("C");
+    assert_eq!(
+        prog_c.resolved_bases,
+        vec!["prog.cs::Base".to_string()],
+        "{prog_c:?}"
+    );
+    assert_eq!(
+        prog_c.resolved_interfaces,
+        vec!["prog.cs::IDisposable".to_string()],
+        "{prog_c:?}"
+    );
+    let bag = get("Bag");
+    assert_eq!(
+        bag.resolved_interfaces,
+        vec!["bag.php::Countable".to_string()],
+        "{bag:?}"
+    );
+    // Reverse index mirrors subclasses for the upstream direction.
+    let impls = projection
+        .implementers
+        .get("shapes.ts::Shape")
+        .expect("Shape should have implementers");
+    assert!(impls.contains("shapes.ts::Circle"));
+    assert!(!projection.subclasses.contains_key("shapes.ts::Shape"));
+}
+
+#[test]
+fn test_kotlin_interface_implements() {
+    // §2.6 gap: Kotlin `interface Foo` implemented by `class Bar : Foo`
+    // resolves IMPLEMENTS, not EXTENDS.
+    let p = snapshot_from(&[("interface Foo { fun m() }\nclass Bar : Foo\n", "a.kt")]);
+    let bar = p.classes.get("a.kt::Bar").expect("Bar indexed");
+    assert!(
+        bar.resolved_bases.is_empty(),
+        "bases: {:?}",
+        bar.resolved_bases
+    );
+    assert_eq!(bar.resolved_interfaces, vec!["a.kt::Foo".to_string()]);
+    assert!(p.implementers["a.kt::Foo"].contains("a.kt::Bar"));
+}
+
+#[test]
+fn test_go_embedded_interface_implements() {
+    // §2.6 gap: Go `type J interface { I; M() }` embeds I — J implements
+    // I. Structs and aliases are not interfaces, and struct embedding
+    // (`struct { I }`) stays out (promotion, not inheritance).
+    let p = snapshot_from(&[(
+        "package p\ntype I interface { M() }\ntype J interface { I\nM() }\ntype S struct { X int }\ntype A int\n",
+        "b.go",
+    )]);
+    let j = p.classes.get("b.go::J").expect("J indexed");
+    assert!(j.resolved_bases.is_empty(), "bases: {:?}", j.resolved_bases);
+    assert_eq!(j.resolved_interfaces, vec!["b.go::I".to_string()]);
+    assert!(p.implementers["b.go::I"].contains("b.go::J"));
+    for id in ["b.go::S", "b.go::A"] {
+        let c = p.classes.get(id).expect("indexed");
+        assert!(
+            !c.grammar_kind.ends_with("/interface"),
+            "{id}: {}",
+            c.grammar_kind
+        );
+        assert!(c.resolved_interfaces.is_empty());
+    }
+}
+
+#[test]
+fn test_python_protocol_implements() {
+    // §2.6 gap: `class P(Protocol)` declares an interface; `class C(P)`
+    // implements it.
+    let p = snapshot_from(&[(
+        "from typing import Protocol\nclass P(Protocol):\n    pass\nclass C(P):\n    pass\n",
+        "c.py",
+    )]);
+    let c = p.classes.get("c.py::C").expect("C indexed");
+    assert!(c.resolved_bases.is_empty(), "bases: {:?}", c.resolved_bases);
+    assert_eq!(c.resolved_interfaces, vec!["c.py::P".to_string()]);
+    assert!(p.implementers["c.py::P"].contains("c.py::C"));
+}
+
+#[test]
+fn test_java_annotation_decorates() {
+    // §2.6 gap: Java annotations under `modifiers` are decorators;
+    // `@interface Route` is a class-like target, so `@Route class C`
+    // resolves DECORATES. Method-level `@Override` is captured as text
+    // but leaves no edge (unresolvable, like builtins).
+    let p = snapshot_from(&[(
+        "@interface Route {}\n@Route public class C {\n@Override public String toString() { return \"\"; }\n}\n",
+        "C.java",
+    )]);
+    let c = p.classes.get("C.java::C").expect("C indexed");
+    assert_eq!(c.resolved_decorators, vec!["C.java::Route".to_string()]);
+    assert!(p.decorated_by["C.java::Route"].contains("C.java::C"));
+    let m = p
+        .functions
+        .get("C.java::C.toString")
+        .expect("method indexed");
+    assert!(
+        m.decorators.iter().any(|d| d == "@Override"),
+        "{:?}",
+        m.decorators
+    );
+    assert!(m.resolved_decorators.is_empty());
+}
+
+#[test]
+fn test_csharp_attribute_decorates() {
+    // §2.6 gap (drive-by): C# `[Attr]` lives in `attribute_list`, not a
+    // `decorator` node — `[MyAttr] class C` resolves DECORATES.
+    let p = snapshot_from(&[(
+        "public class MyAttr {}\n[MyAttr] public class C {}\n",
+        "C.cs",
+    )]);
+    let c = p.classes.get("C.cs::C").expect("C indexed");
+    assert_eq!(c.resolved_decorators, vec!["C.cs::MyAttr".to_string()]);
+    assert!(p.decorated_by["C.cs::MyAttr"].contains("C.cs::C"));
+}
+
+#[test]
+fn test_type_arguments_are_not_bases() {
+    // §2.8 torture.kt: `class SubK : OpenBase(n), Drawable,
+    // Comparable<SubK>` — the `<SubK>` type argument was collected as a
+    // base, listing the class as its own base and overflowing MRO.
+    // Type-argument subtrees are skipped: only `Comparable` lands.
+    let p = snapshot_from(&[(
+        "open class OpenBase(n: Int) {}\nclass SubK(n: Int) : OpenBase(n), Comparable<SubK> {}\n",
+        "t.kt",
+    )]);
+    let sub = p.classes.get("t.kt::SubK").expect("SubK indexed");
+    let names: Vec<&str> = sub.bases.iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(names, vec!["OpenBase", "Comparable"], "{names:?}");
+}
+
+#[test]
+fn test_csharp_type_argument_is_not_a_base() {
+    // Same rule for C# `base_list`: `class C : Base<C>` yields `Base`.
+    let p = snapshot_from(&[(
+        "public class Base {}\npublic class C : Base<C> {}\n",
+        "C.cs",
+    )]);
+    let c = p.classes.get("C.cs::C").expect("C indexed");
+    let names: Vec<&str> = c.bases.iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(names, vec!["Base"], "{names:?}");
+}

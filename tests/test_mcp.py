@@ -863,6 +863,138 @@ class TestTraverse:
         result = _traverse(None, "nonexistent::ghost", "both", None, 3)
         assert "not found" in result.lower() or "codegraph" in result.lower()
 
+    def test_traverse_implements_kind(self, tmp_path, monkeypatch):
+        # §2.6: `implements` walks interface implementations; `extends`
+        # no longer leaks them. Needs a built _core with slice A.
+        import coderadar
+        from coderadar import ops
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "shapes.ts").write_text(
+            "interface Shape { area(): number; }\n"
+            "class Circle implements Shape { area(): number { return 0; } }\n"
+            "class Sub extends Circle { }\n")
+        coderadar.analyze(".", create_store=True)
+        down = ops.traverse("shapes.ts::Circle", "downstream", ["implements"])
+        assert "shapes.ts::Shape" in [r["id"] for r in down["results"]]
+        assert all(r["edge_type"] == "implements" for r in down["results"] if r["depth"] > 0)
+        up = ops.traverse("shapes.ts::Shape", "upstream", ["implements"])
+        assert "shapes.ts::Circle" in [r["id"] for r in up["results"]]
+        ext = ops.traverse("shapes.ts::Sub", "downstream", ["extends"])
+        ext_ids = [r["id"] for r in ext["results"]]
+        assert "shapes.ts::Circle" in ext_ids and "shapes.ts::Shape" not in ext_ids
+
+    def test_traverse_decorates_kind(self, tmp_path, monkeypatch):
+        # §2.6 slice C: `decorates` walks decorator applications both
+        # directions. Needs a built _core with slice C.
+        import coderadar
+        from coderadar import ops
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "helpers.py").write_text(
+            "def validate(fn):\n    return fn\n")
+        (tmp_path / "app.py").write_text(
+            "from helpers import validate\n\n"
+            "@validate\n"
+            "def alpha():\n    pass\n")
+        coderadar.analyze(".", create_store=True)
+        down = ops.traverse("app.py::alpha", "downstream", ["decorates"])
+        assert "helpers.py::validate" in [r["id"] for r in down["results"]]
+        assert all(r["edge_type"] == "decorates" for r in down["results"] if r["depth"] > 0)
+        up = ops.traverse("helpers.py::validate", "upstream", ["decorates"])
+        assert "app.py::alpha" in [r["id"] for r in up["results"]]
+
+    def test_traverse_instantiates_kind(self, tmp_path, monkeypatch):
+        # §2.6 slice D: `instantiates` walks constructor applications
+        # both directions. Needs a built _core with slice D.
+        import coderadar
+        from coderadar import ops
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "eng.py").write_text(
+            "class Engine:\n    def __init__(self):\n        pass\n")
+        (tmp_path / "app.py").write_text(
+            "from eng import Engine\n\n"
+            "def build():\n    return Engine()\n")
+        coderadar.analyze(".", create_store=True)
+        down = ops.traverse("app.py::build", "downstream", ["instantiates"])
+        assert "eng.py::Engine" in [r["id"] for r in down["results"]]
+        assert all(r["edge_type"] == "instantiates" for r in down["results"] if r["depth"] > 0)
+        up = ops.traverse("eng.py::Engine", "upstream", ["instantiates"])
+        assert "app.py::build" in [r["id"] for r in up["results"]]
+
+    def test_traverse_references_kind(self, tmp_path, monkeypatch):
+        # §2.6 slice E: `references` walks function-valued references
+        # both directions — and the calls arm stays silent. Needs a built
+        # _core with slice E.
+        import coderadar
+        from coderadar import ops
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "handlers.py").write_text(
+            "def greeter():\n    pass\n\n"
+            "def get_handler():\n    return greeter\n")
+        coderadar.analyze(".", create_store=True)
+        down = ops.traverse("handlers.py::get_handler", "downstream", ["references"])
+        assert "handlers.py::greeter" in [r["id"] for r in down["results"]]
+        assert all(r["edge_type"] == "references" for r in down["results"] if r["depth"] > 0)
+        up = ops.traverse("handlers.py::greeter", "upstream", ["references"])
+        assert "handlers.py::get_handler" in [r["id"] for r in up["results"]]
+        calls = ops.traverse("handlers.py::get_handler", "downstream", ["calls"])
+        assert "handlers.py::greeter" not in [r["id"] for r in calls["results"]]
+
+    def test_pathmap_alias_import_edge(self, tmp_path, monkeypatch):
+        # §2.5 slice A: tsconfig `paths` alias resolves end to end —
+        # the import edge lands on the mapped target, not the decoy that
+        # suffix matching would prefer. Needs a built _core with §2.5.
+        import json
+
+        import coderadar
+        from coderadar import ops
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tsconfig.json").write_text(json.dumps(
+            {"compilerOptions": {"paths": {"@utils/*": ["lib/utils/*"]}}}))
+        (tmp_path / "lib" / "utils").mkdir(parents=True)
+        (tmp_path / "lib" / "utils" / "a.ts").write_text(
+            "export const a = 2;\n")
+        (tmp_path / "aaa" / "utils").mkdir(parents=True)
+        (tmp_path / "aaa" / "utils" / "a.ts").write_text(
+            "export const a = 1;\n")
+        (tmp_path / "app.ts").write_text(
+            "import { a } from '@utils/a';\nconsole.log(a);\n")
+        coderadar.analyze(".", create_store=True)
+        down = ops.traverse("app.ts::module", "downstream", ["imports"])
+        ids = [r["id"] for r in down["results"]]
+        assert "lib/utils/a.ts::module" in ids, ids
+        assert "aaa/utils/a.ts::module" not in ids, ids
+
+    def test_pathmap_nested_scope_wins(self, tmp_path, monkeypatch):
+        # §2.5 slice B: same prefix, two packages — each importer uses
+        # its nearest tsconfig. Needs a built _core with §2.5 slice B.
+        import json
+
+        import coderadar
+        from coderadar import ops
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tsconfig.json").write_text(json.dumps(
+            {"compilerOptions": {"paths": {"@/*": ["src/*"]}}}))
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "x.ts").write_text("export const x = 0;\n")
+        (tmp_path / "app.ts").write_text(
+            "import { x } from '@/x';\nconsole.log(x);\n")
+        web = tmp_path / "packages" / "web"
+        (web / "src").mkdir(parents=True)
+        (web / "tsconfig.json").write_text(json.dumps(
+            {"compilerOptions":
+                {"baseUrl": "src", "paths": {"@/*": ["src/*"]}}}))
+        (web / "src" / "x.ts").write_text("export const x = 1;\n")
+        (web / "app.ts").write_text(
+            "import { x } from '@/x';\nconsole.log(x);\n")
+        coderadar.analyze(".", create_store=True)
+        web_down = ops.traverse(
+            "packages/web/app.ts::module", "downstream", ["imports"])
+        web_ids = [r["id"] for r in web_down["results"]]
+        assert "packages/web/src/x.ts::module" in web_ids, web_ids
+        root_down = ops.traverse("app.ts::module", "downstream", ["imports"])
+        root_ids = [r["id"] for r in root_down["results"]]
+        assert "src/x.ts::module" in root_ids, root_ids
+
 
 class TestUninitializedIndex:
     """The primary tools before any index exists.
@@ -1164,6 +1296,12 @@ class TestMutationTools:
         result = cg.apply(broken)
         assert result.status == "RolledBack"
         assert target.read_text(encoding="utf-8") == "def foo():\n    return 1\n"
+        assert result.files_written == []
+        assert result.files[0].state == "Restored"
+        assert result.sync.state == "Synchronized"
+        assert result.backup_path is None
+        leftovers = list(tmp_path.glob("*.coderadar-*"))
+        assert leftovers == [], f"rollback left attempt artifacts: {leftovers}"
 
     def test_format_mutation_plan_shows_diff(self):
         from coderadar import MutationEdit, MutationPlan, render
@@ -1250,6 +1388,34 @@ class TestAsOf:
         from coderadar.mcp.server import _as_of
         result = _as_of(None, "", "", [])
         assert "timestamp" in result.lower()
+
+class TestDiagnoseContent:
+    """`coderadar_diagnose` must name what it found — §3.2.
+
+    The battery only asserted exit 0, so a diagnose that silently
+    dropped its sections would print a clean bill of health and pass.
+    These pin the rendered text to fixture ground truth (unresolved
+    target attribution + ambiguous bases), mirroring how
+    TestStalenessBannerFires pins the banner inputs.
+    """
+
+    def test_diagnose_text_names_unresolved_and_ambiguous(self, tmp_path):
+        try:
+            from coderadar._core import analyze
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        from coderadar.mcp.server import _diagnose
+
+        (tmp_path / "a.py").write_text("class Base:\n    pass\n", encoding="utf-8")
+        (tmp_path / "b.py").write_text("class Base:\n    pass\n", encoding="utf-8")
+        (tmp_path / "c.py").write_text(
+            "class C(Base):\n    pass\n\n\ndef f():\n    return missing_fn()\n",
+            encoding="utf-8",
+        )
+        analyze(str(tmp_path))
+        text = _diagnose(None)
+        assert "missing_fn" in text, text
+        assert "Base" in text, text
 
 class TestStalenessBannerFires:
     """`ops.stale_files` read `stats["epoch"]`, a key graph_stats never set.

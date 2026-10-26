@@ -307,8 +307,9 @@ pub const FIELD_FIELDS: &[FieldSpec] = &[
     },
 ];
 
-/// Worked examples — rendered into `docs/query-language.md` and executed by
-/// the Python suite, so a documented query that stops working fails CI.
+/// Worked examples — rendered into
+/// `py_agent/src/coderadar/docs/query-language.md` and executed by the Python
+/// suite, so a documented query that stops working fails CI.
 pub const EXAMPLES: &[&str] = &[
     "classes where inherits_from contains \"BaseModel\"",
     "methods where is_async == true",
@@ -466,7 +467,8 @@ pub fn entity_name(entity: &EntityType) -> &'static str {
 
 /// Markdown reference generated from this table (§3.5) — one section per
 /// entity kind, identity fields first. `tests/test_query_language.py` asserts
-/// `docs/query-language.md` matches this output, so the doc cannot drift.
+/// `py_agent/src/coderadar/docs/query-language.md` matches this output, so the
+/// doc cannot drift.
 pub fn render_markdown() -> String {
     let mut out = String::new();
     out.push_str("# Query language reference\n\n");
@@ -652,18 +654,20 @@ mod tests {
         assert_eq!(
             on_disk,
             render_markdown(),
-            "docs/query-language.md is stale — regenerate it with \
+            "coderadar/docs/query-language.md is stale — regenerate it with \
              `cargo test -p core_indexer write_query_language_docs -- --ignored`"
         );
     }
 
     #[test]
-    #[ignore = "regenerates docs/query-language.md"]
+    #[ignore = "regenerates coderadar/docs/query-language.md"]
     fn write_query_language_docs() {
-        std::fs::write(docs_path(), render_markdown()).expect("write docs/query-language.md");
+        std::fs::write(docs_path(), render_markdown())
+            .expect("write coderadar/docs/query-language.md");
     }
 
     fn docs_path() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/query-language.md")
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../py_agent/src/coderadar/docs/query-language.md")
     }
 }

@@ -4,7 +4,87 @@ Patch releases accumulate toward the next minor (+0.0.1 per implemented feature,
 bump commit named in the feature's DR row). The v0.12 plan history lives
 in `docs/` (v1 frozen, consolidated trio authoritative).
 
-## Unreleased
+## 0.13.0 (2026-10-26)
+
+- Removed the deprecated Python spellings alongside the CLI aliases:
+  `CodeGraph.find`, `CodeGraph.callers_of`/`callees_of`,
+  `CodeGraph.plan_body_replacement`/`plan_signature_update`, the legacy
+  `explore(start_id=…)` walk and `traverse(start_id=…)`/`edge_types=`
+  keywords, and `Snapshot.callers_of`/`callees_of`/`explore`. Canonical
+  names only: `node`, `callers`/`callees`, `plan_replace_body`/
+  `plan_update_signature`, `explore(query=…)`/`traverse(entity_id=…)`.
+- Removed the deprecated pre-0.13 CLI spellings: `analyze`, `rebuild`,
+  `update`, `stats`, bare `blame`, `git-clean`, and `git-diff`, plus the
+  `traverse` aliases `--edges`/`--depth` and direction aliases `in`/`out`.
+  Use `reindex`, `update-file`, `status`, `git blame`/`git is-clean`/`git diff`,
+  and the canonical traverse flags/directions.
+- Skills ship in the wheel: `skills/` moved to
+  `py_agent/src/coderadar/skills/` (package data, read through
+  `importlib.resources`), so `pip install coderadar-rs` delivers the same
+  `SKILL.md` files the drift tests read. `coderadar skills list|show|install`
+  copies both packs into `~/.claude/skills` and `~/.config/opencode/skills`
+  (`--project`, `--dest`, `--force`).
+- The query-language reference moved inside the package
+  (`py_agent/src/coderadar/docs/query-language.md`): `coderadar docs
+  query-language` prints it, and MCP hosts can read `docs://query-language`.
+  Both skill packs are MCP resources too (`skills://coderadar-mcp`,
+  `skills://coderadar-cli`), so an MCP-only client can discover them without
+  a repo checkout. CLI/MCP help now spell out the one surface exception:
+  `coderadar_set_project` is `-C/--project` on the CLI. Release artifacts
+  are gated on all bundled assets (`scripts/verify_bundled_assets.py`), and
+  the Rust doc generator writes the packaged copy. Both packs now carry a
+  per-command/per-tool reference (arguments, flags, defaults, edge-kind and
+  rule-id lists) next to the task guidance, and drift tests fail when a
+  command ships undocumented or a tool ships without a call signature.
+- Call-site cascade for `update_signature` (§2.3): call argument spans
+  are indexed at extraction, persisted as function-concept `call_sites`
+  (parallel to `resolved_calls`, cold-start rehydrated), and consumed by
+  `plan_signature_update` two ways — explicit `call_site_values` become
+  real edits after on-disk verification, and `inject_defaults` synthesizes
+  `name=default` keywords for pure-addition Python signatures. Removals,
+  reorderings, required params, non-Python callers, and stale spans keep
+  manual review.
+- Vector persistence and hybrid search (DR-11, §2.10): embedding vectors
+  persist to per-model `embeddings_<model>` tables (dedup hash rides the
+  concept JSON; rehydrate on cold load, hash flush at persist), and
+  `search_hybrid` fuses keyword + vector arms through Macrame's
+  `HybridSearch` (RRF, `RRF_K=60`), surfaced as `ops.search_hybrid`
+  (auto-compute retry mirroring `search_similar`), MCP
+  `coderadar_search_hybrid`, and CLI `search-hybrid`. Epilogue:
+  `search_similar` now reads the persisted table too (single registered
+  model at the query width; ambiguous widths error naming the tables; no
+  table falls back to the memory scan), so a fresh analyze answers
+  without a recompute.
+- All nine edge kinds populated (§2.6): `resolve_class_hierarchy` splits
+  IMPLEMENTS from EXTENDS by target declaration; new `resolve_decorators`
+  (DECORATES, unique-hits-only), `resolve_instantiations` (INSTANTIATES,
+  overlapping constructor CALLS), and `resolve_references` (REFERENCES,
+  overlap-free value references) run at all four cascade sites; `traverse`
+  serves every kind downstream/upstream on the CLI, `ops`, and MCP.
+- Field-type-aware CBO (§2.4): `coupling_between_objects` unions
+  field-annotation type names resolved through the base tiers
+  (same-module, import-aware, global-unique); stdlib names are skipped as
+  external, ambiguous/self annotations couple to nothing. Golden pins
+  hold (god-class fixture CBO stays 5.0).
+- Config-file path maps (§2.5): `tsconfig.json` (`baseUrl` + `paths`,
+  `extends` chains) and `pyproject.toml` (setuptools/poetry/hatch
+  src-layouts) are discovered per directory — root plus every nested
+  monorepo config, each anchored to its own dir — and the importer's
+  nearest scope wins at resolution, ahead of the old convention/suffix
+  fallbacks. Aliases match raw text before the `@/`→`src/` convention,
+  and configured candidates get an exact-path tier so nested same-tail
+  files can't steal the resolution.
+- Cross-platform path normalization fix for Ubuntu CI.
+- Guarded mutation compensation and explicit synchronization outcomes (DR-35,
+  BUGS_QUIRKS #1): disk attempts use unique artifacts, verified backups,
+  late stale checks, per-file atomic installs, installed-only/hash-guarded
+  compensation, and tri-state post-write verification; the FFI reports an
+  internal `disk_status`, and `CodeGraph.apply` assigns
+  `Applied`/`RolledBack`/`RejectedStale`/`RejectedPolicy`/
+  `ApplyIncomplete`/`RollbackIncomplete` only after synchronous graph,
+  persistence, and derived-data synchronization. Renderers, MCP text, CLI
+  JSON/exit codes, and `ToolRouter` propagate the same failure, per-file,
+  sync, and recovery-path facts.
 
 ## 0.12.0 (2026-10-07)
 

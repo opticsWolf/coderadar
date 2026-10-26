@@ -809,6 +809,34 @@ pub struct UnresolvedRef {
     /// empty span as "no name position known", not as offset zero.
     #[serde(default)]
     pub name_span: ByteSpan,
+    /// Byte range of the call's argument list, including parens
+    /// (`(x, y)` in `save_state(x, y)`). `None` = not recorded (refs that
+    /// are not calls, or snapshots written before §2.3). Consumers must
+    /// treat `None` as "no arg position known" and fall back to the
+    /// `unverified_sites` path, never as an empty edit.
+    #[serde(default)]
+    pub args_span: Option<ByteSpan>,
+}
+
+/// Persisted per-call-site record (§2.3 step 2): the raw `UnresolvedRef`
+/// minus resolution. Stored as `call_sites` in the function concept JSON
+/// (parallel to `resolved_calls`, same order) so cold start rehydrates
+/// `Function.calls` with full fidelity — line/col/name/args survive reload
+/// instead of dying like `call_evidence`. Old concepts without the key
+/// rehydrate to empty (pre-§2.3 behavior: unverified fallback).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CallSiteSpan {
+    pub name: String,
+    #[serde(default)]
+    pub path: Vec<String>,
+    #[serde(default)]
+    pub line: usize,
+    #[serde(default)]
+    pub col: usize,
+    #[serde(default)]
+    pub name_span: ByteSpan,
+    #[serde(default)]
+    pub args_span: Option<ByteSpan>,
 }
 
 /// Evidence for the type of a name inside one function: `m = Manager()`,
@@ -902,12 +930,25 @@ pub struct Class {
     pub parent_class: Option<EntityId>,
     pub bases: Vec<UnresolvedRef>,
     pub resolved_bases: Vec<EntityId>,
+    /// Bases that resolved to an *interface* declaration (`is_interface`)
+    /// rather than a class. Partitioned out of `resolved_bases` by
+    /// `resolve_class_hierarchy` (§2.6): EXTENDS edges assert class
+    /// inheritance, IMPLEMENTS edges assert interface implementation —
+    /// previously folded together and indistinguishable in traversal.
+    pub resolved_interfaces: Vec<EntityId>,
     pub mro: Vec<MroNode>,
     pub mro_error: bool,
     pub methods: Vec<EntityId>,
     pub fields: Vec<Field>,
     pub source: SourceType,
     pub decorators: Vec<String>,
+    /// Decorators that resolved to indexed functions/classes
+    /// (`resolve_decorators`, §2.6 slice C). Partitioned like
+    /// `resolved_interfaces`: unique tier hits only — builtins
+    /// (`@property`, `@staticmethod`), ambiguous and unresolvable names
+    /// leave no edge. Backed by DECORATES ledger edges; powers
+    /// downstream `decorates` traversal.
+    pub resolved_decorators: Vec<EntityId>,
     pub effective: EffectiveClass,
     pub is_type_checking_only: bool,
     pub line: usize,
@@ -951,6 +992,11 @@ pub struct Function {
     /// Entities `refs` resolved to (never `calls` edges: callers stay honest).
     pub resolved_refs: Vec<EntityId>,
     pub decorators: Vec<String>,
+    /// Decorators that resolved to indexed functions/classes
+    /// (`resolve_decorators`, §2.6 slice C). Same rules as the class
+    /// side: unique tier hits only, builtins/ambiguous/unresolvable
+    /// leave no edge. Powers downstream `decorates` traversal.
+    pub resolved_decorators: Vec<EntityId>,
     pub setter_of: Option<EntityId>,
     pub line: usize,
     pub exit_line: usize,
@@ -1140,6 +1186,17 @@ pub struct UpdateOutcome {
     pub entities_added: usize,
     pub entities_removed: usize,
     pub affected_files: Vec<String>,
+    /// xxh3_64 of the exact bytes parsed. Mutation synchronization compares
+    /// this with the attempt's expected final hash before claiming success.
+    pub source_hash: String,
+    /// Operational failure inside `update_file` itself. `None` on every
+    /// successfully constructed outcome, including recovered parses.
+    pub update_error: Option<String>,
+    /// Concept/edge/retirement persistence failed after the projection was
+    /// updated. The in-memory graph moved forward; durable state did not.
+    pub persistence_error: Option<String>,
+    /// Source-blob storage failed. Blob policy skips do not set this.
+    pub blob_error: Option<String>,
     /// `Partial` when tree-sitter had to recover from a syntax error. The file
     /// still yields entities, so "it indexed" is not the same as "it parsed".
     pub parse_quality: ParseQuality,
@@ -1209,6 +1266,7 @@ impl Function {
             resolved_refs: vec![],
             resolved_calls: vec![],
             decorators: f.decorators.clone(),
+            resolved_decorators: vec![],
             setter_of: None,
             line: f.line,
             exit_line: f.exit_line,
@@ -1234,6 +1292,20 @@ impl Function {
 }
 
 impl Class {
+    /// True when this entity declares an interface rather than a class.
+    /// Two shapes: the raw `interface_declaration` kind (TypeScript,
+    /// Java, C#, PHP — captured as `@class` by the taggers), and the
+    /// `/interface`-suffixed kinds `emit_class` records for interface
+    /// declarations under class-like nodes — Go `type I interface`,
+    /// Kotlin `interface Foo`, Python `class P(Protocol)` (§2.6 detection
+    /// gaps), Swift `protocol` (suffixed all along by `classify_class_like`
+    /// but never matched until the suffix check landed). The suffix
+    /// round-trips through concept JSON, so cold-start re-partitioning
+    /// (EXTENDS vs IMPLEMENTS) sees the same answer as a fresh analyze.
+    pub fn is_interface(&self) -> bool {
+        self.grammar_kind == "interface_declaration" || self.grammar_kind.ends_with("/interface")
+    }
+
     /// Build a projected `Class` from an extracted one. See
     /// [`Function::from_extracted`] for why the ids are parameters.
     pub fn from_extracted(
@@ -1250,6 +1322,7 @@ impl Class {
             parent_class,
             bases: c.bases.clone(),
             resolved_bases: vec![],
+            resolved_interfaces: vec![],
             mro: vec![],
             mro_error: false,
             methods: vec![],
@@ -1268,6 +1341,7 @@ impl Class {
                 .collect(),
             source: c.source,
             decorators: c.decorators.clone(),
+            resolved_decorators: vec![],
             effective: EffectiveClass::Plain,
             is_type_checking_only: c.is_type_checking_only,
             line: c.line,
@@ -1492,6 +1566,34 @@ pub struct ProjectedGraph {
     /// tagged edges (plain `name()` calls) count as strong.
     pub call_evidence: HashMap<(EntityId, EntityId), ReceiverEvidence>,
     pub subclasses: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Reverse interface index: interface → set of implementing classes.
+    /// Symmetric to `subclasses`; built by `resolve_class_hierarchy` from
+    /// `resolved_interfaces`; powers upstream `implements` traversal.
+    pub implementers: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Reverse decorator index: decorator → set of decorated
+    /// functions/classes. Built by `resolve_decorators` from
+    /// `resolved_decorators`; powers upstream `decorates` traversal.
+    pub decorated_by: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Reverse instantiation index: class → set of functions that
+    /// instantiate it. Built by `resolve_instantiations` from
+    /// `Function.resolved_calls` (`Constructor` targets); powers upstream
+    /// `instantiates` traversal. A constructor invocation both calls
+    /// (`__init__`/class, CALLS) and instantiates (class, INSTANTIATES) —
+    /// overlap, not partition.
+    pub instantiated_by: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Reverse reference index: entity → set of functions holding a
+    /// function-valued reference to it (callbacks, dispatch tables).
+    /// Built by `resolve_references` from `Function.resolved_refs`;
+    /// powers upstream `references` traversal. Deliberately not CALLS:
+    /// passing a function as a value is not calling it (§2.6 slice E).
+    pub referenced_by: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Project path maps (§2.5): tsconfig `paths`/`baseUrl` + pyproject
+    /// src-layout roots, discovered once per analyze/load by
+    /// `PathMaps::discover`. Empty = no configs (old convention/suffix
+    /// behaviour). Consulted by `find_module_by_dotted_name`; the
+    /// resolver adds priority candidates but never removes the suffix
+    /// fallback, so config-less projects resolve byte-identically.
+    pub path_maps: crate::graph::path_maps::PathMaps,
     pub overridden_by: HashMap<EntityId, BTreeSet<EntityId>>,
     /// Forward override index: override method → (single) base method it
     /// overrides. Absent = no override detected. Downstream traversal of

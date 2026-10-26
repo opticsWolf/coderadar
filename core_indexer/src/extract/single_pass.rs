@@ -13,10 +13,10 @@ use crate::extract::docstring::preceding_docstring;
 use crate::extract::spans::extract_byte_spans;
 use crate::extract::tagger::CompiledQuery;
 use crate::extract::walker::{
-    classify_class_like, derive_function_kind, detect_async, detect_generator, emit_call_for_node,
-    extract_base_classes, extract_class_name, extract_decorators, extract_function_name,
-    extract_go_receiver_type, extract_parameters, make_entity_id, parse_import_from_statement,
-    parse_import_statement, parse_rust_use,
+    class_declares_interface, classify_class_like, derive_function_kind, detect_async,
+    detect_generator, emit_call_for_node, extract_base_classes, extract_class_name,
+    extract_decorators, extract_function_name, extract_go_receiver_type, extract_parameters,
+    make_entity_id, parse_import_from_statement, parse_import_statement, parse_rust_use,
 };
 use crate::types::*;
 
@@ -45,6 +45,7 @@ fn call_ref(node: Node, src: &str) -> Option<UnresolvedRef> {
         line: node.start_position().row + 1,
         col: node.start_position().column,
         name_span: node_span(name_node),
+        args_span: crate::extract::walker::call_args_span(node),
     })
 }
 
@@ -306,6 +307,11 @@ impl<'a> CursorExtractor<'a> {
         let qualified_name = build_qualified_name_simple(&parent_qname, &name);
         let entity_id = make_entity_id(self.file_path, &qualified_name);
         let bases = extract_base_classes(node, self.source);
+        // Classes carry decorators too (`@entity class Model`, TS
+        // `@Injectable class Svc`, Java `@Route class C` via `modifiers`,
+        // C# `[Attr] class C` via `attribute_list`: `extract_decorators`
+        // descends into both — §2.6 detection gaps closed).
+        let decorators = extract_decorators(node, self.source);
         let docstring = preceding_docstring(node, self.source);
         let grammar_kind = if node.kind() == "class_declaration" {
             let sub = classify_class_like(node);
@@ -317,6 +323,19 @@ impl<'a> CursorExtractor<'a> {
         } else {
             node.kind().to_string()
         };
+        // §2.6 detection gaps: Go `type I interface`, Kotlin
+        // `interface Foo`, Python `class P(Protocol)` declare interfaces
+        // under class-like node kinds. Record the hit as a `/interface`
+        // suffix (round-trips through concept JSON, so cold-start
+        // re-partitioning sees it); `Class::is_interface` matches it.
+        // Swift `protocol` was already suffixed by `classify_class_like`
+        // above but never matched — fixed by the same suffix check.
+        let grammar_kind =
+            if class_declares_interface(node, &bases) && !grammar_kind.ends_with("/interface") {
+                format!("{grammar_kind}/interface")
+            } else {
+                grammar_kind
+            };
 
         let unit_idx = self.units.len();
         self.units.push(ExtractedUnit::Class(ExtractedClass {
@@ -327,7 +346,7 @@ impl<'a> CursorExtractor<'a> {
             parent_module: entity_id.clone(),
             parent_class: None,
             bases,
-            decorators: Vec::new(),
+            decorators,
             docstring,
             fields: Vec::new(),
             line,
@@ -841,6 +860,7 @@ fn ref_of(node: Node, source: &str) -> Option<UnresolvedRef> {
         line: node.start_position().row + 1,
         col: node.start_position().column,
         name_span: node_span(name_node),
+        args_span: None,
     })
 }
 
@@ -1048,6 +1068,19 @@ mod call_name_span_tests {
             &src.as_bytes()[reference.name_span.start..reference.name_span.end],
             b"greet"
         );
+    }
+
+    /// §2.3: the call's argument list is recorded so `update_signature`
+    /// can rewrite call sites instead of reporting them unverified.
+    #[test]
+    fn bare_call_records_the_args_span() {
+        let src = "def f():\n    return greet(1, x=2)\n";
+        let tree = python_tree(src);
+        let call = first_node_of_kind(tree.root_node(), "call").expect("call");
+        let reference = call_ref(call, src).expect("bare calls are extracted");
+
+        let args = reference.args_span.expect("calls record their args");
+        assert_eq!(&src.as_bytes()[args.start..args.end], b"(1, x=2)");
     }
 
     /// Function-as-value references (`map(save_state, xs)`) are renamed too,

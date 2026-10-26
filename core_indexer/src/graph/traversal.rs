@@ -68,6 +68,56 @@ impl CodeGraph {
                     }
                 }
             }
+            "implements" => {
+                if up {
+                    push_set(snap.implementers.get(id));
+                }
+                if down {
+                    if let Some(c) = snap.classes.get(id) {
+                        out.extend(c.resolved_interfaces.iter().cloned());
+                    }
+                }
+            }
+            "decorates" => {
+                if up {
+                    push_set(snap.decorated_by.get(id));
+                }
+                if down {
+                    if let Some(f) = snap.functions.get(id) {
+                        out.extend(f.resolved_decorators.iter().cloned());
+                    }
+                    if let Some(c) = snap.classes.get(id) {
+                        out.extend(c.resolved_decorators.iter().cloned());
+                    }
+                }
+            }
+            "instantiates" => {
+                if up {
+                    push_set(snap.instantiated_by.get(id));
+                }
+                if down {
+                    // Constructor targets carry the class id (§2.6 slice D).
+                    if let Some(f) = snap.functions.get(id) {
+                        out.extend(f.resolved_calls.iter().filter_map(|rc| match rc {
+                            crate::types::ResolvedCall::Constructor(class_id) => {
+                                Some(class_id.clone())
+                            }
+                            _ => None,
+                        }));
+                    }
+                }
+            }
+            "references" => {
+                if up {
+                    push_set(snap.referenced_by.get(id));
+                }
+                if down {
+                    // Function-valued references, never calls (§2.6 slice E).
+                    if let Some(f) = snap.functions.get(id) {
+                        out.extend(f.resolved_refs.iter().cloned());
+                    }
+                }
+            }
             "overrides" => {
                 if up {
                     push_set(snap.overridden_by.get(id));

@@ -316,3 +316,354 @@ fn test_set_embedding_empty_vector() {
         "Empty embedding should be stored as empty"
     );
 }
+
+// ── DR-11 slice 2: persistence ───────────────────────────────────────
+// Per-model tables (`embeddings_<model>`, DiskANN) are the durable home;
+// the ledger carries only the dedup hash (slice 1).
+
+#[test]
+fn test_macrame_model_name_normalizes_fastembed_ids() {
+    use crate::storage::macrame_model_name;
+    assert_eq!(
+        macrame_model_name("BAAI/bge-small-en-v1.5")
+            .unwrap()
+            .table(),
+        "embeddings_baai_bge_small_en_v1_5"
+    );
+    assert_eq!(
+        macrame_model_name("nomic_v1").unwrap().table(),
+        "embeddings_nomic_v1"
+    );
+    // Leading digit, empty, too long: honest errors naming the raw id.
+    for bad in ["", "1abc", &"a".repeat(49)] {
+        let err = macrame_model_name(bad).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("InvalidModelName"),
+            "{bad:?} gave {err:?}"
+        );
+    }
+}
+
+#[test]
+fn test_persist_projection_embeddings_writes_heals_and_gates() {
+    use crate::storage::CodeGraphStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodeGraphStore::open(dir.path().join("v.db")).unwrap();
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(&graph, "def add(a, b): return a + b\n", "math.py");
+    graph
+        .set_embeddings_bulk(vec![(
+            "math.py::add".into(),
+            vec![0.5; 8],
+            "m#pp1#x".into(),
+        )])
+        .unwrap();
+    let snap = graph.snapshot();
+    // The model table references concepts: rows need their concept rows,
+    // exactly as the production flush writes v2 concepts before vectors.
+    let now = crate::storage::now_iso8601();
+    let mk = |id: &str| {
+        macrame::ConceptUpsert::new(id, id)
+            .content("{\"kind\":\"function\"}")
+            .valid_from(now.clone())
+            .valid_to(crate::storage::TS_OPEN.to_string())
+            .retired(false)
+    };
+    store
+        .upsert_concepts_bulk(&[mk("math.py::add"), mk("sub.py::sub")])
+        .unwrap();
+    // Fresh writes: rows listed, vectors read from the projection.
+    let report = store
+        .persist_projection_embeddings(
+            "BAAI/bge-small-en-v1.5",
+            &snap,
+            &[("math.py::add".to_string(), "m#pp1#x".to_string())],
+        )
+        .unwrap();
+    assert_eq!(report.persisted, 1);
+    assert_eq!(report.model_table, "embeddings_baai_bge_small_en_v1_5");
+    assert_eq!(report.dimension, 8);
+    assert!(!report.healed);
+    // Empty entries + agreeing table = no-op (cached reruns stay cheap).
+    let again = store
+        .persist_projection_embeddings("BAAI/bge-small-en-v1.5", &snap, &[])
+        .unwrap();
+    assert_eq!(again.persisted, 0);
+    assert!(!again.healed);
+    // Empty entries + staged-only memory = heal (crash-window recovery).
+    index_source(&graph, "def sub(a, b): return a - b\n", "sub.py");
+    graph
+        .set_embeddings_bulk(vec![("sub.py::sub".into(), vec![0.1; 8], "m#pp1#z".into())])
+        .unwrap();
+    let snap2 = graph.snapshot();
+    let healed = store
+        .persist_projection_embeddings("BAAI/bge-small-en-v1.5", &snap2, &[])
+        .unwrap();
+    assert_eq!(healed.persisted, 2, "{healed:?}");
+    assert!(healed.healed);
+    // A listed id with no in-memory vector refuses loudly.
+    let err = store
+        .persist_projection_embeddings(
+            "BAAI/bge-small-en-v1.5",
+            &snap2,
+            &[("nope::missing".to_string(), "h".to_string())],
+        )
+        .unwrap_err();
+    assert!(
+        format!("{err:?}").contains("no in-memory vector"),
+        "{err:?}"
+    );
+    // Mixed memory widths refuse before any write (DimMismatch).
+    let mut projection = (*graph.snapshot()).clone();
+    for (id, width) in [("math.py::add", 4), ("sub.py::sub", 8)] {
+        if let Some(f) = projection.functions.get(id) {
+            let mut updated = (**f).clone();
+            updated.embedding.vec = vec![0.2; width];
+            projection
+                .functions
+                .insert(id.to_string(), std::sync::Arc::new(updated));
+        }
+    }
+    let err = store
+        .persist_projection_embeddings(
+            "BAAI/bge-small-en-v1.5",
+            &projection,
+            &[
+                ("math.py::add".to_string(), "m#pp1#x".to_string()),
+                ("sub.py::sub".to_string(), "m#pp1#z".to_string()),
+            ],
+        )
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("DimMismatch"), "{err:?}");
+    // Vectors for concepts the ledger never recorded refuse with the
+    // repair, never bare SQLite 787.
+    let fresh = CodeGraphStore::open(dir.path().join("fresh.db")).unwrap();
+    let err = fresh
+        .persist_projection_embeddings(
+            "BAAI/bge-small-en-v1.5",
+            &snap2,
+            &[("sub.py::sub".to_string(), "m#pp1#z".to_string())],
+        )
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("flush v2 concepts"), "{err:?}");
+}
+
+#[test]
+fn test_read_model_vectors_roundtrips_and_misses_honestly() {
+    use crate::storage::CodeGraphStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodeGraphStore::open(dir.path().join("v.db")).unwrap();
+    // Missing table = honest empty (fresh store), never an error.
+    let miss = store.read_model_vectors("BAAI/bge-small-en-v1.5").unwrap();
+    assert!(miss.rows.is_empty());
+    assert_eq!(miss.dimension, 0);
+    // Round trip through persist: f64 → f32 → f64 within float error.
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(&graph, "def add(a, b): return a + b\n", "math.py");
+    graph
+        .set_embeddings_bulk(vec![(
+            "math.py::add".into(),
+            vec![0.5; 8],
+            "m#pp1#x".into(),
+        )])
+        .unwrap();
+    let now = crate::storage::now_iso8601();
+    store
+        .upsert_concepts_bulk(
+            &[macrame::ConceptUpsert::new("math.py::add", "math.py::add")
+                .content("{\"kind\":\"function\"}")
+                .valid_from(now)
+                .valid_to(crate::storage::TS_OPEN.to_string())
+                .retired(false)],
+        )
+        .unwrap();
+    let snap = graph.snapshot();
+    store
+        .persist_projection_embeddings(
+            "BAAI/bge-small-en-v1.5",
+            &snap,
+            &[("math.py::add".to_string(), "m#pp1#x".to_string())],
+        )
+        .unwrap();
+    let got = store.read_model_vectors("BAAI/bge-small-en-v1.5").unwrap();
+    assert_eq!(got.dimension, 8);
+    assert_eq!(got.model_table, "embeddings_baai_bge_small_en_v1_5");
+    assert_eq!(got.rows.len(), 1);
+    assert_eq!(got.rows[0].0, "math.py::add");
+    assert!(got.rows[0].1.iter().all(|x| (*x as f64 - 0.5).abs() < 1e-6));
+}
+
+#[test]
+fn test_search_hybrid_fuses_keyword_and_vector_arms() {
+    use crate::storage::CodeGraphStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodeGraphStore::open(dir.path().join("h.db")).unwrap();
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(
+        &graph,
+        "def start_watcher():\n    \"\"\"Debounce the file watcher before restarting.\"\"\"\n    pass\n",
+        "watch.py",
+    );
+    index_source(
+        &graph,
+        "def rename(old, new):\n    \"\"\"Rename a function via plan_rename.\"\"\"\n    pass\n",
+        "graph.py",
+    );
+    index_source(
+        &graph,
+        "def authenticate():\n    \"\"\"Check the service token.\"\"\"\n    pass\n",
+        "svc.py",
+    );
+    graph
+        .set_embeddings_bulk(vec![
+            (
+                "watch.py::start_watcher".into(),
+                vec![1.0, 0.0, 0.0, 0.0],
+                "m#pp1#a".into(),
+            ),
+            (
+                "graph.py::rename".into(),
+                vec![0.0, 1.0, 0.0, 0.0],
+                "m#pp1#b".into(),
+            ),
+            (
+                "svc.py::authenticate".into(),
+                vec![0.9, 0.1, 0.0, 0.0],
+                "m#pp1#c".into(),
+            ),
+        ])
+        .unwrap();
+    // Concept rows carry the text the keyword arm reads; ids must match
+    // the entity ids or the vector arm's join finds nothing.
+    let now = crate::storage::now_iso8601();
+    let mk = |id: &str, doc: &str| {
+        macrame::ConceptUpsert::new(id, id)
+            .content(format!("{{\"kind\":\"function\",\"docstring\":\"{doc}\"}}"))
+            .valid_from(now.clone())
+            .valid_to(crate::storage::TS_OPEN.to_string())
+            .retired(false)
+    };
+    store
+        .upsert_concepts_bulk(&[
+            mk(
+                "watch.py::start_watcher",
+                "Debounce the file watcher before restarting.",
+            ),
+            mk("graph.py::rename", "Rename a function via plan_rename."),
+            mk("svc.py::authenticate", "Check the service token."),
+        ])
+        .unwrap();
+    let snap = graph.snapshot();
+    store
+        .persist_projection_embeddings(
+            "test_hybrid",
+            &snap,
+            &[
+                ("watch.py::start_watcher".to_string(), "m#pp1#a".to_string()),
+                ("graph.py::rename".to_string(), "m#pp1#b".to_string()),
+                ("svc.py::authenticate".to_string(), "m#pp1#c".to_string()),
+            ],
+        )
+        .unwrap();
+    // Query text matches only the watcher; the query vector is the
+    // watcher's own vector. Fusion must rank the both-arms hit first,
+    // then the vector-only hits in cosine order.
+    let hits = store
+        .search_hybrid("test_hybrid", "watcher debounce", &[1.0, 0.0, 0.0, 0.0], 10)
+        .unwrap();
+    assert_eq!(hits.len(), 3, "{hits:?}");
+    assert_eq!(hits[0].concept_id, "watch.py::start_watcher");
+    assert!(hits[0].vector_rank.is_some() && hits[0].keyword_rank.is_some());
+    assert_eq!(hits[1].concept_id, "svc.py::authenticate");
+    assert_eq!(hits[2].concept_id, "graph.py::rename");
+    assert!(hits[2].keyword_rank.is_none(), "{hits:?}");
+    // Empty query both sides = empty, never an FTS syntax error.
+    let empty = store.search_hybrid("test_hybrid", "  ", &[], 10).unwrap();
+    assert!(empty.is_empty());
+    // A vector without a table names the repair, not bare storage noise.
+    let err = store
+        .search_hybrid("no_such_model", "watcher", &[1.0, 0.0, 0.0, 0.0], 10)
+        .unwrap_err();
+    assert!(format!("{err:?}").contains("no_such_model"), "{err:?}");
+}
+
+#[test]
+fn test_model_tables_at_dim_finds_single_width() {
+    // DR-11 epilogue: search_similar names its vector arm by query width.
+    use crate::storage::CodeGraphStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodeGraphStore::open(dir.path().join("ep.db")).unwrap();
+    assert!(store.model_tables_at_dim(4).unwrap().is_empty());
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(&graph, "def alpha():\n    pass\n", "a.py");
+    index_source(&graph, "def beta():\n    pass\n", "b.py");
+    graph
+        .set_embeddings_bulk(vec![
+            (
+                "a.py::alpha".into(),
+                vec![1.0, 0.0, 0.0, 0.0],
+                "m#ep#a".into(),
+            ),
+            (
+                "b.py::beta".into(),
+                vec![0.0, 1.0, 0.0, 0.0],
+                "m#ep#b".into(),
+            ),
+        ])
+        .unwrap();
+    let snap = graph.snapshot();
+    let now = crate::storage::now_iso8601();
+    let mk = |id: &str| {
+        macrame::ConceptUpsert::new(id, id)
+            .content("{\"kind\":\"function\"}")
+            .valid_from(now.clone())
+            .valid_to(crate::storage::TS_OPEN.to_string())
+            .retired(false)
+    };
+    store
+        .upsert_concepts_bulk(&[mk("a.py::alpha"), mk("b.py::beta")])
+        .unwrap();
+    store
+        .persist_projection_embeddings(
+            "epilogue_a",
+            &snap,
+            &[
+                ("a.py::alpha".to_string(), "m#ep#a".to_string()),
+                ("b.py::beta".to_string(), "m#ep#b".to_string()),
+            ],
+        )
+        .unwrap();
+    assert_eq!(store.model_tables_at_dim(4).unwrap(), vec!["epilogue_a"]);
+    assert!(store.model_tables_at_dim(3).unwrap().is_empty());
+    // A second model at the same width is two hits — the FFI dispatch
+    // turns that into an explicit ambiguous-tables error, never a blend.
+    store
+        .persist_projection_embeddings(
+            "epilogue_b",
+            &snap,
+            &[
+                ("a.py::alpha".to_string(), "m#ep#a".to_string()),
+                ("b.py::beta".to_string(), "m#ep#b".to_string()),
+            ],
+        )
+        .unwrap();
+    let mut hits = store.model_tables_at_dim(4).unwrap();
+    hits.sort();
+    assert_eq!(hits, vec!["epilogue_a", "epilogue_b"]);
+}
+
+#[test]
+fn test_rank_table_rows_orders_by_cosine() {
+    // Interpreter-free pin of the epilogue scoring step: the rows read
+    // back from the table rank in cosine order before materialization.
+    use crate::rank_table_rows;
+    let rows = vec![
+        ("b.py::beta".to_string(), vec![0.0f32, 1.0, 0.0, 0.0]),
+        ("a.py::alpha".to_string(), vec![1.0f32, 0.0, 0.0, 0.0]),
+    ];
+    let mut ranked = rank_table_rows(&[1.0, 0.0, 0.0, 0.0], &rows);
+    ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    assert_eq!(ranked[0].1, "a.py::alpha");
+    assert!((ranked[0].0 - 1.0).abs() < 1e-9);
+    assert_eq!(ranked[1].1, "b.py::beta");
+}

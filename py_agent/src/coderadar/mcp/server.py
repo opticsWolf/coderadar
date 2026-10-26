@@ -26,6 +26,8 @@ import structlog
 from mcp.server import MCPServer
 
 from coderadar import ops, render
+from coderadar.docs import doc_description, doc_text
+from coderadar.skills import skill_description, skill_text
 
 logger = structlog.get_logger(__name__)
 
@@ -49,10 +51,11 @@ Need more? Call it again with more specific names.
 
 - `coderadar_search` — find symbols by keyword when you don't know the name
 - `coderadar_search_similar` — semantic search (embeddings via `coderadar_compute_embeddings`, computed on first use)
+- `coderadar_search_hybrid` — RRF-fused keyword + semantic search, with per-arm rank evidence
 - `coderadar_node` — one entity's details and neighbours; `coderadar_module_children` — a module's contents
 - `coderadar_affected` — transitive callers (blast radius), centrality-ranked; `coderadar_callers` / `coderadar_callees` — direct 1-hop neighbours
 - `coderadar_traverse` — any edge kind, upstream or downstream
-- `coderadar_query` — structured queries, e.g. `functions where caller_count == 0` (docs/query-language.md)
+- `coderadar_query` — structured queries, e.g. `functions where caller_count == 0` (full reference: resource `docs://query-language`)
 - `coderadar_as_of` — the graph at a past timestamp
 - `coderadar_resolve` — framework references: routes (`/users/:id`), `*Model` / `*View` names
 - `coderadar_get_smells`, `coderadar_dead_code`, `coderadar_find_clones`, `coderadar_find_scaffolding` — quality findings. Dead code is ranked evidence, not proof: check `coderadar_affected` before deleting.
@@ -75,6 +78,14 @@ served and how fresh the index is.
 - **No index for a project?** Use built-in tools. Indexing is the user's decision: mention `coderadar init`, don't run it.
 - **"Indexing in progress" is not an error.** Retry in a few seconds rather than falling back to grep.
 
+## Skill packs
+
+`coderadar-mcp` and `coderadar-cli` ship inside this package and are
+readable as the resources `skills://coderadar-mcp` and
+`skills://coderadar-cli`. Run `coderadar skills show <name>` to print either
+file, or `coderadar skills install` to copy both into Claude Code / OpenCode
+discovery directories.
+
 ## One project at a time
 
 The server serves one project. Every tool takes an optional `project_path`:
@@ -82,8 +93,10 @@ a path inside the served project is accepted, another project is refused
 with the reason. `coderadar_set_project` switches wholesale (config re-read,
 background re-index, earlier event ids invalid).
 
-The same operations exist on the shell under the same names, hyphenated
+The same graph ops exist on the shell under the same names, hyphenated
 (`coderadar explore`, `coderadar get-smells`, `coderadar status`, ...).
+Project switching is the one exception: the CLI spells it `-C/--project`,
+because one CLI process serves one root.
 """
 
 
@@ -117,6 +130,39 @@ def create_server(graph: Any) -> MCPServer:
         version=__version__,
         instructions=SERVER_INSTRUCTIONS,
     )
+
+    # Agent-facing documents that ship in the wheel. Resources (not tools)
+    # keep the 26-tool surface intact while letting an MCP-only host read the
+    # skill packs and the query-language reference without a repo checkout.
+    @mcp.resource(
+        "skills://coderadar-mcp",
+        name="coderadar-mcp",
+        description=skill_description("coderadar-mcp"),
+        mime_type="text/markdown",
+    )
+    def _skill_mcp() -> str:
+        """The coderadar-mcp agent skill pack."""
+        return skill_text("coderadar-mcp")
+
+    @mcp.resource(
+        "skills://coderadar-cli",
+        name="coderadar-cli",
+        description=skill_description("coderadar-cli"),
+        mime_type="text/markdown",
+    )
+    def _skill_cli() -> str:
+        """The coderadar-cli agent skill pack."""
+        return skill_text("coderadar-cli")
+
+    @mcp.resource(
+        "docs://query-language",
+        name="query-language",
+        description=doc_description("query-language"),
+        mime_type="text/markdown",
+    )
+    def _query_language() -> str:
+        """Query language and field reference."""
+        return doc_text("query-language")
 
     # `roots/list` is a server-to-client request and MCP gives the server no
     # `initialize` hook to send one from — awaiting one during the handshake
@@ -296,7 +342,7 @@ def create_server(graph: Any) -> MCPServer:
             "Every row carries id, file_path, kind and parent_id, so a hit can be "
             "fed to coderadar_affected / coderadar_rename. Unknown fields are "
             "rejected with the available list instead of returning nothing. "
-            "Full field reference: docs/query-language.md."
+            "Full field reference: resource docs://query-language."
         ),
         annotations={
             "read_only_hint": True,
@@ -345,6 +391,35 @@ def create_server(graph: Any) -> MCPServer:
             return mismatch
 
         return _search_similar(graph, query, top_k)
+
+    # ── coderadar_search_hybrid — RRF fusion of keyword + vector ──────
+
+    @mcp.tool(
+        description=(
+            "Hybrid search: RRF-fused keyword (BM25) and semantic (vector) "
+            "search over one embedding model. Returns fused ranks with "
+            "per-arm evidence (vector_rank/keyword_rank). "
+            "Use when neither exact terms nor pure similarity suffice. "
+            "Auto-computes embeddings on first call if no vectors exist."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_search_hybrid(
+        query: str,
+        top_k: int = 10,
+        project_path: str | None = None,
+    ) -> str:
+        """RRF-fused keyword + semantic search."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _search_hybrid(graph, query, top_k)
 
     # ── coderadar_compute_embeddings — generate embedding vectors ────
 
@@ -516,7 +591,7 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Traverse the graph from a starting entity along specified edge kinds. "
             "Direction: 'downstream' (callees), 'upstream' (callers), 'both'. "
-            "Edge kinds: 'calls', 'imports', 'inherits' (alias 'extends'), 'overrides'; "
+            "Edge kinds: 'calls', 'imports', 'inherits' (alias 'extends'), 'implements', 'decorates', 'instantiates', 'references', 'overrides'; "
             "default all. Returns a tree of linked entities. "
             "Use for custom flow analysis beyond explore/affected."
             " " + _ENTITY_ID_GRAMMAR
@@ -690,7 +765,9 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Replace the body of a function/method. "
             "With dry_run=True (default): returns a diff preview for review. "
-            "With dry_run=False: writes the file AND updates the graph atomically. "
+            "With dry_run=False: writes the file, then runs synchronous graph "
+            "synchronization; Applied requires that sync to succeed, while "
+            "ApplyIncomplete keeps valid source and names the sync repair. "
             "Best practice: call first with dry_run=True to review, then call "
             "again with dry_run=False to apply. Use expected_hash to verify the "
             "current body matches before replacing (safety check). Indentation: "
@@ -726,10 +803,11 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Change a function/method signature. "
             "With dry_run=True: shows the signature change and all affected call sites. "
-            "With dry_run=False: writes the definition change AND updates the graph. "
-            "NOTE: the definition signature is edited automatically, but call sites are "
-            "returned as unverified_sites (with line numbers) for manual review — "
-            "call-site argument spans are not indexed, so they cannot be auto-edited safely."
+            "With dry_run=False: writes the definition change, then runs synchronous "
+            "graph synchronization; Applied requires that sync to succeed. "
+            "NOTE: the definition signature is edited automatically; call sites with "
+            "explicit per-caller values and a recorded arg span (§2.3) are edited too, "
+            "the rest are returned as unverified_sites (with line numbers) for manual review."
             " " + _ENTITY_ID_GRAMMAR
         ),
         annotations={
@@ -759,8 +837,8 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Rename an entity (function, class, variable) and all references. "
             "With dry_run=True: shows all files and references that need updating. "
-            "With dry_run=False: renames the definition and ALL references, "
-            "updates the graph. Covers definition site and all usages."
+            "With dry_run=False: renames the definition and ALL references, then "
+            "runs synchronous graph synchronization. Covers definition site and all usages."
             " " + _ENTITY_ID_GRAMMAR
         ),
         annotations={
@@ -789,7 +867,8 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Create a new entity (function, class, constant) in a file. "
             "With dry_run=True: shows where the entity would be inserted. "
-            "With dry_run=False: inserts the entity into the file AND indexes it. "
+            "With dry_run=False: inserts the entity into the file, then runs "
+            "synchronous graph synchronization. "
             "anchor='end' appends at file end, 'top' inserts at file top, "
             "or pass an entity ID to insert after that entity. "
             "The code is rendered from name/body/decorators using language-aware "
@@ -1342,9 +1421,16 @@ def _compute_embeddings(graph: Any, model_name: str | None = None,
     return render.compute_embeddings(metrics)
 
 
-@requires_index
 def _search_similar(graph: Any, query: str, top_k: int) -> str:
     """Semantic/embedding similarity search."""
+    if isinstance(query, str) and not query.strip():
+        return "Please provide a natural-language query for semantic search."
+    return _search_similar_indexed(graph, query, top_k)
+
+
+@requires_index
+def _search_similar_indexed(graph: Any, query: str, top_k: int) -> str:
+    """Indexed semantic/embedding similarity search."""
     try:
         results = ops.search_similar(query, top_k)
     except ops.MissingDependency:
@@ -1356,6 +1442,22 @@ def _search_similar(graph: Any, query: str, top_k: int) -> str:
     except ops.OpError as e:
         return _op_message(e)
     return render.search_similar(query, results)
+
+
+@requires_index
+def _search_hybrid(graph: Any, query: str, top_k: int) -> str:
+    """Hybrid RRF keyword + semantic search."""
+    try:
+        results = ops.search_hybrid(query, top_k)
+    except ops.MissingDependency:
+        return render.fastembed_missing()
+    except ops.NoEmbeddings:
+        return render.no_embeddings()
+    except ops.EngineError as e:
+        return str(e)
+    except ops.OpError as e:
+        return _op_message(e)
+    return render.search_hybrid(query, results)
 
 
 def _module_children(graph: Any, module_id: str) -> str:

@@ -83,8 +83,15 @@ impl WriteGuard {
     }
 
     /// Remove a path from the guard (e.g., after successful reindex).
-    pub fn clear(&self, path: &PathBuf) {
-        self.suppressed.remove(path);
+    pub fn clear(&self, path: &std::path::Path) {
+        self.suppressed.remove(&Self::key_of(path));
+    }
+
+    /// Remove the normalized form of `path`. Registration always stores the
+    /// normalized key, so failed installations must clear through this path
+    /// rather than the raw spelling.
+    pub fn clear_normalized(&self, path: &std::path::Path) {
+        self.suppressed.remove(&Self::key_of(path));
     }
 
     /// Number of active suppressed paths.

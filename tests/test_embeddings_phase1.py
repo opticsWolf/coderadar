@@ -66,9 +66,11 @@ class TestKeyedDedup:
         first = ops.compute_embeddings()
         assert first["generated"] == first["total"] > 0
         assert first["errors"] == 0
+        assert first["persisted"] == first["total"]
         second = ops.compute_embeddings()
         assert second == {"generated": 0, "cached": first["total"],
-                          "total": first["total"], "errors": 0}
+                          "total": first["total"], "errors": 0,
+                          "persisted": 0}
 
     def test_legacy_bare_hash_regenerates_once(self, tiny):
         ops.compute_embeddings()
@@ -86,10 +88,6 @@ class TestKeyedDedup:
         assert rerun["generated"] == 0
 
     def test_docstring_change_rotates_key(self, tiny):
-        # Vectors are projection-side (ledger persistence is 0.13), so the
-        # precise docstring assertion is key rotation, not regen counts:
-        # alpha's key must change (docstring is IN the embed text) while
-        # beta's key stays stable across an incremental file update.
         ops.compute_embeddings()
         alpha_before = _core.lookup_entity("a.py::alpha")["embedding_hash"]
         beta_before = _core.lookup_entity("a.py::beta")["embedding_hash"]
@@ -99,9 +97,10 @@ class TestKeyedDedup:
         coderadar.CodeGraph().update_file("a.py")
         report = ops.compute_embeddings()
         # The file's vectors cleared on update; both regenerate, the
-        # untouched module stays cached.
+        # untouched module stays cached — and the regenerated rows persist.
         assert report["generated"] == 2
         assert report["cached"] == report["total"] - 2
+        assert report["persisted"] == 2
         alpha_after = _core.lookup_entity("a.py::alpha")["embedding_hash"]
         beta_after = _core.lookup_entity("a.py::beta")["embedding_hash"]
         assert alpha_after != alpha_before
@@ -175,4 +174,72 @@ class TestSimilarityStillWorks:
     def test_docstring_drives_ranking(self, tiny):
         ops.compute_embeddings()
         rows = ops.search_similar("alpha computation")
+        assert rows and rows[0]["id"] == "a.py::alpha"
+
+
+class TestRehydrate:
+    def test_rehydrate_after_restart(self, tiny):
+        from coderadar.embedding import embedding_settings
+        first = ops.compute_embeddings()
+        assert first["persisted"] == first["total"] > 0
+        model = embedding_settings()[0]
+        # Simulate a restart: a fresh analyze rebuilds memory (vectors
+        # gone) while the ledger keeps hashes (slices 1+3 flush) and the
+        # table keeps vectors (slice 2). The re-analyze flush must not
+        # wipe stored hashes (gate annotations exclude derived state) —
+        # so a cold load restores them and rehydrate refills the vecs.
+        coderadar.analyze(".", create_store=True)
+        coderadar.load(str(tiny / ".coderadar" / "store" / "coderadar.db"), ".")
+        assert _core.lookup_entity("a.py::alpha")["embedding_hash"]
+        assert not _core.lookup_entity("a.py::alpha").get("has_embedding")
+        rep = _core.rehydrate_embeddings(model)
+        assert rep["rehydrated"] == first["total"], rep
+        assert rep["skipped_no_hash"] == 0, rep
+        rows = ops.search_hybrid("compute the alpha", 3)
+        assert rows and rows[0]["id"] == "a.py::alpha"
+
+
+class TestHybrid:
+    def test_hybrid_fuses_both_arms(self, tiny):
+        ops.compute_embeddings()
+        rows = ops.search_hybrid("compute the alpha", 3)
+        assert rows and rows[0]["id"] == "a.py::alpha"
+        top = rows[0]
+        assert {"id", "score", "vector_rank", "keyword_rank",
+                "name", "kind"} <= set(top)
+        assert top["vector_rank"] is not None
+        assert top["keyword_rank"] is not None
+
+    def test_hybrid_rejects_empty_query(self, tiny):
+        with pytest.raises(ops.InvalidRequest):
+            ops.search_hybrid("   ")
+
+class TestSimilarOnTables:
+    """DR-11 epilogue: `search_similar` reads the persisted model table,
+    so a fresh analyze (empty in-memory vecs by design) answers without
+    triggering a recompute."""
+
+    def test_similar_after_reanalyze_needs_no_recompute(self, tiny, monkeypatch):
+        ops.compute_embeddings()
+        before = ops.search_similar("compute the alpha")
+        assert before and before[0]["id"] == "a.py::alpha"
+        # Fresh analyze clears memory vecs; the ledger table persists.
+        coderadar.analyze(".", create_store=True)
+        monkeypatch.setattr(
+            ops, "compute_embeddings",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("recompute must not run — the table has the vectors")),
+        )
+        after = ops.search_similar("compute the alpha")
+        assert [r["id"] for r in after] == [r["id"] for r in before]
+        assert all("similarity" in r for r in after)
+
+    def test_similar_raw_vector_reads_table(self, tiny):
+        # Raw-vector queries never auto-compute: on the table path they
+        # score, without it they are honestly empty.
+        ops.compute_embeddings()
+        coderadar.analyze(".", create_store=True)
+        model = ops._embedding_model()
+        vec = [float(x) for x in next(iter(model.embed(["compute the alpha"])))]
+        rows = ops.search_similar(vec)
         assert rows and rows[0]["id"] == "a.py::alpha"

@@ -664,6 +664,7 @@ mod tests {
             line: 1,
             col: 0,
             name_span: Default::default(),
+            args_span: None,
         };
         let result = orchestrator.resolve_single_call(&call, &import_graph);
         assert!(matches!(result, ResolvedCall::Builtin(s) if s == "print"));
@@ -679,6 +680,7 @@ mod tests {
             line: 42,
             col: 4,
             name_span: Default::default(),
+            args_span: None,
         };
         let result = orchestrator.resolve_single_call(&call, &import_graph);
         assert!(matches!(result, ResolvedCall::External(s) if s == "unknown_secret_sauce"));

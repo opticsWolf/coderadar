@@ -1,4 +1,4 @@
-# CodeRadar v0.12.0
+# CodeRadar v0.13.0
 
 [![CI](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml/badge.svg)](https://github.com/opticsWolf/coderadar/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/coderadar-rs?label=pypi)](https://pypi.org/project/coderadar-rs/)
@@ -48,7 +48,7 @@ CodeRadar wins on small-to-medium Python/Rust projects due to zero runtime boot 
 > Operator cheat sheet: [`docs/QUICKREF.md`](docs/QUICKREF.md).
 
 ```
-Surfaces (MCP 26 tools, CLI, Python CodeGraph — one name per op)
+Surfaces (MCP 27 tools, CLI, Python CodeGraph — one name per op)
         │
     ops.py (shared validated op layer)  +  synthetic-edge bridge
         │
@@ -62,8 +62,8 @@ Rust _core (single-pass extraction, 41 grammars, resolve cascade L1-L4,
 | Metric | Value |
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
-| **Tests** | 1512 passing (434 Rust + 1078 Python) |
-| **Operations** | One name per graph operation on every surface that serves it: MCP tool `coderadar_<op>`, CLI command `coderadar <op>` (hyphenated), `CodeGraph.<op>()` — 26 ops (25 graph operations + `set_project` project switching, CLI: `-C`): explore, node, search, affected, resolve, query, search_similar, compute_embeddings, module_children, callers, callees, diagnose, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, replace_body, update_signature, rename, create_entity, reindex, update_file, status, set_project. `search_symbols` (keyword search) and `archive` (retention) are Python-API-only by design; `visualize`, `shell`, `git`, `exclude`, `watch`, `init`, `load-snapshot`, `store-repair` stay CLI-side (local-process concerns) — see the step-4 surface verdict in the v0.12 deviations log |
+| **Tests** | 1543 tests (434 Rust + 1109 Python) |
+| **Operations** | One name per graph operation on every surface that serves it: MCP tool `coderadar_<op>`, CLI command `coderadar <op>` (hyphenated), `CodeGraph.<op>()` — 27 ops (26 graph operations + `set_project` project switching, CLI: `-C`): explore, node, search, affected, resolve, query, search_similar, search_hybrid, compute_embeddings, module_children, callers, callees, diagnose, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, replace_body, update_signature, rename, create_entity, reindex, update_file, status, set_project. `search_symbols` (keyword search) and `archive` (retention) are Python-API-only by design; `visualize`, `shell`, `git`, `exclude`, `watch`, `init`, `load-snapshot`, `store-repair` stay CLI-side (local-process concerns) — see the step-4 surface verdict in the v0.12 deviations log |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
 | **Agents** | MCP server over stdio — finds the project root, indexes in the background, and exits with its client |
@@ -104,11 +104,17 @@ coderadar visualize call-graph --format graphviz -o calls.dot
 
 # Serve the graph to an MCP client (Claude Code, Cursor, ...)
 coderadar mcp serve
+
+# Install the bundled agent skill packs (Claude Code, OpenCode, ...)
+coderadar skills install
+
+# Read a bundled reference (query language + every selectable field)
+coderadar docs query-language
 ```
 
-> **0.13 removal notice.** The old CLI spellings (`analyze`, `rebuild`,
-> `update`, `stats`, `blame`, `git-clean`, `git-diff`) still work but are
-> hidden; they are removed in 0.13. Use `reindex`, `update-file`, `status`,
+> **0.13 removal.** The old CLI spellings (`analyze`, `rebuild`,
+> `update`, `stats`, `blame`, `git-clean`, `git-diff`) no longer exist.
+> Use `reindex`, `update-file`, `status`,
 > and `git blame` / `git is-clean` / `git diff`.
 
 ## Python API
@@ -137,7 +143,7 @@ entity = graph.node("src/services.py::UserService.create", include_neighbors=Tru
 callers = graph.callers("views.py::user_detail")  # includes framework edges
 impact = graph.affected("src/auth.py::validate_user", max_depth=3)
 
-# Walk calls / imports / extends / overrides (edge_kinds=None walks all four);
+# Walk all eight assertable edge kinds (edge_kinds=None walks all eight);
 # full entity rows, the start node at depth 0
 rows = graph.traverse("src/auth.py::validate_user", direction="upstream", max_depth=3)
 
@@ -332,9 +338,12 @@ agent enablement — the full v0.12 plan per its release gate (see
 - **Embeddings Phase 1 (DR-11).** Model id + preprocessing in the dedup key,
   write/query dimension gates, `recompute` flag on every surface;
   persistence stays 0.13.
-- **Agent enablement (P2).** `skills/coderadar-mcp` + `skills/coderadar-cli`
-  (repo source of truth, registry drift-tested), release-gate history proof
-  (`as_of` → old/new names *and* bytes), read-path discipline pinned.
+- **Agent enablement (P2).** `coderadar/skills/coderadar-mcp` +
+  `coderadar/skills/coderadar-cli` (source of truth, bundled in the wheel,
+  registry drift-tested); `coderadar skills install` copies both packs into
+  `~/.claude/skills` and `~/.config/opencode/skills` (`--dest`/`--project`
+  for other harnesses). Release-gate history proof (`as_of` → old/new names
+  *and* bytes), read-path discipline pinned.
 - **Upstream fix.** `macrame-db` 0.19.1 repairs the historical loader
   (opticsWolf/Macrame#3) via the bitemporal composition; the rename-fixture
   reproducer is green and un-ignored, production stays on the state fold by
@@ -343,7 +352,7 @@ agent enablement — the full v0.12 plan per its release gate (see
 ## Feature highlights — v0.5 → v0.11
 
 Everything below shipped before v0.12 and still holds. Per-version detail
-lives in `CHANGELOG.md`; the numbers are CI-guarded (1512 tests and
+lives in `CHANGELOG.md`; the numbers are CI-guarded (1543 tests and
 counting, clippy/ruff/fmt green and blocking, 100/100 resolution
 precision-recall on the benchmark corpus).
 
@@ -388,16 +397,16 @@ a content hash (stale writes rejected), the written file must parse
 and method renames cascade. Dry-run unless applied; the allow-list is
 root-anchored; the watcher's write guard skips the engine's own writes.
 
-**Surfaces.** 26 operations, one name each — `coderadar_<op>` (MCP),
+**Surfaces.** 27 operations, one name each — `coderadar_<op>` (MCP),
 `coderadar <op>` (CLI), `CodeGraph.<op>()` — all calling one shared `ops`
 function, pinned by parity tests. CLI takes `--format json`, logs to
 stderr (exit 2 bad input, 1 otherwise), pipes UTF-8 everywhere; `status`
 reports project, config, store, and freshness.
 
 
-### Renamed in v0.11 (removed in 0.13)
+### Renamed in v0.11 (aliases removed in 0.13)
 
-Old names still work with a `DeprecationWarning` or a stderr note, hidden from `--help`.
+Old CLI and Python names no longer exist.
 Update client allow-lists and scripts that call tools by name: the 17 `codegraph_*` tools are now `coderadar_*`, and `node`/`affected` take `entity_id`.
 
 | Old | New |
@@ -445,23 +454,26 @@ py_agent/src/coderadar/    # Python layer
     resolvers/             # 13 framework resolvers: Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router
     embedding/             # Content-addressed dedup
     agent/                 # GraphRAG query pipeline
+    docs/                  # Bundled references (query-language.md)
     lsp/                   # Persistent LSP warm pool
     mutation/              # Tool router for LLM
     mcp/                   # MCP server
-      server.py            #   26 tools + guidance
+      server.py            #   27 tools + guidance
       roots.py             #   project-root ladder and marker walk-up
       startup.py           #   background index, ensure_ready()
       lazy.py              #   roots/list retry on the first tool call
       lifecycle.py         #   handshake timeout, parent watchdog, teardown
     query/                 # Query planner + templates + cache
+    skills/                # Agent skill packs (SKILL.md), bundled in the wheel
     visualizers/           # Mermaid + Graphviz (SCC cycle highlighting)
 
 docs/                      # Live doc set: ARCHITECTURE.md (system design),
                            #   QUICKREF.md (operator cheat sheet), v0.12 trio +
-                           #   deviations, store-and-retention, query-language
-                           #   (generated), smell reference, open-items,
-                           #   BUGS_QUIRKS. Retired docs live in OKFgraph.
-tests/                     # 1078 Python tests (E2E incl. dead-code/clones/scaffold/CFG/
+                           #   deviations, store-and-retention, smell reference,
+                           #   open-items, BUGS_QUIRKS. Retired docs live in
+                           #   OKFgraph. The generated query-language reference
+                           #   ships in the package (`coderadar docs`).
+tests/                     # 1109 Python tests (E2E incl. dead-code/clones/scaffold/CFG/
                            #   centrality/dead-branch/RTA goldens, mutation E2E, MCP,
                            #   framework resolvers, ingest parity, benchmarks)
   mcp/                     # Root resolution, background init, lifecycle, project_path

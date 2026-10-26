@@ -9,6 +9,9 @@
 (interface_declaration
   name: (identifier) @class.name) @class.def
 
+(annotation_type_declaration
+  name: (identifier) @class.name) @class.def
+
 ;; ── Methods / Functions ────────────────────────────────────────────
 
 (method_declaration
