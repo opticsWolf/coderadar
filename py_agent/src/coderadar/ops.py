@@ -84,7 +84,7 @@ __all__ = [
 #: bound to the project it was loaded for.
 OPERATIONS = (
     "explore", "node", "search", "affected", "resolve", "query",
-    "search_similar", "compute_embeddings", "module_children", "as_of",
+    "search_similar", "search_hybrid", "compute_embeddings", "module_children", "as_of",
     "traverse", "get_smells", "dead_code", "find_clones", "find_scaffolding",
     "replace_body", "update_signature", "rename", "create_entity",
     "reindex", "update_file", "status", "set_project",

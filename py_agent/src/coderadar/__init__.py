@@ -646,6 +646,19 @@ class CodeGraph:
         from . import ops
         return ops.search_similar(query, top_k)
 
+    @_bound_to_loaded_project
+    def search_hybrid(
+        self, query: str | list[float], top_k: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Hybrid keyword+vector search, RRF-fused (MCP ``coderadar_search_hybrid``).
+
+        Same query shape as ``search_similar`` (natural language or a
+        ready vector); each row carries both ``vector_rank`` and
+        ``keyword_rank`` per-arm evidence alongside the fused ``score``.
+        """
+        from . import ops
+        return ops.search_hybrid(query, top_k)
+
     def compute_embeddings(self, model_name: str | None = None,
                            batch_size: int = 32,
                            recompute: bool = False) -> dict[str, int]:

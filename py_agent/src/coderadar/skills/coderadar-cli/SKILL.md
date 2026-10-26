@@ -75,6 +75,7 @@ coderadar dead-code [--min-confidence 0.6] [--include-test-reachable] [--max-fin
 coderadar find-clones [--min-lines 10] [--min-similarity 0.8] [--max-groups 100]
 coderadar find-scaffolding [--include-secrets] [--max-findings 100]
 coderadar search-similar 'error handling' [--top-k 10]   # needs embeddings
+coderadar search-hybrid 'error handling' [--top-k 10]    # RRF keyword+semantic, needs embeddings
 coderadar compute-embeddings [--model NAME] [--batch-size 32] [--recompute]
 coderadar status [--format json]
 ```

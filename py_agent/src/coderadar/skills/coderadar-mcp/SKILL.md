@@ -47,6 +47,7 @@ this changes, what did this look like at time T, where are the smells.
 | `coderadar_affected` | blast radius of a change |
 | `ops.search_symbols` (API-only) | keyword search over symbol text — MCP/CLI binding deferred, use the Python API |
 | `coderadar_search_similar` | semantic search (needs embeddings first) |
+| `coderadar_search_hybrid` | RRF-fused keyword + semantic (needs embeddings first) |
 | `coderadar_compute_embeddings` | build vectors; `recompute=true` on model switch |
 | `coderadar_diagnose` | unresolved refs, ambiguous edges |
 | `coderadar_get_smells` / `coderadar_dead_code` | smells / entry-point-aware dead code |
@@ -97,6 +98,7 @@ coderadar_dead_code(min_confidence=0.6, include_test_reachable=False, max_findin
 coderadar_find_clones(min_lines=10, min_similarity=0.8, max_groups=100)
 coderadar_find_scaffolding(include_secrets=False, max_findings=100)
 coderadar_search_similar(query, top_k=10)
+coderadar_search_hybrid(query, top_k=10)
 coderadar_compute_embeddings(model_name=None, recompute=False)
 ```
 
