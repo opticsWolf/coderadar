@@ -277,6 +277,14 @@ with per-arm `depth` reads and deterministic `score-desc/id-asc` ordering.
 > diagnostic connection, surfaced as `ops.search_hybrid` (auto-compute
 > retry mirroring `search_similar`), MCP `coderadar_search_hybrid`, and
 > CLI `search-hybrid`. Commits `1c84de4`, `ea948fd`, `48d9bfc` + this one.
+> **Epilogue (dev): `search_similar` reads the table too.** The
+> vector arm was still memory-only, so a fresh analyze forced a recompute
+> before it could answer. `search_similar` now dispatches to the single
+> registered model table at the query width (ambiguous widths error
+> naming the tables; no table falls back to the memory scan, preserving
+> storeless and never-persisted flows). Post-rebuild verification:
+> `tests/test_embeddings_phase1.py::TestSimilarOnTables` (no-recompute
+> after re-analyze, raw vector scores from the table).
 
 ---
 

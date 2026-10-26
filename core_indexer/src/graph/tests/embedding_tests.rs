@@ -586,3 +586,84 @@ fn test_search_hybrid_fuses_keyword_and_vector_arms() {
         .unwrap_err();
     assert!(format!("{err:?}").contains("no_such_model"), "{err:?}");
 }
+
+#[test]
+fn test_model_tables_at_dim_finds_single_width() {
+    // DR-11 epilogue: search_similar names its vector arm by query width.
+    use crate::storage::CodeGraphStore;
+    let dir = tempfile::tempdir().unwrap();
+    let store = CodeGraphStore::open(dir.path().join("ep.db")).unwrap();
+    assert!(store.model_tables_at_dim(4).unwrap().is_empty());
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(&graph, "def alpha():\n    pass\n", "a.py");
+    index_source(&graph, "def beta():\n    pass\n", "b.py");
+    graph
+        .set_embeddings_bulk(vec![
+            (
+                "a.py::alpha".into(),
+                vec![1.0, 0.0, 0.0, 0.0],
+                "m#ep#a".into(),
+            ),
+            (
+                "b.py::beta".into(),
+                vec![0.0, 1.0, 0.0, 0.0],
+                "m#ep#b".into(),
+            ),
+        ])
+        .unwrap();
+    let snap = graph.snapshot();
+    let now = crate::storage::now_iso8601();
+    let mk = |id: &str| {
+        macrame::ConceptUpsert::new(id, id)
+            .content("{\"kind\":\"function\"}")
+            .valid_from(now.clone())
+            .valid_to(crate::storage::TS_OPEN.to_string())
+            .retired(false)
+    };
+    store
+        .upsert_concepts_bulk(&[mk("a.py::alpha"), mk("b.py::beta")])
+        .unwrap();
+    store
+        .persist_projection_embeddings(
+            "epilogue_a",
+            &snap,
+            &[
+                ("a.py::alpha".to_string(), "m#ep#a".to_string()),
+                ("b.py::beta".to_string(), "m#ep#b".to_string()),
+            ],
+        )
+        .unwrap();
+    assert_eq!(store.model_tables_at_dim(4).unwrap(), vec!["epilogue_a"]);
+    assert!(store.model_tables_at_dim(3).unwrap().is_empty());
+    // A second model at the same width is two hits — the FFI dispatch
+    // turns that into an explicit ambiguous-tables error, never a blend.
+    store
+        .persist_projection_embeddings(
+            "epilogue_b",
+            &snap,
+            &[
+                ("a.py::alpha".to_string(), "m#ep#a".to_string()),
+                ("b.py::beta".to_string(), "m#ep#b".to_string()),
+            ],
+        )
+        .unwrap();
+    let mut hits = store.model_tables_at_dim(4).unwrap();
+    hits.sort();
+    assert_eq!(hits, vec!["epilogue_a", "epilogue_b"]);
+}
+
+#[test]
+fn test_rank_table_rows_orders_by_cosine() {
+    // Interpreter-free pin of the epilogue scoring step: the rows read
+    // back from the table rank in cosine order before materialization.
+    use crate::rank_table_rows;
+    let rows = vec![
+        ("b.py::beta".to_string(), vec![0.0f32, 1.0, 0.0, 0.0]),
+        ("a.py::alpha".to_string(), vec![1.0f32, 0.0, 0.0, 0.0]),
+    ];
+    let mut ranked = rank_table_rows(&[1.0, 0.0, 0.0, 0.0], &rows);
+    ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    assert_eq!(ranked[0].1, "a.py::alpha");
+    assert!((ranked[0].0 - 1.0).abs() < 1e-9);
+    assert_eq!(ranked[1].1, "b.py::beta");
+}

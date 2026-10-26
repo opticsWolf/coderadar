@@ -771,6 +771,40 @@ impl CodeGraphStore {
         })
     }
 
+    /// Tables registered for one embedding width (DR-11 epilogue).
+    ///
+    /// `search_similar` must name its vector arm without Python passing a
+    /// model: tables whose declared dimension matches the query width are
+    /// candidates. Returns inner normalized model names, feedable back
+    /// into `read_model_vectors` (normalization is idempotent). A store
+    /// with no embedding tables yields empty, never an error — the caller
+    /// falls back to the legacy memory scan.
+    pub fn model_tables_at_dim(&self, dim: usize) -> macrame::Result<Vec<String>> {
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut q = conn
+                .query(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'embeddings\\_%' ESCAPE '\\'",
+                    Vec::<libsql::Value>::new(),
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut hits = Vec::new();
+            while let Some(row) = q.next().await.map_err(macrame::DbError::Engine)? {
+                let table: String = row.get(0).map_err(macrame::DbError::Engine)?;
+                let inner = table
+                    .strip_prefix("embeddings_")
+                    .unwrap_or(&table)
+                    .to_string();
+                let model = macrame_model_name(&inner)?;
+                if macrame::vector::declared_dimension(&conn, &model).await? == dim {
+                    hits.push(inner);
+                }
+            }
+            Ok(hits)
+        })
+    }
+
     /// Write `embedding_hash` into stored concept JSON for `(id, hash)`
     /// pairs (DR-11 slice 3). Read-modify-write preserving title and
     /// retired: only the `embedding_hash` key changes. `extra` is

@@ -3178,11 +3178,104 @@ fn search_hybrid(
 }
 
 /// Vector similarity search against entity embeddings.
-/// Uses cosine similarity against stored embedding vectors.
+///
+/// DR-11 epilogue: the persisted per-model table is the source of truth,
+/// not the in-memory vecs. After `analyze()` memory vecs are empty by
+/// design (vectors live in the ledger tables) — the old memory-only scan
+/// came back empty and forced a recompute. The single registered model
+/// table at the query width is scanned instead; no table at this width
+/// (or no store) falls back to the legacy memory scan, which preserves
+/// `set_embeddings_bulk`-without-persist flows and honest emptiness
+/// (Python auto-computes on `[]`).
 /// Scans ALL entity types (functions, classes, modules, imports, constants, type aliases).
 #[pyfunction]
 fn search_similar(py: Python<'_>, query_vec: Vec<f64>, top_k: usize) -> PyResult<Vec<PyObject>> {
-    with_graph(|_graph, snap| {
+    with_graph(|graph, snap| {
+        if let Some(store) = graph.store.as_ref() {
+            match store
+                .model_tables_at_dim(query_vec.len())
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))
+            {
+                Ok(hits) if hits.len() == 1 => {
+                    return table_search_similar(py, store, snap, &hits[0], &query_vec, top_k);
+                }
+                Ok(hits) if hits.len() > 1 => {
+                    let tables: Vec<String> =
+                        hits.iter().map(|m| format!("embeddings_{m}")).collect();
+                    return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "embedding dimension {} matches {} model tables ({}) — one model per store is the contract. \
+                         Recompute from clean with a single model: compute_embeddings(recompute=True).",
+                        query_vec.len(),
+                        tables.len(),
+                        tables.join(", ")
+                    )));
+                }
+                // No table at this width, or the diagnostic read failed:
+                // the memory scan below is the old behavior exactly.
+                Ok(_) | Err(_) => {}
+            }
+        }
+        memory_search_similar(py, snap, &query_vec, top_k)
+    })
+}
+
+/// Score one persisted model table's rows against the query (DR-11 epilogue).
+///
+/// The finder already matched the declared dimension; re-check against the
+/// rows read (cheap race-proofing — a concurrent recompute with another
+/// model between the two reads must error, never score across widths).
+fn table_search_similar(
+    py: Python<'_>,
+    store: &crate::storage::CodeGraphStore,
+    snap: &ProjectedGraph,
+    model_inner: &str,
+    query_vec: &[f64],
+    top_k: usize,
+) -> PyResult<Vec<PyObject>> {
+    let mv = store
+        .read_model_vectors(model_inner)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))?;
+    if mv.rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    if mv.dimension != query_vec.len() {
+        return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "embedding dimension mismatch: query is {}-dim but {} holds {}-dim vectors \
+             (model switch at query time?). Recompute from clean: compute_embeddings(recompute=True).",
+            query_vec.len(),
+            mv.model_table,
+            mv.dimension
+        )));
+    }
+    let scored = rank_table_rows(query_vec, &mv.rows);
+    Ok(materialize_scored(py, snap, scored, top_k))
+}
+
+/// Pure cosine ranking over one model table's rows (DR-11 epilogue).
+/// Kept interpreter-free so lib tests can pin the ordering without
+/// a Python interpreter; the FFI arms only materialize its output.
+pub(crate) fn rank_table_rows(
+    query_vec: &[f64],
+    rows: &[(String, Vec<f32>)],
+) -> Vec<(f64, String)> {
+    rows.iter()
+        .map(|(id, v)| {
+            let v64: Vec<f64> = v.iter().map(|x| *x as f64).collect();
+            (cosine_similarity(query_vec, &v64), id.clone())
+        })
+        .collect()
+}
+
+/// Legacy in-memory scan: the pre-epilogue `search_similar` body, kept as
+/// the no-table fallback (storeless graphs, `set_embeddings_bulk` flows
+/// that never persisted, honest emptiness for Python's auto-compute).
+fn memory_search_similar(
+    py: Python<'_>,
+    snap: &ProjectedGraph,
+    query_vec: &[f64],
+    top_k: usize,
+) -> PyResult<Vec<PyObject>> {
+    {
         // DR-11 dimension gate (query side): mixed store widths or a query
         // width the store never saw used to score 0.0 everywhere — ranked
         // nonsense. Fail explicitly with the recompute remedy instead.
@@ -3240,7 +3333,7 @@ fn search_similar(py: Python<'_>, query_vec: Vec<f64>, top_k: usize) -> PyResult
         // Scan all entity maps for non-empty embeddings
         let collect = |scored: &mut Vec<(f64, String)>, id: &str, emb: &EmbeddingVec| {
             if !emb.vec.is_empty() {
-                let sim = cosine_similarity(&query_vec, &emb.vec);
+                let sim = cosine_similarity(query_vec, &emb.vec);
                 scored.push((sim, id.to_string()));
             }
         };
@@ -3264,51 +3357,61 @@ fn search_similar(py: Python<'_>, query_vec: Vec<f64>, top_k: usize) -> PyResult
             collect(&mut scored, id, &ta.embedding);
         }
 
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(top_k);
+        Ok(materialize_scored(py, snap, scored, top_k))
+    }
+}
 
-        let results: Vec<PyObject> = scored
-            .into_iter()
-            .filter_map(|(sim, id)| {
-                let dict: Option<PyObject> = snap
-                    .functions
-                    .get(&id)
-                    .and_then(|f| function_to_dict(py, f).ok())
-                    .or_else(|| {
-                        snap.classes
-                            .get(&id)
-                            .and_then(|c| class_to_dict(py, c).ok())
-                    })
-                    .or_else(|| {
-                        snap.modules
-                            .get(&id)
-                            .and_then(|m| module_to_dict(py, m).ok())
-                    })
-                    .or_else(|| {
-                        snap.imports
-                            .get(&id)
-                            .and_then(|i| import_to_dict(py, i).ok())
-                    })
-                    .or_else(|| {
-                        snap.constants
-                            .get(&id)
-                            .and_then(|c| constant_to_dict(py, c).ok())
-                    })
-                    .or_else(|| {
-                        snap.type_aliases
-                            .get(&id)
-                            .and_then(|ta| type_alias_to_dict(py, ta).ok())
-                    });
-                dict.inspect(|d| {
-                    if let Ok(dict) = d.downcast_bound::<PyDict>(py) {
-                        let _ = dict.set_item("similarity", sim);
-                    }
+/// Rank, truncate and materialize scored ids (shared tail of the table
+/// and memory arms). Ids missing from the snapshot are dropped: a table
+/// row for a pruned entity scores but cannot display.
+fn materialize_scored(
+    py: Python<'_>,
+    snap: &ProjectedGraph,
+    scored: Vec<(f64, String)>,
+    top_k: usize,
+) -> Vec<PyObject> {
+    let mut scored = scored;
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(top_k);
+    scored
+        .into_iter()
+        .filter_map(|(sim, id)| {
+            let dict: Option<PyObject> = snap
+                .functions
+                .get(&id)
+                .and_then(|f| function_to_dict(py, f).ok())
+                .or_else(|| {
+                    snap.classes
+                        .get(&id)
+                        .and_then(|c| class_to_dict(py, c).ok())
                 })
+                .or_else(|| {
+                    snap.modules
+                        .get(&id)
+                        .and_then(|m| module_to_dict(py, m).ok())
+                })
+                .or_else(|| {
+                    snap.imports
+                        .get(&id)
+                        .and_then(|i| import_to_dict(py, i).ok())
+                })
+                .or_else(|| {
+                    snap.constants
+                        .get(&id)
+                        .and_then(|c| constant_to_dict(py, c).ok())
+                })
+                .or_else(|| {
+                    snap.type_aliases
+                        .get(&id)
+                        .and_then(|ta| type_alias_to_dict(py, ta).ok())
+                });
+            dict.inspect(|d| {
+                if let Ok(dict) = d.downcast_bound::<PyDict>(py) {
+                    let _ = dict.set_item("similarity", sim);
+                }
             })
-            .collect();
-
-        Ok(results)
-    })
+        })
+        .collect()
 }
 
 /// Cosine similarity between two vectors.

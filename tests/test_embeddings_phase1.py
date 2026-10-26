@@ -213,3 +213,33 @@ class TestHybrid:
     def test_hybrid_rejects_empty_query(self, tiny):
         with pytest.raises(ops.InvalidRequest):
             ops.search_hybrid("   ")
+
+class TestSimilarOnTables:
+    """DR-11 epilogue: `search_similar` reads the persisted model table,
+    so a fresh analyze (empty in-memory vecs by design) answers without
+    triggering a recompute."""
+
+    def test_similar_after_reanalyze_needs_no_recompute(self, tiny, monkeypatch):
+        ops.compute_embeddings()
+        before = ops.search_similar("compute the alpha")
+        assert before and before[0]["id"] == "a.py::alpha"
+        # Fresh analyze clears memory vecs; the ledger table persists.
+        coderadar.analyze(".", create_store=True)
+        monkeypatch.setattr(
+            ops, "compute_embeddings",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("recompute must not run — the table has the vectors")),
+        )
+        after = ops.search_similar("compute the alpha")
+        assert [r["id"] for r in after] == [r["id"] for r in before]
+        assert all("similarity" in r for r in after)
+
+    def test_similar_raw_vector_reads_table(self, tiny):
+        # Raw-vector queries never auto-compute: on the table path they
+        # score, without it they are honestly empty.
+        ops.compute_embeddings()
+        coderadar.analyze(".", create_store=True)
+        model = ops._embedding_model()
+        vec = [float(x) for x in next(iter(model.embed(["compute the alpha"])))]
+        rows = ops.search_similar(vec)
+        assert rows and rows[0]["id"] == "a.py::alpha"

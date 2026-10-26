@@ -1032,7 +1032,10 @@ def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
 
     `query` is natural language (embedded locally with fastembed; at most
     20 results, and embeddings are computed on first use) or a ready
-    embedding vector. Results carry ``similarity``, ``name``, ``kind`` and
+    embedding vector. Candidates come from the persisted model table, so a
+    fresh analyze (empty in-memory vectors) answers without a recompute;
+    raw vectors never trigger the auto-compute — without a matching table
+    they return []. Results carry ``similarity``, ``name``, ``kind`` and
     the file.
     """
     from coderadar._core import search_similar as _ss
