@@ -48,7 +48,7 @@ CodeRadar wins on small-to-medium Python/Rust projects due to zero runtime boot 
 > Operator cheat sheet: [`docs/QUICKREF.md`](docs/QUICKREF.md).
 
 ```
-Surfaces (MCP 26 tools, CLI, Python CodeGraph — one name per op)
+Surfaces (MCP 27 tools, CLI, Python CodeGraph — one name per op)
         │
     ops.py (shared validated op layer)  +  synthetic-edge bridge
         │
@@ -63,7 +63,7 @@ Rust _core (single-pass extraction, 41 grammars, resolve cascade L1-L4,
 |--------|-------|
 | **Languages indexed** | 41 (12 Tier 1, 29 Tier 2, 330+ Tier 3) |
 | **Tests** | 1543 tests (434 Rust + 1109 Python) |
-| **Operations** | One name per graph operation on every surface that serves it: MCP tool `coderadar_<op>`, CLI command `coderadar <op>` (hyphenated), `CodeGraph.<op>()` — 26 ops (25 graph operations + `set_project` project switching, CLI: `-C`): explore, node, search, affected, resolve, query, search_similar, compute_embeddings, module_children, callers, callees, diagnose, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, replace_body, update_signature, rename, create_entity, reindex, update_file, status, set_project. `search_symbols` (keyword search) and `archive` (retention) are Python-API-only by design; `visualize`, `shell`, `git`, `exclude`, `watch`, `init`, `load-snapshot`, `store-repair` stay CLI-side (local-process concerns) — see the step-4 surface verdict in the v0.12 deviations log |
+| **Operations** | One name per graph operation on every surface that serves it: MCP tool `coderadar_<op>`, CLI command `coderadar <op>` (hyphenated), `CodeGraph.<op>()` — 27 ops (26 graph operations + `set_project` project switching, CLI: `-C`): explore, node, search, affected, resolve, query, search_similar, search_hybrid, compute_embeddings, module_children, callers, callees, diagnose, as_of, traverse, get_smells, dead_code, find_clones, find_scaffolding, replace_body, update_signature, rename, create_entity, reindex, update_file, status, set_project. `search_symbols` (keyword search) and `archive` (retention) are Python-API-only by design; `visualize`, `shell`, `git`, `exclude`, `watch`, `init`, `load-snapshot`, `store-repair` stay CLI-side (local-process concerns) — see the step-4 surface verdict in the v0.12 deviations log |
 | **Query surface** | Pest structural + Macrame agent traversals + vector search |
 | **Frameworks** | Django, Flask, FastAPI, Go, Actix, Express, Spring Boot, Laravel, ASP.NET, Rails, NestJS, Vue Router, React Router |
 | **Agents** | MCP server over stdio — finds the project root, indexes in the background, and exits with its client |
@@ -458,7 +458,7 @@ py_agent/src/coderadar/    # Python layer
     lsp/                   # Persistent LSP warm pool
     mutation/              # Tool router for LLM
     mcp/                   # MCP server
-      server.py            #   26 tools + guidance
+      server.py            #   27 tools + guidance
       roots.py             #   project-root ladder and marker walk-up
       startup.py           #   background index, ensure_ready()
       lazy.py              #   roots/list retry on the first tool call
