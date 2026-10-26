@@ -309,8 +309,8 @@ try:
     names = []
     if tools_r and "result" in tools_r:
         names = [t.get("name", "") for t in tools_r["result"].get("tools", [])]
-    check(SEC, "mcp-tools-list-22", len(names) == 22, f"got {len(names)}: {names[:5]}")
-    ok22 = len(names) == 22
+    check(SEC, "mcp-tools-list-27", len(names) == 27, f"got {len(names)}: {names[:5]}")
+    ok22 = len(names) == 27
     if ok22:
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
               "params": {"name": "coderadar_search", "arguments": {"query": "combine", "top_k": 3}}})
@@ -457,12 +457,13 @@ check(SEC, "callers-canonical", isinstance(c1, list), f"n={len(c1) if isinstance
 cal = callees_of(RUN_ID)
 names = [c.get("name", c.get("id", "")) for c in cal] if isinstance(cal, list) else []
 check(SEC, "run-callees-include-combine-or-external", any("combine" in n for n in names), str(names)[:200])
-# R2-1 anchor, repointed v0.8.21: run has NO external callee anymore since
-# Issue 9 resolves combine -> helpers::combine (correctly). Probe a
-# genuinely-external call instead: makeStore -> new Store() (external::Store).
+# makeStore -> new Store() now resolves same-file (store.ts defines and
+# exports Store) instead of staying external:: — the old anchor assumed a
+# genuinely-external call, but same-file constructor resolution is the
+# better behavior. Pin the resolved id, not the external spelling.
 _ms_ext = next((h["id"] for h in search_entities("makeStore", 5, "function")), "")
 _ms_cal = callees_of(_ms_ext) if _ms_ext else []
-check(SEC, "external-callee-visible", any("external" in str(c.get("id", "")) for c in (_ms_cal if isinstance(_ms_cal, list) else [])), str([c.get("id", "?") for c in (_ms_cal if isinstance(_ms_cal, list) else [])])[:250])
+check(SEC, "samesite-ctor-resolves", any(c.get("id", "") == "store.ts::Store" for c in (_ms_cal if isinstance(_ms_cal, list) else [])), str([c.get("id", "?") for c in (_ms_cal if isinstance(_ms_cal, list) else [])])[:250])
 # Issue 9 probe: does run -> helpers.combine resolve naturally?
 resolved_helpers = any("helpers" in str(c.get("id", "")) for c in (cal if isinstance(cal, list) else []))
 check(SEC, "issue9-reexport-resolves", resolved_helpers, str(names)[:250])
@@ -562,3 +563,5 @@ for sec, name, status, detail in results:
     if status != "PASS":
         log(f"  FAIL {sec}/{name} — {detail}")
 log("FAIL-LIST-END")
+# CI gates on the exit code (manual runs just read the log).
+sys.exit(0 if npass == len(results) else 1)

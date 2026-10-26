@@ -105,3 +105,37 @@ jobs:
         # (0.16.x flags 950+ on a tree written pre-rule). Bump the pin
         # deliberately and clean to zero against the new version.
         run: uvx ruff@0.16.5 check py_agent/src tests
+
+  dogfood:
+    name: Dogfood battery (round 2)
+    runs-on: ubuntu-latest
+    # §3.2: `battery_round2.py` was manual dogfood (exit-0-only at the
+    # suite level) while covering all CLI commands + all MCP tools
+    # against a self-contained fixture (~90s). Wired here so surface
+    # drift fails the build instead of waiting for a human run.
+    # `battery_readonly` stays manual: it needs the repo's own
+    # (gitignored) store. `battery_mutation` stays manual: it rewrites
+    # the demo files with dry_run=False.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+
+      - name: Build + install
+        run: |
+          uv venv
+          uv pip install maturin
+          uv run maturin develop --release --manifest-path core_indexer/Cargo.toml
+          uv pip install -e ".[dev]"
+
+      - name: Run round-2 battery
+        run: uv run python tests/cr_edit_tests/battery_round2.py

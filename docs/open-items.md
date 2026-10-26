@@ -476,13 +476,21 @@ have that property and no test — see the v0.8 plan §4.
 >   ranks + ids), `explore` (the KeyError catch is documented in-file),
 >   mutation tools (e2e), traverse kinds, smells/dead-code goldens,
 >   staleness banner inputs.
-> - Watch-list, not defects: the `cr_edit_tests` batteries are manual
->   dogfood (no CI reference — verified), so battery-only coverage
->   (e.g. `callees`, `module_children`, `as_of` content paths) stays
->   one careless edit from silent; `render.py` per-command formatters
->   are covered only indirectly through MCP text tests where those
->   exist. Next hunt: promote the highest-value battery checks into
->   the suite or wire the batteries into CI.
+> - Watch-list, mostly closed (dev): the `cr_edit_tests` batteries were
+>   manual dogfood (no CI reference — verified) — `battery_round2.py`
+>   (all 22 CLI commands + all MCP tools against self-contained
+>   `r2proj`, ~90s) is now a CI `dogfood` job, gated on a new nonzero
+>   exit code; it immediately paid off, catching two stale pins (tool
+>   count 22→27 with the `tools/call` probe silently gated behind it,
+>   and an `external::Store` anchor that same-file constructor
+>   resolution had outgrown — now pins `store.ts::Store`). `render.py`
+>   formatters have direct unit tests (`tests/test_render.py`, 27
+>   tests, no `_core`); `callees` pinned at ops level.
+>   Remaining manual: `battery_readonly` (needs the repo's own
+>   gitignored store), `battery_mutation` (rewrites demos with
+>   dry_run=False), `battery_slop` (synthetic option matrix,
+>   unmeasured runtime); `as_of` content and MCP-text `module_children`
+>   stay thin.
 
 ---
 

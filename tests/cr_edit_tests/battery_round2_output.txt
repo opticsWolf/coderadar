@@ -52,7 +52,7 @@
 [PASS] cli/shell-help-stats-exit
 [PASS] cli/shell-query
 [PASS] cli/watch-reacts
-[PASS] cli/mcp-tools-list-22
+[PASS] cli/mcp-tools-list-27
 [PASS] cli/mcp-tools-call
 [PASS] cli/load-snapshot
 [PASS] cli/load-snapshot-wrong-root
@@ -108,7 +108,7 @@
 [PASS] mcp/set-project-bad-path-signals
 [PASS] surface/callers-canonical
 [PASS] surface/run-callees-include-combine-or-external
-[PASS] surface/external-callee-visible
+[PASS] surface/samesite-ctor-resolves
 [PASS] surface/issue9-reexport-resolves
 [PASS] surface/star-export-fn-indexed
 [PASS] surface/heartbeat-knob

@@ -206,3 +206,14 @@ def test_find_scaffolding_reports_todo_marker(tmp_path):
         os.chdir(previous)
     assert any(f["kind"] == "comment-marker" and "TODO" in f["label"]
                for f in findings if f["kind"] != "scan-stats"), findings
+
+
+def test_callees_lists_direct_callees(graph):
+    # `callees` was battery-only at the MCP layer (exit 0, no content).
+    # Fixture chain: entry -> Store.load -> helper.
+    entry = _id(graph, "entry")
+    load = next(h["id"] for h in graph.search("load")
+                if h["id"].endswith("Store.load"))
+    first = {c["id"] for c in graph.callees(entry)}
+    assert load in first, first
+    assert {c["id"] for c in graph.callees(load)} == {_id(graph, "helper")}
