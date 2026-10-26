@@ -1281,14 +1281,18 @@ impl Function {
 }
 
 impl Class {
-    /// True when this entity declares an interface rather than a class:
-    /// the `.scm` taggers capture `interface_declaration` as `@class`
-    /// (TypeScript, Java, C#, PHP), and `emit_class` keeps the raw node
-    /// kind in `grammar_kind`. Go `type X interface{...}`, Kotlin
-    /// `interface`, and Python `Protocol` bases are not detected yet —
-    /// their implementations resolve as EXTENDS (documented §2.6 gap).
+    /// True when this entity declares an interface rather than a class.
+    /// Two shapes: the raw `interface_declaration` kind (TypeScript,
+    /// Java, C#, PHP — captured as `@class` by the taggers), and the
+    /// `/interface`-suffixed kinds `emit_class` records for interface
+    /// declarations under class-like nodes — Go `type I interface`,
+    /// Kotlin `interface Foo`, Python `class P(Protocol)` (§2.6 detection
+    /// gaps), Swift `protocol` (suffixed all along by `classify_class_like`
+    /// but never matched until the suffix check landed). The suffix
+    /// round-trips through concept JSON, so cold-start re-partitioning
+    /// (EXTENDS vs IMPLEMENTS) sees the same answer as a fresh analyze.
     pub fn is_interface(&self) -> bool {
-        self.grammar_kind == "interface_declaration"
+        self.grammar_kind == "interface_declaration" || self.grammar_kind.ends_with("/interface")
     }
 
     /// Build a projected `Class` from an extracted one. See

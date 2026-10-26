@@ -278,8 +278,22 @@ from class inheritance in a traversal.
 > `implements` was missed entirely (Java `super_interfaces`, C# `base_list`,
 > PHP `class_interface_clause`; matched by node kind — field names are
 > unreliable across grammar versions). MRO still folds (reads unresolved
-> `bases`). Go/Kotlin/Protocol interfaces undetected (resolve
-> as EXTENDS — documented gap). Commit `e3eb350` (+ this one).
+> `bases`). Go/Kotlin/Protocol/Swift interfaces are now detected too
+> (dev): Go `type I interface` — embedded interfaces in `interface_type`
+> unfold as bases (`type_elem`-wrapped, `method_elem` excluded so
+> parameter types never leak); Kotlin `interface Foo` —
+> `delegation_specifier` unfolds like C# `base_list`; Python
+> `class P(Protocol)` — matched on the base name. `class_declares_interface`
+> (walker.rs) decides at extraction; `emit_class` records a
+> `/interface`-suffixed `grammar_kind` (round-trips through concept JSON,
+> so cold-start re-partitioning agrees) and `is_interface` matches the
+> suffix. Java annotations are descended (`extract_decorators` recurses
+> into `modifiers` for `marker_annotation`/`annotation`; C#
+> `attribute_list` in the same arm), and Java `@interface` declarations
+> are tagged as classes so annotation targets resolve. Remaining
+> micro-gaps: Go struct embedding (`struct { I }` — promotion, not
+> inheritance) and PHP `#[...]` attributes (the grammar parses the file
+> as text — parser-level, out of scope). Commit `e3eb350` (+ this one).
 >
 > Slice C (dev): DECORATES edges. `resolve_decorators` reduces decorator
 > text (`@validate`, dotted `@helpers.route("/x")`, applied, Rust `#[..]`,

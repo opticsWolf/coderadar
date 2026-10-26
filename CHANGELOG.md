@@ -24,6 +24,45 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
   per-command/per-tool reference (arguments, flags, defaults, edge-kind and
   rule-id lists) next to the task guidance, and drift tests fail when a
   command ships undocumented or a tool ships without a call signature.
+- Call-site cascade for `update_signature` (§2.3): call argument spans
+  are indexed at extraction, persisted as function-concept `call_sites`
+  (parallel to `resolved_calls`, cold-start rehydrated), and consumed by
+  `plan_signature_update` two ways — explicit `call_site_values` become
+  real edits after on-disk verification, and `inject_defaults` synthesizes
+  `name=default` keywords for pure-addition Python signatures. Removals,
+  reorderings, required params, non-Python callers, and stale spans keep
+  manual review.
+- Vector persistence and hybrid search (DR-11, §2.10): embedding vectors
+  persist to per-model `embeddings_<model>` tables (dedup hash rides the
+  concept JSON; rehydrate on cold load, hash flush at persist), and
+  `search_hybrid` fuses keyword + vector arms through Macrame's
+  `HybridSearch` (RRF, `RRF_K=60`), surfaced as `ops.search_hybrid`
+  (auto-compute retry mirroring `search_similar`), MCP
+  `coderadar_search_hybrid`, and CLI `search-hybrid`. Epilogue:
+  `search_similar` now reads the persisted table too (single registered
+  model at the query width; ambiguous widths error naming the tables; no
+  table falls back to the memory scan), so a fresh analyze answers
+  without a recompute.
+- All nine edge kinds populated (§2.6): `resolve_class_hierarchy` splits
+  IMPLEMENTS from EXTENDS by target declaration; new `resolve_decorators`
+  (DECORATES, unique-hits-only), `resolve_instantiations` (INSTANTIATES,
+  overlapping constructor CALLS), and `resolve_references` (REFERENCES,
+  overlap-free value references) run at all four cascade sites; `traverse`
+  serves every kind downstream/upstream on the CLI, `ops`, and MCP.
+- Field-type-aware CBO (§2.4): `coupling_between_objects` unions
+  field-annotation type names resolved through the base tiers
+  (same-module, import-aware, global-unique); stdlib names are skipped as
+  external, ambiguous/self annotations couple to nothing. Golden pins
+  hold (god-class fixture CBO stays 5.0).
+- Config-file path maps (§2.5): `tsconfig.json` (`baseUrl` + `paths`,
+  `extends` chains) and `pyproject.toml` (setuptools/poetry/hatch
+  src-layouts) are discovered per directory — root plus every nested
+  monorepo config, each anchored to its own dir — and the importer's
+  nearest scope wins at resolution, ahead of the old convention/suffix
+  fallbacks. Aliases match raw text before the `@/`→`src/` convention,
+  and configured candidates get an exact-path tier so nested same-tail
+  files can't steal the resolution.
+- Cross-platform path normalization fix for Ubuntu CI.
 
 ## 0.12.0 (2026-10-07)
 

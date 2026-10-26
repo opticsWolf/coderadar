@@ -495,8 +495,9 @@ IMPLEMENTS split from EXTENDS (TS/Java/C#/PHP), traverse both directions;
 all §1 + §2.1 + §3.1 resolved
 in v0.12; §2.4 landed on dev — field-type-aware CBO (cyclomatic already
 AST-based); §2.5 path maps, §2.6 done on dev (all 8 assertable kinds;
-remaining gaps are detection-only: Go/Kotlin/Protocol interfaces,
-Java annotations),
+detection gaps closed: Go/Kotlin/Protocol/Swift interfaces,
+Java annotations descended + `@interface` tagged, C# attributes;
+remaining micro-gaps: Go struct embedding, PHP attributes),
 §2.8 TS throughput, §2.9 SQLite internals still
 deferred; §2.2/§2.7 decided). Bugs/quirks:
 `CODERADAR_BUGS_QUIRKS.md` (9 fixed, #10 harness-side carried,

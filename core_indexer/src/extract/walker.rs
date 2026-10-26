@@ -33,6 +33,46 @@ pub fn classify_class_like(node: Node) -> &'static str {
     "class"
 }
 
+/// Interface test at extraction: true when `node` (a class-like the
+/// tagger captured as `@class.def`) declares an interface rather than a
+/// class. Covers what `Class::is_interface` cannot see from the raw
+/// `interface_declaration` kind alone (§2.6 detection gaps):
+///   Go `type I interface { ... }` — a `type_spec` whose type is
+///     `interface_type` (struct types and aliases return false);
+///   Kotlin `interface Foo` — a `class_declaration` with the `interface`
+///     keyword child (`class`/`object` return false);
+///   Python `class P(Protocol)` / `class P(typing.Protocol)` — the
+///     `Protocol` base (a local non-typing namesake would also match;
+///     same-name shadowing is accepted, as with stdlib base skipping).
+/// `emit_class` records a hit as a `/interface`-suffixed `grammar_kind`,
+/// which round-trips through concept JSON, so cold-start re-partitioning
+/// sees it. Go struct embedding (`struct { I }`) is deliberately out:
+/// anonymous fields are promotion, not inheritance.
+pub fn class_declares_interface(node: Node, bases: &[crate::types::UnresolvedRef]) -> bool {
+    let mut cursor = node.walk();
+    let kids: Vec<Node> = node.children(&mut cursor).collect();
+    match node.kind() {
+        // Go: `type I interface { ... }` — a `type_spec` whose type is
+        // `interface_type` (struct types and aliases return false).
+        "type_declaration" => kids.iter().any(|c| {
+            if c.kind() != "type_spec" {
+                return false;
+            }
+            let mut inner = c.walk();
+            let grand: Vec<Node> = c.children(&mut inner).collect();
+            grand.iter().any(|t| t.kind() == "interface_type")
+        }),
+        // Kotlin: `interface Foo` — the `interface` keyword child
+        // (`class` / `object` return false).
+        "class_declaration" => kids.iter().any(|c| c.kind() == "interface"),
+        // Python: `class P(Protocol)` / `class P(typing.Protocol)`.
+        "class_definition" => bases
+            .iter()
+            .any(|b| b.name == "Protocol" || b.name.ends_with(".Protocol")),
+        _ => false,
+    }
+}
+
 /// Parse an `import_statement` node: `import os`, `import os.path as p`
 /// Parse an `import_statement` node. Handles bare `import foo` /
 /// `import foo as bar` plus the TS/JS forms `import { ... } from '...'`,
@@ -724,7 +764,9 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
             // (c) C# mixed base lists — `class C : Base, IDisposable`.
             // Collected unfolded; resolve_class_hierarchy splits classes
             // (EXTENDS) from interfaces (IMPLEMENTS) by target kind (§2.6).
-            "base_list" => {
+            // Kotlin `delegation_specifier` (`class Bar : Foo`, `Foo()`)
+            // has the same unfold shape (§2.6 gap fix).
+            "base_list" | "delegation_specifier" => {
                 let mut stack = vec![n];
                 while let Some(x) = stack.pop() {
                     let mut c = x.walk();
@@ -734,6 +776,31 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
                         } else {
                             stack.push(k);
                         }
+                    }
+                }
+            }
+            // (d) Go embedded interfaces — `type J interface { I; M() }`:
+            // the embedded `I` sits in a `type_elem` wrapper (qualified
+            // `pkg.I`, unions, and `~T` terms unfold the same way), while
+            // method signatures nest inside `method_elem`. Seed the stack
+            // with every direct child EXCEPT `method_elem`, then unfold —
+            // parameter types never leak into bases. Go struct embedding
+            // (`struct{ I }`) stays out: anonymous fields are promotion,
+            // not inheritance.
+            "interface_type" => {
+                let mut c = n.walk();
+                let mut stack: Vec<Node> = n
+                    .children(&mut c)
+                    .filter(|k| k.kind() != "method_elem")
+                    .collect();
+                while let Some(x) = stack.pop() {
+                    if is_base_node_kind(x.kind()) {
+                        base_nodes.push(x);
+                        continue;
+                    }
+                    let mut c = x.walk();
+                    for k in x.children(&mut c) {
+                        stack.push(k);
                     }
                 }
             }
@@ -1153,13 +1220,23 @@ pub fn extract_decorators(node: Node, source: &str) -> Vec<String> {
     fn collect(parent: Node, source: &str, out: &mut Vec<String>) {
         let mut cursor = parent.walk();
         for child in parent.children(&mut cursor) {
-            // `decorator` (Python) and `attribute_item` (Rust `#[...]`,
-            // e.g. `#[pyfunction]` — the FFI bridge dead-code analysis
-            // must see it).
-            if child.kind() == "decorator" || child.kind() == "attribute_item" {
-                if let Ok(text) = child.utf8_text(source.as_bytes()) {
-                    out.push(text.trim().to_string());
+            match child.kind() {
+                // Python `@x`, Rust `#[...]`, TS `@Injectable`, Java
+                // `@Override` / `@SuppressWarnings(..)`, C# `[Test]`
+                // (inner `attribute` node text).
+                "decorator" | "attribute_item" | "marker_annotation" | "annotation"
+                | "attribute" => {
+                    if let Ok(text) = child.utf8_text(source.as_bytes()) {
+                        out.push(text.trim().to_string());
+                    }
                 }
+                // Java/Kotlin `modifiers` wrap annotations next to
+                // keywords (`public`, `static` — ignored by the match);
+                // C# `attribute_list` wraps `[..]` attributes. Neither
+                // wrapper can contain a nested declaration, so one-level
+                // recursion cannot misattribute another item's decorator.
+                "modifiers" | "attribute_list" => collect(child, source, out),
+                _ => {}
             }
         }
     }
@@ -1424,15 +1501,18 @@ mod decorator_capture_tests {
     use super::*;
 
     fn decorators_of(src: &str) -> Vec<String> {
-        let lang = crate::graph::CodeGraph::ts_language(&crate::types::Language::Rust)
-            .expect("rust grammar");
+        decorators_of_kind(src, crate::types::Language::Rust, "function_item")
+    }
+
+    fn decorators_of_kind(src: &str, lang: crate::types::Language, kind: &str) -> Vec<String> {
+        let ts = crate::graph::CodeGraph::ts_language(&lang).expect("grammar");
         let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&lang).unwrap();
+        parser.set_language(&ts).unwrap();
         let tree = parser.parse(src, None).unwrap();
         let root = tree.root_node();
         let mut stack = vec![root];
         while let Some(n) = stack.pop() {
-            if n.kind() == "function_item" {
+            if n.kind() == kind {
                 return extract_decorators(n, src);
             }
             let mut cursor = n.walk();
@@ -1440,7 +1520,7 @@ mod decorator_capture_tests {
                 stack.push(child);
             }
         }
-        panic!("no function_item in {src:?}");
+        panic!("no {kind} in {src:?}");
     }
 
     #[test]
@@ -1470,6 +1550,51 @@ mod decorator_capture_tests {
         );
         // Bare fn: nothing, and importantly no panic.
         assert!(decorators_of("fn f() {}\n").is_empty());
+    }
+
+    #[test]
+    fn java_annotations_are_captured() {
+        // §2.6 gap: Java annotations hide under `modifiers` — marker,
+        // valued, and method-level forms.
+        use crate::types::Language::Java;
+        assert_eq!(
+            decorators_of_kind("@Deprecated public class C {}\n", Java, "class_declaration"),
+            vec!["@Deprecated"]
+        );
+        assert_eq!(
+            decorators_of_kind(
+                "public class C { @SuppressWarnings(\"all\") public void m() {} }\n",
+                Java,
+                "method_declaration"
+            ),
+            vec!["@SuppressWarnings(\"all\")"]
+        );
+        assert_eq!(
+            decorators_of_kind(
+                "@Route(\"/x\") public class C {}\n",
+                Java,
+                "class_declaration"
+            ),
+            vec!["@Route(\"/x\")"]
+        );
+    }
+
+    #[test]
+    fn csharp_attributes_are_captured() {
+        // §2.6 gap (drive-by): C# attributes live in `attribute_list`.
+        use crate::types::Language::CSharp;
+        assert_eq!(
+            decorators_of_kind("[MyAttr] public class C {}\n", CSharp, "class_declaration"),
+            vec!["MyAttr"]
+        );
+        assert_eq!(
+            decorators_of_kind(
+                "public class C { [Test] public void M() {} }\n",
+                CSharp,
+                "method_declaration"
+            ),
+            vec!["Test"]
+        );
     }
 }
 
