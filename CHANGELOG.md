@@ -6,6 +6,13 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Removed the deprecated Python spellings alongside the CLI aliases:
+  `CodeGraph.find`, `CodeGraph.callers_of`/`callees_of`,
+  `CodeGraph.plan_body_replacement`/`plan_signature_update`, the legacy
+  `explore(start_id=…)` walk and `traverse(start_id=…)`/`edge_types=`
+  keywords, and `Snapshot.callers_of`/`callees_of`/`explore`. Canonical
+  names only: `node`, `callers`/`callees`, `plan_replace_body`/
+  `plan_update_signature`, `explore(query=…)`/`traverse(entity_id=…)`.
 - Removed the deprecated pre-0.13 CLI spellings: `analyze`, `rebuild`,
   `update`, `stats`, bare `blame`, `git-clean`, and `git-diff`, plus the
   `traverse` aliases `--edges`/`--depth` and direction aliases `in`/`out`.

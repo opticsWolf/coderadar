@@ -393,7 +393,7 @@ By design, not by omission: `search_symbols` + `archive` are Python-API-only
 concerns); `set_project` is `-C/--project` on the CLI with no Python form
 (it works on the cwd). Proven by `test_surface_parity.py` + `test_mcp.py` +
 `test_skill_drift.py` (skills are package data, so the wheel ships what
-the tests read; CLI old spellings removed in 0.13, DR-22).
+the tests read; CLI and Python deprecated spellings removed in 0.13, DR-22).
 
 ---
 

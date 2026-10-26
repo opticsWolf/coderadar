@@ -404,9 +404,9 @@ stderr (exit 2 bad input, 1 otherwise), pipes UTF-8 everywhere; `status`
 reports project, config, store, and freshness.
 
 
-### Renamed in v0.11 (CLI aliases removed in 0.13)
+### Renamed in v0.11 (aliases removed in 0.13)
 
-Old CLI names no longer exist. Python deprecated spellings still warn.
+Old CLI and Python names no longer exist.
 Update client allow-lists and scripts that call tools by name: the 17 `codegraph_*` tools are now `coderadar_*`, and `node`/`affected` take `entity_id`.
 
 | Old | New |

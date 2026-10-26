@@ -38,8 +38,7 @@ Never run two servers on one store — the second gets `DB_LOCKED`.
 | Refresh one file | `coderadar update-file F` | `coderadar_update_file` | `g.update_file("…")` |
 
 Mutations are **dry-run unless applied**; the written file must parse or the
-run fails loudly. Old CLI spellings were removed in 0.13; Python deprecated
-spellings still warn.
+run fails loudly. Old CLI and Python spellings were removed in 0.13.
 
 ## Query language (essentials)
 
@@ -82,7 +81,7 @@ default_dry_run = true
 | `… concepts_fts … rebuild_fts` | FTS table missing/tampered → `store-repair`, then reindex |
 | `TemporalUnsupported` on callers-at-T | decided NO-GO (§3.3) — restructure the question to live graph + `as_of` names/bytes |
 | `InvalidRequest: stored graph` | keyword search needs a served (stored) graph → `reindex` first |
-| DeprecationWarning on old names | rename to the canonical op; CLI removals landed in 0.13 |
+| AttributeError on a removed name | use the canonical op; CLI + Python removals landed in 0.13 |
 
 ## Version notes
 

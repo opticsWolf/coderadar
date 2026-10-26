@@ -101,11 +101,6 @@ try:
 except ImportError:
     pass
 
-# The caller/callee indexes the facade walks carry exactly one kind of
-# edge. Named so the legacy call-graph walk can answer honestly when asked
-# for another.
-EDGE_KIND_CALLS = "calls"
-
 # Step-4 surface: `coderadar.ops` answers attribute access after a bare
 # `import coderadar` (the shared seam's errors catch as
 # `coderadar.ops.OpError`, ...). `ops` imports stdlib only at module level,
@@ -140,12 +135,6 @@ def _mutation_operation_lock() -> threading.Lock:
             _MUTATION_OPERATION_LOCKS[key] = lock
         return lock
 
-
-def _deprecated(old: str, new: str) -> None:
-    """Warn once per call site that `old` is now spelled `new`."""
-    import warnings
-    warnings.warn(f"CodeGraph.{old} is deprecated; use {new}", DeprecationWarning,
-                  stacklevel=3)
 
 # ── Public API Types ────────────────────────────────────────────────────────
 
@@ -484,7 +473,7 @@ class CodeGraph:
 
         Every row carries ``id``, ``file_path``, ``kind`` and ``parent_id``
         whatever ``select`` narrows to, so a row can be passed straight to
-        :meth:`callers_of` or ``plan_rename``. An unknown field raises
+        :meth:`callers` or ``plan_rename``. An unknown field raises
         ``ValueError`` listing what the entity does have — it is never a
         silent empty result.
 
@@ -512,103 +501,15 @@ class CodeGraph:
         symbols: list[str] | None = None,
         direction: Literal["downstream", "upstream", "both"] = "both",
         max_files: int = 8,
-        *,
-        start_id: str | None = None,
-        max_depth: int | None = None,
-        edge_kinds: list[str] | None = None,
     ) -> dict[str, Any]:
         """Source and call paths for the named symbols (MCP ``coderadar_explore``).
 
         `query` is symbol names or a question; `symbols` names them
         explicitly. Returns ``{"names", "files", "relationships",
         "stale_files"}`` — see :func:`coderadar.ops.explore`.
-
-        The old call-graph walk (``explore(start_id, direction, max_depth,
-        edge_kinds)`` returning ``{entity_id, edge_kind, direction, depth}``
-        rows) still runs when called with ``start_id=``, ``max_depth=`` or
-        ``edge_kinds=``, or with direction ``in`` / ``out``, and warns: use
-        :meth:`traverse` with ``edge_kinds=["calls"]``.
         """
-        if (start_id is not None or max_depth is not None or edge_kinds is not None
-                or direction in ("in", "out")):
-            _deprecated("explore(start_id, ...)", "CodeGraph.traverse")
-            return self._walk(start_id or query, direction,
-                              3 if max_depth is None else max_depth, edge_kinds)
         from . import ops
         return ops.explore(query, symbols, direction, max_files)
-
-    def _walk(
-        self,
-        start_id: str,
-        direction: str = "both",
-        max_depth: int = 3,
-        edge_kinds: list[str] | None = None,
-    ) -> list[dict[str, Any]]:
-        """The legacy call-graph walk behind ``explore(start_id=...)``.
-
-        Breadth-first, so the depth reported for an entity is the length of
-        the shortest path to it, and an entity reached both ways is reported
-        once — at whichever depth found it first. Direction is "in"
-        (callers), "out" (callees) or "both"; the only edge kind this walk
-        follows is "calls". Rows: `entity_id`, `edge_kind`, `direction`,
-        `depth`.
-        """
-        direction = {"upstream": "in", "downstream": "out"}.get(direction, direction)
-        if edge_kinds is not None and EDGE_KIND_CALLS not in edge_kinds:
-            return []
-
-        directions: list[str] = (
-            ["out", "in"] if direction == "both" else [direction]
-        )
-        results: list[dict[str, Any]] = []
-        visited: set = {start_id}
-        frontier: list[str] = [start_id]
-
-        for depth in range(1, max(max_depth, 0) + 1):
-            next_frontier: list[str] = []
-            for current in frontier:
-                for way in directions:
-                    rows = (
-                        self._get_outgoing(current)
-                        if way == "out"
-                        else self._get_incoming(current)
-                    )
-                    for row in rows:
-                        # These rows are entities, not edge records: the edge
-                        # is implied by which index they came out of.
-                        neighbour = row.get("id")
-                        if not neighbour or neighbour in visited:
-                            continue
-                        visited.add(neighbour)
-                        next_frontier.append(neighbour)
-                        results.append({
-                            "entity_id": neighbour,
-                            "edge_kind": EDGE_KIND_CALLS,
-                            "direction": way,
-                            "depth": depth,
-                        })
-            if not next_frontier:
-                break
-            frontier = next_frontier
-
-        return results
-
-    def _get_incoming(self, entity_id: str) -> list[dict[str, Any]]:
-        """Internal: the entities that call entity_id."""
-        # Delegates to Rust core via _core module
-        try:
-            from coderadar._core import callers_of as _callers_of
-            return _callers_of(entity_id)
-        except ImportError:
-            return []
-
-    def _get_outgoing(self, entity_id: str) -> list[dict[str, Any]]:
-        """Internal: the entities entity_id calls."""
-        try:
-            from coderadar._core import callees_of as _callees_of
-            return _callees_of(entity_id)
-        except ImportError:
-            return []
 
     # ── Macrame Operations ────────────────────────────────────────────
 
@@ -619,32 +520,16 @@ class CodeGraph:
         direction: str = "both",
         edge_kinds: list[str] | None = None,
         max_depth: int = 3,
-        *,
-        start_id: str | None = None,
-        edge_types: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Breadth-first walk along any edge kinds (MCP ``coderadar_traverse``).
 
-        `direction` is ``downstream`` | ``upstream`` | ``both`` (``out`` /
-        ``in`` accepted); `edge_kinds` any of ``calls``, ``imports``,
+        `direction` is ``downstream`` | ``upstream`` | ``both``;
+        `edge_kinds` any of ``calls``, ``imports``,
         ``inherits`` (alias ``extends``), ``implements``, ``decorates``, ``instantiates``, ``references``, ``overrides`` —
         None means all.
         Returns the reached entity rows, each with ``depth`` and
         ``edge_type``; an unknown `entity_id` raises ``ops.NotFound``.
-
-        The old argument order ``traverse(start_id, max_depth, edge_types,
-        direction)`` and the ``start_id=`` / ``edge_types=`` keywords still
-        work, with a DeprecationWarning.
         """
-        if isinstance(direction, int) or start_id is not None or edge_types is not None:
-            _deprecated("traverse(start_id, max_depth, edge_types, direction)",
-                        "traverse(entity_id, direction, edge_kinds, max_depth)")
-            if isinstance(direction, int):  # old positional order
-                old_depth, old_types = direction, edge_kinds
-                old_direction = max_depth if isinstance(max_depth, str) else "both"
-                direction, edge_kinds, max_depth = old_direction, old_types, old_depth
-            entity_id = start_id or entity_id
-            edge_kinds = edge_types if edge_types is not None else edge_kinds
         from . import ops
         return ops.traverse(entity_id or "", direction, edge_kinds, max_depth)["results"]
 
@@ -666,14 +551,6 @@ class CodeGraph:
         return Snapshot(self, normalized)
 
     @_bound_to_loaded_project
-    def find(self, entity_id: str) -> dict[str, Any] | None:
-        """Deprecated: :meth:`node` returns the same record and raises
-        ``ops.NotFound`` (with candidates) instead of returning None."""
-        _deprecated("find", "CodeGraph.node")
-        from .query import MacrameQuery
-        return MacrameQuery(self).find(entity_id)
-
-    @_bound_to_loaded_project
     def callers(self, entity_id: str) -> list[dict[str, Any]]:
         """Direct callers, from the reverse call index (CLI ``callers``)."""
         from .query import MacrameQuery
@@ -685,16 +562,6 @@ class CodeGraph:
         from .query import MacrameQuery
         return MacrameQuery(self).callees_of(entity_id)
 
-    def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Deprecated spelling of :meth:`callers`."""
-        _deprecated("callers_of", "CodeGraph.callers")
-        return self.callers(entity_id)
-
-    def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Deprecated spelling of :meth:`callees`."""
-        _deprecated("callees_of", "CodeGraph.callees")
-        return self.callees(entity_id)
-
     @_bound_to_loaded_project
     def call_sites(self, entity_id: str) -> list[dict[str, Any]] | None:
         """Every call site extracted from a function, with the resolver's verdict.
@@ -702,7 +569,7 @@ class CodeGraph:
         Rows are ``{name, path, line, col, status, target, reason}`` in source
         order; ``status`` is one of function / method / constructor / builtin /
         external / unresolved / pending. ``None`` when ``entity_id`` is not a
-        function. Unlike ``callees_of`` this shows the calls that did *not*
+        function. Unlike ``callees`` this shows the calls that did *not*
         become edges.
         """
         from coderadar._core import call_sites
@@ -1132,16 +999,6 @@ class CodeGraph:
             id="", tool="update_signature", edits=[],
             affected_files=[], diff_preview="", unverified_sites=[], warnings=[],
         )
-
-    def plan_body_replacement(self, *args: Any, **kwargs: Any) -> MutationPlan:
-        """Deprecated spelling of :meth:`plan_replace_body`."""
-        _deprecated("plan_body_replacement", "CodeGraph.plan_replace_body")
-        return self.plan_replace_body(*args, **kwargs)
-
-    def plan_signature_update(self, *args: Any, **kwargs: Any) -> MutationPlan:
-        """Deprecated spelling of :meth:`plan_update_signature`."""
-        _deprecated("plan_signature_update", "CodeGraph.plan_update_signature")
-        return self.plan_update_signature(*args, **kwargs)
 
     @_bound_to_loaded_project
     def plan_rename(
@@ -1742,26 +1599,6 @@ class Snapshot:
                 f"blob disagree"
             )
         return entity, raw[lo:hi], ref
-
-    def callers_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Deprecated spelling of :meth:`callers` (which refuses: raises)."""
-        _deprecated("Snapshot.callers_of", "Snapshot.callers")
-        return self.callers(entity_id)
-
-    def callees_of(self, entity_id: str) -> list[dict[str, Any]]:
-        """Deprecated spelling of :meth:`callees`."""
-        _deprecated("Snapshot.callees_of", "Snapshot.callees")
-        return self.callees(entity_id)
-
-    def explore(
-        self,
-        start_id: str,
-        direction: Literal["in", "out", "both"] = "both",
-        max_depth: int = 3,
-    ) -> list[dict[str, Any]]:
-        """Deprecated call-graph walk (which refuses: raises)."""
-        _deprecated("Snapshot.explore", "Snapshot.traverse")
-        return self.traverse(start_id, direction, None, max_depth)
 
 
 # ── Batch Context Manager ───────────────────────────────────────────────────

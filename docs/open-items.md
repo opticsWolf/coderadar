@@ -49,6 +49,11 @@ Python BFS, the same move `traversal-matrix.md` step B made for `executor.py`.
 > **Status (v0.12.0):** modern `explore` returns names/files/relationships
 > via `ops.explore`; the old call-graph walk survives only as the deprecated
 > `explore(start_id=…)` path pointing at `traverse`. No action.
+>
+> **Status (v0.13):** the legacy `explore(start_id=…)` walk, the `traverse`
+> `start_id=`/`edge_types=` keywords, and the deprecated `find` /
+> `callers_of` / `callees_of` / `plan_body_replacement` /
+> `plan_signature_update` / `Snapshot.explore` spellings are removed.
 
 ### 1.2 Every CLI invocation re-indexes the project
 

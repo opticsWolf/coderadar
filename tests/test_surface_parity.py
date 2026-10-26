@@ -76,6 +76,13 @@ class TestNames:
         for old in ("analyze", "rebuild", "update", "stats", "blame", "git-clean", "git-diff"):
             assert old not in main.commands, old
 
+    def test_old_python_names_are_removed_in_v013(self):
+        for old in ("find", "callers_of", "callees_of",
+                    "plan_body_replacement", "plan_signature_update"):
+            assert not hasattr(coderadar.CodeGraph, old), old
+        for old in ("callers_of", "callees_of", "explore"):
+            assert not hasattr(coderadar.Snapshot, old), old
+
 
 SOURCE = '''\
 def helper():
