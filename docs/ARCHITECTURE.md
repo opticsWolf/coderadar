@@ -412,7 +412,7 @@ with documented pending consumers.
 
 ## 13. Quality gates & release policy
 
-- **Tests:** 1543 (434 Rust incl. 5 integration + 1109 Python). Gate bundle:
+- **Tests:** 1667 (503 Rust incl. 5 integration + 1164 Python, 1 skipped). Gate bundle:
   release-gate history, read-path discipline, call-edge accounting, snapshot
   honesty, surface parity, skill drift, Rust cross-module, blob reads +
   2 latency gates.
@@ -498,7 +498,7 @@ in kb.db). Statuses at v0.12.0:
 | DR-32 | Call-edge accounting (category error) | closed (v0.11.13) |
 | DR-33 | History-aware load gate | re-baselined |
 | DR-34 | FTS5 keyword search | closed (v0.11.10) |
-| DR-35 | Guarded mutation compensation + explicit sync outcomes (BUGS_QUIRKS #1) | closed (dev) |
+| DR-35 | Guarded mutation compensation + explicit sync outcomes (BUGS_QUIRKS #1) | closed (dev; implemented `4d5cb1c`, bumped `8fa427b`) |
 
 ---
 
