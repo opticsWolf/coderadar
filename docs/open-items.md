@@ -272,6 +272,10 @@ from class inheritance in a traversal.
 > STRUCTURAL 7->8, kind list 7->8. §2.6 is now 8 of 9 edge kinds
 > asserted; only `references`-adjacent gaps (none structural) remain.
 > Remaining: nothing structural -- the kind list is complete.
+>
+> (Verified live 2026-10-26 with slice E in the rebuilt `_core.pyd`:
+> new Python `test_traverse_references_kind` passes (calls arm pinned
+> silent); full file 122/122, embeddings 20/20.)
 
 ### 2.7 Stack Graphs / L1 resolution
 
