@@ -397,7 +397,7 @@ a content hash (stale writes rejected), the written file must parse
 and method renames cascade. Dry-run unless applied; the allow-list is
 root-anchored; the watcher's write guard skips the engine's own writes.
 
-**Surfaces.** 26 operations, one name each — `coderadar_<op>` (MCP),
+**Surfaces.** 27 operations, one name each — `coderadar_<op>` (MCP),
 `coderadar <op>` (CLI), `CodeGraph.<op>()` — all calling one shared `ops`
 function, pinned by parity tests. CLI takes `--format json`, logs to
 stderr (exit 2 bad input, 1 otherwise), pipes UTF-8 everywhere; `status`

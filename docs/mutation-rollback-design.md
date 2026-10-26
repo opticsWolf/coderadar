@@ -1,7 +1,8 @@
 # Mutation apply semantics: guarded rollback and truthful synchronization (DRAFT)
 
-**Status:** design for agreement; no implementation until the contract in §4 is
-approved. This revision incorporates the architecture review of the first draft.
+**Status:** implemented on `dev` (target decision DR-35). This revision is the
+as-built contract: guarded compensation plus verified synchronization for
+`replace_body`, `update_signature`, `rename`, and `create_entity`.
 **Target decision:** DR-35 (proposed) — guarded mutation compensation + explicit
 synchronization outcomes.
 **Closes:** the carried semantics note in `docs/CODERADAR_BUGS_QUIRKS.md` #1,

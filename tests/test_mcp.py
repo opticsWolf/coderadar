@@ -1296,6 +1296,12 @@ class TestMutationTools:
         result = cg.apply(broken)
         assert result.status == "RolledBack"
         assert target.read_text(encoding="utf-8") == "def foo():\n    return 1\n"
+        assert result.files_written == []
+        assert result.files[0].state == "Restored"
+        assert result.sync.state == "Synchronized"
+        assert result.backup_path is None
+        leftovers = list(tmp_path.glob("*.coderadar-*"))
+        assert leftovers == [], f"rollback left attempt artifacts: {leftovers}"
 
     def test_format_mutation_plan_shows_diff(self):
         from coderadar import MutationEdit, MutationPlan, render

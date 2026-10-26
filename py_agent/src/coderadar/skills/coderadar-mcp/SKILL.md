@@ -133,6 +133,26 @@ cannot rewrite argument spans. `create_entity` renders the header from
 `signature` when given, otherwise from `name`; `anchor` is `end`, `top`,
 or an entity id to insert after.
 
+### Mutation outcomes
+
+A mutation result is one public status, not a header plus an unrelated
+`Applied`. `syntax_errors` carries syntax diagnostics only; operational
+failures use `failure`, per-file outcomes, and `sync`.
+
+- `Applied`: every edit is on disk, verified, and synchronized.
+- `RolledBack`: no plan bytes remain; verification plus restored-state
+synchronization completed.
+- `RejectedStale`: disk changed since planning; re-plan from current bytes.
+- `RejectedPolicy`: change the target/configuration; do not retry unchanged.
+- `ApplyIncomplete`: valid source stayed on disk, but graph, persistence,
+or derived-data synchronization did not complete. Repair the named sync
+problem with `coderadar_update_file`/`coderadar_reindex`; do not blindly
+re-apply the old plan.
+- `RollbackIncomplete`: stop automatic retries, inspect per-file states and
+retained `recovery_path` values, recover manually, then resync.
+
+"Graph updated: yes" appears only when `sync.state` is `Synchronized`.
+
 ## Honesty contracts (do not work around these)
 
 - `ContentUnavailable` ("content unavailable for T") ≠ "not in graph at

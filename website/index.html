@@ -367,12 +367,12 @@ use <span class="tok-s">as_of</span> + <span class="tok-s">read_bytes</span> for
     <div class="why-row rv">
       <div class="why-copy">
         <h3><span class="k-magenta">One op,</span> every agent surface</h3>
-        <p>26 operations share one name across MCP, CLI, and Python, all calling one
+        <p>27 operations share one name across MCP, CLI, and Python, all calling one
           shared function, pinned by parity tests. A fix in the op layer lands
           everywhere at once, and agent skills ship inside the package (and the
           wheel), drift-tested against the registry.</p>
         <ul>
-          <li><strong>26 <code>coderadar_*</code> tools</strong>: one prefix, allow-list friendly</li>
+          <li><strong>27 <code>coderadar_*</code> tools</strong>: one prefix, allow-list friendly</li>
           <li><strong>CLI for every op</strong>: JSON out, stderr + exit codes, dry-run by default</li>
           <li><strong>Skills bundled</strong>: <code>coderadar skills install</code> drops both packs into Claude Code / OpenCode</li>
         </ul>

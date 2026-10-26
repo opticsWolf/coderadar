@@ -76,6 +76,20 @@ class TestMcpSkillDrift:
     def test_hidden_old_spellings_not_taught_as_tools(self):
         assert "coderadar_analyze" not in _skill("coderadar-mcp")
 
+    def test_mutation_outcomes_and_recovery_are_taught(self):
+        text = _skill("coderadar-mcp")
+        for status in (
+            "Applied",
+            "RolledBack",
+            "RejectedStale",
+            "RejectedPolicy",
+            "ApplyIncomplete",
+            "RollbackIncomplete",
+        ):
+            assert status in text
+        assert "recovery_path" in text
+        assert "Synchronized" in text
+
 
 class TestCliSkillDrift:
     def test_every_taught_command_exists(self):
@@ -116,6 +130,19 @@ class TestCliSkillDrift:
         text = _skill("coderadar-cli")
         for cmd in ("replace-body", "update-signature", "rename", "create-entity"):
             assert f"coderadar {cmd}" in text, f"CLI skill does not teach {cmd}"
+
+    def test_mutation_outcomes_and_exit_codes_are_taught(self):
+        text = _skill("coderadar-cli")
+        for status in (
+            "Applied",
+            "RolledBack",
+            "RejectedStale",
+            "RejectedPolicy",
+            "ApplyIncomplete",
+            "RollbackIncomplete",
+        ):
+            assert status in text
+        assert "Exit" in text and "0" in text and "1" in text and "2" in text
 
     def test_set_project_exception_is_taught(self):
         # MCP's coderadar_set_project has no CLI command; the CLI spelling is -C.

@@ -165,6 +165,32 @@ check(SEC, "callees", rc == 0 and ("combine" in out or "callee" in out.lower() o
 rc, out = cli("callers", "no/such.py::missing")
 check(SEC, "callers-bad-id", "no " in out.lower() or "not found" in out.lower() or "unknown" in out.lower() or "0" in out or rc == 0, out[:200])
 
+# DR-35: mutation dry runs stay exit 0; outside-root creates are policy
+# refusals (exit 2), not silent no-ops.
+_probe_dir = os.path.join(FIX, "src")
+_probe_file = os.path.join(_probe_dir, "r2_cli_exit_probe.py")
+os.makedirs(_probe_dir, exist_ok=True)
+with open(_probe_file, "w", encoding="utf-8") as _fh:
+    _fh.write("def probe():\n    return 1\n")
+try:
+    rc, out = cli("replace-body", "src/r2_cli_exit_probe.py::probe", "pass")
+    check(SEC, "mutation-dry-run-rc0", rc == 0 and "DRY RUN" in out, out[:200])
+    _outside = os.path.join(tempfile.gettempdir(), f"r2_outside_root_{os.getpid()}.py")
+    with open(_outside, "w", encoding="utf-8") as _fh:
+        _fh.write("secret = 1\n")
+    try:
+        rc, out = cli("create-entity", _outside, "python", "function", "r2_outside", "return 1", "--apply")
+        with open(_outside, encoding="utf-8") as _fh:
+            _outside_after = _fh.read()
+        check(SEC, "mutation-outside-root-rc2", rc == 2 and "Mutation Rejected" in out and "Policy" in out and _outside_after == "secret = 1\n", f"rc={rc} {out[:200]}")
+    finally:
+        try:
+            os.remove(_outside)
+        except OSError:
+            pass
+finally:
+    shutil.rmtree(_probe_dir, ignore_errors=True)
+
 rc, out = cli("diagnose")
 check(SEC, "diagnose", rc == 0, out[:200])
 rc, out = cli("diagnose", "--unresolved")

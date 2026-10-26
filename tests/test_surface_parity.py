@@ -148,6 +148,32 @@ class TestCli:
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["edge_kinds"] in (None, [])
 
+    def test_mutation_dry_run_exits_0_and_writes_nothing(self, project):
+        target = project / "pkg" / "mod.py"
+        before = target.read_text(encoding="utf-8")
+        dry = _run("replace-body", "pkg/mod.py::helper", "return 2")
+
+        assert dry.exit_code == 0, dry.output
+        assert "DRY RUN" in dry.output
+        assert target.read_text(encoding="utf-8") == before
+
+    def test_mutation_plan_policy_refusal_exits_2_and_writes_nothing(self, project):
+        outsider = project.parent / f"outside_{os.getpid()}.py"
+        outsider.write_text("secret = 1\n", encoding="utf-8")
+        try:
+            refused = _run(
+                "create-entity", str(outsider), "python", "function",
+                "probe", "return 1", "--apply",
+            )
+        finally:
+            after = outsider.read_text(encoding="utf-8")
+            outsider.unlink()
+
+        assert refused.exit_code == 2, refused.output
+        assert "Mutation Rejected" in refused.output
+        assert "Policy" in refused.output
+        assert after == "secret = 1\n"
+
     def test_edits_are_dry_runs_unless_applied(self, project):
         target = project / "pkg" / "mod.py"
         dry = _run("rename", "pkg/mod.py::helper", "assist")

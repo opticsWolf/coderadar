@@ -63,6 +63,16 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
   and configured candidates get an exact-path tier so nested same-tail
   files can't steal the resolution.
 - Cross-platform path normalization fix for Ubuntu CI.
+- Guarded mutation compensation and explicit synchronization outcomes (DR-35,
+  BUGS_QUIRKS #1): disk attempts use unique artifacts, verified backups,
+  late stale checks, per-file atomic installs, installed-only/hash-guarded
+  compensation, and tri-state post-write verification; the FFI reports an
+  internal `disk_status`, and `CodeGraph.apply` assigns
+  `Applied`/`RolledBack`/`RejectedStale`/`RejectedPolicy`/
+  `ApplyIncomplete`/`RollbackIncomplete` only after synchronous graph,
+  persistence, and derived-data synchronization. Renderers, MCP text, CLI
+  JSON/exit codes, and `ToolRouter` propagate the same failure, per-file,
+  sync, and recovery-path facts.
 
 ## 0.12.0 (2026-10-07)
 

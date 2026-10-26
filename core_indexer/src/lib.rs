@@ -181,6 +181,26 @@ fn mutation_engine() -> mutation::MutationEngine {
     }
 }
 
+/// Process-wide per-root disk-attempt mutexes.
+///
+/// `apply_mutation` may be called directly, bypassing the Python facade's
+/// operation lock. Serializing disk phases here guarantees two
+/// same-process attempts cannot share unique artifacts (their ids already
+/// differ) or interleave read/prepare/backup/install/verify/compensation.
+/// Lock ordering is deliberate: acquire this root lock BEFORE `with_graph`
+/// takes the global graph read guard. Never acquire it while holding
+/// `GLOBAL_GRAPH.write()`.
+static DISK_ATTEMPT_LOCKS: std::sync::LazyLock<
+    dashmap::DashMap<PathBuf, Arc<parking_lot::Mutex<()>>>,
+> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+fn disk_attempt_lock_for(root: PathBuf) -> Arc<parking_lot::Mutex<()>> {
+    DISK_ATTEMPT_LOCKS
+        .entry(root)
+        .or_insert_with(|| Arc::new(parking_lot::Mutex::new(())))
+        .clone()
+}
+
 pub(crate) fn with_graph<F, R>(f: F) -> PyResult<R>
 where
     F: FnOnce(&CodeGraph, &Arc<ProjectedGraph>) -> PyResult<R>,
@@ -1184,6 +1204,10 @@ fn update_file(
     // "Fully applied" means the file parsed cleanly and the graph took
     // every entity in it; a recovered parse is a partial update.
     dict.set_item("fully_applied", outcome.parse_errors == 0)?;
+    dict.set_item("source_hash", outcome.source_hash)?;
+    dict.set_item("update_error", outcome.update_error.clone())?;
+    dict.set_item("persistence_error", outcome.persistence_error.clone())?;
+    dict.set_item("blob_error", outcome.blob_error.clone())?;
     dict.set_item("entities_added", outcome.entities_added)?;
     dict.set_item("entities_removed", outcome.entities_removed)?;
     dict.set_item("affected_files", outcome.affected_files)?;
@@ -1477,9 +1501,11 @@ fn plan_create_entity(
     })
 }
 
-/// Apply a mutation plan (the JSON form of a plan dict) atomically: every
-/// edit's `expected_hash` is checked first, and a write that leaves a file
-/// unparseable is rolled back.
+/// Apply a mutation plan (the JSON form of a plan dict).
+///
+/// This boundary reports the honest disk outcome (`disk_status`), not a
+/// premature public `Applied`. The Python facade performs synchronous graph
+/// synchronization and only then constructs the final public status.
 #[pyfunction]
 fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
@@ -1530,15 +1556,58 @@ fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
         warnings: Vec::new(),
     };
 
+    let disk_lock_root = INDEXED_ROOT
+        .read()
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let disk_lock = disk_attempt_lock_for(disk_lock_root);
+    let _disk_attempt_guard = disk_lock.lock();
     with_graph(|_graph, _snap| {
         let mut engine = mutation_engine();
         let result = engine.apply(&plan);
         let dict = PyDict::new(py);
-        dict.set_item(
-            "applied",
-            matches!(result.status, mutation::MutationStatus::Applied),
-        )?;
-        dict.set_item("status", format!("{:?}", result.status))?;
+        dict.set_item("disk_status", format!("{:?}", result.disk_status))?;
+        dict.set_item("attempt_id", result.attempt_id)?;
+        let failure = |failure: &Option<mutation::MutationFailure>| -> PyResult<PyObject> {
+            match failure {
+                Some(failure) => {
+                    let detail = PyDict::new(py);
+                    detail.set_item("stage", failure.stage)?;
+                    detail.set_item("code", failure.code)?;
+                    detail.set_item("message", &failure.message)?;
+                    Ok(detail.into())
+                }
+                None => Ok(py.None()),
+            }
+        };
+        dict.set_item("primary", failure(&result.primary)?)?;
+        dict.set_item("failure", failure(&result.failure)?)?;
+        let files: Vec<PyObject> = result
+            .files
+            .iter()
+            .map(|file| {
+                let detail = PyDict::new(py);
+                let _ = detail.set_item("file", &file.file);
+                let _ = detail.set_item("state", format!("{:?}", file.state));
+                let _ = detail.set_item("pre_hash", &file.pre_hash);
+                let _ = detail.set_item("installed_hash", file.installed_hash.clone());
+                let _ = detail.set_item("final_hash", file.final_hash.clone());
+                let _ = detail.set_item("expected_hash", file.expected_hash.clone());
+                let _ = detail.set_item("recovery_path", file.recovery_path.clone());
+                let error = match &file.error {
+                    Some(error) => {
+                        let detail = PyDict::new(py);
+                        let _ = detail.set_item("code", error.code);
+                        let _ = detail.set_item("message", &error.message);
+                        detail.into()
+                    }
+                    None => py.None(),
+                };
+                let _ = detail.set_item("error", error);
+                detail.into()
+            })
+            .collect();
+        dict.set_item("files", files)?;
         dict.set_item("files_written", result.files_written)?;
         dict.set_item(
             "errors",
@@ -1548,10 +1617,14 @@ fn apply_mutation(plan_json: &str) -> PyResult<PyObject> {
                 .map(|e| format!("{}:{} — {}", e.file, e.line, e.message))
                 .collect::<Vec<_>>(),
         )?;
-        dict.set_item(
-            "backup_path",
-            result.backup_path.clone().unwrap_or_default(),
-        )?;
+        dict.set_item("backup_path", result.backup_path.clone())?;
+        let sync = PyDict::new(py);
+        sync.set_item("state", "NotAttempted")?;
+        sync.set_item("attempted_files", Vec::<String>::new())?;
+        sync.set_item("updated_files", Vec::<String>::new())?;
+        sync.set_item("errors", Vec::<PyObject>::new())?;
+        sync.set_item("warnings", Vec::<PyObject>::new())?;
+        dict.set_item("sync", sync)?;
         Ok(dict.into())
     })
 }

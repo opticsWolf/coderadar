@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import os
+import threading
 
 #: Single version source (F11 fix): pyproject.toml is authoritative.
 #: `__version__` resolves from installed package metadata first (so an
@@ -68,6 +70,7 @@ __version__ = _resolve_version()
 
 import json
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -108,6 +111,34 @@ EDGE_KIND_CALLS = "calls"
 # `coderadar.ops.OpError`, ...). `ops` imports stdlib only at module level,
 # so this cannot cycle back through the package.
 from . import ops
+from .excludes import resolve_entity_path as _resolve_entity_path
+
+_MUTATION_OPERATION_LOCKS: dict[str, threading.Lock] = {}
+_MUTATION_OPERATION_LOCKS_GUARD = threading.Lock()
+
+
+def _mutation_operation_lock() -> threading.Lock:
+    """Process-wide per-root lock for disk apply + facade synchronization.
+
+    The Rust graph is process-global: two `CodeGraph` handles are not two
+    graphs. An instance-local lock therefore cannot serialize concurrent
+    `apply()` calls. This lock is held across `apply_mutation` and all
+    required `update_file`/derived-data synchronization so a second
+    same-process attempt cannot interleave the disk phases with another
+    attempt's graph sync. External processes remain explicitly unserialized.
+    """
+    try:
+        from coderadar._core import indexed_root_py as _root_fn
+        root = _root_fn() or os.getcwd()
+    except Exception:  # noqa: BLE001 - missing extension/root: cwd is the best key
+        root = os.getcwd()
+    key = os.path.realpath(root)
+    with _MUTATION_OPERATION_LOCKS_GUARD:
+        lock = _MUTATION_OPERATION_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _MUTATION_OPERATION_LOCKS[key] = lock
+        return lock
 
 
 def _deprecated(old: str, new: str) -> None:
@@ -117,9 +148,6 @@ def _deprecated(old: str, new: str) -> None:
                   stacklevel=3)
 
 # ── Public API Types ────────────────────────────────────────────────────────
-
-from dataclasses import dataclass
-
 
 @dataclass(frozen=True)
 class UpdateReport:
@@ -134,6 +162,19 @@ class UpdateReport:
     fully_applied: bool
     epoch_before: int
     epoch_after: int
+    #: xxh3_64 of the exact bytes parsed. Mutation synchronization compares
+    #: this with the disk attempt's expected final hash.
+    source_hash: str = ""
+    #: Operational failure inside `update_file` itself. `None` on every
+    #: constructed outcome, including recovered parses.
+    update_error: str | None = None
+    #: Concept/edge/retirement persistence failed after the projection moved.
+    persistence_error: str | None = None
+    #: Source-blob storage failed. Configured blob skips do not set this.
+    blob_error: str | None = None
+    #: Framework-route refresh failed. The projection update stands; the
+    #: failure is reported in the mutation sync summary rather than hidden.
+    route_warning: str | None = None
     #: The file was gone from disk, so its entities were dropped instead.
     removed: bool = False
     entities_removed: int = 0
@@ -188,11 +229,67 @@ class MutationEdit:
 
 
 @dataclass(frozen=True)
+class MutationFailure:
+    """One failed operation in a mutation attempt (stable stage + code)."""
+    stage: str
+    code: str
+    message: str
+
+
+@dataclass(frozen=True)
+class MutationFileError:
+    """Structured per-file error detail."""
+    code: str
+    message: str
+
+
+@dataclass(frozen=True)
+class MutationFileResult:
+    """Per-file outcome for one disk attempt."""
+    file: str
+    state: Literal["Untouched", "Installed", "Restored", "ExternallyChanged", "RestoreFailed", "Unknown"]
+    pre_hash: str = ""
+    installed_hash: str | None = None
+    final_hash: str | None = None
+    expected_hash: str | None = None
+    recovery_path: str | None = None
+    error: MutationFileError | None = None
+
+
+@dataclass(frozen=True)
+class MutationSyncSummary:
+    """What public synchronization proved after the disk attempt."""
+    state: Literal["NotNeeded", "NotAttempted", "Synchronized", "Partial", "Failed", "Unknown"]
+    attempted_files: list[str] = field(default_factory=list)
+    updated_files: list[str] = field(default_factory=list)
+    errors: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class MutationResult:
-    """Result of applying a mutation plan."""
-    status: Literal["Applied", "RolledBack", "RejectedStale", "RejectedPolicy"]
+    """Result of applying a mutation plan.
+
+    `status` is public only after `CodeGraph.apply` synchronizes the graph:
+    disk `Installed` becomes `Applied` solely with synchronized graph and
+    persistence state, while unverified synchronization becomes one of the
+    explicit incomplete outcomes. `syntax_errors` carries syntax diagnostics
+    only; operational failures use `failure`, per-file outcomes, and `sync`.
+    """
+    status: Literal["Applied", "RolledBack", "RejectedStale", "RejectedPolicy", "ApplyIncomplete", "RollbackIncomplete"]
     files_written: list[str]
-    syntax_errors: list[dict]
+    syntax_errors: list[Any]
+    attempt_id: str = ""
+    primary: MutationFailure | None = None
+    failure: MutationFailure | None = None
+    files: list[MutationFileResult] = field(default_factory=list)
+    sync: MutationSyncSummary = field(default_factory=lambda: MutationSyncSummary(
+        state="NotAttempted",
+        attempted_files=[],
+        updated_files=[],
+        errors=[],
+        warnings=[],
+    ))
     backup_path: str | None = None
 
 
@@ -220,6 +317,68 @@ class MutationError(CodeRadarError):
 
 class PolicyViolation(MutationError):
     """Mutation rejected by policy configuration."""
+
+
+# ── Mutation outcome parsing ──────────────────────────────────────────────
+
+def _optional_text(value: Any) -> str | None:
+    return str(value) if value not in (None, "") else None
+
+
+def _parse_mutation_failure(value: Any) -> MutationFailure | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return MutationFailure(
+            stage=str(value["stage"]),
+            code=str(value["code"]),
+            message=str(value.get("message", "")),
+        )
+    except KeyError as exc:
+        raise CodeRadarError(f"apply_mutation returned a malformed failure: {value!r}") from exc
+
+
+def _parse_mutation_file_error(value: Any) -> MutationFileError | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return MutationFileError(code=str(value["code"]), message=str(value.get("message", "")))
+    except KeyError as exc:
+        raise CodeRadarError(f"apply_mutation returned a malformed file error: {value!r}") from exc
+
+
+_ALLOWED_FILE_STATES = ("Untouched", "Installed", "Restored", "ExternallyChanged", "RestoreFailed", "Unknown")
+
+
+def _parse_mutation_file(value: Any) -> MutationFileResult:
+    if not isinstance(value, dict):
+        raise CodeRadarError(f"apply_mutation returned a malformed file result: {value!r}")
+    try:
+        state = str(value["state"])
+        if state not in _ALLOWED_FILE_STATES:
+            raise CodeRadarError(f"apply_mutation returned unknown file state: {state!r}")
+        return MutationFileResult(
+            file=str(value["file"]),
+            state=state,  # type: ignore[arg-type]
+            pre_hash=str(value.get("pre_hash", "")),
+            installed_hash=_optional_text(value.get("installed_hash")),
+            final_hash=_optional_text(value.get("final_hash")),
+            expected_hash=_optional_text(value.get("expected_hash")),
+            recovery_path=_optional_text(value.get("recovery_path")),
+            error=_parse_mutation_file_error(value.get("error")),
+        )
+    except KeyError as exc:
+        raise CodeRadarError(f"apply_mutation returned a malformed file result: {value!r}") from exc
+
+
+def _blank_sync_summary(state: str = "NotAttempted") -> MutationSyncSummary:
+    return MutationSyncSummary(
+        state=state,  # type: ignore[arg-type]
+        attempted_files=[],
+        updated_files=[],
+        errors=[],
+        warnings=[],
+    )
 
 
 # ── CodeGraph Python Wrapper ────────────────────────────────────────────────
@@ -757,14 +916,12 @@ class CodeGraph:
         how many entities went.
         """
         dropped: dict | None = None
-        if content is None and not Path(file_path).exists():
+        route_warning: str | None = None
+        if content is None and not _resolve_entity_path(file_path).exists():
             dropped = self._remove_file_full(file_path)
             # §1.3 (DR-10): the file is gone — its routes retire via the
             # file-scoped diff (missing file extracts nothing).
-            try:
-                self._refresh_framework_routes(file_path, None)
-            except Exception:  # noqa: BLE001, S110 - removal stands regardless
-                pass
+            route_warning = self._refresh_framework_routes(file_path, None)
         if dropped and dropped["entities_removed"]:
             # a file never indexed falls through and fails below
             return UpdateReport(
@@ -775,18 +932,18 @@ class CodeGraph:
                 epoch_before=dropped["epoch_before"],
                 epoch_after=dropped["epoch_after"],
                 removed=True, entities_removed=dropped["entities_removed"],
+                route_warning=route_warning,
             )
         try:
             from coderadar._core import update_file as _update_file_rust
             result = _update_file_rust(file_path, content, force)
             # §1.3 (DR-10): re-extract this file's routes (scope = file;
             # ghosts retire via the diff). Best-effort: extraction must
-            # never fail the update.
-            try:
-                self._refresh_framework_routes(file_path, content)
-            except Exception:  # noqa: BLE001, S110 - update stands regardless
-                pass
+            # never fail the update, but its warning belongs in the report.
+            route_warning = self._refresh_framework_routes(file_path, content)
             if isinstance(result, dict):
+                persistence_error = result.get("persistence_error")
+                blob_error = result.get("blob_error")
                 return UpdateReport(
                     affected_files=result.get("affected_files") or [file_path],
                     changed_symbols=[
@@ -805,14 +962,16 @@ class CodeGraph:
                     fully_applied=bool(result.get("fully_applied", True)),
                     epoch_before=int(result.get("epoch_before", 0)),
                     epoch_after=int(result.get("epoch_after", 0)),
+                    source_hash=str(result.get("source_hash", "")),
+                    update_error=None,
+                    persistence_error=str(persistence_error) if persistence_error else None,
+                    blob_error=str(blob_error) if blob_error else None,
+                    route_warning=route_warning,
                     blobs_stored=int(result.get("blobs_stored", 0)),
                     blobs_skipped_oversize=int(result.get("blobs_skipped_oversize", 0)),
                     blobs_skipped_excluded=int(result.get("blobs_skipped_excluded", 0)),
                     blobs_bytes=int(result.get("blobs_bytes", 0)),
                 )
-        except ImportError:
-            # Nothing parsed anything, so "Clean" and fully_applied=True were
-            # a report about work that did not happen.
             return UpdateReport(
                 affected_files=[file_path], changed_symbols=[],
                 new_unresolved_references=[], newly_resolved_references=[],
@@ -820,6 +979,7 @@ class CodeGraph:
                 parse_quality="Error: the coderadar._core extension is not built",
                 parse_errors=1,
                 fully_applied=False, epoch_before=0, epoch_after=0,
+                update_error="the coderadar._core extension is not built",
             )
         except RuntimeError as e:
             return UpdateReport(
@@ -827,6 +987,7 @@ class CodeGraph:
                 new_unresolved_references=[], newly_resolved_references=[],
                 elapsed_ms=0.0, parse_quality=f"Error: {e}", parse_errors=1,
                 fully_applied=False, epoch_before=0, epoch_after=0,
+                update_error=str(e),
             )
 
         # Fallback (unreachable in practice)
@@ -835,28 +996,35 @@ class CodeGraph:
             new_unresolved_references=[], newly_resolved_references=[],
             elapsed_ms=0.0, parse_quality="Clean", parse_errors=0,
             fully_applied=False, epoch_before=0, epoch_after=0,
+            update_error="update_file returned no usable report",
         )
 
     @staticmethod
-    def _refresh_framework_routes(file_path: str, content: str | None) -> None:
-        """Re-extract one file's framework routes (§1.3, DR-10)."""
-        import os
+    def _refresh_framework_routes(file_path: str, content: str | None) -> str | None:
+        """Re-extract one file's framework routes (§1.3, DR-10).
 
-        from coderadar import framework as _framework
-        from coderadar.excludes import resolve_entity_path as _resolve
+        Returns `None` on success or skip, or a warning string the caller
+        must surface. Route refresh never fails the projection update.
+        """
         try:
-            from coderadar._core import indexed_root_py as _rust_root
-            root = _rust_root() or os.getcwd()
-        except Exception:  # noqa: BLE001 - fall back to the cwd
-            root = os.getcwd()
-        abs_path = _resolve(file_path)
-        try:
-            rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
-        except ValueError:
-            return
-        if rel.startswith(".."):
-            return
-        _framework.refresh_framework_file(root, rel, content)
+            from coderadar import framework as _framework
+            from coderadar.excludes import resolve_entity_path as _resolve
+            try:
+                from coderadar._core import indexed_root_py as _rust_root
+                root = _rust_root() or os.getcwd()
+            except Exception:  # noqa: BLE001 - fall back to the cwd
+                root = os.getcwd()
+            abs_path = _resolve(file_path)
+            try:
+                rel = os.path.relpath(abs_path, root).replace(os.sep, "/")
+            except ValueError:
+                return None
+            if rel.startswith(".."):
+                return None
+            _framework.refresh_framework_file(root, rel, content)
+            return None
+        except Exception as exc:  # noqa: BLE001 - best-effort refresh reports, never raises
+            return f"framework-route refresh failed for {file_path}: {exc}"
 
     def _remove_file_full(self, file_path: str) -> dict:
         """Drop a deleted file; full report (epochs included).
@@ -1019,11 +1187,14 @@ class CodeGraph:
 
     @_bound_to_loaded_project
     def apply(self, plan: MutationPlan) -> MutationResult:
-        """Apply a mutation plan atomically.
+        """Apply a mutation plan with guarded compensation and verified sync.
 
-        Phase 1: Write edits to disk (with backup).
-        Phase 2: Re-parse changed files → stage → Macrame persist.
-        Phase 3: Rebuild ProjectedGraph reverse indexes.
+        Disk replacement is atomic per file; a multi-file plan is not a
+        filesystem transaction. `Applied` additionally requires the graph,
+        persistence, and derived-data synchronization summarized in `sync`.
+        Valid source stays in place on graph-sync failure (`ApplyIncomplete`);
+        compensation is for write/verification failure, not a pretend
+        distributed transaction across disk and SQLite.
         """
         try:
             from coderadar._core import apply_mutation as _am
@@ -1037,63 +1208,264 @@ class CodeGraph:
                 "can be applied"
             ) from exc
 
-        result = _am(json.dumps({
-            "id": plan.id,
-            "tool": plan.tool,
-            "edits": [{"file": e.file, "span_start": e.span_start or 0,
-                       "span_end": e.span_end or 0, "replacement": e.replacement,
-                       "expected_hash": e.expected_hash or ""} for e in plan.edits],
-            "affected_files": plan.affected_files,
-        }))
-        if not isinstance(result, dict):
-            raise CodeRadarError(f"apply_mutation returned {type(result).__name__}, "
-                                 "expected a result dict")
+        with _mutation_operation_lock():
+            result = _am(json.dumps({
+                "id": plan.id,
+                "tool": plan.tool,
+                "edits": [{"file": e.file, "span_start": e.span_start or 0,
+                           "span_end": e.span_end or 0, "replacement": e.replacement,
+                           "expected_hash": e.expected_hash or ""} for e in plan.edits],
+                "affected_files": plan.affected_files,
+            }))
+            if not isinstance(result, dict):
+                raise CodeRadarError(f"apply_mutation returned {type(result).__name__}, "
+                                     "expected a result dict")
 
-        applied = bool(result.get("applied", False))
-        if applied:
-            # Only a plan that reached disk changes what the graph should hold.
-            for f in plan.affected_files:
-                try:
-                    self.update_file(f)
-                except Exception:  # noqa: BLE001, S110 - best-effort graph refresh
-                    pass
-            # R2-17: multi-file plans resolve order-dependently — an
-            # importer re-resolved before its source re-indexed keeps a
-            # stale external:: edge (rename across a re-export chain hit
-            # exactly this). A second pass over the same files converges:
-            # pass 1 leaves every affected file's entities/imports current,
-            # so pass 2 resolves calls against settled siblings. Single-file
-            # plans cannot strand cross-file edges; skip the extra work.
-            if len(plan.affected_files) > 1:
-                for f in plan.affected_files:
-                    try:
-                        self.update_file(f)
-                    except Exception:  # noqa: BLE001, S110 - best-effort graph refresh
-                        pass
-            for f in plan.affected_files:
-                try:
-                    clear_embeddings_for_file(f)
-                except RuntimeError:
-                    pass
+            disk_status = str(result.get("disk_status", ""))
+            if disk_status not in ("Installed", "Restored", "NotInstalled",
+                                   "RejectedStale", "RejectedPolicy", "DiskIncomplete"):
+                raise CodeRadarError(f"apply_mutation returned unknown disk_status: {disk_status!r}")
+            primary = _parse_mutation_failure(result.get("primary"))
+            failure = _parse_mutation_failure(result.get("failure"))
+            files = [_parse_mutation_file(entry) for entry in result.get("files", []) or []]
+            files_written = list(result.get("files_written", []) or [])
+            syntax_errors = list(result.get("errors", []) or [])
+            backup_path = result.get("backup_path") or None
+            attempt_id = str(result.get("attempt_id", "") or "")
 
-        raw_status = str(result.get("status", ""))
-        if applied:
-            status = "Applied"
-        elif "RejectedStale" in raw_status:
-            status = "RejectedStale"
-        elif "RejectedPolicy" in raw_status:
-            # A policy refusal is not a failed write; collapsing every
-            # non-Applied status to RolledBack lost the reason.
-            status = "RejectedPolicy"
+            if disk_status in ("RejectedPolicy", "RejectedStale"):
+                return MutationResult(
+                    status=disk_status,  # type: ignore[arg-type]
+                    files_written=files_written,
+                    syntax_errors=syntax_errors,
+                    attempt_id=attempt_id,
+                    primary=primary,
+                    failure=failure or primary,
+                    files=files,
+                    sync=_blank_sync_summary("NotNeeded"),
+                    backup_path=backup_path,
+                )
+
+            expected_hashes = {entry.file: entry.expected_hash for entry in files
+                               if entry.expected_hash}
+            if disk_status in ("Installed", "Restored"):
+                sync = self._synchronize_mutation_files(
+                    plan.affected_files, expected_hashes, clear_embeddings_for_file)
+            else:
+                # NotInstalled performed no install; DiskIncomplete has no
+                # proven final bytes. Neither gets blind "success" sync.
+                sync = _blank_sync_summary()
+
+            if disk_status == "Installed":
+                if sync.state == "Synchronized":
+                    return MutationResult(
+                        status="Applied",
+                        files_written=files_written,
+                        syntax_errors=syntax_errors,
+                        attempt_id=attempt_id,
+                        primary=primary,
+                        failure=None,
+                        files=files,
+                        sync=sync,
+                        backup_path=backup_path,
+                    )
+                status = "ApplyIncomplete"
+                public_failure = self._sync_failure(sync) or failure or primary
+            elif disk_status == "Restored":
+                primary_code = primary.code if primary else ""
+                if sync.state in ("Synchronized", "NotNeeded"):
+                    if primary_code == "stale_content":
+                        status = "RejectedStale"
+                    else:
+                        status = "RolledBack"
+                    public_failure = failure or primary
+                else:
+                    status = "RollbackIncomplete"
+                    public_failure = self._sync_failure(sync) or failure or primary
+            elif disk_status == "NotInstalled":
+                status = "RolledBack"
+                public_failure = failure or primary
+            else:
+                status = "RollbackIncomplete"
+                public_failure = failure or primary
+
+            return MutationResult(
+                status=status,  # type: ignore[arg-type]
+                files_written=files_written,
+                syntax_errors=syntax_errors,
+                attempt_id=attempt_id,
+                primary=primary,
+                failure=public_failure,
+                files=files,
+                sync=sync,
+                backup_path=backup_path,
+            )
+
+    @staticmethod
+    def _sync_failure(sync: MutationSyncSummary) -> MutationFailure | None:
+        if not sync.errors:
+            return None
+        error = sync.errors[0]
+        return MutationFailure(
+            stage=str(error.get("stage", "graph_sync")),
+            code=str(error.get("code", "sync_failed")),
+            message=str(error.get("message", "mutation synchronization failed")),
+        )
+
+    def _synchronize_mutation_files(
+        self,
+        affected_files: list[str],
+        expected_hashes: dict[str, str],
+        clear_embeddings_for_file: Any,
+    ) -> MutationSyncSummary:
+        """Synchronize every touched file and prove its bytes.
+
+        The sync set is the canonical union of affected files and files the
+        disk attempt installed or restored; each installed/restored entry
+        carries the exact hash the facade must observe. Multi-file plans
+        keep the existing R2-17 second pass so cross-file resolution
+        converges.
+        """
+        attempted_files = sorted(set(affected_files) | set(expected_hashes))
+        if not attempted_files:
+            return MutationSyncSummary(
+                state="NotNeeded",
+                attempted_files=[],
+                updated_files=[],
+                errors=[],
+                warnings=[],
+            )
+        errors: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = []
+        reports: dict[str, UpdateReport] = {}
+
+        def synchronize_once(label: str) -> None:
+            for target in attempted_files:
+                try:
+                    report = self.update_file(target)
+                except Exception as exc:  # noqa: BLE001 - sync must report, not raise
+                    errors.append({
+                        "stage": "graph_sync",
+                        "code": "update_failed",
+                        "file": target,
+                        "message": f"{label} update failed for {target}: {exc}",
+                    })
+                    continue
+                expected = expected_hashes.get(target)
+                if report.update_error:
+                    errors.append({
+                        "stage": "graph_sync",
+                        "code": "update_failed",
+                        "file": target,
+                        "message": f"{label} update failed for {target}: {report.update_error}",
+                    })
+                elif expected is not None and report.source_hash != expected:
+                    errors.append({
+                        "stage": "graph_sync",
+                        "code": "concurrent_modification",
+                        "file": target,
+                        "message": (
+                            f"{label} update for {target} parsed bytes {report.source_hash!r}, "
+                            f"expected {expected!r}; current disk is another writer's work"
+                        ),
+                    })
+                elif report.persistence_error or report.blob_error:
+                    detail = report.persistence_error or report.blob_error or ""
+                    errors.append({
+                        "stage": "persistence",
+                        "code": "persistence_failed",
+                        "file": target,
+                        "message": f"{label} persistence failed for {target}: {detail}",
+                    })
+                else:
+                    if report.parse_errors:
+                        errors.append({
+                            "stage": "graph_sync",
+                            "code": "recovered_parse",
+                            "file": target,
+                            "message": (
+                                f"{label} update for {target} recovered from "
+                                f"{report.parse_errors} parse error(s); synchronization is partial"
+                            ),
+                        })
+                    if report.route_warning:
+                        warnings.append({
+                            "stage": "graph_sync",
+                            "code": "framework_routes",
+                            "file": target,
+                            "message": report.route_warning,
+                        })
+                reports[target] = report
+
+        synchronize_once("first")
+        # R2-17 convergence: pass 1 settles entities/imports, pass 2 resolves
+        # calls against settled siblings. The final reports decide the outcome.
+        if len(attempted_files) > 1:
+            synchronize_once("second")
+
+        for target in attempted_files:
+            report = reports.get(target)
+            if report is None or report.update_error:
+                continue
+            expected = expected_hashes.get(target)
+            if expected is not None and report.source_hash != expected:
+                continue
+            if report.persistence_error or report.blob_error:
+                continue
+            try:
+                cleared = clear_embeddings_for_file(target)
+            except Exception as exc:  # noqa: BLE001 - sync must report, not raise
+                errors.append({
+                    "stage": "derived_data",
+                    "code": "derived_data_failed",
+                    "file": target,
+                    "message": f"derived-data invalidation failed for {target}: {exc}",
+                })
+                continue
+            cleared_count = 0
+            if isinstance(cleared, dict):
+                try:
+                    cleared_count = int(cleared.get("cleared", 0) or 0)
+                except (TypeError, ValueError):
+                    cleared_count = 0
+            if cleared_count:
+                # Derived vectors are only cleared in memory here. Persisted
+                # per-model rows are overwritten by recompute, not retracted,
+                # so name the pending recompute instead of claiming removal.
+                warnings.append({
+                    "stage": "derived_data",
+                    "code": "embeddings_pending_recompute",
+                    "file": target,
+                    "message": (
+                        f"cleared {cleared_count} in-memory embedding vector(s) for {target}; "
+                        "persisted per-model vectors remain until compute_embeddings regenerates them"
+                    ),
+                })
+
+        updated_files = sorted(
+            target for target, report in reports.items()
+            if report.update_error is None
+            and (
+                expected_hashes.get(target) is None
+                or report.source_hash == expected_hashes.get(target)
+            )
+            and not report.persistence_error
+            and not report.blob_error
+            and not report.parse_errors
+        )
+        hard_errors = [error for error in errors if error.get("code") != "recovered_parse"]
+        if hard_errors:
+            state = "Failed"
+        elif errors:
+            state = "Partial"
         else:
-            status = "RolledBack"
-
-        return MutationResult(
-            status=status,
-            # The files the engine says it wrote, not the ones the plan hoped to.
-            files_written=result.get("files_written", []),
-            syntax_errors=result.get("errors", []),
-            backup_path=result.get("backup_path"),
+            state = "Synchronized"
+        return MutationSyncSummary(
+            state=state,  # type: ignore[arg-type]
+            attempted_files=attempted_files,
+            updated_files=updated_files,
+            errors=errors,
+            warnings=warnings,
         )
 
     # ── Stats / Debug ──────────────────────────────────────────────────
@@ -1650,8 +2022,12 @@ __all__ = [
     "CodeRadarError",
     "MutationEdit",
     "MutationError",
+    "MutationFailure",
+    "MutationFileError",
+    "MutationFileResult",
     "MutationPlan",
     "MutationResult",
+    "MutationSyncSummary",
     "ParseError",
     "PolicyViolation",
     "ResolutionError",
@@ -1726,6 +2102,10 @@ class Watcher:
         blobs_skipped_oversize = 0
         blobs_skipped_excluded = 0
         blobs_bytes = 0
+        update_error: str | None = None
+        persistence_errors: list[str] = []
+        blob_errors: list[str] = []
+        route_warning: str | None = None
 
         for file_path, change_kind in batch:
             # The watcher stats the path, so "Delete" now actually arrives;
@@ -1760,6 +2140,14 @@ class Watcher:
             new_unresolved.extend(report.new_unresolved_references)
             newly_resolved.extend(report.newly_resolved_references)
             parse_errors += report.parse_errors
+            if report.update_error and update_error is None:
+                update_error = f"{file_path}: {report.update_error}"
+            if report.persistence_error:
+                persistence_errors.append(f"{file_path}: {report.persistence_error}")
+            if report.blob_error:
+                blob_errors.append(f"{file_path}: {report.blob_error}")
+            if report.route_warning and route_warning is None:
+                route_warning = f"{file_path}: {report.route_warning}"
             blobs_stored += report.blobs_stored
             blobs_skipped_oversize += report.blobs_skipped_oversize
             blobs_skipped_excluded += report.blobs_skipped_excluded
@@ -1789,6 +2177,11 @@ class Watcher:
             blobs_skipped_oversize=blobs_skipped_oversize,
             blobs_skipped_excluded=blobs_skipped_excluded,
             blobs_bytes=blobs_bytes,
+            source_hash="",
+            update_error=update_error,
+            persistence_error="; ".join(persistence_errors) if persistence_errors else None,
+            blob_error="; ".join(blob_errors) if blob_errors else None,
+            route_warning=route_warning,
         )
 
     def __enter__(self) -> Watcher:  # noqa: PYI034 - typing.Self needs 3.11+

@@ -765,7 +765,9 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Replace the body of a function/method. "
             "With dry_run=True (default): returns a diff preview for review. "
-            "With dry_run=False: writes the file AND updates the graph atomically. "
+            "With dry_run=False: writes the file, then runs synchronous graph "
+            "synchronization; Applied requires that sync to succeed, while "
+            "ApplyIncomplete keeps valid source and names the sync repair. "
             "Best practice: call first with dry_run=True to review, then call "
             "again with dry_run=False to apply. Use expected_hash to verify the "
             "current body matches before replacing (safety check). Indentation: "
@@ -801,7 +803,8 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Change a function/method signature. "
             "With dry_run=True: shows the signature change and all affected call sites. "
-            "With dry_run=False: writes the definition change AND updates the graph. "
+            "With dry_run=False: writes the definition change, then runs synchronous "
+            "graph synchronization; Applied requires that sync to succeed. "
             "NOTE: the definition signature is edited automatically; call sites with "
             "explicit per-caller values and a recorded arg span (§2.3) are edited too, "
             "the rest are returned as unverified_sites (with line numbers) for manual review."
@@ -834,8 +837,8 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Rename an entity (function, class, variable) and all references. "
             "With dry_run=True: shows all files and references that need updating. "
-            "With dry_run=False: renames the definition and ALL references, "
-            "updates the graph. Covers definition site and all usages."
+            "With dry_run=False: renames the definition and ALL references, then "
+            "runs synchronous graph synchronization. Covers definition site and all usages."
             " " + _ENTITY_ID_GRAMMAR
         ),
         annotations={
@@ -864,7 +867,8 @@ def create_server(graph: Any) -> MCPServer:
         description=(
             "Create a new entity (function, class, constant) in a file. "
             "With dry_run=True: shows where the entity would be inserted. "
-            "With dry_run=False: inserts the entity into the file AND indexes it. "
+            "With dry_run=False: inserts the entity into the file, then runs "
+            "synchronous graph synchronization. "
             "anchor='end' appends at file end, 'top' inserts at file top, "
             "or pass an entity ID to insert after that entity. "
             "The code is rendered from name/body/decorators using language-aware "
@@ -1417,9 +1421,16 @@ def _compute_embeddings(graph: Any, model_name: str | None = None,
     return render.compute_embeddings(metrics)
 
 
-@requires_index
 def _search_similar(graph: Any, query: str, top_k: int) -> str:
     """Semantic/embedding similarity search."""
+    if isinstance(query, str) and not query.strip():
+        return "Please provide a natural-language query for semantic search."
+    return _search_similar_indexed(graph, query, top_k)
+
+
+@requires_index
+def _search_similar_indexed(graph: Any, query: str, top_k: int) -> str:
+    """Indexed semantic/embedding similarity search."""
     try:
         results = ops.search_similar(query, top_k)
     except ops.MissingDependency:

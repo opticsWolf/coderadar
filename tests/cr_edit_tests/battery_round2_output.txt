@@ -23,6 +23,8 @@
 [PASS] cli/callers
 [PASS] cli/callees
 [PASS] cli/callers-bad-id
+[PASS] cli/mutation-dry-run-rc0
+[PASS] cli/mutation-outside-root-rc2
 [PASS] cli/diagnose
 [PASS] cli/diagnose-unresolved
 [PASS] cli/diagnose-low-confidence
@@ -122,5 +124,5 @@
 
 ======================================================================
 SUMMARY
-121/121 passed
+123/123 passed
 FAIL-LIST-END

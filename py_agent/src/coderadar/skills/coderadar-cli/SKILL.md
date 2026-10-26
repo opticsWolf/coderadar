@@ -123,6 +123,13 @@ lists call sites as unverified — it cannot rewrite argument spans.
 `create-entity` renders the header from `--signature` when given,
 otherwise from `name`.
 
+Mutation results use the same six public statuses as the Python/MCP
+surfaces (`Applied`, `RolledBack`, `RejectedStale`, `RejectedPolicy`,
+`ApplyIncomplete`, `RollbackIncomplete`). `--format json` preserves the
+complete `failure`, per-file, `sync`, and recovery-path structure. Exit
+codes are 0 for `Applied`/dry-run, 2 for stale/policy refusals, and 1 for
+rollback and incomplete outcomes.
+
 ### Local process
 
 ```bash

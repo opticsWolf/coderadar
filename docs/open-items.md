@@ -474,7 +474,9 @@ have that property and no test — see the v0.8 plan §4.
 >   pinned at ops level (both clone instances named; TODO marker found).
 > - Audited clean (content assertions exist): `search_hybrid` (fused
 >   ranks + ids), `explore` (the KeyError catch is documented in-file),
->   mutation tools (e2e), traverse kinds, smells/dead-code goldens,
+>   mutation tools (e2e plus FFI `disk_status`/public-status pins,
+>   sync-incomplete outcomes, renderer/recovery text, and CLI exit codes),
+>   traverse kinds, smells/dead-code goldens,
 >   staleness banner inputs.
 > - Watch-list, mostly closed (dev): the `cr_edit_tests` batteries were
 >   manual dogfood (no CI reference — verified) — `battery_round2.py`

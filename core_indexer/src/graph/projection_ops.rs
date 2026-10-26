@@ -7,32 +7,33 @@ use super::CodeGraph;
 use crate::types::*;
 
 impl CodeGraph {
-    /// Close removed entities in the persistent ledger.
-    ///
-    /// Removal used to touch the in-memory projection only. The store kept
-    /// every concept and edge open forever, so `as_of` for any past instant
-    /// answered with a set that only ever grew — a deleted function stayed
-    /// "currently true" in a database whose whole point is knowing when
-    /// things stopped being true.
+    /// Close removed entities in the persistent ledger and report failures.
     ///
     /// Best-effort by design: the projection is the source of truth for
     /// queries, and a ledger write that fails must not fail the update. It is
     /// reported, not swallowed.
-    pub(crate) fn retire_in_store<'a>(&self, ids: impl IntoIterator<Item = &'a EntityId>) {
-        let store = match &self.store {
-            Some(store) => store,
-            None => return,
-        };
+    pub(crate) fn try_retire_in_store<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a EntityId>,
+    ) -> Option<String> {
+        let store = self.store.as_ref()?;
         let ids: Vec<String> = ids.into_iter().cloned().collect();
         if ids.is_empty() {
-            return;
+            return None;
         }
         if let Err(e) = store.retire_entities(&ids) {
-            eprintln!(
-                "Warning: could not retire {} removed entities: {:?}",
+            return Some(format!(
+                "could not retire {} removed entities: {:?}",
                 ids.len(),
                 e
-            );
+            ));
+        }
+        None
+    }
+
+    pub(crate) fn retire_in_store<'a>(&self, ids: impl IntoIterator<Item = &'a EntityId>) {
+        if let Some(message) = self.try_retire_in_store(ids) {
+            eprintln!("Warning: {message}");
         }
     }
 
@@ -284,14 +285,14 @@ impl CodeGraph {
     /// entities and only insert/remove entities that actually changed. Unchanged
     /// entities (same ID + same content hashes) are left in place, avoiding
     /// unnecessary hashmap churn and edge recalculation.
-    /// Returns (inserted_count, removed_count).
+    /// Returns (inserted_count, removed_count, retirement_error).
     pub fn apply_diff_update(
         &self,
         projection: &mut ProjectedGraph,
         units: &[ExtractedUnit],
         file_path: &str,
         language: &Language,
-    ) -> (usize, usize) {
+    ) -> (usize, usize, Option<String>) {
         // 1. Collect old entity hashes from projection.
         //    Normalize entity IDs for cross-platform prefix matching.
         let normalized_file_path = normalize_path_str(file_path);
@@ -753,9 +754,9 @@ impl CodeGraph {
                 .retain(|(s, t)| !gone.contains(s) && !gone.contains(t));
         }
 
-        self.retire_in_store(removed_ids.iter());
+        let retirement_error = self.try_retire_in_store(removed_ids.iter());
 
-        (inserted, removed)
+        (inserted, removed, retirement_error)
     }
 
     /// Update a single file in-place: re-index and diff against the current graph.
@@ -810,8 +811,9 @@ impl CodeGraph {
         let source = match content {
             Some(c) => c.to_string(),
             None => std::fs::read_to_string(&disk_path)
-                .map_err(|e| format!("Failed to read file: {}", e))?,
+                .map_err(|e| format!("Failed to read file: {e}"))?,
         };
+        let source_hash = format!("{:016x}", xxhash_rust::xxh3::xxh3_64(source.as_bytes()));
 
         // §1.9 put-then-assert: the file's bytes hit the blob store BEFORE
         // the v2 flush below asserts any digest (same ordering guarantee
@@ -821,6 +823,7 @@ impl CodeGraph {
         // inside `put_source_blob` regardless.
         let (mut blob_stored, mut blob_oversize, mut blob_excluded, mut blob_bytes) =
             (0u64, 0u64, 0u64, 0u64);
+        let mut blob_error: Option<String> = None;
         if let Some(ref store) = self.store {
             match store.put_source_blob(file_path, source.as_bytes()) {
                 Ok(crate::storage::BlobOutcome::Stored { digest, bytes }) => {
@@ -836,6 +839,7 @@ impl CodeGraph {
                 }
                 Ok(crate::storage::BlobOutcome::Disabled) => {}
                 Err(e) => {
+                    blob_error = Some(format!("source blob put failed for {file_path}: {e:?}"));
                     eprintln!(
                         "[diag] blob put failed for {file_path}: {e:?} — continuing without blob"
                     );
@@ -868,7 +872,7 @@ impl CodeGraph {
         let before = self.snapshot();
         let epoch_before = self.epoch();
         let mut projection = (*before).clone();
-        let (new_count, removed_count) =
+        let (new_count, removed_count, retirement_error) =
             self.apply_diff_update(&mut projection, &units, file_path, &lang);
         // Keep the dotted-name fast path in sync (cheap; module set is
         // unchanged today, but a stale index would silently degrade the
@@ -887,6 +891,10 @@ impl CodeGraph {
         // the instantiation index rebuilds on current data.
         self.resolve_instantiations(&mut projection);
         self.resolve_references(&mut projection);
+        let mut persistence_errors: Vec<String> = Vec::new();
+        if let Some(error) = retirement_error {
+            persistence_errors.push(format!("retire removed entities: {error}"));
+        }
         // Phase 4b (v0.8 P1): flush concept JSON v2 for this file AFTER the
         // scoped cascade and BEFORE scoped edges (FK REFERENCES order) — v2
         // concepts carry post-resolution state (e.g. `resolved_calls`) that
@@ -894,11 +902,17 @@ impl CodeGraph {
         // `persist_entities` flush.
         if let Some(ref store) = self.store {
             let v2 = crate::storage::build_v2_concepts_for_file(&projection, file_path, &digests);
-            let _ = store.upsert_concepts_bulk(&v2);
+            if let Err(e) = store.upsert_concepts_bulk(&v2) {
+                persistence_errors.push(format!("concept flush failed for {file_path}: {e:?}"));
+            }
         }
         // Scoped: an edit to one file must not re-assert the project's whole
         // edge set (plan §1.2).
-        let _ = self.persist_edges_scoped(&projection, Some(file_path));
+        if let Err(e) = self.persist_edges_scoped(&projection, Some(file_path)) {
+            persistence_errors.push(format!(
+                "scoped edge persistence failed for {file_path}: {e:?}"
+            ));
+        }
         self.commit_projection(projection);
 
         // Track affected files (this file + any callers)
@@ -927,6 +941,14 @@ impl CodeGraph {
             changed_symbols: diff.symbols,
             new_unresolved: diff.new_unresolved,
             newly_resolved: diff.newly_resolved,
+            source_hash,
+            update_error: None,
+            persistence_error: if persistence_errors.is_empty() {
+                None
+            } else {
+                Some(persistence_errors.join("; "))
+            },
+            blob_error,
             epoch_before,
             epoch_after: self.epoch(),
             entities_added: new_count,

@@ -3,14 +3,17 @@
 //
 // Each plan_* method takes the current CodeGraph for entity/span lookup and
 // computes byte-accurate edits with content-hash guards. apply() performs
-// stale-write rejection, backup, atomic write, post-write parse verification,
-// and automatic rollback on tainted updates.
+// unique-artifact disk attempts: policy → prepare → verified backups → late
+// stale checks → atomic per-file installs → tri-state post-write
+// verification → installed-only, hash-guarded compensation.
 
 pub mod edit;
 pub mod indent;
 pub mod write_guard;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+
+use serde::Serialize;
 
 use crate::mutation::edit::apply_edits_to_file;
 use crate::mutation::indent::detect_indent_style;
@@ -47,26 +50,84 @@ pub struct UnverifiedSite {
     pub reason: String,
 }
 
-/// Result of applying a mutation plan.
-#[derive(Clone, Debug)]
-pub struct MutationResult {
-    pub status: MutationStatus,
+/// Disk outcome for one mutation attempt.
+///
+/// The disk engine cannot prove graph synchronization on its own, so this is
+/// deliberately an internal `disk_status`, not the public facade status. The
+/// Python facade maps `Installed`/`Restored` to `Applied`/`RolledBack` only
+/// after required synchronization completes; anything unverified becomes one
+/// of the explicit incomplete outcomes.
+#[derive(Clone, Debug, Serialize)]
+pub struct DiskMutationResult {
+    pub attempt_id: String,
+    pub disk_status: DiskMutationStatus,
+    /// First operational failure for this attempt. `failure` may differ when
+    /// compensation itself fails: the primary introduced-syntax/unavailable
+    /// failure remains here, while `failure` names the failed restore.
+    pub primary: Option<MutationFailure>,
+    /// Primary operational failure (policy, read, prepare, backup, write,
+    /// verification, or compensation). Introduced syntax errors stay in
+    /// `syntax_errors`; this field names the failed operation instead.
+    pub failure: Option<MutationFailure>,
+    pub files: Vec<MutationFileOutcome>,
+    /// Compatibility projection: files retaining this attempt's bytes at the
+    /// last verification. Empty after complete rollback or rejection. The
+    /// per-file `files` vector is authoritative for ambiguous cases.
     pub files_written: Vec<String>,
     pub syntax_errors: Vec<SyntaxDiagnostic>,
-    pub reindex: ReindexSummary,
+    /// Deprecated single-file compatibility pointer. `None` on every
+    /// complete outcome. On incomplete recovery it may name the first
+    /// retained recovery file; `files[].recovery_path` is authoritative.
     pub backup_path: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MutationStatus {
-    Applied,
-    RolledBack,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum DiskMutationStatus {
+    Installed,
+    Restored,
+    NotInstalled,
     RejectedStale,
-    /// Refused by `MutationConfig` before any file was read or written.
     RejectedPolicy,
+    DiskIncomplete,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
+pub struct MutationFailure {
+    pub stage: &'static str,
+    pub code: &'static str,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MutationFileOutcome {
+    pub file: String,
+    pub state: FileMutationState,
+    pub pre_hash: String,
+    pub installed_hash: Option<String>,
+    pub final_hash: Option<String>,
+    /// Hash the facade must observe before claiming synchronization, if any.
+    pub expected_hash: Option<String>,
+    pub recovery_path: Option<String>,
+    pub error: Option<MutationFileError>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum FileMutationState {
+    Untouched,
+    Installed,
+    Restored,
+    ExternallyChanged,
+    RestoreFailed,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MutationFileError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct SyntaxDiagnostic {
     pub file: String,
     pub line: u32,
@@ -75,13 +136,9 @@ pub struct SyntaxDiagnostic {
     pub offending_span: ByteSpan,
 }
 
-#[derive(Clone, Debug)]
-pub struct ReindexSummary {
-    pub files: usize,
-    pub entities_updated: usize,
-    pub edges_updated: usize,
-    pub duration_ms: u64,
-}
+// The old placeholder `ReindexSummary` is gone: it never crossed the FFI
+// with meaningful data, and the facade now aggregates real per-file sync
+// reports instead.
 
 // ── Mutation Engine ────────────────────────────────────────────────────────
 
@@ -299,39 +356,128 @@ fn hash_span(bytes: &[u8], span: ByteSpan) -> String {
     span_hash(&bytes[start..end])
 }
 
-/// Parse `source` with the tree-sitter grammar for `lang`, if available.
-/// Returns None if the language has no grammar or parsing fails.
-fn parse_has_error(lang: crate::types::Language, source: &[u8]) -> Option<bool> {
-    let ts_lang = crate::graph::CodeGraph::ts_language(&lang)?;
-    let mut parser = tree_sitter::Parser::new();
-    parser.set_language(&ts_lang).ok()?;
-    let tree = parser.parse(source, None)?;
-    Some(tree.root_node().has_error())
+/// Post-write verification outcome.
+///
+/// `Unavailable` is a first-class answer, not a silent pass: a missing
+/// grammar, parser failure, or unreadable bytes can never serialize as
+/// clean verification after this attempt installed its own bytes.
+enum PostWriteVerification {
+    Passed,
+    Introduced(SyntaxDiagnostic),
+    Unavailable {
+        stage: &'static str,
+        code: &'static str,
+        message: String,
+    },
 }
 
-/// Post-write parse verification: report a diagnostic only if the mutation
-/// *introduced* a syntax error (after has_error && !before has_error).
-fn verify_parse_introduced_error(file_path: &str, original: &[u8]) -> Option<SyntaxDiagnostic> {
+/// Classify installed bytes against the recorded original.
+fn classify_post_write(
+    file_path: &str,
+    original: &[u8],
+    installed: &[u8],
+) -> PostWriteVerification {
     let lang = crate::types::Language::from_extension(
         std::path::Path::new(file_path)
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("py"),
     );
-    let before = parse_has_error(lang, original);
-    let after_bytes = std::fs::read(disk_path_for(file_path)).ok()?;
-    let after = parse_has_error(lang, &after_bytes);
-
-    match (before, after) {
-        (Some(_), Some(true)) if before == Some(false) => Some(SyntaxDiagnostic {
+    let Some(ts_lang) = crate::graph::CodeGraph::ts_language(&lang) else {
+        return PostWriteVerification::Unavailable {
+            stage: "verify",
+            code: "verification_grammar_unavailable",
+            message: format!(
+                "no tree-sitter grammar for {file_path}; installed bytes cannot be verified",
+            ),
+        };
+    };
+    let mut parser = tree_sitter::Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return PostWriteVerification::Unavailable {
+            stage: "verify",
+            code: "verification_parser_unavailable",
+            message: format!(
+                "tree-sitter parser could not be configured for {file_path}; installed bytes cannot be verified",
+            ),
+        };
+    }
+    let Some(before) = parser.parse(original, None) else {
+        return PostWriteVerification::Unavailable {
+            stage: "verify",
+            code: "verification_parser_failed",
+            message: format!(
+                "tree-sitter could not parse the recorded original of {file_path}; introduction cannot be established",
+            ),
+        };
+    };
+    let Some(after) = parser.parse(installed, None) else {
+        return PostWriteVerification::Unavailable {
+            stage: "verify",
+            code: "verification_parser_failed",
+            message: format!(
+                "tree-sitter could not parse the installed bytes of {file_path}; installed state cannot be verified",
+            ),
+        };
+    };
+    if after.root_node().has_error() && !before.root_node().has_error() {
+        PostWriteVerification::Introduced(SyntaxDiagnostic {
             file: file_path.to_string(),
             line: 0,
             column: 0,
             message: "post-write parse check failed — mutation introduced a syntax error".into(),
             offending_span: ByteSpan { start: 0, end: 0 },
-        }),
-        _ => None,
+        })
+    } else {
+        PostWriteVerification::Passed
     }
+}
+
+fn mutation_failure(stage: &'static str, code: &'static str, message: String) -> MutationFailure {
+    MutationFailure {
+        stage,
+        code,
+        message,
+    }
+}
+
+fn file_error(code: &'static str, message: String) -> MutationFileError {
+    MutationFileError { code, message }
+}
+
+fn attempt_sibling(file: &str, attempt_id: &str, suffix: &str) -> String {
+    format!("{file}.coderadar-{attempt_id}.{suffix}")
+}
+
+/// Resolve a plan target and read its bytes once.
+fn resolve_target_bytes(file: &str) -> Result<(std::path::PathBuf, Vec<u8>), std::io::Error> {
+    let disk_path = disk_path_for(file);
+    let bytes = std::fs::read(&disk_path).or_else(|_| std::fs::read(file))?;
+    Ok((disk_path, bytes))
+}
+
+/// Replace `target` through a same-directory temporary file and rename.
+///
+/// Same-directory placement keeps the rename on one filesystem, giving
+/// atomic visibility for this file only. This is not a multi-file or crash
+/// transaction: each file replacement is atomic, the plan is not.
+fn atomic_replace(
+    target: &std::path::Path,
+    contents: &[u8],
+    temp: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::io::Write;
+
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut tmp = std::fs::File::create(temp)?;
+    tmp.write_all(contents)?;
+    tmp.sync_all()?;
+    drop(tmp);
+    std::fs::rename(temp, target)
 }
 
 /// Shared process-wide WriteGuard — suppresses watcher events for files the
@@ -413,6 +559,38 @@ pub struct MutationEngine {
     /// — set it from the indexed root so a plan cannot reach outside the
     /// project it was planned against.
     pub project_root: Option<std::path::PathBuf>,
+    #[cfg(test)]
+    pub(crate) hooks: MutationTestHooks,
+}
+
+/// Deterministic fault injection for the disk-attempt matrix (§9.1).
+///
+/// Filesystem failures and external-writer races cannot be scheduled
+/// reliably with sleeps. Tests set these hooks before `apply()` to inject
+/// one event at the exact phase boundary under test.
+#[cfg(test)]
+pub(crate) type MutationInstallHook = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct MutationTestHooks {
+    /// Called with the target file immediately after its rename succeeds,
+    /// before post-write verification reads it back.
+    pub after_install: Option<MutationInstallHook>,
+    /// Fail guarded backup without touching disk.
+    pub fail_backup_write: bool,
+    /// Fail the backup for exactly this target, after earlier targets in
+    /// the same attempt have backed up. This deterministically exercises
+    /// cleanup when a later backup fails.
+    pub fail_backup_on: Option<String>,
+    /// Run once after every backup verifies and before the pre-install
+    /// stale check. Tests use it to inject an external write in the exact
+    /// window where no plan bytes are installed yet.
+    pub after_backup: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+    /// Fail guarded restoration without touching disk.
+    pub fail_restore_write: bool,
+    /// Install the original bytes but report read-back verification as failed.
+    pub fail_restore_readback: bool,
 }
 
 impl MutationEngine {
@@ -421,6 +599,8 @@ impl MutationEngine {
             write_guard: shared_write_guard(),
             config,
             project_root: None,
+            #[cfg(test)]
+            hooks: MutationTestHooks::default(),
         }
     }
 
@@ -2084,274 +2264,916 @@ impl MutationEngine {
             warnings: vec!["Preflight parse-check deferred to Python layer".into()],
         })
     }
+}
 
-    /// Apply a mutation plan: stale-check → backup → write → post-verify → rollback.
-    pub fn apply(&mut self, plan: &MutationPlan) -> MutationResult {
-        use std::io::Write;
+/// Mutable per-file state while one disk attempt runs. Only `outcome()`
+/// crosses the FFI; every intermediate decision stays inside `apply()`.
+struct FileAttempt {
+    file: String,
+    disk_path: std::path::PathBuf,
+    original: String,
+    pre_hash: String,
+    prepared: String,
+    prepared_hash: String,
+    backup_path: Option<std::path::PathBuf>,
+    state: FileMutationState,
+    installed_hash: Option<String>,
+    final_hash: Option<String>,
+    error: Option<MutationFileError>,
+}
 
-        // ── Phase 0: Policy ─────────────────────────────────────────────
-        // Before anything is read or written. See check_policy for why the
-        // gate lives here rather than in the Python caller.
-        if let Err(reason) = self.check_policy(plan) {
-            return MutationResult {
-                status: MutationStatus::RejectedPolicy,
-                files_written: vec![],
-                syntax_errors: vec![SyntaxDiagnostic {
-                    file: plan
-                        .edits
-                        .first()
-                        .map(|e| e.file.clone())
-                        .unwrap_or_default(),
-                    line: 0,
-                    column: 0,
-                    message: format!("policy rejected the plan — {}", reason),
-                    offending_span: ByteSpan { start: 0, end: 0 },
-                }],
-                reindex: ReindexSummary {
-                    files: 0,
-                    entities_updated: 0,
-                    edges_updated: 0,
-                    duration_ms: 0,
-                },
-                backup_path: None,
-            };
+impl FileAttempt {
+    fn outcome(&self) -> MutationFileOutcome {
+        let expected_hash = match self.state {
+            FileMutationState::Installed => self.installed_hash.clone(),
+            FileMutationState::Restored => Some(self.pre_hash.clone()),
+            _ => None,
+        };
+        let recovery_path = match self.state {
+            FileMutationState::ExternallyChanged
+            | FileMutationState::RestoreFailed
+            | FileMutationState::Unknown => {
+                self.backup_path.as_ref().map(|p| p.display().to_string())
+            }
+            _ => None,
+        };
+        MutationFileOutcome {
+            file: self.file.clone(),
+            state: self.state,
+            pre_hash: self.pre_hash.clone(),
+            installed_hash: self.installed_hash.clone(),
+            final_hash: self.final_hash.clone(),
+            expected_hash,
+            recovery_path,
+            error: self.error.clone(),
         }
+    }
+}
 
-        // Group edits by file path (all edits carry real byte spans)
-        let mut by_file: HashMap<String, Vec<MutationEdit>> = HashMap::new();
+/// Remove every verified backup this attempt created. A backup-phase
+/// failure leaves no plan bytes on disk, so its pre-images are unneeded
+/// artifacts rather than recovery material.
+fn cleanup_attempt_backups(attempts: &mut HashMap<String, FileAttempt>) {
+    for attempt in attempts.values_mut() {
+        if let Some(backup) = attempt.backup_path.take() {
+            let _ = std::fs::remove_file(backup);
+        }
+    }
+}
+
+fn disk_outcome(
+    attempt_id: String,
+    disk_status: DiskMutationStatus,
+    primary: Option<MutationFailure>,
+    failure: Option<MutationFailure>,
+    attempts: &HashMap<String, FileAttempt>,
+    file_order: &[String],
+    syntax_errors: Vec<SyntaxDiagnostic>,
+) -> DiskMutationResult {
+    let files = file_order
+        .iter()
+        .map(|file| {
+            attempts.get(file).map(FileAttempt::outcome).unwrap_or({
+                MutationFileOutcome {
+                    file: file.clone(),
+                    state: FileMutationState::Untouched,
+                    pre_hash: String::new(),
+                    installed_hash: None,
+                    final_hash: None,
+                    expected_hash: None,
+                    recovery_path: None,
+                    error: None,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    let files_written = files
+        .iter()
+        .filter(|f| f.state == FileMutationState::Installed)
+        .map(|f| f.file.clone())
+        .collect::<Vec<_>>();
+    let backup_path = if disk_status == DiskMutationStatus::DiskIncomplete {
+        files.iter().find_map(|f| f.recovery_path.clone())
+    } else {
+        None
+    };
+    DiskMutationResult {
+        attempt_id,
+        disk_status,
+        primary: primary.clone(),
+        failure: failure.or(primary),
+        files,
+        files_written,
+        syntax_errors,
+        backup_path,
+    }
+}
+
+impl MutationEngine {
+    /// Apply a mutation plan: policy → prepare → backup → install → verify → compensate.
+    ///
+    /// Every temporary and backup sibling carries this attempt's id, so two
+    /// same-process attempts can neither share artifacts nor interleave disk
+    /// phases (the FFI also serializes attempts per root). Compensation only
+    /// restores targets this attempt installed, and only while their current
+    /// bytes still match this attempt's installed hash.
+    pub fn apply(&mut self, plan: &MutationPlan) -> DiskMutationResult {
+        // ── Phase 0: Policy ─────────────────────────────────────────────
+        // At the Rust trust boundary, before anything is read or written.
+        let attempt_id = ulid::Ulid::new().to_string();
+        let mut by_file: BTreeMap<String, Vec<MutationEdit>> = BTreeMap::new();
         for edit in &plan.edits {
             by_file
                 .entry(edit.file.clone())
                 .or_default()
                 .push(edit.clone());
         }
+        let mut file_order: Vec<String> = by_file.keys().cloned().collect();
+        for file in &plan.affected_files {
+            if !by_file.contains_key(file) {
+                file_order.push(file.clone());
+            }
+        }
+        file_order.sort();
+        let empty_attempts: HashMap<String, FileAttempt> = HashMap::new();
+        if let Err(reason) = self.check_policy(plan) {
+            let failure = Some(mutation_failure(
+                "policy",
+                "policy_refused",
+                format!("policy rejected the plan — {reason}"),
+            ));
+            return disk_outcome(
+                attempt_id,
+                DiskMutationStatus::RejectedPolicy,
+                failure.clone(),
+                failure,
+                &empty_attempts,
+                &file_order,
+                Vec::new(),
+            );
+        }
 
+        let mut attempts: HashMap<String, FileAttempt> = HashMap::new();
         let mut syntax_errors: Vec<SyntaxDiagnostic> = Vec::new();
-        let mut originals: HashMap<String, String> = HashMap::new();
 
-        // ── Phase 1: Stale-write rejection ──────────────────────────────
-        // Every non-empty expected_hash must match the current content at its
-        // span. Any mismatch → reject the entire plan (nothing is written).
-        for (file_path, edits) in &by_file {
-            // F14: keys are canonical root-relative ids; resolve for disk.
-            let disk_path = if std::path::Path::new(file_path).is_absolute() {
-                std::path::PathBuf::from(file_path)
-            } else {
-                crate::indexed_root().join(file_path)
-            };
-            let original = match std::fs::read_to_string(&disk_path)
-                .or_else(|_| std::fs::read_to_string(file_path))
-            {
-                Ok(s) => s,
+        // ── Phase 1: Read and prepare every file before installing any ──
+        // Full-file hashes are recorded for every target, including
+        // insertion-only `create_entity` edits whose empty span hashes prove
+        // nothing about the surrounding file.
+        for file_path in &file_order {
+            let edits = by_file.get(file_path).cloned().unwrap_or_default();
+            let (disk_path, bytes) = match resolve_target_bytes(file_path) {
+                Ok(found) => found,
                 Err(e) => {
-                    syntax_errors.push(SyntaxDiagnostic {
-                        file: file_path.clone(),
-                        line: 0,
-                        column: 0,
-                        message: format!("read failed: {}", e),
-                        offending_span: ByteSpan { start: 0, end: 0 },
-                    });
-                    return MutationResult {
-                        status: MutationStatus::RolledBack,
-                        files_written: vec![],
-                        syntax_errors,
-                        reindex: ReindexSummary {
-                            files: 0,
-                            entities_updated: 0,
-                            edges_updated: 0,
-                            duration_ms: 0,
+                    attempts.insert(
+                        file_path.clone(),
+                        FileAttempt {
+                            file: file_path.clone(),
+                            disk_path: disk_path_for(file_path),
+                            original: String::new(),
+                            pre_hash: String::new(),
+                            prepared: String::new(),
+                            prepared_hash: String::new(),
+                            backup_path: None,
+                            state: FileMutationState::Untouched,
+                            installed_hash: None,
+                            final_hash: None,
+                            error: Some(file_error("read_failed", format!("read failed: {e}"))),
                         },
-                        backup_path: None,
-                    };
+                    );
+                    let failure = Some(mutation_failure(
+                        "read",
+                        "read_failed",
+                        format!("read failed for {file_path}: {e}"),
+                    ));
+                    return disk_outcome(
+                        attempt_id,
+                        DiskMutationStatus::NotInstalled,
+                        failure.clone(),
+                        failure,
+                        &attempts,
+                        &file_order,
+                        syntax_errors,
+                    );
                 }
             };
-            for edit in edits {
+            let original = match String::from_utf8(bytes.clone()) {
+                Ok(text) => text,
+                Err(e) => {
+                    attempts.insert(
+                        file_path.clone(),
+                        FileAttempt {
+                            file: file_path.clone(),
+                            disk_path,
+                            original: String::new(),
+                            pre_hash: String::new(),
+                            prepared: String::new(),
+                            prepared_hash: String::new(),
+                            backup_path: None,
+                            state: FileMutationState::Untouched,
+                            installed_hash: None,
+                            final_hash: None,
+                            error: Some(file_error(
+                                "read_failed",
+                                format!("target is not UTF-8: {e}"),
+                            )),
+                        },
+                    );
+                    let failure = Some(mutation_failure(
+                        "read",
+                        "read_failed",
+                        format!("target {file_path} is not UTF-8: {e}"),
+                    ));
+                    return disk_outcome(
+                        attempt_id,
+                        DiskMutationStatus::NotInstalled,
+                        failure.clone(),
+                        failure,
+                        &attempts,
+                        &file_order,
+                        syntax_errors,
+                    );
+                }
+            };
+            let pre_hash = span_hash(original.as_bytes());
+            for edit in &edits {
                 if edit.expected_hash.is_empty() {
                     continue;
                 }
                 let actual = hash_span(original.as_bytes(), edit.span);
                 if actual != edit.expected_hash {
-                    syntax_errors.push(SyntaxDiagnostic {
-                        file: file_path.clone(), line: 0, column: 0,
-                        message: format!(
-                            "stale edit rejected — content changed since planning (expected {}, found {})",
+                    attempts.insert(file_path.clone(), FileAttempt {
+                        file: file_path.clone(),
+                        disk_path,
+                        original: original.clone(),
+                        pre_hash: pre_hash.clone(),
+                        prepared: String::new(),
+                        prepared_hash: String::new(),
+                        backup_path: None,
+                        state: FileMutationState::Untouched,
+                        installed_hash: None,
+                        final_hash: None,
+                        error: Some(file_error(
+                            "stale_content",
+                            format!(
+                                "stale edit rejected — content changed since planning (expected {}, found {})",
+                                edit.expected_hash, actual
+                            ),
+                        )),
+                    });
+                    let failure = Some(mutation_failure(
+                        "read",
+                        "stale_content",
+                        format!(
+                            "stale edit rejected for {file_path} — content changed since planning (expected {}, found {})",
                             edit.expected_hash, actual
                         ),
-                        offending_span: edit.span,
-                    });
-                    return MutationResult {
-                        status: MutationStatus::RejectedStale,
-                        files_written: vec![],
+                    ));
+                    return disk_outcome(
+                        attempt_id,
+                        DiskMutationStatus::RejectedStale,
+                        failure.clone(),
+                        failure,
+                        &attempts,
+                        &file_order,
                         syntax_errors,
-                        reindex: ReindexSummary {
-                            files: 0,
-                            entities_updated: 0,
-                            edges_updated: 0,
-                            duration_ms: 0,
-                        },
-                        backup_path: None,
-                    };
+                    );
                 }
             }
-            originals.insert(file_path.clone(), original);
-        }
-
-        // ── Phase 2: Backup every target file ────────────────────────────
-        let mut backups: Vec<(String, String)> = Vec::new(); // (file, backup)
-        for file_path in by_file.keys() {
-            let backup_path = format!("{}.coderadar-bak", file_path);
-            if let Err(e) = std::fs::copy(disk_path_for(file_path), disk_path_for(&backup_path)) {
-                for (_, bp) in &backups {
-                    let _ = std::fs::remove_file(disk_path_for(bp));
-                }
-                syntax_errors.push(SyntaxDiagnostic {
-                    file: file_path.clone(),
-                    line: 0,
-                    column: 0,
-                    message: format!("backup failed: {}", e),
-                    offending_span: ByteSpan { start: 0, end: 0 },
-                });
-                return MutationResult {
-                    status: MutationStatus::RolledBack,
-                    files_written: vec![],
-                    syntax_errors,
-                    reindex: ReindexSummary {
-                        files: 0,
-                        entities_updated: 0,
-                        edges_updated: 0,
-                        duration_ms: 0,
-                    },
-                    backup_path: None,
-                };
-            }
-            backups.push((file_path.clone(), backup_path));
-        }
-
-        // ── Phase 3: Write (atomic temp + rename) ────────────────────────
-        let mut files_written: Vec<String> = Vec::new();
-        for (file_path, edits) in &by_file {
-            let original = originals.get(file_path).cloned().unwrap_or_default();
-            let new_content = match apply_edits_to_file(&original, edits) {
-                Ok(s) => s,
+            let prepared = match apply_edits_to_file(&original, &edits) {
+                Ok(prepared) => prepared,
                 Err(e) => {
-                    rollback_all(&backups);
-                    syntax_errors.push(SyntaxDiagnostic {
-                        file: file_path.clone(),
-                        line: 0,
-                        column: 0,
-                        message: format!("apply failed: {:?}", e),
-                        offending_span: ByteSpan { start: 0, end: 0 },
-                    });
-                    return MutationResult {
-                        status: MutationStatus::RolledBack,
-                        files_written: vec![],
-                        syntax_errors,
-                        reindex: ReindexSummary {
-                            files: 0,
-                            entities_updated: 0,
-                            edges_updated: 0,
-                            duration_ms: 0,
+                    attempts.insert(
+                        file_path.clone(),
+                        FileAttempt {
+                            file: file_path.clone(),
+                            disk_path,
+                            original: original.clone(),
+                            pre_hash: pre_hash.clone(),
+                            prepared: String::new(),
+                            prepared_hash: String::new(),
+                            backup_path: None,
+                            state: FileMutationState::Untouched,
+                            installed_hash: None,
+                            final_hash: None,
+                            error: Some(file_error(
+                                "prepare_failed",
+                                format!("apply failed: {e:?}"),
+                            )),
                         },
-                        backup_path: None,
-                    };
+                    );
+                    let failure = Some(mutation_failure(
+                        "prepare",
+                        "prepare_failed",
+                        format!("apply failed for {file_path}: {e:?}"),
+                    ));
+                    return disk_outcome(
+                        attempt_id,
+                        DiskMutationStatus::NotInstalled,
+                        failure.clone(),
+                        failure,
+                        &attempts,
+                        &file_order,
+                        syntax_errors,
+                    );
                 }
             };
-
-            let tmp_path = format!("{}.coderadar-tmp", file_path);
-            let write_ok = std::fs::File::create(disk_path_for(&tmp_path))
-                .and_then(|mut f| f.write_all(new_content.as_bytes()))
-                .and_then(|_| std::fs::rename(disk_path_for(&tmp_path), disk_path_for(file_path)))
-                .is_ok();
-
-            if write_ok {
-                files_written.push(file_path.clone());
-                // Suppress watcher events for this file for 5s — the mutation
-                // engine wrote it, so the watcher shouldn't re-index it.
-                self.write_guard.suppress(
-                    std::path::PathBuf::from(file_path),
-                    span_hash(new_content.as_bytes()),
-                    5,
-                );
-            } else {
-                let _ = std::fs::remove_file(disk_path_for(&tmp_path));
-                rollback_all(&backups);
-                syntax_errors.push(SyntaxDiagnostic {
+            let prepared_hash = span_hash(prepared.as_bytes());
+            attempts.insert(
+                file_path.clone(),
+                FileAttempt {
                     file: file_path.clone(),
-                    line: 0,
-                    column: 0,
-                    message: "atomic write failed".into(),
-                    offending_span: ByteSpan { start: 0, end: 0 },
-                });
-                return MutationResult {
-                    status: MutationStatus::RolledBack,
-                    files_written: vec![],
-                    syntax_errors,
-                    reindex: ReindexSummary {
-                        files: 0,
-                        entities_updated: 0,
-                        edges_updated: 0,
-                        duration_ms: 0,
-                    },
+                    disk_path,
+                    original,
+                    pre_hash,
+                    prepared,
+                    prepared_hash,
                     backup_path: None,
-                };
-            }
-        }
-
-        // ── Phase 4: Post-write parse verification ───────────────────────
-        let mut tainted: Vec<SyntaxDiagnostic> = Vec::new();
-        for file_path in &files_written {
-            let original_bytes = originals
-                .get(file_path)
-                .map(|s| s.as_bytes())
-                .unwrap_or(&[]);
-            if let Some(diag) = verify_parse_introduced_error(file_path, original_bytes) {
-                tainted.push(diag);
-            }
-        }
-
-        if !tainted.is_empty() {
-            // Tainted update → automatic rollback of every written file.
-            rollback_all(&backups);
-            syntax_errors.extend(tainted);
-            return MutationResult {
-                status: MutationStatus::RolledBack,
-                files_written: vec![],
-                syntax_errors,
-                reindex: ReindexSummary {
-                    files: 0,
-                    entities_updated: 0,
-                    edges_updated: 0,
-                    duration_ms: 0,
+                    state: FileMutationState::Untouched,
+                    installed_hash: None,
+                    final_hash: None,
+                    error: None,
                 },
-                backup_path: backups.first().map(|(_, bp)| bp.clone()),
+            );
+        }
+
+        // ── Phase 2: Back up every prepared target ─────────────────────
+        // Backups are verified against the full-file pre-hash. A backup
+        // failure happens before any plan bytes reach disk, so only this
+        // attempt's unneeded artifacts are cleaned.
+        for file_path in &file_order {
+            let Some(attempt) = attempts.get_mut(file_path) else {
+                continue;
             };
+            if attempt.prepared.is_empty() && attempt.pre_hash.is_empty() {
+                continue;
+            }
+            let backup_path = match (attempt.disk_path.parent(), attempt.disk_path.file_name()) {
+                (Some(parent), Some(name)) => parent.join(format!(
+                    "{}.coderadar-{attempt_id}.bak",
+                    name.to_string_lossy()
+                )),
+                _ => std::path::PathBuf::from(attempt_sibling(file_path, &attempt_id, "bak")),
+            };
+            #[cfg(test)]
+            let fail_backup_write = self.hooks.fail_backup_write
+                || self.hooks.fail_backup_on.as_deref() == Some(file_path.as_str());
+            #[cfg(not(test))]
+            let fail_backup_write = false;
+            if fail_backup_write {
+                attempt.error = Some(file_error(
+                    "backup_failed",
+                    "injected backup failure".into(),
+                ));
+                let failure = Some(mutation_failure(
+                    "backup",
+                    "backup_failed",
+                    format!("injected backup failure for {file_path}"),
+                ));
+                let _ = attempt;
+                cleanup_attempt_backups(&mut attempts);
+                return disk_outcome(
+                    attempt_id,
+                    DiskMutationStatus::NotInstalled,
+                    failure.clone(),
+                    failure,
+                    &attempts,
+                    &file_order,
+                    syntax_errors,
+                );
+            }
+            if let Err(e) = std::fs::copy(&attempt.disk_path, &backup_path) {
+                attempt.error = Some(file_error("backup_failed", format!("backup failed: {e}")));
+                let failure = Some(mutation_failure(
+                    "backup",
+                    "backup_failed",
+                    format!("backup failed for {file_path}: {e}"),
+                ));
+                let _ = attempt;
+                cleanup_attempt_backups(&mut attempts);
+                return disk_outcome(
+                    attempt_id,
+                    DiskMutationStatus::NotInstalled,
+                    failure.clone(),
+                    failure,
+                    &attempts,
+                    &file_order,
+                    syntax_errors,
+                );
+            }
+            let backup_bytes = match std::fs::read(&backup_path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    let _ = std::fs::remove_file(&backup_path);
+                    attempt.error = Some(file_error(
+                        "backup_unverified",
+                        format!("backup read-back failed: {e}"),
+                    ));
+                    let failure = Some(mutation_failure(
+                        "backup",
+                        "backup_unverified",
+                        format!("backup read-back failed for {file_path}: {e}"),
+                    ));
+                    let _ = attempt;
+                    cleanup_attempt_backups(&mut attempts);
+                    return disk_outcome(
+                        attempt_id,
+                        DiskMutationStatus::NotInstalled,
+                        failure.clone(),
+                        failure,
+                        &attempts,
+                        &file_order,
+                        syntax_errors,
+                    );
+                }
+            };
+            if span_hash(&backup_bytes) != attempt.pre_hash {
+                let _ = std::fs::remove_file(&backup_path);
+                attempt.error = Some(file_error(
+                    "backup_unverified",
+                    "backup read-back hash does not match the pre-install hash".into(),
+                ));
+                let failure = Some(mutation_failure(
+                    "backup",
+                    "backup_unverified",
+                    format!("backup read-back mismatch for {file_path}"),
+                ));
+                let _ = attempt;
+                cleanup_attempt_backups(&mut attempts);
+                return disk_outcome(
+                    attempt_id,
+                    DiskMutationStatus::NotInstalled,
+                    failure.clone(),
+                    failure,
+                    &attempts,
+                    &file_order,
+                    syntax_errors,
+                );
+            }
+            attempt.backup_path = Some(backup_path);
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.hooks.after_backup.clone() {
+            hook();
         }
 
-        // ── Phase 5: Success — clean up backups ──────────────────────────
-        for (_, backup_path) in &backups {
-            let _ = std::fs::remove_file(disk_path_for(backup_path));
+        // Late stale check immediately before installation. Targets that only
+        // needed preparation still have no plan bytes on disk.
+        for file_path in &file_order {
+            let Some(attempt) = attempts.get_mut(file_path) else {
+                continue;
+            };
+            if attempt.pre_hash.is_empty() {
+                continue;
+            }
+            let current =
+                match std::fs::read(&attempt.disk_path).or_else(|_| std::fs::read(file_path)) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        attempt.error =
+                            Some(file_error("read_failed", format!("late read failed: {e}")));
+                        let failure = Some(mutation_failure(
+                            "read",
+                            "read_failed",
+                            format!("late read failed for {file_path}: {e}"),
+                        ));
+                        let _ = attempt;
+                        cleanup_attempt_backups(&mut attempts);
+                        return disk_outcome(
+                            attempt_id,
+                            DiskMutationStatus::NotInstalled,
+                            failure.clone(),
+                            failure,
+                            &attempts,
+                            &file_order,
+                            syntax_errors,
+                        );
+                    }
+                };
+            if span_hash(&current) != attempt.pre_hash {
+                attempt.error = Some(file_error(
+                    "stale_content",
+                    "content changed after preparation and before installation".into(),
+                ));
+                let failure = Some(mutation_failure(
+                    "read",
+                    "stale_content",
+                    format!(
+                        "content changed for {file_path} after preparation and before installation"
+                    ),
+                ));
+                let _ = attempt;
+                cleanup_attempt_backups(&mut attempts);
+                return disk_outcome(
+                    attempt_id,
+                    DiskMutationStatus::RejectedStale,
+                    failure.clone(),
+                    failure,
+                    &attempts,
+                    &file_order,
+                    syntax_errors,
+                );
+            }
         }
 
-        MutationResult {
-            status: MutationStatus::Applied,
-            files_written,
-            syntax_errors: Vec::new(),
-            reindex: ReindexSummary {
-                files: by_file.len(),
-                entities_updated: 0,
-                edges_updated: 0,
-                duration_ms: 0,
-            },
-            backup_path: None,
+        // ── Phase 3: Install prepared bytes (atomic temp + rename) ─────
+        // The expected hash is registered BEFORE rename, so there is no
+        // unsuppressed post-rename window. An observed external hash never
+        // matches and is not dropped.
+        for file_path in &file_order {
+            let Some(attempt) = attempts.get_mut(file_path) else {
+                continue;
+            };
+            if attempt.pre_hash.is_empty() {
+                continue;
+            }
+            // Late stale check immediately before this file installs. An
+            // external writer may have changed it after preparation or after
+            // an earlier file in the same plan installed.
+            let current =
+                match std::fs::read(&attempt.disk_path).or_else(|_| std::fs::read(file_path)) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        attempt.error =
+                            Some(file_error("read_failed", format!("late read failed: {e}")));
+                        let primary = Some(mutation_failure(
+                            "read",
+                            "read_failed",
+                            format!("late read failed for {file_path}: {e}"),
+                        ));
+                        return self.compensate(
+                            attempt_id,
+                            primary,
+                            &mut attempts,
+                            &file_order,
+                            syntax_errors,
+                        );
+                    }
+                };
+            if span_hash(&current) != attempt.pre_hash {
+                attempt.error = Some(file_error(
+                    "stale_content",
+                    "content changed after preparation and before installation".into(),
+                ));
+                let primary = Some(mutation_failure(
+                    "read",
+                    "stale_content",
+                    format!(
+                        "content changed for {file_path} after preparation and before installation"
+                    ),
+                ));
+                return self.compensate(
+                    attempt_id,
+                    primary,
+                    &mut attempts,
+                    &file_order,
+                    syntax_errors,
+                );
+            }
+            self.write_guard
+                .suppress(attempt.disk_path.clone(), attempt.prepared_hash.clone(), 5);
+            let temp_path = match (attempt.disk_path.parent(), attempt.disk_path.file_name()) {
+                (Some(parent), Some(name)) => parent.join(format!(
+                    "{}.coderadar-{attempt_id}.tmp",
+                    name.to_string_lossy()
+                )),
+                _ => std::path::PathBuf::from(attempt_sibling(file_path, &attempt_id, "tmp")),
+            };
+            if let Err(e) =
+                atomic_replace(&attempt.disk_path, attempt.prepared.as_bytes(), &temp_path)
+            {
+                let _ = std::fs::remove_file(&temp_path);
+                self.write_guard.clear_normalized(&attempt.disk_path);
+                attempt.state = FileMutationState::Unknown;
+                attempt.error = Some(file_error(
+                    "write_failed",
+                    format!("atomic write failed: {e}"),
+                ));
+                let primary = Some(mutation_failure(
+                    "write",
+                    "write_failed",
+                    format!("atomic write failed for {file_path}: {e}"),
+                ));
+                return self.compensate(
+                    attempt_id,
+                    primary,
+                    &mut attempts,
+                    &file_order,
+                    syntax_errors,
+                );
+            }
+            attempt.installed_hash = Some(attempt.prepared_hash.clone());
+            attempt.state = FileMutationState::Installed;
+            #[cfg(test)]
+            if let Some(hook) = self.hooks.after_install.clone() {
+                hook(file_path);
+            }
+            let current = match std::fs::read(&attempt.disk_path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    attempt.state = FileMutationState::Unknown;
+                    attempt.error = Some(file_error(
+                        "install_unverified",
+                        format!("installed bytes could not be read back: {e}"),
+                    ));
+                    let primary = Some(mutation_failure(
+                        "verify",
+                        "install_unverified",
+                        format!("installed bytes for {file_path} could not be read back: {e}"),
+                    ));
+                    return self.compensate(
+                        attempt_id,
+                        primary,
+                        &mut attempts,
+                        &file_order,
+                        syntax_errors,
+                    );
+                }
+            };
+            if span_hash(&current) != attempt.prepared_hash {
+                attempt.state = FileMutationState::ExternallyChanged;
+                attempt.final_hash = Some(span_hash(&current));
+                attempt.error = Some(file_error(
+                    "concurrent_modification",
+                    "target changed between installation and verification; this attempt's backup was not restored over it".into(),
+                ));
+                let primary = Some(mutation_failure(
+                    "verify",
+                    "concurrent_modification",
+                    format!("target {file_path} changed between installation and verification"),
+                ));
+                return self.compensate(
+                    attempt_id,
+                    primary,
+                    &mut attempts,
+                    &file_order,
+                    syntax_errors,
+                );
+            }
+            attempt.final_hash = Some(attempt.prepared_hash.clone());
         }
+
+        // ── Phase 4: Post-write verification ───────────────────────
+        // Verification failures compensate whole-plan, exactly like an
+        // introduced syntax error. `Unavailable` can never become `Applied`.
+        let mut primary: Option<MutationFailure> = None;
+        for file_path in &file_order {
+            let Some(attempt) = attempts.get_mut(file_path) else {
+                continue;
+            };
+            if attempt.state != FileMutationState::Installed {
+                continue;
+            }
+            let installed_bytes = match std::fs::read(&attempt.disk_path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    attempt.state = FileMutationState::Unknown;
+                    attempt.final_hash = None;
+                    attempt.error = Some(file_error(
+                        "install_unverified",
+                        format!("installed bytes could not be read back: {e}"),
+                    ));
+                    primary = Some(mutation_failure(
+                        "verify",
+                        "install_unverified",
+                        format!("installed bytes for {file_path} could not be read back: {e}"),
+                    ));
+                    break;
+                }
+            };
+            match classify_post_write(file_path, attempt.original.as_bytes(), &installed_bytes) {
+                PostWriteVerification::Passed => {}
+                PostWriteVerification::Introduced(diagnostic) => {
+                    syntax_errors.push(diagnostic);
+                    if primary.is_none() {
+                        primary = Some(mutation_failure(
+                            "verify",
+                            "introduced_syntax_error",
+                            format!("post-write parse check failed for {file_path} — mutation introduced a syntax error"),
+                        ));
+                    }
+                }
+                PostWriteVerification::Unavailable {
+                    stage,
+                    code,
+                    message,
+                } => {
+                    if primary.is_none() {
+                        primary = Some(mutation_failure(stage, code, message));
+                    }
+                }
+            }
+        }
+        if let Some(primary) = primary {
+            return self.compensate(
+                attempt_id,
+                Some(primary),
+                &mut attempts,
+                &file_order,
+                syntax_errors,
+            );
+        }
+
+        // ── Phase 5: Success — clean up verified backups ───────────────
+        for attempt in attempts.values_mut() {
+            if attempt.state == FileMutationState::Installed {
+                if let Some(backup) = attempt.backup_path.take() {
+                    let _ = std::fs::remove_file(backup);
+                }
+            }
+        }
+        disk_outcome(
+            attempt_id,
+            DiskMutationStatus::Installed,
+            None,
+            None,
+            &attempts,
+            &file_order,
+            Vec::new(),
+        )
     }
-}
 
-/// Restore every backup (rollback) and remove the backup files.
-fn rollback_all(backups: &[(String, String)]) {
-    for (file_path, backup_path) in backups {
-        let _ = std::fs::copy(disk_path_for(backup_path), disk_path_for(file_path));
-        let _ = std::fs::remove_file(disk_path_for(backup_path));
+    /// Guarded whole-plan compensation.
+    ///
+    /// Only files this attempt installed are touched, and only while their
+    /// current bytes still match the installed hash. Restoration itself is
+    /// atomic temp+rename with read-back verification; a backup is deleted
+    /// only after its restored state verifies.
+    fn compensate(
+        &self,
+        attempt_id: String,
+        primary: Option<MutationFailure>,
+        attempts: &mut HashMap<String, FileAttempt>,
+        file_order: &[String],
+        syntax_errors: Vec<SyntaxDiagnostic>,
+    ) -> DiskMutationResult {
+        let fail_restore_write = {
+            #[cfg(test)]
+            {
+                self.hooks.fail_restore_write
+            }
+            #[cfg(not(test))]
+            {
+                false
+            }
+        };
+        let fail_restore_readback = {
+            #[cfg(test)]
+            {
+                self.hooks.fail_restore_readback
+            }
+            #[cfg(not(test))]
+            {
+                false
+            }
+        };
+        let mut restore_failure: Option<MutationFailure> = None;
+        for file in file_order {
+            let Some(attempt) = attempts.get_mut(file) else {
+                continue;
+            };
+            if attempt.state != FileMutationState::Installed {
+                continue;
+            }
+            let installed_hash = attempt.installed_hash.clone().unwrap_or_default();
+            let current = match std::fs::read(&attempt.disk_path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    attempt.state = FileMutationState::Unknown;
+                    attempt.final_hash = None;
+                    attempt.error = Some(file_error(
+                        "restore_unreadable",
+                        format!("installed target could not be re-read before restore: {e}"),
+                    ));
+                    if restore_failure.is_none() {
+                        restore_failure = Some(mutation_failure(
+                            "restore",
+                            "restore_unreadable",
+                            format!(
+                                "installed target {file} could not be re-read before restore: {e}"
+                            ),
+                        ));
+                    }
+                    continue;
+                }
+            };
+            if span_hash(&current) != installed_hash {
+                attempt.state = FileMutationState::ExternallyChanged;
+                attempt.final_hash = Some(span_hash(&current));
+                attempt.error = Some(file_error(
+                    "concurrent_modification",
+                    "target changed after this attempt installed it; the retained backup was not restored over another writer's bytes".into(),
+                ));
+                if restore_failure.is_none() {
+                    restore_failure = Some(mutation_failure(
+                        "restore",
+                        "concurrent_modification",
+                        format!("target {file} changed after this attempt installed it"),
+                    ));
+                }
+                continue;
+            }
+            // Restoring is also an engine write: suppress it before rename.
+            self.write_guard
+                .suppress(attempt.disk_path.clone(), attempt.pre_hash.clone(), 5);
+            let restore_temp = match (attempt.disk_path.parent(), attempt.disk_path.file_name()) {
+                (Some(parent), Some(name)) => parent.join(format!(
+                    "{}.coderadar-{attempt_id}.restore",
+                    name.to_string_lossy()
+                )),
+                _ => std::path::PathBuf::from(attempt_sibling(file, &attempt_id, "restore")),
+            };
+            let restore_result = if fail_restore_write {
+                Err(std::io::Error::other("injected restore failure"))
+            } else {
+                match atomic_replace(
+                    &attempt.disk_path,
+                    attempt.original.as_bytes(),
+                    &restore_temp,
+                ) {
+                    Ok(()) => {
+                        if fail_restore_readback {
+                            Err(std::io::Error::other("injected restore read-back failure"))
+                        } else {
+                            std::fs::read(&attempt.disk_path).map_err(|e| {
+                                std::io::Error::other(format!("restore read-back failed: {e}"))
+                            })
+                        }
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&restore_temp);
+                        Err(e)
+                    }
+                }
+            };
+            match restore_result {
+                Ok(restored_bytes) => {
+                    if span_hash(&restored_bytes) == attempt.pre_hash {
+                        if let Some(backup) = attempt.backup_path.take() {
+                            let _ = std::fs::remove_file(backup);
+                        }
+                        attempt.state = FileMutationState::Restored;
+                        attempt.final_hash = Some(attempt.pre_hash.clone());
+                        attempt.error = None;
+                    } else {
+                        attempt.state = FileMutationState::RestoreFailed;
+                        attempt.final_hash = Some(span_hash(&restored_bytes));
+                        attempt.error = Some(file_error(
+                            "restore_unverified",
+                            "restored bytes failed read-back verification; the backup was retained"
+                                .into(),
+                        ));
+                        if restore_failure.is_none() {
+                            restore_failure = Some(mutation_failure(
+                                "restore",
+                                "restore_unverified",
+                                format!("restored bytes for {file} failed read-back verification"),
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    attempt.state = FileMutationState::RestoreFailed;
+                    attempt.final_hash = Some(span_hash(&current));
+                    attempt.error =
+                        Some(file_error("restore_failed", format!("restore failed: {e}")));
+                    if restore_failure.is_none() {
+                        restore_failure = Some(mutation_failure(
+                            "restore",
+                            "restore_failed",
+                            format!("restore failed for {file}: {e}"),
+                        ));
+                    }
+                }
+            }
+        }
+        let restored_all = file_order.iter().all(|file| {
+            matches!(
+                attempts.get(file).map(|attempt| attempt.state),
+                None | Some(FileMutationState::Untouched) | Some(FileMutationState::Restored)
+            )
+        });
+        if restored_all {
+            disk_outcome(
+                attempt_id,
+                DiskMutationStatus::Restored,
+                primary.clone(),
+                primary,
+                attempts,
+                file_order,
+                syntax_errors,
+            )
+        } else {
+            disk_outcome(
+                attempt_id,
+                DiskMutationStatus::DiskIncomplete,
+                primary.clone(),
+                restore_failure.or(primary),
+                attempts,
+                file_order,
+                syntax_errors,
+            )
+        }
     }
 }
 
@@ -3005,7 +3827,7 @@ mod tests {
             ByteSpan { start: 0, end: 5 },
             "value = 1\n",
         );
-        assert_eq!(eng.apply(&plan).status, MutationStatus::Applied);
+        assert_eq!(eng.apply(&plan).disk_status, DiskMutationStatus::Installed);
     }
 
     #[test]
@@ -3023,8 +3845,12 @@ mod tests {
         );
 
         let result = eng.apply(&plan);
-        assert_eq!(result.status, MutationStatus::RejectedPolicy);
-        assert!(result.syntax_errors[0]
+        assert_eq!(result.disk_status, DiskMutationStatus::RejectedPolicy);
+        assert!(result.syntax_errors.is_empty());
+        assert!(result
+            .failure
+            .as_ref()
+            .unwrap()
             .message
             .contains("outside the project root"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "secret = 1\n");
@@ -3045,8 +3871,14 @@ mod tests {
         );
 
         let result = eng.apply(&plan);
-        assert_eq!(result.status, MutationStatus::RejectedPolicy);
-        assert!(result.syntax_errors[0].message.contains("deny-listed"));
+        assert_eq!(result.disk_status, DiskMutationStatus::RejectedPolicy);
+        assert!(result.syntax_errors.is_empty());
+        assert!(result
+            .failure
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("deny-listed"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[core]\n");
     }
 
@@ -3134,8 +3966,14 @@ mod tests {
         plan.edits[0].expected_hash = String::new();
 
         let result = eng.apply(&plan);
-        assert_eq!(result.status, MutationStatus::RejectedPolicy);
-        assert!(result.syntax_errors[0].message.contains("no expected_hash"));
+        assert_eq!(result.disk_status, DiskMutationStatus::RejectedPolicy);
+        assert!(result.syntax_errors.is_empty());
+        assert!(result
+            .failure
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("no expected_hash"));
     }
 
     #[test]
@@ -3153,7 +3991,10 @@ mod tests {
             replacement: "x = 1\n".into(),
             expected_hash: String::new(),
         }]);
-        assert_eq!(eng.apply(&created).status, MutationStatus::Applied);
+        assert_eq!(
+            eng.apply(&created).disk_status,
+            DiskMutationStatus::Installed
+        );
     }
 
     #[test]
@@ -3176,8 +4017,12 @@ mod tests {
         over.edits.push(over.edits[0].clone());
 
         let result = eng.apply(&over);
-        assert_eq!(result.status, MutationStatus::RejectedPolicy);
-        assert!(result.syntax_errors[0]
+        assert_eq!(result.disk_status, DiskMutationStatus::RejectedPolicy);
+        assert!(result.syntax_errors.is_empty());
+        assert!(result
+            .failure
+            .as_ref()
+            .unwrap()
             .message
             .contains("over the configured limit"));
     }
@@ -3196,7 +4041,10 @@ mod tests {
             "x = 1\n",
         );
 
-        assert_eq!(eng.apply(&plan).status, MutationStatus::RejectedPolicy);
+        assert_eq!(
+            eng.apply(&plan).disk_status,
+            DiskMutationStatus::RejectedPolicy
+        );
         let _ = std::fs::remove_file(&outside);
     }
 
@@ -3217,7 +4065,10 @@ mod tests {
             "value = 1\n",
         );
 
-        assert_eq!(eng.apply(&plan).status, MutationStatus::RejectedPolicy);
+        assert_eq!(
+            eng.apply(&plan).disk_status,
+            DiskMutationStatus::RejectedPolicy
+        );
     }
 
     #[test]
@@ -3239,7 +4090,7 @@ mod tests {
             ByteSpan { start: 0, end: 1 },
             "a = 1\n",
         );
-        assert_eq!(eng.apply(&ok).status, MutationStatus::Applied);
+        assert_eq!(eng.apply(&ok).disk_status, DiskMutationStatus::Installed);
 
         let outside = dir.path().join("other.py");
         let mut eng = MutationEngine::new(config).with_project_root(dir.path());
@@ -3249,8 +4100,14 @@ mod tests {
             "a = 1\n",
         );
         let result = eng.apply(&refused);
-        assert_eq!(result.status, MutationStatus::RejectedPolicy);
-        assert!(result.syntax_errors[0].message.contains("allow list"));
+        assert_eq!(result.disk_status, DiskMutationStatus::RejectedPolicy);
+        assert!(result.syntax_errors.is_empty());
+        assert!(result
+            .failure
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("allow list"));
     }
 
     #[test]
@@ -3299,8 +4156,8 @@ mod tests {
         }]);
         let result = eng.apply(&p);
         assert_eq!(
-            result.status,
-            MutationStatus::Applied,
+            result.disk_status,
+            DiskMutationStatus::Installed,
             "{:#?}",
             result.syntax_errors
         );
@@ -3330,7 +4187,7 @@ mod tests {
             expected_hash: String::new(),
         }]);
         let result = eng.apply(&p);
-        assert_eq!(result.status, MutationStatus::Applied);
+        assert_eq!(result.disk_status, DiskMutationStatus::Installed);
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
             "import os\ndef g():\n    pass\n"
@@ -3367,8 +4224,8 @@ mod tests {
         }]);
         let result = eng.apply(&p);
         assert_eq!(
-            result.status,
-            MutationStatus::Applied,
+            result.disk_status,
+            DiskMutationStatus::Installed,
             "{:#?}",
             result.syntax_errors
         );
@@ -3379,12 +4236,11 @@ mod tests {
             "def f():\n    \"\"\"Merge HTML metadata.\"\"\"\n    merged = {**a, **b}\n    return merged\n",
             "every line must keep its indentation"
         );
-        assert_eq!(
-            parse_has_error(
-                crate::types::Language::from_extension("py"),
-                written.as_bytes()
+        assert!(
+            matches!(
+                classify_post_write(&file, src.as_bytes(), written.as_bytes()),
+                PostWriteVerification::Passed
             ),
-            Some(false),
             "written file must parse — G0-A gate"
         );
     }
@@ -3453,7 +4309,7 @@ mod tests {
                 plan.diff_preview
             );
             let p2 = eng.apply(&plan);
-            assert_eq!(p2.status, MutationStatus::Applied);
+            assert_eq!(p2.disk_status, DiskMutationStatus::Installed);
             assert_eq!(
                 std::fs::read_to_string(&file).unwrap(),
                 "def f(a):\n    return a + 1\n",
@@ -3520,13 +4376,16 @@ mod tests {
             )
             .unwrap();
         let p2 = eng.apply(&plan);
-        assert_eq!(p2.status, MutationStatus::Applied);
+        assert_eq!(p2.disk_status, DiskMutationStatus::Installed);
         let written = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
             written, "def f(a):\n    x = 1\n    y = 2\n    return y\n",
             "{written}"
         );
-        assert!(!parse_has_error(crate::types::Language::Python, written.as_bytes()).unwrap());
+        assert!(matches!(
+            classify_post_write(&path.to_string_lossy(), src.as_bytes(), written.as_bytes()),
+            PostWriteVerification::Passed
+        ));
     }
 
     #[test]
@@ -3580,7 +4439,7 @@ mod tests {
             )
             .unwrap();
         let p2 = eng.apply(&plan);
-        assert_eq!(p2.status, MutationStatus::Applied);
+        assert_eq!(p2.disk_status, DiskMutationStatus::Installed);
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "def f(a):\n    total = a or 0\n    if total:\n        return total\n    return -1\n",
@@ -3614,8 +4473,12 @@ mod tests {
             expected_hash: hash,
         }]);
         let result = eng.apply(&p);
-        assert_eq!(result.status, MutationStatus::RejectedStale);
-        assert!(!result.syntax_errors.is_empty());
+        assert_eq!(result.disk_status, DiskMutationStatus::RejectedStale);
+        assert!(result.syntax_errors.is_empty());
+        assert_eq!(
+            result.primary.as_ref().map(|failure| failure.code),
+            Some("stale_content")
+        );
         // File must be untouched
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
@@ -3647,8 +4510,8 @@ mod tests {
         }]);
         let result = eng.apply(&p);
         assert_eq!(
-            result.status,
-            MutationStatus::RolledBack,
+            result.disk_status,
+            DiskMutationStatus::Restored,
             "{:#?}",
             result.syntax_errors
         );
@@ -3657,8 +4520,23 @@ mod tests {
             std::fs::read_to_string(&file).unwrap(),
             "def foo():\n    return 1\n"
         );
+        assert!(!result.syntax_errors.is_empty());
+        assert_eq!(
+            result.primary.as_ref().map(|failure| failure.code),
+            Some("introduced_syntax_error")
+        );
+        assert!(result.backup_path.is_none());
         // No leftover backup file
         assert!(!Path::new(&format!("{}.coderadar-bak", file)).exists());
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".coderadar-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "leftover attempt artifacts: {leftovers:?}"
+        );
     }
 
     #[test]
@@ -3685,14 +4563,553 @@ mod tests {
         }]);
         let result = eng.apply(&p);
         assert_eq!(
-            result.status,
-            MutationStatus::Applied,
+            result.disk_status,
+            DiskMutationStatus::Installed,
             "{:#?}",
             result.syntax_errors
         );
         assert_eq!(
             std::fs::read_to_string(&file).unwrap(),
             "def foo():\n    return 2\n"
+        );
+    }
+
+    #[test]
+    fn test_multi_file_failure_restores_the_installed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.py");
+        let b = dir.path().join("b.py");
+        let a_src = "def a():\n    return 1\n";
+        let b_src = "def b():\n    return 1\n";
+        std::fs::write(&a, a_src).unwrap();
+        std::fs::write(&b, b_src).unwrap();
+        let a_file = a.to_string_lossy().to_string();
+        let b_file = b.to_string_lossy().to_string();
+        let replacement = |source: &str, needle: &str, replacement: &str| {
+            let start = source.find(needle).unwrap();
+            MutationEdit {
+                file: String::new(),
+                span: ByteSpan {
+                    start,
+                    end: start + needle.len(),
+                },
+                replacement: replacement.into(),
+                expected_hash: hash_span(
+                    source.as_bytes(),
+                    ByteSpan {
+                        start,
+                        end: start + needle.len(),
+                    },
+                ),
+            }
+        };
+        let mut a_edit = replacement(a_src, "return 1", "return 2");
+        a_edit.file = a_file.clone();
+        let mut b_edit = replacement(b_src, "def b():", "def b(:");
+        b_edit.file = b_file.clone();
+        let p = MutationPlan {
+            id: "multi".into(),
+            tool: "rename_symbol".into(),
+            affected_files: vec![a_file.clone(), b_file.clone()],
+            edits: vec![a_edit, b_edit],
+            diff_preview: String::new(),
+            unverified_sites: Vec::new(),
+            warnings: Vec::new(),
+        };
+
+        let mut eng = engine();
+        let result = eng.apply(&p);
+        assert_eq!(result.disk_status, DiskMutationStatus::Restored);
+        assert_eq!(result.files_written, Vec::<String>::new());
+        assert_eq!(
+            result
+                .files
+                .iter()
+                .map(|file| file.state)
+                .collect::<Vec<_>>(),
+            vec![FileMutationState::Restored, FileMutationState::Restored]
+        );
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), a_src);
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), b_src);
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".coderadar-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "leftover attempt artifacts: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn test_external_edit_to_untouched_target_survives_compensation() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.py");
+        let b = dir.path().join("b.py");
+        let a_src = "def a():\n    return 1\n";
+        let b_src = "value = 1\n";
+        std::fs::write(&a, a_src).unwrap();
+        std::fs::write(&b, b_src).unwrap();
+        let a_file = a.to_string_lossy().to_string();
+        let b_file = b.to_string_lossy().to_string();
+        let start = a_src.find("return 1").unwrap();
+        let p = MutationPlan {
+            id: "external-untouched".into(),
+            tool: "rename_symbol".into(),
+            affected_files: vec![a_file.clone(), b_file.clone()],
+            edits: vec![MutationEdit {
+                file: a_file.clone(),
+                span: ByteSpan {
+                    start,
+                    end: a_src.len(),
+                },
+                replacement: "def a(:\n  broken".into(),
+                expected_hash: hash_span(
+                    a_src.as_bytes(),
+                    ByteSpan {
+                        start,
+                        end: a_src.len(),
+                    },
+                ),
+            }],
+            diff_preview: String::new(),
+            unverified_sites: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let mut eng = engine();
+        let external_b = b_file.clone();
+        eng.hooks.after_install = Some(std::sync::Arc::new(move |installed: &str| {
+            if installed == external_b {
+                return;
+            }
+            let _ = std::fs::write(&external_b, "value = 2\n");
+        }));
+        let result = eng.apply(&p);
+        assert_eq!(result.disk_status, DiskMutationStatus::Restored);
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), a_src);
+        assert_eq!(
+            std::fs::read_to_string(&b).unwrap(),
+            "value = 2\n",
+            "compensation must not restore over an untouched target"
+        );
+    }
+
+    #[test]
+    fn test_external_edit_after_install_is_a_conflict_not_a_restore() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.py");
+        let src = "def a():\n    return 1\n";
+        std::fs::write(&path, src).unwrap();
+        let file = path.to_string_lossy().to_string();
+        let start = src.find("return 1").unwrap();
+        let p = plan(vec![MutationEdit {
+            file: file.clone(),
+            span: ByteSpan {
+                start,
+                end: start + 8,
+            },
+            replacement: "return (2".into(),
+            expected_hash: hash_span(
+                src.as_bytes(),
+                ByteSpan {
+                    start,
+                    end: start + 8,
+                },
+            ),
+        }]);
+        let mut eng = engine();
+        eng.hooks.after_install = Some(std::sync::Arc::new(move |installed: &str| {
+            let _ = std::fs::write(installed, "def a():\n    return 999\n");
+        }));
+        let result = eng.apply(&p);
+        assert_eq!(result.disk_status, DiskMutationStatus::DiskIncomplete);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "def a():\n    return 999\n",
+            "another writer's bytes must survive compensation"
+        );
+        let outcome = result
+            .files
+            .iter()
+            .find(|outcome| outcome.file == file)
+            .unwrap();
+        assert_eq!(outcome.state, FileMutationState::ExternallyChanged);
+        let recovery = outcome
+            .recovery_path
+            .clone()
+            .expect("conflict must retain a backup");
+        assert!(
+            std::path::Path::new(&recovery).exists(),
+            "{recovery} must exist"
+        );
+        assert_eq!(result.backup_path.as_deref(), Some(recovery.as_str()));
+    }
+
+    #[test]
+    fn test_late_stale_after_an_earlier_install_restores_that_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.py");
+        let b = dir.path().join("b.py");
+        let a_src = "def a():\n    return 1\n";
+        let b_src = "def b():\n    return 1\n";
+        std::fs::write(&a, a_src).unwrap();
+        std::fs::write(&b, b_src).unwrap();
+        let a_file = a.to_string_lossy().to_string();
+        let b_file = b.to_string_lossy().to_string();
+        let edit = |file: &str, source: &str| {
+            let start = source.find("return 1").unwrap();
+            MutationEdit {
+                file: file.to_string(),
+                span: ByteSpan {
+                    start,
+                    end: start + 8,
+                },
+                replacement: "return 2".into(),
+                expected_hash: hash_span(
+                    source.as_bytes(),
+                    ByteSpan {
+                        start,
+                        end: start + 8,
+                    },
+                ),
+            }
+        };
+        let p = MutationPlan {
+            id: "late-stale".into(),
+            tool: "rename_symbol".into(),
+            affected_files: vec![a_file.clone(), b_file.clone()],
+            edits: vec![edit(&a_file, a_src), edit(&b_file, b_src)],
+            diff_preview: String::new(),
+            unverified_sites: Vec::new(),
+            warnings: Vec::new(),
+        };
+        let mut eng = engine();
+        let external_b = b_file.clone();
+        let expected_a = a_file.clone();
+        eng.hooks.after_install = Some(std::sync::Arc::new(move |installed: &str| {
+            if installed == expected_a {
+                let _ = std::fs::write(&external_b, "def b():\n    return 999\n");
+            }
+        }));
+        let result = eng.apply(&p);
+        assert_eq!(result.disk_status, DiskMutationStatus::Restored);
+        assert_eq!(
+            result.primary.as_ref().map(|failure| failure.code),
+            Some("stale_content")
+        );
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), a_src);
+        assert_eq!(
+            std::fs::read_to_string(&b).unwrap(),
+            "def b():\n    return 999\n",
+            "the late external change is not plan bytes and must survive"
+        );
+    }
+
+    #[test]
+    fn test_backup_failure_writes_nothing_and_cleans_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.py");
+        let src = "def a():\n    return 1\n";
+        std::fs::write(&path, src).unwrap();
+        let file = path.to_string_lossy().to_string();
+        let start = src.find("return 1").unwrap();
+        let p = plan(vec![MutationEdit {
+            file: file.clone(),
+            span: ByteSpan {
+                start,
+                end: start + 8,
+            },
+            replacement: "return 2".into(),
+            expected_hash: hash_span(
+                src.as_bytes(),
+                ByteSpan {
+                    start,
+                    end: start + 8,
+                },
+            ),
+        }]);
+        let mut eng = engine();
+        eng.hooks.fail_backup_write = true;
+        let result = eng.apply(&p);
+        assert_eq!(result.disk_status, DiskMutationStatus::NotInstalled);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), src);
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".coderadar-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "leftover attempt artifacts: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn test_second_backup_failure_cleans_the_first_verified_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.py");
+        let b = dir.path().join("b.py");
+        let a_src = "def a():\n    return 1\n";
+        let b_src = "def b():\n    return 1\n";
+        std::fs::write(&a, a_src).unwrap();
+        std::fs::write(&b, b_src).unwrap();
+        let a_file = a.to_string_lossy().to_string();
+        let b_file = b.to_string_lossy().to_string();
+        let edit = |file: &str, source: &str| {
+            let start = source.find("return 1").unwrap();
+            MutationEdit {
+                file: file.to_string(),
+                span: ByteSpan {
+                    start,
+                    end: start + 8,
+                },
+                replacement: "return 2".into(),
+                expected_hash: hash_span(
+                    source.as_bytes(),
+                    ByteSpan {
+                        start,
+                        end: start + 8,
+                    },
+                ),
+            }
+        };
+        let p = plan(vec![edit(&a_file, a_src), edit(&b_file, b_src)]);
+        let mut eng = engine();
+        eng.hooks.fail_backup_on = Some(b_file.clone());
+        let result = eng.apply(&p);
+        assert_eq!(result.disk_status, DiskMutationStatus::NotInstalled);
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), a_src);
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), b_src);
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".coderadar-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "leftover attempt artifacts: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn test_pre_install_stale_cleans_verified_backups() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.py");
+        let b = dir.path().join("b.py");
+        let a_src = "def a():\n    return 1\n";
+        let b_src = "def b():\n    return 1\n";
+        let external_b_src = "def b():\n    return 999\n";
+        std::fs::write(&a, a_src).unwrap();
+        std::fs::write(&b, b_src).unwrap();
+        let a_file = a.to_string_lossy().to_string();
+        let b_file = b.to_string_lossy().to_string();
+        let edit = |file: &str, source: &str| {
+            let start = source.find("return 1").unwrap();
+            MutationEdit {
+                file: file.to_string(),
+                span: ByteSpan {
+                    start,
+                    end: start + 8,
+                },
+                replacement: "return 2".into(),
+                expected_hash: hash_span(
+                    source.as_bytes(),
+                    ByteSpan {
+                        start,
+                        end: start + 8,
+                    },
+                ),
+            }
+        };
+        let p = plan(vec![edit(&a_file, a_src), edit(&b_file, b_src)]);
+        let mut eng = engine();
+        let changed_b = b_file.clone();
+        eng.hooks.after_backup = Some(std::sync::Arc::new(move || {
+            let _ = std::fs::write(&changed_b, external_b_src);
+        }));
+        let result = eng.apply(&p);
+        assert_eq!(result.disk_status, DiskMutationStatus::RejectedStale);
+        assert_eq!(
+            result.primary.as_ref().map(|failure| failure.code),
+            Some("stale_content")
+        );
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), a_src);
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), external_b_src);
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".coderadar-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "leftover attempt artifacts: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn test_failed_restore_is_incomplete_with_a_real_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.py");
+        let src = "def a():\n    return 1\n";
+        std::fs::write(&path, src).unwrap();
+        let file = path.to_string_lossy().to_string();
+        let start = src.find("return 1").unwrap();
+        let p = plan(vec![MutationEdit {
+            file: file.clone(),
+            span: ByteSpan {
+                start,
+                end: start + 8,
+            },
+            replacement: "return (2".into(),
+            expected_hash: hash_span(
+                src.as_bytes(),
+                ByteSpan {
+                    start,
+                    end: start + 8,
+                },
+            ),
+        }]);
+        let mut eng = engine();
+        eng.hooks.fail_restore_write = true;
+        let result = eng.apply(&p);
+        assert_eq!(result.disk_status, DiskMutationStatus::DiskIncomplete);
+        assert_eq!(
+            result.primary.as_ref().map(|failure| failure.code),
+            Some("introduced_syntax_error")
+        );
+        assert_eq!(
+            result.failure.as_ref().map(|failure| failure.code),
+            Some("restore_failed")
+        );
+        let outcome = result
+            .files
+            .iter()
+            .find(|outcome| outcome.file == file)
+            .unwrap();
+        assert_eq!(outcome.state, FileMutationState::RestoreFailed);
+        let recovery = outcome
+            .recovery_path
+            .clone()
+            .expect("incomplete recovery must retain a backup");
+        assert!(
+            std::path::Path::new(&recovery).exists(),
+            "{recovery} must exist"
+        );
+    }
+
+    #[test]
+    fn test_unverified_readback_is_incomplete_even_when_bytes_match() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.py");
+        let src = "def a():\n    return 1\n";
+        std::fs::write(&path, src).unwrap();
+        let file = path.to_string_lossy().to_string();
+        let start = src.find("return 1").unwrap();
+        let p = plan(vec![MutationEdit {
+            file: file.clone(),
+            span: ByteSpan {
+                start,
+                end: start + 8,
+            },
+            replacement: "return (2".into(),
+            expected_hash: hash_span(
+                src.as_bytes(),
+                ByteSpan {
+                    start,
+                    end: start + 8,
+                },
+            ),
+        }]);
+        let mut eng = engine();
+        eng.hooks.fail_restore_readback = true;
+        let result = eng.apply(&p);
+        assert_eq!(result.disk_status, DiskMutationStatus::DiskIncomplete);
+        let outcome = result
+            .files
+            .iter()
+            .find(|outcome| outcome.file == file)
+            .unwrap();
+        assert_eq!(outcome.state, FileMutationState::RestoreFailed);
+        assert!(outcome
+            .recovery_path
+            .as_ref()
+            .map(|path| std::path::Path::new(path).exists())
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn test_unavailable_verification_compensates_instead_of_applying() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.zzz");
+        let src = "value = 1\n";
+        std::fs::write(&path, src).unwrap();
+        let file = path.to_string_lossy().to_string();
+        let p = plan(vec![MutationEdit {
+            file: file.clone(),
+            span: ByteSpan { start: 0, end: 0 },
+            replacement: "# note\n".into(),
+            expected_hash: String::new(),
+        }]);
+        let mut eng = engine();
+        let result = eng.apply(&p);
+        assert_eq!(result.disk_status, DiskMutationStatus::Restored);
+        assert_eq!(
+            result.primary.as_ref().map(|failure| failure.code),
+            Some("verification_grammar_unavailable")
+        );
+        assert!(result.syntax_errors.is_empty());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), src);
+    }
+
+    #[test]
+    fn test_pre_existing_syntax_error_is_not_an_introduced_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.py");
+        let src = "def a(:\n    return 1\n";
+        std::fs::write(&path, src).unwrap();
+        let file = path.to_string_lossy().to_string();
+        let p = plan(vec![MutationEdit {
+            file: file.clone(),
+            span: ByteSpan {
+                start: 0,
+                end: src.len(),
+            },
+            replacement: "def a():\n    return 1\n".into(),
+            expected_hash: hash_span(
+                src.as_bytes(),
+                ByteSpan {
+                    start: 0,
+                    end: src.len(),
+                },
+            ),
+        }]);
+        let mut eng = engine();
+        let result = eng.apply(&p);
+        assert_eq!(result.disk_status, DiskMutationStatus::Installed);
+        assert!(result.syntax_errors.is_empty());
+    }
+
+    #[test]
+    fn test_same_root_attempt_locks_exclude_each_other() {
+        let root = std::env::temp_dir().join(format!("cr-disk-lock-{}", std::process::id()));
+        let first = crate::disk_attempt_lock_for(root.clone());
+        let held = first
+            .try_lock()
+            .expect("an uncontended root lock must be available");
+        assert!(
+            first.try_lock().is_none(),
+            "a held root lock must exclude the same attempt"
+        );
+        drop(held);
+        assert!(
+            first.try_lock().is_some(),
+            "releasing the guard must free the root"
+        );
+        let other = crate::disk_attempt_lock_for(root.join("sibling"));
+        assert!(
+            !std::sync::Arc::ptr_eq(&first, &other),
+            "different roots need different locks"
         );
     }
 

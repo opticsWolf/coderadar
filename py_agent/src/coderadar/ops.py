@@ -1039,12 +1039,12 @@ def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
     the file.
     """
     from coderadar._core import search_similar as _ss
+    if isinstance(query, str) and not query.strip():
+        raise InvalidRequest("Please provide a natural-language query for semantic search.")
     if not isinstance(query, str):
         return _ss(list(query), top_k)
 
     _require_index()
-    if not query.strip():
-        raise InvalidRequest("Please provide a natural-language query for semantic search.")
     try:
         embedding = list(next(iter(_embedding_model().embed([query]))))
     except ImportError:
@@ -1162,10 +1162,10 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     for present-tense search). Bytes-at-T rides source blobs (§3.0: use
     `Snapshot.read_bytes` / `read_source` for entity bytes at T.
     """
-    _require_index()
     if not timestamp:
         raise InvalidRequest(
             "Please provide an ISO 8601 timestamp (e.g. '2025-01-15T10:00:00Z').")
+    _require_index()
     # R2-10 + §0.1(a): one normalization truth (Macrame canonical UTC) for
     # every temporal entry point — `datetime.fromisoformat` used to accept
     # offsets/naive stamps Macrame then rejects downstream.
@@ -1448,10 +1448,10 @@ def find_scaffolding(include_secrets: bool = False, max_findings: int = 100) -> 
 
 # ── Edits ─────────────────────────────────────────────────────────────────
 # Each edit plans first; with dry_run=False the plan is applied, which
-# writes the file and updates the graph together. The result is
+# writes the file and synchronously updates the graph. The result is
 # ``{"plan": MutationPlan, "result": MutationResult | None, "note": str}``;
-# ``result`` is None for a dry run. Any failure raises MutationFailed with
-# the engine's message — nothing was written.
+# ``result`` is None for a dry run. Expected operational outcomes return a
+# structured `MutationResult`; interface misuse and `OpError`s raise.
 
 def _edit(plan_fn, dry_run: bool, graph: Any, note: str = "") -> dict:
     try:
@@ -1677,9 +1677,9 @@ def update_file(file_path: str, content: str | None = None, *, graph: Any = None
     deleted from disk is dropped from the graph. Returns the
     `coderadar.UpdateReport` (``removed`` / ``entities_removed`` for a
     deletion, ``fully_applied`` False for a recovered parse)."""
-    _require_index()
-    if not file_path.strip():
+    if not isinstance(file_path, str) or not file_path.strip():
         raise InvalidRequest("Please provide a file path.")
+    _require_index()
     try:
         return (graph or _graph()).update_file(file_path, content)
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError

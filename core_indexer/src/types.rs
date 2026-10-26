@@ -1186,6 +1186,17 @@ pub struct UpdateOutcome {
     pub entities_added: usize,
     pub entities_removed: usize,
     pub affected_files: Vec<String>,
+    /// xxh3_64 of the exact bytes parsed. Mutation synchronization compares
+    /// this with the attempt's expected final hash before claiming success.
+    pub source_hash: String,
+    /// Operational failure inside `update_file` itself. `None` on every
+    /// successfully constructed outcome, including recovered parses.
+    pub update_error: Option<String>,
+    /// Concept/edge/retirement persistence failed after the projection was
+    /// updated. The in-memory graph moved forward; durable state did not.
+    pub persistence_error: Option<String>,
+    /// Source-blob storage failed. Blob policy skips do not set this.
+    pub blob_error: Option<String>,
     /// `Partial` when tree-sitter had to recover from a syntax error. The file
     /// still yields entities, so "it indexed" is not the same as "it parsed".
     pub parse_quality: ParseQuality,

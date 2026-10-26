@@ -154,7 +154,7 @@ side never touches ledger handles.
   already-serving means cwd-rooted; `reindex` on demand; `ensure_ready`
   bounded wait with warming-vs-hung log signal. `Snapshot` objects serve
   history: `read_bytes` (exact bytes-at-T) vs `read_source` (display form).
-- **`ops`** — `OPERATIONS` (26 names) with validated arguments and the
+- **`ops`** — `OPERATIONS` (27 names) with validated arguments and the
   shared error taxonomy. One fix here reaches MCP + CLI + Python.
 - **`coldstart`** — `build_graph`: load the ledger, then refresh only
   changed files. Stale load + changed-files-only is the pinned discipline
@@ -173,8 +173,10 @@ side never touches ledger handles.
   agreement, per-model tables (`embeddings_<model>`, DiskANN) + ledger
   hashes + cold-start rehydrate + RRF hybrid, all landed on dev_0.13
   (DR-11 slices 1–4).
-- **`mutation/`** — apply pipeline with post-write parse validation and
-  auto-diagnose (rollback needs its own design: BUGS_QUIRKS #1-half).
+- **`mutation/`** — guarded disk attempts with post-write verification,
+  installed-only compensation, and facade-verified synchronization (public
+  `Applied`/`RolledBack`/`RejectedStale`/`RejectedPolicy`/
+  `ApplyIncomplete`/`RollbackIncomplete`; BUGS_QUIRKS #1, DR-35).
   `tool_router.py` is a named seam for P2 routing (DR-16).
 - **`render` / `visualizers`** — human and JSON output; diagrams fail loudly
   instead of drawing fiction (open-items §3.2 lineage).
@@ -327,12 +329,25 @@ across MCP/CLI/Python (8 tests); latency gates history-aware
 
 ## 9. Mutations
 
-`plan_*` (pure, reviewable) → `apply_mutation` (guarded write):
+`plan_*` (pure, reviewable) → `apply_mutation` (guarded disk attempt) →
+facade-verified synchronization:
 
-- Write guard: backup → atomic write → post-parse → restore on failure.
-  The written file is validated to parse (BUGS_QUIRKS #1 root cause fixed);
-  auto-rollback on introduced errors needs its own apply-semantics design
-  (carried half).
+- Disk attempt: unique attempt id, full-file pre-hashes, verified backups,
+  late full-hash stale checks, per-file atomic temp+rename visibility, and
+  post-write tree-sitter verification. Compensation restores only files
+  this attempt installed, only while current bytes still match the installed
+  hash, through atomic restore plus read-back verification; backups survive
+  every incomplete recovery (DR-35).
+- Public statuses: `Applied` needs installed bytes, clean verification, and
+  synchronized graph/persistence/derived-data state; `RolledBack` needs
+  complete verified restoration plus restored-state sync (or zero installs);
+  stale/policy refusals stay distinct; incomplete verification or sync is
+  `ApplyIncomplete` or `RollbackIncomplete`, with named recovery actions
+  and retained recovery paths.
+- Synchronization is the facade's synchronous `update_file` pass over the
+  disk attempt's exact expected bytes (with the multi-file second pass for
+  cross-file convergence), not a watcher event. No mutation rows are added
+  to the Macrame ledger; a restored resync is a new old-bytes generation.
 - Byte-span verification: edits apply at tree-sitter spans, with
   first-line indent re-basing (`normalize_body_for_splice`).
 - `update_signature` rewrites the definition plus call sites with recorded
@@ -365,8 +380,8 @@ across MCP/CLI/Python (8 tests); latency gates history-aware
 
 ## 11. Surfaces & parity
 
-`ops.OPERATIONS` = 26 names. By group: **read** (explore, node, search,
-affected, resolve, query, search_similar, module_children, callers, callees,
+`ops.OPERATIONS` = 27 names. By group: **read** (explore, node, search,
+affected, resolve, query, search_similar, search_hybrid, module_children, callers, callees,
 diagnose, as_of, traverse); **analysis** (get_smells, dead_code, find_clones,
 find_scaffolding, compute_embeddings); **write** (replace_body,
 update_signature, rename, create_entity, reindex, update_file); **project**
@@ -483,6 +498,7 @@ in kb.db). Statuses at v0.12.0:
 | DR-32 | Call-edge accounting (category error) | closed (v0.11.13) |
 | DR-33 | History-aware load gate | re-baselined |
 | DR-34 | FTS5 keyword search | closed (v0.11.10) |
+| DR-35 | Guarded mutation compensation + explicit sync outcomes (BUGS_QUIRKS #1) | closed (dev) |
 
 ---
 
@@ -501,7 +517,8 @@ remaining micro-gaps: Go struct embedding, PHP attributes),
 §2.8 TS throughput, §2.9 SQLite internals still
 deferred; §2.2/§2.7 decided). Bugs/quirks:
 `CODERADAR_BUGS_QUIRKS.md` (9 fixed, #10 harness-side carried,
-#1 rollback half needs apply-semantics design).
+#1 apply-semantics implemented on dev: guarded compensation + explicit
+synchronization outcomes, DR-35).
 
 ---
 

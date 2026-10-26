@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 import click
 from rich.console import Console
@@ -698,9 +698,44 @@ def _edit(fmt: str, call) -> None:
     _ensure_graph()
     try:
         outcome = call()
+    except ops.MutationFailed as e:
+        click.echo(render.mutation_error(str(e)), err=True)
+        raise SystemExit(_mutation_failure_exit_code(e)) from None
     except ops.OpError as e:
         _fail(e)
+    except Exception as e:  # noqa: BLE001 - surfaced as MutationFailed
+        failure = ops.MutationFailed(str(e))
+        click.echo(render.mutation_error(str(failure)), err=True)
+        raise SystemExit(_mutation_failure_exit_code(failure)) from None
     _emit(fmt, outcome, lambda o: render.edit(o, apply_hint=APPLY_HINT))
+    raise SystemExit(_mutation_exit_code(outcome))
+
+
+def _mutation_failure_exit_code(error: BaseException) -> int:
+    """CLI exit contract for a mutation that never produced a result.
+
+    Plan-time stale/policy refusals carry the same 2 as the structured
+    `RejectedStale`/`RejectedPolicy` outcomes; other planning failures stay 1.
+    """
+    text = f"{type(error).__name__}: {error}"
+    if any(marker in text for marker in ("PolicyViolation", "RejectedPolicy",
+                                          "policy rejected", "allow list")):
+        return 2
+    if any(marker in text for marker in ("StaleIndex", "HashMismatch", "RejectedStale",
+                                          "stale edit rejected", "content changed since planning")):
+        return 2
+    return 1
+
+
+def _mutation_exit_code(outcome: Any) -> int:
+    """CLI exit contract: 0 Applied/dry-run; 1 incomplete/rollback; 2 refusal."""
+    result = outcome.get("result") if isinstance(outcome, dict) else getattr(outcome, "result", None)
+    status = result.get("status") if isinstance(result, dict) else getattr(result, "status", None)
+    if result is None or status == "Applied":
+        return 0
+    if status in ("RejectedStale", "RejectedPolicy"):
+        return 2
+    return 1
 
 
 @main.command(name="replace-body")
