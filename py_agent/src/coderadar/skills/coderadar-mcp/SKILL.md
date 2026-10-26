@@ -6,7 +6,7 @@ description: Use CodeRadar's MCP tools (coderadar_*) for codebase intelligence o
 # CodeRadar MCP
 
 CodeRadar is a local-first semantic code graph (tree-sitter + Macrame
-ledger + FTS5 + embeddings). Twenty-six `coderadar_*` tools answer
+ledger + FTS5 + embeddings). Twenty-seven `coderadar_*` tools answer
 structural questions in one round-trip: what calls this, what breaks if
 this changes, what did this look like at time T, where are the smells.
 
@@ -87,7 +87,8 @@ coderadar_status()
 ```
 
 `traverse` directions are `downstream` / `upstream` / `both`; edge kinds
-are `calls`, `imports`, `extends` (alias `inherits`), `overrides` — all
+are `calls`, `imports`, `extends` (alias `inherits`), `implements`,
+`decorates`, `instantiates`, `references`, `overrides` — all
 when omitted. `max_depth` defaults to 3.
 
 ### Quality and search

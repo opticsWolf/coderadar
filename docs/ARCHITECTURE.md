@@ -36,7 +36,7 @@ Five ideas explain most of the design:
 
 ```
 ┌─ Surfaces ──────────────────────────────────────────────┐
-│  MCP server (26 coderadar_* tools)  ·  CLI (click)       │
+│  MCP server (27 coderadar_* tools)  ·  CLI (click)       │
 │  Python: CodeGraph facade  ·  coderadar/skills (bundled) │
 └───────────────────────┬─────────────────────────────────┘
                         │  one shared op layer

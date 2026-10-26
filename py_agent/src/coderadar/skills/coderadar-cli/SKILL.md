@@ -53,7 +53,7 @@ coderadar search QUERY [--kind function|class|type_alias|constant|module|import]
 coderadar node ENTITY_ID [--neighbors]
 coderadar query 'functions where caller_count == 0' [--format text|table|json]
 coderadar traverse ENTITY_ID [--direction both|upstream|downstream|in|out] \
-                    [--edge-kinds calls,imports,extends,overrides] [--max-depth 3]
+                    [--edge-kinds calls,imports,extends,implements,decorates,instantiates,references,overrides] [--max-depth 3]
 coderadar callers ENTITY_ID                  # one hop up; transitive = affected
 coderadar callees ENTITY_ID                  # one hop down
 coderadar affected ENTITY_ID [--max-depth 5] # transitive callers, the blast radius

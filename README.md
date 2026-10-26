@@ -143,7 +143,7 @@ entity = graph.node("src/services.py::UserService.create", include_neighbors=Tru
 callers = graph.callers("views.py::user_detail")  # includes framework edges
 impact = graph.affected("src/auth.py::validate_user", max_depth=3)
 
-# Walk calls / imports / extends / overrides (edge_kinds=None walks all four);
+# Walk all eight assertable edge kinds (edge_kinds=None walks all eight);
 # full entity rows, the start node at depth 0
 rows = graph.traverse("src/auth.py::validate_user", direction="upstream", max_depth=3)
 

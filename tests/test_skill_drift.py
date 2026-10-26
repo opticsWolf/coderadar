@@ -76,6 +76,14 @@ class TestMcpSkillDrift:
     def test_hidden_old_spellings_not_taught_as_tools(self):
         assert "coderadar_analyze" not in _skill("coderadar-mcp")
 
+    def test_traverse_edge_kinds_are_current(self):
+        text = _skill("coderadar-mcp")
+        for kind in (
+            "calls", "imports", "extends", "implements",
+            "decorates", "instantiates", "references", "overrides",
+        ):
+            assert kind in text, f"MCP skill omits traverse edge kind: {kind}"
+
     def test_mutation_outcomes_and_recovery_are_taught(self):
         text = _skill("coderadar-mcp")
         for status in (
@@ -130,6 +138,14 @@ class TestCliSkillDrift:
         text = _skill("coderadar-cli")
         for cmd in ("replace-body", "update-signature", "rename", "create-entity"):
             assert f"coderadar {cmd}" in text, f"CLI skill does not teach {cmd}"
+
+    def test_traverse_edge_kinds_are_current(self):
+        text = _skill("coderadar-cli")
+        for kind in (
+            "calls", "imports", "extends", "implements",
+            "decorates", "instantiates", "references", "overrides",
+        ):
+            assert kind in text, f"CLI skill omits traverse edge kind: {kind}"
 
     def test_mutation_outcomes_and_exit_codes_are_taught(self):
         text = _skill("coderadar-cli")
