@@ -250,6 +250,11 @@ or not at all.
 > roots (+ all slice-A tests migrated to scopes). §2.5 done: no gaps
 > remain. Remaining: live rebuild + verify (new Python
 > `test_pathmap_nested_scope_wins` fails honestly pre-build).
+>
+> (Verified live 2026-10-26 with slice B in the rebuilt `_core.pyd`:
+> new Python `test_pathmap_nested_scope_wins` passes — the web
+> importer lands on `packages/web/src/x.ts`, the root importer on
+> `src/x.ts`; full file 124/124, embeddings 20/20.)
 
 ### 2.6 Four edge kinds are asserted; nine exist
 
