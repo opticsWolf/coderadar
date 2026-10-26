@@ -432,3 +432,60 @@ fn test_traverse_decorates_both_directions() {
     let cup = CodeGraph::traverse_bfs(&proj, "models.py::entity", 5, &kinds, true, false);
     assert!(cup.iter().any(|(id, _, _)| id == "models.py::Model"));
 }
+
+#[test]
+fn test_traverse_instantiates_both_directions() {
+    // §2.6 slice D: `instantiates` walks Constructor targets downstream
+    // and the instantiated_by reverse index upstream. A constructor
+    // invocation both calls (CALLS, to `__init__`/class) and instantiates
+    // (INSTANTIATES, to the class) — overlap, not partition.
+    let proj = snapshot_from(&[
+        (
+            "class Engine:\n    def __init__(self):\n        pass\n",
+            "eng.py",
+        ),
+        (
+            "from eng import Engine\n\ndef build():\n    return Engine()\n\ndef helper():\n    return 1\n",
+            "app.py",
+        ),
+    ]);
+    let kinds = vec!["instantiates".to_string()];
+
+    let down = CodeGraph::traverse_bfs(&proj, "app.py::build", 5, &kinds, false, true);
+    let down_ids: Vec<&str> = down.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert!(
+        down_ids.contains(&"eng.py::Engine"),
+        "build instantiates Engine: {down_ids:?}"
+    );
+    assert!(
+        down.iter()
+            .all(|(_, _, k)| k.is_empty() || k == "instantiates"),
+        "arm reaches only via instantiates: {down:?}"
+    );
+
+    let up = CodeGraph::traverse_bfs(&proj, "eng.py::Engine", 5, &kinds, true, false);
+    let up_ids: Vec<&str> = up.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert!(
+        up_ids.contains(&"app.py::build"),
+        "Engine instantiated by build: {up_ids:?}"
+    );
+    assert!(
+        !up_ids.contains(&"app.py::helper"),
+        "helper never constructs: {up_ids:?}"
+    );
+
+    // The calls arm still sees the constructor invocation (overlap).
+    let calls = CodeGraph::traverse_bfs(
+        &proj,
+        "app.py::build",
+        5,
+        &["calls".to_string()],
+        false,
+        true,
+    );
+    let call_ids: Vec<&str> = calls.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert!(
+        call_ids.iter().any(|id| id.starts_with("eng.py::Engine")),
+        "CALLS still covers the constructor: {call_ids:?}"
+    );
+}

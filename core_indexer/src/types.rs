@@ -1559,6 +1559,13 @@ pub struct ProjectedGraph {
     /// functions/classes. Built by `resolve_decorators` from
     /// `resolved_decorators`; powers upstream `decorates` traversal.
     pub decorated_by: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Reverse instantiation index: class → set of functions that
+    /// instantiate it. Built by `resolve_instantiations` from
+    /// `Function.resolved_calls` (`Constructor` targets); powers upstream
+    /// `instantiates` traversal. A constructor invocation both calls
+    /// (`__init__`/class, CALLS) and instantiates (class, INSTANTIATES) —
+    /// overlap, not partition.
+    pub instantiated_by: HashMap<EntityId, BTreeSet<EntityId>>,
     pub overridden_by: HashMap<EntityId, BTreeSet<EntityId>>,
     /// Forward override index: override method → (single) base method it
     /// overrides. Absent = no override detected. Downstream traversal of

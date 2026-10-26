@@ -447,6 +447,7 @@ pub(crate) mod tests {
             subclasses: HashMap::new(),
             implementers: HashMap::new(),
             decorated_by: HashMap::new(),
+            instantiated_by: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
             ambiguous_bases: Vec::new(),

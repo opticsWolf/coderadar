@@ -3,8 +3,8 @@
 //! Rebuilds an in-memory [`ProjectedGraph`] from a Macrame-ledger
 //! [`MaterializedState`]. Concept JSON v2 (see `crate::storage`) carries
 //! post-resolution *base* state; the resolution cascade
-//! (imports → class methods → MRO → hierarchy → decorators → overrides)
-//! is re-run by
+//! (imports → class methods → MRO → hierarchy → decorators →
+//! instantiations → overrides) is re-run by
 //! the caller on the returned projection, mirroring `analyze_inner`
 //! (lib.rs) minus `resolve_all_calls` — `resolved_calls` are already
 //! carried on each function.
@@ -23,7 +23,9 @@
 //! Structural edges are never read at load: `importers` is rebuilt by
 //! `resolve_imports`, EXTENDS/IMPLEMENTS by `resolve_class_hierarchy` (via
 //! `resolved_bases`/`resolved_interfaces`), DECORATES by `resolve_decorators`
-//! (via `resolved_decorators`/`decorated_by`), OVERRIDES by `resolve_overrides` (via
+//! (via `resolved_decorators`/`decorated_by`), INSTANTIATES by
+//! `resolve_instantiations` (via Constructor targets → `instantiated_by`),
+//! OVERRIDES by `resolve_overrides` (via
 //! `overrides_base`). Ledger CALLS edges are a strict subset of (1) —
 //! the persister skips external/builtin targets — so skipping them loses
 //! nothing.
@@ -102,6 +104,7 @@ pub fn projection_from_state(
         call_evidence: HashMap::new(),
         subclasses: HashMap::new(),
         implementers: HashMap::new(),
+        instantiated_by: HashMap::new(),
         decorated_by: HashMap::new(),
         overridden_by: HashMap::new(),
         overrides_base: HashMap::new(),
@@ -191,6 +194,7 @@ const STRUCTURAL_EDGE_KINDS: &[&str] = &[
     "EXTENDS",
     "IMPLEMENTS",
     "DECORATES",
+    "INSTANTIATES",
     "OVERRIDES",
 ];
 
@@ -303,6 +307,7 @@ mod tests {
             call_evidence: HashMap::new(),
             subclasses: HashMap::new(),
             implementers: HashMap::new(),
+            instantiated_by: HashMap::new(),
             decorated_by: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),

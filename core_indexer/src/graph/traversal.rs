@@ -91,6 +91,22 @@ impl CodeGraph {
                     }
                 }
             }
+            "instantiates" => {
+                if up {
+                    push_set(snap.instantiated_by.get(id));
+                }
+                if down {
+                    // Constructor targets carry the class id (§2.6 slice D).
+                    if let Some(f) = snap.functions.get(id) {
+                        out.extend(f.resolved_calls.iter().filter_map(|rc| match rc {
+                            crate::types::ResolvedCall::Constructor(class_id) => {
+                                Some(class_id.clone())
+                            }
+                            _ => None,
+                        }));
+                    }
+                }
+            }
             "overrides" => {
                 if up {
                     push_set(snap.overridden_by.get(id));

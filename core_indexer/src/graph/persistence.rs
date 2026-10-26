@@ -313,6 +313,38 @@ impl CodeGraph {
             }
         }
 
+        // INSTANTIATES edges (§2.6 slice D): function → class it
+        // constructs. Read off `resolved_calls` (`Constructor` targets
+        // carry the class id); a constructor invocation both calls
+        // (`__init__`/class, CALLS) and instantiates (class) — overlap,
+        // not partition. Same FK/scope guards as CALLS.
+        for (fid, f) in projection.functions.iter() {
+            for rc in f.resolved_calls.iter() {
+                let crate::types::ResolvedCall::Constructor(class_id) = rc else {
+                    continue;
+                };
+                if !in_scope(fid, class_id) {
+                    continue;
+                }
+                if dangling(fid, class_id) {
+                    continue;
+                }
+                if open.contains(&edge_key(fid, class_id, "INSTANTIATES")) {
+                    edge_count += 1;
+                    continue;
+                }
+                batch.push(
+                    EdgeAssertion::new(fid.as_str(), class_id.as_str(), "INSTANTIATES")
+                        .valid_from(ts_now.as_str())
+                        .weight(1.0),
+                );
+                edge_count += 1;
+                if batch.len() >= 200 {
+                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                }
+            }
+        }
+
         // OVERRIDES edges: override method → base method.
         for (override_fid, base_fid) in projection.overrides_base.iter() {
             if !in_scope(override_fid, base_fid) {

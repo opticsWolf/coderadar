@@ -659,3 +659,48 @@ fn test_persist_edges_asserts_decorates_kind() {
         .expect("retire should succeed");
     assert_eq!(retired, 0, "DECORATES edge must survive reconciliation");
 }
+
+#[test]
+fn test_persist_edges_asserts_instantiates_kind() {
+    // §2.6 slice D: a constructor invocation persists as INSTANTIATES
+    // (function → class) alongside its CALLS edge — overlap, not
+    // partition — and the reconciler keeps it.
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(
+        &graph,
+        "class Engine:\n    def __init__(self):\n        pass\n",
+        "eng.py",
+    );
+    index_source(
+        &graph,
+        "from eng import Engine\n\ndef build():\n    return Engine()\n",
+        "app.py",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    graph.resolve_imports(&mut projection);
+    graph.resolve_all_calls(&mut projection);
+    graph.resolve_instantiations(&mut projection);
+    let persisted = graph
+        .persist_edges(&projection)
+        .expect("persist_edges should succeed");
+    assert!(
+        persisted >= 2,
+        "CALLS/IMPORTS + INSTANTIATES should persist, got {persisted}"
+    );
+    let store = graph.store.as_ref().expect("temp store attached");
+    let now = crate::storage::now_iso8601();
+    let triples = store.open_edge_triples(&now).expect("read back edges");
+    assert!(
+        triples.contains(&(
+            "app.py::build".to_string(),
+            "eng.py::Engine".to_string(),
+            "INSTANTIATES".to_string()
+        )),
+        "ledger must carry the INSTANTIATES triple, got {triples:?}"
+    );
+    let keep = crate::stale_edge_keep_set(&projection);
+    let retired = store
+        .retire_stale_edges(&keep)
+        .expect("retire should succeed");
+    assert_eq!(retired, 0, "INSTANTIATES edge must survive reconciliation");
+}

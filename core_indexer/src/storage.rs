@@ -1433,12 +1433,13 @@ impl CodeGraphStore {
         &self,
         keep: &std::collections::HashSet<(String, String, String)>,
     ) -> macrame::Result<usize> {
-        const STRUCTURAL: [&str; 6] = [
+        const STRUCTURAL: [&str; 7] = [
             "CALLS",
             "IMPORTS",
             "EXTENDS",
             "IMPLEMENTS",
             "DECORATES",
+            "INSTANTIATES",
             "OVERRIDES",
         ];
         let ts = now_iso8601();

@@ -245,6 +245,16 @@ from class inheritance in a traversal.
 > `emit_class` hardcoded `decorators: Vec::new` — class decorators were
 > dropped for every language. Remaining: `references`/`instantiates`
 > still declared-unpopulated; Java `annotation` nodes not descended.
+>
+> Slice D (dev): INSTANTIATES edges. Constructor invocations already
+> resolved (`ResolvedCall::Constructor`) and persisted as CALLS; slice D
+> asserts the same pairs as INSTANTIATES (overlap, not partition) so
+> traversal can tell calling from constructing. New `resolve_instantiations`
+> pass builds the `instantiated_by` reverse index from resolved calls
+> (cascade order matters: after call resolution in all four sites --
+> analyze, update-file, load, test helper). Traverse both directions,
+> keep-set, STRUCTURAL 6->7, kind list 6->7. Remaining: `references`
+> still declared-unpopulated.
 
 ### 2.7 Stack Graphs / L1 resolution
 

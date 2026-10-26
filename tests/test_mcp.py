@@ -902,6 +902,24 @@ class TestTraverse:
         up = ops.traverse("helpers.py::validate", "upstream", ["decorates"])
         assert "app.py::alpha" in [r["id"] for r in up["results"]]
 
+    def test_traverse_instantiates_kind(self, tmp_path, monkeypatch):
+        # §2.6 slice D: `instantiates` walks constructor applications
+        # both directions. Needs a built _core with slice D.
+        import coderadar
+        from coderadar import ops
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "eng.py").write_text(
+            "class Engine:\n    def __init__(self):\n        pass\n")
+        (tmp_path / "app.py").write_text(
+            "from eng import Engine\n\n"
+            "def build():\n    return Engine()\n")
+        coderadar.analyze(".", create_store=True)
+        down = ops.traverse("app.py::build", "downstream", ["instantiates"])
+        assert "eng.py::Engine" in [r["id"] for r in down["results"]]
+        assert all(r["edge_type"] == "instantiates" for r in down["results"] if r["depth"] > 0)
+        up = ops.traverse("eng.py::Engine", "upstream", ["instantiates"])
+        assert "app.py::build" in [r["id"] for r in up["results"]]
+
 
 class TestUninitializedIndex:
     """The primary tools before any index exists.

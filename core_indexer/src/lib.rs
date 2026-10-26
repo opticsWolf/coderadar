@@ -557,6 +557,13 @@ pub(crate) fn stale_edge_keep_set(
         for dec_id in f.resolved_decorators.iter() {
             keep.insert((fid.clone(), dec_id.clone(), "DECORATES".to_string()));
         }
+        // §2.6 slice D: INSTANTIATES pairs are structural too —
+        // Constructor targets read off resolved_calls.
+        for rc in f.resolved_calls.iter() {
+            if let crate::types::ResolvedCall::Constructor(class_id) = rc {
+                keep.insert((fid.clone(), class_id.clone(), "INSTANTIATES".to_string()));
+            }
+        }
     }
     for (cid, class) in projection.classes.iter() {
         for dec_id in class.resolved_decorators.iter() {
@@ -960,6 +967,7 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         graph.resolve_overrides(&mut projection);
         graph.resolve_decorators(&mut projection);
         graph.resolve_all_calls(&mut projection);
+        graph.resolve_instantiations(&mut projection);
         // Concept JSON v2 flush — post-cascade, pre-edge (FK order).
         // Part 2 of put-then-assert: digests computed above are asserted
         // here. A degraded put (no digest) keeps graph coverage and
@@ -2193,12 +2201,13 @@ fn callees_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
 /// not "none of them" — every docstring above this boundary says so, and the
 /// BFS loops over the kinds it is given, so an empty list used to walk
 /// nowhere and return only the start node.
-const ALL_EDGE_KINDS: [&str; 6] = [
+const ALL_EDGE_KINDS: [&str; 7] = [
     "calls",
     "decorates",
     "extends",
     "implements",
     "imports",
+    "instantiates",
     "overrides",
 ];
 
@@ -2208,7 +2217,7 @@ fn validate_edge_kinds(kinds: &[String]) -> Result<(), String> {
     for k in kinds {
         if !ALL_EDGE_KINDS.contains(&k.as_str()) {
             return Err(format!(
-                "Unknown edge kind `{k}` (expected calls, imports, extends, implements, decorates, \
+                "Unknown edge kind `{k}` (expected calls, imports, extends, implements, decorates, instantiates, \
                  overrides; `inherits` is an alias for `extends`)"
             ));
         }
@@ -3557,6 +3566,7 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             graph.resolve_class_hierarchy(&mut projection);
             graph.resolve_overrides(&mut projection);
             graph.resolve_decorators(&mut projection);
+            graph.resolve_instantiations(&mut projection);
             graph.commit_projection(projection);
 
             // `commit_projection` stamped "now"; the honest value is the
