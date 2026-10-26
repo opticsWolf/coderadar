@@ -353,15 +353,18 @@ Phase 2 removed the algorithmic cliffs (the O(F²) scans, the whole-projection
 clone). Closing the remaining throughput gap to CodeGraph is a separate
 programme.
 
-> (2026-10-27) Scale-robustness data point: `analyze` on
-> `codegraph-main/__tests__` (178 small TS files) dies with a Windows
-> stack overflow; either 89-file half analyzes fine. TS-only corpus, and
-> the §2.6-gap extraction paths are provable no-ops on TS input, so this
-> is pre-existing, not a regression — a latent deep recursion in analyze
-> that corpus size trips. `test_real_repo_traversal_latency` (marked
-> `slow`, needs the external checkout so CI skips it) is the canary.
-> Fix belongs to the throughput programme (or its own robustness slice),
-> not to any edge-kind work.
+> (2026-10-27) Scale-robustness data point, corrected after a real
+> bisect: `analyze` dies with a Windows stack overflow on
+> `codegraph-main/__tests__/fixtures/kernel-parity/torture.kt` alone
+> (267 lines — the `SubK : OpenBase(n), Drawable, Comparable<SubK>`
+> multi-base block is implicated). Proven pre-existing: the 0bc0498
+> baseline binary (before the §2.6-gap work) crashes identically, so
+> this is NOT a regression from the new Kotlin base/interface arms —
+> it is a latent deep recursion (parse or resolve) that the torture
+> fixture trips. `test_real_repo_traversal_latency` (marked `slow`,
+> needs the external checkout so CI skips it) is the canary. Fix belongs
+> to the throughput programme (or its own robustness slice), not to
+> any edge-kind work.
 
 ### 2.9 SQLite PRAGMAs, string interning, columnar extraction
 
