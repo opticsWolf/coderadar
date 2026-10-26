@@ -964,6 +964,9 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         // per lookup once this suffix index is built; without it the cascade
         // scans every module per import (v0.8 P1: 8.3s of the 46s benchmark).
         crate::graph::rebuild_module_path_index(&mut projection);
+        // §2.5: project path maps (tsconfig/pyproject) precede import
+        // resolution — aliases rewrite specifiers before suffix matching.
+        projection.path_maps = crate::graph::path_maps::PathMaps::discover(root);
         graph.resolve_imports(&mut projection);
         graph.populate_class_methods(&mut projection);
         graph.compute_all_mro(&mut projection);
@@ -3566,6 +3569,12 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             // `persist_edges` (the ledger already is the truth).
             let config = active_config();
             let graph = CodeGraph::new((*config).clone()).with_store(store);
+            // §2.5: re-discover path maps at load so an edited tsconfig /
+            // pyproject takes effect on the next cold start without a
+            // re-analyze. `root` absent ⇒ empty maps (old behaviour).
+            if let Some(r) = root {
+                projection.path_maps = crate::graph::path_maps::PathMaps::discover(r);
+            }
             graph.resolve_imports(&mut projection);
             graph.populate_class_methods(&mut projection);
             graph.compute_all_mro(&mut projection);

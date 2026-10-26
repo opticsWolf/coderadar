@@ -170,6 +170,7 @@ impl CodeGraph {
             implementers: HashMap::new(),
             instantiated_by: HashMap::new(),
             referenced_by: HashMap::new(),
+            path_maps: crate::graph::path_maps::PathMaps::default(),
             decorated_by: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),

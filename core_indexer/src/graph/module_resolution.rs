@@ -389,10 +389,109 @@ fn pick_suffix_winner(
     best.map(str::to_string)
 }
 
+/// §2.5: apply tsconfig `paths` aliases to a raw specifier. Exact keys
+/// match whole; `prefix/*` keys match the prefix and substitute the
+/// remainder for the `*` in each target (targets without `*` are used
+/// verbatim). A trailing known extension on a candidate is stripped —
+/// the index keys are extension-less. Order: exacts + longest-prefix
+/// first (alias vec order), targets in tsconfig order.
+fn alias_candidates(projection: &ProjectedGraph, spec: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for alias in &projection.path_maps.ts_aliases {
+        let rest = if alias.exact {
+            if spec != alias.from {
+                continue;
+            }
+            None
+        } else if let Some(rest) = spec.strip_prefix(alias.from.as_str()) {
+            Some(rest.trim_start_matches('/'))
+        } else {
+            continue;
+        };
+        for target in &alias.to {
+            let mut candidate = match rest {
+                Some(r) if target.contains('*') => target.replacen('*', r, 1),
+                _ => target.clone(),
+            };
+            // Targets may name the file (`src/app.ts`); the suffix
+            // machinery matches extension-less stems.
+            if let Some((stem, ext)) = candidate.rsplit_once('.') {
+                if KNOWN_MODULE_EXTENSIONS.contains(&ext) {
+                    candidate = stem.to_string();
+                }
+            }
+            if !out.contains(&candidate) {
+                out.push(candidate);
+            }
+        }
+    }
+    out
+}
+
+/// §2.5: run the suffix machinery (fast index when built, legacy scan
+/// otherwise) over one slash-path candidate. Used for alias/base/root
+/// candidates; the plain-specifier path below inlines the same loops.
+fn lookup_module_tail(
+    projection: &ProjectedGraph,
+    slash: &str,
+    importer_lang: Option<crate::types::Language>,
+) -> Option<String> {
+    if projection.modules.is_empty() || !projection.module_path_index.is_empty() {
+        let segs: Vec<&str> = slash.split('/').collect();
+        for start in 0..segs.len() {
+            let tail = segs[start..].join("/");
+            if let Some(ids) = projection.module_path_index.get(&tail) {
+                if let Some(winner) = pick_suffix_winner(projection, ids, importer_lang) {
+                    return Some(winner);
+                }
+            }
+        }
+        return None;
+    }
+    lookup_module_tail_scan(projection, slash, importer_lang)
+}
+
+/// Legacy slow path factored for reuse: full scan over every module,
+/// longest-suffix-first, smallest-id winner per length (DR-14).
+fn lookup_module_tail_scan(
+    projection: &ProjectedGraph,
+    slash: &str,
+    importer_lang: Option<crate::types::Language>,
+) -> Option<String> {
+    let segments: Vec<&str> = slash.split('/').collect();
+    for n in (1..=segments.len()).rev() {
+        let suffix_slash = segments[segments.len() - n..].join("/");
+        let mut ids = Vec::new();
+        for module in projection.modules.values() {
+            let path_normalized = module.path.to_string_lossy().replace('\\', "/");
+            for ext in KNOWN_MODULE_EXTENSIONS {
+                let suffix = format!("{suffix_slash}.{ext}");
+                let init_suffix = format!("{suffix_slash}/__init__.{ext}");
+                if path_normalized.ends_with(&suffix) || path_normalized.ends_with(&init_suffix) {
+                    ids.push(module.id.clone());
+                    break;
+                }
+            }
+        }
+        if !ids.is_empty() {
+            return pick_suffix_winner(projection, &ids, importer_lang);
+        }
+    }
+    None
+}
+
 /// Find a module by its dotted name (e.g., "coderadar.config" → config.py).
 /// v0.5: Language-agnostic — matches any known extension (py, ex, zig, scala, lua, ...).
 /// Converts the dotted name to path segments and matches against suffixes of
 /// all module file paths.
+///
+/// §2.5: before suffix matching, project path maps add priority candidates.
+/// tsconfig `paths` aliases rewrite the raw specifier (exact, then
+/// longest-prefix; targets in tsconfig order, first hit wins), then
+/// `baseUrl` (TS/JS importers) and pyproject src-roots (Python importers)
+/// anchor the full specifier under the configured root. Priority-only:
+/// a miss falls through to the convention + suffix behaviour below, so
+/// config-less projects resolve byte-identically to before.
 pub(crate) fn find_module_by_dotted_name(
     projection: &ProjectedGraph,
     dotted_name: &str,
@@ -410,6 +509,41 @@ pub(crate) fn find_module_by_dotted_name(
     };
 
     let segments: Vec<&str> = dotted_name.split('.').collect();
+    let importer_lang = projection.modules.get(current_module).map(|m| m.language);
+
+    // §2.5 priority candidates: config-anchored lookups before generic
+    // suffix matching. Misses fall through — never a new failure mode.
+    if !projection.path_maps.is_empty() {
+        let slash = segments.join("/");
+        // tsconfig paths aliases (any importer: aliases match raw text).
+        for candidate in alias_candidates(projection, dotted_name) {
+            if let Some(hit) = lookup_module_tail(projection, &candidate, importer_lang) {
+                return Some(hit);
+            }
+        }
+        // tsconfig baseUrl anchors bare specifiers under the root.
+        if let Some(base) = projection.path_maps.ts_base_url.as_deref() {
+            let is_ts = matches!(
+                importer_lang,
+                Some(crate::types::Language::TypeScript | crate::types::Language::JavaScript)
+            );
+            if is_ts {
+                let anchored = format!("{base}/{slash}");
+                if let Some(hit) = lookup_module_tail(projection, &anchored, importer_lang) {
+                    return Some(hit);
+                }
+            }
+        }
+        // pyproject src-layout roots anchor dotted imports exactly.
+        if importer_lang == Some(crate::types::Language::Python) {
+            for root in &projection.path_maps.python_roots {
+                let anchored = format!("{root}/{slash}");
+                if let Some(hit) = lookup_module_tail(projection, &anchored, importer_lang) {
+                    return Some(hit);
+                }
+            }
+        }
+    }
 
     // Fast path (v0.8 P1): the suffix index, when built, is COMPLETE — a key
     // exists for every (module, suffix) pair the scan below could return, so
@@ -421,7 +555,6 @@ pub(crate) fn find_module_by_dotted_name(
     //
     // A graph with modules but an empty index is legacy or hand-built (unit
     // tests) — it keeps the full-scan behaviour below, unchanged.
-    let importer_lang = projection.modules.get(current_module).map(|m| m.language);
     if projection.modules.is_empty() || !projection.module_path_index.is_empty() {
         for start in 0..segments.len() {
             let tail = segments[start..].join("/");
@@ -434,33 +567,8 @@ pub(crate) fn find_module_by_dotted_name(
         return None;
     }
 
-    // Legacy slow path: full scan over every module. Longest-suffix-first
-    // priority is preserved (outer loop), but within one suffix length the
-    // winner is the smallest module id — DR-14: first-HashMap-hit-wins
-    // flapped across processes. Same for the fallback below.
-    //
-    // Build candidate path suffixes by matching the last N segments
-    for n in (1..=segments.len()).rev() {
-        let suffix_parts = &segments[segments.len() - n..];
-        let suffix_slash = suffix_parts.join("/");
-
-        let mut ids = Vec::new();
-        for module in projection.modules.values() {
-            let path_str = module.path.to_string_lossy().to_string();
-            let path_normalized = path_str.replace('\\', "/");
-            // Check each known extension
-            for ext in KNOWN_MODULE_EXTENSIONS {
-                let suffix = format!("{}.{}", suffix_slash, ext);
-                let init_suffix = format!("{}/__init__.{}", suffix_slash, ext);
-                if path_normalized.ends_with(&suffix) || path_normalized.ends_with(&init_suffix) {
-                    ids.push(module.id.clone());
-                    break;
-                }
-            }
-        }
-        if !ids.is_empty() {
-            return pick_suffix_winner(projection, &ids, importer_lang);
-        }
+    if let Some(winner) = lookup_module_tail_scan(projection, &segments.join("/"), importer_lang) {
+        return Some(winner);
     }
 
     // Fallback: strip any extension and match segments in reverse order

@@ -939,6 +939,31 @@ class TestTraverse:
         calls = ops.traverse("handlers.py::get_handler", "downstream", ["calls"])
         assert "handlers.py::greeter" not in [r["id"] for r in calls["results"]]
 
+    def test_pathmap_alias_import_edge(self, tmp_path, monkeypatch):
+        # §2.5 slice A: tsconfig `paths` alias resolves end to end —
+        # the import edge lands on the mapped target, not the decoy that
+        # suffix matching would prefer. Needs a built _core with §2.5.
+        import json
+
+        import coderadar
+        from coderadar import ops
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tsconfig.json").write_text(json.dumps(
+            {"compilerOptions": {"paths": {"@utils/*": ["lib/utils/*"]}}}))
+        (tmp_path / "lib" / "utils").mkdir(parents=True)
+        (tmp_path / "lib" / "utils" / "a.ts").write_text(
+            "export const a = 2;\n")
+        (tmp_path / "aaa" / "utils").mkdir(parents=True)
+        (tmp_path / "aaa" / "utils" / "a.ts").write_text(
+            "export const a = 1;\n")
+        (tmp_path / "app.ts").write_text(
+            "import { a } from '@utils/a';\nconsole.log(a);\n")
+        coderadar.analyze(".", create_store=True)
+        down = ops.traverse("app.ts::module", "downstream", ["imports"])
+        ids = [r["id"] for r in down["results"]]
+        assert "lib/utils/a.ts::module" in ids, ids
+        assert "aaa/utils/a.ts::module" not in ids, ids
+
 
 class TestUninitializedIndex:
     """The primary tools before any index exists.

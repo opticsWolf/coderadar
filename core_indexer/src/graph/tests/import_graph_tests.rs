@@ -214,3 +214,157 @@ fn test_alias_aware_module_resolution() {
         m.path.to_string_lossy()
     );
 }
+
+fn projection_with_maps(
+    files: &[(&str, &str)],
+    maps: crate::graph::path_maps::PathMaps,
+    build_index: bool,
+) -> ProjectedGraph {
+    let graph = CodeGraph::new(GraphConfig::default());
+    for (src, path) in files {
+        index_source(&graph, src, path);
+    }
+    let mut projection = (*graph.snapshot()).clone();
+    projection.path_maps = maps;
+    if build_index {
+        crate::graph::rebuild_module_path_index(&mut projection);
+    }
+    projection
+}
+
+fn ts_alias_maps() -> crate::graph::path_maps::PathMaps {
+    crate::graph::path_maps::PathMaps {
+        ts_aliases: vec![crate::graph::path_maps::TsAlias {
+            from: "@utils/".to_string(),
+            exact: false,
+            to: vec!["lib/utils/*".to_string()],
+        }],
+        ts_base_url: None,
+        python_roots: vec![],
+    }
+}
+
+#[test]
+fn test_pathmap_alias_resolves_unresolvable() {
+    // §2.5: `@utils/a` has no dots, so suffix matching never fires —
+    // without maps it resolves to nothing (the gap). With the alias
+    // it lands on the mapped target — on both the indexed fast path
+    // and the legacy scan.
+    let files: &[(&str, &str)] = &[
+        ("export const a = 1;\n", "aaa/utils/a.ts"),
+        ("export const a = 2;\n", "lib/utils/a.ts"),
+        ("import { a } from '@utils/a';\n", "app.ts"),
+    ];
+    for build_index in [true, false] {
+        let plain =
+            projection_with_maps(files, crate::graph::path_maps::PathMaps::new(), build_index);
+        let target = crate::graph::find_module_by_dotted_name(&plain, "@utils/a", "app.ts::module");
+        assert!(
+            target.is_none(),
+            "no maps: @-prefixed specifier is unresolvable (index={build_index})"
+        );
+        let mapped = projection_with_maps(files, ts_alias_maps(), build_index);
+        let target =
+            crate::graph::find_module_by_dotted_name(&mapped, "@utils/a", "app.ts::module");
+        assert_eq!(
+            target.as_deref(),
+            Some("lib/utils/a.ts::module"),
+            "alias maps to lib (index={build_index})"
+        );
+    }
+}
+
+#[test]
+fn test_pathmap_alias_target_order_and_fallback() {
+    // Targets are tried in tsconfig order (missing first target falls
+    // through); an unmapped specifier keeps the old suffix behaviour.
+    let files: &[(&str, &str)] = &[("export const a = 2;\n", "lib/utils/a.ts")];
+    let mut maps = ts_alias_maps();
+    maps.ts_aliases[0].to = vec!["missing/*".to_string(), "lib/utils/*".to_string()];
+    let projection = projection_with_maps(files, maps, true);
+    let target =
+        crate::graph::find_module_by_dotted_name(&projection, "@utils/a", "app.ts::module");
+    assert_eq!(target.as_deref(), Some("lib/utils/a.ts::module"));
+    // Unmapped specifier: suffix fallback still works.
+    let target =
+        crate::graph::find_module_by_dotted_name(&projection, "lib.utils.a", "app.ts::module");
+    assert_eq!(target.as_deref(), Some("lib/utils/a.ts::module"));
+}
+
+#[test]
+fn test_pathmap_base_url_anchors_ts() {
+    // §2.5: baseUrl=src anchors `u/b` under src/ for TS importers;
+    // without it the smallest id (`lib/...`) wins the suffix match.
+    let files: &[(&str, &str)] = &[
+        ("export const b = 0;\n", "lib/u/b.ts"),
+        ("export const b = 1;\n", "src/u/b.ts"),
+        ("import { b } from 'u/b';\n", "app.ts"),
+    ];
+    let plain = projection_with_maps(files, crate::graph::path_maps::PathMaps::new(), true);
+    assert_eq!(
+        crate::graph::find_module_by_dotted_name(&plain, "u/b", "app.ts::module").as_deref(),
+        Some("lib/u/b.ts::module")
+    );
+    let maps = crate::graph::path_maps::PathMaps {
+        ts_aliases: vec![],
+        ts_base_url: Some("src".to_string()),
+        python_roots: vec![],
+    };
+    let anchored = projection_with_maps(files, maps, true);
+    assert_eq!(
+        crate::graph::find_module_by_dotted_name(&anchored, "u/b", "app.ts::module").as_deref(),
+        Some("src/u/b.ts::module")
+    );
+}
+
+#[test]
+fn test_pathmap_python_src_root_wins() {
+    // §2.5: with src-layout declared, `mylib.x` anchors exactly under
+    // src/ instead of losing to the id-ordered suffix match.
+    let files: &[(&str, &str)] = &[
+        ("X = 1\n", "aaa/mylib/x.py"),
+        ("X = 2\n", "src/mylib/x.py"),
+        ("import mylib.x\n", "app.py"),
+    ];
+    let plain = projection_with_maps(files, crate::graph::path_maps::PathMaps::new(), true);
+    assert_eq!(
+        crate::graph::find_module_by_dotted_name(&plain, "mylib.x", "app.py::module").as_deref(),
+        Some("aaa/mylib/x.py::module")
+    );
+    let maps = crate::graph::path_maps::PathMaps {
+        ts_aliases: vec![],
+        ts_base_url: None,
+        python_roots: vec!["src".to_string()],
+    };
+    let rooted = projection_with_maps(files, maps, true);
+    assert_eq!(
+        crate::graph::find_module_by_dotted_name(&rooted, "mylib.x", "app.py::module").as_deref(),
+        Some("src/mylib/x.py::module")
+    );
+}
+
+#[test]
+fn test_pathmap_alias_end_to_end_import_edge() {
+    // §2.5: the mapped specifier becomes a real import edge —
+    // extraction → alias rewrite → edge, not just unit resolution.
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(&graph, "export const a = 1;\n", "aaa/utils/a.ts");
+    index_source(&graph, "export const a = 2;\n", "lib/utils/a.ts");
+    index_source(
+        &graph,
+        "import { a } from '@utils/a';\nconsole.log(a);\n",
+        "app.ts",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    projection.path_maps = ts_alias_maps();
+    crate::graph::rebuild_module_path_index(&mut projection);
+    graph.resolve_imports(&mut projection);
+    let targets = projection.imports_by_importer.get("app.ts::module");
+    let got: Option<Vec<&str>> =
+        targets.map(|t| t.iter().map(|s| s.as_str()).collect());
+    assert_eq!(
+        got,
+        Some(vec!["lib/utils/a.ts::module"]),
+        "app.ts must import the aliased target"
+    );
+}

@@ -449,6 +449,7 @@ pub(crate) mod tests {
             decorated_by: HashMap::new(),
             instantiated_by: HashMap::new(),
             referenced_by: HashMap::new(),
+            path_maps: crate::graph::path_maps::PathMaps::default(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
             ambiguous_bases: Vec::new(),

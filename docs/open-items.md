@@ -210,6 +210,26 @@ drifting.
 convention. Projects with a non-conventional path map resolve by suffix match
 or not at all.
 
+> **Status (dev): slice A landed.** New `graph::path_maps` module:
+> `PathMaps::discover(root)` reads `<root>/tsconfig.json`
+> (`compilerOptions.baseUrl` + `paths`, following `extends` chains with
+> cycle/depth guards, JSONC comments stripped) and `<root>/pyproject.toml`
+> (setuptools `find.where` / `package-dir`, poetry `from`, hatch
+> `packages`; only existing dirs become roots). Discovery never fails —
+> missing/unparseable configs yield empty maps. Stored on the projection
+> (analyze + cold-start load re-discovers, so edited configs take effect
+> without re-analyze); `find_module_by_dotted_name` tries alias rewrites
+> (exact, longest-prefix, tsconfig target order), then baseUrl (TS/JS
+> importers) and src-roots (Python importers) before the old suffix
+> fallback. Priority-only: config-less projects resolve byte-identically.
+> Tests: 5 discover unit tests + 5 resolve tests (alias gap→fixed on
+> fast and scan paths, target order, unmapped fallback, baseUrl anchor,
+> src-root win) + end-to-end import edge; only nested-monorepo configs
+> stay a documented gap. New `toml 0.8` dep (cached, offline-clean).
+> Remaining: live rebuild + verify (new Python
+> `test_pathmap_alias_import_edge` fails honestly pre-build), then
+> Python-side docs touch-ups if the surface needs them (no API changed).
+
 ### 2.6 Four edge kinds are asserted; nine exist
 
 *(`traversal-matrix.md` §1.1, §2)*

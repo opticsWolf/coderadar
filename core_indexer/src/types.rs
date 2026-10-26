@@ -1572,6 +1572,13 @@ pub struct ProjectedGraph {
     /// powers upstream `references` traversal. Deliberately not CALLS:
     /// passing a function as a value is not calling it (§2.6 slice E).
     pub referenced_by: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Project path maps (§2.5): tsconfig `paths`/`baseUrl` + pyproject
+    /// src-layout roots, discovered once per analyze/load by
+    /// `PathMaps::discover`. Empty = no configs (old convention/suffix
+    /// behaviour). Consulted by `find_module_by_dotted_name`; the
+    /// resolver adds priority candidates but never removes the suffix
+    /// fallback, so config-less projects resolve byte-identically.
+    pub path_maps: crate::graph::path_maps::PathMaps,
     pub overridden_by: HashMap<EntityId, BTreeSet<EntityId>>,
     /// Forward override index: override method → (single) base method it
     /// overrides. Absent = no override detected. Downstream traversal of
