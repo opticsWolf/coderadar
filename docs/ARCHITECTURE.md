@@ -114,7 +114,7 @@ CodeRadar/
     agent/graphrag.py           # named seam → P2 context work
     lsp/pool.py                 # named seam → L4 override (DR-2/DR-16)
     skills/coderadar-{mcp,cli}/  # bundled agent skill truth (P2, wheel)
-  tests/                        # 1109 Python tests + Rust 434 (lib + integ)
+  tests/                        # 1157 Python tests + Rust 503 (lib + integ)
   docs/                         # live set only (see §15)
 ```
 
