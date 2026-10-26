@@ -434,6 +434,31 @@ Each pass found the same shape: a surface that produced *plausible output* and
 exited 0. None of them crashed. The remaining question is which surfaces still
 have that property and no test — see the v0.8 plan §4.
 
+> **Status (dev): first smoke-hunt done, pattern confirmed twice more.**
+> Mapped all 24 MCP tools to test files, separating shape coverage
+> (exit-0 batteries, drift/parity tests) from content assertions:
+>
+> - `diagnose` had exit-0-only coverage (`battery_round2` `rc == 0`) at
+>   every layer — a report silently dropping its sections would print a
+>   clean bill of health and pass. Now pinned: ops content
+>   (`test_diagnose_reports_unresolved_and_ambiguous` — known unresolved
+>   target attributed to its caller, ambiguous `Base` counted) plus the
+>   rendered MCP text naming both (`TestDiagnoseContent`).
+> - `find_clones` / `find_scaffolding` had exit-0-only battery coverage;
+>   engine goldens existed but nothing asserted above `_core`. Now
+>   pinned at ops level (both clone instances named; TODO marker found).
+> - Audited clean (content assertions exist): `search_hybrid` (fused
+>   ranks + ids), `explore` (the KeyError catch is documented in-file),
+>   mutation tools (e2e), traverse kinds, smells/dead-code goldens,
+>   staleness banner inputs.
+> - Watch-list, not defects: the `cr_edit_tests` batteries are manual
+>   dogfood (no CI reference — verified), so battery-only coverage
+>   (e.g. `callees`, `module_children`, `as_of` content paths) stays
+>   one careless edit from silent; `render.py` per-command formatters
+>   are covered only indirectly through MCP text tests where those
+>   exist. Next hunt: promote the highest-value battery checks into
+>   the suite or wire the batteries into CI.
+
 ---
 
 ## 4. Not gaps

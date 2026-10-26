@@ -1383,6 +1383,34 @@ class TestAsOf:
         result = _as_of(None, "", "", [])
         assert "timestamp" in result.lower()
 
+class TestDiagnoseContent:
+    """`coderadar_diagnose` must name what it found — §3.2.
+
+    The battery only asserted exit 0, so a diagnose that silently
+    dropped its sections would print a clean bill of health and pass.
+    These pin the rendered text to fixture ground truth (unresolved
+    target attribution + ambiguous bases), mirroring how
+    TestStalenessBannerFires pins the banner inputs.
+    """
+
+    def test_diagnose_text_names_unresolved_and_ambiguous(self, tmp_path):
+        try:
+            from coderadar._core import analyze
+        except ImportError:
+            pytest.skip("Rust _core extension not built")
+        from coderadar.mcp.server import _diagnose
+
+        (tmp_path / "a.py").write_text("class Base:\n    pass\n", encoding="utf-8")
+        (tmp_path / "b.py").write_text("class Base:\n    pass\n", encoding="utf-8")
+        (tmp_path / "c.py").write_text(
+            "class C(Base):\n    pass\n\n\ndef f():\n    return missing_fn()\n",
+            encoding="utf-8",
+        )
+        analyze(str(tmp_path))
+        text = _diagnose(None)
+        assert "missing_fn" in text, text
+        assert "Base" in text, text
+
 class TestStalenessBannerFires:
     """`ops.stale_files` read `stats["epoch"]`, a key graph_stats never set.
 
