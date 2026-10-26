@@ -282,9 +282,11 @@ with per-arm `depth` reads and deterministic `score-desc/id-asc` ordering.
 > before it could answer. `search_similar` now dispatches to the single
 > registered model table at the query width (ambiguous widths error
 > naming the tables; no table falls back to the memory scan, preserving
-> storeless and never-persisted flows). Post-rebuild verification:
-> `tests/test_embeddings_phase1.py::TestSimilarOnTables` (no-recompute
-> after re-analyze, raw vector scores from the table).
+> storeless and never-persisted flows). Verified live 2026-10-26 after
+> rebuilding `_core.pyd`: `TestSimilarOnTables` passes (no-recompute
+> after re-analyze, raw vector scores from the table), full embeddings
+> suite 20/20, `test_traverse_implements_kind` passes with the §2.6
+> binary. Commit `67c1ba8`.
 
 ---
 
