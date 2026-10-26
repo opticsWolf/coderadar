@@ -229,6 +229,11 @@ or not at all.
 > Remaining: live rebuild + verify (new Python
 > `test_pathmap_alias_import_edge` fails honestly pre-build), then
 > Python-side docs touch-ups if the surface needs them (no API changed).
+>
+> (Verified live 2026-10-26 with slice A in the rebuilt `_core.pyd`:
+> new Python `test_pathmap_alias_import_edge` passes — the import edge
+> lands on the mapped `lib/` target, not the `aaa/` decoy; full file
+> 123/123, embeddings 20/20.)
 
 ### 2.6 Four edge kinds are asserted; nine exist
 
