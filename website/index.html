@@ -358,9 +358,9 @@ snap.read_bytes(<span class="tok-s">"py_agent/src/coderadar/ops.py"</span>)
         </ul>
       </div>
       <div class="mini"><div class="bar"><i></i><i></i><i></i></div>
-<pre><code>$ coderadar traverse dead::module --as-of 2024-01-01
-<span class="tok-k">TemporalUnsupported:</span> traverse reads live state;
-use <span class="tok-s">as_of</span> + <span class="tok-s">read_bytes</span> for moments.</code></pre>
+<pre><code>$ coderadar as-of 2024-01-01 dead::module
+<span class="tok-k">names as they were</span>; <span class="tok-s">read_bytes</span>
+serves the exact source at T.</code></pre>
       </div>
     </div>
 
