@@ -88,29 +88,12 @@ class TestOneCommandPerName:
         assert "mutations" not in main.commands
 
 
-class TestRenamedTools:
-    """P2 renamed-tool checks: old spellings work AND carry the 0.13 notice."""
-    @pytest.mark.parametrize("old,new", [
-        ("analyze", "reindex --full"),
-        ("rebuild", "reindex --full"),
-        ("update", "update-file"),
-        ("stats", "status"),
-    ])
-    def test_old_spelling_prints_removal_notice(self, old, new):
-        import io
-        from contextlib import redirect_stderr
-
-        from coderadar.cli import _renamed
-        buf = io.StringIO()
-        with redirect_stderr(buf):
-            _renamed(old, new)
-        out = buf.getvalue()
-        assert new in out
-        assert "0.13" in out
-
-    def test_old_spellings_still_registered(self):
-        for old in ("analyze", "rebuild", "update", "stats"):
-            assert old in main.commands
+class TestRemovedTools:
+    """v0.13 removed the deprecated CLI spellings."""
+    def test_old_spellings_are_not_registered(self):
+        for old in ("analyze", "rebuild", "update", "stats",
+                      "blame", "git-clean", "git-diff"):
+            assert old not in main.commands
 
 
 class TestCommandsThatUsedToAnswerNothing:
@@ -137,18 +120,19 @@ class TestCommandsThatUsedToAnswerNothing:
         # A header with nothing under it reads as a clean bill of health.
         assert "none" in result.output or "ambiguous" in result.output
 
-    def test_stats_answers_after_a_bare_init(self, run):
+    def test_status_answers_after_a_bare_init(self, run):
         """The whole read-only surface used to dead-end here.
 
-        The graph lives in the process that built it, so a fresh `stats`
+        The graph lives in the process that built it, so a fresh `status`
         process found an empty core and told the user to run the command
         they had already run.
         """
-        result = run("stats")
+        result = run("status")
 
         assert result.exit_code == 0, result.output
         assert "No graph loaded" not in result.output
         assert "functions" in result.output
+        assert "Project:" in result.output
 
 
 class TestQueriesSeeRealFields:
@@ -184,7 +168,8 @@ class TestVisualizeFailsInsteadOfInventing:
         assert "BaseModel" not in result.output, "demo data came back"
 
     def test_an_entity_with_no_calls_is_an_error_not_a_diagram(self, run):
-        run("rebuild", ".")
+        result = run("reindex", "--full")
+        assert result.exit_code == 0, result.output
         result = CliRunner().invoke(
             main, ["visualize", "call-graph", "gen"], catch_exceptions=False)
 
@@ -195,7 +180,7 @@ class TestVisualizeFailsInsteadOfInventing:
 
 class TestExitCodes:
     def test_a_failed_update_does_not_report_success(self, run):
-        result = run("update", "does_not_exist.py")
+        result = run("update-file", "does_not_exist.py")
 
         assert result.exit_code != 0, result.output
 

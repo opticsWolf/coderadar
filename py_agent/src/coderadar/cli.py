@@ -389,14 +389,6 @@ def _op(fmt: str, call, text) -> None:
     _emit(fmt, result, text)
 
 
-def _renamed(old: str, new: str) -> None:
-    click.echo(
-        f"`coderadar {old}` is now `coderadar {new}` "
-        "(the old spelling is removed in 0.13).",
-        err=True,
-    )
-
-
 def _text_arg(value: str | None) -> str | None:
     """'-' reads the value from stdin."""
     return sys.stdin.read() if value == "-" else value
@@ -615,14 +607,13 @@ def as_of(timestamp: str, symbols: tuple, query_text: str, fmt: str):
 @main.command()
 @click.argument("entity_id")
 @click.option("--direction", default="both", show_default=True,
-              type=click.Choice(["downstream", "upstream", "both", "out", "in"]),
+              type=click.Choice(["downstream", "upstream", "both"]),
               help="upstream = callers, importers, subclasses, implementers, instantiators, referrers; "
-              "downstream = callees, "
-              "imports, bases, interfaces, decorators, constructed (out/in are aliases).")
-@click.option("--edge-kinds", "--edges", "edge_kinds", default=None,
+              "downstream = callees, imports, bases, interfaces, decorators, constructed.")
+@click.option("--edge-kinds", "edge_kinds", default=None,
               help="Comma-separated: calls, imports, extends (alias inherits), "
               "implements, decorates, instantiates, references, overrides. Default: all of them.")
-@click.option("--max-depth", "--depth", "max_depth", default=3, show_default=True,
+@click.option("--max-depth", "max_depth", default=3, show_default=True,
               help="At most 10.")
 @_format_option
 def traverse(entity_id: str, direction: str, edge_kinds: str | None, max_depth: int,
@@ -887,47 +878,6 @@ def _status(fmt: str, load: bool) -> None:
         _print_effective_excludes()
 
 
-# ── Old names (hidden; they still work) ──────────────────────────────────
-
-@main.command(hidden=True)
-@click.argument("path", type=click.Path(exists=True, file_okay=False), default=".")
-@click.option("--exclude", "excludes", multiple=True)
-def analyze(path: str, excludes: tuple):
-    """Old name of `coderadar -C PATH reindex --full`."""
-    _renamed("analyze", "reindex --full")
-    _enter_project(project=path, walk=False)
-    _reindex(True, excludes, False, "text")
-
-
-@main.command(hidden=True)
-@click.argument("path", type=click.Path(exists=True, file_okay=False), default=".")
-@click.option("--full", is_flag=True)
-@click.option("--exclude", "excludes", multiple=True)
-def rebuild(path: str, full: bool, excludes: tuple):
-    """Old name of `coderadar -C PATH reindex --full`."""
-    _renamed("rebuild", "reindex --full")
-    _enter_project(project=path, walk=False)
-    _reindex(True, excludes, False, "text")
-
-
-@main.command(hidden=True)
-@click.argument("file", type=click.Path())
-@click.option("--content", default=None)
-def update(file: str, content: str | None):
-    """Old name of `coderadar update-file`."""
-    _renamed("update", "update-file")
-    (file,) = _enter_project(file)
-    _update_file(file, content, "text")
-
-
-@main.command(hidden=True)
-def stats():
-    """Old name of `coderadar status` (always loads the graph)."""
-    _renamed("stats", "status")
-    _enter_project()
-    _status("text", load=True)
-
-
 # ── Git ──────────────────────────────────────────────────────────────────
 
 @main.group()
@@ -1001,19 +951,6 @@ def git_diff(repo: str, old_oid: str | None, new_oid: str | None):
     console.print(f"[bold]{len(files)} changed files:[/bold]")
     for f in files:
         console.print(f"  {f}")
-
-
-def _hidden_alias(command: click.Command, old: str, new: str) -> None:
-    def callback(*args, **kwargs):
-        _renamed(old, new)
-        return command.callback(*args, **kwargs)
-    main.add_command(click.Command(old, params=command.params, callback=callback,
-                                   hidden=True, help=f"Old name of `coderadar {new}`."))
-
-
-_hidden_alias(git_blame, "blame", "git blame")
-_hidden_alias(git_is_clean, "git-clean", "git is-clean")
-_hidden_alias(git_diff, "git-diff", "git diff")
 
 
 @main.command()

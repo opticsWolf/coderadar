@@ -170,6 +170,5 @@ retained `recovery_path` values, recover manually, then resync.
 ## Names
 
 Tools are `coderadar_*` on this surface only. The CLI spells the same
-operations differently (`reindex`, `update-file`, `status`, `git blame`
-— never the old `analyze`/`rebuild`/`update`/`stats`, which print a
-0.13-removal notice). See the `coderadar-cli` skill for terminal use.
+operations differently (`reindex`, `update-file`, `status`, `git blame`); the
+pre-0.13 CLI aliases are gone. See the `coderadar-cli` skill for terminal use.

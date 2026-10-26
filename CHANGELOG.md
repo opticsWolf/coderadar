@@ -6,6 +6,11 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Removed the deprecated pre-0.13 CLI spellings: `analyze`, `rebuild`,
+  `update`, `stats`, bare `blame`, `git-clean`, and `git-diff`, plus the
+  `traverse` aliases `--edges`/`--depth` and direction aliases `in`/`out`.
+  Use `reindex`, `update-file`, `status`, `git blame`/`git is-clean`/`git diff`,
+  and the canonical traverse flags/directions.
 - Skills ship in the wheel: `skills/` moved to
   `py_agent/src/coderadar/skills/` (package data, read through
   `importlib.resources`), so `pip install coderadar-rs` delivers the same

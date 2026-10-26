@@ -112,9 +112,9 @@ coderadar skills install
 coderadar docs query-language
 ```
 
-> **0.13 removal notice.** The old CLI spellings (`analyze`, `rebuild`,
-> `update`, `stats`, `blame`, `git-clean`, `git-diff`) still work but are
-> hidden; they are removed in 0.13. Use `reindex`, `update-file`, `status`,
+> **0.13 removal.** The old CLI spellings (`analyze`, `rebuild`,
+> `update`, `stats`, `blame`, `git-clean`, `git-diff`) no longer exist.
+> Use `reindex`, `update-file`, `status`,
 > and `git blame` / `git is-clean` / `git diff`.
 
 ## Python API
@@ -404,9 +404,9 @@ stderr (exit 2 bad input, 1 otherwise), pipes UTF-8 everywhere; `status`
 reports project, config, store, and freshness.
 
 
-### Renamed in v0.11 (removed in 0.13)
+### Renamed in v0.11 (CLI aliases removed in 0.13)
 
-Old names still work with a `DeprecationWarning` or a stderr note, hidden from `--help`.
+Old CLI names no longer exist. Python deprecated spellings still warn.
 Update client allow-lists and scripts that call tools by name: the 17 `codegraph_*` tools are now `coderadar_*`, and `node`/`affected` take `entity_id`.
 
 | Old | New |

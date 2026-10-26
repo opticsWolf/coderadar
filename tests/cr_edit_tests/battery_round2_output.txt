@@ -3,19 +3,17 @@
 [PASS] cli/init
 [PASS] cli/init-twice-refuses-or-ok
 [PASS] cli/init-force
-[PASS] cli/analyze
+[PASS] cli/reindex
 [PASS] cli/status
-[PASS] cli/stats
-[PASS] cli/rebuild
-[PASS] cli/rebuild-full-flag
-[PASS] cli/rebuild-one-shot-exclude
+[PASS] cli/reindex-full-flag
+[PASS] cli/reindex-one-shot-exclude
 [PASS] cli/have-ids
 [PASS] cli/have-main-id
 [PASS] cli/query-basic
 [PASS] cli/query-filtered
 [PASS] cli/query-syntax-error
-[PASS] cli/traverse-out
-[PASS] cli/traverse-in
+[PASS] cli/traverse-downstream
+[PASS] cli/traverse-upstream
 [PASS] cli/traverse-both
 [PASS] cli/traverse-edges-calls
 [PASS] cli/traverse-bad-edge-kind-errors
@@ -37,21 +35,21 @@
 [PASS] cli/exclude-remove
 [PASS] cli/exclude-remove-missing
 [PASS] cli/exclude-add-back
-[PASS] cli/update-noop-content
-[PASS] cli/update-missing-file
+[PASS] cli/update-file-noop-content
+[PASS] cli/update-file-missing
 [PASS] cli/store-repair
 [PASS] cli/store-repair-bad-db
-[PASS] cli/blame
-[PASS] cli/blame-missing
-[PASS] cli/git-clean-when-clean
-[PASS] cli/git-clean-when-dirty
+[PASS] cli/git-blame
+[PASS] cli/git-blame-missing
+[PASS] cli/git-is-clean-when-clean
+[PASS] cli/git-is-clean-when-dirty
 [PASS] cli/git-diff-head-clean
 [PASS] cli/git-diff-two-commits
 [PASS] cli/git-diff-bad-oid-errors
 [PASS] cli/visualize-call-graph
 [PASS] cli/visualize-slash-id-works
 [PASS] cli/visualize-bad-format-errors
-[PASS] cli/shell-help-stats-exit
+[PASS] cli/shell-help-status-exit
 [PASS] cli/shell-query
 [PASS] cli/watch-reacts
 [PASS] cli/mcp-tools-list-27
@@ -124,5 +122,5 @@
 
 ======================================================================
 SUMMARY
-123/123 passed
+121/121 passed
 FAIL-LIST-END

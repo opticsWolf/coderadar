@@ -128,11 +128,14 @@ class TestCliSkillDrift:
         )
         assert not missing, f"CLI skill teaches no syntax for: {missing}"
 
-    def test_old_spellings_carry_the_notice(self):
+    def test_removed_spellings_are_not_taught_as_commands(self):
         text = _skill("coderadar-cli")
-        for old in ("analyze", "rebuild", "update", "stats"):
-            assert old in text
-        assert "0.13" in text
+        for old in ("analyze", "rebuild", "update", "stats",
+                      "blame", "git-clean", "git-diff"):
+            assert not re.search(
+                rf"(?m)^coderadar {re.escape(old)}(?:\s|$)", text
+            ), f"CLI skill teaches removed {old}"
+        assert "Removed in 0.13" in text
 
     def test_teaches_the_four_mutations(self):
         text = _skill("coderadar-cli")

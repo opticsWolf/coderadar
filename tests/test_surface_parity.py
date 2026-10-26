@@ -72,10 +72,9 @@ class TestNames:
                 gaps[op] = sorted(missing)
         assert gaps == {}
 
-    def test_old_cli_names_still_work_but_are_hidden(self):
+    def test_old_cli_names_are_removed_in_v013(self):
         for old in ("analyze", "rebuild", "update", "stats", "blame", "git-clean", "git-diff"):
-            assert old in main.commands, old
-            assert main.commands[old].hidden, old
+            assert old not in main.commands, old
 
 
 SOURCE = '''\
@@ -196,11 +195,11 @@ class TestCli:
         assert result.exit_code == 0, result.output
         assert "File Removed" in result.stdout
 
-    def test_an_old_name_says_its_new_one(self, project):
+    def test_a_removed_name_is_not_a_command(self, project):
         result = _run("stats")
 
-        assert result.exit_code == 0, result.output
-        assert "coderadar status" in result.stderr
+        assert result.exit_code == 2, result.output
+        assert "No such command" in result.output
 
 
 @pytest.mark.skipif(not _CORE, reason="Rust _core extension not built")

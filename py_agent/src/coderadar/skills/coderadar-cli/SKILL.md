@@ -1,14 +1,13 @@
 ---
 name: coderadar-cli
-description: Use the CodeRadar CLI in a terminal for codebase intelligence: init, status, reindex, query, traverse, callers/callees, and mutations on an indexed project. Use when MCP is unavailable, for scripting, or to create/refresh the .coderadar/ store the coderadar-mcp skill queries. Teaches current command names (old analyze/rebuild/update/stats spellings print a 0.13-removal notice) and installs the bundled MCP + CLI skill packs (`coderadar skills install`).
+description: Use the CodeRadar CLI in a terminal for codebase intelligence: init, status, reindex, query, traverse, callers/callees, and mutations on an indexed project. Use when MCP is unavailable, for scripting, or to create/refresh the .coderadar/ store the coderadar-mcp skill queries. Teaches current command names (pre-0.13 aliases removed) and installs the bundled MCP + CLI skill packs (`coderadar skills install`).
 ---
 
 # CodeRadar CLI
 
 Same graph as the MCP surface, terminal spelling. One name per
-operation: the commands below are current — the old spellings
-(`analyze`, `rebuild`, `update`, `stats`) still run but print a
-removal notice (gone in 0.13).
+operation: the commands below are current — the pre-0.13 aliases
+are gone in 0.13.
 
 ## When to trigger
 
@@ -52,7 +51,7 @@ coderadar explore [SYMBOL]... [-q TEXT] [--direction both|upstream|downstream] [
 coderadar search QUERY [--kind function|class|type_alias|constant|module|import] [--top-k 10]
 coderadar node ENTITY_ID [--neighbors]
 coderadar query 'functions where caller_count == 0' [--format text|table|json]
-coderadar traverse ENTITY_ID [--direction both|upstream|downstream|in|out] \
+coderadar traverse ENTITY_ID [--direction both|upstream|downstream] \
                     [--edge-kinds calls,imports,extends,implements,decorates,instantiates,references,overrides] [--max-depth 3]
 coderadar callers ENTITY_ID                  # one hop up; transitive = affected
 coderadar callees ENTITY_ID                  # one hop down
@@ -63,8 +62,7 @@ coderadar module-children MODULE_ID          # e.g. 'pkg/app.py::module'
 coderadar diagnose [--unresolved] [--low-confidence]
 ```
 
-`traverse` caps `--max-depth` at 10; `--direction` aliases are `out`
-(downstream) and `in` (upstream); `--edge-kinds` is comma-separated and
+`traverse` caps `--max-depth` at 10; `--edge-kinds` is comma-separated and
 accepts `inherits` for `extends`.
 
 ### Quality and search
@@ -149,13 +147,12 @@ gives the exact flags for one command. `coderadar docs query-language`
 prints the full query language and every selectable field (also the MCP
 resource `docs://query-language`).
 
-## Renamed (do not teach the old spellings)
+## Removed in 0.13 (do not use)
 
-`analyze` → `reindex --full`, `rebuild` → `reindex --full`,
-`update` → `update-file`, `stats` → `status`. Old invocations print
-`` `<old>` is now `<new>` (the old spelling is removed in 0.13). ``
-and still run. `git blame` / `is-clean` / `diff` live under the `git`
-group now.
+The pre-0.13 aliases `analyze`, `rebuild`, `update`, `stats`, bare `blame`,
+`git-clean`, and `git-diff` no longer exist, along with the traverse flag
+aliases `--edges`/`--depth` and direction aliases `in`/`out`. Use the
+canonical commands and flags above.
 
 ## Notes
 

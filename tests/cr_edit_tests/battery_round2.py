@@ -110,22 +110,17 @@ check(SEC, "init-twice-refuses-or-ok", rc == 0 and ("already" in out.lower() or 
 rc, out = cli("init", "--force")
 check(SEC, "init-force", rc == 0, out[:200])
 
-rc, out = cli("analyze")
-check(SEC, "analyze", rc == 0, out[:200])
+rc, out = cli("reindex", "--full")
+check(SEC, "reindex", rc == 0, out[:200])
 
 rc, out = cli("status")
 check(SEC, "status", rc == 0 and ("index" in out.lower() or "store" in out.lower() or "fresh" in out.lower()), out[:300])
 
-rc, out = cli("stats")
-check(SEC, "stats", rc == 0 and ("function" in out.lower() or "entit" in out.lower() or "concept" in out.lower()), out[:300])
-
-rc, out = cli("rebuild")
-check(SEC, "rebuild", rc == 0, out[:200])
-rc, out = cli("rebuild", "--full")
-check(SEC, "rebuild-full-flag", rc == 0, out[:120])
-rc, out = cli("rebuild", "--exclude", "ignored/")
-check(SEC, "rebuild-one-shot-exclude", rc == 0, out[:200])
-# NOTE: the in-process graph is stale after CLI-side rebuilds — re-analyze
+rc, out = cli("reindex", "--full")
+check(SEC, "reindex-full-flag", rc == 0, out[:120])
+rc, out = cli("reindex", "--full", "--exclude", "ignored/")
+check(SEC, "reindex-one-shot-exclude", rc == 0, out[:200])
+# NOTE: the in-process graph is stale after CLI-side reindexes — re-analyze
 # (which picks up .coderadar.toml excludes) before asserting effect.
 
 # discover a real id for the id-taking commands
@@ -146,16 +141,16 @@ check(SEC, "query-filtered", rc == 0 and "combine" in out, out[:200])
 rc, out = cli("query", "frobnicate {{{")
 check(SEC, "query-syntax-error", "error" in out.lower() or "fail" in out.lower() or "invalid" in out.lower() or "parse" in out.lower(), out[:200])
 
-for direction in ("out", "in", "both"):
-    rc, out = cli("traverse", run_id, "--depth", "2", "--direction", direction)
+for direction in ("downstream", "upstream", "both"):
+    rc, out = cli("traverse", run_id, "--max-depth", "2", "--direction", direction)
     check(SEC, f"traverse-{direction}", rc == 0, out[:150])
-rc, out = cli("traverse", run_id, "--edges", "calls")
+rc, out = cli("traverse", run_id, "--edge-kinds", "calls")
 check(SEC, "traverse-edges-calls", rc == 0, out[:150])
-rc, out = cli("traverse", run_id, "--edges", "bogus_edge_kind")
+rc, out = cli("traverse", run_id, "--edge-kinds", "bogus_edge_kind")
 # R2 finding: unknown edge kind silently yields "No results" (rc 0)
 # instead of an error. Documenting actual behavior here.
 check(SEC, "traverse-bad-edge-kind-errors", "error" in out.lower() or "unknown" in out.lower() or "invalid" in out.lower(), out[:200])
-rc, out = cli("traverse", "no/such.py::missing", "--depth", "2")
+rc, out = cli("traverse", "no/such.py::missing", "--max-depth", "2")
 check(SEC, "traverse-bad-id", rc == 0 or "error" in out.lower() or "no " in out.lower() or "unknown" in out.lower() or "not found" in out.lower(), out[:200])
 
 rc, out = cli("callers", helpers_id)
@@ -205,7 +200,7 @@ rc, out = cli("exclude", "add", "ignored/")
 check(SEC, "exclude-add", rc == 0, out[:200])
 rc, out = cli("exclude", "list")
 check(SEC, "exclude-list-has-ignored", rc == 0 and "ignored" in out, out[:300])
-rc, out = cli("rebuild")
+rc, out = cli("reindex", "--full")
 # fresh-process view: the in-process global accumulates across ops, so the
 # exclude effect must be measured in a clean interpreter (R2-5).
 par3 = subprocess.run(
@@ -233,39 +228,39 @@ check(SEC, "exclude-add-back", rc == 0, out[:120])
 
 with open(os.path.join(FIX, "main.py"), encoding="utf-8") as _fh:
     _main_content = _fh.read()
-rc, out = cli("update", "main.py", "--content", _main_content)
-check(SEC, "update-noop-content", rc == 0, out[:200])
-rc, out = cli("update", "does/not/exist.py", "--content", "x = 1")
-check(SEC, "update-missing-file", rc != 0 or "error" in out.lower() or "not" in out.lower() or "no " in out.lower(), out[:200])
+rc, out = cli("update-file", "main.py", "--content", _main_content)
+check(SEC, "update-file-noop-content", rc == 0, out[:200])
+rc, out = cli("update-file", "does/not/exist.py", "--content", "x = 1")
+check(SEC, "update-file-missing", rc != 0 or "error" in out.lower() or "not" in out.lower() or "no " in out.lower(), out[:200])
 
 rc, out = cli("store-repair")
 check(SEC, "store-repair", rc == 0, out[:300])
 rc, out = cli("store-repair", "--db", os.path.join(FIX, "no-such-store.db"))
 check(SEC, "store-repair-bad-db", "error" in out.lower() or "not" in out.lower() or "no " in out.lower() or "fail" in out.lower() or rc != 0, out[:200])
 
-rc, out = cli("blame", "main.py")
-check(SEC, "blame", rc == 0 and ("r2" in out or "@" in out or "main.py" in out or "|" in out), out[:300])
-rc, out = cli("blame", "does/not/exist.py")
-check(SEC, "blame-missing", "error" in out.lower() or "not" in out.lower() or "no " in out.lower() or "fail" in out.lower() or rc != 0, out[:200])
+rc, out = cli("git", "blame", "main.py")
+check(SEC, "git-blame", rc == 0 and ("r2" in out or "@" in out or "main.py" in out or "|" in out), out[:300])
+rc, out = cli("git", "blame", "does/not/exist.py")
+check(SEC, "git-blame-missing", "error" in out.lower() or "not" in out.lower() or "no " in out.lower() or "fail" in out.lower() or rc != 0, out[:200])
 
 git("add", "-A")
 git("commit", "-qm", "r2 generated files")
-rc, out = cli("git-clean")
-check(SEC, "git-clean-when-clean", rc == 0 and "clean" in out.lower() and "uncommitted" not in out.lower(), out[:200])
+rc, out = cli("git", "is-clean")
+check(SEC, "git-is-clean-when-clean", rc == 0 and "clean" in out.lower() and "uncommitted" not in out.lower(), out[:200])
 with open(os.path.join(FIX, "dirty_probe.txt"), "w") as f:
     f.write("dirty\n")
-rc, out = cli("git-clean")
-check(SEC, "git-clean-when-dirty", "dirty" in out.lower() or "uncommitted" in out.lower() or "not clean" in out.lower() or "modified" in out.lower() or "untracked" in out.lower() or rc != 0, out[:200])
+rc, out = cli("git", "is-clean")
+check(SEC, "git-is-clean-when-dirty", "dirty" in out.lower() or "uncommitted" in out.lower() or "not clean" in out.lower() or "modified" in out.lower() or "untracked" in out.lower() or rc != 0, out[:200])
 git("add", "-A")
 git("commit", "-qm", "r2 second commit")
 
-rc, out = cli("git-diff", "--old", "HEAD")
+rc, out = cli("git", "diff", "--old", "HEAD")
 check(SEC, "git-diff-head-clean", rc == 0 and "no changed" in out.lower(), out[:200])
 _old = git("rev-parse", "HEAD~1").stdout.strip()
 _new = git("rev-parse", "HEAD").stdout.strip()
-rc, out = cli("git-diff", "--old", _old, "--new", _new)
+rc, out = cli("git", "diff", "--old", _old, "--new", _new)
 check(SEC, "git-diff-two-commits", rc == 0 and "dirty_probe" in out, out[:200])
-rc, out = cli("git-diff", "--old", "deadbeef" * 5)
+rc, out = cli("git", "diff", "--old", "deadbeef" * 5)
 # R2 finding: unknown revision prints the same "No changed files" as a
 # genuinely empty diff instead of an error.
 check(SEC, "git-diff-bad-oid-errors", rc != 0 or "error" in out.lower() or "unknown" in out.lower() or "invalid" in out.lower() or "not found" in out.lower(), out[:200])
@@ -282,8 +277,8 @@ rc, out = cli("visualize", "call-graph", run_id, "--format", "not-a-format")
 # "no edges" path) instead of an error listing supported formats.
 check(SEC, "visualize-bad-format-errors", rc != 0 or "error" in out.lower() or "unknown" in out.lower() or "support" in out.lower() or "format" in out.lower(), out[:200])
 
-rc, out = cli("shell", input_text="help\nstats\nexit\n", timeout=180)
-check(SEC, "shell-help-stats-exit", rc == 0 and ("Commands" in out or "commands" in out), out[:300])
+rc, out = cli("shell", input_text="help\nstatus\nexit\n", timeout=180)
+check(SEC, "shell-help-status-exit", rc == 0 and ("Commands" in out or "commands" in out), out[:300])
 rc, out = cli("shell", input_text="query functions where name contains 'combine'\nexit\n", timeout=180)
 check(SEC, "shell-query", rc == 0 and "combine" in out, out[:300])
 

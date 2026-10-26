@@ -38,8 +38,8 @@ Never run two servers on one store — the second gets `DB_LOCKED`.
 | Refresh one file | `coderadar update-file F` | `coderadar_update_file` | `g.update_file("…")` |
 
 Mutations are **dry-run unless applied**; the written file must parse or the
-run fails loudly. Old spellings (`analyze`, `explore(start_id=…)`) warn and
-die in 0.13.
+run fails loudly. Old CLI spellings were removed in 0.13; Python deprecated
+spellings still warn.
 
 ## Query language (essentials)
 
@@ -82,10 +82,10 @@ default_dry_run = true
 | `… concepts_fts … rebuild_fts` | FTS table missing/tampered → `store-repair`, then reindex |
 | `TemporalUnsupported` on callers-at-T | decided NO-GO (§3.3) — restructure the question to live graph + `as_of` names/bytes |
 | `InvalidRequest: stored graph` | keyword search needs a served (stored) graph → `reindex` first |
-| DeprecationWarning on old names | rename to the canonical op; removals land in 0.13 |
+| DeprecationWarning on old names | rename to the canonical op; CLI removals landed in 0.13 |
 
 ## Version notes
 
 +0.0.1 per feature (`pyproject` + workspace `Cargo.toml`, one bump commit).
-Specs, tests, dep patches: no bump. Current: **0.12.0**, `macrame-db` 0.19.1,
+Specs, tests, dep patches: no bump. Current: **0.13.0**, `macrame-db` 0.19.1,
 store schema v22. `../CHANGELOG.md` is the per-version record.
