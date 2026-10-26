@@ -4,7 +4,7 @@ Patch releases accumulate toward the next minor (+0.0.1 per implemented feature,
 bump commit named in the feature's DR row). The v0.12 plan history lives
 in `docs/` (v1 frozen, consolidated trio authoritative).
 
-## Unreleased
+## 0.13.0 (2026-10-26)
 
 - Removed the deprecated Python spellings alongside the CLI aliases:
   `CodeGraph.find`, `CodeGraph.callers_of`/`callees_of`,
