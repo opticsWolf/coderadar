@@ -4,7 +4,7 @@
 //! [`MaterializedState`]. Concept JSON v2 (see `crate::storage`) carries
 //! post-resolution *base* state; the resolution cascade
 //! (imports → class methods → MRO → hierarchy → decorators →
-//! instantiations → overrides) is re-run by
+//! instantiations → references → overrides) is re-run by
 //! the caller on the returned projection, mirroring `analyze_inner`
 //! (lib.rs) minus `resolve_all_calls` — `resolved_calls` are already
 //! carried on each function.
@@ -16,7 +16,8 @@
 //!    target, Method → method id, Builtin/External → `external::{name}`,
 //!    Unresolved → nothing.
 //! 2. Ledger edges whose kind is **not** structural (CALLS / IMPORTS /
-//!    EXTENDS / IMPLEMENTS / OVERRIDES) — i.e. synthetic framework edges registered
+//!    EXTENDS / IMPLEMENTS / DECORATES / INSTANTIATES / REFERENCES /
+//!    OVERRIDES) — i.e. synthetic framework edges registered
 //!    under their original kind. They land in the same call indices,
 //!    exactly as `register_synthetic_edges_bulk` does in memory.
 //!
@@ -25,6 +26,7 @@
 //! `resolved_bases`/`resolved_interfaces`), DECORATES by `resolve_decorators`
 //! (via `resolved_decorators`/`decorated_by`), INSTANTIATES by
 //! `resolve_instantiations` (via Constructor targets → `instantiated_by`),
+//! REFERENCES by `resolve_references` (via `resolved_refs` → `referenced_by`),
 //! OVERRIDES by `resolve_overrides` (via
 //! `overrides_base`). Ledger CALLS edges are a strict subset of (1) —
 //! the persister skips external/builtin targets — so skipping them loses
@@ -105,6 +107,7 @@ pub fn projection_from_state(
         subclasses: HashMap::new(),
         implementers: HashMap::new(),
         instantiated_by: HashMap::new(),
+        referenced_by: HashMap::new(),
         decorated_by: HashMap::new(),
         overridden_by: HashMap::new(),
         overrides_base: HashMap::new(),
@@ -195,6 +198,7 @@ const STRUCTURAL_EDGE_KINDS: &[&str] = &[
     "IMPLEMENTS",
     "DECORATES",
     "INSTANTIATES",
+    "REFERENCES",
     "OVERRIDES",
 ];
 
@@ -308,6 +312,7 @@ mod tests {
             subclasses: HashMap::new(),
             implementers: HashMap::new(),
             instantiated_by: HashMap::new(),
+            referenced_by: HashMap::new(),
             decorated_by: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),

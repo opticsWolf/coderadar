@@ -109,6 +109,7 @@ impl CodeGraph {
             subclasses: HashMap::new(),
             implementers: HashMap::new(),
             instantiated_by: HashMap::new(),
+            referenced_by: HashMap::new(),
             decorated_by: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),

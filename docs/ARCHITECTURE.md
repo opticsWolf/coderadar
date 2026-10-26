@@ -197,7 +197,7 @@ side never touches ledger handles.
 (Django/Flask/FastAPI/Express/Rails route → handler), `type_alias`.
 Internal: `EmbeddingVec`, `ProjectedGraph`.
 
-**Edges** — nine kinds exist, four are asserted by the backfill:
+**Edges** — all nine kinds are populated (`contains` structurally, the other eight asserted):
 
 | Kind | Populated? | Notes |
 |---|---|---|
@@ -209,7 +209,7 @@ Internal: `EmbeddingVec`, `ProjectedGraph`.
 | `implements` | yes (dev) | partitioned by target declaration; TS/Java/C#/PHP |
 | `decorates` | yes (dev) | unique tier hits over classes+fns; builtins/ambiguous none |
 | `instantiates` | yes (dev) | Constructor targets; overlaps CALLS, does not partition |
-| `references` | declared, unpopulated | open-items §2.6 |
+| `references` | yes (dev) | resolved_refs (callbacks/values); never CALLS — kind list complete |
 
 `graph_stats` breaks out asserted / external / unresolved / route shares —
 the outer number and the ledger rows disagree by category, never by loss
@@ -494,8 +494,9 @@ model tables, rehydrate, hybrid RRF; §2.6 slice A landed on dev —
 IMPLEMENTS split from EXTENDS (TS/Java/C#/PHP), traverse both directions;
 all §1 + §2.1 + §3.1 resolved
 in v0.12; §2.4 landed on dev — field-type-aware CBO (cyclomatic already
-AST-based); §2.5 path maps, §2.6 remainder
-(references, Go/Kotlin/Protocol interfaces, Java annotations),
+AST-based); §2.5 path maps, §2.6 done on dev (all 8 assertable kinds;
+remaining gaps are detection-only: Go/Kotlin/Protocol interfaces,
+Java annotations),
 §2.8 TS throughput, §2.9 SQLite internals still
 deferred; §2.2/§2.7 decided). Bugs/quirks:
 `CODERADAR_BUGS_QUIRKS.md` (9 fixed, #10 harness-side carried,

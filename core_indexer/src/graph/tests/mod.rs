@@ -75,6 +75,7 @@ fn snapshot_from(sources: &[(&str, &str)]) -> ProjectedGraph {
     graph.resolve_decorators(&mut projection);
     graph.resolve_all_calls(&mut projection);
     graph.resolve_instantiations(&mut projection);
+    graph.resolve_references(&mut projection);
     projection
 }
 

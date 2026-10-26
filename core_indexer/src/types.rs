@@ -1566,6 +1566,12 @@ pub struct ProjectedGraph {
     /// (`__init__`/class, CALLS) and instantiates (class, INSTANTIATES) —
     /// overlap, not partition.
     pub instantiated_by: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Reverse reference index: entity → set of functions holding a
+    /// function-valued reference to it (callbacks, dispatch tables).
+    /// Built by `resolve_references` from `Function.resolved_refs`;
+    /// powers upstream `references` traversal. Deliberately not CALLS:
+    /// passing a function as a value is not calling it (§2.6 slice E).
+    pub referenced_by: HashMap<EntityId, BTreeSet<EntityId>>,
     pub overridden_by: HashMap<EntityId, BTreeSet<EntityId>>,
     /// Forward override index: override method → (single) base method it
     /// overrides. Absent = no override detected. Downstream traversal of

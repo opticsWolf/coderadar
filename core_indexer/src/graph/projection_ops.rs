@@ -886,6 +886,7 @@ impl CodeGraph {
         // After the scoped re-resolution: resolved_calls are fresh, so
         // the instantiation index rebuilds on current data.
         self.resolve_instantiations(&mut projection);
+        self.resolve_references(&mut projection);
         // Phase 4b (v0.8 P1): flush concept JSON v2 for this file AFTER the
         // scoped cascade and BEFORE scoped edges (FK REFERENCES order) — v2
         // concepts carry post-resolution state (e.g. `resolved_calls`) that

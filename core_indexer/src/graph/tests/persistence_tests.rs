@@ -704,3 +704,42 @@ fn test_persist_edges_asserts_instantiates_kind() {
         .expect("retire should succeed");
     assert_eq!(retired, 0, "INSTANTIATES edge must survive reconciliation");
 }
+
+#[test]
+fn test_persist_edges_asserts_references_kind() {
+    // §2.6 slice E: a function-valued reference persists as REFERENCES
+    // (holder → target) and the reconciler keeps it. The CALLS arm from
+    // the same holder stays silent — validated at traverse level.
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(
+        &graph,
+        "def greeter():\n    pass\n\ndef get_handler():\n    return greeter\n",
+        "handlers.py",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    graph.resolve_all_calls(&mut projection);
+    graph.resolve_references(&mut projection);
+    let persisted = graph
+        .persist_edges(&projection)
+        .expect("persist_edges should succeed");
+    assert!(
+        persisted >= 1,
+        "REFERENCES edge should persist, got {persisted}"
+    );
+    let store = graph.store.as_ref().expect("temp store attached");
+    let now = crate::storage::now_iso8601();
+    let triples = store.open_edge_triples(&now).expect("read back edges");
+    assert!(
+        triples.contains(&(
+            "handlers.py::get_handler".to_string(),
+            "handlers.py::greeter".to_string(),
+            "REFERENCES".to_string()
+        )),
+        "ledger must carry the REFERENCES triple, got {triples:?}"
+    );
+    let keep = crate::stale_edge_keep_set(&projection);
+    let retired = store
+        .retire_stale_edges(&keep)
+        .expect("retire should succeed");
+    assert_eq!(retired, 0, "REFERENCES edge must survive reconciliation");
+}

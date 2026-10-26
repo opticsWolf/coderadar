@@ -261,6 +261,17 @@ from class inheritance in a traversal.
 > (Verified live 2026-10-26 with slices C+D in the rebuilt `_core.pyd`:
 > new Python `test_traverse_instantiates_kind` passes alongside the
 > decorates one; full file 121/121.)
+>
+> Slice E (dev): REFERENCES edges. `Function.refs`/`resolved_refs`
+> (function-valued references: callbacks, dispatch tables, `return
+> handler`) were resolved but deliberately never persisted as CALLS.
+> Slice E asserts them as REFERENCES (overlap-free by construction:
+> a value reference is not a call, and the traverse test pins the
+> calls arm silent). New `resolve_references` pass builds the
+> `referenced_by` reverse index; traverse both directions, keep-set,
+> STRUCTURAL 7->8, kind list 7->8. §2.6 is now 8 of 9 edge kinds
+> asserted; only `references`-adjacent gaps (none structural) remain.
+> Remaining: nothing structural -- the kind list is complete.
 
 ### 2.7 Stack Graphs / L1 resolution
 

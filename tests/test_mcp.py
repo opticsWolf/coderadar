@@ -920,6 +920,25 @@ class TestTraverse:
         up = ops.traverse("eng.py::Engine", "upstream", ["instantiates"])
         assert "app.py::build" in [r["id"] for r in up["results"]]
 
+    def test_traverse_references_kind(self, tmp_path, monkeypatch):
+        # §2.6 slice E: `references` walks function-valued references
+        # both directions — and the calls arm stays silent. Needs a built
+        # _core with slice E.
+        import coderadar
+        from coderadar import ops
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "handlers.py").write_text(
+            "def greeter():\n    pass\n\n"
+            "def get_handler():\n    return greeter\n")
+        coderadar.analyze(".", create_store=True)
+        down = ops.traverse("handlers.py::get_handler", "downstream", ["references"])
+        assert "handlers.py::greeter" in [r["id"] for r in down["results"]]
+        assert all(r["edge_type"] == "references" for r in down["results"] if r["depth"] > 0)
+        up = ops.traverse("handlers.py::greeter", "upstream", ["references"])
+        assert "handlers.py::get_handler" in [r["id"] for r in up["results"]]
+        calls = ops.traverse("handlers.py::get_handler", "downstream", ["calls"])
+        assert "handlers.py::greeter" not in [r["id"] for r in calls["results"]]
+
 
 class TestUninitializedIndex:
     """The primary tools before any index exists.

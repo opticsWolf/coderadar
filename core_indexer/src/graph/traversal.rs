@@ -107,6 +107,17 @@ impl CodeGraph {
                     }
                 }
             }
+            "references" => {
+                if up {
+                    push_set(snap.referenced_by.get(id));
+                }
+                if down {
+                    // Function-valued references, never calls (§2.6 slice E).
+                    if let Some(f) = snap.functions.get(id) {
+                        out.extend(f.resolved_refs.iter().cloned());
+                    }
+                }
+            }
             "overrides" => {
                 if up {
                     push_set(snap.overridden_by.get(id));

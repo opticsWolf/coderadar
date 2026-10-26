@@ -345,6 +345,34 @@ impl CodeGraph {
             }
         }
 
+        // REFERENCES edges (§2.6 slice E): function → entity it holds
+        // as a value (callbacks, dispatch tables). Deliberately not
+        // CALLS — passing a function as a value is not calling it.
+        // Same FK/scope guards as the other structural loops.
+        for (fid, f) in projection.functions.iter() {
+            for target in f.resolved_refs.iter() {
+                if !in_scope(fid, target) {
+                    continue;
+                }
+                if dangling(fid, target) {
+                    continue;
+                }
+                if open.contains(&edge_key(fid, target, "REFERENCES")) {
+                    edge_count += 1;
+                    continue;
+                }
+                batch.push(
+                    EdgeAssertion::new(fid.as_str(), target.as_str(), "REFERENCES")
+                        .valid_from(ts_now.as_str())
+                        .weight(1.0),
+                );
+                edge_count += 1;
+                if batch.len() >= 200 {
+                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                }
+            }
+        }
+
         // OVERRIDES edges: override method → base method.
         for (override_fid, base_fid) in projection.overrides_base.iter() {
             if !in_scope(override_fid, base_fid) {

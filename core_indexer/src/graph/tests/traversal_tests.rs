@@ -489,3 +489,48 @@ fn test_traverse_instantiates_both_directions() {
         "CALLS still covers the constructor: {call_ids:?}"
     );
 }
+
+#[test]
+fn test_traverse_references_both_directions() {
+    // §2.6 slice E: `references` walks resolved_refs downstream and the
+    // referenced_by reverse index upstream. Passing a function as a value
+    // is a reference, never a call — the calls arm stays silent.
+    let proj = snapshot_from(&[(
+        "def greeter():\n    pass\n\ndef get_handler():\n    return greeter\n\ndef plain():\n    return 1\n",
+        "handlers.py",
+    )]);
+    let kinds = vec!["references".to_string()];
+
+    let down = CodeGraph::traverse_bfs(&proj, "handlers.py::get_handler", 5, &kinds, false, true);
+    let down_ids: Vec<&str> = down.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert!(
+        down_ids.contains(&"handlers.py::greeter"),
+        "get_handler references greeter: {down_ids:?}"
+    );
+
+    let up = CodeGraph::traverse_bfs(&proj, "handlers.py::greeter", 5, &kinds, true, false);
+    let up_ids: Vec<&str> = up.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert!(
+        up_ids.contains(&"handlers.py::get_handler"),
+        "greeter referenced by get_handler: {up_ids:?}"
+    );
+    assert!(
+        !up_ids.contains(&"handlers.py::plain"),
+        "plain holds no reference: {up_ids:?}"
+    );
+
+    // The calls arm does not fire for a value reference.
+    let calls = CodeGraph::traverse_bfs(
+        &proj,
+        "handlers.py::get_handler",
+        5,
+        &["calls".to_string()],
+        false,
+        true,
+    );
+    let call_ids: Vec<&str> = calls.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert!(
+        !call_ids.contains(&"handlers.py::greeter"),
+        "value reference is not a call: {call_ids:?}"
+    );
+}
