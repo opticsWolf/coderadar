@@ -353,18 +353,30 @@ Phase 2 removed the algorithmic cliffs (the O(F²) scans, the whole-projection
 clone). Closing the remaining throughput gap to CodeGraph is a separate
 programme.
 
-> (2026-10-27) Scale-robustness data point, corrected after a real
-> bisect: `analyze` dies with a Windows stack overflow on
-> `codegraph-main/__tests__/fixtures/kernel-parity/torture.kt` alone
-> (267 lines — the `SubK : OpenBase(n), Drawable, Comparable<SubK>`
-> multi-base block is implicated). Proven pre-existing: the 0bc0498
-> baseline binary (before the §2.6-gap work) crashes identically, so
-> this is NOT a regression from the new Kotlin base/interface arms —
-> it is a latent deep recursion (parse or resolve) that the torture
-> fixture trips. `test_real_repo_traversal_latency` (marked `slow`,
-> needs the external checkout so CI skips it) is the canary. Fix belongs
-> to the throughput programme (or its own robustness slice), not to
-> any edge-kind work.
+> (2026-10-27) Fixed on dev. Root cause, found by file logging
+> (abort swallows captured output): not the parser but
+> `compute_c3_mro`, which recursed per base with no cycle guard —
+> and the new §2.6 Kotlin `delegation_specifier` unfold fed it a
+> self-base: `Comparable<SubK>` descended into the type argument
+> and collected `SubK` itself (`SubK` bases were
+> `[OpenBase, Drawable, Comparable, SubK]`), alternating
+> SubK↔OpenBase ~2900 frames to overflow. The 0bc0498 baseline
+> binary crashes on the same file (so the fixture is hostile to
+> the old code too — unlocated, likely a different latent
+> recursion, since the old code collected no Kotlin bases at
+> all). Two fixes: (1) type-argument subtrees
+> (`type_arguments`, `type_argument_list`) are never descended
+> into in any base-unfold arm (Java `super_interfaces`, C#
+> `base_list`, Kotlin `delegation_specifier`, Go
+> `interface_type` — the C#/Java arms had the same latent
+> wrong-edge bug: `Base<Foo>` collected `Foo`); (2)
+> `compute_c3_mro_guarded` carries a visiting set — cycles stop
+> instead of recursing (class still heads its own MRO). Regression
+> pins: type-args-are-not-bases (Kotlin + C#), MRO cycle
+> terminates (A↔B). Verified live: torture.kt, kernel-parity (36
+> files), full __tests__ (289 files) analyze clean; previously
+> crashing `test_real_repo_traversal_latency` passes; full suite
+> 1124 green with nothing deselected.
 
 ### 2.9 SQLite PRAGMAs, string interning, columnar extraction
 

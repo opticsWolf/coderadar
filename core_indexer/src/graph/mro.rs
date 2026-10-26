@@ -67,6 +67,26 @@ impl CodeGraph {
 
     /// C3 linearization: L[C] = C + merge(L[B1],...,L[Bn], [B1,...,Bn])
     fn compute_c3_mro(&self, projection: &ProjectedGraph, class_id: &str) -> Vec<MroNode> {
+        let mut visiting = Vec::new();
+        self.compute_c3_mro_guarded(projection, class_id, &mut visiting)
+    }
+
+    /// `compute_c3_mro` with a visiting set: inheritance cycles (a class
+    /// listed — directly or transitively — as its own base, via a type
+    /// argument, a same-name shadow, or genuinely cyclic source) stop
+    /// here instead of recursing forever (§2.8 torture.kt: Windows stack
+    /// overflow aborting `analyze`). The class still lands in its own
+    /// MRO; the cyclic link is simply not unfolded.
+    fn compute_c3_mro_guarded(
+        &self,
+        projection: &ProjectedGraph,
+        class_id: &str,
+        visiting: &mut Vec<String>,
+    ) -> Vec<MroNode> {
+        if visiting.iter().any(|v| v == class_id) {
+            return vec![MroNode::Class(class_id.to_string())];
+        }
+        visiting.push(class_id.to_string());
         let class = match projection.classes.get(class_id) {
             Some(c) => c.clone(),
             None => return vec![MroNode::Class(class_id.to_string())],
@@ -87,7 +107,7 @@ impl CodeGraph {
             .map(|base| {
                 let resolved = Self::resolve_base_by_name(projection, &base.name, &parent_module);
                 match resolved {
-                    Some(id) => self.compute_c3_mro(projection, &id),
+                    Some(id) => self.compute_c3_mro_guarded(projection, &id, visiting),
                     None => vec![MroNode::External {
                         name: base.name.clone(),
                     }],
@@ -110,6 +130,7 @@ impl CodeGraph {
         let merged = c3_merge(merge_lists);
         let mut result = vec![MroNode::Class(class_id.to_string())];
         result.extend(merged);
+        visiting.pop();
         result
     }
 

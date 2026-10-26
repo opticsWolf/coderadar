@@ -530,3 +530,30 @@ fn test_csharp_attribute_decorates() {
     assert_eq!(c.resolved_decorators, vec!["C.cs::MyAttr".to_string()]);
     assert!(p.decorated_by["C.cs::MyAttr"].contains("C.cs::C"));
 }
+
+#[test]
+fn test_type_arguments_are_not_bases() {
+    // §2.8 torture.kt: `class SubK : OpenBase(n), Drawable,
+    // Comparable<SubK>` — the `<SubK>` type argument was collected as a
+    // base, listing the class as its own base and overflowing MRO.
+    // Type-argument subtrees are skipped: only `Comparable` lands.
+    let p = snapshot_from(&[(
+        "open class OpenBase(n: Int) {}\nclass SubK(n: Int) : OpenBase(n), Comparable<SubK> {}\n",
+        "t.kt",
+    )]);
+    let sub = p.classes.get("t.kt::SubK").expect("SubK indexed");
+    let names: Vec<&str> = sub.bases.iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(names, vec!["OpenBase", "Comparable"], "{names:?}");
+}
+
+#[test]
+fn test_csharp_type_argument_is_not_a_base() {
+    // Same rule for C# `base_list`: `class C : Base<C>` yields `Base`.
+    let p = snapshot_from(&[(
+        "public class Base {}\npublic class C : Base<C> {}\n",
+        "C.cs",
+    )]);
+    let c = p.classes.get("C.cs::C").expect("C indexed");
+    let names: Vec<&str> = c.bases.iter().map(|b| b.name.as_str()).collect();
+    assert_eq!(names, vec!["Base"], "{names:?}");
+}

@@ -98,3 +98,33 @@ fn test_c3_diamond() {
         }
     }
 }
+
+#[test]
+fn test_mro_cycle_terminates() {
+    // §2.8 torture.kt: a class listed as its own base (directly or via a
+    // cycle) sent compute_c3_mro into infinite recursion — Windows stack
+    // overflow aborting analyze. The visiting set stops the cycle; the
+    // class still lands in its own MRO.
+    let graph = CodeGraph::new(GraphConfig::default());
+    index_source(
+        &graph,
+        "class A(B):\n    pass\nclass B(A):\n    pass\n",
+        "cyc.py",
+    );
+    let mut projection = (*graph.snapshot()).clone();
+    graph.compute_all_mro(&mut projection);
+    for name in ["A", "B"] {
+        let c = projection
+            .classes
+            .values()
+            .find(|c| c.name == name)
+            .expect("class indexed");
+        assert!(
+            c.mro
+                .iter()
+                .any(|m| matches!(m, MroNode::Class(id) if id.ends_with(name))),
+            "{name} should head its own MRO, got {:?}",
+            c.mro
+        );
+    }
+}

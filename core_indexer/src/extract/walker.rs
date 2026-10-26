@@ -668,6 +668,14 @@ pub fn extract_function_name(node: Node, source: &str) -> String {
 
 /// Extract base classes from a class node's superclass/heritage fields.
 pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
+    /// Type-argument wrappers are never descended into: `Comparable<SubK>`
+    /// contributes `Comparable`, never the argument `SubK`. Collecting the
+    /// argument would list the class itself as its own base and send MRO
+    /// into infinite recursion (§2.8 torture.kt). Covers Kotlin/Java/TS
+    /// `type_arguments` and C# `type_argument_list`.
+    fn descendable(k: &tree_sitter::Node) -> bool {
+        !matches!(k.kind(), "type_arguments" | "type_argument_list")
+    }
     fn is_base_node_kind(k: &str) -> bool {
         matches!(
             k,
@@ -712,7 +720,7 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
                     for k in x.children(&mut c) {
                         if is_base_node_kind(k.kind()) {
                             base_nodes.push(k);
-                        } else {
+                        } else if descendable(&k) {
                             stack.push(k);
                         }
                     }
@@ -755,7 +763,7 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
                     for k in x.children(&mut c) {
                         if is_base_node_kind(k.kind()) {
                             base_nodes.push(k);
-                        } else {
+                        } else if descendable(&k) {
                             stack.push(k);
                         }
                     }
@@ -773,7 +781,7 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
                     for k in x.children(&mut c) {
                         if is_base_node_kind(k.kind()) {
                             base_nodes.push(k);
-                        } else {
+                        } else if descendable(&k) {
                             stack.push(k);
                         }
                     }
@@ -796,6 +804,9 @@ pub fn extract_base_classes(node: Node, source: &str) -> Vec<UnresolvedRef> {
                 while let Some(x) = stack.pop() {
                     if is_base_node_kind(x.kind()) {
                         base_nodes.push(x);
+                        continue;
+                    }
+                    if !descendable(&x) {
                         continue;
                     }
                     let mut c = x.walk();
