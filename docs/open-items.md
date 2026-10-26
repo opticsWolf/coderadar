@@ -245,6 +245,8 @@ from class inheritance in a traversal.
 > `emit_class` hardcoded `decorators: Vec::new` — class decorators were
 > dropped for every language. Remaining: `references`/`instantiates`
 > still declared-unpopulated; Java `annotation` nodes not descended.
+> (Verified live 2026-10-26 after rebuilding `_core.pyd`: new Python
+> `test_traverse_decorates_kind` passes; full file 121/121.)
 >
 > Slice D (dev): INSTANTIATES edges. Constructor invocations already
 > resolved (`ResolvedCall::Constructor`) and persisted as CALLS; slice D
@@ -255,6 +257,10 @@ from class inheritance in a traversal.
 > analyze, update-file, load, test helper). Traverse both directions,
 > keep-set, STRUCTURAL 6->7, kind list 6->7. Remaining: `references`
 > still declared-unpopulated.
+>
+> (Verified live 2026-10-26 with slices C+D in the rebuilt `_core.pyd`:
+> new Python `test_traverse_instantiates_kind` passes alongside the
+> decorates one; full file 121/121.)
 
 ### 2.7 Stack Graphs / L1 resolution
 
