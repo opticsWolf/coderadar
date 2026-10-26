@@ -263,6 +263,56 @@ impl CodeGraph {
             }
         }
 
+        // DECORATES edges (§2.6 slice C): decorated → decorator, for
+        // functions and classes. `resolved_decorators` holds unique tier
+        // hits only; same FK/scope guards as EXTENDS.
+        for (fid, f) in projection.functions.iter() {
+            for dec_id in f.resolved_decorators.iter() {
+                if !in_scope(fid, dec_id) {
+                    continue;
+                }
+                if dangling(fid, dec_id) {
+                    continue;
+                }
+                if open.contains(&edge_key(fid, dec_id, "DECORATES")) {
+                    edge_count += 1;
+                    continue;
+                }
+                batch.push(
+                    EdgeAssertion::new(fid.as_str(), dec_id.as_str(), "DECORATES")
+                        .valid_from(ts_now.as_str())
+                        .weight(1.0),
+                );
+                edge_count += 1;
+                if batch.len() >= 200 {
+                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                }
+            }
+        }
+        for (cid, class) in projection.classes.iter() {
+            for dec_id in class.resolved_decorators.iter() {
+                if !in_scope(cid, dec_id) {
+                    continue;
+                }
+                if dangling(cid, dec_id) {
+                    continue;
+                }
+                if open.contains(&edge_key(cid, dec_id, "DECORATES")) {
+                    edge_count += 1;
+                    continue;
+                }
+                batch.push(
+                    EdgeAssertion::new(cid.as_str(), dec_id.as_str(), "DECORATES")
+                        .valid_from(ts_now.as_str())
+                        .weight(1.0),
+                );
+                edge_count += 1;
+                if batch.len() >= 200 {
+                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                }
+            }
+        }
+
         // OVERRIDES edges: override method → base method.
         for (override_fid, base_fid) in projection.overrides_base.iter() {
             if !in_scope(override_fid, base_fid) {

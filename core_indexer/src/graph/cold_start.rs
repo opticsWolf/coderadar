@@ -3,7 +3,8 @@
 //! Rebuilds an in-memory [`ProjectedGraph`] from a Macrame-ledger
 //! [`MaterializedState`]. Concept JSON v2 (see `crate::storage`) carries
 //! post-resolution *base* state; the resolution cascade
-//! (imports → class methods → MRO → hierarchy → overrides) is re-run by
+//! (imports → class methods → MRO → hierarchy → decorators → overrides)
+//! is re-run by
 //! the caller on the returned projection, mirroring `analyze_inner`
 //! (lib.rs) minus `resolve_all_calls` — `resolved_calls` are already
 //! carried on each function.
@@ -21,7 +22,8 @@
 //!
 //! Structural edges are never read at load: `importers` is rebuilt by
 //! `resolve_imports`, EXTENDS/IMPLEMENTS by `resolve_class_hierarchy` (via
-//! `resolved_bases`/`resolved_interfaces`), OVERRIDES by `resolve_overrides` (via
+//! `resolved_bases`/`resolved_interfaces`), DECORATES by `resolve_decorators`
+//! (via `resolved_decorators`/`decorated_by`), OVERRIDES by `resolve_overrides` (via
 //! `overrides_base`). Ledger CALLS edges are a strict subset of (1) —
 //! the persister skips external/builtin targets — so skipping them loses
 //! nothing.
@@ -100,6 +102,7 @@ pub fn projection_from_state(
         call_evidence: HashMap::new(),
         subclasses: HashMap::new(),
         implementers: HashMap::new(),
+        decorated_by: HashMap::new(),
         overridden_by: HashMap::new(),
         overrides_base: HashMap::new(),
         ambiguous_bases: Vec::new(),
@@ -182,7 +185,14 @@ pub fn projection_from_state(
 
 /// Structural edge kinds written by `persist_edges_scoped`. Excluded from
 /// ledger restoration (see module docs).
-const STRUCTURAL_EDGE_KINDS: &[&str] = &["CALLS", "IMPORTS", "EXTENDS", "IMPLEMENTS", "OVERRIDES"];
+const STRUCTURAL_EDGE_KINDS: &[&str] = &[
+    "CALLS",
+    "IMPORTS",
+    "EXTENDS",
+    "IMPLEMENTS",
+    "DECORATES",
+    "OVERRIDES",
+];
 
 /// Restore the CALLS reverse indices from `Function.resolved_calls`
 /// (see module docs for the pair rules).
@@ -293,6 +303,7 @@ mod tests {
             call_evidence: HashMap::new(),
             subclasses: HashMap::new(),
             implementers: HashMap::new(),
+            decorated_by: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
             ambiguous_bases: Vec::new(),
@@ -335,6 +346,7 @@ mod tests {
                 bases: Vec::new(),
                 resolved_bases: vec![],
                 resolved_interfaces: vec![],
+                resolved_decorators: vec![],
                 mro: Vec::new(),
                 mro_error: false,
                 methods: vec!["a.py::C.run".to_string()],
@@ -373,6 +385,7 @@ mod tests {
                 bindings: Vec::new(),
                 refs: Vec::new(),
                 resolved_refs: Vec::new(),
+                resolved_decorators: vec![],
                 line: 12,
                 exit_line: 20,
                 docstring: Some("the foo".to_string()),
@@ -417,6 +430,7 @@ mod tests {
                 bindings: Vec::new(),
                 refs: Vec::new(),
                 resolved_refs: Vec::new(),
+                resolved_decorators: vec![],
                 line: 22,
                 exit_line: 30,
                 docstring: None,

@@ -758,10 +758,10 @@ def traverse(entity_id: str, direction: str = "both",
              edge_kinds: Sequence[str] | None = None, max_depth: int = 3) -> dict:
     """Breadth-first walk from `entity_id` along any edge kinds.
 
-    `direction` is ``downstream`` (callees, imports, bases, interfaces), ``upstream``
-    (callers, importers, subclasses, implementers) or ``both``; ``out`` / ``in`` are
+    `direction` is ``downstream`` (callees, imports, bases, interfaces, decorators), ``upstream``
+    (callers, importers, subclasses, implementers, decorated) or ``both``; ``out`` / ``in`` are
     accepted as aliases. `edge_kinds` is any of ``calls``, ``imports``,
-    ``inherits`` (alias ``extends``), ``implements``, ``overrides``; None means all. Depth
+    ``inherits`` (alias ``extends``), ``implements``, ``decorates``, ``overrides``; None means all. Depth
     is capped at 10.
 
     Returns ``{"entity", "entity_id", "direction", "max_depth",

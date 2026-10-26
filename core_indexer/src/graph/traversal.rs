@@ -78,6 +78,19 @@ impl CodeGraph {
                     }
                 }
             }
+            "decorates" => {
+                if up {
+                    push_set(snap.decorated_by.get(id));
+                }
+                if down {
+                    if let Some(f) = snap.functions.get(id) {
+                        out.extend(f.resolved_decorators.iter().cloned());
+                    }
+                    if let Some(c) = snap.classes.get(id) {
+                        out.extend(c.resolved_decorators.iter().cloned());
+                    }
+                }
+            }
             "overrides" => {
                 if up {
                     push_set(snap.overridden_by.get(id));

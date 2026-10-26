@@ -552,6 +552,17 @@ pub(crate) fn stale_edge_keep_set(
             "OVERRIDES".to_string(),
         ));
     }
+    // §2.6 slice C: DECORATES pairs are structural too.
+    for (fid, f) in projection.functions.iter() {
+        for dec_id in f.resolved_decorators.iter() {
+            keep.insert((fid.clone(), dec_id.clone(), "DECORATES".to_string()));
+        }
+    }
+    for (cid, class) in projection.classes.iter() {
+        for dec_id in class.resolved_decorators.iter() {
+            keep.insert((cid.clone(), dec_id.clone(), "DECORATES".to_string()));
+        }
+    }
     keep
 }
 
@@ -947,6 +958,7 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         graph.compute_all_mro(&mut projection);
         graph.resolve_class_hierarchy(&mut projection);
         graph.resolve_overrides(&mut projection);
+        graph.resolve_decorators(&mut projection);
         graph.resolve_all_calls(&mut projection);
         // Concept JSON v2 flush — post-cascade, pre-edge (FK order).
         // Part 2 of put-then-assert: digests computed above are asserted
@@ -2181,7 +2193,14 @@ fn callees_of(py: Python<'_>, entity_id: &str) -> PyResult<Vec<PyObject>> {
 /// not "none of them" — every docstring above this boundary says so, and the
 /// BFS loops over the kinds it is given, so an empty list used to walk
 /// nowhere and return only the start node.
-const ALL_EDGE_KINDS: [&str; 5] = ["calls", "extends", "implements", "imports", "overrides"];
+const ALL_EDGE_KINDS: [&str; 6] = [
+    "calls",
+    "decorates",
+    "extends",
+    "implements",
+    "imports",
+    "overrides",
+];
 
 /// R2-9: reject unknown edge kinds with a naming-names error instead of
 /// walking nowhere and reporting "No results". Pure; unit-tested below.
@@ -2189,7 +2208,7 @@ fn validate_edge_kinds(kinds: &[String]) -> Result<(), String> {
     for k in kinds {
         if !ALL_EDGE_KINDS.contains(&k.as_str()) {
             return Err(format!(
-                "Unknown edge kind `{k}` (expected calls, imports, extends, implements, \
+                "Unknown edge kind `{k}` (expected calls, imports, extends, implements, decorates, \
                  overrides; `inherits` is an alias for `extends`)"
             ));
         }
@@ -3537,6 +3556,7 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             graph.compute_all_mro(&mut projection);
             graph.resolve_class_hierarchy(&mut projection);
             graph.resolve_overrides(&mut projection);
+            graph.resolve_decorators(&mut projection);
             graph.commit_projection(projection);
 
             // `commit_projection` stamped "now"; the honest value is the
@@ -3957,6 +3977,7 @@ mod tests {
             bindings: Vec::new(),
             refs: Vec::new(),
             resolved_refs: Vec::new(),
+            resolved_decorators: vec![],
             line: 1,
             exit_line: 2,
             docstring: None,

@@ -617,10 +617,10 @@ def as_of(timestamp: str, symbols: tuple, query_text: str, fmt: str):
 @click.option("--direction", default="both", show_default=True,
               type=click.Choice(["downstream", "upstream", "both", "out", "in"]),
               help="upstream = callers, importers, subclasses, implementers; downstream = callees, "
-              "imports, bases, interfaces (out/in are aliases).")
+              "imports, bases, interfaces, decorators (out/in are aliases).")
 @click.option("--edge-kinds", "--edges", "edge_kinds", default=None,
               help="Comma-separated: calls, imports, extends (alias inherits), "
-              "implements, overrides. Default: all of them.")
+              "implements, decorates, overrides. Default: all of them.")
 @click.option("--max-depth", "--depth", "max_depth", default=3, show_default=True,
               help="At most 10.")
 @_format_option

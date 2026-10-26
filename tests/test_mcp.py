@@ -883,6 +883,25 @@ class TestTraverse:
         ext_ids = [r["id"] for r in ext["results"]]
         assert "shapes.ts::Circle" in ext_ids and "shapes.ts::Shape" not in ext_ids
 
+    def test_traverse_decorates_kind(self, tmp_path, monkeypatch):
+        # §2.6 slice C: `decorates` walks decorator applications both
+        # directions. Needs a built _core with slice C.
+        import coderadar
+        from coderadar import ops
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "helpers.py").write_text(
+            "def validate(fn):\n    return fn\n")
+        (tmp_path / "app.py").write_text(
+            "from helpers import validate\n\n"
+            "@validate\n"
+            "def alpha():\n    pass\n")
+        coderadar.analyze(".", create_store=True)
+        down = ops.traverse("app.py::alpha", "downstream", ["decorates"])
+        assert "helpers.py::validate" in [r["id"] for r in down["results"]]
+        assert all(r["edge_type"] == "decorates" for r in down["results"] if r["depth"] > 0)
+        up = ops.traverse("helpers.py::validate", "upstream", ["decorates"])
+        assert "app.py::alpha" in [r["id"] for r in up["results"]]
+
 
 class TestUninitializedIndex:
     """The primary tools before any index exists.

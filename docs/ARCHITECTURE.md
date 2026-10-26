@@ -207,7 +207,8 @@ Internal: `EmbeddingVec`, `ProjectedGraph`.
 | `extends` | yes | classes only (since dev: interfaces split to IMPLEMENTS, §2.6) |
 | `overrides` | yes | |
 | `implements` | yes (dev) | partitioned by target declaration; TS/Java/C#/PHP |
-| `references` `decorates` `instantiates` | declared, unpopulated | open-items §2.6 |
+| `decorates` | yes (dev) | unique tier hits over classes+fns; builtins/ambiguous none |
+| `references` `instantiates` | declared, unpopulated | open-items §2.6 |
 
 `graph_stats` breaks out asserted / external / unresolved / route shares —
 the outer number and the ledger rows disagree by category, never by loss
@@ -493,7 +494,7 @@ IMPLEMENTS split from EXTENDS (TS/Java/C#/PHP), traverse both directions;
 all §1 + §2.1 + §3.1 resolved
 in v0.12; §2.4 landed on dev — field-type-aware CBO (cyclomatic already
 AST-based); §2.5 path maps, §2.6 remainder
-(references/decorates/instantiates, Go/Kotlin/Protocol interfaces),
+(references/instantiates, Go/Kotlin/Protocol interfaces, Java annotations),
 §2.8 TS throughput, §2.9 SQLite internals still
 deferred; §2.2/§2.7 decided). Bugs/quirks:
 `CODERADAR_BUGS_QUIRKS.md` (9 fixed, #10 harness-side carried,

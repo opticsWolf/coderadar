@@ -891,6 +891,7 @@ def unrelated(q):
             bindings: Vec::new(),
             refs: Vec::new(),
             resolved_refs: Vec::new(),
+            resolved_decorators: vec![],
             line: 1,
             exit_line: 5,
             docstring: None,

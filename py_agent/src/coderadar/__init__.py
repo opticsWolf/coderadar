@@ -468,7 +468,7 @@ class CodeGraph:
 
         `direction` is ``downstream`` | ``upstream`` | ``both`` (``out`` /
         ``in`` accepted); `edge_kinds` any of ``calls``, ``imports``,
-        ``inherits`` (alias ``extends``), ``implements``, ``overrides`` —
+        ``inherits`` (alias ``extends``), ``implements``, ``decorates``, ``overrides`` —
         None means all.
         Returns the reached entity rows, each with ``depth`` and
         ``edge_type``; an unknown `entity_id` raises ``ops.NotFound``.

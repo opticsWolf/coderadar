@@ -232,9 +232,19 @@ from class inheritance in a traversal.
 > `implements` was missed entirely (Java `super_interfaces`, C# `base_list`,
 > PHP `class_interface_clause`; matched by node kind — field names are
 > unreliable across grammar versions). MRO still folds (reads unresolved
-> `bases`). Remaining: `references`/`decorates`/`instantiates` still
-> declared-unpopulated; Go/Kotlin/Protocol interfaces undetected (resolve
+> `bases`). Go/Kotlin/Protocol interfaces undetected (resolve
 > as EXTENDS — documented gap). Commit `e3eb350` (+ this one).
+>
+> Slice C (dev): DECORATES edges. `resolve_decorators` reduces decorator
+> text (`@validate`, dotted `@helpers.route("/x")`, applied, Rust `#[..]`,
+> C# `[..]`) to a name and resolves through the base tiers over classes
+> *and* functions (`import_target_modules` factored out of mro.rs for
+> reuse); unique hits only. `Function`/`Class.resolved_decorators` +
+> `decorated_by` reverse index, DECORATES ledger loop, keep-set,
+> STRUCTURAL 5->6, traverse both directions. Extraction fix inside:
+> `emit_class` hardcoded `decorators: Vec::new` — class decorators were
+> dropped for every language. Remaining: `references`/`instantiates`
+> still declared-unpopulated; Java `annotation` nodes not descended.
 
 ### 2.7 Stack Graphs / L1 resolution
 

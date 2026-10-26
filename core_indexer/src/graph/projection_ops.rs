@@ -881,6 +881,7 @@ impl CodeGraph {
         self.compute_all_mro(&mut projection);
         self.resolve_class_hierarchy(&mut projection);
         self.resolve_overrides(&mut projection);
+        self.resolve_decorators(&mut projection);
         self.resolve_calls_scoped(&mut projection, Some(file_path));
         // Phase 4b (v0.8 P1): flush concept JSON v2 for this file AFTER the
         // scoped cascade and BEFORE scoped edges (FK REFERENCES order) — v2

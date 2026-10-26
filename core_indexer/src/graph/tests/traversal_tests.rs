@@ -310,3 +310,125 @@ fn test_traverse_implements_both_directions() {
         "Shape is not a base class: {ext_ids:?}"
     );
 }
+
+#[test]
+fn test_decorators_resolve_unique_tier_hits() {
+    // §2.6 slice C: decorator text reduces to a name and resolves through
+    // the base tiers over classes and functions. Unique hits resolve;
+    // builtins, ambiguous and unresolvable names leave no edge.
+    let proj = snapshot_from(&[
+        (
+            "def validate(fn):\n    return fn\n\
+             def route(path):\n    def wrap(fn):\n        return fn\n    return wrap\n",
+            "helpers.py",
+        ),
+        (
+            "from helpers import validate\n\
+             import helpers\n\n\
+             @validate\n\
+             def alpha():\n    pass\n\n\
+             @helpers.route(\"/x\")\n\
+             def beta():\n    pass\n\n\
+             @property\n\
+             def gamma():\n    pass\n\n\
+             @validate\n\
+             @route(\"/y\")\n\
+             def delta():\n    pass\n",
+            "app.py",
+        ),
+        (
+            "def entity(cls):\n    return cls\n\n\
+             @entity\n\
+             class Model:\n    pass\n",
+            "models.py",
+        ),
+        ("def tag(fn):\n    return fn\n", "dup1.py"),
+        ("def tag(fn):\n    return fn\n", "dup2.py"),
+        ("@tag\ndef lonely():\n    pass\n", "use.py"),
+    ]);
+    let fn_named = |name: &str| {
+        proj.functions
+            .values()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("{name} should be indexed"))
+    };
+    // Import-aware tier: @validate → helpers.py::validate.
+    assert_eq!(
+        fn_named("alpha").resolved_decorators,
+        vec!["helpers.py::validate".to_string()]
+    );
+    // Dotted + applied: leaf `route` → global-unique helpers.py::route.
+    assert_eq!(
+        fn_named("beta").resolved_decorators,
+        vec!["helpers.py::route".to_string()]
+    );
+    // Builtin with no indexed target: no edge.
+    assert!(fn_named("gamma").resolved_decorators.is_empty());
+    // Stacked decorators resolve in order; the applied `@route("/y")`
+    // reduces to the leaf and lands on the global-unique target.
+    assert_eq!(
+        fn_named("delta").resolved_decorators,
+        vec![
+            "helpers.py::validate".to_string(),
+            "helpers.py::route".to_string()
+        ]
+    );
+    // Class decorators resolve too.
+    let model = proj
+        .classes
+        .values()
+        .find(|c| c.name == "Model")
+        .expect("Model should be indexed");
+    assert_eq!(
+        model.resolved_decorators,
+        vec!["models.py::entity".to_string()]
+    );
+    // Ambiguous (dup1 + dup2 both define tag, no import): no edge.
+    assert!(fn_named("lonely").resolved_decorators.is_empty());
+    // Reverse index mirrors the forward edges.
+    assert!(proj.decorated_by["helpers.py::validate"].contains("app.py::alpha"));
+    assert!(proj.decorated_by["models.py::entity"].contains("models.py::Model"));
+    assert!(!proj.decorated_by.contains_key("dup1.py::tag"));
+}
+
+#[test]
+fn test_traverse_decorates_both_directions() {
+    // §2.6 slice C: `decorates` walks resolved_decorators downstream and
+    // the decorated_by reverse index upstream, for functions and classes.
+    let proj = snapshot_from(&[
+        ("def validate(fn):\n    return fn\n", "helpers.py"),
+        (
+            "from helpers import validate\n\n\
+             @validate\n\
+             def alpha():\n    pass\n",
+            "app.py",
+        ),
+        (
+            "def entity(cls):\n    return cls\n\n\
+             @entity\n\
+             class Model:\n    pass\n",
+            "models.py",
+        ),
+    ]);
+    let kinds = vec!["decorates".to_string()];
+
+    let down = CodeGraph::traverse_bfs(&proj, "app.py::alpha", 5, &kinds, false, true);
+    let down_ids: Vec<&str> = down.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert!(
+        down_ids.contains(&"helpers.py::validate"),
+        "alpha decorated by validate: {down_ids:?}"
+    );
+
+    let up = CodeGraph::traverse_bfs(&proj, "helpers.py::validate", 5, &kinds, true, false);
+    let up_ids: Vec<&str> = up.iter().map(|(id, _, _)| id.as_str()).collect();
+    assert!(
+        up_ids.contains(&"app.py::alpha"),
+        "validate decorates alpha: {up_ids:?}"
+    );
+
+    // Class side, both directions.
+    let cdown = CodeGraph::traverse_bfs(&proj, "models.py::Model", 5, &kinds, false, true);
+    assert!(cdown.iter().any(|(id, _, _)| id == "models.py::entity"));
+    let cup = CodeGraph::traverse_bfs(&proj, "models.py::entity", 5, &kinds, true, false);
+    assert!(cup.iter().any(|(id, _, _)| id == "models.py::Model"));
+}

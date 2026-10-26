@@ -307,6 +307,13 @@ impl<'a> CursorExtractor<'a> {
         let qualified_name = build_qualified_name_simple(&parent_qname, &name);
         let entity_id = make_entity_id(self.file_path, &qualified_name);
         let bases = extract_base_classes(node, self.source);
+        // Classes carry decorators too (`@entity class Model`, TS
+        // `@Injectable class Svc`): the function path has read them since
+        // the decorator-capture fix, but emit_class always wrote an empty
+        // vec — §2.6 slice C needs them for DECORATES edges. Java
+        // `annotation` nodes (under `modifiers`) are still not descended:
+        // documented gap, same as before.
+        let decorators = extract_decorators(node, self.source);
         let docstring = preceding_docstring(node, self.source);
         let grammar_kind = if node.kind() == "class_declaration" {
             let sub = classify_class_like(node);
@@ -328,7 +335,7 @@ impl<'a> CursorExtractor<'a> {
             parent_module: entity_id.clone(),
             parent_class: None,
             bases,
-            decorators: Vec::new(),
+            decorators,
             docstring,
             fields: Vec::new(),
             line,

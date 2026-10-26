@@ -942,6 +942,13 @@ pub struct Class {
     pub fields: Vec<Field>,
     pub source: SourceType,
     pub decorators: Vec<String>,
+    /// Decorators that resolved to indexed functions/classes
+    /// (`resolve_decorators`, §2.6 slice C). Partitioned like
+    /// `resolved_interfaces`: unique tier hits only — builtins
+    /// (`@property`, `@staticmethod`), ambiguous and unresolvable names
+    /// leave no edge. Backed by DECORATES ledger edges; powers
+    /// downstream `decorates` traversal.
+    pub resolved_decorators: Vec<EntityId>,
     pub effective: EffectiveClass,
     pub is_type_checking_only: bool,
     pub line: usize,
@@ -985,6 +992,11 @@ pub struct Function {
     /// Entities `refs` resolved to (never `calls` edges: callers stay honest).
     pub resolved_refs: Vec<EntityId>,
     pub decorators: Vec<String>,
+    /// Decorators that resolved to indexed functions/classes
+    /// (`resolve_decorators`, §2.6 slice C). Same rules as the class
+    /// side: unique tier hits only, builtins/ambiguous/unresolvable
+    /// leave no edge. Powers downstream `decorates` traversal.
+    pub resolved_decorators: Vec<EntityId>,
     pub setter_of: Option<EntityId>,
     pub line: usize,
     pub exit_line: usize,
@@ -1243,6 +1255,7 @@ impl Function {
             resolved_refs: vec![],
             resolved_calls: vec![],
             decorators: f.decorators.clone(),
+            resolved_decorators: vec![],
             setter_of: None,
             line: f.line,
             exit_line: f.exit_line,
@@ -1313,6 +1326,7 @@ impl Class {
                 .collect(),
             source: c.source,
             decorators: c.decorators.clone(),
+            resolved_decorators: vec![],
             effective: EffectiveClass::Plain,
             is_type_checking_only: c.is_type_checking_only,
             line: c.line,
@@ -1541,6 +1555,10 @@ pub struct ProjectedGraph {
     /// Symmetric to `subclasses`; built by `resolve_class_hierarchy` from
     /// `resolved_interfaces`; powers upstream `implements` traversal.
     pub implementers: HashMap<EntityId, BTreeSet<EntityId>>,
+    /// Reverse decorator index: decorator → set of decorated
+    /// functions/classes. Built by `resolve_decorators` from
+    /// `resolved_decorators`; powers upstream `decorates` traversal.
+    pub decorated_by: HashMap<EntityId, BTreeSet<EntityId>>,
     pub overridden_by: HashMap<EntityId, BTreeSet<EntityId>>,
     /// Forward override index: override method → (single) base method it
     /// overrides. Absent = no override detected. Downstream traversal of

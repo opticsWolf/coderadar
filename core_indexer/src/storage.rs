@@ -1433,7 +1433,14 @@ impl CodeGraphStore {
         &self,
         keep: &std::collections::HashSet<(String, String, String)>,
     ) -> macrame::Result<usize> {
-        const STRUCTURAL: [&str; 5] = ["CALLS", "IMPORTS", "EXTENDS", "IMPLEMENTS", "OVERRIDES"];
+        const STRUCTURAL: [&str; 6] = [
+            "CALLS",
+            "IMPORTS",
+            "EXTENDS",
+            "IMPLEMENTS",
+            "DECORATES",
+            "OVERRIDES",
+        ];
         let ts = now_iso8601();
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         let stale: Vec<(String, String, String, String)> = runtime().block_on(async {
@@ -2459,6 +2466,7 @@ fn parse_v2_class(id: &str, v: &serde_json::Value) -> std::result::Result<Class,
         // Cascade-rebuilt, never persisted:
         resolved_bases: vec![],
         resolved_interfaces: vec![],
+        resolved_decorators: vec![],
         mro: vec![],
         mro_error: false,
         methods: vec![],
@@ -2516,6 +2524,7 @@ fn parse_v2_function(id: &str, v: &serde_json::Value) -> std::result::Result<Fun
         bindings: Vec::new(),
         refs: Vec::new(),
         resolved_refs: str_list(v, "resolved_refs"),
+        resolved_decorators: vec![],
         line: req_u64(v, "line", id)? as usize,
         exit_line: req_u64(v, "exit_line", id)? as usize,
         docstring: opt_str(v, "docstring"),
@@ -2705,6 +2714,7 @@ mod concept_v2_tests {
             }],
             resolved_bases: vec![],
             resolved_interfaces: vec![],
+            resolved_decorators: vec![],
             mro: vec![],
             mro_error: false,
             methods: vec![],
@@ -2782,6 +2792,7 @@ mod concept_v2_tests {
             bindings: Vec::new(),
             refs: Vec::new(),
             resolved_refs: Vec::new(),
+            resolved_decorators: vec![],
             line: 12,
             exit_line: 20,
             docstring: Some("H.".into()),

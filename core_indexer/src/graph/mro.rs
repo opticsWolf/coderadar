@@ -198,14 +198,44 @@ impl CodeGraph {
         base_name: &str,
         current_module: &str,
     ) -> Option<String> {
-        let module = projection.modules.get(current_module)?;
+        let targets = Self::import_target_modules(projection, base_name, current_module);
+        for target in &targets {
+            let mut found: Option<String> = None;
+            for (id, c) in &projection.classes {
+                if c.name == base_name && &c.parent_module == target {
+                    if found.is_some() {
+                        return None;
+                    } // 2+ in target → ambiguous
+                    found = Some(id.clone());
+                }
+            }
+            if found.is_some() {
+                return found;
+            }
+        }
+        None
+    }
+
+    /// The modules an imported symbol comes from (§2.6 slice C reuse).
+    ///
+    /// Shared tier-2 lookup: the caller's module imports `name` (named
+    /// from-imports only — module/star/side imports do not name a specific
+    /// symbol, so they can't disambiguate). Returns every resolution target
+    /// in import order; callers try each in turn, exactly as the original
+    /// single-kind tier did.
+    pub(crate) fn import_target_modules(
+        projection: &ProjectedGraph,
+        name: &str,
+        current_module: &str,
+    ) -> Vec<EntityId> {
+        let mut targets = Vec::new();
+        let Some(module) = projection.modules.get(current_module) else {
+            return targets;
+        };
         for imp_id in &module.imports {
-            let imp = match projection.imports.get(imp_id) {
-                Some(i) => i,
-                None => continue,
+            let Some(imp) = projection.imports.get(imp_id) else {
+                continue;
             };
-            // Named imports carry the symbol we can match; module/star/side
-            // imports do not name a specific class, so they can't disambiguate.
             let names: Vec<&str> = match &imp.kind {
                 crate::types::ImportKind::FromImport { names, .. }
                 | crate::types::ImportKind::RelativeImport { names, .. } => {
@@ -213,24 +243,13 @@ impl CodeGraph {
                 }
                 _ => Vec::new(),
             };
-            if !names.contains(&base_name) {
+            if !names.contains(&name) {
                 continue;
             }
             if let crate::types::ImportResolution::Module(target) = &imp.resolution {
-                let mut found: Option<String> = None;
-                for (id, c) in &projection.classes {
-                    if c.name == base_name && &c.parent_module == target {
-                        if found.is_some() {
-                            return None;
-                        } // 2+ in target → ambiguous
-                        found = Some(id.clone());
-                    }
-                }
-                if found.is_some() {
-                    return found;
-                }
+                targets.push(target.clone());
             }
         }
-        None
+        targets
     }
 }

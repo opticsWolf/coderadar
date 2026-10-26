@@ -168,6 +168,7 @@ impl CodeGraph {
             call_evidence: HashMap::new(),
             subclasses: HashMap::new(),
             implementers: HashMap::new(),
+            decorated_by: HashMap::new(),
             overridden_by: HashMap::new(),
             overrides_base: HashMap::new(),
             ambiguous_bases: Vec::new(),
