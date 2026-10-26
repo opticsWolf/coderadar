@@ -964,6 +964,37 @@ class TestTraverse:
         assert "lib/utils/a.ts::module" in ids, ids
         assert "aaa/utils/a.ts::module" not in ids, ids
 
+    def test_pathmap_nested_scope_wins(self, tmp_path, monkeypatch):
+        # §2.5 slice B: same prefix, two packages — each importer uses
+        # its nearest tsconfig. Needs a built _core with §2.5 slice B.
+        import json
+
+        import coderadar
+        from coderadar import ops
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "tsconfig.json").write_text(json.dumps(
+            {"compilerOptions": {"paths": {"@/*": ["src/*"]}}}))
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "x.ts").write_text("export const x = 0;\n")
+        (tmp_path / "app.ts").write_text(
+            "import { x } from '@/x';\nconsole.log(x);\n")
+        web = tmp_path / "packages" / "web"
+        (web / "src").mkdir(parents=True)
+        (web / "tsconfig.json").write_text(json.dumps(
+            {"compilerOptions":
+                {"baseUrl": "src", "paths": {"@/*": ["src/*"]}}}))
+        (web / "src" / "x.ts").write_text("export const x = 1;\n")
+        (web / "app.ts").write_text(
+            "import { x } from '@/x';\nconsole.log(x);\n")
+        coderadar.analyze(".", create_store=True)
+        web_down = ops.traverse(
+            "packages/web/app.ts::module", "downstream", ["imports"])
+        web_ids = [r["id"] for r in web_down["results"]]
+        assert "packages/web/src/x.ts::module" in web_ids, web_ids
+        root_down = ops.traverse("app.ts::module", "downstream", ["imports"])
+        root_ids = [r["id"] for r in root_down["results"]]
+        assert "src/x.ts::module" in root_ids, root_ids
+
 
 class TestUninitializedIndex:
     """The primary tools before any index exists.

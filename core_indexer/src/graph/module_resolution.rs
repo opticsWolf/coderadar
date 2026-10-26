@@ -395,9 +395,12 @@ fn pick_suffix_winner(
 /// verbatim). A trailing known extension on a candidate is stripped —
 /// the index keys are extension-less. Order: exacts + longest-prefix
 /// first (alias vec order), targets in tsconfig order.
-fn alias_candidates(projection: &ProjectedGraph, spec: &str) -> Vec<String> {
+///
+/// §2.5 slice B: aliases come from the importer's nearest scope
+/// (already root-anchored at parse time), so this takes the slice.
+fn alias_candidates_in(aliases: &[crate::graph::path_maps::TsAlias], spec: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for alias in &projection.path_maps.ts_aliases {
+    for alias in aliases {
         let rest = if alias.exact {
             if spec != alias.from {
                 continue;
@@ -426,6 +429,75 @@ fn alias_candidates(projection: &ProjectedGraph, spec: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// §2.5 slice B: run a config-anchored candidate (`alias`/`baseUrl`/
+/// src-root rewrite) with exact-path priority. A rewritten candidate is a
+/// *root-relative path*, not a suffix: without the exact tier, a nested
+/// file sharing the tail (`packages/web/src/x` vs candidate `src/x`)
+/// would steal the resolution by id-order. Tier 1 returns exact path
+/// hits (extension-less compare); tier 2 falls back to the normal suffix
+/// machinery (covers `__init__` packages and extension variants).
+/// Exact-path tier shared by configured candidates and the `@/`
+/// convention rewrite: return the winner among modules whose
+/// extension-less path EQUALS the candidate, or `None` (caller falls
+/// through to suffix matching). Index fast path when built, exact scan
+/// otherwise.
+fn lookup_exact_path(
+    projection: &ProjectedGraph,
+    slash: &str,
+    importer_lang: Option<crate::types::Language>,
+) -> Option<String> {
+    if !projection.module_path_index.is_empty() {
+        if let Some(ids) = projection.module_path_index.get(slash) {
+            let exact: Vec<EntityId> = ids
+                .iter()
+                .filter(|id| {
+                    projection.modules.get(id.as_str()).is_some_and(|m| {
+                        exact_path_matches(&m.path.to_string_lossy().replace('\\', "/"), slash)
+                    })
+                })
+                .cloned()
+                .collect();
+            if !exact.is_empty() {
+                return pick_suffix_winner(projection, &exact, importer_lang);
+            }
+        }
+        return None;
+    }
+    let mut exact = Vec::new();
+    for module in projection.modules.values() {
+        if exact_path_matches(&module.path.to_string_lossy().replace('\\', "/"), slash) {
+            exact.push(module.id.clone());
+        }
+    }
+    if !exact.is_empty() {
+        return pick_suffix_winner(projection, &exact, importer_lang);
+    }
+    None
+}
+
+fn lookup_config_candidate(
+    projection: &ProjectedGraph,
+    slash: &str,
+    importer_lang: Option<crate::types::Language>,
+) -> Option<String> {
+    if let Some(hit) = lookup_exact_path(projection, slash, importer_lang) {
+        return Some(hit);
+    }
+    lookup_module_tail(projection, slash, importer_lang)
+}
+
+/// Extension-less path equality against a candidate (known extensions
+/// only — exotic-extension modules never enter the index either).
+fn exact_path_matches(normalized_path: &str, slash: &str) -> bool {
+    if normalized_path == slash {
+        return true;
+    }
+    match normalized_path.rsplit_once('.') {
+        Some((stem, ext)) => stem == slash && KNOWN_MODULE_EXTENSIONS.contains(&ext),
+        None => false,
+    }
 }
 
 /// §2.5: run the suffix machinery (fast index when built, legacy scan
@@ -480,6 +552,23 @@ fn lookup_module_tail_scan(
     None
 }
 
+/// §2.5 slice B: the config scope owning an importer is chosen by its
+/// directory. Prefer the module's file path (handles `::kind`-suffixed
+/// ids); fall back to treating the raw id as a path. Normalizes `\`
+/// so Windows trees match the slash-form scope dirs.
+pub(crate) fn importer_dir_of(projection: &ProjectedGraph, current_module: &str) -> String {
+    let path = projection
+        .modules
+        .get(current_module)
+        .map(|m| m.path.to_string_lossy().to_string())
+        .unwrap_or_else(|| current_module.to_string());
+    let slash = path.replace('\\', "/");
+    let no_kind = slash.rsplit_once("::").map_or(slash.as_str(), |(p, _)| p);
+    no_kind
+        .rsplit_once('/')
+        .map_or(String::new(), |(p, _)| p.to_string())
+}
+
 /// Find a module by its dotted name (e.g., "coderadar.config" → config.py).
 /// v0.5: Language-agnostic — matches any known extension (py, ex, zig, scala, lua, ...).
 /// Converts the dotted name to path segments and matches against suffixes of
@@ -497,6 +586,51 @@ pub(crate) fn find_module_by_dotted_name(
     dotted_name: &str,
     current_module: &str,
 ) -> Option<String> {
+    // Raw specifier segments: aliases match raw text, so the priority
+    // block below runs BEFORE the `@/` convention rewrite (slice B:
+    // an explicit config beats the convention; the convention used to
+    // consume `@/x` into `src/x` and hide it from aliases entirely).
+    let raw_segments: Vec<&str> = dotted_name.split('.').collect();
+    let importer_lang = projection.modules.get(current_module).map(|m| m.language);
+
+    // §2.5 priority candidates: config-anchored lookups before generic
+    // suffix matching. Misses fall through — never a new failure mode.
+    // Slice B: the scope is the NEAREST config dir owning the importer
+    // (root scope when no nested config applies).
+    if !projection.path_maps.is_empty() {
+        let importer_dir = importer_dir_of(projection, current_module);
+        let scope = projection.path_maps.scope_for(&importer_dir);
+        let slash = raw_segments.join("/");
+        // tsconfig paths aliases (any importer: aliases match raw text).
+        for candidate in alias_candidates_in(&scope.ts_aliases, dotted_name) {
+            if let Some(hit) = lookup_config_candidate(projection, &candidate, importer_lang) {
+                return Some(hit);
+            }
+        }
+        // tsconfig baseUrl anchors bare specifiers under the root.
+        if let Some(base) = scope.ts_base_url.as_deref() {
+            let is_ts = matches!(
+                importer_lang,
+                Some(crate::types::Language::TypeScript | crate::types::Language::JavaScript)
+            );
+            if is_ts {
+                let anchored = format!("{base}/{slash}");
+                if let Some(hit) = lookup_config_candidate(projection, &anchored, importer_lang) {
+                    return Some(hit);
+                }
+            }
+        }
+        // pyproject src-layout roots anchor dotted imports exactly.
+        if importer_lang == Some(crate::types::Language::Python) {
+            for root in &scope.python_roots {
+                let anchored = format!("{root}/{slash}");
+                if let Some(hit) = lookup_config_candidate(projection, &anchored, importer_lang) {
+                    return Some(hit);
+                }
+            }
+        }
+    }
+
     // 2.2: normalize common TS path aliases before suffix matching.
     // `@/...` and `~/...` conventionally map to `src/...` (Vite/Next/tsconfig).
     let normalized;
@@ -509,40 +643,11 @@ pub(crate) fn find_module_by_dotted_name(
     };
 
     let segments: Vec<&str> = dotted_name.split('.').collect();
-    let importer_lang = projection.modules.get(current_module).map(|m| m.language);
-
-    // §2.5 priority candidates: config-anchored lookups before generic
-    // suffix matching. Misses fall through — never a new failure mode.
-    if !projection.path_maps.is_empty() {
-        let slash = segments.join("/");
-        // tsconfig paths aliases (any importer: aliases match raw text).
-        for candidate in alias_candidates(projection, dotted_name) {
-            if let Some(hit) = lookup_module_tail(projection, &candidate, importer_lang) {
-                return Some(hit);
-            }
-        }
-        // tsconfig baseUrl anchors bare specifiers under the root.
-        if let Some(base) = projection.path_maps.ts_base_url.as_deref() {
-            let is_ts = matches!(
-                importer_lang,
-                Some(crate::types::Language::TypeScript | crate::types::Language::JavaScript)
-            );
-            if is_ts {
-                let anchored = format!("{base}/{slash}");
-                if let Some(hit) = lookup_module_tail(projection, &anchored, importer_lang) {
-                    return Some(hit);
-                }
-            }
-        }
-        // pyproject src-layout roots anchor dotted imports exactly.
-        if importer_lang == Some(crate::types::Language::Python) {
-            for root in &projection.path_maps.python_roots {
-                let anchored = format!("{root}/{slash}");
-                if let Some(hit) = lookup_module_tail(projection, &anchored, importer_lang) {
-                    return Some(hit);
-                }
-            }
-        }
+    // The convention rewrite names a root-relative path, so it gets the
+    // same exact-path tier as configured candidates: `@/x` MEANS `src/x`
+    // and a nested same-tail file must not steal it by id-order.
+    if let Some(hit) = lookup_exact_path(projection, &segments.join("/"), importer_lang) {
+        return Some(hit);
     }
 
     // Fast path (v0.8 P1): the suffix index, when built, is COMPLETE — a key

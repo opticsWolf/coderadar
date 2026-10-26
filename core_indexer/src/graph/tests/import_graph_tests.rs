@@ -232,16 +232,31 @@ fn projection_with_maps(
     projection
 }
 
-fn ts_alias_maps() -> crate::graph::path_maps::PathMaps {
+fn root_scope_maps(
+    ts_aliases: Vec<crate::graph::path_maps::TsAlias>,
+    ts_base_url: Option<String>,
+    python_roots: Vec<String>,
+) -> crate::graph::path_maps::PathMaps {
     crate::graph::path_maps::PathMaps {
-        ts_aliases: vec![crate::graph::path_maps::TsAlias {
+        scopes: vec![crate::graph::path_maps::ConfigScope {
+            dir: String::new(),
+            ts_aliases,
+            ts_base_url,
+            python_roots,
+        }],
+    }
+}
+
+fn ts_alias_maps() -> crate::graph::path_maps::PathMaps {
+    root_scope_maps(
+        vec![crate::graph::path_maps::TsAlias {
             from: "@utils/".to_string(),
             exact: false,
             to: vec!["lib/utils/*".to_string()],
         }],
-        ts_base_url: None,
-        python_roots: vec![],
-    }
+        None,
+        vec![],
+    )
 }
 
 #[test]
@@ -280,7 +295,7 @@ fn test_pathmap_alias_target_order_and_fallback() {
     // through); an unmapped specifier keeps the old suffix behaviour.
     let files: &[(&str, &str)] = &[("export const a = 2;\n", "lib/utils/a.ts")];
     let mut maps = ts_alias_maps();
-    maps.ts_aliases[0].to = vec!["missing/*".to_string(), "lib/utils/*".to_string()];
+    maps.scopes[0].ts_aliases[0].to = vec!["missing/*".to_string(), "lib/utils/*".to_string()];
     let projection = projection_with_maps(files, maps, true);
     let target =
         crate::graph::find_module_by_dotted_name(&projection, "@utils/a", "app.ts::module");
@@ -305,11 +320,7 @@ fn test_pathmap_base_url_anchors_ts() {
         crate::graph::find_module_by_dotted_name(&plain, "u/b", "app.ts::module").as_deref(),
         Some("lib/u/b.ts::module")
     );
-    let maps = crate::graph::path_maps::PathMaps {
-        ts_aliases: vec![],
-        ts_base_url: Some("src".to_string()),
-        python_roots: vec![],
-    };
+    let maps = root_scope_maps(vec![], Some("src".to_string()), vec![]);
     let anchored = projection_with_maps(files, maps, true);
     assert_eq!(
         crate::graph::find_module_by_dotted_name(&anchored, "u/b", "app.ts::module").as_deref(),
@@ -331,11 +342,7 @@ fn test_pathmap_python_src_root_wins() {
         crate::graph::find_module_by_dotted_name(&plain, "mylib.x", "app.py::module").as_deref(),
         Some("aaa/mylib/x.py::module")
     );
-    let maps = crate::graph::path_maps::PathMaps {
-        ts_aliases: vec![],
-        ts_base_url: None,
-        python_roots: vec!["src".to_string()],
-    };
+    let maps = root_scope_maps(vec![], None, vec!["src".to_string()]);
     let rooted = projection_with_maps(files, maps, true);
     assert_eq!(
         crate::graph::find_module_by_dotted_name(&rooted, "mylib.x", "app.py::module").as_deref(),
@@ -360,11 +367,77 @@ fn test_pathmap_alias_end_to_end_import_edge() {
     crate::graph::rebuild_module_path_index(&mut projection);
     graph.resolve_imports(&mut projection);
     let targets = projection.imports_by_importer.get("app.ts::module");
-    let got: Option<Vec<&str>> =
-        targets.map(|t| t.iter().map(|s| s.as_str()).collect());
+    let got: Option<Vec<&str>> = targets.map(|t| t.iter().map(|s| s.as_str()).collect());
     assert_eq!(
         got,
         Some(vec!["lib/utils/a.ts::module"]),
         "app.ts must import the aliased target"
     );
+}
+
+fn aliased_scope(dir: &str, from: &str, to: &str) -> crate::graph::path_maps::ConfigScope {
+    crate::graph::path_maps::ConfigScope {
+        dir: dir.to_string(),
+        ts_aliases: vec![crate::graph::path_maps::TsAlias {
+            from: from.to_string(),
+            exact: false,
+            to: vec![to.to_string()],
+        }],
+        ts_base_url: None,
+        python_roots: vec![],
+    }
+}
+
+#[test]
+fn test_pathmap_nearest_scope_wins() {
+    // §2.5 slice B: the same prefix maps differently per package — the
+    // importer uses its nearest config, not the root one.
+    let files: &[(&str, &str)] = &[
+        ("export const x = 0;\n", "src/x.ts"),
+        ("export const x = 1;\n", "packages/web/src/x.ts"),
+        ("import { x } from '@/x';\n", "packages/web/app.ts"),
+        ("import { x } from '@/x';\n", "other/app.ts"),
+    ];
+    let maps = crate::graph::path_maps::PathMaps {
+        scopes: vec![
+            aliased_scope("", "@/", "src/*"),
+            aliased_scope("packages/web", "@/", "packages/web/src/*"),
+        ],
+    };
+    let projection = projection_with_maps(files, maps, true);
+    let web =
+        crate::graph::find_module_by_dotted_name(&projection, "@/x", "packages/web/app.ts::module");
+    assert_eq!(web.as_deref(), Some("packages/web/src/x.ts::module"));
+    let other =
+        crate::graph::find_module_by_dotted_name(&projection, "@/x", "other/app.ts::module");
+    assert_eq!(other.as_deref(), Some("src/x.ts::module"));
+}
+
+#[test]
+fn test_pathmap_nested_python_roots_scoped() {
+    // §2.5 slice B: nested src-layout roots apply to their own subtree;
+    // root importers keep the old suffix behaviour.
+    let files: &[(&str, &str)] = &[
+        ("X = 0\n", "aaa/m.py"),
+        ("X = 1\n", "packages/pkg-a/src/m.py"),
+        ("import m\n", "packages/pkg-a/app.py"),
+        ("import m\n", "app.py"),
+    ];
+    let maps = crate::graph::path_maps::PathMaps {
+        scopes: vec![
+            crate::graph::path_maps::ConfigScope::default(),
+            crate::graph::path_maps::ConfigScope {
+                dir: "packages/pkg-a".to_string(),
+                ts_aliases: vec![],
+                ts_base_url: None,
+                python_roots: vec!["packages/pkg-a/src".to_string()],
+            },
+        ],
+    };
+    let projection = projection_with_maps(files, maps, true);
+    let nested =
+        crate::graph::find_module_by_dotted_name(&projection, "m", "packages/pkg-a/app.py::module");
+    assert_eq!(nested.as_deref(), Some("packages/pkg-a/src/m.py::module"));
+    let root = crate::graph::find_module_by_dotted_name(&projection, "m", "app.py::module");
+    assert_eq!(root.as_deref(), Some("aaa/m.py::module"));
 }

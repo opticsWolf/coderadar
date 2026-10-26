@@ -338,7 +338,11 @@ fn is_path_excluded(path: &str, exclude: Option<Vec<String>>) -> bool {
 /// `roots` keeps. `exclude` patterns are gitignore-syntax globs applied on
 /// top of the `.gitignore` rules `ignore` already reads. `extra` is the
 /// one-shot `--exclude` / `analyze(exclude=[…])` layer for the run.
-fn project_walk(root: &str, project: &graph::ProjectConfig, extra: &[String]) -> ignore::Walk {
+pub(crate) fn project_walk(
+    root: &str,
+    project: &graph::ProjectConfig,
+    extra: &[String],
+) -> ignore::Walk {
     let root_path = std::path::Path::new(root);
     let mut builder = match project.roots.first() {
         Some(first) => ignore::WalkBuilder::new(root_path.join(first)),
@@ -966,7 +970,10 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         crate::graph::rebuild_module_path_index(&mut projection);
         // §2.5: project path maps (tsconfig/pyproject) precede import
         // resolution — aliases rewrite specifiers before suffix matching.
-        projection.path_maps = crate::graph::path_maps::PathMaps::discover(root);
+        // Slice B: every nested config is discovered, each anchored to
+        // its own dir; nearest-scope-wins at query time.
+        projection.path_maps =
+            crate::graph::path_maps::PathMaps::discover(root, &config.project, extra_excludes);
         graph.resolve_imports(&mut projection);
         graph.populate_class_methods(&mut projection);
         graph.compute_all_mro(&mut projection);
@@ -3573,7 +3580,11 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             // pyproject takes effect on the next cold start without a
             // re-analyze. `root` absent ⇒ empty maps (old behaviour).
             if let Some(r) = root {
-                projection.path_maps = crate::graph::path_maps::PathMaps::discover(r);
+                projection.path_maps = crate::graph::path_maps::PathMaps::discover(
+                    r,
+                    &config.project,
+                    &[],
+                );
             }
             graph.resolve_imports(&mut projection);
             graph.populate_class_methods(&mut projection);

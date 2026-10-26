@@ -234,6 +234,22 @@ or not at all.
 > new Python `test_pathmap_alias_import_edge` passes — the import edge
 > lands on the mapped `lib/` target, not the `aaa/` decoy; full file
 > 123/123, embeddings 20/20.)
+>
+> Slice B (dev): nested monorepo configs. `discover` now walks the
+> analyzed tree (same ignore rules as indexing, 64-config cap) and
+> parses every `tsconfig.json` / `pyproject.toml` into a `ConfigScope`
+> anchored to its own directory; the importer's nearest scope wins
+> (root scope always exists as fallback — no ancestor fallback on a
+> miss, matching TS). `extends` chains anchor inherited entries to the
+> PARENT's dir. Two reorder fixes fell out: aliases now run on the raw
+> specifier before the `@/`→`src/` convention (the convention consumed
+> `@/x` and hid it from aliases), and configured candidates — plus the
+> convention rewrite — get an exact-path tier first, so a nested
+> same-tail file can't steal the resolution by id-order. Tests: nested
+> discover + cross-dir extends + nearest-wins resolve + nested pyproject
+> roots (+ all slice-A tests migrated to scopes). §2.5 done: no gaps
+> remain. Remaining: live rebuild + verify (new Python
+> `test_pathmap_nested_scope_wins` fails honestly pre-build).
 
 ### 2.6 Four edge kinds are asserted; nine exist
 
