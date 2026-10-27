@@ -2,6 +2,7 @@
 
 > **Date:** 2026-10-27 · **Baseline:** CodeRadar v0.13.0 (`e68c443`, `main`) on `macrame-db 0.19.1`
 > **Status:** design proposal — nothing here is implemented. No decision register row yet.
+> §6 has a working prototype (`scripts/verify_history.py`) and §2.5 reports what it measured.
 > **Question answered:** can the bitemporal ledger carry *code* history (not just structural
 > history), is one content-addressed blob per file enough, and what is the lightweight diffable
 > structure that makes "how did this change between T1 and T2" a query rather than a byte fetch.
@@ -36,6 +37,12 @@ One finding came out of this pass that is not in either prior doc: **function bo
 stored per version in the ledger** (`v["source"]`, `storage.rs:2085`, carried in `concepts.content`).
 That makes body-level diffing free today and makes ledger payloads carry the bytes twice. §3.4
 states the choice that creates.
+
+**Measured, not argued (§2.5):** on this repo's own store the byte coverage of recorded history is
+**0.0%** — one file-generation of 5,079 sampled across 6,442 generations. The structural history is
+intact and the bytes are absent, because 6,441 of those generations predate the blob write path and
+no analyze has run since it landed. That makes §2.2 the live problem on real data, not a
+hypothetical.
 
 Two things not to do: **delta blobs** (the reference scan cannot see a base digest that lives
 inside another blob's bytes — D-287) and **compression inside CodeRadar** (the address *is*
@@ -146,6 +153,68 @@ contract rather than discovering.
 
 Covered in §1.4: degrades honestly, never silently, and is an operations problem rather than an
 architecture one. Listed here only so the ranking is complete.
+
+### 2.5 What this is on the repo's own store, measured
+
+Run of `scripts/verify_history.py` (the §6 prototype) against
+`.coderadar/store/coderadar.db` on 2026-10-27:
+
+```
+window           2026-09-10T18:14:13Z .. 2026-10-26T16:58:19Z
+generations      15 sampled of 6442
+totals (file-generations)  ok=1  no_digest=5078  unresolvable=0  digest_mismatch=0
+byte coverage              0.0%
+distinct digests checked   1
+```
+
+The `blobs` table holds **one row, 30 bytes**, named by `m.py::module` — a scratch file, not repo
+source. Across a 114 MB store, 6,442 recorded generations and 490 known modules, that is the whole
+of the recorded code bytes.
+
+**Why, exactly.** The write path landed in `6065b0a` (2026-10-06, "feat: DR-25 §1.9 put-on-index").
+The store's generations fall on 2026-09-10 (184), 10-03 (3,908), 10-04 (826), 10-06 (1,519) and
+10-26 (**1**). Even the latest 10-06 generations carry no digest, so no analyze has run through the
+new path; the single 10-26 write was an incremental update touching one file, and that file's bytes
+are the one blob.
+
+Three things follow, and the third is the one that matters:
+
+- **Nothing is corrupt and nothing was lost to archival.** `unresolvable=0` and
+  `digest_mismatch=0`: the retention machinery (§1.4) is not implicated at all. There was never
+  anything there to lose.
+- **The gap is write-path coverage, exactly as §2.2 describes** — not blob design, not archival,
+  not the cold file.
+- **A full re-analyze fixes the present and not the past.** It puts bytes for *current* content
+  only. The 6,441 historical generations describe content that exists in no blob, no payload and no
+  working tree, so they are **permanently byte-less**. §2.2's "pre-blob generation" case is not a
+  footnote on this store; it is all of it. This is also the sharpest available argument for §5: a
+  commit-driven ingest can *reconstruct* that history from git, whereas analyze-driven indexing
+  cannot recover a single byte of it.
+
+The measurement is worth repeating after any full analyze, and after any archive session — the
+first to confirm coverage went up, the second to confirm `unresolvable` stayed at zero.
+
+### 2.6 The read API cannot sweep history: it folds per call
+
+Found while building the §6 prototype, and it shapes §6's implementation.
+
+`entity_source_ref_at(id, T)` calls `self.reconstruct(timestamp)` on every invocation
+(`storage.rs:957`) and then reads one concept out of the resulting `MaterializedState`. Measured on
+this store (40k log entries, 12,857 concepts): **~0.36 s per call**, and `lookup_entities_at`
+likewise folds once per call (`lib.rs:1752`) but returns projection dicts that carry no `extra`,
+so the digest is not in them.
+
+That is correct for the API's purpose — one entity, one instant, one read — and unusable for a
+sweep: one 490-module generation costs ~3 minutes, a 12-generation sample ~35. There is no
+batched route from Python today, because the one call that would amortise the fold drops the field
+the sweep needs.
+
+Consequence for §6: the shipped op needs one new primitive,
+**`source_refs_at(entity_ids, T) -> {id: SourceRef}`** — one `reconstruct`, N refs out of the same
+state. It is a small, local addition beside `entity_source_ref_at` and it turns a sweep from
+O(files × generations) folds into O(generations). The prototype works around its absence by
+replaying `transaction_log` payloads itself, which is a doctrine-I violation acceptable in a
+measurement script and not in shipped code — see §6.
 
 ---
 
@@ -324,11 +393,23 @@ generation in the window and reports, per generation:
 - blobs whose recomputed SHA-256 disagrees with their address;
 - recorded spans exceeding the blob's byte length.
 
-Everything it needs exists: `reconstruct`, `entity_source_ref_at`, `blob_get`, and the span check
-already written for single reads (`__init__.py:1597`). It is cheap, it is read-only, and it converts
-"there might be a gap between the structural history and the bytes" into a number per generation —
-which is what decides whether §2.2 and §2.3 are theoretical or are already eating history on a real
-repository.
+It is cheap, it is read-only, and it converts "there might be a gap between the structural history
+and the bytes" into a number per generation. §2.5 is that number for this repo, and it decided the
+question: §2.2 is not theoretical here, it is the whole store.
+
+**Prototype.** `scripts/verify_history.py` does this today — sampled or `--all` generations, the
+four outcomes above plus `digest_malformed`, one fetch-and-re-hash per distinct digest, and
+`--crosscheck N` which compares its answers against the engine's (25/25 agreement on the run in
+§2.5). Read its docstring before quoting its numbers: it replays `transaction_log` payloads to get
+all digests at T in one query, because of §2.6.
+
+**What the shipped op needs that the prototype fakes.** One batched primitive,
+`source_refs_at(entity_ids, T)` (§2.6). With it, the op is a loop over generations with no fold of
+its own — the engine folds once per generation and the Python side only counts, which is the
+division of labour doctrine I asks for. Without it the op would either re-implement folding
+(forbidden) or take ~35 minutes for twelve generations (useless). Everything else it needs already
+exists: `reconstruct`, `blob_get`, and the span check already written for single reads
+(`__init__.py:1597`).
 
 ---
 
@@ -336,14 +417,16 @@ repository.
 
 | Step | What | Schema change | Closes |
 |---|---|---|---|
-| 1 | `verify_history(from, to)` | none | measures §2.2/§2.3 |
+| 0 | `source_refs_at(ids, T)` batched primitive (§2.6) | none | makes step 1 affordable |
+| 1 | `verify_history(from, to)` — prototype exists | none | measures §2.2/§2.3 |
 | 2 | `changes_between(T1, T2)` (Layer 1) | none | entity-level diffability |
 | 3 | Version spine + `had_content` (Layer 2) | additive | "when did this change" as a walk |
 | 3b | Decide the `content.source` duplication (§3.4) | none, or `format` bump if trimmed | hot-file growth, scan cost |
 | 4 | Branch-aware reads (`reconstruct_on` through the facade) | none in Macrame | §4 |
 | 5 | Commit-driven ingestion | ingestion rewrite | §2.1 |
 
-Steps 1 and 2 are independent of everything else and of each other. Step 3 makes step 5's
+Step 0 exists only because of §2.6 and is a prerequisite for step 1 alone. Step 2 is independent of
+everything else. Step 3 makes step 5's
 per-commit writes natural rather than awkward. Step 4 is worth doing before step 5, because a
 branch-unaware reader over a branched ledger answers whole-ledger belief where the caller meant one
 lineage's view — and that is a wrong answer, not a missing feature.
@@ -356,7 +439,11 @@ pair. Add a version spine and two read APIs on top; compute diffs on read and ca
 pair. Resist delta chains and in-CodeRadar compression, both of which trade a bounded storage win
 for an unbounded correctness risk against D-287's scan.
 
-The honest framing of the original worry: there is no gap between Macrame's structural history and
-the bytes it names — put-then-assert makes that direction impossible, and the scan makes the
-retention direction safe. The gap is between **the code's history and the ledger's samples of it**,
-and it is closed by changing what triggers a write, not by changing how bytes are stored.
+The honest framing of the original worry, in three parts. There is **no gap between Macrame's
+structural history and the bytes it names** — put-then-assert makes that direction impossible, and
+the scan makes the retention direction safe; §2.5 confirms it on real data with zero unresolvable
+digests and zero mismatches. There *is* a gap between **what the ledger describes and what it
+recorded bytes for**, and on this store it is total (§2.5) — a write-path coverage problem, fixed
+going forward by a full analyze and never fixed backwards. And underneath both there is the gap
+between **the code's history and the ledger's samples of it**, which is closed by changing what
+triggers a write (§5), not by changing how bytes are stored.
