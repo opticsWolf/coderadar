@@ -269,7 +269,10 @@ replay.
    prototype is the right shape and is already legible.
 6. CLI command `coderadar verify-history` following the `as-of` pattern (`cli.py:590-605`):
    `_enter_project()`, `_op(fmt, …)`, `--format json`.
-7. MCP: **not** in the first cut (§11 Q-4).
+7. MCP: **in** the first cut — Q-4 decided both ops get one, so
+   `coderadar_verify_history` ships with the op: sampling on by default
+   (`generations=25`) and a scan cap (`max_generations=200`) because a
+   blind agent must not be handed a 6,442-fold bill.
 8. `scripts/verify_history.py` — keep, and amend its docstring to point at the shipped op and to say
    its log replay is now redundant. It stays useful as the independent check on the op (two
    implementations, one of which is allowed to be wrong, is a test; two shipped ones is F-6).
@@ -567,7 +570,7 @@ before it counts as closed, per the v0.12 release-gate convention.
 
 | DR | Decision | Status |
 |---|---|---|
-| DR-36 | Batched `source_refs_at` primitive + `verify_history` integrity op; `recorded_generations` as a documented non-fold listing | proposed (P0, P1) |
+| DR-36 | Batched `source_refs_at` primitive + `verify_history` integrity op; `recorded_generations` as a documented non-fold listing | P0 landed `ff5fb96`, P1 landed `b964f1b` (2026-10-28) |
 | DR-37 | `changes_between` over `extra.coderadar.content_hash`; hashes detect, bytes prove | proposed (P2) |
 | DR-38 | `content_version` spine with `HAD_CONTENT`; spine concepts timeless and sweep-excluded | proposed (P3) |
 | DR-39 | ~~`content.source` duplication: lean on it or trim it~~ | **withdrawn** 2026-10-28 — premise false, there is no duplication (P3b) |
@@ -697,6 +700,41 @@ Deviations from §5, all deliberate:
 - **Rebuild needed two `mcp serve` kills.** The repo `_core.pyd` was DLL-locked by stale
   `coderadar.exe mcp serve` processes — same precedent as the v0.13 session. Restart them before
   trusting MCP answers against the new binary.
+
+### 2026-10-28 — P1 `verify_history` landed (`b964f1b` on `dev`)
+
+What shipped: `recorded_generations` + `module_concept_ids` in `storage.rs` (both through
+`open_diagnostic_conn`, Q-3 local; ever-ids with both H-11 spellings, branch-scoped, schema
+dependency stated) + FFI bindings with snapshot-then-release locking; `ops.verify_history`
+(one P0 batch per sampled generation, verdicts cached per distinct digest, the prototype's
+report shape as the contract, ends-always-included sampling, `max_generations` cap) + `render`,
+`CodeGraph.verify_history`, CLI `verify-history`, MCP `coderadar_verify_history` (25-gen
+default, 200-scan cap per Q-4) with server-instructions bullet; both skills updated (28 tools);
+prototype docstring amended to shipped-but-independent-check.
+
+Tests: 2 Rust unit tests (windowed listing, retired-included ever-ids) + 15 Python tests
+including op-vs-replay agreement on a live store, and a retention pin that an archive session
+moves no coverage. Full gates at landing: Rust lib 503 passed + 1 ignored, full Python 1182
+passed + 1 skipped, fmt/clippy/ruff clean, rebuilt `_core.pyd`.
+Self-host reproduction: 25 sampled of 6,583 generations in 6.8 s, totals ok=274 / no_digest=8274
+(3.21% — the §0 step function, now a number); latest generation 275 modules / 274 ok, consistent
+with the post-re-analyze fixture plus one added module.
+
+Deviations from §5, all deliberate:
+
+- **MCP in the first cut.** Item 7 predated Q-4; the decision says both ops get one with bounded
+  defaults, so the tool ships with P1 rather than waiting. The report shapes were already the
+  contract — freezing them at the tool instead of later changes nothing.
+- **`digest_malformed` untestable live.** Hot blob bytes are trigger-guarded (content addressing:
+  only `put_at` may change), so corruption is reachable only through the cold file. The mismatch
+  and unresolvable pins go archive-then-tamper-cold, mirroring `test_retention`'s cold-loss
+  pattern; malformed has no live path and stays a classifier branch.
+- **Op drops the prototype's `--crosscheck`.** The check compared the replay against the engine;
+  the op has no replay (F-6), and singles would defeat P0. The shipped equivalent is the
+  `test_op_matches_independent_replay` test: prototype-vs-op totals agreement on a fixture store.
+- **Rebuild needed another `mcp serve` kill.** A restarted server process held the repo `_core.pyd`
+  again (os error 32). The other editor's b44ad63 hit the same wall. This is now the third
+  strike: any rebuild procedure should list `mcp serve` holders first.
 
 ### 2026-10-28 — questionnaire decisions and a retraction
 

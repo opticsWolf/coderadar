@@ -4,6 +4,15 @@ Patch releases accumulate toward the next minor (+0.0.1 per implemented feature,
 bump commit named in the feature's DR row). The v0.12 plan history lives
 in `docs/` (v1 frozen, consolidated trio authoritative).
 
+## Unreleased
+
+- Temporal P0 (DR-36): `source_refs_at` — one fold serves N entity refs,
+  absent-at-T omitted, corrupt concept fails the batch (`ff5fb96`).
+- Temporal P1 (DR-36): `verify_history` — per-generation byte coverage
+  over `recorded_generations` + `module_concept_ids`, report shape as
+  contract, CLI `verify-history`, MCP `coderadar_verify_history`
+  (28 tools).
+
 ## 0.13.0 (2026-10-26)
 
 - Removed the deprecated Python spellings alongside the CLI aliases:
