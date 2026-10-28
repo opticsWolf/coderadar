@@ -1,0 +1,631 @@
+# CodeRadar — Temporal Code Reconstruction: Architecture & Implementation
+
+> **Date:** 2026-10-27 · **Baseline:** v0.13.0 (`fd6ac00`, `main`) on `macrame-db 0.19.1`
+> **Status:** plan, not as-built. Nothing in §5 is implemented except P1's prototype
+> (`scripts/verify_history.py`, landed `a1ab115`). No decision-register rows exist yet; §8 is what
+> to add before code lands.
+> **Derives from:** [`temporal-code-reconstruction.md`](temporal-code-reconstruction.md) (the
+> analysis and its verdicts — where this file disagrees with it, this file is newer and wins) and
+> [`code-storage-vs-macrame-philosophy.md`](code-storage-vs-macrame-philosophy.md) (doctrine
+> conformance, whose five contracts are carried here as §3 invariants).
+> **Governs:** store-and-retention behaviour ([`store-and-retention.md`](store-and-retention.md))
+> once P5 changes what triggers a write.
+> **Method:** every claim in §0 was re-checked against the working tree at the baseline above.
+> File:line citations are the check, not the plan text.
+
+---
+
+## 0. Verification header (code truth at `fd6ac00`)
+
+| Claim | Code check 2026-10-27 | Consequence for the plan |
+|---|---|---|
+| Blob is one row per distinct content | `storage.rs:196` `put_source_blob` on every analyze (`lib.rs:956`) and update (`projection_ops.rs:828`); address is `sha256_hex` (`Macrame src/blob.rs:104`) | storage ceiling is the content union of history; no delta scheme needed (§4 F-1) |
+| Digest rides versioned `extra` | `coderadar_extra` writes `extra.coderadar.source_blob` (`storage.rs:1737-1748`) | the *reference* is bitemporal, the bytes are timeless and branch-global |
+| `entity_source_ref_at` folds per call | `storage.rs:958` calls `self.reconstruct(timestamp)`, then reads one concept | **P0 exists because of this**; measured 0.36 s/call on the self-host store |
+| `lookup_entities_at` folds once but loses `extra` | `lib.rs:1752` one `reconstruct`; `entity_ref_to_dict` (`ffi_convert.rs:243`) builds from `ProjectedGraph`, which carries no `extra` | no batched digest route from Python today |
+| Per-entity body hash already versioned | `annotation::CONTENT_HASH` in content JSON (`storage.rs:1815`, writers `2014-2091`) **and** mirrored to `extra.coderadar.content_hash` (`storage.rs:1737`) | P2 needs no schema change |
+| Function body text already in the ledger | `v["source"] = f.source` (`storage.rs:2085`), carried in `concepts.content` via `build_concept` (`storage.rs:1757`) | §6 H-7 duplication decision; P3b |
+| `concepts.id` is UNIQUE | hot schema: `id TEXT NOT NULL UNIQUE` | the hot table holds only current versions; **all** history is log replay, so every historical read costs a fold |
+| Macrame exposes no generation listing | no `DISTINCT recorded_at` or log-listing `pub async fn` in `Macrame/src/connection.rs` | P1 needs `recorded_generations` in CodeRadar (§5 P1.1), or upstream it (§11 Q-3) |
+| Non-fold SQL via diagnostic conn is in-pattern | `current_seq_anchor` runs `SELECT MAX(seq_id)` on `transaction_log` (`storage.rs:1575`), with the stated reason that folding to read one integer costs seconds | `recorded_generations` is the same shape and needs no new doctrine |
+| Stale sweep finds ids two ways | `live_concept_ids_for_file` = `extra.coderadar.file_path` match (`storage.rs:1333`) ∪ id-prefix range `{file}::` (`storage.rs:1347`) | **P3 hazard H-1**: a spine concept carrying `file_path` would be retired as stale |
+| Structural edge sweep is a fixed list of 8 | `retire_stale_edges` `const STRUCTURAL: [&str; 8]` (`storage.rs:1437-1446`) — `CONTAINS` is not in it | a new `HAD_CONTENT` edge is **not** swept; P3 must close it explicitly (H-2) |
+| The framework hook sweeps by exclusion | `open_synthetic_triples` takes everything `NOT IN ('CALLS','IMPORTS','EXTENDS','OVERRIDES')` (`storage.rs:1271`) | **H-3**: `HAD_CONTENT` would be captured as "synthetic" and pair-retired |
+| Edge vocabulary is a const module | `storage.rs:40-49` `edge_type` with 9 constants | `HAD_CONTENT` is a one-line addition plus the two sweep fixes above |
+| Byte coverage on the self-host store | `scripts/verify_history.py`: ok=1, no_digest=5078, unresolvable=0, mismatch=0 over 15 of 6442 generations | the write-path gap is total here; P5 is the only route to recovering it |
+| `valid_from` is index-now | `now_iso8601()` (`storage.rs:68-79`) used for concepts and edges | P5 is a semantic change, not an optimisation (§3 INV-8) |
+| Retirement preserves history | `retire_entities` carries title/content/extra forward with `valid_to = now`, `retired = 1` (`storage.rs:1039`) | spine concepts must be excluded, not retired (H-1) |
+| Blob cap pairing is documented, not enforced | 8 MiB `BLOB_MAX_BYTES` (`storage.rs:1601`) vs 1 MiB `[watch] max_file_size_bytes` | P5 multiplies oversize skips; decide the pairing before per-commit ingest |
+
+---
+
+## 1. What is being built, and why
+
+**Capability statement.** Given a file (or an entity) and a point in time — and, after P4, a
+branch — CodeRadar can state what the code *was*, prove it byte-for-byte, and say what changed
+between any two such points. Today it can do the first for one entity at one instant, cannot do the
+third at all, and on the repo's own store cannot do the first either, because the bytes were never
+recorded (§0, last-but-two row).
+
+**The three gaps, in the order they bite.**
+
+1. **Write-path coverage.** The ledger describes files it recorded no bytes for. Measured at 100%
+   on this store. Fixed going forward by a full analyze; never fixed backwards except by P5.
+2. **No queryable version spine.** "Every content this file ever had" means folding at guessed
+   timestamps and comparing `extra`. It should be an edge walk.
+3. **Sampling frequency.** `valid_from = index-now` makes the timeline *when CodeRadar looked*, not
+   *when the code changed*. Contents between two runs exist nowhere, in any store, ever.
+
+**What is explicitly *not* broken**, so that no phase "fixes" it: the blob design, the archive's
+reference scan, the hot/cold retention split, and put-then-assert ordering. §0 confirms zero
+unresolvable digests and zero mismatches on a store with 6,442 generations. The analysis doc's
+verdict stands: adopt the blob design as specified; the risk was never philosophical.
+
+---
+
+## 2. Target architecture
+
+```
+                 ┌─ P5 ingestion ──────────────────────────────────────┐
+                 │ git commits/branches drive writes                   │
+                 │ valid_from = commit time, recorded_at = ingest time │
+                 └───────────────────┬────────────────────────────────-┘
+                                     │ asserts
+  read APIs    ┌────────────────────┴─────────────────────────────────┐
+  (P1,P2,P4)   │ verify_history · changes_between · Snapshot.read_*   │
+               │ branch-aware: reconstruct_on(lineage, T)             │
+               └───────────────┬──────────────────┬──────────────────-┘
+                               │ one fold per T   │ hash compare, no bytes
+  spine (P3)   ┌───────────────┴──────────────────┴──────────────────-┐
+               │ {path}@{digest}  kind=content_version   (timeless)    │
+               │   extra: source_blob, size, line_count, parent_digest │
+               │ {path}::module --HAD_CONTENT--> …   [valid interval]  │
+               └───────────────┬──────────────────────────────────────┘
+  references   ┌───────────────┴──────────────────────────────────────┐
+  (today)      │ extra.coderadar.source_blob on the module concept    │
+               │ extra.coderadar.content_hash per entity (xxHash64)   │
+               └───────────────┬──────────────────────────────────────┘
+  bytes        ┌───────────────┴──────────────────────────────────────┐
+  (today)      │ Macrame blobs: sha256(content) → bytes, hot ⇄ cold   │
+               │ branch-global, no refcount, liveness by log scan     │
+               └──────────────────────────────────────────────────────┘
+  primitive    source_refs_at(ids, T)  — one reconstruct, N refs  (P0)
+```
+
+Four layers, bottom to top: **bytes** are content-addressed and timeless; **references** to them
+are versioned; the **spine** makes the reference history walkable; **read APIs** answer questions
+over it. P5 changes only what drives writes into the stack — not the stack.
+
+The layering is the architecture's whole claim: a change at one level must not require a change at
+another. Delta blobs break it (bytes would reference bytes, §4 F-1). Stored diffs break it (a
+derived answer would become a record, F-3). Per-branch blob copies break it (timeless data gaining
+a lineage, F-5).
+
+---
+
+## 3. Invariants
+
+Non-negotiable. Each is stated with where it is enforced today, because a plan that restates an
+invariant without naming its enforcement point is a wish.
+
+- **INV-1 — Put bytes before asserting the digest.** Enforced at `lib.rs:949-962`. A crash leaves
+  orphan bytes (bounded, aged out by the scan); the reverse ordering strands a live digest over
+  absent bytes. Any new write path (P3 spine, P5 ingestion) asserts digests **after** the put that
+  created them, in that order, no exceptions for batching.
+- **INV-2 — Digests are 64 lowercase hex, everywhere, always.** `validate_digest`
+  (`Macrame src/blob.rs:84`) refuses anything else rather than folding case. The archive's
+  reference scan matches that text and nothing else (D-287), so an uppercased, truncated, base64 or
+  prefixed digest is an invisible reference and its bytes are reclaimable. This is the retention
+  mechanism, not a formatting preference.
+- **INV-3 — The reference lives in a ledger payload, never only inside blob bytes.** The scan reads
+  hot log payloads; it never reads blob contents. Anything a blob's survival depends on must be
+  named in `extra`, `content` or link properties.
+- **INV-4 — Bytes are branch-global; references are per-lineage.** Blobs and `kv_store` carry no
+  `branch_id` by design (D-213/D-214). P4 resolves the digest through the reader's lineage and
+  *then* fetches branch-global bytes, in that order.
+- **INV-5 — No CodeRadar-side blob GC, ever.** The archive session is the only deleter. A refcount
+  is the design Macrame rejected (D-281 gate 3) and CodeRadar must not reintroduce it under another
+  name ("cleanup", "vacuum", "prune").
+- **INV-6 — Folds belong to the engine.** Doctrine I. Every at-T answer comes from `reconstruct` /
+  `reconstruct_on`. `scripts/verify_history.py` violates this deliberately and is the one
+  exception, scoped to a measurement script that is not imported by anything (§5 P1).
+- **INV-7 — Fidelity is explicit.** A read either returns the recorded bytes, or says which of the
+  named reasons it cannot (`ContentUnavailable` with cause, `None` for not-in-graph,
+  `EngineError` for a broken ledger). Never a silent present-tense answer, never a truncation
+  without a count. Enforced at `__init__.py:1556-1600`.
+- **INV-8 — The two clocks stay separate.** `recorded_at` is when CodeRadar learned it; `valid_from`
+  is when it was true in the world. Code history means **recorded** time until P5 lands, and P5's
+  whole content is making `valid_from` mean commit time. No phase may blur them to make a query
+  easier.
+- **INV-9 — Spine concepts are timeless and never retired.** A content that existed existed. What
+  ends is the *edge* saying the file currently has it (H-1, H-2).
+
+---
+
+## 4. Forbidden, with the failure mode
+
+These are not style preferences. Each has a mechanism by which it silently corrupts history.
+
+- **F-1 — Delta blobs.** A delta's base digest would live inside another blob's bytes, which the
+  reference scan never reads (INV-3). The base becomes archive-eligible, then cold-file-loss
+  eligible, while a live delta depends on it. The failure is silent and arrives one archive session
+  late. *If ever unavoidable:* publish the base digest in the spine concept's `extra`, materialise
+  a full snapshot every N links, and write the chain-depth bound into the schema docs — but the
+  recommendation is don't: content addressing already dedups the unchanged majority.
+- **F-2 — Compression inside CodeRadar.** The address *is* `sha256(stored bytes)` and the hot table
+  CHECKs `size` against the byte length. Compressing above the addressing layer breaks the address,
+  the CHECK, and `blob_get`'s meaning at once. Keeping a plaintext digest beside a compressed blob
+  address breaks verification instead. Compression belongs below addressing, i.e. inside Macrame,
+  as its own decision.
+- **F-3 — Stored diffs.** A diff is derived (doctrine VI). Stored, it becomes a second record that
+  can disagree with the two contents it claims to relate, and nothing can adjudicate. Compute on
+  read; cache keyed `(digest_a, digest_b)` only, never by a mutable id.
+- **F-4 — A second reclamation path.** See INV-5.
+- **F-5 — Per-branch blob copies or branch-scoped blob GC.** Makes timeless data lineage-bound and
+  reintroduces F-4 by the back door.
+- **F-6 — Re-implementing the fold in shipped code.** Two fold implementations will diverge, and the
+  one in Python will be the wrong one (INV-6). The prototype's log replay must not graduate into
+  `ops.py`; P0 exists so that it does not have to.
+- **F-7 — `valid_from = now` once P5 lands.** Mixing index-now and commit-time stamps in one
+  ledger makes valid-time queries answer neither question. P5 is all-or-nothing per store, with a
+  recorded migration decision (§8 DR-40).
+- **F-8 — Trusting `content_hash` as proof of identity.** xxHash64 is 64-bit and
+  non-cryptographic. It is adequate for *detecting* change and for ranking what to inspect. It must
+  never gate a write whose correctness matters, and must never be reported to a user as "identical".
+  When proof is needed, compare bytes.
+- **F-9 — Letting a blob failure fail an index.** Today a `blob_put` error logs a diag line and
+  indexing continues (`lib.rs:963`). That is correct: structural coverage is worth more than byte
+  coverage, and the gap is visible through P1. Do not "harden" this into a hard failure.
+
+---
+
+## 5. Phases
+
+Each phase: **goal**, **required** (files and signatures), **hazards**, **tests**, **done when**.
+Phases are ordered by dependency; §9 is the sequencing table.
+
+### P0 — `source_refs_at`: one fold, N refs  (DR-36)
+
+**Goal.** Make a history sweep affordable without re-implementing the fold. This phase exists
+solely because of the §0 row "folds per call": 0.36 s × files × generations is ~35 minutes for a
+twelve-generation sample of 490 modules, and the only Python alternative is F-6.
+
+**Required.**
+
+1. `core_indexer/src/storage.rs` — extract the body of `entity_source_ref_at` (`storage.rs:953`)
+   into a state-taking helper, so there is exactly one implementation of "ref out of a folded
+   state":
+
+   ```rust
+   fn source_ref_from_state(
+       state: &macrame::temporal::MaterializedState,
+       entity_id: &str,
+   ) -> macrame::Result<Option<SourceRef>>;
+
+   pub fn entity_source_ref_at(&self, entity_id: &str, timestamp: &str)
+       -> macrame::Result<Option<SourceRef>>;            // unchanged signature, now a 2-line caller
+
+   pub fn source_refs_at(&self, entity_ids: &[String], timestamp: &str)
+       -> macrame::Result<(std::collections::HashMap<String, SourceRef>, bool)>;
+   ```
+
+   The `bool` is `predates_recorded_history`, mirroring `entities_at` (`lib.rs:1755`) rather than
+   inventing a second spelling. Ids absent at T are absent from the map — not `None` entries:
+   "not in the graph" and "in the graph without bytes" are different answers and only the second is
+   a gap (§3 INV-7).
+
+2. `core_indexer/src/lib.rs` — one `#[pyfunction]` beside `entity_source_ref_at` (`lib.rs:1898`),
+   registered at `lib.rs:75`, returning `{"refs": {id: ref_dict}, "predates_recorded_history": bool}`
+   with the same ten keys per ref the single call already emits. Fold under `py.allow_threads`, as
+   `entities_at` does (`lib.rs:1752`) — a slow reconstruct must not hold the GIL or block a writer.
+
+3. No Python surface. P0 is a primitive; P1 and P2 are its only callers.
+
+**Hazards.** The refactor must not change `entity_source_ref_at`'s observable behaviour — it is
+what `Snapshot._read_raw` depends on (`__init__.py:1553-1554`), including the four distinct failure
+messages. The single-call path keeps its own `reconstruct`; do not add caching across calls (a
+stale cached state would answer a *different* question than asked, which is INV-7's exact
+prohibition).
+
+**Tests.** `core_indexer` unit tests: (a) `source_refs_at` and N× `entity_source_ref_at` return
+identical refs for the same (ids, T) — this is the anti-divergence pin for the extracted helper;
+(b) ids absent at T are absent from the map; (c) `predates_recorded_history` matches
+`lookup_entities_at`'s for a pre-floor T; (d) one fold per call, asserted by a counter or by timing
+ratio against the N-call path.
+
+**Done when.** A 490-id, 12-generation sweep costs 12 folds, measured, and the parity test (a)
+passes.
+
+---
+
+### P1 — `verify_history`: make the gap a number  (DR-36)
+
+**Goal.** Per recorded generation, what fraction of the files the ledger describes can have their
+bytes reconstructed. Already prototyped; this phase is about shipping it on P0 instead of a log
+replay.
+
+**Required.**
+
+1. `storage.rs` — `pub fn recorded_generations(&self, from: Option<&str>, to: Option<&str>, branch: &str) -> macrame::Result<Vec<String>>`:
+   `SELECT DISTINCT recorded_at FROM transaction_log WHERE branch_id = ? [AND window] ORDER BY recorded_at`,
+   through `open_diagnostic_conn`. This is a listing, not a fold, and has direct precedent in
+   `current_seq_anchor` (`storage.rs:1575`) with the same stated reason: folding to read a scalar
+   costs seconds. Document it as such, or the next reader will think INV-6 was broken.
+2. `storage.rs` — `pub fn module_concept_ids(&self) -> macrame::Result<Vec<String>>`, or reuse
+   `live_concept_ids` (`storage.rs:1365`) plus a suffix filter. Note the subtlety: the sweep needs
+   ids that existed *ever*, not ids live *now*, so a `retired = 0` filter is wrong here. State which
+   you chose and why in the docstring.
+3. `lib.rs` — `verify_history(from, to, generations, all, branch)` → the report dict, or expose the
+   two primitives and build the report in Python. **Prefer Python**: the counting is not hot, and
+   the report shape will change more often than the engine should.
+4. `py_agent/src/coderadar/ops.py` — `verify_history(...) -> dict`, added to `__all__`
+   (`ops.py:30-60`), raising `InvalidRequest` for a bad window and `NoIndex` without a store, like
+   its neighbours.
+5. `py_agent/src/coderadar/render.py` — a text renderer; the per-generation table from the
+   prototype is the right shape and is already legible.
+6. CLI command `coderadar verify-history` following the `as-of` pattern (`cli.py:590-605`):
+   `_enter_project()`, `_op(fmt, …)`, `--format json`.
+7. MCP: **not** in the first cut (§11 Q-4).
+8. `scripts/verify_history.py` — keep, and amend its docstring to point at the shipped op and to say
+   its log replay is now redundant. It stays useful as the independent check on the op (two
+   implementations, one of which is allowed to be wrong, is a test; two shipped ones is F-6).
+
+**Report shape** (the prototype's, as the contract):
+
+```
+{store, root, branch, window: [lo, hi], total_generations, sampled,
+ generations: [{timestamp, modules, counts: {ok, no_digest, unresolvable,
+                digest_mismatch, digest_malformed}, offenders: {...}}],
+ totals: {...}, byte_coverage_pct, distinct_digests}
+```
+
+One fetch-and-re-hash per **distinct digest**, not per occurrence: the address is the identity.
+
+**Hazards.** `digest_malformed` must be counted separately from `unresolvable` — a malformed digest
+means the bytes were reclaimable (INV-2), which is a different incident from bytes that went
+missing. Sampling must always include both window ends, or a reader will conclude coverage is
+uniform when it is a step function (it is a step function on this store).
+
+**Tests.** New `tests/test_verify_history.py`: a fixture store with one blob-backed and one
+blob-less generation reports exactly 1 and 0; a store whose blob row is deleted reports
+`unresolvable` and not `no_digest`; a doctored digest reports `digest_mismatch`; a pre-blob
+generation reports `no_digest` for every file; `--all` and sampling agree on a store with ≤ N
+generations. `tests/test_retention.py` gains: coverage is unchanged by an archive session, and
+`unresolvable` stays 0 across it.
+
+**Done when.** `coderadar verify-history` reproduces the §0 numbers on the self-host store in
+seconds rather than minutes, and the archive test proves retention does not move coverage.
+
+---
+
+### P2 — `changes_between`: entity diff with no byte reads  (DR-37)
+
+**Goal.** Added / removed / modified / moved per entity between two instants, from hashes already
+recorded. No schema change, no blob reads.
+
+**Required.**
+
+1. Fold at T1 and T2 (`lookup_entities_at`, or P0's call where the digest is also wanted), join by
+   entity id, compare `extra.coderadar.content_hash` (`storage.rs:1737`).
+2. Classification: present only in T2 = **added**; only in T1 = **removed**; both with different
+   hash = **modified**; both with equal hash but different span = **moved**. "Moved" is worth its
+   own class because it is the common churn and the least interesting.
+3. `ops.changes_between(t1, t2, scope=None) -> dict` + `__all__`, renderer, CLI
+   `coderadar changes-between`. Optional `scope` = file path or id prefix.
+4. Docstring must carry F-8 verbatim-in-spirit: equal hash is *evidence* of no change, not proof;
+   `Snapshot.read_bytes` is one call away when proof is wanted.
+
+**Hazards.** The two folds are two separate reconstructs and an entity can vanish between them if
+writes are concurrent; answer as absent rather than erroring (the precedent is
+`__init__.py:1559`, "vanished between the two folds; answer as absent"). Do not reach for
+`content.source` here even though it is present (§6 H-7) — the hash is the cheap path and the
+duplication's fate is undecided.
+
+**Tests.** `tests/test_changes_between.py`: a fixture with one body edit, one rename, one added
+function, one deleted file across two generations yields exactly the four classes; a pure
+whitespace-only move yields `moved`; equal T1 and T2 yields all-empty.
+
+**Done when.** The four classes are right on a fixture, and the op makes exactly two folds
+(asserted).
+
+---
+
+### P3 — The `content_version` spine  (DR-38)
+
+**Goal.** Make "every content this file ever had" an edge walk with intervals, instead of a guessing
+game over timestamps.
+
+**Shape.**
+
+```
+concept  {path}@{digest}      kind = content_version        (timeless, never retired)
+         extra.coderadar: {format, kind, source_blob, size, line_count, parent_digest}
+edge     {path}::module  --HAD_CONTENT-->  {path}@{digest}   [valid_from … valid_to]
+```
+
+Naming: `content_version`, **not** `file_version` — module content JSON already carries an
+unrelated `file_version` integer (`storage.rs:2013`, `types.rs:919`), and reusing the name makes two
+different things grep identically.
+
+**Required.**
+
+1. `storage.rs:40-49` — add `pub const HAD_CONTENT: &str = "HAD_CONTENT";` to `edge_type`.
+2. `storage.rs` — build the spine concept and the edge in `build_v2_concepts_all`
+   (`storage.rs:2213`) and `build_v2_concepts_for_file` (`storage.rs:2249`), both of which already
+   receive `&SourceBlobDigests`. Idempotence: the id is derived from the digest, so re-indexing
+   unchanged content re-upserts an identical concept and re-asserts an open edge — which the
+   existing open-triple skip already absorbs. **One concept + one edge per actual content change,
+   nothing for unchanged files**, and that is the property to test.
+3. `parent_digest` = the digest this file had immediately before, or null for the first. Read it
+   from the current open `HAD_CONTENT` edge before asserting the new one. This is the diff spine and
+   it must live in the ledger payload, not be inferred at read time (INV-3 keeps the bytes alive
+   through it).
+4. Close the previous edge explicitly: `valid_to = now` on the old `HAD_CONTENT` when a new digest
+   arrives. See H-2 — nothing sweeps it for you.
+5. Exclude spine concepts from the stale sweep. See H-1 — this is the phase's main hazard, not a
+   detail.
+
+**Hazards (all three are live traps in today's code).**
+
+- **H-1 — the stale sweep would retire the spine.** `live_concept_ids_for_file` collects ids by
+  `extra.coderadar.file_path` (`storage.rs:1333`) *and* by the `{file}::` id-prefix range
+  (`storage.rs:1347`). `{path}@{digest}` escapes the prefix range but **not** the `file_path` match,
+  so a spine concept carrying `file_path` in its extra — which it wants, for queryability — is
+  retired as stale on the next index of that file. Fix: exclude `kind = 'content_version'` in the
+  `extra` query, and pin it with a test that indexes twice and asserts the spine survives.
+  Per INV-9 the concept is timeless; what ends is the edge.
+- **H-2 — nothing closes the edge.** `retire_stale_edges` sweeps a fixed list of 8 structural types
+  (`storage.rs:1437-1446`); `HAD_CONTENT` is not among them, and adding it there would be wrong
+  (the sweep retires what is absent from the fresh projection, and *all* historical contents are
+  absent by definition — it would close the whole chain on every index). Close the previous edge
+  explicitly in the writer.
+- **H-3 — the framework hook would pair-retire it.** `open_synthetic_triples` selects everything
+  `NOT IN ('CALLS','IMPORTS','EXTENDS','OVERRIDES')` (`storage.rs:1271`), so `HAD_CONTENT` lands in
+  the §1.3 scoped pair-retire as if it were a framework edge. Add it to that exclusion list. An
+  exclusion-based query is a trap for every future edge type; consider inverting it to an
+  inclusion list in the same change (§11 Q-2).
+
+**Reads unlocked.** `history_of(file)` → the chain newest-first with intervals;
+`content_at(file, T)` without a span lookup; cross-branch content comparison after P4; and P2 gains
+a cheap pre-filter (did the module's digest change at all?).
+
+**Tests.** `tests/test_content_spine.py`: index twice unchanged → zero new spine concepts, zero new
+edges, spine survives (H-1); edit one file → exactly one new concept, one closed edge, one open
+edge, `parent_digest` points at the previous digest; delete the file → chain intact and queryable
+at an earlier T; a framework-resolver pass does not retire `HAD_CONTENT` (H-3). Rust-side: the
+`edge_type` const is used, not shadowed by a literal.
+
+**Done when.** `history_of` returns the full chain for a file edited three times, after an
+`analyze → edit → update → edit → update` sequence, and the unchanged-reindex test shows zero spine
+growth.
+
+---
+
+### P3b — Decide the `content.source` duplication  (DR-39)
+
+**Goal.** Stop carrying file bytes twice by accident, or carry them twice on purpose with the cost
+written down.
+
+**The finding.** `v2_function` writes `v["source"] = f.source` (`storage.rs:2085`) and that JSON is
+the concept's canonical `content` (`build_concept`, `storage.rs:1757`). So function body text is
+stored per version inside ledger payloads, alongside the blob holding the same bytes as part of the
+whole file. Consequences: the archive's reference scan reads hot log payloads to decide blob
+liveness and reports `blob_scan_bytes` (D-287), so body text in payloads makes that scan
+proportionally more expensive; the hot file grows with body churn independently of blob dedup; and
+the two copies have different lifetimes (the blob is reclaimable by the scan, the payload copy is
+not until its row archives).
+
+**The two options, honestly.**
+
+| | Lean on it | Trim it |
+|---|---|---|
+| What | declare `content.source` the body-diff path | store spans only, slice bodies from the blob on read |
+| Cost | hot file and scan grow with body churn | `content` schema change, `format` bump, read-compat path for every existing generation |
+| Gain | body diffing needs no blobs at all | smaller hot file, cheaper scan, one copy of the bytes |
+| Risk | P5 multiplies it per commit | a read path that must handle both shapes forever |
+
+**Recommendation:** trim, but *not before P5 is decided* — if commit-driven ingestion is adopted,
+the multiplier makes trimming compulsory and the migration should happen once, together. If P5 is
+declined, leaning on it is defensible and must then be written into the architecture doc as
+intentional.
+
+**Required either way.** A decision-register row stating which, with the reason. This phase is a
+decision, not code.
+
+---
+
+### P4 — Branch-aware reads  (DR-40)
+
+**Goal.** Walk lineages, not just time. Macrame is ready; the facade has no branch parameter
+anywhere.
+
+**Required.**
+
+1. Thread a lineage through the fold: `reconstruct_on` (`Macrame src/connection.rs:3570`) beside
+   `reconstruct` in `storage.rs:1563`, and a `branch` parameter on `source_refs_at`,
+   `entity_source_ref_at`, `lookup_entit{y,ies}_at`, defaulting to the trunk.
+2. Python: `branch=` on `Snapshot`, `ops.as_of`, `ops.verify_history`, `ops.changes_between`;
+   `ops.branches()` listing (`Macrame src/connection.rs:3049`).
+3. Order of operations, per INV-4: resolve the digest **through the reader's lineage**, then
+   `blob_get` the branch-global bytes. Never the reverse, and never a per-branch blob lookup.
+4. Cross-branch content diff builds on P3's spine. Macrame's own `diff(a, b)`
+   (`Macrame src/connection.rs:3074`) is edge-level and deliberately has no instant parameter — it cannot report
+   a divergence that is *about* an instant having passed — so it answers a different question and is
+   not a substitute.
+
+**Hazards.** A branch-unaware reader over a branched ledger answers whole-ledger belief where the
+caller meant one lineage's view. That is a wrong answer, not a missing feature, which is why P4
+comes before P5 rather than after. Never add per-branch blob copies (F-5).
+
+**Tests.** Fork, write divergent content on each lineage, assert: each lineage reads its own bytes
+at T; the trunk is unaffected; one blob row backs content both lineages reached; `blob_get` is
+lineage-independent.
+
+**Done when.** Two lineages with different content for one path each read their own bytes, off one
+shared blob table.
+
+---
+
+### P5 — Commit-driven ingestion  (DR-41)
+
+**Goal.** Close gap 3. Make valid time mean the code's own history.
+
+**Shape.** One Macrame branch per git branch, forked at the merge-base. Per commit: `valid_from =`
+commit time, `recorded_at =` ingest time, blobs per file-at-commit. Then `as_of_valid` and
+`as_of_recorded`/`reconstruct` (D-174) stop being the same question asked twice, and backfilling an
+old branch becomes a legitimate retroactive correction rather than a lie told in valid time.
+
+**Why it is the only route to the measured gap.** The 6,441 byte-less generations on this store
+describe content that exists in no blob, no payload and no working tree. A full re-analyze fixes
+the present and never the past. A commit-driven ingest can *reconstruct* that history from git,
+because git still has the bytes. This is the strongest argument available for P5 and it only became
+visible once P1 measured the store.
+
+**Required (sketch — this phase needs its own plan before code).**
+
+1. A commit walker: per branch, per commit, the changed file set and their bytes at that commit.
+2. Fork mapping: git branch ↔ Macrame lineage, forked at merge-base, recorded once.
+3. Stamping: `valid_from` = commit time (committer, not author — state which and why),
+   `recorded_at` = engine-stamped ingest time. INV-8 and F-7 govern.
+4. A per-store mode flag, because mixed stamping is F-7. Migration of an index-now store is a
+   decision, not a default: either re-ingest from git into a fresh store, or keep the old store as
+   frozen history and start a new one. Recommend the former; record it.
+5. Cost: one write per commit per branch carrying its file set. The blob table absorbs the content
+   **union** of history, not the sum of the checkouts — dedup is what makes this affordable, and
+   §0's "one row per distinct content" is the measurement that supports the claim.
+
+**Hazards.** The 1 MiB watcher cap vs 8 MiB blob cap pairing (§0, last row) multiplies per commit.
+Merge commits must not double-count a content. Shallow clones and rewritten history (rebase, force
+push) mean the git side is not append-only while the ledger is — decide what an ingest does when a
+previously-ingested commit disappears (recommend: nothing; the ledger keeps what it was told, which
+is exactly what bitemporality is for).
+
+**Done when.** A store ingested from git answers "what did this file look like at commit X on
+branch Y" with bytes, and `verify_history` reports coverage at or near 100% for the ingested range.
+
+---
+
+## 6. Hazard register
+
+Traps found in today's code while planning. H-1 to H-3 are detailed in P3.
+
+| # | Hazard | Where | Bites in |
+|---|---|---|---|
+| H-1 | Stale sweep retires spine concepts matched by `extra.coderadar.file_path` | `storage.rs:1333` | P3 |
+| H-2 | Nothing closes a `HAD_CONTENT` edge; the 8-type sweep both misses it and would over-close it | `storage.rs:1437-1446` | P3 |
+| H-3 | Exclusion-based `open_synthetic_triples` captures every new edge type as "synthetic" | `storage.rs:1271` | P3, and every future edge type |
+| H-4 | `entity_source_ref_at` folds per call; any new per-entity historical read inherits the cost | `storage.rs:958` | P0, P2 |
+| H-5 | `concepts.id` is UNIQUE — no concept history in the hot table, so every historical read is a replay | hot schema | performance of every phase |
+| H-6 | Watcher 1 MiB vs blob 8 MiB caps are paired by documentation only | `storage.rs:1601` + comment | P1 reporting, P5 volume |
+| H-7 | Function body text duplicated into log payloads, inflating the reference scan | `storage.rs:2085` | P3b, P5 |
+| H-8 | Naive/offset timestamps accepted at the Python boundary, rejected by Macrame `normalize` | philosophy doc mismatch #4 | every new temporal op's argument handling |
+| H-9 | `content_hash` is xxHash64: 64-bit, non-cryptographic | `storage.rs:1815` | P2's contract (F-8) |
+| H-10 | Hot-only backup is pointers; bytes live in hot **or** cold | `store-and-retention.md` | operational, all phases |
+
+---
+
+## 7. Test plan
+
+New files, and what each one is for. Existing suites that must not regress: `tests/test_blob_reads.py`
+(the §3.0 read path), `tests/test_retention.py` (archive behaviour), `tests/test_ops_api.py`
+(surface shape).
+
+| File | Pins |
+|---|---|
+| `core_indexer` unit tests (in `storage.rs` tests module) | P0 parity between `source_refs_at` and the single call; one-fold-per-call; absent-at-T semantics |
+| `tests/test_verify_history.py` | the five outcome classes, sampling vs `--all`, coverage unmoved by archive |
+| `tests/test_changes_between.py` | the four change classes, two-folds-only, whitespace move |
+| `tests/test_content_spine.py` | zero growth on unchanged reindex, `parent_digest` chain, H-1 and H-3 survival |
+| `tests/test_branch_reads.py` (P4) | per-lineage bytes off one shared blob table |
+
+Cross-cutting assertions worth their own tests, because they are the invariants most likely to rot:
+every digest CodeRadar writes is 64 lowercase hex (INV-2, grep-level test over a fixture store's
+`extra`); no code path outside the archive deletes from `blobs` (INV-5, a source-level test is
+acceptable here); `blob_put` precedes digest assertion under failure injection (INV-1, already the
+intent of the §1.9 tests — extend to the spine writer).
+
+---
+
+## 8. Decision-register rows to add
+
+Numbering continues from DR-35 (`docs/mutation-rollback-design.md`). Each row needs a landing commit
+before it counts as closed, per the v0.12 release-gate convention.
+
+| DR | Decision | Status |
+|---|---|---|
+| DR-36 | Batched `source_refs_at` primitive + `verify_history` integrity op; `recorded_generations` as a documented non-fold listing | proposed (P0, P1) |
+| DR-37 | `changes_between` over `extra.coderadar.content_hash`; hashes detect, bytes prove | proposed (P2) |
+| DR-38 | `content_version` spine with `HAD_CONTENT`; spine concepts timeless and sweep-excluded | proposed (P3) |
+| DR-39 | `content.source` duplication: lean on it or trim it | **open decision** (P3b) |
+| DR-40 | Branch-aware reads: lineage resolves the reference, bytes stay branch-global | proposed (P4) |
+| DR-41 | Commit-driven ingestion; per-store stamping mode; migration path | **open decision** (P5) |
+
+---
+
+## 9. Sequencing
+
+| Order | Phase | Why here | Blocked by |
+|---|---|---|---|
+| 1 | P0 `source_refs_at` | nothing else is affordable without it | — |
+| 2 | P1 `verify_history` | measures the gap before anything is built on assumptions | P0 |
+| 3 | P2 `changes_between` | no schema change; independent of the spine | P0 (optional) |
+| 4 | P3 spine | makes P5's per-commit writes natural; carries H-1/H-2/H-3 | P2 for shared read shapes |
+| 5 | P3b duplication decision | needs P5's direction to be decidable | P5 direction |
+| 6 | P4 branch reads | must precede P5: a branch-unaware reader over a branched ledger is wrong, not incomplete | P3 |
+| 7 | P5 ingestion | the semantic change; needs its own plan | P3, P4, DR-41 |
+
+P0–P2 are additive, read-only and shippable in one release. P3 touches the write path. P4 touches
+every read signature. P5 is a different product decision and should not ride a point release.
+
+---
+
+## 10. Out of scope, and never
+
+**Out of scope here:** repository-wide reconstruction of non-indexed files (§2.3 of the analysis doc
+— blobs exist only for files the walker visits, and that is a contract to state, not a gap to
+close); compression of stored bytes (belongs in Macrame); a diff *cache* (compute first, measure,
+then cache keyed `(digest_a, digest_b)` if a hot path appears); MCP exposure of the new ops until
+their shapes settle.
+
+**Never:** delta blobs (F-1), stored diffs (F-3), CodeRadar-side blob GC (F-4/INV-5), per-branch
+blob copies (F-5), a second fold implementation in shipped code (F-6).
+
+---
+
+## 11. Open questions for the maintainer
+
+- **Q-1 — P5: adopt or decline?** Everything above P3 is useful either way, but P3b's
+  recommendation and P5's migration path both hang on this. The measured 0% coverage is the
+  strongest argument for it; the cost is an ingestion rewrite and a per-store stamping mode.
+- **Q-2 — Invert `open_synthetic_triples` to an inclusion list?** The exclusion form (H-3) will trap
+  every future edge type, not just `HAD_CONTENT`. Fixing it inside P3 is a small change with a
+  blast radius in the framework-resolver path (§1.3), so it may deserve its own change.
+- **Q-3 — Upstream `recorded_generations` into Macrame?** A read-only listing of `transaction_log`
+  stamps is arguably Macrame's to own, and CodeRadar holding it means one more raw-SQL dependency on
+  the engine's schema. Keeping it local is faster now; upstreaming is cleaner and needs a Macrame
+  release.
+- **Q-4 — Do the new ops belong on MCP?** `verify_history` is an operator tool, not an agent tool;
+  `changes_between` plausibly is an agent tool. Deciding early avoids a surface that has to be
+  withdrawn.
+- **Q-5 — Does a full analyze get run on the self-host store now?** It would lift coverage for
+  current content and leave the 6,441 historical generations byte-less forever. Worth doing
+  regardless, but it also destroys the cleanest available before/after demonstration of P1.
+
+---
+
+## Judgment
+
+The architecture is already right where it is hardest to change — content addressing, retention by
+reference scan, put-then-assert, branch-global bytes — and §0 confirms it empirically: zero
+unresolvable digests, zero mismatches, across 6,442 generations. What is missing is cheap and
+additive: one batched primitive, two read APIs, one spine of digests, and a parameter for lineage.
+
+The one expensive thing is P5, and it is expensive because it is a semantic change rather than a
+feature: it decides whether CodeRadar's timeline is a record of its own activity or a record of the
+code's history. The measurement in §0 is what makes that question concrete — a store with six
+thousand generations and one file's bytes is an index of structure that cannot show the code it
+describes.
+
+Build P0–P2 first regardless of that decision. They are small, they are honest about what they
+cannot answer, and they turn every remaining claim in this document into something that can be
+checked rather than argued.
