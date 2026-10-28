@@ -1068,9 +1068,10 @@ reading): the findings were ingested as `coderadar/temporal-findings-2026-10-28`
 CodeRadar corpus — register, philosophy note, open-items, the v0.7–v0.12 plans, the per-session
 thought trails — was consolidated out of the shared `OKFgraph/kb.db` into `okfgraph.db` at the repo
 root (102 concepts; fidelity verified id-by-id, bodies and tags; `kb.db` emptied of CodeRadar
-content). The project's memory now travels with the checkout, and both halves of the "gaps"
-paragraph are resolved: H-11/H-12/H-13 and the coverage numbers are in the graph, beside the
-decisions they qualify.
+content). The memory now sits beside the code rather than in a store shared with other projects —
+though not *in* git, since `.gitignore` excludes `*.db`, so a clone gets the docs and not the graph.
+Both halves of the "gaps" paragraph are resolved: H-11/H-12/H-13 and the coverage numbers are in the
+graph, beside the decisions they qualify.
 
 ### 2026-10-28 — v0.14.0 cut (P0–P4 released)
 
