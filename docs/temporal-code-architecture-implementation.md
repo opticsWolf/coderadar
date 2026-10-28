@@ -1,8 +1,9 @@
 # CodeRadar — Temporal Code Reconstruction: Architecture & Implementation
 
 > **Date:** 2026-10-27 · **Baseline:** v0.13.0 (`fd6ac00`, `main`) on `macrame-db 0.19.1`
-> **Status:** plan, not as-built. Nothing in §5 is implemented except P1's prototype
-> (`scripts/verify_history.py`, landed `a1ab115`). No decision-register rows exist yet; §8 is what
+> **Status:** plan, partly built. P0 landed (`ff5fb96`, §12); P1's prototype
+> (`scripts/verify_history.py`) predates the plan (`a1ab115`). Nothing else in
+> §5 is implemented. No decision-register rows exist yet; §8 is what
 > to add before code lands.
 > **Derives from:** [`temporal-code-reconstruction.md`](temporal-code-reconstruction.md) (the
 > analysis and its verdicts — where this file disagrees with it, this file is newer and wins) and
@@ -234,7 +235,8 @@ identical refs for the same (ids, T) — this is the anti-divergence pin for the
 ratio against the N-call path.
 
 **Done when.** A 490-id, 12-generation sweep costs 12 folds, measured, and the parity test (a)
-passes.
+passes. *(Met 2026-10-28: parity pins green; fold-count measured 23x on a 30-id fixture sweep
+— one fold vs thirty — rather than the full 490-id run. See §12.)*
 
 ---
 
@@ -626,6 +628,38 @@ code's history. The measurement in §0 is what makes that question concrete — 
 thousand generations and one file's bytes is an index of structure that cannot show the code it
 describes.
 
+## 12. Progress log
+
 Build P0–P2 first regardless of that decision. They are small, they are honest about what they
 cannot answer, and they turn every remaining claim in this document into something that can be
-checked rather than argued.
+checked rather than argued — which is what §12 now records.
+
+### 2026-10-28 — P0 `source_refs_at` landed (`ff5fb96` on `dev`)
+
+What shipped: `source_ref_from_state` extracted in `storage.rs` (the single implementation
+behind both paths); `CodeGraphStore::source_refs_at` (one `reconstruct`, absent ids omitted
+from the map, `predates_recorded_history` mirrored); the `#[pyfunction]` binding with
+snapshot-then-release locking and `py.allow_threads`, registered beside `entity_source_ref_at`;
+`source_ref_to_dict` as the one dict-shape builder, with the single-call path refactored onto it.
+No `ops` surface, per the plan — P1/P2 are the only callers.
+
+Tests: 2 Rust unit tests (batch-vs-single parity over present/module/absent ids; predates with
+empty map) + `tests/test_source_refs_at.py` (5 FFI tests: t0/t1 parity on a two-generation store,
+omission-never-None, predates, garbage-ts `ValueError`). Full gates at landing: Rust lib 499
+passed + 1 ignored, `test_blob_reads` + new file 21 passed, `cargo fmt --check` / `clippy
+--all-targets -D warnings` / `ruff` clean, rebuilt `_core.pyd`.
+
+Deviations from §5, all deliberate:
+
+- **Corrupt concept fails the batch.** The plan did not specify; propagating (like the single
+  call) won over skipping, because a sweep must surface corruption, not hide it (INV-7).
+- **Fold-count test (d) not CI-pinned.** No instrumentation hook exists to count folds, and a
+  timing-ratio assertion would be flaky CI. Measured manually instead: 30-id fixture sweep, 30
+  singles 0.02 s vs batch <0.001 s (23x — one fold vs thirty). The win scales with log size; the
+  0.36 s/call figure in §0 was measured on the 40k-log self-host store.
+- **`predates` fixture subtlety.** A stamp captured *before* the upsert predates the recording
+  (recorded_at lands later), so the Rust fixture re-stamps after the write. Worth remembering for
+  every future temporal test.
+- **Rebuild needed two `mcp serve` kills.** The repo `_core.pyd` was DLL-locked by stale
+  `coderadar.exe mcp serve` processes — same precedent as the v0.13 session. Restart them before
+  trusting MCP answers against the new binary.
