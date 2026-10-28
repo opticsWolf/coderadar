@@ -604,6 +604,59 @@ def as_of(timestamp: str, symbols: tuple, query_text: str, fmt: str):
             query="`coderadar query`", search="`coderadar search`"))
 
 
+@main.command(name="verify-history")
+@click.option("--from", "from_ts", default=None,
+              help="Window start (ISO 8601 UTC). Omit for the first generation.")
+@click.option("--to", "to_ts", default=None,
+              help="Window end (ISO 8601 UTC). Omit for the last generation.")
+@click.option("--generations", default=25, show_default=True, type=int,
+              help="How many generations to sample (both window ends always included).")
+@click.option("--all", "all_generations", is_flag=True,
+              help="Sweep every generation in the window instead of sampling.")
+@click.option("--branch", default="main", show_default=True,
+              help="Ledger branch to verify.")
+@click.option("--offenders", default=10, show_default=True, type=int,
+              help="Offending ids to list per outcome (0 hides the list).")
+@_format_option
+def verify_history(from_ts: str | None, to_ts: str | None, generations: int,
+                   all_generations: bool, branch: str, offenders: int, fmt: str):
+    """Report per-generation byte coverage (MCP coderadar_verify_history)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.verify_history(
+            from_ts, to_ts, generations, all_generations, branch, offenders),
+        lambda result: render.verify_history(result, offenders=offenders))
+
+
+@main.command(name="changes-between")
+@click.option("--t1", "t1", required=True,
+              help="Window start (ISO 8601 UTC).")
+@click.option("--t2", "t2", required=True,
+              help="Window end (ISO 8601 UTC).")
+@click.option("--scope", default=None,
+              help="File path as indexed, or an id prefix. Omit for the whole universe.")
+@click.option("--branch", default="main", show_default=True,
+              help="Ledger branch to diff.")
+@_format_option
+def changes_between(t1: str, t2: str, scope: str | None, branch: str, fmt: str):
+    """Report added/removed/modified/moved entities (MCP coderadar_changes_between)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.changes_between(t1, t2, scope, branch),
+        lambda result: render.changes_between(result))
+
+
+@main.command(name="history")
+@click.argument("file")
+@_format_option
+def history(file: str, fmt: str):
+    """Every content FILE ever had, newest first (P3 content spine)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.history_of(file),
+        lambda result: render.history_of(result))
+
+
 @main.command()
 @click.argument("entity_id")
 @click.option("--direction", default="both", show_default=True,

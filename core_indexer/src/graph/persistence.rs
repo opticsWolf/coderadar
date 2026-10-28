@@ -140,6 +140,38 @@ impl CodeGraph {
             .map(|(s, t, k)| edge_key(&s, &t, &k))
             .collect();
 
+        // H-12: every assertion in a run shares one `valid_from`, so the same
+        // triple queued twice collides on the ledger's
+        // (source, target, type, valid_from, recorded_at, branch) UNIQUE key —
+        // and because each batch flush is fallible, that abort left the
+        // batches before it committed: a partial edge write reported as a
+        // success. The loops below read from sets EXCEPT the two that walk
+        // `Vec`s: `resolved_calls` (INSTANTIATES) and `resolved_refs`
+        // (REFERENCES). A function constructing the same class twice is
+        // ordinary code and produced exactly that duplicate — 53 functions on
+        // CodeRadar itself.
+        //
+        // Deduping at the flush boundary rather than in each loop is
+        // deliberate: it is one guard for all nine current loops and for
+        // every edge type added later, which is the shape of the defect
+        // (a new loop over a `Vec` would otherwise reintroduce it).
+        //
+        // `edge_count` is unchanged by this: it counts what the projection
+        // holds, "whether newly asserted or already open", so a repeated
+        // projection entry still counts twice. Only the write is deduped.
+        let mut queued: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut flush =
+            |assertions: Vec<macrame::graph::EdgeAssertion>| -> Result<(), macrame::DbError> {
+                let fresh: Vec<_> = assertions
+                    .into_iter()
+                    .filter(|a| queued.insert(edge_key(&a.source, &a.target, &a.edge_type)))
+                    .collect();
+                if fresh.is_empty() {
+                    return Ok(());
+                }
+                store.assert_edges_bulk(fresh).map(|_| ())
+            };
+
         let dangling = |a: &str, b: &str| !is_persistable(a) || !is_persistable(b);
 
         for (caller, callees) in projection.callees_by_caller.iter() {
@@ -174,7 +206,7 @@ impl CodeGraph {
                 );
                 edge_count += 1;
                 if batch.len() >= 200 {
-                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                    flush(std::mem::take(&mut batch))?;
                 }
             }
         }
@@ -204,7 +236,7 @@ impl CodeGraph {
                 );
                 edge_count += 1;
                 if batch.len() >= 200 {
-                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                    flush(std::mem::take(&mut batch))?;
                 }
             }
         }
@@ -231,7 +263,7 @@ impl CodeGraph {
                 );
                 edge_count += 1;
                 if batch.len() >= 200 {
-                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                    flush(std::mem::take(&mut batch))?;
                 }
             }
         }
@@ -258,7 +290,7 @@ impl CodeGraph {
                 );
                 edge_count += 1;
                 if batch.len() >= 200 {
-                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                    flush(std::mem::take(&mut batch))?;
                 }
             }
         }
@@ -285,7 +317,7 @@ impl CodeGraph {
                 );
                 edge_count += 1;
                 if batch.len() >= 200 {
-                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                    flush(std::mem::take(&mut batch))?;
                 }
             }
         }
@@ -308,7 +340,7 @@ impl CodeGraph {
                 );
                 edge_count += 1;
                 if batch.len() >= 200 {
-                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                    flush(std::mem::take(&mut batch))?;
                 }
             }
         }
@@ -340,7 +372,7 @@ impl CodeGraph {
                 );
                 edge_count += 1;
                 if batch.len() >= 200 {
-                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                    flush(std::mem::take(&mut batch))?;
                 }
             }
         }
@@ -368,7 +400,7 @@ impl CodeGraph {
                 );
                 edge_count += 1;
                 if batch.len() >= 200 {
-                    store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                    flush(std::mem::take(&mut batch))?;
                 }
             }
         }
@@ -392,12 +424,12 @@ impl CodeGraph {
             );
             edge_count += 1;
             if batch.len() >= 200 {
-                store.assert_edges_bulk(std::mem::take(&mut batch))?;
+                flush(std::mem::take(&mut batch))?;
             }
         }
 
         if !batch.is_empty() {
-            store.assert_edges_bulk(batch)?;
+            flush(batch)?;
         }
 
         Ok(edge_count)

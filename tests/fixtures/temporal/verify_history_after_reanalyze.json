@@ -1,0 +1,434 @@
+{
+  "store": ".coderadar\\store\\coderadar.db",
+  "root": ".",
+  "branch": "main",
+  "window": [
+    "2026-09-10T18:14:13.268486Z",
+    "2026-10-28T07:13:23.124895Z"
+  ],
+  "total_generations": 6575,
+  "sampled": 25,
+  "offenders_per_outcome": 5,
+  "generations": [
+    {
+      "timestamp": "2026-09-10T18:14:13.268486Z",
+      "modules": 70,
+      "counts": {
+        "no_digest": 70
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module",
+          ".\\core_indexer\\src\\extract\\decorators.rs::module",
+          ".\\core_indexer\\src\\extract\\docstring.rs::module",
+          ".\\core_indexer\\src\\extract\\spans.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T21:43:12.321707Z",
+      "modules": 241,
+      "counts": {
+        "no_digest": 241
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T21:43:14.487943Z",
+      "modules": 237,
+      "counts": {
+        "no_digest": 237
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T22:03:02.056672Z",
+      "modules": 474,
+      "counts": {
+        "no_digest": 474
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T22:03:02.217355Z",
+      "modules": 474,
+      "counts": {
+        "no_digest": 474
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T22:03:02.390898Z",
+      "modules": 474,
+      "counts": {
+        "no_digest": 474
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T22:03:02.533964Z",
+      "modules": 474,
+      "counts": {
+        "no_digest": 474
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T22:03:02.685476Z",
+      "modules": 474,
+      "counts": {
+        "no_digest": 474
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T22:03:02.848010Z",
+      "modules": 474,
+      "counts": {
+        "no_digest": 474
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T22:03:03.002026Z",
+      "modules": 474,
+      "counts": {
+        "no_digest": 474
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T22:03:03.156234Z",
+      "modules": 474,
+      "counts": {
+        "no_digest": 474
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T22:03:03.345110Z",
+      "modules": 474,
+      "counts": {
+        "no_digest": 474
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T22:03:03.491065Z",
+      "modules": 474,
+      "counts": {
+        "no_digest": 474
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T22:03:03.623075Z",
+      "modules": 474,
+      "counts": {
+        "no_digest": 474
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\core_indexer\\src\\clones\\apted.rs::module",
+          ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+          ".\\core_indexer\\src\\clones\\minhash.rs::module",
+          ".\\core_indexer\\src\\clones\\mod.rs::module",
+          ".\\core_indexer\\src\\clones\\tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-03T22:03:04.437805Z",
+      "modules": 362,
+      "counts": {
+        "no_digest": 362
+      },
+      "offenders": {
+        "no_digest": [
+          ".\\py_agent\\src\\coderadar\\resolvers\\__init__.py::module",
+          ".\\py_agent\\src\\coderadar\\resolvers\\actix.py::module",
+          ".\\py_agent\\src\\coderadar\\resolvers\\aspnet.py::module",
+          ".\\py_agent\\src\\coderadar\\resolvers\\base.py::module",
+          ".\\py_agent\\src\\coderadar\\resolvers\\django.py::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-04T05:29:52.083824Z",
+      "modules": 240,
+      "counts": {
+        "no_digest": 240
+      },
+      "offenders": {
+        "no_digest": [
+          "core_indexer/src/clones/apted.rs::module",
+          "core_indexer/src/clones/lsh_index.rs::module",
+          "core_indexer/src/clones/minhash.rs::module",
+          "core_indexer/src/clones/mod.rs::module",
+          "core_indexer/src/clones/tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-04T05:31:15.531722Z",
+      "modules": 240,
+      "counts": {
+        "no_digest": 240
+      },
+      "offenders": {
+        "no_digest": [
+          "core_indexer/src/clones/apted.rs::module",
+          "core_indexer/src/clones/lsh_index.rs::module",
+          "core_indexer/src/clones/minhash.rs::module",
+          "core_indexer/src/clones/mod.rs::module",
+          "core_indexer/src/clones/tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-04T07:06:57.561216Z",
+      "modules": 243,
+      "counts": {
+        "no_digest": 243
+      },
+      "offenders": {
+        "no_digest": [
+          "core_indexer/src/clones/apted.rs::module",
+          "core_indexer/src/clones/lsh_index.rs::module",
+          "core_indexer/src/clones/minhash.rs::module",
+          "core_indexer/src/clones/mod.rs::module",
+          "core_indexer/src/clones/tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-06T13:18:22.100190Z",
+      "modules": 245,
+      "counts": {
+        "no_digest": 245
+      },
+      "offenders": {
+        "no_digest": [
+          "core_indexer/src/clones/apted.rs::module",
+          "core_indexer/src/clones/lsh_index.rs::module",
+          "core_indexer/src/clones/minhash.rs::module",
+          "core_indexer/src/clones/mod.rs::module",
+          "core_indexer/src/clones/tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-06T20:23:54.965225Z",
+      "modules": 245,
+      "counts": {
+        "no_digest": 245
+      },
+      "offenders": {
+        "no_digest": [
+          "core_indexer/src/clones/apted.rs::module",
+          "core_indexer/src/clones/lsh_index.rs::module",
+          "core_indexer/src/clones/minhash.rs::module",
+          "core_indexer/src/clones/mod.rs::module",
+          "core_indexer/src/clones/tokens.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-06T20:23:55.807451Z",
+      "modules": 239,
+      "counts": {
+        "no_digest": 239
+      },
+      "offenders": {
+        "no_digest": [
+          "core_indexer/src/clones/apted.rs::module",
+          "core_indexer/src/clones/lsh_index.rs::module",
+          "core_indexer/src/clones/minhash.rs::module",
+          "core_indexer/src/clones/tokens.rs::module",
+          "core_indexer/src/extract/decorators.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-06T20:23:56.357254Z",
+      "modules": 237,
+      "counts": {
+        "no_digest": 237
+      },
+      "offenders": {
+        "no_digest": [
+          "core_indexer/src/clones/apted.rs::module",
+          "core_indexer/src/clones/lsh_index.rs::module",
+          "core_indexer/src/clones/minhash.rs::module",
+          "core_indexer/src/clones/tokens.rs::module",
+          "core_indexer/src/extract/decorators.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-06T20:23:56.861799Z",
+      "modules": 235,
+      "counts": {
+        "no_digest": 235
+      },
+      "offenders": {
+        "no_digest": [
+          "core_indexer/src/clones/apted.rs::module",
+          "core_indexer/src/clones/lsh_index.rs::module",
+          "core_indexer/src/clones/minhash.rs::module",
+          "core_indexer/src/clones/tokens.rs::module",
+          "core_indexer/src/extract/decorators.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-06T20:23:57.243087Z",
+      "modules": 234,
+      "counts": {
+        "no_digest": 234
+      },
+      "offenders": {
+        "no_digest": [
+          "core_indexer/src/clones/apted.rs::module",
+          "core_indexer/src/clones/lsh_index.rs::module",
+          "core_indexer/src/clones/minhash.rs::module",
+          "core_indexer/src/clones/tokens.rs::module",
+          "core_indexer/src/extract/decorators.rs::module"
+        ]
+      }
+    },
+    {
+      "timestamp": "2026-10-28T07:13:23.124895Z",
+      "modules": 274,
+      "counts": {
+        "ok": 273,
+        "no_digest": 1
+      },
+      "offenders": {
+        "no_digest": [
+          "core_indexer/src/scaffold/secrets.rs::module"
+        ]
+      }
+    }
+  ],
+  "totals": {
+    "no_digest": 8283,
+    "ok": 273
+  },
+  "byte_coverage_pct": 3.19,
+  "distinct_digests": 272,
+  "offender_sample": {
+    "no_digest": [
+      ".\\core_indexer\\src\\clones\\apted.rs::module",
+      ".\\core_indexer\\src\\clones\\lsh_index.rs::module",
+      ".\\core_indexer\\src\\clones\\minhash.rs::module",
+      ".\\core_indexer\\src\\clones\\mod.rs::module",
+      ".\\core_indexer\\src\\clones\\tokens.rs::module"
+    ]
+  },
+  "offender_distinct": {
+    "no_digest": 487
+  },
+  "crosscheck": {
+    "checked": 20,
+    "agreed": 20,
+    "disagreements": []
+  }
+}

@@ -58,6 +58,9 @@ coderadar callees ENTITY_ID                  # one hop down
 coderadar affected ENTITY_ID [--max-depth 5] # transitive callers, the blast radius
 coderadar resolve '/users/:id' [--limit 5]   # routes, *Model / *View names
 coderadar as-of TIMESTAMP [SYMBOL]... [-q TEXT]   # names at T, not bytes at T
+coderadar verify-history [--from TS --to TS] [--generations 25 | --all]  # can the past be reconstructed
+coderadar changes-between --t1 TS --t2 TS [--scope FILE|PREFIX]  # what changed, hash-based
+coderadar history FILE                   # every content FILE ever had, newest first
 coderadar module-children MODULE_ID          # e.g. 'pkg/app.py::module'
 coderadar diagnose [--unresolved] [--low-confidence]
 ```
@@ -160,5 +163,7 @@ canonical commands and flags above.
 - MCP `coderadar_set_project` has no separate CLI command: use `-C/--project`
   (`coderadar -C ../other status`). One process serves one root.
 - Keep using normal file tools for raw reads; use the graph for structure.
-- History (as-of/bytes-at-T) and retention (`archive`) are API/MCP-first;
-  the CLI covers the live graph.
+- History reads are CLI-first-class: `as-of` for names at T,
+  `verify-history` for whether the bytes exist at all, `changes-between`
+  for what changed between two instants. Retention
+  (`archive`) stays API/MCP-first.

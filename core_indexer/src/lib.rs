@@ -70,9 +70,22 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lookup_entity_at, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entities_at, m)?)?;
     m.add_function(wrap_pyfunction!(blob_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(edge_persist_error, m)?)?;
     m.add_function(wrap_pyfunction!(search_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(blob_get, m)?)?;
     m.add_function(wrap_pyfunction!(entity_source_ref_at, m)?)?;
+    m.add_function(wrap_pyfunction!(source_refs_at, m)?)?;
+    m.add_function(wrap_pyfunction!(recorded_generations, m)?)?;
+    m.add_function(wrap_pyfunction!(module_concept_ids, m)?)?;
+    m.add_function(wrap_pyfunction!(all_concept_ids, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_id, m)?)?;
+    m.add_function(wrap_pyfunction!(content_hashes_at, m)?)?;
+    m.add_function(wrap_pyfunction!(visible_module_concept_ids, m)?)?;
+    m.add_function(wrap_pyfunction!(visible_all_concept_ids, m)?)?;
+    m.add_function(wrap_pyfunction!(branches, m)?)?;
+    m.add_function(wrap_pyfunction!(fork_branch, m)?)?;
+    m.add_function(wrap_pyfunction!(write_branch_content, m)?)?;
+    m.add_function(wrap_pyfunction!(history_of, m)?)?;
     m.add_function(wrap_pyfunction!(archive, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -236,6 +249,23 @@ where
         }
     };
     f(snap)
+}
+
+/// Map a temporal-engine error onto the Python surface (P4, DR-40):
+/// unknown/refused lineage names are caller errors (`ValueError` →
+/// `InvalidRequest` upstairs), everything else is an engine failure
+/// (`RuntimeError` → `EngineError`). A typo'd branch must refuse loudly,
+/// never read as the trunk.
+fn temporal_err(e: macrame::DbError) -> PyErr {
+    match e {
+        macrame::DbError::UnknownBranch(name) => pyo3::exceptions::PyValueError::new_err(format!(
+            "unknown branch {name:?}: fork it first"
+        )),
+        macrame::DbError::InvalidBranchId(name) => {
+            pyo3::exceptions::PyValueError::new_err(format!("invalid branch name {name:?}"))
+        }
+        other => pyo3::exceptions::PyRuntimeError::new_err(format!("{other:?}")),
+    }
 }
 
 // ── PyO3-exposed Graph wrapper ─────────────────────────────────────────────
@@ -661,6 +691,9 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
     // §1.9: cumulative blob counters describe the generation this analyze
     // produces — reset here, incremented by every write-through put.
     crate::storage::reset_blob_stats();
+    // H-12: likewise, an edge-persist failure describes THIS generation and
+    // must not be inherited from the last one.
+    crate::storage::reset_edge_persist_error();
     let config = active_config();
     let mut graph = CodeGraph::new((*config).clone());
     // F14: the write-time canonical form strips THIS root — it must be
@@ -1010,16 +1043,51 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         // re-persist); a failed index for a blob problem would invert the
         // priority (graph primary, bytes secondary).
         if let Some(ref store) = graph.store {
-            let v2 = crate::storage::build_v2_concepts_all(&projection, &blob_digests);
+            let mut v2 = crate::storage::build_v2_concepts_all(&projection, &blob_digests);
             current_concept_ids = v2.iter().map(|concept| concept.id.clone()).collect();
+            // P3 (DR-38): content-version spine — computed here and
+            // appended to the SAME bulk: one flush, one commit, one
+            // generation (P1 `recorded_generations` counts DISTINCT
+            // `recorded_at` per commit). Digest-less modules (degraded
+            // puts) mint no spine; the next successful put starts
+            // their chain.
+            let spine_inputs: Vec<(String, String)> = projection
+                .modules
+                .keys()
+                .filter_map(|id| {
+                    id.strip_suffix("::module").and_then(|file| {
+                        blob_digests
+                            .get(file)
+                            .map(|digest| (id.clone(), digest.clone()))
+                    })
+                })
+                .collect();
+            if !spine_inputs.is_empty() {
+                let now = crate::storage::now_iso8601();
+                match store.spine_upserts_for(&spine_inputs, &now) {
+                    Ok(extra) => v2.extend(extra),
+                    Err(e) => eprintln!("[diag] spine computation failed: {e:?}"),
+                }
+            }
             if let Err(e) = store.upsert_concepts_bulk(&v2) {
                 concept_flush_succeeded = false;
                 eprintln!("[diag] v2 concept flush failed: {e:?}");
             }
         }
         // Persist resolved edges to Macrame store
+        // H-12: assert-only and batch-flushed, so a failure here leaves the
+        // batches before it committed. That is a partial edge write, not a
+        // failed one, and the index around it is sound — so it must not fail
+        // the analyze, and must not be a quiet `[diag]` line either. Recorded
+        // for `edge_persist_error()` (which `ops.reindex` reports) and said
+        // plainly, naming the consequence rather than only the error.
         if let Err(e) = graph.persist_edges(&projection) {
-            eprintln!("[diag] persist_edges failed: {e:?}");
+            crate::storage::record_edge_persist_error(format!("{e:?}"));
+            eprintln!(
+                "[coderadar] WARNING edge persistence failed part way through: {e:?}\n\
+                 [coderadar] the store's edges are INCOMPLETE for this generation \
+                 (concepts and blobs are not affected); re-run the analyze"
+            );
         }
         // F6: a re-analyze must actually upgrade a v1 store. v1 ids are
         // absolute paths while v2 ids are relative, so the v2 flush above
@@ -1731,6 +1799,7 @@ fn entities_at(
     py: Python<'_>,
     entity_ids: &[String],
     timestamp: &str,
+    branch: &str,
 ) -> PyResult<(Vec<Option<PyObject>>, bool)> {
     use crate::graph::cold_start::projection_from_state;
     // Normalize first so a garbage ts is deterministically a ValueError
@@ -1749,9 +1818,9 @@ fn entities_at(
             )
         })?
     };
-    let state = py.allow_threads(|| store.reconstruct(&ts)).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("reconstruct({ts:?}) failed: {e:?}"))
-    })?;
+    let state = py
+        .allow_threads(|| store.reconstruct_on(&ts, branch))
+        .map_err(temporal_err)?;
     let predates = state.predates_recorded_history;
     let (projection, _stats) = projection_from_state(&state).map_err(|e| {
         pyo3::exceptions::PyRuntimeError::new_err(format!("projection at {ts:?} failed: {e}"))
@@ -1759,10 +1828,20 @@ fn entities_at(
     let entities = entity_ids
         .iter()
         .map(|id| {
-            // R2-16: existence checks accept any id spelling too.
+            // R2-16: existence checks accept any id spelling too. Raw
+            // first: the requested spelling resolves when IT is the one
+            // live at T (an old spelling at an old T — H-11); canonical
+            // covers the reverse (an old spelling at a new T). When both
+            // spellings are live under one canonical form they are the
+            // same concept, so order cannot double-count.
             let canon = canonical_lookup_id(id);
-            if let Some(found) = entity_ref_to_dict(py, &canon, &projection) {
+            if let Some(found) = entity_ref_to_dict(py, id, &projection) {
                 return Some(found);
+            }
+            if canon != *id {
+                if let Some(found) = entity_ref_to_dict(py, &canon, &projection) {
+                    return Some(found);
+                }
             }
             match resolve_qualified_name(&projection, &canon) {
                 Some(resolved) => entity_ref_to_dict(py, &resolved, &projection),
@@ -1778,10 +1857,15 @@ fn entities_at(
 /// bool}`. A garbage timestamp is a `ValueError`; a missing graph or store
 /// is a `RuntimeError`.
 #[pyfunction]
-#[pyo3(signature = (entity_id, timestamp))]
-fn lookup_entity_at(py: Python<'_>, entity_id: &str, timestamp: &str) -> PyResult<PyObject> {
+#[pyo3(signature = (entity_id, timestamp, branch = "main"))]
+fn lookup_entity_at(
+    py: Python<'_>,
+    entity_id: &str,
+    timestamp: &str,
+    branch: &str,
+) -> PyResult<PyObject> {
     let ids = vec![entity_id.to_string()];
-    let (mut entities, predates) = entities_at(py, &ids, timestamp)?;
+    let (mut entities, predates) = entities_at(py, &ids, timestamp, branch)?;
     let out = PyDict::new(py);
     out.set_item("entity", entities.pop().flatten())?;
     out.set_item("predates_recorded_history", predates)?;
@@ -1793,13 +1877,14 @@ fn lookup_entity_at(py: Python<'_>, entity_id: &str, timestamp: &str) -> PyResul
 /// `ops.as_of` funnels N symbols through here so a 20-symbol call costs
 /// one reconstruct, not twenty.
 #[pyfunction]
-#[pyo3(signature = (entity_ids, timestamp))]
+#[pyo3(signature = (entity_ids, timestamp, branch = "main"))]
 fn lookup_entities_at(
     py: Python<'_>,
     entity_ids: Vec<String>,
     timestamp: &str,
+    branch: &str,
 ) -> PyResult<PyObject> {
-    let (entities, predates) = entities_at(py, &entity_ids, timestamp)?;
+    let (entities, predates) = entities_at(py, &entity_ids, timestamp, branch)?;
     let by_id = PyDict::new(py);
     for (id, entity) in entity_ids.iter().zip(entities) {
         by_id.set_item(id, entity)?;
@@ -1823,6 +1908,18 @@ fn blob_stats(py: Python<'_>) -> PyResult<PyObject> {
     out.set_item("skipped_excluded", stats.skipped_excluded)?;
     out.set_item("bytes", stats.bytes)?;
     Ok(out.into())
+}
+
+/// H-12: the engine message from this generation's edge-persist failure, or
+/// `None` when edges persisted cleanly.
+///
+/// Same lifetime as `blob_stats`: reset on `analyze`/`load_snapshot`, set by
+/// a failing `persist_edges`. `Some(..)` means the store's edges are
+/// incomplete for the loaded generation — concepts and blobs are unaffected,
+/// and a re-analyze is the repair.
+#[pyfunction]
+fn edge_persist_error() -> Option<String> {
+    crate::storage::edge_persist_error_snapshot()
 }
 
 /// FTS5 keyword search over concept text (§1.10, DR-34): `{id, rank}`
@@ -1886,6 +1983,24 @@ fn blob_get(py: Python<'_>, digest: &str) -> PyResult<PyObject> {
     }
 }
 
+/// Dict shape for one `SourceRef`: the ten keys `entity_source_ref_at`
+/// already emits, built in exactly one place (P0, DR-36) so the single
+/// and batched paths cannot diverge in shape.
+fn source_ref_to_dict(py: Python<'_>, r: &crate::storage::SourceRef) -> PyResult<PyObject> {
+    let d = PyDict::new(py);
+    d.set_item("id", &r.id)?;
+    d.set_item("file_path", &r.file_path)?;
+    d.set_item("digest", &r.digest)?;
+    d.set_item("span_start", r.span_start)?;
+    d.set_item("span_end", r.span_end)?;
+    d.set_item("has_span", r.has_span)?;
+    d.set_item("full_file", r.full_file)?;
+    d.set_item("start_line", r.start_line)?;
+    d.set_item("end_line", r.end_line)?;
+    d.set_item("handler_id", &r.handler_id)?;
+    Ok(d.into())
+}
+
 /// Where one entity's bytes live at one timestamp (§3.0, DR-25):
 /// `{id, file_path, digest | None, span_start, span_end, has_span,
 /// full_file, start_line, end_line, handler_id | None} | None`. `None` = not in the
@@ -1894,8 +2009,13 @@ fn blob_get(py: Python<'_>, digest: &str) -> PyResult<PyObject> {
 /// `RuntimeError`. Takes the id as given: spelling resolution is the
 /// caller's (`Snapshot` resolves via `find` first).
 #[pyfunction]
-#[pyo3(signature = (entity_id, timestamp))]
-fn entity_source_ref_at(py: Python<'_>, entity_id: &str, timestamp: &str) -> PyResult<PyObject> {
+#[pyo3(signature = (entity_id, timestamp, branch = "main"))]
+fn entity_source_ref_at(
+    py: Python<'_>,
+    entity_id: &str,
+    timestamp: &str,
+    branch: &str,
+) -> PyResult<PyObject> {
     let ts = normalize_timestamp(timestamp)?;
     let found = with_graph(|graph, _snap| {
         let store = graph.store.as_ref().ok_or_else(|| {
@@ -1904,26 +2024,385 @@ fn entity_source_ref_at(py: Python<'_>, entity_id: &str, timestamp: &str) -> PyR
             )
         })?;
         store
-            .entity_source_ref_at(entity_id, &ts)
-            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))
+            .entity_source_ref_at(entity_id, &ts, branch)
+            .map_err(temporal_err)
     })?;
     match found {
-        Some(r) => {
-            let d = PyDict::new(py);
-            d.set_item("id", r.id)?;
-            d.set_item("file_path", r.file_path)?;
-            d.set_item("digest", r.digest)?;
-            d.set_item("span_start", r.span_start)?;
-            d.set_item("span_end", r.span_end)?;
-            d.set_item("has_span", r.has_span)?;
-            d.set_item("full_file", r.full_file)?;
-            d.set_item("start_line", r.start_line)?;
-            d.set_item("end_line", r.end_line)?;
-            d.set_item("handler_id", r.handler_id)?;
-            Ok(d.into())
-        }
+        Some(r) => source_ref_to_dict(py, &r),
         None => Ok(py.None()),
     }
+}
+
+/// Batched `entity_source_ref_at` (P0, DR-36): one `reconstruct` serves
+/// every id, so a sweep over files × generations costs one fold per generation
+/// instead of one per entity. Returns `{"refs": {id: ref_dict},
+/// "predates_recorded_history": bool}` — ids absent at T are absent from
+/// the map, never `None` entries. A garbage timestamp is a `ValueError`; a
+/// missing graph or store is a `RuntimeError`. No Python surface: P1's
+/// `verify_history` and P2's `changes_between` are the only callers.
+#[pyfunction]
+#[pyo3(signature = (entity_ids, timestamp, branch = "main"))]
+fn source_refs_at(
+    py: Python<'_>,
+    entity_ids: Vec<String>,
+    timestamp: &str,
+    branch: &str,
+) -> PyResult<PyObject> {
+    let ts = normalize_timestamp(timestamp)?;
+    // Same snapshot-then-release discipline as `entities_at`: a slow
+    // reconstruct must not hold the graph lock or block a writer.
+    let store = {
+        let guard = GLOBAL_GRAPH.read();
+        let graph = guard.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
+        })?;
+        graph.store.clone().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "No persistent store — temporal lookup needs a .coderadar store",
+            )
+        })?
+    };
+    let (refs, predates) = py
+        .allow_threads(|| store.source_refs_at(&entity_ids, &ts, branch))
+        .map_err(temporal_err)?;
+    let by_id = PyDict::new(py);
+    for (id, r) in refs {
+        by_id.set_item(id, source_ref_to_dict(py, &r)?)?;
+    }
+    let out = PyDict::new(py);
+    out.set_item("refs", by_id)?;
+    out.set_item("predates_recorded_history", predates)?;
+    Ok(out.into())
+}
+
+/// Snapshot the store behind `GLOBAL_GRAPH` for a diagnostic-conn read.
+///
+/// The P1 listings (`recorded_generations`, `module_concept_ids`) run their
+/// own SQL through `open_diagnostic_conn`, so they need the store handle
+/// but must not hold the graph lock while the query runs.
+fn snapshot_store() -> PyResult<std::sync::Arc<crate::storage::CodeGraphStore>> {
+    let guard = GLOBAL_GRAPH.read();
+    let graph = guard.as_ref().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
+    })?;
+    graph.store.clone().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err(
+            "No persistent store — temporal reads need a .coderadar store",
+        )
+    })
+}
+
+/// Every recorded generation in a window, oldest first (P1, DR-36).
+///
+/// `from`/`to` are Macrame-canonical UTC stamps or `None` for open ends;
+/// garbage is a `ValueError` via `normalize_timestamp`, a missing graph or
+/// store a `RuntimeError`. Pure listing, no fold — safe to call in a sweep.
+#[pyfunction]
+#[pyo3(signature = (from, to, branch))]
+fn recorded_generations(
+    py: Python<'_>,
+    from: Option<String>,
+    to: Option<String>,
+    branch: &str,
+) -> PyResult<Vec<String>> {
+    let lo = from.map(|s| normalize_timestamp(&s)).transpose()?;
+    let hi = to.map(|s| normalize_timestamp(&s)).transpose()?;
+    let store = snapshot_store()?;
+    py.allow_threads(|| {
+        store
+            .recorded_generations(lo.as_deref(), hi.as_deref(), branch)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "recorded_generations({lo:?}..{hi:?}, {branch:?}) failed: {e:?}"
+                ))
+            })
+    })
+}
+
+/// Ids of every module concept the ledger ever described on `branch`
+/// (P1, DR-36): the input universe for a per-generation sweep. See
+/// `CodeGraphStore::module_concept_ids` for why ever-ids, not live ones.
+#[pyfunction]
+#[pyo3(signature = (branch,))]
+fn module_concept_ids(py: Python<'_>, branch: &str) -> PyResult<Vec<String>> {
+    let store = snapshot_store()?;
+    py.allow_threads(|| {
+        store.module_concept_ids(branch).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "module_concept_ids({branch:?}) failed: {e:?}"
+            ))
+        })
+    })
+}
+
+/// Ids of every concept the ledger ever described on `branch` (P2,
+/// DR-37): the input universe for the entity diff. See
+/// `CodeGraphStore::all_concept_ids` for the ever-not-live contract.
+#[pyfunction]
+#[pyo3(signature = (branch,))]
+fn all_concept_ids(py: Python<'_>, branch: &str) -> PyResult<Vec<String>> {
+    let store = snapshot_store()?;
+    py.allow_threads(|| {
+        store.all_concept_ids(branch).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "all_concept_ids({branch:?}) failed: {e:?}"
+            ))
+        })
+    })
+}
+
+/// Every lineage the ledger knows, trunk first (P4, DR-40):
+/// `[{"name", "parent" | None, "forked_at" | None, "created_at"}]`.
+/// A listing, not a fold — one tiny table read under `snapshot_store`
+/// discipline. An unforked database answers exactly the trunk.
+#[pyfunction]
+#[pyo3(signature = ())]
+fn branches(py: Python<'_>) -> PyResult<PyObject> {
+    let store = snapshot_store()?;
+    let infos = py.allow_threads(|| store.branches()).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("branches() failed: {e:?}"))
+    })?;
+    let out = PyList::empty(py);
+    for b in infos {
+        let d = PyDict::new(py);
+        d.set_item("name", b.name)?;
+        d.set_item("parent", b.parent)?;
+        d.set_item("forked_at", b.forked_at)?;
+        d.set_item("created_at", b.created_at)?;
+        out.append(d)?;
+    }
+    Ok(out.into())
+}
+
+/// Cut a lineage `name` from `from_branch` ("main" by default; P4,
+/// DR-40): the write half of branch reads, and the setup P5's
+/// per-git-branch ingestion stands on. An unknown parent or a bad name
+/// is a `ValueError` (refused, never trunk-fallback). Returns the cut
+/// lineage as a `branches()`-shaped dict.
+#[pyfunction]
+#[pyo3(signature = (name, from_branch = "main"))]
+fn fork_branch(py: Python<'_>, name: &str, from_branch: &str) -> PyResult<PyObject> {
+    let store = snapshot_store()?;
+    let b = py
+        .allow_threads(|| store.fork_branch(name, from_branch))
+        .map_err(temporal_err)?;
+    let d = PyDict::new(py);
+    d.set_item("name", b.name)?;
+    d.set_item("parent", b.parent)?;
+    d.set_item("forked_at", b.forked_at)?;
+    d.set_item("created_at", b.created_at)?;
+    Ok(d.into())
+}
+
+/// Record divergent content for `path` on `branch` (P4, DR-40): blob put
+/// (policy-honoring) plus content-addressed spine mint and same-id
+/// branch-pointer turnover in one bulk. Multi-commit by construction
+/// (blob, then spine + pointer); a re-point to identical bytes is a
+/// gate no-op. Returns the spine id, so callers can assert chain
+/// continuity. Refuses with `ValueError`
+/// for unknown branches and `RuntimeError` when no blob is recorded
+/// (disabled, excluded, oversize — a pointer without bytes would lie).
+#[pyfunction]
+#[pyo3(signature = (path, bytes, branch))]
+fn write_branch_content(
+    py: Python<'_>,
+    path: &str,
+    bytes: Vec<u8>,
+    branch: &str,
+) -> PyResult<String> {
+    let store = snapshot_store()?;
+    py.allow_threads(|| store.write_branch_content(path, &bytes, branch))
+        .map_err(temporal_err)
+}
+
+/// Ids of every module concept visible on `branch` (P4, DR-40): own
+/// rows UNION ancestors' — what a branch sweep iterates. Unknown branches
+/// refuse (never trunk-fallback).
+#[pyfunction]
+#[pyo3(signature = (branch,))]
+fn visible_module_concept_ids(py: Python<'_>, branch: &str) -> PyResult<Vec<String>> {
+    let store = snapshot_store()?;
+    py.allow_threads(|| {
+        store
+            .visible_module_concept_ids(branch)
+            .map_err(temporal_err)
+    })
+}
+
+/// Ids of every concept visible on `branch` (P4, DR-40): the ancestry
+/// union — what P2's diff sweeps on a lineage.
+#[pyfunction]
+#[pyo3(signature = (branch,))]
+fn visible_all_concept_ids(py: Python<'_>, branch: &str) -> PyResult<Vec<String>> {
+    let store = snapshot_store()?;
+    py.allow_threads(|| store.visible_all_concept_ids(branch).map_err(temporal_err))
+}
+
+/// Canonical read-path form of one entity id (P2, DR-37): converges
+/// legacy spellings (`.\\main.py::main`) to the live form so the diff
+/// can join generations across the H-11 respelling. Thin wrapper over
+/// `canonical_lookup_id` — see its docstring for the carve-outs
+/// (`external::*`, bare names and symbolic spellings pass through).
+#[pyfunction]
+#[pyo3(signature = (entity_id,))]
+fn canonical_id(entity_id: &str) -> String {
+    canonical_lookup_id(entity_id)
+}
+
+/// Every content a file ever had, newest first (P3, DR-38).
+///
+/// Ledger-direct through `snapshot_store` (no fold, no projection): the
+/// chain is one row per content change. `file_path` accepts any id
+/// spelling (canonicalized like every other temporal read); the answer
+/// is a list of `{digest, valid_from, valid_to, open, parent_digest,
+/// size_bytes, line_count}` newest-first, `[]` for a file the spine
+/// never saw (digest-less modules mint no spine).
+#[pyfunction]
+fn history_of(py: Python<'_>, file_path: &str) -> PyResult<PyObject> {
+    let module_id = canonical_lookup_id(&format!("{file_path}::module"));
+    let path = module_id
+        .strip_suffix("::module")
+        .unwrap_or(file_path)
+        .to_string();
+    let store = snapshot_store()?;
+    let chain = py.allow_threads(|| store.history_of(&path)).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "history_of({file_path:?}) failed: {e:?}"
+        ))
+    })?;
+    let out = PyList::empty(py);
+    for v in &chain {
+        let d = PyDict::new(py);
+        d.set_item("digest", &v.digest)?;
+        d.set_item("valid_from", &v.valid_from)?;
+        d.set_item("valid_to", &v.valid_to)?;
+        d.set_item("open", v.open)?;
+        d.set_item("parent_digest", &v.parent_digest)?;
+        d.set_item("size_bytes", v.size_bytes)?;
+        d.set_item("line_count", v.line_count)?;
+        out.append(d)?;
+    }
+    Ok(out.into())
+}
+
+/// to, its `content_hash` (`None` for kinds the extractor never hashed —
+/// imports, constants, type aliases, routes), and its line span (`None`
+/// where the projection carries none: modules are the whole file, routes
+/// are synthetic, byte-span kinds would need a blob read to line-map).
+/// Same kind dispatch and dotted-name fallback as `entity_ref_to_dict`,
+/// so the diff's universe agrees with `find`.
+type HashSpanHit = (String, Option<u64>, Option<u64>, Option<u64>);
+
+fn entity_hash_span(snap: &ProjectedGraph, entity_id: &str) -> Option<HashSpanHit> {
+    if let Some(f) = snap.functions.get(entity_id) {
+        return Some((
+            f.id.clone(),
+            Some(f.content_hash),
+            Some(f.line as u64),
+            Some(f.exit_line as u64),
+        ));
+    }
+    if let Some(c) = snap.classes.get(entity_id) {
+        return Some((
+            c.id.clone(),
+            Some(c.content_hash),
+            Some(c.line as u64),
+            Some(c.exit_line as u64),
+        ));
+    }
+    if let Some(m) = snap.modules.get(entity_id) {
+        return Some((m.id.clone(), Some(m.content_hash), None, None));
+    }
+    if let Some(i) = snap.imports.get(entity_id) {
+        return Some((i.id.clone(), None, Some(i.line as u64), None));
+    }
+    if let Some(k) = snap.constants.get(entity_id) {
+        return Some((k.id.clone(), None, None, None));
+    }
+    if let Some(t) = snap.type_aliases.get(entity_id) {
+        return Some((t.id.clone(), None, None, None));
+    }
+    if let Some(r) = snap.routes.get(entity_id) {
+        return Some((r.id.clone(), None, None, None));
+    }
+    None
+}
+
+/// Per-entity diff material at one timestamp (P2, DR-37): one fold
+/// serves every id. Returns `{"hashes": {requested_id: entry | None},
+/// "predates_recorded_history": bool}`; an entry is `{"id",
+/// "content_hash", "start_line", "end_line"}` with `None` where the
+/// projection carries nothing (see `entity_hash_span`). Keyed by
+/// *requested* id — `ops.changes_between` groups by canonical form
+/// itself, so a respelling never double-counts. Same
+/// snapshot-then-release locking as `entities_at`: a slow reconstruct
+/// must not block a writer. A garbage timestamp is a `ValueError`; a
+/// missing graph or store is a `RuntimeError`.
+#[pyfunction]
+#[pyo3(signature = (entity_ids, timestamp, branch = "main"))]
+fn content_hashes_at(
+    py: Python<'_>,
+    entity_ids: Vec<String>,
+    timestamp: &str,
+    branch: &str,
+) -> PyResult<PyObject> {
+    use crate::graph::cold_start::projection_from_state;
+    let ts = normalize_timestamp(timestamp)?;
+    let store = {
+        let guard = GLOBAL_GRAPH.read();
+        let graph = guard.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
+        })?;
+        graph.store.clone().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "No persistent store — temporal lookup needs a .coderadar store",
+            )
+        })?
+    };
+    let state = py
+        .allow_threads(|| store.reconstruct_on(&ts, branch))
+        .map_err(temporal_err)?;
+    let predates = state.predates_recorded_history;
+    let (projection, _stats) = projection_from_state(&state).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("projection at {ts:?} failed: {e}"))
+    })?;
+    let by_id = PyDict::new(py);
+    for id in &entity_ids {
+        // R2-16, H-11: raw first, then canonical — same discipline as
+        // `entities_at`, so the diff's universe agrees with `find` at
+        // every T (an old spelling resolves at an old T raw, at a new
+        // T via canonical).
+        let canon = canonical_lookup_id(id);
+        let found = entity_hash_span(&projection, id)
+            .or_else(|| {
+                if canon != *id {
+                    entity_hash_span(&projection, &canon)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                resolve_qualified_name(&projection, &canon)
+                    .and_then(|resolved| entity_hash_span(&projection, &resolved))
+            });
+        match found {
+            Some((actual, hash, start, end)) => {
+                let entry = PyDict::new(py);
+                entry.set_item("id", actual)?;
+                entry.set_item("content_hash", hash)?;
+                entry.set_item("start_line", start)?;
+                entry.set_item("end_line", end)?;
+                by_id.set_item(id, entry)?;
+            }
+            None => {
+                by_id.set_item(id, py.None())?;
+            }
+        }
+    }
+    let out = PyDict::new(py);
+    out.set_item("hashes", by_id)?;
+    out.set_item("predates_recorded_history", predates)?;
+    Ok(out.into())
 }
 
 /// One archive session at `cutoff` (§3.4, DR-25): `{links_archived,
@@ -2341,7 +2820,7 @@ fn normalize_edge_kinds(edge_kinds: &[String]) -> Vec<String> {
 /// `out`/`downstream` or `both`; `as_of` reads the graph as it was at a past
 /// timestamp. Returns one dict per reached node.
 #[pyfunction]
-#[pyo3(signature = (start_id, max_depth, edge_kinds, direction, as_of=None))]
+#[pyo3(signature = (start_id, max_depth, edge_kinds, direction, as_of=None, branch="main"))]
 fn traverse(
     py: Python<'_>,
     start_id: &str,
@@ -2349,6 +2828,7 @@ fn traverse(
     edge_kinds: Vec<String>,
     direction: &str,
     as_of: Option<String>,
+    branch: &str,
 ) -> PyResult<Vec<PyObject>> {
     // ── Direction normalization ────────────────────────────────────
     let (up, down) = match direction.trim().to_ascii_lowercase().as_str() {
@@ -2443,13 +2923,10 @@ fn traverse(
         // parity.
         use crate::graph::cold_start::projection_from_state;
         let ts_for_state = ts_owned.clone();
+        let branch_owned = branch.to_string();
         let state = py
-            .allow_threads(move || store.reconstruct(&ts_for_state))
-            .map_err(|e| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "as_of state at {ts_owned:?} failed: {e:?}"
-                ))
-            })?;
+            .allow_threads(move || store.reconstruct_on(&ts_for_state, &branch_owned))
+            .map_err(temporal_err)?;
         let (projection, _stats) = projection_from_state(&state).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!(
                 "as_of projection at {ts_owned:?} failed: {e}"
@@ -3683,6 +4160,8 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             *LEDGER_REVISION.write() = Some(revision);
             // §1.9: a loaded generation has no blob activity backing it yet.
             crate::storage::reset_blob_stats();
+            // H-12: nor any edge write of its own to have failed.
+            crate::storage::reset_edge_persist_error();
             *GLOBAL_GRAPH.write() = Some(graph);
             // F14: canonicalized absolute, exactly like analyze_inner — a
             // relative root here made every later strip_prefix fail and

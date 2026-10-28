@@ -533,22 +533,24 @@ class CodeGraph:
         from . import ops
         return ops.traverse(entity_id or "", direction, edge_kinds, max_depth)["results"]
 
-    def as_of(self, timestamp: str) -> Snapshot:
+    def as_of(self, timestamp: str, branch: str = "main") -> Snapshot:
         """Return a point-in-time snapshot: entity reads fold the ledger at
         recorded-time T (Macrame canonical UTC; anything else is
         `ops.InvalidRequest`). Signature decision (plan §0.1a): `as_of` stays
         — MCP/CLI/Python names are pinned by the parity test, and DR-17
         rules out another rename round. Bytes-at-T rides source blobs (§3.0:
-        `Snapshot.read_bytes` / `read_source`)."""
+        `Snapshot.read_bytes` / `read_source`). P4 (DR-40): `branch`
+        selects the lineage (trunk by default) — every snapshot read folds
+        `reconstruct_on(T, branch); unknown branches refuse at first fold."""
         from . import ops
         try:
             from coderadar._core import normalize_timestamp as _normalize_ts
             normalized = _normalize_ts(timestamp or "")
+            return Snapshot(self, normalized, branch)
         except ImportError as e:
             raise ops.EngineError(f"native extension unavailable: {e}") from e
         except ValueError as e:
             raise ops.InvalidRequest(str(e)) from None
-        return Snapshot(self, normalized)
 
     @_bound_to_loaded_project
     def callers(self, entity_id: str) -> list[dict[str, Any]]:
@@ -684,6 +686,50 @@ class CodeGraph:
         """
         from . import ops
         return ops.search_hybrid(query, top_k)
+
+    @_bound_to_loaded_project
+    def verify_history(
+        self, from_ts: str | None = None, to_ts: str | None = None,
+        generations: int = 25, all_generations: bool = False,
+        branch: str = "main", offenders: int = 10,
+        max_generations: int | None = None,
+    ) -> dict[str, Any]:
+        """Per-generation byte coverage (MCP ``coderadar_verify_history``).
+
+        What fraction of the files the ledger describes at each recorded
+        generation can actually have their bytes reconstructed. Sampling
+        is on by default (`generations`, both window ends always
+        included); `all_generations` sweeps the whole window.
+        """
+        from . import ops
+        return ops.verify_history(
+            from_ts, to_ts, generations, all_generations, branch,
+            offenders, max_generations, graph=self,
+        )
+
+    @_bound_to_loaded_project
+    def changes_between(
+        self, t1: str, t2: str, scope: str | None = None,
+        branch: str = "main",
+    ) -> dict[str, Any]:
+        """Entity diff between two instants (MCP ``coderadar_changes_between``).
+
+        Added / removed / modified / moved per entity from recorded hashes
+        — no byte reads, so it works where `verify_history` reports 0%.
+        Equal hash is evidence of no change, not proof (F-8); `scope`
+        bounds the diff to one file or id prefix.
+        """
+        from . import ops
+        return ops.changes_between(t1, t2, scope, branch, graph=self)
+
+    def history_of(self, file: str) -> dict[str, Any]:
+        """Every content a file ever had, newest first (P3, no MCP surface).
+
+        The `HAD_CONTENT` spine chain with intervals — use it to answer
+        "what did this file look like before" without folding time.
+        """
+        from . import ops
+        return ops.history_of(file, graph=self)
 
     def compute_embeddings(self, model_name: str | None = None,
                            batch_size: int = 32,
@@ -1361,10 +1407,20 @@ class Snapshot:
         entity = snapshot.find("src/models.py::User.save")  # None if absent at T
     """
 
-    def __init__(self, graph: CodeGraph, timestamp: str):
+    def __init__(self, graph: CodeGraph, timestamp: str, branch: str = "main"):
         self._graph = graph
         self._timestamp = timestamp
+        self._branch = branch
         self._predates: bool | None = None
+
+    @property
+    def branch(self) -> str:
+        """The lineage this snapshot reads (P4, DR-40): every `find` /
+        `traverse` / byte read folds `reconstruct_on(T, branch)`, so a
+        branch snapshot sees the lineage's own divergent content and the
+        trunk at the fork for everything else. Unknown branches refuse at
+        first fold (never trunk-fallback)."""
+        return self._branch
 
     @property
     def timestamp(self) -> str:
@@ -1382,7 +1438,7 @@ class Snapshot:
             from . import ops
             try:
                 from coderadar._core import lookup_entities_at as _lookup_at
-                batch = _lookup_at([], self._timestamp)
+                batch = _lookup_at([], self._timestamp, self._branch)
             except ValueError as e:  # normalized at construction; defensive
                 raise ops.InvalidRequest(str(e)) from None
             except RuntimeError as e:
@@ -1400,7 +1456,7 @@ class Snapshot:
         from . import ops
         try:
             from coderadar._core import lookup_entity_at as _lookup_at
-            result = _lookup_at(entity_id, self._timestamp)
+            result = _lookup_at(entity_id, self._timestamp, self._branch)
         except ValueError as e:  # normalized at construction; defensive
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
@@ -1443,7 +1499,7 @@ class Snapshot:
         from . import ops
         try:
             from coderadar._core import lookup_entities_at as _lookup_at
-            batch = _lookup_at(ids, self._timestamp)
+            batch = _lookup_at(ids, self._timestamp, self._branch)
         except ValueError as e:
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
@@ -1472,7 +1528,7 @@ class Snapshot:
         try:
             from coderadar._core import traverse as _traverse
             return _traverse(entity_id, max_depth, edge_kinds or [],
-                             direction, self._timestamp)
+                             direction, self._timestamp, self._branch)
         except ValueError as e:
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
@@ -1551,7 +1607,7 @@ class Snapshot:
         try:
             from coderadar._core import blob_get as _blob_get
             from coderadar._core import entity_source_ref_at as _ref_at
-            ref = _ref_at(entity["id"], self._timestamp)
+            ref = _ref_at(entity["id"], self._timestamp, self._branch)
         except ValueError as e:  # normalized at construction; defensive
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
@@ -1853,6 +1909,23 @@ def blob_stats() -> dict:
                 "skipped_excluded": 0, "bytes": 0}
 
 
+def edge_persist_error() -> str | None:
+    """This generation's edge-persist failure, or `None` when clean (H-12).
+
+    Same lifetime as `blob_stats`: reset on `analyze`/`load_snapshot`, set
+    when `persist_edges` fails. Edge persistence is assert-only and flushed
+    in batches, so a failure part way through leaves the earlier batches
+    committed — a string here means the store's edges are **incomplete** for
+    the loaded generation, while concepts and blobs are unaffected. A
+    re-analyze is the repair.
+    """
+    try:
+        from coderadar._core import edge_persist_error as _edge_error_rust
+        return _edge_error_rust()
+    except ImportError:
+        return None
+
+
 __all__ = [
     "BatchContext",
     "CodeGraph",
@@ -1875,6 +1948,7 @@ __all__ = [
     "Watcher",
     "analyze",
     "blob_stats",
+    "edge_persist_error",
     "load",
     "ops",
     "watch",

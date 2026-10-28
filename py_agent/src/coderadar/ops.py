@@ -15,6 +15,7 @@ served root, the CLI through the directory it runs in.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from collections import deque
@@ -44,6 +45,7 @@ __all__ = [
     "callers",
     "canonical_entity_id",
     "canonical_file_path",
+    "changes_between",
     "compute_embeddings",
     "create_entity",
     "dead_code",
@@ -55,6 +57,7 @@ __all__ = [
     "find_scaffolding",
     "friendly_entity_id",
     "get_smells",
+    "history_of",
     "module_children",
     "node",
     "normalize_query_spelling",
@@ -75,6 +78,7 @@ __all__ = [
     "traverse",
     "update_file",
     "update_signature",
+    "verify_history",
 ]
 
 #: Every shared operation, by its one name. The MCP tool is
@@ -85,6 +89,8 @@ __all__ = [
 OPERATIONS = (
     "explore", "node", "search", "affected", "resolve", "query",
     "search_similar", "search_hybrid", "compute_embeddings", "module_children", "as_of",
+    "verify_history",
+    "changes_between",
     "traverse", "get_smells", "dead_code", "find_clones", "find_scaffolding",
     "replace_body", "update_signature", "rename", "create_entity",
     "reindex", "update_file", "status", "set_project",
@@ -1148,8 +1154,28 @@ def _graph():
     return coderadar.CodeGraph()
 
 
+def branches(*, graph: Any = None) -> list[dict]:
+    """Every lineage the ledger knows, trunk first (P4, DR-40).
+
+    Returns ``[{"name", "parent" | None, "forked_at" | None,
+    "created_at"}]`` — the trunk has no parent and no fork instant; an
+    unforked database answers exactly the trunk. A listing, not a fold.
+    No MCP/CLI surface by decision (spec-conformant parity: reads go
+    through `Snapshot`/`as_of` with `branch=`, setup through the `_core`
+    `fork_branch` / `write_branch_content` instruments P5 will drive).
+    """
+    _require_index()
+    try:
+        from coderadar._core import branches as _branches
+        return [dict(b) for b in _branches()]
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from e
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+
+
 def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
-          *, graph: Any = None) -> dict:
+          branch: str = "main", *, graph: Any = None) -> dict:
     """Look symbols up as they were at a Macrame-canonical `timestamp`.
 
     Returns ``{"timestamp", "names", "entities": {name: entity | None},
@@ -1161,6 +1187,8 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     names only; there is no temporal query execution (use `coderadar_query`
     for present-tense search). Bytes-at-T rides source blobs (§3.0: use
     `Snapshot.read_bytes` / `read_source` for entity bytes at T.
+    `branch` (P4, DR-40) folds `reconstruct_on(T, branch)`: an unknown
+    lineage refuses with `InvalidRequest`, never trunk data.
     """
     if not timestamp:
         raise InvalidRequest(
@@ -1180,7 +1208,7 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     # Validation parity gate: the same timestamp must pass `CodeGraph.as_of`
     # (MCP/CLI/Python agree by construction — same normalizer, same fold).
     try:
-        (graph or _graph()).as_of(normalized)
+        (graph or _graph()).as_of(normalized, branch=branch)
     except InvalidRequest:
         raise
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
@@ -1197,7 +1225,7 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
             "predates_recorded_history": False,
         }
     try:
-        batch = _lookup_at(names, normalized)
+        batch = _lookup_at(names, normalized, branch)
     except ValueError as e:  # already normalized; defensive
         raise InvalidRequest(str(e)) from None
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
@@ -1208,6 +1236,421 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
         "names": names,
         "entities": {name: found.get(name) for name in names},
         "predates_recorded_history": bool(batch.get("predates_recorded_history", False)),
+    }
+
+
+def _sample_generations(stamps: list[str], n: int) -> list[str]:
+    """`n` stamps spread evenly across `stamps`, both ends always included.
+
+    A reader will conclude coverage is uniform when it is a step function
+    (it is a step function on real stores), so a sample that drops an end
+    is a lie by omission. Port of the `verify_history` prototype's rule.
+    """
+    if n <= 0 or len(stamps) <= n:
+        return list(stamps)
+    if n == 1:
+        return [stamps[-1]]
+    step = (len(stamps) - 1) / (n - 1)
+    picked = {round(i * step) for i in range(n)} | {0, len(stamps) - 1}
+    return [stamps[i] for i in sorted(picked)]
+
+
+def verify_history(from_ts: str | None = None, to_ts: str | None = None,
+                   generations: int = 25, all: bool = False,
+                   branch: str = "main", offenders: int = 10,
+                   max_generations: int | None = None,
+                   *, graph: Any = None) -> dict:
+    """Per-generation byte coverage of the ledger (P1, DR-36).
+
+    For every sampled recorded generation: what fraction of the files the
+    ledger describes at T can actually have their bytes reconstructed.
+    Returns the prototype's report shape as the contract (see
+    `scripts/verify_history.py`): ``{"store", "root", "branch",
+    "window", "total_generations", "sampled", "offenders_per_outcome",
+    "generations": [{timestamp, modules, counts, offenders}], "totals",
+    "byte_coverage_pct", "distinct_digests", "offender_sample",
+    "offender_distinct"}``. One fetch-and-re-hash per *distinct* digest,
+    not per occurrence: the address is the identity.
+
+    Outcomes per (generation, module): ``ok`` (bytes resolve, SHA-256
+    matches), ``no_digest`` (described at T, no blob — skipped, excluded,
+    oversize, disabled, or a pre-blob generation), ``unresolvable`` (bytes
+    gone), ``digest_mismatch`` (corruption), ``digest_malformed`` (not 64
+    lowercase hex: invisible to the archive's reference scan, so the bytes
+    were reclaimable — a different incident from bytes gone missing).
+
+    `branch` scopes listings AND folds (P4, DR-40): generations, the
+    ever-universe, and every per-generation batch fold on the lineage, so a
+    branch sweep sees the lineage's own divergent bytes.
+    `generations` samples evenly with both window ends always included;
+    `all` sweeps every generation in the window. `max_generations` caps the
+    sweep (the MCP tool passes one — a blind agent must not be handed a
+    6,442-fold bill; Q-4). A window with no recorded generations is an
+    `InvalidRequest`, as is a garbage stamp or an inverted window.
+    """
+    _require_index()
+    if generations is True or generations is False or not isinstance(generations, int) \
+            or generations < 1:
+        raise InvalidRequest(
+            f"generations must be a positive integer, got {generations!r}.")
+    if not isinstance(offenders, int) or isinstance(offenders, bool) or offenders < 0:
+        raise InvalidRequest(f"offenders must be a non-negative integer, got {offenders!r}.")
+    try:
+        from coderadar._core import normalize_timestamp as _normalize_ts
+        from coderadar._core import recorded_generations as _generations
+        from coderadar._core import source_refs_at as _refs_at
+        from coderadar._core import visible_module_concept_ids as _ever_ids
+        lo = _normalize_ts(from_ts) if from_ts else None
+        hi = _normalize_ts(to_ts) if to_ts else None
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    if lo is not None and hi is not None and lo > hi:
+        raise InvalidRequest(
+            f"empty window: from {from_ts!r} sorts after to {to_ts!r} once normalized.")
+    try:
+        stamps = _generations(lo, hi, branch)
+        ever = _ever_ids(branch)
+    except ValueError as e:  # unknown lineage (ancestry lookup refuses)
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    if not stamps:
+        raise InvalidRequest(
+            "no recorded generations in that window"
+            + (f" for branch {branch!r}" if branch != "main" else "")
+            + "; the ledger has nothing to verify there.")
+    picked = list(stamps) if all else _sample_generations(stamps, generations)
+    if max_generations is not None and len(picked) > max_generations:
+        raise InvalidRequest(
+            f"{len(picked)} generations exceed max_generations={max_generations}; "
+            "sample with a smaller generations count or a narrower window.")
+    g = graph or _graph()
+    root = getattr(g, "_root", None) or os.getcwd()
+    db_path = getattr(g, "_db_path", None) or ".coderadar/store/coderadar.db"
+    db = Path(db_path)
+    store = str((Path(root) / db).resolve() if not db.is_absolute() else db.resolve())
+    verdicts: dict[str, str] = {}
+
+    def check_digest(digest: str) -> str:
+        cached = verdicts.get(digest)
+        if cached is not None:
+            return cached
+        try:
+            raw = blob_get(digest)
+        except InvalidRequest:
+            verdict = "digest_malformed"
+        else:
+            if raw is None:
+                verdict = "unresolvable"
+            elif hashlib.sha256(raw).hexdigest() != digest:
+                verdict = "digest_mismatch"
+            else:
+                verdict = "ok"
+        verdicts[digest] = verdict
+        return verdict
+
+    gens = []
+    offender_all: dict[str, set[str]] = {}
+    for ts in picked:
+        try:
+            batch = _refs_at(ever, ts, branch)
+        except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+            raise EngineError(str(e)) from None
+        described = {
+            entity_id: ref.get("digest") or None
+            for entity_id, ref in batch["refs"].items()
+        }
+        counts: dict[str, int] = {}
+        full: dict[str, list[str]] = {}
+        for entity_id, digest in described.items():
+            outcome = "no_digest" if not digest else check_digest(digest)
+            counts[outcome] = counts.get(outcome, 0) + 1
+            if outcome != "ok":
+                full.setdefault(outcome, []).append(entity_id)
+                offender_all.setdefault(outcome, set()).add(entity_id)
+        # The counts above come from the full lists first; the cap below
+        # never changes a number — only how many examples travel with it.
+        gens.append({
+            "timestamp": ts,
+            "modules": len(described),
+            "counts": counts,
+            "offenders": {k: v[:offenders] for k, v in full.items()},
+        })
+    totals: dict[str, int] = {}
+    for gen in gens:
+        for outcome, n in gen["counts"].items():
+            totals[outcome] = totals.get(outcome, 0) + n
+    covered = totals.get("ok", 0)
+    total_files = sum(totals.values())
+    return {
+        "store": store,
+        "root": str(Path(root).resolve()),
+        "branch": branch,
+        "window": [stamps[0], stamps[-1]],
+        "total_generations": len(stamps),
+        "sampled": len(picked),
+        "offenders_per_outcome": offenders,
+        "generations": gens,
+        "totals": totals,
+        "byte_coverage_pct": round(covered / total_files * 100, 2) if total_files else 0.0,
+        "distinct_digests": len(verdicts),
+        "offender_sample": {k: sorted(v)[:offenders] for k, v in offender_all.items()},
+        "offender_distinct": {k: len(v) for k, v in offender_all.items()},
+    }
+
+
+HISTORY_OF_CONTRACT_KEYS = ("file", "versions", "count")
+HISTORY_OF_VERSION_KEYS = (
+    "digest", "valid_from", "valid_to", "open",
+    "parent_digest", "size_bytes", "line_count",
+)
+
+
+def history_of(file: str, *, graph: Any = None) -> dict:
+    """Every content a file ever had, newest first (P3, DR-38).
+
+    Returns ``{"file", "versions": [...], "count"}`` where each
+    version is ``{"digest", "valid_from", "valid_to", "open",
+    "parent_digest", "size_bytes", "line_count"}`` newest-first.
+    The chain is the `HAD_CONTENT` spine: one row per content change
+    with contiguous intervals (close and open share one stamp), the
+    first content parentless, a deleted file's head closed by the
+    retire cascade. A digest-less file (degraded put, never
+    successfully blobbed) never mints spine rows and reads as ``[]``
+    — presence in the chain means the bytes were kept, so unlike
+    `verify_history` there is no `no_digest` class here. `file` is the
+    indexed path (root-relative posix); any store id spelling is
+    accepted and canonicalized. Like every `_core` temporal read, the
+    chain is read from the loaded graph (`graph` supplies the calling
+    convention only).
+    """
+    if not file or not str(file).strip():
+        raise InvalidRequest("Please provide a file path (e.g. 'pkg/mod.py').")
+    # No `_require_index` modules gate: a deleted file's chain must stay
+    # queryable after its last entity is gone (the spine outlives the
+    # projection by construction). The store-missing cases still raise
+    # below via the FFI errors.
+    _ = graph or _graph()
+    try:
+        from coderadar._core import history_of as _history_of
+        chain = _history_of(str(file))
+    except RuntimeError as e:
+        raise NoIndex(str(e)) from e
+    versions = [dict(v) for v in chain]
+    return {"file": str(file), "versions": versions, "count": len(versions)}
+
+
+def changes_between(t1: str, t2: str, scope: str | None = None,
+                    branch: str = "main", *, graph: Any = None) -> dict:
+    """Added / removed / modified / moved / uncompared entities between two instants (P2, DR-37).
+
+    Two folds, no byte reads: `content_hashes_at` at T1 and at T2 over the
+    ever-universe (`all_concept_ids`), joined by canonical id, compared by
+    `content_hash`. Classes: present only at T2 = ``added``; only at T1 =
+    ``removed``; both with different hash = ``modified``; both with equal
+    hash but a different span = ``moved``; both present but hash-less
+    (imports, constants, type aliases, routes — kinds the extractor never
+    hashed) = ``uncompared``. A T1-only/T2-only pair sharing one hash with
+    no rival claimant also reads as ``moved`` (a file move with identical
+    text); ambiguous twins stay added + removed. ``unmodified`` is a count
+    only — on a real store it is thousands.
+
+    F-8, verbatim in spirit: an equal hash is *evidence* of no change,
+    not proof — and the hash is 64-bit xxHash (H-9), so shared-text
+    twins collide by construction, not by accident. `Snapshot.read_bytes`
+    is one call away when proof is wanted. `branch` scopes listings AND
+    folds (P4, DR-40): the ever-universe and both hash folds run on the
+    lineage, so the diff is the lineage's view at both instants.
+    `scope` is a file path as
+    indexed (root-relative posix) or an id prefix, and bounds the only
+    cost that scales: the two folds walk the whole ever-universe.
+
+    H-11 is joined away, not reported away: raw ids group by
+    `canonical_id`, presence is any-member, and the T2 spelling is the
+    display id — a window straddling the 2026-10-03 respelling reports
+    `normalized_ids: true` with a count, not 6.3k phantom removals. The
+    concurrent-write hazard (§5 P2) is vacuous for immutable history:
+    each fold is deterministic at its T, and a vanished lookup answers
+    absent (the `__init__.py:1559` precedent) rather than erroring.
+    """
+    _require_index()
+    try:
+        from coderadar._core import canonical_id as _canonical
+        from coderadar._core import content_hashes_at as _hashes_at
+        from coderadar._core import normalize_timestamp as _normalize_ts
+        from coderadar._core import visible_all_concept_ids as _ever_ids
+        start = _normalize_ts(t1)
+        end = _normalize_ts(t2)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    if start > end:
+        raise InvalidRequest(
+            f"empty window: t1 {t1!r} sorts after t2 {t2!r} once normalized.")
+    try:
+        ever = _ever_ids(branch)
+        canon = [(raw, _canonical(raw)) for raw in ever]
+    except ValueError as e:  # unknown lineage (ancestry lookup refuses)
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    groups: dict[str, list[str]] = {}
+    for raw, cid in canon:
+        groups.setdefault(cid, []).append(raw)
+    normalized = sum(1 for raws in groups.values() if len(set(raws)) > 1)
+    if scope is not None:
+        if "::" in scope:
+            cscope = _canonical(scope)
+
+            def keep(cid: str) -> bool:
+                return cid == cscope or cid.startswith(cscope)
+        else:
+            head = scope.replace("\\", "/")
+
+            def keep(cid: str) -> bool:
+                return cid.split("::")[0] == head
+        groups = {cid: raws for cid, raws in groups.items() if keep(cid)}
+    raws = [raw for rs in groups.values() for raw in rs]
+    try:
+        first = _hashes_at(raws, start, branch)
+        second = _hashes_at(raws, end, branch)
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+
+    def _side_entry(raws: list[str], side: dict) -> dict | None:
+        found = [(raw, side[raw]) for raw in raws if side.get(raw) is not None]
+        if not found:
+            return None
+        # An exact spelling hit beats a canonical/fallback resolution when
+        # both spellings resolve at one T.
+        for raw, entry in found:
+            if entry["id"] == raw:
+                return entry
+        return found[0][1]
+
+    def _hex(value) -> str | None:
+        return format(value, "x") if value is not None else None
+
+    def _span(entry) -> list[int] | None:
+        if entry["start_line"] is None or entry["end_line"] is None:
+            return None
+        return [entry["start_line"], entry["end_line"]]
+
+    added, removed, modified, moved, uncompared = [], [], [], [], []
+    t1_only: dict[str, tuple[str, dict]] = {}
+    t2_only: dict[str, tuple[str, dict]] = {}
+    unmodified = 0
+    for cid in sorted(groups):
+        raws = groups[cid]
+        before = _side_entry(raws, first["hashes"])
+        after = _side_entry(raws, second["hashes"])
+        if before is not None and after is not None:
+            hb, ha = before["content_hash"], after["content_hash"]
+            if hb is None and ha is None:
+                uncompared.append({"id": after["id"]})
+            elif hb is not None and ha is not None and hb == ha:
+                sb, sa = _span(before), _span(after)
+                if sb is not None and sa is not None and sb != sa:
+                    moved.append({
+                        "id": after["id"],
+                        "content_hash": _hex(ha),
+                        "span_before": sb,
+                        "span_after": sa,
+                    })
+                else:
+                    unmodified += 1
+            else:
+                modified.append({
+                    "id": after["id"],
+                    "hash_before": _hex(hb),
+                    "hash_after": _hex(ha),
+                    "span_before": _span(before),
+                    "span_after": _span(after),
+                })
+        elif before is not None:
+            t1_only[cid] = (before["id"], before)
+        elif after is not None:
+            t2_only[cid] = (after["id"], after)
+    # Leftover pairing by hash: a file move with identical text is one
+    # move, not a removal plus an addition — but only with no rival
+    # claimant on either side (identical twins stay added + removed).
+    by_hash_before: dict[int, list[str]] = {}
+    by_hash_after: dict[int, list[str]] = {}
+    for cid, (_display_id, entry) in t1_only.items():
+        if entry["content_hash"] is not None:
+            by_hash_before.setdefault(entry["content_hash"], []).append(cid)
+    for cid, (_display_id, entry) in t2_only.items():
+        if entry["content_hash"] is not None:
+            by_hash_after.setdefault(entry["content_hash"], []).append(cid)
+    paired: set[str] = set()
+    for digest, cids in by_hash_before.items():
+        others = by_hash_after.get(digest, [])
+        if len(cids) == 1 and len(others) == 1 and others[0] != cids[0]:
+            cid_b, cid_a = cids[0], others[0]
+            _id_b, entry_b = t1_only[cid_b]
+            _id_a, entry_a = t2_only[cid_a]
+            moved.append({
+                "id_before": _id_b,
+                "id_after": _id_a,
+                "content_hash": _hex(digest),
+                "span_before": _span(entry_b),
+                "span_after": _span(entry_a),
+            })
+            paired.add(cid_b)
+            paired.add(cid_a)
+    for cid in sorted(t1_only):
+        if cid in paired:
+            continue
+        display_id, entry = t1_only[cid]
+        removed.append({
+            "id": display_id,
+            "content_hash": _hex(entry["content_hash"]),
+            "span": _span(entry),
+        })
+    for cid in sorted(t2_only):
+        if cid in paired:
+            continue
+        display_id, entry = t2_only[cid]
+        added.append({
+            "id": display_id,
+            "content_hash": _hex(entry["content_hash"]),
+            "span": _span(entry),
+        })
+    g = graph or _graph()
+    root = getattr(g, "_root", None) or os.getcwd()
+    db_path = getattr(g, "_db_path", None) or ".coderadar/store/coderadar.db"
+    db = Path(db_path)
+    store = str((Path(root) / db).resolve() if not db.is_absolute() else db.resolve())
+    counts = {
+        "added": len(added),
+        "removed": len(removed),
+        "modified": len(modified),
+        "moved": len(moved),
+        "uncompared": len(uncompared),
+    }
+    return {
+        "store": store,
+        "root": str(Path(root).resolve()),
+        "branch": branch,
+        "t1": start,
+        "t2": end,
+        "scope": scope,
+        "normalized_ids": normalized > 0,
+        "normalized_groups": normalized,
+        "added": added,
+        "removed": removed,
+        "modified": modified,
+        "moved": moved,
+        "uncompared": uncompared,
+        "counts": counts,
+        "unmodified": unmodified,
+        "predates": {
+            "t1": first["predates_recorded_history"],
+            "t2": second["predates_recorded_history"],
+        },
     }
 
 
@@ -1663,6 +2106,16 @@ def reindex(with_embeddings: bool = False, full: bool = False,
         import coderadar
         out["blobs"] = coderadar.blob_stats()
     except Exception:  # noqa: BLE001, S110 - stats must not fail the report
+        pass
+    # H-12: a partial edge write used to reach the caller as a clean report
+    # with a `[diag]` line on stderr. Present only when it happened, so a
+    # clean reindex report is unchanged.
+    try:
+        import coderadar
+        edge_error = coderadar.edge_persist_error()
+        if edge_error:
+            out["edge_persist_error"] = edge_error
+    except Exception:  # noqa: BLE001, S110 - never fail the report
         pass
     if with_embeddings:
         try:

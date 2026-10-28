@@ -4,6 +4,51 @@ Patch releases accumulate toward the next minor (+0.0.1 per implemented feature,
 bump commit named in the feature's DR row). The v0.12 plan history lives
 in `docs/` (v1 frozen, consolidated trio authoritative).
 
+## 0.14.0 (2026-10-28)
+
+Temporal code reconstruction, phases P0–P4: the store can now be read at a
+time, on a branch, and — for the first time — asked whether that history
+holds the bytes it claims to.
+
+- Temporal P0 (DR-36): `source_refs_at` — one fold serves N entity refs,
+  absent-at-T omitted, corrupt concept fails the batch (`ff5fb96`).
+- Temporal P1 (DR-36): `verify_history` — per-generation byte coverage
+  over `recorded_generations` + `module_concept_ids`, report shape as
+  contract, CLI `verify-history`, MCP `coderadar_verify_history`
+  (28 tools) (`b964f1b`).
+- Temporal P2 (DR-37): `changes_between` — added/removed/modified/moved
+  per entity from recorded hashes over `all_concept_ids`, no byte reads;
+  H-11 joined away by canonical grouping; CLI `changes-between`, MCP
+  `coderadar_changes_between` (29 tools) (`92aafcb`).
+- Temporal DR-42 (Q-2/H-3): `open_synthetic_triples` is an inclusion
+  list — the hook sweeps exactly the `synthetic:` namespace it mints,
+  not every future edge type (`600d689`).
+- Temporal P3 (DR-38): `content_version` spine — timeless
+  `{path}@{digest}` concepts, no edges (a `HAD_CONTENT` edge would pin
+  blobs hot against the archive scan); digest-free payloads, parent and
+  intervals derived from chain order; one flush one commit; `history_of`
+  read + CLI `history` (MCP surface stays 29 tools) (`f3625c6`).
+- Temporal P4 (DR-40): branch-aware reads — lineage-resolved folds
+  (`reconstruct_on`) with `branch=` on every temporal read,
+  branch-minted pointer concepts (`branch:{branch}:content:{path}`,
+  same-id turnover so superseded bytes archive), ancestry-union sweep
+  universes, `ops.branches()` (MCP surface stays 29 tools) (`a4ac405`).
+- Fixed (H-12): `persist_edges` wrote edge batches non-atomically and
+  failed silently. `INSTANTIATES` was derived from a `Vec` with no dedup,
+  so a function constructing the same class twice emitted two identical
+  assertions sharing one `valid_from` — a UNIQUE violation that aborted
+  the run *after* earlier batches had committed, reported only as
+  `[diag]` with a zero exit. Measured before the fix: 53 affected
+  functions, 2,619 edges of a generation missing. Now deduped at the
+  flush boundary, and a failure reaches the caller as
+  `edge_persist_error` on the reindex report (`53cac4d`).
+- Known (H-13): the DR-30 blob notice counts *this run's* puts, not the
+  store's coverage — `verify_history` is the only surface that measures
+  coverage. On a store indexed before this release, expect a low number:
+  the self-host store read 0.01% before a re-analyze and 3.19% after,
+  because historical generations hold no bytes. Only commit-driven
+  ingestion (P5, DR-41, deferred) can fill them.
+
 ## 0.13.0 (2026-10-26)
 
 - Removed the deprecated Python spellings alongside the CLI aliases:

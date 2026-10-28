@@ -261,6 +261,82 @@ fn test_persist_edges_emits_imports_and_extends() {
     );
 }
 #[test]
+fn test_persist_edges_dedups_repeated_constructor_calls() {
+    // H-12: INSTANTIATES is read off `resolved_calls`, a Vec, so a function
+    // constructing the same class twice queued two identical assertions —
+    // and every assertion in a run shares one `valid_from`, so the pair
+    // collided on the ledger's (source, target, type, valid_from,
+    // recorded_at, branch) UNIQUE key. Because each batch flush is fallible,
+    // the abort left the batches before it committed: a partial edge write
+    // that analyze reported as a success. Constructing a class twice in one
+    // function is ordinary code, so this is reachable from any real tree.
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(
+        &graph,
+        "class Thing:\n    def __init__(self): pass\n",
+        "t.py",
+    );
+    index_source(
+        &graph,
+        "from t import Thing\ndef make():\n    a = Thing()\n    b = Thing()\n    return a, b\n",
+        "m.py",
+    );
+
+    let mut projection = (*graph.snapshot()).clone();
+    graph.resolve_imports(&mut projection);
+    graph.resolve_all_calls(&mut projection);
+
+    // Sanity: the fixture must actually produce the duplicate under test,
+    // or this passes for the wrong reason.
+    let has_duplicate_ctor = projection.functions.values().any(|f| {
+        let ctors: Vec<&String> = f
+            .resolved_calls
+            .iter()
+            .filter_map(|rc| match rc {
+                crate::types::ResolvedCall::Constructor(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        let distinct: std::collections::HashSet<&&String> = ctors.iter().collect();
+        distinct.len() < ctors.len()
+    });
+    assert!(
+        has_duplicate_ctor,
+        "fixture should construct one class twice in one function"
+    );
+
+    graph
+        .persist_edges(&projection)
+        .expect("a duplicate INSTANTIATES triple must not abort the edge write");
+}
+#[test]
+fn test_persist_edges_is_idempotent_across_runs() {
+    // The dedup guard added for H-12 must not break the pre-existing
+    // idempotence: a second persist of the same projection re-reads the open
+    // intervals and asserts nothing new, so it neither errors nor changes the
+    // reported count (which is a property of the projection, not the ledger).
+    let (graph, _dir) = graph_with_temp_store();
+    index_source(&graph, "class Base:\n    def m(self): pass\n", "base.py");
+    index_source(
+        &graph,
+        "class Sub(Base):\n    def m(self): pass\n",
+        "sub.py",
+    );
+
+    let mut projection = (*graph.snapshot()).clone();
+    graph.compute_all_mro(&mut projection);
+    graph.resolve_class_hierarchy(&mut projection);
+    graph.resolve_overrides(&mut projection);
+    graph.resolve_all_calls(&mut projection);
+
+    let first = graph.persist_edges(&projection).expect("first persist");
+    let second = graph.persist_edges(&projection).expect("second persist");
+    assert_eq!(
+        first, second,
+        "a re-persist should report the same projection edge count"
+    );
+}
+#[test]
 fn test_temporal_synthetic_edge_persistence() {
     let (graph, _dir) = graph_with_temp_store();
     index_source(&graph, "def user_detail(id): pass\n", "views.py");

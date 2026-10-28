@@ -2,7 +2,7 @@
 // Bridges CodeRadar's entity model to Macrame's concept+assertion model.
 // Macrame is tokio-based; CodeRadar wraps it with block_on behind a sync API.
 
-use macrame::graph::{EdgeAssertion, Subgraph, TraversalBuilder};
+use macrame::graph::{Subgraph, TraversalBuilder};
 use macrame::prelude::*;
 use macrame::temporal::{MaterializedState, SnapshotCadence};
 use std::collections::{HashMap, HashSet};
@@ -47,6 +47,177 @@ pub mod edge_type {
     pub const DECORATES: &str = "DECORATES";
     pub const INSTANTIATES: &str = "INSTANTIATES";
     pub const OVERRIDES: &str = "OVERRIDES";
+    /// P3 (DR-38): the content-version spine edge. Ledger-only — never in
+    /// the projection, never structural, never `synthetic:` — so neither
+    /// `retire_stale_edges`, nor the DR-42 hook sweep, nor the single-open
+    /// guard's fresh set touches it; `maintain_content_spine` owns it.
+    ///
+    /// RETIRED WITH THE EDGE (P3 as shipped, DR-38): the spine is
+    /// concepts-only. A `HAD_CONTENT` edge target names its concept
+    /// (`{path}@{digest}`), and Macrame's archive reference scan reads
+    /// link payloads — so every closed edge version would pin its blob
+    /// hot forever and kill retention (§3.4). The chain needs no edge:
+    /// concepts order by `valid_from` and intervals derive from chain
+    /// order. Kept as a reserved name, not a live kind.
+    pub const HAD_CONTENT: &str = "HAD_CONTENT";
+    /// P4 (DR-40): the branch-content pointer concept kind. Ledger-only —
+    /// never in the projection, never traversed, never swept: the id
+    /// (`branch_pointer_id`) sits outside every file-prefix range, the
+    /// row carries no `file_path`, and the kind is excluded from the
+    /// entity listings beside `content_version`.
+    ///
+    /// Why a concept and not an edge: Macrame concepts are
+    /// lineage-frozen — a branch inherits its parent's concepts and
+    /// cannot restate one (D-225; the overlay is deferred as D-214) — so
+    /// divergent bytes cannot live in the module concept. A branch
+    /// therefore mints its OWN pointer concept per path, id
+    /// `branch:{branch}:content:{path}` (stable per lineage+path, so
+    /// every re-point is same-id turnover and the archive reclaims
+    /// superseded bytes exactly like superseded module content). An
+    /// earlier edge-shaped pointer died on retention evidence: link log
+    /// rows are terminal (a closed row is latest-for-its-entity
+    /// forever), so every superseded branch version would pin its blob
+    /// hot forever; concept turnover has no such trap.
+    ///
+    /// The read side is a direct map lookup (no scan): the branch's
+    /// pointer wins when present, else the module concept (trunk-frozen
+    /// fallback — one read algorithm, no special case). The trunk never
+    /// mints one. The row names its blob in content AND extra (the live
+    /// pin, same as module `extra`); superseded rows release on turnover.
+    pub const BRANCH_CONTENT_KIND: &str = "branch_content";
+}
+
+/// One row of `branches()`: the lineage's name, its parent (`None` for
+/// the trunk), and the two stamps Macrame records (fork instant and row
+/// write — equal for every fork this release can cut; see the `Branch`
+/// docs for why they are separate columns).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BranchInfo {
+    pub name: String,
+    pub parent: Option<String>,
+    pub forked_at: Option<String>,
+    pub created_at: String,
+}
+
+/// Outcome of one [`CodeGraphStore::maintain_content_spine`] pass: how
+/// many flushed modules were seen, and how many spine concepts were
+/// upserted. Unchanged files report only in `files_seen` — the
+/// zero-growth property the P3 tests pin.
+#[derive(Debug, Default)]
+pub struct SpineReport {
+    pub files_seen: usize,
+    pub concepts_upserted: usize,
+}
+
+/// One link in a file's content chain, as [`CodeGraphStore::history_of`]
+/// returns it: the digest, its ledger interval, the previous digest (or
+/// `None` for the first content), and the payload size. `open` is true
+/// exactly for the head of the chain (`valid_to` still the open
+/// sentinel); a deleted file's chain ends closed via the retire cascade
+/// (`retire_entities` closes edges on either side of a retired
+/// endpoint), never by spine deletion — the concept is timeless.
+#[derive(Debug)]
+pub struct SpineVersion {
+    pub digest: String,
+    pub valid_from: String,
+    pub valid_to: String,
+    pub open: bool,
+    pub parent_digest: Option<String>,
+    pub size_bytes: u64,
+    pub line_count: u64,
+}
+
+/// Build the timeless `{path}@{digest}` spine concept upsert. The id is
+/// content-addressed, so re-indexing unchanged content re-upserts an
+/// identical row the [`CodeGraphStore::filter_unchanged`] gate absorbs;
+/// the payload is metadata-sized (path, size, lines) —
+/// never program text, which stays in the blob (P3b constraint) — and,
+/// critically, names no blob digest anywhere the archive reference scan
+/// reads. Concept payloads DO log `extra` (verified against the ledger,
+/// not assumed), so `extra` carries no digests at all: no `source_blob`
+/// (the digest is the id suffix) and no `parent_digest` (the parent is
+/// the next-older chain link, derived at read time). Title and content
+/// carry the path only; the digest lives solely in the id — an
+/// unscanned `entity_id` column, since the scan reads payloads. A
+/// superseded blob therefore stays archivable (§3.4); the spine pins
+/// metadata, never bytes.
+///
+/// Stable pointer-concept id for one path on one lineage (P4, DR-40):
+/// `branch:{branch}:content:{path}`. Deliberately outside every
+/// file-prefix range (`{path}::`, `{path}@`): no sweep, no listing, no
+/// history chain matches it by accident — the kind exclusion is belt.
+fn branch_pointer_id(path: &str, branch: &str) -> String {
+    format!("branch:{branch}:content:{path}")
+}
+
+/// One branch-content pointer concept (P4, DR-40): the lineage's view of
+/// one path's bytes. Same-id turnover by construction (the id is stable
+/// per lineage+path), so re-pointing supersedes same-entity and the
+/// archive reclaims — the module-content release path, not a new one.
+/// The blob address rides content AND extra (the read boundary is
+/// `source_blob_of_extra`, mirrored from modules); `file_path` appears
+/// nowhere (H-1: a sweep matching it would retire live branch views).
+fn branch_pointer_upsert(
+    path: &str,
+    sha: &str,
+    branch: &str,
+    now: &str,
+) -> macrame::Result<ConceptUpsert> {
+    let branch_id = macrame::BranchId::new(branch)?;
+    let content = serde_json::json!({
+        "meta_version": V2_META_VERSION,
+        "kind": edge_type::BRANCH_CONTENT_KIND,
+        "branch": branch,
+        "source_blob": sha,
+    });
+    let extra = serde_json::json!({
+        "coderadar": {
+            "format": 1,
+            "kind": edge_type::BRANCH_CONTENT_KIND,
+            "source_blob": sha,
+        },
+    });
+    Ok(
+        ConceptUpsert::new(branch_pointer_id(path, branch), path.to_string())
+            .content(content.to_string())
+            .extra(extra.to_string())
+            .valid_from(now.to_string())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(branch_id),
+    )
+}
+
+fn spine_concept_upsert(
+    path: &str,
+    digest: &str,
+    size: u64,
+    line_count: u64,
+    now: &str,
+) -> ConceptUpsert {
+    let id = format!("{path}@{digest}");
+    let content = serde_json::json!({
+        "meta_version": V2_META_VERSION,
+        "kind": "content_version",
+        "name": path,
+        "file_path": path,
+    });
+    let extra = serde_json::json!({
+        "coderadar": {
+            "format": 1,
+            "kind": "content_version",
+            "file_path": path,
+            "content_hash": serde_json::Value::Null,
+            "size": size,
+            "line_count": line_count,
+        }
+    });
+    ConceptUpsert::new(id, path.to_string())
+        .content(content.to_string())
+        .extra(extra.to_string())
+        .valid_from(now.to_string())
+        .valid_to(TS_OPEN.to_string())
+        .retired(false)
 }
 
 /// Serialises every libSQL open in this process — `Database::open` and
@@ -56,11 +227,18 @@ static DIAGNOSTIC_OPEN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Key lifespan timestamp — the Macrame open sentinel for "still true".
 pub const TS_OPEN: &str = "9999-12-31T00:00:00.000000Z";
 
+/// Edge-kind namespace owned by the framework hook's scoped pair-retire
+/// (§1.3, DR-42). Minted only by `framework.py::_ledger_synthetic_edge_kind`;
+/// see `open_synthetic_triples` for the membership rule and the audit.
+pub(crate) const FRAMEWORK_SYNTHETIC_EDGE_PREFIX: &str = "synthetic:";
+
 /// Indexed application metadata namespace carried in Macrame's `concepts.extra`.
 const CODERADAR_EXTRA_FILE_PATH: &str = "$.coderadar.file_path";
 
 const LIVE_IDS_BY_EXTRA_FILE_PATH_SQL: &str = "SELECT id FROM concepts WHERE retired = 0 \
-    AND json_extract(extra, '$.coderadar.file_path') = ?1";
+    AND json_extract(extra, '$.coderadar.file_path') = ?1 \
+    AND (json_extract(extra, '$.coderadar.kind') IS NULL \
+         OR json_extract(extra, '$.coderadar.kind') != 'content_version')";
 const LIVE_IDS_BY_ID_FILE_RANGE_SQL: &str = "SELECT id FROM concepts WHERE retired = 0 \
     AND id >= ?1 AND id < ?2";
 
@@ -337,8 +515,12 @@ impl CodeGraphStore {
     /// are write mechanics, not facts, and are deliberately not compared
     /// (every run stamps a fresh `valid_from`, which is what used to mint a
     /// new version per analyze — +26 rows per no-op analyze on the 7-file
-    /// fixture). Unhashable content (missing/unparseable hash) always
-    /// rewrites: the safe direction. Fail-open like [`Self::absent_concept_ids`].
+    /// fixture). Unhashable on exactly one side always rewrites (the safe
+    /// direction — a v1 row without a hash still upgrades); unhashable on
+    /// both sides falls back to full-content equality, so hashless
+    /// concepts (the P3 spine, which must not carry a digest in its
+    /// content) do not churn a fresh version per run. Fail-open like
+    /// [`Self::absent_concept_ids`]..
     pub fn filter_unchanged(&self, concepts: &[ConceptUpsert]) -> Vec<ConceptUpsert> {
         if concepts.is_empty() {
             return Vec::new();
@@ -939,23 +1121,33 @@ impl CodeGraphStore {
         runtime().block_on(self.db.blob_get(digest))
     }
 
-    /// Where one entity's bytes live at one timestamp (§3.0, DR-25).
+    /// Ref for one entity out of an already-folded state: the single
+    /// implementation behind `entity_source_ref_at` and `source_refs_at`
+    /// (P0, DR-36). `timestamp` is only used in error text — the state is
+    /// already the fold at T. `None` = not in the graph at T (never
+    /// asserted, not yet, or retired) — the same answer as
+    /// `lookup_entity_at`, never an error. `digest=None` = no blob recorded
+    /// (pre-blob generation, excluded, oversize, or disabled);
+    /// `has_span=false` = synthetic (routes) with no source bytes. Takes
+    /// the id as given — spelling resolution is the caller's (`Snapshot`
+    /// resolves via `find` first).
     ///
-    /// One `reconstruct(T)` over the ledger: the entity concept's content
-    /// JSON gives `file_path` + byte `span` + line range, the file's module
-    /// concept at T gives the `source_blob` digest from its extra. `None`
-    /// = not in the graph at T (never asserted, not yet, or retired) — the
-    /// same answer as `lookup_entity_at`, never an error. `digest=None` =
-    /// no blob recorded (pre-blob generation, excluded, oversize, or
-    /// disabled); `has_span=false` = synthetic (routes) with no source
-    /// bytes. Takes the id as given — spelling resolution is the caller's
-    /// (`Snapshot` resolves via `find` first).
-    pub fn entity_source_ref_at(
-        &self,
+    /// P4 (DR-40, INV-4): the digest resolves through the reader's
+    /// lineage before the bytes are touched. The branch's pointer concept
+    /// (`branch:{branch}:content:{path}`) wins over the module concept
+    /// when the fold sees it — own row, or an ancestor's until the reader
+    /// mints its own — else the module concept (trunk-frozen fallback).
+    /// Never another lineage's bytes: pointer ids name their lineage.
+    /// A pointer hit returns the branch's full
+    /// file (`full_file = true`, `has_span = false`): spans belong to the
+    /// lineage that wrote them, and slicing one lineage's bytes by
+    /// another's spans would be a wrong answer, not a partial one.
+    fn source_ref_from_state(
+        state: &MaterializedState,
         entity_id: &str,
         timestamp: &str,
+        branch: &str,
     ) -> macrame::Result<Option<SourceRef>> {
-        let state = self.reconstruct(timestamp)?;
         let concept = match state.concepts.get(entity_id) {
             Some(c) => c,
             None => return Ok(None),
@@ -979,6 +1171,26 @@ impl CodeGraphStore {
             .and_then(|v| v.as_str())
             .is_some_and(|k| k == "module");
         let module_id = format!("{file_path}::module");
+        // P4 (DR-40): the branch's view first. A pointer names the blob
+        // outright (`properties.source_blob`); the module concept is the
+        // trunk-frozen fallback (a branch inherits it as of the fork).
+        if let Some(sha) = Self::branch_pointer_digest(state, file_path, branch) {
+            return Ok(Some(SourceRef {
+                id: entity_id.to_string(),
+                file_path: file_path.to_string(),
+                digest: Some(sha),
+                span_start: 0,
+                span_end: 0,
+                has_span: false,
+                full_file: true,
+                start_line: 1,
+                end_line: 1,
+                handler_id: content
+                    .get("handler_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            }));
+        }
         let digest = state
             .concepts
             .get(&module_id)
@@ -1001,6 +1213,69 @@ impl CodeGraphStore {
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
         }))
+    }
+
+    /// The blob address a branch-content pointer concept names for `path`
+    /// on `branch`, if any (P4, DR-40): a direct map lookup — the id is
+    /// deterministic (`branch:{branch}:content:{path}`), so there is no
+    /// scan and no lineage guessing. The row is visible exactly when the
+    /// reader's ancestry holds its mint lineage (own row, or an
+    /// ancestor's until the reader mints its own): a `reconstruct_on`
+    /// fold narrows to the ancestry, so a hit IS the lineage's view and
+    /// a miss falls through to the module concept. Never another
+    /// lineage's bytes: a sibling's pointer id names the sibling, and
+    /// the trunk never mints one.
+    fn branch_pointer_digest(
+        state: &MaterializedState,
+        path: &str,
+        branch: &str,
+    ) -> Option<String> {
+        let pointer = state.concepts.get(&branch_pointer_id(path, branch))?;
+        source_blob_of_extra(&pointer.extra)
+    }
+
+    /// Batched refs for N entities at one timestamp (P0, DR-36): one
+    /// `reconstruct_on(T, branch)` serves every id, turning a sweep from
+    /// O(files × generations) folds into O(generations). Ids absent at T
+    /// are absent from the map — never `None` entries — so "not in the
+    /// graph" stays distinct from "in the graph without bytes" (INV-7).
+    /// Returns the map plus `predates_recorded_history`, mirroring
+    /// `entities_at`. A corrupt concept fails the whole batch, exactly as
+    /// the single call fails its one read: a sweep must surface
+    /// corruption, not skip it. P4 (DR-40): the fold is lineage-resolved;
+    /// an unknown branch refuses with `DbError::UnknownBranch` (refused,
+    /// never trunk-fallback — Macrame's own rule).
+    pub fn source_refs_at(
+        &self,
+        entity_ids: &[String],
+        timestamp: &str,
+        branch: &str,
+    ) -> macrame::Result<(HashMap<String, SourceRef>, bool)> {
+        let state = self.reconstruct_on(timestamp, branch)?;
+        let mut refs = HashMap::with_capacity(entity_ids.len());
+        for entity_id in entity_ids {
+            if let Some(r) = Self::source_ref_from_state(&state, entity_id, timestamp, branch)? {
+                refs.insert(entity_id.clone(), r);
+            }
+        }
+        Ok((refs, state.predates_recorded_history))
+    }
+
+    /// Where one entity's bytes live at one timestamp (§3.0, DR-25).
+    ///
+    /// One lineage-resolved fold over the ledger, then
+    /// `source_ref_from_state` — the fold-per-call cost that P0's batched
+    /// `source_refs_at` exists to avoid. Same answers as
+    /// `lookup_entity_at`: `None` is data, never an error. P4 (DR-40):
+    /// `branch` selects the lineage (trunk by default).
+    pub fn entity_source_ref_at(
+        &self,
+        entity_id: &str,
+        timestamp: &str,
+        branch: &str,
+    ) -> macrame::Result<Option<SourceRef>> {
+        let state = self.reconstruct_on(timestamp, branch)?;
+        Self::source_ref_from_state(&state, entity_id, timestamp, branch)
     }
 
     /// One archive session at `cutoff` (§3.4, DR-25): moves blobs last-put
@@ -1254,10 +1529,26 @@ impl CodeGraphStore {
         })
     }
 
-    /// Open non-structural edge triples with their `valid_from`, for the
-    /// framework hook's scoped pair-retire (§1.3). Structural kinds are
-    /// owned by `retire_stale_edges`; synthetic `synthetic:*` rows live
-    /// and die with the route diff instead.
+    /// Open framework-owned edge triples with their `valid_from`, for the
+    /// framework hook's scoped pair-retire (§1.3). The hook owns exactly
+    /// the `synthetic:` namespace: every framework-resolver edge passes
+    /// through `framework.py::_ledger_synthetic_edge_kind`, which mints
+    /// `synthetic:{resolver}:{edge}` (13 resolvers in `resolvers/`, edge
+    /// parts observed in the audit: handles, registers, navigation,
+    /// callback, depends_on, association).
+    ///
+    /// DR-42 (Q-2, H-3): this used to be an exclusion list (`NOT IN
+    /// ('CALLS', 'IMPORTS', 'EXTENDS', 'OVERRIDES')`), which silently
+    /// swept every future edge type — including the four structural kinds
+    /// it did not exclude (DECORATES, IMPLEMENTS, INSTANTIATES,
+    /// REFERENCES) — into the hook's retire scope. The inclusion list
+    /// under-sweeps visibly instead: structural rows belong to
+    /// `retire_stale_edges`, and direct-path synthetic rows with
+    /// non-namespaced kinds (e.g. `DEPENDS_ON`) belong to whoever wrote
+    /// them. If you add a resolver, its edges are covered automatically
+    /// as long as they pass through the `synthetic:` choke point; if you
+    /// add a new edge kind outside that namespace, this sweep will not
+    /// retire it — that is the point.
     pub fn open_synthetic_triples(
         &self,
         now: &str,
@@ -1266,9 +1557,11 @@ impl CodeGraphStore {
         runtime().block_on(async {
             let mut rows = conn
                 .query(
-                    "SELECT source_id, target_id, edge_type, valid_from \
-                     FROM links_current WHERE valid_to > ?1 \
-                     AND edge_type NOT IN ('CALLS', 'IMPORTS', 'EXTENDS', 'OVERRIDES')",
+                    &format!(
+                        "SELECT source_id, target_id, edge_type, valid_from \
+                         FROM links_current WHERE valid_to > ?1 \
+                         AND edge_type LIKE '{FRAMEWORK_SYNTHETIC_EDGE_PREFIX}%'"
+                    ),
                     libsql::params![now],
                 )
                 .await
@@ -1357,7 +1650,16 @@ impl CodeGraphStore {
         })
     }
 
-    /// Ids of every concept the ledger still holds to be true.
+    /// Ids of every live ENTITY concept the ledger still holds to be true.
+    ///
+    /// Entities only: the P3 content-version spine (`kind =
+    /// 'content_version'`) and the P4 branch-content pointers (`kind =
+    /// 'branch_content'`) are ledger infrastructure, not entities —
+    /// timeless, digest-addressed, owned by `maintain_content_spine` /
+    /// `write_branch_content`. Every file-lifecycle sweep built on this
+    /// listing (F14 non-canonical retirement, exclusion retirement) must
+    /// never see them, so the exclusion lives here rather than in each
+    /// caller. Read the spine through `history_of`.
     ///
     /// The counterpart to [`Self::retire_entities`]: retirement is only
     /// meaningful if something can tell the difference, and until now nothing
@@ -1366,7 +1668,14 @@ impl CodeGraphStore {
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         runtime().block_on(async {
             let mut rows = conn
-                .query("SELECT id FROM concepts WHERE retired = 0 ORDER BY id", ())
+                .query(
+                    "SELECT id FROM concepts WHERE retired = 0 \
+                     AND (json_extract(content, '$.kind') IS NULL \
+                          OR json_extract(content, '$.kind') NOT IN \
+                             ('content_version', 'branch_content')) \
+                     ORDER BY id",
+                    (),
+                )
                 .await
                 .map_err(macrame::DbError::Engine)?;
             let mut out = Vec::new();
@@ -1564,6 +1873,19 @@ impl CodeGraphStore {
         runtime().block_on(self.db.reconstruct(ts))
     }
 
+    /// State at `ts` as `branch` saw it (P4, DR-40): the ancestry
+    /// resolved, one belief per edge key from the nearest lineage holding
+    /// it. Concepts need no resolution — the schema forbids two lineages
+    /// holding one id (D-225), so narrowing is all a concept needs — and
+    /// branch-divergent bytes ride branch-minted pointer concepts
+    /// (`branch:{branch}:content:{path}`), which ancestry-narrowing
+    /// already scopes to the reader's lineage. On an unforked database this delegates to
+    /// `reconstruct` unchanged (Macrame's `Trunk` shape pays nothing).
+    /// Unknown branches refuse with `DbError::UnknownBranch`.
+    pub fn reconstruct_on(&self, ts: &str, branch: &str) -> macrame::Result<MaterializedState> {
+        runtime().block_on(self.db.reconstruct_on(ts, branch))
+    }
+
     /// The ledger's high-water mark without folding it.
     ///
     /// `analyze` stamps LEDGER_REVISION after every flush; a full
@@ -1583,6 +1905,452 @@ impl CodeGraphStore {
             .map(|row| row.get::<i64>(0).unwrap_or(0))
             .unwrap_or(0);
         Ok(anchor)
+    }
+
+    /// Every recorded generation in a window, oldest first (P1, DR-36).
+    ///
+    /// A listing, not a fold: one indexed `DISTINCT recorded_at` probe on
+    /// the `current_seq_anchor` precedent (folding to read scalars costs
+    /// seconds on a large log). `recorded_at` is when the ledger was told,
+    /// so one stamp is one act of indexing, not one commit of history.
+    /// Branch-scoped: the ledger holds every branch and a sweep must not
+    /// mix their stamps.
+    ///
+    /// Schema dependency (Q-3): this names the `transaction_log` columns
+    /// directly. It breaks loudly — a renamed column fails the query —
+    /// rather than returning a plausible wrong answer, which is why the
+    /// coupling is acceptable until it is upstreamed into Macrame.
+    pub fn recorded_generations(
+        &self,
+        from: Option<&str>,
+        to: Option<&str>,
+        branch: &str,
+    ) -> macrame::Result<Vec<String>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        let mut sql =
+            "SELECT DISTINCT recorded_at FROM transaction_log WHERE branch_id = ?1".to_string();
+        // Params are positional (?1 is branch); window bounds append in
+        // order so the numbering stays obvious.
+        let mut params: Vec<String> = vec![branch.to_string()];
+        if let Some(lo) = from {
+            sql.push_str(&format!(" AND recorded_at >= ?{}", params.len() + 1));
+            params.push(lo.to_string());
+        }
+        if let Some(hi) = to {
+            sql.push_str(&format!(" AND recorded_at <= ?{}", params.len() + 1));
+            params.push(hi.to_string());
+        }
+        sql.push_str(" ORDER BY recorded_at");
+        let libsql_params: Vec<libsql::Value> =
+            params.into_iter().map(libsql::Value::Text).collect();
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(&sql, libsql_params)
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok(out)
+        })
+    }
+
+    /// Every lineage the ledger knows, trunk first (P4, DR-40).
+    ///
+    /// Read through Macrame's read connection (one tiny append-only
+    /// table), not a fold — the same reason `recorded_generations` is a
+    /// listing. A database that never forked answers exactly the trunk.
+    pub fn branches(&self) -> macrame::Result<Vec<BranchInfo>> {
+        let out = runtime().block_on(self.db.branches())?;
+        Ok(out
+            .into_iter()
+            .map(|b| BranchInfo {
+                name: b.id.as_str().to_string(),
+                parent: b.parent.as_ref().map(|p| p.as_str().to_string()),
+                forked_at: b.forked_at.clone(),
+                created_at: b.created_at.clone(),
+            })
+            .collect())
+    }
+
+    /// Cut a lineage `name` from `from` (P4, DR-40): the write half of
+    /// branch reads, and the setup P5's per-git-branch ingestion stands
+    /// on. Refuses unknown parents with `DbError::UnknownBranch` and bad
+    /// names with `DbError::InvalidBranchId` — a typo'd lineage must
+    /// never silently read as the trunk.
+    pub fn fork_branch(&self, name: &str, from: &str) -> macrame::Result<BranchInfo> {
+        let name = BranchId::new(name)?;
+        let from = BranchId::new(from)?;
+        let b = runtime().block_on(self.db.fork(name, from))?;
+        Ok(BranchInfo {
+            name: b.id.as_str().to_string(),
+            parent: b.parent.as_ref().map(|p| p.as_str().to_string()),
+            forked_at: b.forked_at.clone(),
+            created_at: b.created_at.clone(),
+        })
+    }
+
+    /// Record divergent content for `path` on `branch` (P4, DR-40): the
+    /// one branch-legal way to disagree with the trunk about a file's
+    /// bytes. Concepts are lineage-frozen (D-225: a branch inherits and
+    /// cannot restate), so this mints the three things a branch MAY own:
+    /// blob bytes (content-addressed, branch-global table — identical
+    /// content shares one row across lineages), the content-addressed
+    /// spine concept (same id the trunk would mint for these bytes, so
+    /// `history_of` stays one chain and `all_concept_ids` stays clean),
+    /// and the branch-content pointer concept (stable id per lineage +
+    /// path — the read side's digest source, same-id turnover on
+    /// re-point, so superseded bytes archive exactly like superseded
+    /// module content).
+    ///
+    /// Two commits, honestly: blob put, then spine + pointer in one
+    /// bulk (both concepts, one stamp — the P3 one-flush ethos). A
+    /// re-point to the same bytes is a gate no-op (the open pointer
+    /// already names them — zero-growth). Returns the spine id, so
+    /// callers can assert chain continuity.
+    ///
+    /// Refusals: unknown branch (the pointer mint names it —
+    /// `BranchId::new` refuses blanks, the write refuses the
+    /// unregistered); disabled or skipped blob puts (no bytes, no
+    /// pointer — a pointer without bytes would be a lie the read side
+    /// cannot detect).
+    pub fn write_branch_content(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        branch: &str,
+    ) -> macrame::Result<String> {
+        BranchId::new(branch)?;
+        let sha = match self.put_source_blob(path, bytes)? {
+            BlobOutcome::Stored { digest, .. } => digest,
+            outcome => {
+                return Err(macrame::DbError::Engine(libsql::Error::Misuse(format!(
+                    "write_branch_content: no blob recorded for {path} on {branch} ({outcome:?})"
+                ))));
+            }
+        };
+        let now = now_iso8601();
+        let size = bytes.len() as u64;
+        let lines = if bytes.is_empty() {
+            0
+        } else {
+            let breaks = bytes.iter().filter(|b| **b == b'\n').count() as u64;
+            breaks + u64::from(!bytes.ends_with(b"\n"))
+        };
+        // Same id the trunk's `spine_upserts_for` mints for these bytes:
+        // `{path}@{sha}` content-addressed, lineage-agnostic.
+        let spine_id = format!("{path}@{sha}");
+        let spine = spine_concept_upsert(path, &sha, size, lines, &now);
+        let pointer = branch_pointer_upsert(path, &sha, branch, &now)?;
+        self.upsert_concepts_bulk(&[spine, pointer])?;
+        Ok(spine_id)
+    }
+
+    /// Ids of every module concept the ledger ever described on a branch
+    /// (P1, DR-36): the input universe for a per-generation sweep.
+    ///
+    /// EVER, not live: a `retired = 0` filter would drop every module that
+    /// no longer exists, and the sweep must still visit the generations
+    /// where it did. The per-generation `source_refs_at` batch then filters
+    /// this universe to present-at-T (absent ids are omitted, never `None`),
+    /// so retired and not-yet-asserted ids cost nothing but list membership.
+    /// Both id spellings are included (H-11: `{file}::module` changed
+    /// spelling mid-history); each generation's batch returns only the
+    /// spelling live at that T, so no generation double-counts.
+    /// The `LIKE`/`GLOB` pair is the prototype's (`scripts/verify_history.py`):
+    /// `LIKE` for the index, `GLOB` because SQLite `LIKE` is
+    /// case-insensitive for ASCII and would also match a struct named
+    /// `Module`.
+    pub fn module_concept_ids(&self, branch: &str) -> macrame::Result<Vec<String>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT DISTINCT entity_id FROM transaction_log \
+                     WHERE table_name = 'concepts' AND branch_id = ?1 \
+                     AND entity_id LIKE '%::module' AND entity_id GLOB '*::module' \
+                     ORDER BY entity_id",
+                    libsql::params![branch],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok(out)
+        })
+    }
+
+    /// Ids of every module concept visible on `branch` (P4, DR-40): the
+    /// branch's own rows UNION its ancestors' — inheritance, not just
+    /// mint lineage. A branch sweep must see the trunk's modules (it
+    /// reads them at fork-time content through its own folds); the
+    /// single-branch [`Self::module_concept_ids`] lists what was minted
+    /// where and stays the honest primitive underneath. Unknown branches
+    /// refuse via the ancestry lookup (never trunk-fallback).
+    pub fn visible_module_concept_ids(&self, branch: &str) -> macrame::Result<Vec<String>> {
+        let mut out = self.module_concept_ids(branch)?;
+        for ancestor in runtime().block_on(self.db.ancestry(branch))? {
+            if ancestor.branch_id != branch {
+                out.extend(self.module_concept_ids(&ancestor.branch_id)?);
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
+    /// Ids of every concept the ledger ever described on `branch` (P2,
+    /// DR-37): the input universe for the entity diff. Same ever-not-live
+    /// contract as [`Self::module_concept_ids`] without the kind filter —
+    /// functions, classes, imports and the rest are in the diff's join,
+    /// not just files. Excludes both infrastructure kinds (`content_version`
+    /// spine, P4 `branch_content` pointers) the way `live_concept_ids`
+    /// does — the diff joins entities, not ledger machinery. Both id spellings are included (H-11); each
+    /// generation's batch returns only the spelling live at that T, and
+    /// `ops.changes_between` groups raw ids by canonical form, so no
+    /// generation double-counts and a respelling never reads as churn.
+    /// Retired ids stay in (a deletion is a T1-only group); branch scope
+    /// matches `transaction_log.branch_id` (`"main"` unless told
+    /// otherwise). `ordering` is_id order — deterministic, not meaningful.
+    ///
+    /// Infrastructure kinds (`content_version` spine, P4
+    /// `branch_content` pointers) are excluded by kind (P2's diff joins
+    /// entities; a timeless `{path}@{digest}` row would read as a perpetual
+    /// `uncompared` group at every T, and a branch pointer is a view, not
+    /// an entity). The kind exclusion is branch-uniform: it holds for the
+    /// mint branch's own rows too, so pointers never enter any branch's
+    /// diff universe. The subquery is branch-agnostic by id, which is
+    /// exact here: spine ids are content-addressed, so the same bytes
+    /// are the same spine row on every branch.
+    pub fn all_concept_ids(&self, branch: &str) -> macrame::Result<Vec<String>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT DISTINCT entity_id FROM transaction_log \
+                     WHERE table_name = 'concepts' AND branch_id = ?1 \
+                     AND entity_id NOT IN (SELECT id FROM concepts \
+                         WHERE json_extract(content, '$.kind') IN \
+                            ('content_version', 'branch_content')) \
+                     ORDER BY entity_id",
+                    libsql::params![branch],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok(out)
+        })
+    }
+
+    /// Ids of every concept visible on `branch` (P4, DR-40): the
+    /// ancestry union, matching [`Self::visible_module_concept_ids`] —
+    /// what P2's diff sweeps when it runs on a lineage.
+    pub fn visible_all_concept_ids(&self, branch: &str) -> macrame::Result<Vec<String>> {
+        let mut out = self.all_concept_ids(branch)?;
+        for ancestor in runtime().block_on(self.db.ancestry(branch))? {
+            if ancestor.branch_id != branch {
+                out.extend(self.all_concept_ids(&ancestor.branch_id)?);
+            }
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
+    /// Compute the content-version spine upserts for freshly flushed
+    /// modules (P3, DR-38): one timeless `{path}@{digest}` concept per
+    /// actual content change, nothing for unchanged files. Pure compute
+    /// plus store reads — no writes — so both write sites append the
+    /// spine to their v2 bulk and flush ONCE: the spine must not mint
+    /// its own commit, because `recorded_generations` (P1) counts
+    /// DISTINCT `recorded_at` per commit and one flush stays one
+    /// generation.
+    ///
+    /// Concepts only, deliberately no edge: an edge target names its
+    /// concept, and Macrame's archive reference scan reads hot link
+    /// payloads — so every closed `HAD_CONTENT` version would pin its
+    /// blob hot forever and defeat retention (§3.4, DR-25). The chain
+    /// needs no edge: spine concepts order by `valid_from`, intervals
+    /// and parents derive from chain order. Likewise the concept
+    /// payload names no digest — title and content carry the path only
+    /// and `extra` carries numbers only (payloads DO log `extra`,
+    /// verified against the ledger, not assumed) — the digest lives
+    /// solely in the id, an unscanned `entity_id` column since the scan
+    /// reads payloads. A superseded blob therefore stays archivable.
+    ///
+    /// `module_digests` carries only modules with a validated digest
+    /// (degraded puts keep graph coverage but mint no spine; the next
+    /// successful put starts the chain). Unchanged content is ALWAYS
+    /// re-emitted, never skipped by digest comparison: the timeless id
+    /// makes "same digest" look like "nothing to do", but the open
+    /// row may still need the rewrite — a v1 row missing `meta_version`
+    /// is the case that bit (the v1→v2 upgrade silently skipped every
+    /// spine row). The [`CodeGraphStore::filter_unchanged`] gate absorbs
+    /// the true no-op (byte-identical re-upsert, no new version, no new
+    /// commit); emitting unconditionally also heals any metadata drift
+    /// or corruption from ground truth (blob bytes). A missing blob
+    /// skips the file loudly, never half-written.
+    pub fn spine_upserts_for(
+        &self,
+        module_digests: &[(String, String)],
+        now: &str,
+    ) -> macrame::Result<Vec<ConceptUpsert>> {
+        let mut out = Vec::new();
+        for (module_id, digest) in module_digests {
+            let Some(path) = module_id.strip_suffix("::module") else {
+                eprintln!("[diag] spine: skipping non-module id {module_id}");
+                continue;
+            };
+            let bytes = match self.blob_get(digest)? {
+                Some(b) => b,
+                None => {
+                    eprintln!("[diag] spine: blob missing for {digest} ({path}) — skipping");
+                    continue;
+                }
+            };
+            let size = bytes.len() as u64;
+            // Line count: newlines, plus the final unterminated line.
+            // A trailing newline does not start a new line.
+            let lines = if bytes.is_empty() {
+                0
+            } else {
+                let breaks = bytes.iter().filter(|b| **b == b'\n').count() as u64;
+                breaks + u64::from(!bytes.ends_with(b"\n"))
+            };
+            out.push(spine_concept_upsert(path, digest, size, lines, now));
+        }
+        Ok(out)
+    }
+
+    /// Maintain the content-version spine (P3, DR-38): compute via
+    /// [`CodeGraphStore::spine_upserts_for`] and flush in one commit.
+    /// The write sites (full analyze, `update_file`) inline the compute
+    /// into their v2 bulk instead — one flush, one generation — so this
+    /// wrapper exists for small callers and tests, not the hot path.
+    pub fn maintain_content_spine(
+        &self,
+        module_digests: &[(String, String)],
+        now: &str,
+    ) -> macrame::Result<SpineReport> {
+        let concepts = self.spine_upserts_for(module_digests, now)?;
+        Ok(SpineReport {
+            files_seen: module_digests
+                .iter()
+                .filter(|(id, _)| id.ends_with("::module"))
+                .count(),
+            concepts_upserted: self.upsert_concepts_bulk(&concepts)?,
+        })
+    }
+
+    /// Every content a file ever had, newest first (P3, DR-38): the
+    /// spine chain with derived intervals, plus the spine payload's
+    /// `parent_digest`/`size`/`line_count`.
+    ///
+    /// Ledger-direct, not a fold: the chain is one concept per content
+    /// change, so a full reconstruct to read it would be pure overhead.
+    /// Reads the timeless spine concepts by id prefix (`concepts.id`
+    /// is UNIQUE, so one row per content — no version fold); intervals
+    /// derive from chain order because maintain stamps one `now` per
+    /// content (each version's `valid_from` ends the previous one's
+    /// interval, contiguously by construction).
+    ///
+    /// The head is open while the module concept is live. A deleted
+    /// file's chain ends at the module's retire stamp (the retire
+    /// cascade owns entity death; the spine owns content, so it never
+    /// invents the stamp — it reports the module's). An unknown file
+    /// reads as `[]`: no spine rows, no chain.
+    ///
+    /// Branch is trunk for now — P4 (DR-40) threads lineage through
+    /// this read. A corrupt spine payload fails the read (INV-7
+    /// honesty, P0 precedent), with the concept id in the message.
+    pub fn history_of(&self, file_path: &str) -> macrame::Result<Vec<SpineVersion>> {
+        let module_id = format!("{file_path}::module");
+        let escaped = file_path
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("{escaped}@%");
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT id, extra, valid_from FROM concepts \
+                     WHERE retired = 0 AND id LIKE ?1 ESCAPE '\\' \
+                     AND json_extract(content, '$.kind') = 'content_version' \
+                     ORDER BY valid_from DESC",
+                    libsql::params![pattern],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                let id: String = row.get(0).unwrap_or_default();
+                let extra: String = row.get(1).unwrap_or_default();
+                let payload: serde_json::Value = serde_json::from_str(&extra).map_err(|e| {
+                    macrame::DbError::Engine(libsql::Error::Misuse(format!(
+                        "spine concept {id} has unparseable extra: {e}",
+                    )))
+                })?;
+                let inner = payload.get("coderadar");
+                let get_u64 = |key: &str| {
+                    inner
+                        .and_then(|v| v.get(key))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                };
+                let prefix = format!("{file_path}@");
+                out.push(SpineVersion {
+                    digest: id.strip_prefix(&prefix).unwrap_or(&id).to_string(),
+                    valid_from: row.get(2).unwrap_or_default(),
+                    valid_to: TS_OPEN.to_string(),
+                    open: true,
+                    // No stored parent: the parent is the next-older
+                    // link, derived below from chain order (`extra`
+                    // carries no digests — retention coexistence).
+                    parent_digest: None,
+                    size_bytes: get_u64("size"),
+                    line_count: get_u64("line_count"),
+                });
+            }
+            // Intervals and parents derive from chain order: each
+            // version's start ends the previous one's interval, and each
+            // version's parent is the next-older link (the oldest content
+            // is parentless).
+            for i in 1..out.len() {
+                let start = out[i - 1].valid_from.clone();
+                out[i].valid_to = start;
+                out[i].open = false;
+                let child = i - 1;
+                let parent_digest = out[i].digest.clone();
+                out[child].parent_digest = Some(parent_digest);
+            }
+            // The head ends where the file died, if it did: the module
+            // concept's retire stamp. A live module (or an untraceable
+            // one) leaves the head open.
+            if let Some(head) = out.first_mut() {
+                let mut mrows = conn
+                    .query(
+                        "SELECT retired, valid_to FROM concepts WHERE id = ?1",
+                        libsql::params![module_id],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                if let Some(mrow) = mrows.next().await.map_err(macrame::DbError::Engine)? {
+                    let retired: i64 = mrow.get(0).unwrap_or(0);
+                    if retired != 0 {
+                        head.valid_to = mrow.get(1).unwrap_or_default();
+                        head.open = false;
+                    }
+                }
+            }
+            Ok(out)
+        })
     }
 }
 
@@ -1660,6 +2428,39 @@ pub fn reset_blob_stats() {
     if let Ok(mut stats) = BLOB_STATS.lock() {
         *stats = BlobStats::default();
     }
+}
+
+/// H-12: the last edge-persist failure of this generation, or `None`.
+///
+/// `persist_edges` is assert-only and flushes in batches, so a failure part
+/// way through leaves the batches before it committed — the store's edge
+/// state is then incomplete while the index itself looks healthy. That used
+/// to be a `[diag]` line on stderr with a zero exit, which is how a partial
+/// edge write could pass for a clean analyze. Recorded here on the same
+/// terms as `BLOB_STATS`: process-global and reset at the analyze/load
+/// boundary, because the cheap reindex path persists edges through
+/// `update_file` and per-call threading would miss it.
+static EDGE_PERSIST_ERROR: std::sync::LazyLock<std::sync::Mutex<Option<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// Clear the recorded failure (analyze/load boundaries).
+pub fn reset_edge_persist_error() {
+    if let Ok(mut slot) = EDGE_PERSIST_ERROR.lock() {
+        *slot = None;
+    }
+}
+
+/// Record that edge persistence failed, with the engine's own message.
+pub fn record_edge_persist_error(message: impl Into<String>) {
+    if let Ok(mut slot) = EDGE_PERSIST_ERROR.lock() {
+        *slot = Some(message.into());
+    }
+}
+
+/// The recorded failure for the report surfaces, or `None` when edges
+/// persisted cleanly.
+pub fn edge_persist_error_snapshot() -> Option<String> {
+    EDGE_PERSIST_ERROR.lock().ok().and_then(|slot| slot.clone())
 }
 
 /// Where one entity's bytes live at one timestamp (§3.0 read path).
@@ -1975,7 +2776,17 @@ fn concept_changed(
         cur.get(annotation::CONTENT_HASH).and_then(|h| h.as_str()),
     ) {
         (Some(a), Some(b)) => a != b,
-        // Unhashable on either side rewrites (safe direction).
+        // Neither side hashable: compare the full content (parsed, so
+        // key order cannot fake a change). The P3 spine deliberately
+        // carries no `content_hash` — a digest in content would land in
+        // the logged payload and pin the blob hot against retention —
+        // so without this arm every maintain would mint a fresh spine
+        // version per analyze, churning `valid_from` and scrambling the
+        // chain order the read derives. Byte-identical means no-op.
+        (None, None) => {
+            serde_json::from_str::<serde_json::Value>(&concept.content).map_or(true, |v| v != cur)
+        }
+        // Unhashable on exactly one side rewrites (safe direction).
         _ => true,
     }
 }
@@ -2317,6 +3128,15 @@ pub enum V2ConceptClass {
     /// Field entities (fields ride inside their Class), so these are
     /// skipped with a warning.
     StandaloneField,
+    /// P3 content-version spine concept (`kind = 'content_version'`) and
+    /// P4 branch-content pointer (`kind = 'branch_content'`).
+    /// Ledger infrastructure, not entities: timeless,
+    /// digest-addressed, read through `history_of` / the branch read
+    /// path. Skipped by entity loaders exactly like standalone fields —
+    /// matching them before the canonical check is what keeps them out
+    /// of `V1Leftover` (which hard-fails the load) and out of
+    /// `parse_v2_concept` (which has no arm for either).
+    Spine,
     /// Content that is not JSON or has no kind.
     Unreadable,
 }
@@ -2331,6 +3151,9 @@ pub fn classify_v2_concept(content: &str) -> V2ConceptClass {
     };
     if kind == "field" {
         return V2ConceptClass::StandaloneField;
+    }
+    if kind == "content_version" || kind == edge_type::BRANCH_CONTENT_KIND {
+        return V2ConceptClass::Spine;
     }
     if V2_CANONICAL_KINDS.contains(&kind)
         && v.get("meta_version").and_then(|m| m.as_u64()) == Some(V2_META_VERSION)
@@ -3611,7 +4434,10 @@ mod tests {
             1
         );
         assert_eq!(store.upsert_concepts_bulk(&[tombstone]).unwrap(), 0);
-        // Unhashable content always rewrites (safe direction).
+        // Unhashable on both sides: byte-identical absorbs (no fresh
+        // version per run — the P3 spine must not carry a digest in its
+        // content, so without the full-content fallback every maintain
+        // would churn), any drift rewrites.
         let bare = v2_upsert(
             "f.py::bar",
             "bar",
@@ -3625,7 +4451,7 @@ mod tests {
                 .unwrap(),
             1
         );
-        assert_eq!(store.upsert_concepts_bulk(&[bare]).unwrap(), 1);
+        assert_eq!(store.upsert_concepts_bulk(&[bare]).unwrap(), 0);
         // A meta_version-less row with matching hash still upgrades (the
         // v1-store upgrade path); afterwards it skips like any v2 row.
         let legacy = ConceptUpsert::new("f.py::v1", "v1")
@@ -3980,6 +4806,575 @@ mod tests {
         assert_eq!(source_blob_of_extra(bad), None);
         // Not JSON at all.
         assert_eq!(source_blob_of_extra("not json"), None);
+    }
+
+    /// P0 (DR-36) fixture: a module with a blob digest plus one function
+    /// concept, both asserted now. Returns the store and a pre-history
+    /// timestamp (before the first recorded write) for the predates pin.
+    fn source_ref_store(dir: &std::path::Path) -> (CodeGraphStore, String) {
+        let store = CodeGraphStore::open(dir.join("refs.db")).unwrap();
+        let digest = "c".repeat(64);
+        let module_extra = format!(r#"{{"coderadar":{{"format":1,"source_blob":"{digest}"}}}}"#);
+        let now = now_iso8601();
+        let module = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .extra(module_extra)
+            .valid_from(now.clone())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        let func = macrame::ConceptUpsert::new("m.py::f", "m.py::f")
+            .content(
+                r#"{"kind":"function","name":"f","file_path":"m.py","span":{"start":0,"end":10}}"#,
+            )
+            .valid_from(now.clone())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[module, func]).unwrap(), 2);
+        // Stamp AFTER the write: `now` above predates the recording (the
+        // upsert lands later), and a sweep must query at-or-after it.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        (store, now_iso8601())
+    }
+
+    /// P0 (DR-36) anti-divergence pin: the batched path returns exactly
+    /// what N single calls return, for present, digest-less and absent ids.
+    #[test]
+    fn source_refs_at_matches_single_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, now) = source_ref_store(dir.path());
+        let ids = vec![
+            "m.py::f".to_string(),
+            "m.py::module".to_string(),
+            "m.py::ghost".to_string(),
+        ];
+        let (batch, predates) = store.source_refs_at(&ids, &now, "main").unwrap();
+        assert!(!predates);
+        // Absent at T: absent from the map, never a None entry.
+        assert_eq!(batch.len(), 2);
+        assert!(!batch.contains_key("m.py::ghost"));
+        for id in ["m.py::f", "m.py::module"] {
+            let single = store
+                .entity_source_ref_at(id, &now, "main")
+                .unwrap()
+                .unwrap();
+            let batched = &batch[id];
+            assert_eq!(batched.id, single.id);
+            assert_eq!(batched.file_path, single.file_path);
+            assert_eq!(batched.digest, single.digest);
+            assert_eq!(batched.digest.as_deref(), Some("c".repeat(64).as_str()));
+            assert_eq!(
+                (batched.span_start, batched.span_end),
+                (single.span_start, single.span_end)
+            );
+            assert_eq!(batched.has_span, single.has_span);
+            assert_eq!(batched.full_file, single.full_file);
+        }
+        // The function carries a span; the module concept has none.
+        assert!(batch["m.py::f"].has_span);
+        assert!(!batch["m.py::module"].has_span);
+        assert!(batch["m.py::module"].full_file);
+    }
+
+    /// P0 (DR-36): a pre-floor T reports `predates_recorded_history` with
+    /// an empty map — the sweep's stop condition, matching `entities_at`.
+    #[test]
+    fn source_refs_at_predates_history_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _now) = source_ref_store(dir.path());
+        let (batch, predates) = store
+            .source_refs_at(
+                &["m.py::f".to_string()],
+                "2000-01-01T00:00:00.000000Z",
+                "main",
+            )
+            .unwrap();
+        assert!(predates);
+        assert!(batch.is_empty());
+    }
+
+    /// P4 (DR-40): on an unforked database `reconstruct_on(main)` is
+    /// `reconstruct` — same concepts, same edges, no predates flag.
+    #[test]
+    fn reconstruct_on_trunk_matches_reconstruct() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, now) = source_ref_store(dir.path());
+        let plain = store.reconstruct(&now).unwrap();
+        let on = store.reconstruct_on(&now, "main").unwrap();
+        assert!(!on.predates_recorded_history);
+        assert_eq!(on.concepts.len(), plain.concepts.len());
+        assert_eq!(on.edges.len(), plain.edges.len());
+    }
+
+    /// P4 (DR-40): one lineage before the fork (the trunk, no parent),
+    /// two after — the fork names its parent and cut instant.
+    #[test]
+    fn branches_lists_trunk_then_fork() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _now) = source_ref_store(dir.path());
+        let before = store.branches().unwrap();
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].name, "main");
+        assert_eq!(before[0].parent, None);
+        let cut = store.fork_branch("feat", "main").unwrap();
+        assert_eq!(cut.name, "feat");
+        assert_eq!(cut.parent.as_deref(), Some("main"));
+        assert!(cut.forked_at.is_some());
+        let after = store.branches().unwrap();
+        assert_eq!(after.len(), 2);
+        assert!(after.iter().any(|b| b.name == "feat"));
+    }
+
+    /// P4 (DR-40): forking from an unregistered lineage refuses (never
+    /// trunk-fallback), and so does a blank name — a typo'd lineage must
+    /// never silently read as another.
+    #[test]
+    fn fork_rejects_unknown_parent_and_bad_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _now) = source_ref_store(dir.path());
+        let err = store.fork_branch("feat", "nope").unwrap_err();
+        assert!(
+            matches!(err, macrame::DbError::UnknownBranch(_)),
+            "unknown parent must refuse, got {err:?}"
+        );
+        let err = store.fork_branch("", "main").unwrap_err();
+        assert!(
+            matches!(err, macrame::DbError::InvalidBranchId(_)),
+            "blank name must refuse, got {err:?}"
+        );
+    }
+
+    /// P4 (DR-40) core: divergent bytes on a branch. The branch reads its
+    /// own blob (full file — spans belong to the trunk's lineage); the
+    /// trunk keeps its module-concept fallback; the spine stays one
+    /// shared content-addressed chain across lineages.
+    #[test]
+    fn branch_pointer_diverges_and_trunk_fallback_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _now) = source_ref_store(dir.path());
+        store.fork_branch("feat", "main").unwrap();
+        let bytes_b = b"x = 1\ny = 2\n";
+        let spine_id = store.write_branch_content("m.py", bytes_b, "feat").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let now = now_iso8601();
+        // The branch reads its own bytes.
+        let branched = store
+            .entity_source_ref_at("m.py::module", &now, "feat")
+            .unwrap()
+            .unwrap();
+        let sha_b = branched.digest.clone().expect("branch must name its blob");
+        assert_eq!(spine_id, format!("m.py@{sha_b}"));
+        assert!(branched.full_file);
+        assert!(!branched.has_span);
+        let got = store.blob_get(&sha_b).unwrap().unwrap();
+        assert_eq!(got, bytes_b);
+        // The trunk is unaffected: module-concept fallback, legacy digest.
+        let trunk = store
+            .entity_source_ref_at("m.py::module", &now, "main")
+            .unwrap()
+            .unwrap();
+        assert_eq!(trunk.digest.as_deref(), Some("c".repeat(64).as_str()));
+        // One shared chain: trunk content is not in it (no blob was ever
+        // put for the fixture digest), branch content is.
+        let chain = store.history_of("m.py").unwrap();
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].digest, sha_b);
+    }
+
+    /// P4 (DR-40): re-pointing to the same bytes is a gate no-op
+    /// (zero-growth ethos); re-pointing elsewhere turns over the same
+    /// pointer id, so the archive reclaims the old bytes exactly like
+    /// superseded module content — same-entity supersession, no writer
+    /// close step, no terminal rows.
+    #[test]
+    fn branch_repoint_is_idempotent_and_turns_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _now) = source_ref_store(dir.path());
+        store.fork_branch("feat", "main").unwrap();
+        let v1 = b"x = 1\n";
+        let v2 = b"x = 1\ny = 2\n";
+        let id1 = store.write_branch_content("m.py", v1, "feat").unwrap();
+        let id1_again = store.write_branch_content("m.py", v1, "feat").unwrap();
+        assert_eq!(id1, id1_again);
+        // Turnover, not accumulation: the stable pointer id names the
+        // new bytes after the re-point, through the read path.
+        let id2 = store.write_branch_content("m.py", v2, "feat").unwrap();
+        assert_ne!(id1, id2);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let now = now_iso8601();
+        let state = store.reconstruct_on(&now, "feat").unwrap();
+        let pointer = state
+            .concepts
+            .get("branch:feat:content:m.py")
+            .expect("pointer concept visible on its branch");
+        let sha2 = id2.trim_start_matches("m.py@");
+        assert_eq!(source_blob_of_extra(&pointer.extra).as_deref(), Some(sha2));
+        // And the trunk cannot see it (ancestry-narrowed fold).
+        let trunk_state = store.reconstruct_on(&now, "main").unwrap();
+        assert!(!trunk_state
+            .concepts
+            .contains_key("branch:feat:content:m.py"));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let now = now_iso8601();
+        let r = store
+            .entity_source_ref_at("m.py::module", &now, "feat")
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.digest.as_deref(), Some(id2.trim_start_matches("m.py@")));
+    }
+
+    /// P4 (DR-40): reading on an unregistered lineage refuses — the
+    /// branch-unaware-reader hazard answered as an error, not trunk data.
+    #[test]
+    fn unknown_branch_read_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, now) = source_ref_store(dir.path());
+        let err = store
+            .entity_source_ref_at("m.py::module", &now, "nope")
+            .unwrap_err();
+        assert!(
+            matches!(err, macrame::DbError::UnknownBranch(_)),
+            "unknown branch must refuse, got {err:?}"
+        );
+    }
+
+    /// P4 (DR-40): pointer concepts are ledger infrastructure — invisible
+    /// to every entity listing, while the ancestry union still hands a
+    /// branch sweep the trunk's modules it inherits.
+    #[test]
+    fn branch_infrastructure_is_invisible_to_entity_listings() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _now) = source_ref_store(dir.path());
+        store.fork_branch("feat", "main").unwrap();
+        store
+            .write_branch_content("m.py", b"x = 1\ny = 2\n", "feat")
+            .unwrap();
+        let live = store.live_concept_ids().unwrap();
+        assert!(!live.iter().any(|id| id.starts_with("branch:")));
+        assert!(live.contains(&"m.py::module".to_string()));
+        let feat_ids = store.all_concept_ids("feat").unwrap();
+        assert!(!feat_ids.iter().any(|id| id.starts_with("branch:")));
+        // The strict listing is mint-lineage: nothing but the pointer was
+        // minted on the branch, and the pointer is excluded.
+        assert!(feat_ids.is_empty());
+        // The visible union hands the branch its inherited universe.
+        assert_eq!(
+            store.visible_module_concept_ids("feat").unwrap(),
+            store.module_concept_ids("main").unwrap()
+        );
+        assert!(store
+            .visible_all_concept_ids("feat")
+            .unwrap()
+            .contains(&"m.py::f".to_string()));
+        // And the classifier diverts pointer rows like spine rows (never
+        // entities, never V1Leftovers).
+        let pointer_content = r#"{"meta_version":2,"kind":"branch_content","branch":"feat"}"#;
+        assert!(matches!(
+            classify_v2_concept(pointer_content),
+            V2ConceptClass::Spine
+        ));
+    }
+
+    /// P1 (DR-36) fixture: two recorded acts. The first asserts module
+    /// `m.py`; the second retires it and asserts `n.py`. Returns the store
+    /// plus the valid-from stamp of the second act and a post-write stamp.
+    fn generations_store(dir: &std::path::Path) -> (CodeGraphStore, String, String) {
+        let store = CodeGraphStore::open(dir.join("gens.db")).unwrap();
+        let digest = "d".repeat(64);
+        let m_extra = format!(r#"{{"coderadar":{{"format":1,"source_blob":"{digest}"}}}}"#);
+        let m_v1 = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .extra(m_extra)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[m_v1]).unwrap(), 1);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let s1 = now_iso8601();
+        let m_v2 = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(s1.clone())
+            .valid_to(TS_OPEN.to_string())
+            .retired(true);
+        let n_v1 = macrame::ConceptUpsert::new("n.py::module", "n.py::module")
+            .content(r#"{"kind":"module","name":"n.py","file_path":"n.py"}"#)
+            .valid_from(s1.clone())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[m_v2, n_v1]).unwrap(), 2);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        (store, s1, now_iso8601())
+    }
+
+    /// P1 (DR-36): the listing is one stamp per recorded act, oldest
+    /// first, and the window bounds narrow it.
+    #[test]
+    fn recorded_generations_lists_windowed_stamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _s1, _s2) = generations_store(dir.path());
+        let all = store.recorded_generations(None, None, "main").unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all[0] < all[1]);
+        let tail = store
+            .recorded_generations(Some(&all[1]), None, "main")
+            .unwrap();
+        assert_eq!(tail, vec![all[1].clone()]);
+    }
+
+    /// P1 (DR-36): ever-ids, not live ones — the retired `m.py::module`
+    /// is in the universe the sweep iterates.
+    #[test]
+    fn module_concept_ids_includes_retired() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _s1, _s2) = generations_store(dir.path());
+        let mut ids = store.module_concept_ids("main").unwrap();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["m.py::module".to_string(), "n.py::module".to_string()]
+        );
+        // And the live-only view disagrees, which is why the sweep must
+        // not use it.
+        let live = store.live_concept_ids().unwrap();
+        assert!(!live.contains(&"m.py::module".to_string()));
+    }
+
+    /// P2 (DR-37): the full ever-universe, not just modules — a
+    /// function retired with its file stays diffable.
+    #[test]
+    fn all_concept_ids_lists_every_kind_and_retired() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _s1, _s2) = generations_store(dir.path());
+        // The fixture store holds two module concepts (one retired).
+        // Assert a function concept asserted alongside: the universe is
+        // not the module list.
+        let f_v1 = macrame::ConceptUpsert::new("m.py::f", "m.py::f")
+            .content(r#"{"kind":"function","name":"f"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[f_v1]).unwrap(), 1);
+        let mut ids = store.all_concept_ids("main").unwrap();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![
+                "m.py::f".to_string(),
+                "m.py::module".to_string(),
+                "n.py::module".to_string()
+            ]
+        );
+        // Modules-only is the strict subset; the diff must use the full one.
+        let modules = store.module_concept_ids("main").unwrap();
+        assert!(modules.len() < ids.len());
+        assert!(modules.iter().all(|m| ids.contains(m)));
+    }
+
+    /// DR-42 (Q-2, H-3): the framework hook's sweep is an inclusion list
+    /// over the `synthetic:` namespace. Structural rows — even DECORATES
+    /// and REFERENCES, which the old exclusion list swept — and
+    /// non-namespaced direct-path rows (`DEPENDS_ON`) are not returned;
+    /// a retired namespaced row leaves the sweep via `retire_synthetic_pairs`.
+    #[test]
+    fn open_synthetic_triples_returns_only_namespaced_framework_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("syn.db")).unwrap();
+        let now = now_iso8601();
+        for id in ["r::route", "h.py::handler", "a.py::f", "b.py::g"] {
+            let up = macrame::ConceptUpsert::new(id, id)
+                .content(r#"{"kind":"function","name":"x","file_path":"f.py"}"#)
+                .valid_from(now.clone())
+                .valid_to(TS_OPEN.to_string())
+                .retired(false);
+            assert_eq!(store.upsert_concepts_bulk(&[up]).unwrap(), 1);
+        }
+        let triples = [
+            ("r::route", "h.py::handler", "synthetic:flask:handles"),
+            ("r::route", "h.py::handler", "synthetic:django:registers"),
+            ("a.py::f", "b.py::g", "DECORATES"),
+            ("a.py::f", "b.py::g", "REFERENCES"),
+            ("a.py::f", "b.py::g", "DEPENDS_ON"),
+        ];
+        let batch: Vec<macrame::graph::EdgeAssertion> = triples
+            .iter()
+            .map(|&(s, t, k)| {
+                macrame::graph::EdgeAssertion::new(s, t, k)
+                    .valid_from(now.clone())
+                    .weight(1.0)
+            })
+            .collect();
+        assert_eq!(store.assert_edges_bulk(batch).unwrap(), 5);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let mut got = store.open_synthetic_triples(&now_iso8601()).unwrap();
+        got.sort();
+        assert_eq!(
+            got.iter().map(|(_, _, k, _)| k.clone()).collect::<Vec<_>>(),
+            vec![
+                "synthetic:django:registers".to_string(),
+                "synthetic:flask:handles".to_string()
+            ]
+        );
+        // Retired namespaced rows leave the sweep (the hook's step-4
+        // close path converges: re-running finds nothing stale).
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let retired_at = now_iso8601();
+        assert_eq!(store.retire_synthetic_pairs(&got, &retired_at).unwrap(), 2);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(store
+            .open_synthetic_triples(&now_iso8601())
+            .unwrap()
+            .is_empty());
+    }
+
+    /// P3 (DR-38): the spine writer's contract — one timeless concept
+    /// per actual content change (parents and intervals derived from
+    /// chain order), the unchanged gate absorbing true no-ops. Also pins
+    /// the retention coexistence: no SPINE log payload names a digest
+    /// (title/content carry the path, `extra` numbers only; the digest
+    /// lives in the unscanned id column), so a superseded blob stays
+    /// archivable. And the universe hygiene: spine ids appear in
+    /// neither `live_concept_ids*` nor `all_concept_ids`, so file sweeps
+    /// and the P2 diff never see ledger infrastructure as entities.
+    /// The v1-upgrade heal: a spine row stripped of `meta_version` is
+    /// rewritten on the next maintain (same digest, fresh metadata) —
+    /// the digest pre-skip that swallowed the upgrade is gone; the gate,
+    /// not the caller, decides no-op.
+    #[test]
+    fn spine_maintain_links_one_chain_per_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("spine.db")).unwrap();
+        let now = now_iso8601();
+        let module = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(now.clone())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[module]).unwrap(), 1);
+        let blob_put = |name: &str, bytes: &[u8]| match store.put_source_blob(name, bytes).unwrap()
+        {
+            BlobOutcome::Stored { digest, .. } => digest,
+            other => panic!("expected Stored, got {other:?}"),
+        };
+        let d1 = blob_put("m.py", b"x = 1\n");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let t1 = now_iso8601();
+        let r1 = store
+            .maintain_content_spine(&[("m.py::module".to_string(), d1.clone())], &t1)
+            .unwrap();
+        assert_eq!((r1.files_seen, r1.concepts_upserted), (1, 1));
+        // Unchanged content: the gate absorbs the re-upsert — the
+        // report shows zero upserts, no new version, no new commit.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let r_same = store
+            .maintain_content_spine(&[("m.py::module".to_string(), d1.clone())], &now_iso8601())
+            .unwrap();
+        assert_eq!((r_same.files_seen, r_same.concepts_upserted), (1, 0));
+        // v1-upgrade heal: a metadata-stripped row for the SAME digest
+        // is rewritten, not skipped. Write the stripped variant through
+        // the bulk API (the digest pre-skip is gone, so the gate sees
+        // it); the next maintain must count one healing upsert.
+        let full_content = spine_concept_upsert("m.py", &d1, 6, 1, &now_iso8601())
+            .content
+            .clone();
+        let mut stripped_value: serde_json::Value = serde_json::from_str(&full_content).unwrap();
+        stripped_value
+            .as_object_mut()
+            .unwrap()
+            .remove("meta_version");
+        let mut stripped_upsert = spine_concept_upsert("m.py", &d1, 6, 1, &now_iso8601());
+        stripped_upsert.content = stripped_value.to_string();
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(std::slice::from_ref(&stripped_upsert))
+                .unwrap(),
+            1,
+            "the stripped variant must land (drift from the open row)"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let t_heal = now_iso8601();
+        let r_heal = store
+            .maintain_content_spine(&[("m.py::module".to_string(), d1.clone())], &t_heal)
+            .unwrap();
+        assert_eq!(
+            (r_heal.files_seen, r_heal.concepts_upserted),
+            (1, 1),
+            "a metadata-stripped row must heal, not skip"
+        );
+        // New content: one concept, parent-linked.
+        let d2 = blob_put("m.py", b"x = 1\ny = 2\n");
+        assert_ne!(d1, d2);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let t2 = now_iso8601();
+        let r2 = store
+            .maintain_content_spine(&[("m.py::module".to_string(), d2.clone())], &t2)
+            .unwrap();
+        assert_eq!((r2.files_seen, r2.concepts_upserted), (1, 1));
+        let chain = store.history_of("m.py").unwrap();
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].digest, d2);
+        assert!(chain[0].open);
+        assert_eq!(chain[0].parent_digest.as_deref(), Some(d1.as_str()));
+        assert_eq!(chain[0].size_bytes, 12);
+        assert_eq!(chain[0].line_count, 2);
+        assert_eq!(chain[1].digest, d1);
+        assert!(!chain[1].open);
+        assert_eq!(chain[1].parent_digest, None);
+        assert_eq!(
+            chain[1].valid_from, t_heal,
+            "the heal rewrite restamps the same digest row"
+        );
+        assert_eq!(
+            chain[1].valid_to, chain[0].valid_from,
+            "intervals derive from chain order: contiguous by construction"
+        );
+        // Universe hygiene: no sweep and no diff universe lists spine rows.
+        assert_eq!(
+            store.live_concept_ids_for_file("m.py").unwrap(),
+            vec!["m.py::module".to_string()]
+        );
+        assert!(
+            !store
+                .live_concept_ids()
+                .unwrap()
+                .iter()
+                .any(|id| id.contains('@')),
+            "spine ids are not live entities"
+        );
+        assert!(
+            !store
+                .all_concept_ids("main")
+                .unwrap()
+                .iter()
+                .any(|id| id.contains('@')),
+            "spine ids are not diff-universe entities"
+        );
+        // Retention coexistence: no SPINE log payload names a spine digest.
+        // Concept payloads log (v, title, content, stamps) AND `extra`,
+        // so the spine title/content/extra carry the path and numbers
+        // only; the digest lives solely in the id — an unscanned
+        // `entity_id` column, since the archive scan reads payloads. A
+        // superseded blob therefore stays archivable. Scoped to spine
+        // rows: module payloads name their live digest by design (and
+        // age out via their successor row), which is exactly the
+        // mechanism the pin must not disturb.
+        let (_leak_guard, leak_conn) = store.open_diagnostic_conn().unwrap();
+        let leaked: i64 = runtime()
+            .block_on(async {
+                let mut rows = leak_conn
+                    .query(
+                        "SELECT COUNT(*) FROM transaction_log                          WHERE payload LIKE ?1 AND entity_id LIKE 'm.py@%'",
+                        libsql::params![format!("%{d1}%")],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .unwrap();
+                Ok::<_, macrame::DbError>(row.get(0).unwrap_or(0))
+            })
+            .unwrap();
+        assert_eq!(leaked, 0, "spine rows must not pin blobs via hot payloads");
     }
 
     /// §1.9 (DR-25): put round-trip + idempotent retry (the

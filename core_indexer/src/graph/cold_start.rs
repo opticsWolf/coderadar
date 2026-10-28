@@ -60,6 +60,10 @@ pub struct ColdStartStats {
     /// Standalone `field` concepts skipped — v1 leftovers; v2 embeds
     /// fields in the owning class.
     pub skipped_field_concepts: usize,
+    /// P3 content-version spine concepts skipped — ledger infrastructure
+    /// (timeless, digest-addressed), read through `history_of`, never
+    /// materialized as entities.
+    pub skipped_spine_concepts: usize,
 }
 
 impl ColdStartStats {
@@ -75,6 +79,7 @@ impl ColdStartStats {
             resolved_call_pairs: 0,
             synthetic_edges: 0,
             skipped_field_concepts: 0,
+            skipped_spine_concepts: 0,
         }
     }
 }
@@ -122,6 +127,7 @@ pub fn projection_from_state(
     for (id, attrs) in &state.concepts {
         match classify_v2_concept(&attrs.content) {
             V2ConceptClass::StandaloneField => stats.skipped_field_concepts += 1,
+            V2ConceptClass::Spine => stats.skipped_spine_concepts += 1,
             V2ConceptClass::V1Leftover => v1_leftovers += 1,
             V2ConceptClass::Unreadable => unreadable += 1,
             V2ConceptClass::Canonical(_) => match parse_v2_concept(id, &attrs.content)? {

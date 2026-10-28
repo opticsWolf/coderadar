@@ -1,6 +1,6 @@
 # CodeRadar Architecture
 
-> **Living document.** Baseline: v0.13.0 (`dev`), `macrame-db` 0.19.1,
+> **Living document.** Baseline: v0.14.0 (`dev`), `macrame-db` 0.19.1,
 > store schema v22. Update with feature commits the way `CHANGELOG.md` is
 > updated — a section that describes behavior the code no longer has is a bug.
 > Design *history* (why things are the way they are) lives in the
@@ -101,7 +101,7 @@ CodeRadar/
     __init__.py                 # CodeGraph facade, Snapshot, errors
     ops.py                      # OPERATIONS: validated shared op layer
     cli.py                      # click CLI (graph ops + local-only cmds)
-    mcp/server.py               # 27 tools, thin over ops
+    mcp/server.py               # 29 tools, thin over ops
     coldstart.py                # ledger load + changed-files refresh
     config.py                   # .coderadar.toml (pydantic, §12)
     resolvers/ framework.py     # L2–L4 cascade + framework routes (DR-10)
@@ -184,7 +184,7 @@ side never touches ledger handles.
   cwd-rooted serving state.
 - **`agent/graphrag.py`, `lsp/pool.py`** — kept as named seams with wiring
   triggers in their headers (DR-16); neither is on any hot path.
-- **`mcp/server.py`** — 27 tools, thin over `ops`, plus server instructions
+- **`mcp/server.py`** — 29 tools, thin over `ops`, plus server instructions
   (language count, staleness guidance — README-tested).
 - **`cli.py`** — graph ops plus local-only commands (`init`, `visualize`,
   `shell`, `git`, `exclude`, `watch`, `load-snapshot`, `store-repair`,
@@ -412,16 +412,17 @@ with documented pending consumers.
 
 ## 13. Quality gates & release policy
 
-- **Tests:** 1660 (503 Rust incl. 5 integration + 1157 Python, 1 skipped). Gate bundle:
+- **Tests:** 1742 (518 Rust incl. 5 integration + 1224 Python, 1 skipped). Gate bundle:
   release-gate history, read-path discipline, call-edge accounting, snapshot
   honesty, surface parity, skill drift, Rust cross-module, blob reads +
-  2 latency gates.
+  2 latency gates, temporal reconstruction (`verify_history`,
+  `changes_between`, content spine, branch reads).
 - **Lint:** clippy 0 (`--all-targets -D warnings`), `cargo fmt` clean,
   `ruff check` clean (format not adopted), CI lint blocking (P4).
 - **Version policy (DR-26, process-open):** `pyproject.toml` + workspace
   `Cargo.toml` together, +0.0.1 per implemented feature, one bump commit
   named in the feature's DR row. Spec/test/verification-only and dep
-  patches: no bump. Minor cut accumulates (0.13.0).
+  patches: no bump. Minor cut accumulates (0.14.0).
 - **Register currency is a release-gate input:** DR rows update the same
   session as the code.
 
@@ -435,15 +436,54 @@ reverse-edge ledger; zero agent traces needed callers-at-T. Re-check on:
 first blocked trace, or Macrame reverse-edge support. A future GO needs no
 ledger change (reverse-BFS over reconstructed state is available).
 
+### 14.1 Reconstruction (v0.14, P0–P4)
+
+What a store answers as of 0.14.0, all of it read-only over the existing
+ledger — no new schema, no stored diffs, no second fold implementation:
+
+- **`source_refs_at`** (DR-36) — one fold serves N entity refs. Every
+  per-entity historical read goes through it; folding per call was H-4.
+- **`verify_history`** (DR-36) — per-generation byte coverage. The first
+  surface that measures whether history holds bytes at all, and the only
+  detector for the H-13 class of silence. Bounded defaults on MCP
+  (sampling on, scan capped) because its cost scales with generation count.
+- **`changes_between`** (DR-37) — added/removed/modified/moved per entity
+  from recorded content hashes, no byte reads. Canonical grouping joins
+  away H-11's mid-history id respelling.
+- **`content_version` spine** (DR-38) — timeless `{path}@{digest}`
+  concepts, deliberately **no edges**: a `HAD_CONTENT` edge's terminal link
+  rows would pin blobs hot against the archive scan. Parent and intervals
+  are derived from chain order; payloads name no digest, so retention
+  stays clean. Read through `history_of` / CLI `history`.
+- **Branch-aware reads** (DR-40) — `reconstruct_on` resolves a digest
+  through the reader's lineage, then reads branch-global bytes.
+  `branch=` is on every temporal read; pointer concepts
+  (`branch:{branch}:content:{path}`) turn over under the same id so
+  superseded bytes archive. Unknown lineages refuse, never return trunk
+  data.
+
+**The honest limit.** Bytes exist only for generations written with blobs
+on. A store indexed before this release has concepts for its history and no
+content behind them: the self-host store measured 0.01% coverage, and 3.19%
+after a full re-analyze, because a re-analyze fixes the present and never
+the past. Filling it needs commit-driven ingestion from git (P5, DR-41,
+deferred by Q-1), which is a semantic change to valid time and not a point
+release.
+
 ---
 
 ## 15. Knowledge & docs
 
-- **OKFgraph `kb.db`** is the project memory: the decision register
-  (concept `coderadar-decision-register`, all DR rows + statuses), the
-  architecture review + v0.12 plan trio (frozen research corpus), and
-  `thoughts/coderadar-v0.12-impl/` (per-landing reasoning). GPU-indexed
-  (`cuda`, fp16); register rows update same-session.
+- **OKFgraph `okfgraph.db`** at the repo root is the project memory: the
+  decision register (concept `coderadar-decision-register`, all DR rows +
+  statuses), the architecture review + v0.12 plan trio (frozen research
+  corpus), the per-landing reasoning trails
+  (`thoughts/coderadar-v0.12-impl/`, `…-v0.13-impl/`,
+  `…-coderadar-temporal/`), and the temporal findings note. GPU-indexed
+  (`cuda`, fp16 — the graph pins the precision, so every write needs
+  `--precision fp16`); register rows update same-session. Consolidated here
+  from the shared `OKFgraph/kb.db` on 2026-10-28, so the project's memory
+  travels with the checkout.
 - **This directory holds the live set only** (`v0.12-architecture-implementation.md` =
   architecture baseline + plan + deviations diary, store-and-retention +
   smell reference + open-items + BUGS_QUIRKS + CHANGELOG). The generated
@@ -460,7 +500,7 @@ ledger change (reverse-BFS over reconstructed state is available).
 ## 16. Decision index
 
 Full rationale per row lives in the register (`coderadar-decision-register`
-in kb.db). Statuses at v0.13.0:
+in `okfgraph.db` at the repo root). Statuses at v0.14.0:
 
 | ID | Decision | Status |
 |---|---|---|
@@ -499,6 +539,13 @@ in kb.db). Statuses at v0.13.0:
 | DR-33 | History-aware load gate | re-baselined |
 | DR-34 | FTS5 keyword search | closed (v0.11.10) |
 | DR-35 | Guarded mutation compensation + explicit sync outcomes (BUGS_QUIRKS #1) | closed (dev; implemented `4d5cb1c`, bumped `8fa427b`) |
+| DR-36 | Batched `source_refs_at` (P0) + `verify_history` (P1) | closed (v0.14.0; `ff5fb96`, `b964f1b`) |
+| DR-37 | `changes_between`: entity diff from recorded hashes, no byte reads (P2) | closed (v0.14.0; `92aafcb`) |
+| DR-38 | `content_version` spine: concepts-only, digest-free payloads (P3) | closed (v0.14.0; `f3625c6`) |
+| DR-39 | Duplicate `content.source` beside the blob | withdrawn (2026-10-28) |
+| DR-40 | Branch-aware reads: `reconstruct_on` + pointer concepts (P4) | closed (v0.14.0; `a4ac405`) |
+| DR-41 | Commit-driven ingestion (P5) | deferred (Q-1; revisit now that P0–P4 ship) |
+| DR-42 | `open_synthetic_triples` is an inclusion list (H-3) | closed (v0.14.0; `600d689`) |
 
 ---
 

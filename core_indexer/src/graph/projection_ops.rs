@@ -901,7 +901,23 @@ impl CodeGraph {
         // cold start parses back. Replaces the old pre-cascade v1
         // `persist_entities` flush.
         if let Some(ref store) = self.store {
-            let v2 = crate::storage::build_v2_concepts_for_file(&projection, file_path, &digests);
+            let mut v2 =
+                crate::storage::build_v2_concepts_for_file(&projection, file_path, &digests);
+            // P3 (DR-38): content-version spine for this file, appended
+            // to the SAME bulk — one flush, one commit, one generation
+            // (P1 `recorded_generations` counts DISTINCT `recorded_at`
+            // per commit). Concepts first is FK order; a spine-compute
+            // failure is loud but must not fail the entity flush.
+            if let Some(digest) = digests.get(file_path) {
+                let now = crate::storage::now_iso8601();
+                match store
+                    .spine_upserts_for(&[(format!("{file_path}::module"), digest.clone())], &now)
+                {
+                    Ok(extra) => v2.extend(extra),
+                    Err(e) => persistence_errors
+                        .push(format!("spine computation failed for {file_path}: {e:?}")),
+                }
+            }
             if let Err(e) = store.upsert_concepts_bulk(&v2) {
                 persistence_errors.push(format!("concept flush failed for {file_path}: {e:?}"));
             }

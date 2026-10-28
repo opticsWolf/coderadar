@@ -9,7 +9,8 @@
 > **Builds on:** [`code-storage-vs-macrame-philosophy.md`](code-storage-vs-macrame-philosophy.md)
 > (doctrine conformance of the blob design — its verdict stands unchanged) and
 > [`store-and-retention.md`](store-and-retention.md) (hot/cold, backup pair).
-> **CodeRadar refs:** `core_indexer/src/storage.rs:196,953,1601,1719-1753,1815,2085`,
+> **CodeRadar refs:** `core_indexer/src/storage.rs:196,953,1601,1719-1753,1815,2090,2121`,
+> `core_indexer/src/types.rs:634-639`,
 > `lib.rs:949-963`, `graph/projection_ops.rs:828`, `py_agent/src/coderadar/__init__.py:1481-1600`.
 > **Macrame refs:** `src/blob.rs`, `src/temporal/archive.rs:1095`, `src/connection.rs:3074,3545,3570`,
 > `src/branch.rs`; D-281/D-287/D-288, D-213/D-214/D-228.
@@ -33,10 +34,11 @@ carries a `content_hash` (xxHash64 hex of its body) in both its canonical `conte
 node second, and keep diffs as a read-time computation cached by `(digest_a, digest_b)` — never as
 the record of truth.
 
-One finding came out of this pass that is not in either prior doc: **function body text is already
-stored per version in the ledger** (`v["source"]`, `storage.rs:2085`, carried in `concepts.content`).
-That makes body-level diffing free today and makes ledger payloads carry the bytes twice. §3.4
-states the choice that creates.
+One finding came out of this pass that is not in either prior doc: **the blob is the only copy of
+program text in the store.** `concepts.content` carries metadata and byte spans but no source — the
+`source` key it does write is a two-variant `impl`/`stub` enum (`types.rs:634-639`), not the body.
+So §2.5's measured 0% blob coverage means no recoverable text at any granularity, and span-plus-blob
+is the only read path there has ever been. §3.4 has the verification and the consequences.
 
 **Measured, not argued (§2.5):** on this repo's own store the byte coverage of recorded history is
 **0.0%** — one file-generation of 5,079 sampled across 6,442 generations. The structural history is
@@ -287,37 +289,54 @@ Where the cache lives is a later decision. `kv_store` is the obvious candidate (
 operational, branch-global). A cache entry stored as a *blob* would need its key published in the
 ledger for the same reason §3.5 gives.
 
-### 3.4 The bytes are already in the ledger twice — decide on purpose
+### 3.4 The bytes are in the ledger exactly once — the blob is the only copy
 
-`v2_function` writes `v["source"] = f.source` (`storage.rs:2085`), and the v2 JSON is the concept's
-canonical `content` (`build_concept`, `storage.rs:1757`). So a function's body text is stored, per
-version, inside a ledger payload — alongside the blob that holds the same bytes as part of the
-whole file.
+> **Correction (2026-10-28).** An earlier revision of this section claimed that function body text
+> is stored per version inside ledger payloads, and proposed deciding whether to lean on that
+> duplication or trim it. **That claim was wrong, and there is no duplication to decide about.**
+> The paragraphs below are the verified position; the retracted one is recorded here because the
+> conclusions that followed from it (a `content` schema change, a `format` bump, a scan-cost
+> concern, and a migration tied to §5) were all consequences of the error.
 
-Three consequences, none of them currently written down:
+The concept writers do write a `source` key — `class_content` at `storage.rs:2090`,
+`function_content` at `2121`, and the constant and type-alias writers at `2202` and `2219` — but
+every one of those fields is of type `SourceType` (`types.rs:634-639`): a two-variant enum,
+`#[serde(rename_all = "lowercase")]`, serialised as `"impl"` or `"stub"`. The field records
+**whether an entity has a real body or is a stub declaration** — it does not hold the body.
+`module_content` writes no `source` key at all.
 
-- **Body diffing needs no blobs at all today.** Fold at T1 and T2, read `content.source`, diff. For
-  functions and classes this is a complete answer already; §3.1's hash tells you *whether* to
-  bother.
-- **Log payloads carry source text.** The archive's reference scan reads hot log payloads to decide
-  blob liveness, and `blob_scan_bytes` is the number it reports (D-287). Source text in payloads
-  makes that scan proportionally more expensive, and makes the hot file grow with body churn
-  independently of the blob table's dedup.
-- **It is duplication with different lifetimes.** The blob is reclaimable by the scan; the payload
-  copy is not reclaimable at all until the row archives. Doctrine V — no physical deletion in hot —
-  applies to the payload copy and not to the bytes it duplicates.
+So: **no concept writer stores source text anywhere.** What `concepts.content` carries is metadata —
+name, kind, file path, line and exit line, docstring, decorators, parameters, metrics, resolved
+calls, the `content_hash`/`signature_hash`/`body_hash` digests, and the byte spans (`span`,
+`name_span`, `body_span`, `params_span`, `decorators_span`). Rich, and entirely derivative. Not one
+byte of the program text.
 
-The choice to make deliberately: **lean on it** (declare `content.source` the body-diff path, keep
-blobs for whole-file exactness and non-function bytes) or **trim it** (store spans only and slice
-bodies from the blob on read, which is what `entity_source_ref_at` already does). Trimming is the
-cleaner architecture and the cheaper hot file; it is also a `content` schema change with a `format`
-bump and a read-compat path for existing generations, so it is not free. This document does not
-decide it — it records that the duplication is a decision, not an accident, and that §5's
-per-commit ingestion multiplies whichever way it goes.
+The consequences run the opposite way to the retracted ones:
+
+- **Body diffing is impossible without blobs.** There is no payload copy to fall back on. The only
+  route to historical text, at any granularity, is: resolve the generation's blob digest, read the
+  blob, slice by the stored span. That is exactly what `entity_source_ref_at` returns
+  (`storage.rs:953`) and what `_read_raw` consumes (`__init__.py:1539`) — the architecture is
+  already span-plus-blob, and was never anything else.
+- **The 0% coverage measured in §2.5 is therefore total.** It is not "whole-file reads are
+  unavailable but function bodies still work". For 6,441 of 6,442 generations on this store there is
+  no recoverable source text of any kind. The spans are all still there, pointing into bytes that
+  were never stored.
+- **The reference scan is cheap, and stays cheap.** `blob_scan_bytes` (D-287) is proportional to
+  metadata-sized payloads, not to body churn. The scan-cost objection raised against the version
+  spine in §3.2 loses its only quantitative leg: a spine concept's payload is a path, a digest and a
+  parent digest, which is smaller than every concept already being written.
+- **Doctrine VI holds with no asterisk.** Everything in `content` is re-derivable from the bytes by
+  re-parsing. The bytes are the one thing that is not derivable from anything else in the store —
+  which is the whole argument for §5.
+
+The decision this section used to pose does not exist. What replaces it is a constraint: blob
+coverage is not an optimisation, it is the sole custodian of program text, so every phase that
+reads history depends on §6's verification and on §5's ingestion actually putting bytes there.
 
 ### 3.5 Two things not to do
 
-**No delta blobs.** (Same scan, different trap from §3.4's duplication.) A blob survives only while some hot log entry names its digest in a payload
+**No delta blobs.** (The same reference scan §3.4 discusses, in a trap of its own.) A blob survives only while some hot log entry names its digest in a payload
 (D-287). A delta blob's base digest would live *inside another blob's bytes*, and the scan never
 reads blob contents — only log payloads. The base would therefore become archive-eligible, and
 eventually cold-file-loss-eligible, while a live delta depended on it. The failure is silent and
@@ -421,7 +440,7 @@ exists: `reconstruct`, `blob_get`, and the span check already written for single
 | 1 | `verify_history(from, to)` — prototype exists | none | measures §2.2/§2.3 |
 | 2 | `changes_between(T1, T2)` (Layer 1) | none | entity-level diffability |
 | 3 | Version spine + `had_content` (Layer 2) | additive | "when did this change" as a walk |
-| 3b | Decide the `content.source` duplication (§3.4) | none, or `format` bump if trimmed | hot-file growth, scan cost |
+| ~~3b~~ | ~~Decide the `content.source` duplication~~ — withdrawn, §3.4: there is no duplication | — | — |
 | 4 | Branch-aware reads (`reconstruct_on` through the facade) | none in Macrame | §4 |
 | 5 | Commit-driven ingestion | ingestion rewrite | §2.1 |
 

@@ -1,6 +1,6 @@
 # CodeRadar Quick Reference
 
-> v0.13.0 · Full design: `ARCHITECTURE.md` · Agent skills:
+> v0.14.0 · Full design: `ARCHITECTURE.md` · Agent skills:
 > `coderadar/skills/coderadar-{mcp,cli}/SKILL.md` (bundled; install with
 > `coderadar skills install`) · Query language:
 > `coderadar docs query-language` (generated — read it, don't guess fields).
@@ -32,7 +32,11 @@ Never run two servers on one store — the second gets `DB_LOCKED`.
 | Resolve import/route | `coderadar resolve "a.b.c"` | `coderadar_resolve` | `g.resolve("…")` |
 | Structured query | `coderadar query "functions where …"` | `coderadar_query` | `g.query("…")` |
 | Smells / dead code | `coderadar get-smells`, `dead-code` | `coderadar_get_smells`, `…_dead_code` | `g.get_smells()` |
-| History read | — (via Python) | `coderadar_as_of` | `snap = g.as_of(t); snap.read_bytes(id)` |
+| History read | — (via Python) | `coderadar_as_of` | `snap = g.as_of(t, branch="main"); snap.read_bytes(id)` |
+| Trust that history | `coderadar verify-history` | `coderadar_verify_history` | `ops.verify_history()` |
+| What changed T1→T2 | `coderadar changes-between T1 T2` | `coderadar_changes_between` | `ops.changes_between(t1, t2)` |
+| Versions of a file | `coderadar history FILE` | — | `g.history_of("…")` |
+| List branches | — (API-only) | — | `ops.branches()` |
 | Edit code | `coderadar replace-body … [--apply]` | `coderadar_replace_body` | plan → apply |
 | Archive old blobs | — (API-only) | — | `g.archive() # cutoff or archive_after_days` |
 | Refresh one file | `coderadar update-file F` | `coderadar_update_file` | `g.update_file("…")` |
@@ -86,5 +90,9 @@ default_dry_run = true
 ## Version notes
 
 +0.0.1 per feature (`pyproject` + workspace `Cargo.toml`, one bump commit).
-Specs, tests, dep patches: no bump. Current: **0.13.0**, `macrame-db` 0.19.1,
+Specs, tests, dep patches: no bump. Current: **0.14.0**, `macrame-db` 0.19.1,
 store schema v22. `../CHANGELOG.md` is the per-version record.
+
+`verify-history` reports coverage for the generations a store actually wrote
+bytes for. On a store indexed before 0.14 that number is low and correct —
+historical generations hold concepts, not content. See ARCHITECTURE §14.1.

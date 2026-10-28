@@ -820,6 +820,160 @@ def as_of(result: dict, *,
     return "\n".join(lines)
 
 
+def verify_history(result: dict, *, offenders: int = 10) -> str:
+    """Per-generation byte coverage as legible text (P1, DR-36).
+
+    The table shape is the prototype's (`scripts/verify_history.py`): one
+    row per generation, file-generation totals, coverage, and the capped
+    offender sample beside its exact distinct count.
+    """
+    def coverage(counts: dict) -> float:
+        total = sum(counts.values())
+        return (counts.get("ok", 0) / total * 100.0) if total else 0.0
+
+    out = [
+        f"store            {result['store']}  (branch {result['branch']})",
+        f"window           {result['window'][0]} .. {result['window'][1]}",
+        (
+            f"generations      {result['sampled']} sampled of "
+            f"{result['total_generations']}"
+        ),
+        "",
+        (
+            f"{'generation':28} {'files':>6} {'ok':>6} {'no_digest':>10} "
+            f"{'unresolv':>9} {'mismatch':>9} {'cov%':>7}"
+        ),
+    ]
+    for gen in result["generations"]:
+        c = gen["counts"]
+        out.append(
+            f"{gen['timestamp'][:28]:28} {gen['modules']:>6} {c.get('ok', 0):>6} "
+            f"{c.get('no_digest', 0):>10} {c.get('unresolvable', 0):>9} "
+            f"{c.get('digest_mismatch', 0):>9} {coverage(c):>6.1f}%"
+        )
+    t = result["totals"]
+    out += [
+        "",
+        (
+            f"totals (file-generations)  ok={t.get('ok', 0)}  "
+            f"no_digest={t.get('no_digest', 0)}  "
+            f"unresolvable={t.get('unresolvable', 0)}  "
+            f"mismatch={t.get('digest_mismatch', 0)}  "
+            f"malformed={t.get('digest_malformed', 0)}"
+        ),
+        f"byte coverage              {result['byte_coverage_pct']:.1f}%",
+        f"distinct digests checked   {result['distinct_digests']}",
+    ]
+    if offenders:
+        for outcome, paths in sorted(result["offender_sample"].items()):
+            total = result["offender_distinct"][outcome]
+            shown = paths[:offenders]
+            out.append(f"\n{outcome} ({total} distinct files):")
+            out += [f"  {p}" for p in shown]
+            if total > len(shown):
+                out.append(f"  ... and {total - len(shown)} more")
+    return "\n".join(out)
+
+
+def history_of(result: dict) -> str:
+    """A file's content chain as legible text (P3, DR-38).
+
+    One row per content version, newest first: short digest, interval,
+    parent link, payload size. The open head is marked; a closed head
+    means the file was deleted (retire cascade) or... nothing else
+    closes it — only new content does.
+    """
+    versions = result["versions"]
+    out = [
+        f"file             {result['file']}",
+        f"versions         {result['count']}",
+        "",
+        f"{'digest':10} {'valid_from':28} {'valid_to':28} {'parent':10} {'bytes':>8}",
+    ]
+    for v in versions:
+        mark = " (open)" if v["open"] else ""
+        parent = (v["parent_digest"] or "-")[:8]
+        out.append(
+            f"{v['digest'][:8]:10} {v['valid_from'][:28]:28} "
+            f"{v['valid_to'][:28]:28} {parent:10} {v['size_bytes']:>8}{mark}"
+        )
+    return "\n".join(out)
+
+
+def changes_between(result: dict, *, per_class: int = 25) -> str:
+    """Entity diff between two instants as legible text (P2, DR-37).
+
+    Counts first, then one capped section per class (the render caps at
+    `per_class` entries with an explicit "... and N more" tail — the JSON
+    report is complete). Cross-id moves name both spellings; `uncompared`
+    ids are presence-only by construction.
+    """
+    c = result["counts"]
+    head = [
+        f"store            {result['store']}  (branch {result['branch']})",
+        f"t1               {result['t1']}",
+        f"t2               {result['t2']}",
+        (
+            f"scope            {result['scope']}"
+            if result["scope"] is not None
+            else "scope            (whole universe)"
+        ),
+        (
+            f"changed          added={c['added']}  removed={c['removed']}  "
+            f"modified={c['modified']}  moved={c['moved']}  "
+            f"uncompared={c['uncompared']}  "
+            f"unmodified={result['unmodified']}"
+        ),
+        (
+            f"ids              normalized across H-11 respelling: "
+            f"{result['normalized_groups']} merged groups"
+            if result["normalized_ids"]
+            else "ids              single spelling (no H-11 merge)"
+        ),
+    ]
+
+    def fmt_span(span) -> str:
+        if span is None:
+            return ""
+        return f"  @{span[0]}-{span[1]}"
+
+    def entry_added(e: dict) -> str:
+        return f"  + {e['id']}{fmt_span(e['span'])}"
+
+    def entry_removed(e: dict) -> str:
+        return f"  - {e['id']}{fmt_span(e['span'])}"
+
+    def entry_modified(e: dict) -> str:
+        return (
+            f"  ~ {e['id']}  "
+            f"{e['hash_before']} -> {e['hash_after']}"
+            f"{fmt_span(e['span_after'])}"
+        )
+
+    def entry_moved(e: dict) -> str:
+        if "id_before" in e:
+            return (
+                f"  > {e['id_before']} -> {e['id_after']}"
+                f"{fmt_span(e['span_after'])}"
+            )
+        return f"  > {e['id']}{fmt_span(e['span_after'])}"
+
+    sections = [
+        ("added", result["added"], entry_added),
+        ("removed", result["removed"], entry_removed),
+        ("modified", result["modified"], entry_modified),
+        ("moved", result["moved"], entry_moved),
+        ("uncompared", result["uncompared"], lambda e: f"  ? {e['id']}"),
+    ]
+    for name, items, fmt in sections:
+        head.append(f"\n{name} ({len(items)}):")
+        shown = items[:per_class]
+        head += [fmt(e) for e in shown]
+        if len(items) > len(shown):
+            head.append(f"  ... and {len(items) - len(shown)} more")
+    return "\n".join(head)
+
+
 # ── Edits ─────────────────────────────────────────────────────────────────
 
 def edit(outcome: dict, apply_hint: str = "call again with `dry_run=False`") -> str:
@@ -1082,6 +1236,20 @@ def reindex(result: dict) -> str:
     elif "embeddings_error" in result:
         lines.append("")
         lines.append(f"- **Embeddings:** failed — {result['embeddings_error']}")
+    # H-12: the index is sound and the counts above are real, so this is a
+    # warning rather than a failure — but it must be impossible to miss.
+    if "edge_persist_error" in result:
+        lines += [
+            "",
+            (
+                "> **Edges are INCOMPLETE for this generation.** Edge "
+                "persistence failed part way through, so some edges were "
+                "never written (concepts and blobs are unaffected). "
+                "Re-run the reindex."
+            ),
+            "",
+            f"> Engine said: `{result['edge_persist_error']}`",
+        ]
     return "\n".join(lines)
 
 
