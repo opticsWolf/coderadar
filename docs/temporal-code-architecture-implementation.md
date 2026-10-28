@@ -1062,3 +1062,33 @@ hot+cold backup/restore drill) is still untested; the Q-5 baseline copy was hot-
 Gaps: H-11, H-12, H-13 and the 0.01% → 99.6% coverage measurement exist only in this repo. The
 knowledge base has no hazard register and no concept for the re-analyze, so nothing there would stop a
 future reader from treating DR-25/DR-30 as fully settled.
+
+**Closed the same day** (recorded here rather than by editing the entry above, which is a dated
+reading): the findings were ingested as `coderadar/temporal-findings-2026-10-28`, and the whole
+CodeRadar corpus — register, philosophy note, open-items, the v0.7–v0.12 plans, the per-session
+thought trails — was consolidated out of the shared `OKFgraph/kb.db` into `okfgraph.db` at the repo
+root (102 concepts; fidelity verified id-by-id, bodies and tags; `kb.db` emptied of CodeRadar
+content). The project's memory now travels with the checkout, and both halves of the "gaps"
+paragraph are resolved: H-11/H-12/H-13 and the coverage numbers are in the graph, beside the
+decisions they qualify.
+
+### 2026-10-28 — v0.14.0 cut (P0–P4 released)
+
+Version bumped `0.13.0` → `0.14.0` per DR-26 (`pyproject.toml` + workspace `Cargo.toml` together,
+lockfiles synced), the Unreleased block became the `0.14.0` section, and the phase set merged to
+`main`. Gate bundle at the cut: **Rust 513 lib + 5 integration passed, 1 ignored**; `cargo fmt
+--check` and `cargo clippy --all-targets -D warnings` clean; **Python 1224 passed, 1 skipped**
+(`tests/`, `cr_edit_tests` excluded as always). Surface: 29 MCP tools, unchanged since P2.
+
+Two things the release deliberately ships as documented limits rather than fixes: H-12's residual
+(batch flushes are still not one transaction — a failure from another cause still leaves earlier
+batches committed, now loudly) and H-13 (the blob half of the philosophy note's mismatch #5 has no
+reporting channel; `verify_history` is the only coverage surface). Both are recorded in §6 and the
+changelog, neither blocks the phase set.
+
+**Q-1 is now answerable.** Its condition was "retake the P5 decision after P0–P4 ship, against
+coverage numbers from a re-analyzed store rather than the present 0%". P0–P4 have shipped and the
+numbers are in: 99.6% for a freshly written generation, **3.19% store-wide**, because a re-analyze
+fixes the present and never the past. That spread is the argument for P5 and the measure of what it
+would recover. DR-41 stays `deferred` until P5 has a plan of its own; it is no longer waiting on
+evidence.
