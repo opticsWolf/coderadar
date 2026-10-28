@@ -571,7 +571,7 @@ before it counts as closed, per the v0.12 release-gate convention.
 | DR | Decision | Status |
 |---|---|---|
 | DR-36 | Batched `source_refs_at` primitive + `verify_history` integrity op; `recorded_generations` as a documented non-fold listing | P0 landed `ff5fb96`, P1 landed `b964f1b` (2026-10-28) |
-| DR-37 | `changes_between` over `extra.coderadar.content_hash`; hashes detect, bytes prove | proposed (P2) |
+| DR-37 | `changes_between` over `extra.coderadar.content_hash`; hashes detect, bytes prove | P2 closed (`92aafcb` on `dev` 2026-10-28) |
 | DR-38 | `content_version` spine with `HAD_CONTENT`; spine concepts timeless and sweep-excluded | proposed (P3) |
 | DR-39 | ~~`content.source` duplication: lean on it or trim it~~ | **withdrawn** 2026-10-28 — premise false, there is no duplication (P3b) |
 | DR-40 | Branch-aware reads: lineage resolves the reference, bytes stay branch-global | proposed (P4) |
@@ -864,3 +864,66 @@ related suites 35 passed; **full Python suite 1,160 passed** (excluding `tests/p
 `tests/cr_edit_tests`); `reindex --full` renders a clean report with no warning block and nothing on
 stderr. Three `mcp serve` processes were killed to get there (one parent, two children) — restart
 them if they are wanted.
+
+### 2026-10-28 — P2 `changes_between` landed (`92aafcb` on `dev`)
+
+What shipped: `all_concept_ids` in `storage.rs` (ever-not-live, no kind filter, branch-scoped,
+both H-11 spellings) + `canonical_id` + `content_hashes_at` FFI (one fold serves N ids:
+resolved id, `content_hash`, line span; `None` hash/span where the projection carries none) with
+snapshot-then-release locking; `ops.changes_between` (canonical grouping, any-present
+presence, T2 display spelling, leftover hash-pairing only with no rival claimant, `uncompared`
+class for hash-less kinds) + `render`, `CodeGraph.changes_between`, CLI `changes-between`, MCP
+`coderadar_changes_between` per Q-4 (no scan cap needed: cost is two folds, ~1 s on the
+self-host store); both skills updated (29 tools); count pins 28 → 29 in battery, project-path,
+README, ARCHITECTURE, server comment.
+
+Tests: 1 Rust unit test (full ever-universe incl. a retired module's function; modules-only is
+a strict subset) + 19 Python tests. Full gates at landing: Rust lib 504 passed + 1 ignored,
+full Python 1201 passed + 1 skipped, fmt/clippy/ruff clean, rebuilt `_core.pyd` (no lock fight
+this time — no `mcp serve` was running).
+
+Self-host H-11 proof: `changes_between(2026-10-03T21:50, 2026-10-03T22:10)` — the twenty minutes
+straddling the respelling — in 0.8 s: `normalized_ids: true`, 5,235 merged groups, 3,116
+unmodified, modified 231, moved 101 (same hash, shifted spans — genuine moves through the
+respelling), added 126 / removed 115 (real churn incl. a test rename), uncompared 1685. No
+phantom 6.3k × 2. An earlier attempt with T1 = 2026-10-01 returned all-added: most old
+concepts have `valid_from` 2026-10-03 (asserted in the migration-era re-analyze, live ~20 min),
+so at 10-01 they genuinely did not exist — the diff was honest, the window was wrong.
+
+Findings, all read-path-relevant:
+
+- **Old-spelling-at-old-T resolved to `None` (shared lookup bug, fixed).** `entities_at`
+  canonicalized before looking up, so an old spelling at a T when only it was live missed
+  (canonical = new spelling, absent from the old projection), while the same spelling at a
+  new T hit. Both `entities_at` and `content_hashes_at` now try raw-exact first, then
+  canonical, then the dotted fallback — strictly more correct (miss → hit only; live-T ids
+  are already canonical so nothing else changes). This also fixes `as_of`/`Snapshot.find`
+  for pre-respelling spellings. `source_ref_from_state` stays exact-only: P1's sweep passes
+  the ever-universe raw, so both spellings hit whichever is live; unifying P0 singles with
+  lookup semantics is a follow-up, not P2.
+- **Same-id `moved` is nearly unreachable via `update_file`.** The update path rewrites a
+  function only on signature/body change (`projection_ops` needs-insert gate), so a pure
+  reorder mints no row and the ledger keeps write-time spans: on a `d.py` reorder fixture
+  both functions read unmodified. Pinned as `test_pure_reorder_is_invisible_to_the_update_path`.
+  Same-id moved surfaces after full re-analyze rewrites (the self-host window shows 101) —
+  the read side is ready; whether the write path should mint span-only rows is a DR-worthy
+  decision (write amplification vs span history), explicitly not P2 (read-only, no schema
+  change). The spec fixture's whitespace-move yields `moved` only through that future path;
+  the test drives it through crafted folds instead.
+- **Rename reads as removed + added, by hash construction.** `content_hash` covers the full
+  span including the name, so `beta` → `beta2` with an identical body still hashes
+  differently — leftover pairing correctly refuses to merge them. Cross-id `moved` is real
+  file moves with byte-identical text (proven by `e.py::eco` → `f.py::eco`).
+- **`uncompared` is a fifth class, deliberately.** Imports, constants, type aliases and routes
+  carry no `content_hash` — presence is all the ledger can say. Both-present reads as
+  `uncompared`, never silently as unmodified. File-level recall is preserved regardless:
+  any byte change still modifies the module hash.
+- **Line-anchored import ids shift as removed + added** (`import@390` → `import@406` across
+  the H-11 window). Honest under presence-only semantics (R2-17 ids are line-stable by
+  construction); pairing them by line-proximity would be guessing.
+- **Concurrent-write hazard vacuous for immutable history.** Each fold is deterministic at
+  its T; a vanished lookup answers absent per the `__init__.py:1559` precedent rather than
+  erroring. Recorded in the op docstring.
+- **Deviations from §5:** MCP ships with P2 (Q-4 decided both ops get one — item 3 never
+  excluded it, unlike P1's item 7); `uncompared` extends the four-class contract for the
+  reason above; same-id `moved` tested via crafted folds, not the live fixture.

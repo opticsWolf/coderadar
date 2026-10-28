@@ -12,6 +12,10 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
   over `recorded_generations` + `module_concept_ids`, report shape as
   contract, CLI `verify-history`, MCP `coderadar_verify_history`
   (28 tools).
+- Temporal P2 (DR-37): `changes_between` — added/removed/modified/moved
+  per entity from recorded hashes over `all_concept_ids`, no byte reads;
+  H-11 joined away by canonical grouping; CLI `changes-between`, MCP
+  `coderadar_changes_between` (29 tools) (`92aafcb`).
 
 ## 0.13.0 (2026-10-26)
 
