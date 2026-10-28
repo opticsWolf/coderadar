@@ -589,6 +589,7 @@ Traps found in today's code while planning. H-1 to H-3 are detailed in P3.
 | H-9 | `content_hash` is xxHash64: 64-bit, non-cryptographic | `storage.rs:1815` | P2's contract (F-8) |
 | H-10 | Hot-only backup is pointers; bytes live in hot **or** cold | `store-and-retention.md` | operational, all phases |
 | H-12 | ~~**`persist_edges` is non-atomic and fails silently.**~~ **Cause fixed 2026-10-28** (§12). `INSTANTIATES` was derived from `Function.resolved_calls`, a `Vec` with no dedup, so a function constructing the same class twice emitted two identical assertions sharing one `valid_from` — a UNIQUE violation on `links` that aborted the run *after* earlier batches had committed, reported only as `[diag]` with a zero exit. Measured before the fix: 53 affected functions, and 2,619 of the generation's edges written with `INSTANTIATES`/`REFERENCES`/`OVERRIDES` missing. Now deduped at the flush boundary, and a failure is recorded and reported. **Residual:** the batch flushes are still not one transaction, so a failure from any *other* cause would still leave earlier batches committed — now loudly, not silently | `persistence.rs:161-176`, `lib.rs:1029-1039` | P3's `HAD_CONTENT` writer must use the same flush path, not a new one |
+| H-13 | **The DR-30 blob notice cannot see a coverage collapse.** `BLOB_STATS` is process-global and reset at each analyze (`storage.rs:2423-2440`), so the counts riding every reindex report (`ops.py:2102-2107`) describe *this run's* puts, never the store's historical coverage. A store whose 6,441 past generations hold no bytes reports a healthy notice on every run — which is exactly how the 0.01% baseline survived three weeks unseen. DR-30's recorded term "blob counts on every report surface ARE the notice" therefore holds for new writes only; P1's `verify_history` is the first surface that measures coverage at all. Same class as the philosophy note's open mismatch #5 (no blob outcome on `UpdateReport`), which H-12's fix wired for *edges* and left unwired for blobs | `storage.rs:2423-2489`, `ops.py:2102-2107` | P1 (the only detector), P5 (migration can't be judged without it) |
 | H-11 | **Entity ids changed spelling mid-history.** On the self-host store, `{file}::module` ids are `.\core_indexer\...` up to 2026-10-03T22:03:05Z and `core_indexer/...` from 2026-10-03T22:02:56Z on; the 6,308 old-spelling concepts are correctly `retired=1`, so nothing is wrong *now* — but a `changes_between` straddling that boundary classifies by id and reports ~6.3k removals plus ~6.3k additions for code that never changed | measured on `.coderadar/store/coderadar.db` | **P2**, and any future id-shape change |
 
 ---
@@ -1020,3 +1021,44 @@ for P5: pointer ids are stable per lineage+path (same-id turnover is the release
 form would orphan pins); `history_of` stays branch-agnostic (the chain is content, not lineage);
 branch writes beyond `write_branch_content` (new-file module concepts, per-branch sweep scoping,
 deletion semantics) are P5's, explicitly not P4's.
+
+### 2026-10-28 — findings checked against the OKFgraph knowledge base
+
+Read-only, through `okf … --db-path` (the store is a LadybugDB file, not SQLite; `okfgraph.db.lock`
+means a writer may be live). `okfgraph.db` at the repo root carries three CodeRadar concepts pinned at
+v0.13.0 — `changelog-0.13.0`, `decision-index-0.13.0`, `mutation-rollback-design-0.13.0`; the full
+register and the architecture notes live in `D:/User/Documents/Python/OKFgraph/kb.db`
+(`coderadar-decision-register`, `code-storage-vs-macrame-philosophy`, `open-items`, the v0.7–v0.12
+plans).
+
+Decision state agrees with this repo: the register holds DR-36 through DR-42 with DR-39 withdrawn,
+DR-41 deferred, and P3/P4 closed on `dev`. Nothing there contradicts a phase as built.
+
+What the graph **confirms**, from `code-storage-vs-macrame-philosophy` (2026-10-06, three weeks before
+P4 was written):
+
+- Its branching consequence (b) — "historical-byte lookup on a branched ledger must resolve the digest
+  through the reader's lineage (`reconstruct_on`/ancestry-bounded fold), then `blob_get` the
+  branch-global bytes" — is, clause for clause, what DR-40 shipped. P4's shape was recorded doctrine
+  before it was a design.
+- Its doctrine-VI reading, "Snapshots carry digests, never bytes", already put the only copy of file
+  text in the blob. The DR-39 retraction removed a contradiction this repo had introduced; it did not
+  change what the knowledge base said.
+- Its mismatch #5, "`UpdateReport` has no oversize/blob-outcome field … wire both", named the exact
+  class of silence H-12 fell into: a write outcome with no reporting channel. H-12's fix opened that
+  channel for edges (`edge_persist_error`); the blob half of #5 is still open.
+
+What the graph **qualifies** rather than refutes: DR-30 is recorded `closed` on the term "blob counts
+on every report surface ARE the notice". The counts are per-run and process-global, so they are a
+notice about writes, not about coverage — recorded as **H-13**. DR-25 likewise reads "ALL LANDED" and
+is true of the mechanism; the measured 0.01% baseline shows a landed mechanism can still produce a
+byte-less history, and no concept in the graph records that.
+
+What P5 inherits from the graph: mismatch #3, "`valid_from = index-now` conflates world time with
+learn time — prefer file mtime/commit time if CodeRadar ever promises *code as committed*". P5 is that
+promise, so DR-41 must settle the axis, not just the ingestion trigger. Mismatch #6 (a coherent
+hot+cold backup/restore drill) is still untested; the Q-5 baseline copy was hot-only.
+
+Gaps: H-11, H-12, H-13 and the 0.01% → 99.6% coverage measurement exist only in this repo. The
+knowledge base has no hazard register and no concept for the re-analyze, so nothing there would stop a
+future reader from treating DR-25/DR-30 as fully settled.
