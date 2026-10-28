@@ -70,6 +70,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(lookup_entity_at, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entities_at, m)?)?;
     m.add_function(wrap_pyfunction!(blob_stats, m)?)?;
+    m.add_function(wrap_pyfunction!(edge_persist_error, m)?)?;
     m.add_function(wrap_pyfunction!(search_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(blob_get, m)?)?;
     m.add_function(wrap_pyfunction!(entity_source_ref_at, m)?)?;
@@ -662,6 +663,9 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
     // §1.9: cumulative blob counters describe the generation this analyze
     // produces — reset here, incremented by every write-through put.
     crate::storage::reset_blob_stats();
+    // H-12: likewise, an edge-persist failure describes THIS generation and
+    // must not be inherited from the last one.
+    crate::storage::reset_edge_persist_error();
     let config = active_config();
     let mut graph = CodeGraph::new((*config).clone());
     // F14: the write-time canonical form strips THIS root — it must be
@@ -1019,8 +1023,19 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
             }
         }
         // Persist resolved edges to Macrame store
+        // H-12: assert-only and batch-flushed, so a failure here leaves the
+        // batches before it committed. That is a partial edge write, not a
+        // failed one, and the index around it is sound — so it must not fail
+        // the analyze, and must not be a quiet `[diag]` line either. Recorded
+        // for `edge_persist_error()` (which `ops.reindex` reports) and said
+        // plainly, naming the consequence rather than only the error.
         if let Err(e) = graph.persist_edges(&projection) {
-            eprintln!("[diag] persist_edges failed: {e:?}");
+            crate::storage::record_edge_persist_error(format!("{e:?}"));
+            eprintln!(
+                "[coderadar] WARNING edge persistence failed part way through: {e:?}\n\
+                 [coderadar] the store's edges are INCOMPLETE for this generation \
+                 (concepts and blobs are not affected); re-run the analyze"
+            );
         }
         // F6: a re-analyze must actually upgrade a v1 store. v1 ids are
         // absolute paths while v2 ids are relative, so the v2 flush above
@@ -1824,6 +1839,18 @@ fn blob_stats(py: Python<'_>) -> PyResult<PyObject> {
     out.set_item("skipped_excluded", stats.skipped_excluded)?;
     out.set_item("bytes", stats.bytes)?;
     Ok(out.into())
+}
+
+/// H-12: the engine message from this generation's edge-persist failure, or
+/// `None` when edges persisted cleanly.
+///
+/// Same lifetime as `blob_stats`: reset on `analyze`/`load_snapshot`, set by
+/// a failing `persist_edges`. `Some(..)` means the store's edges are
+/// incomplete for the loaded generation — concepts and blobs are unaffected,
+/// and a re-analyze is the repair.
+#[pyfunction]
+fn edge_persist_error() -> Option<String> {
+    crate::storage::edge_persist_error_snapshot()
 }
 
 /// FTS5 keyword search over concept text (§1.10, DR-34): `{id, rank}`
@@ -3730,6 +3757,8 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             *LEDGER_REVISION.write() = Some(revision);
             // §1.9: a loaded generation has no blob activity backing it yet.
             crate::storage::reset_blob_stats();
+            // H-12: nor any edge write of its own to have failed.
+            crate::storage::reset_edge_persist_error();
             *GLOBAL_GRAPH.write() = Some(graph);
             // F14: canonicalized absolute, exactly like analyze_inner — a
             // relative root here made every later strip_prefix fail and

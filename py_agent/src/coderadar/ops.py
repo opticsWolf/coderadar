@@ -1664,6 +1664,16 @@ def reindex(with_embeddings: bool = False, full: bool = False,
         out["blobs"] = coderadar.blob_stats()
     except Exception:  # noqa: BLE001, S110 - stats must not fail the report
         pass
+    # H-12: a partial edge write used to reach the caller as a clean report
+    # with a `[diag]` line on stderr. Present only when it happened, so a
+    # clean reindex report is unchanged.
+    try:
+        import coderadar
+        edge_error = coderadar.edge_persist_error()
+        if edge_error:
+            out["edge_persist_error"] = edge_error
+    except Exception:  # noqa: BLE001, S110 - never fail the report
+        pass
     if with_embeddings:
         try:
             out["embeddings"] = compute_embeddings()

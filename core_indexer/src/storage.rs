@@ -1698,6 +1698,39 @@ pub fn reset_blob_stats() {
     }
 }
 
+/// H-12: the last edge-persist failure of this generation, or `None`.
+///
+/// `persist_edges` is assert-only and flushes in batches, so a failure part
+/// way through leaves the batches before it committed — the store's edge
+/// state is then incomplete while the index itself looks healthy. That used
+/// to be a `[diag]` line on stderr with a zero exit, which is how a partial
+/// edge write could pass for a clean analyze. Recorded here on the same
+/// terms as `BLOB_STATS`: process-global and reset at the analyze/load
+/// boundary, because the cheap reindex path persists edges through
+/// `update_file` and per-call threading would miss it.
+static EDGE_PERSIST_ERROR: std::sync::LazyLock<std::sync::Mutex<Option<String>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(None));
+
+/// Clear the recorded failure (analyze/load boundaries).
+pub fn reset_edge_persist_error() {
+    if let Ok(mut slot) = EDGE_PERSIST_ERROR.lock() {
+        *slot = None;
+    }
+}
+
+/// Record that edge persistence failed, with the engine's own message.
+pub fn record_edge_persist_error(message: impl Into<String>) {
+    if let Ok(mut slot) = EDGE_PERSIST_ERROR.lock() {
+        *slot = Some(message.into());
+    }
+}
+
+/// The recorded failure for the report surfaces, or `None` when edges
+/// persisted cleanly.
+pub fn edge_persist_error_snapshot() -> Option<String> {
+    EDGE_PERSIST_ERROR.lock().ok().and_then(|slot| slot.clone())
+}
+
 /// Where one entity's bytes live at one timestamp (§3.0 read path).
 ///
 /// `digest=None` = no blob recorded for the file at T; `has_span=false` =

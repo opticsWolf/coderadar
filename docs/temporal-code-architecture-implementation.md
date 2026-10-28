@@ -533,7 +533,7 @@ Traps found in today's code while planning. H-1 to H-3 are detailed in P3.
 | H-8 | Naive/offset timestamps accepted at the Python boundary, rejected by Macrame `normalize` | philosophy doc mismatch #4 | every new temporal op's argument handling |
 | H-9 | `content_hash` is xxHash64: 64-bit, non-cryptographic | `storage.rs:1815` | P2's contract (F-8) |
 | H-10 | Hot-only backup is pointers; bytes live in hot **or** cold | `store-and-retention.md` | operational, all phases |
-| H-12 | **`persist_edges` is non-atomic and fails silently.** `INSTANTIATES` is derived from `Function.resolved_calls`, a `Vec` with no dedup (`persistence.rs:316-345`), so a function constructing the same class twice emits two identical assertions sharing one `valid_from` — a UNIQUE violation on `links`. The `?` on each 200-row `assert_edges_bulk` aborts the run *after* earlier batches committed, and the caller only prints `[diag]` (`lib.rs:1022-1023`), so analyze exits 0 and the report says nothing. Measured: 53 affected functions and a partial edge write on the 2026-10-28 re-analyze | `persistence.rs:316`, `lib.rs:1022` | **every phase that reads edges**; P3's `HAD_CONTENT` inherits the same non-atomicity |
+| H-12 | ~~**`persist_edges` is non-atomic and fails silently.**~~ **Cause fixed 2026-10-28** (§12). `INSTANTIATES` was derived from `Function.resolved_calls`, a `Vec` with no dedup, so a function constructing the same class twice emitted two identical assertions sharing one `valid_from` — a UNIQUE violation on `links` that aborted the run *after* earlier batches had committed, reported only as `[diag]` with a zero exit. Measured before the fix: 53 affected functions, and 2,619 of the generation's edges written with `INSTANTIATES`/`REFERENCES`/`OVERRIDES` missing. Now deduped at the flush boundary, and a failure is recorded and reported. **Residual:** the batch flushes are still not one transaction, so a failure from any *other* cause would still leave earlier batches committed — now loudly, not silently | `persistence.rs:161-176`, `lib.rs:1029-1039` | P3's `HAD_CONTENT` writer must use the same flush path, not a new one |
 | H-11 | **Entity ids changed spelling mid-history.** On the self-host store, `{file}::module` ids are `.\core_indexer\...` up to 2026-10-03T22:03:05Z and `core_indexer/...` from 2026-10-03T22:02:56Z on; the 6,308 old-spelling concepts are correctly `retired=1`, so nothing is wrong *now* — but a `changes_between` straddling that boundary classifies by id and reports ~6.3k removals plus ~6.3k additions for code that never changed | measured on `.coderadar/store/coderadar.db` | **P2**, and any future id-shape change |
 
 ---
@@ -777,3 +777,49 @@ links.branch_id` — and still exited 0 with a clean JSON report. Traced to the 
 so it is a latent instance of the same defect. The fix is one dedup set covering every loop, which
 is also the guard future edge types need — and P3's `HAD_CONTENT` would inherit the non-atomicity
 as it stands.
+
+### 2026-10-28 — H-12 fixed: edge dedup, and the failure made visible
+
+Two halves, because H-12 was two defects wearing one error message.
+
+**The cause.** Deduped at the flush boundary (`persistence.rs:161-176`): a run-level `queued` set
+of `edge_key` triples filters each batch before `assert_edges_bulk`, and all ten flush sites now go
+through it. Deliberately not fixed per loop — one guard covers the nine current loops and every
+edge type added later, which matters because the two offending loops (`INSTANTIATES` over
+`resolved_calls`, `REFERENCES` over `resolved_refs`) are the only ones walking `Vec`s today and a
+new one would reintroduce the bug. `edge_count` is untouched: it reports what the projection holds,
+"whether newly asserted or already open", so a repeated projection entry still counts twice.
+
+**The silence.** `EDGE_PERSIST_ERROR` in `storage.rs`, on the same terms as `BLOB_STATS`:
+process-global, reset at the analyze/load boundary (both call sites), because the cheap reindex path
+persists edges through `update_file` and per-call threading would miss it. Surfaced as the
+`edge_persist_error()` pyfunction → `coderadar.edge_persist_error()` → `ops.reindex`'s report key
+(present only when it happened, so a clean report is unchanged) → a `render.reindex` block that says
+the edges are INCOMPLETE and quotes the engine. The `[diag]` line became a `[coderadar] WARNING`
+naming the consequence (`lib.rs:1029-1039`).
+
+**Residual, stated rather than fixed:** the batch flushes are still not one transaction. A failure
+from some other cause would still leave the batches before it committed — but no longer silently.
+P3's `HAD_CONTENT` writer must use this flush path rather than adding its own.
+
+Tests. Rust: `test_persist_edges_dedups_repeated_constructor_calls` builds the two-construction
+fixture, asserts the duplicate is really in the projection (or it would pass for the wrong reason),
+then persists. Verified to fail without the fix with the exact production error —
+`UNIQUE constraint failed: links.source_id, ...`. Plus
+`test_persist_edges_is_idempotent_across_runs`, since the new guard sits next to the open-interval
+check. Python: `tests/test_edge_persist_reporting.py` (5) covers a clean report omitting the key, a
+multi-batch duplicate-heavy tree, and both render branches.
+
+Gates: `cargo fmt --check` clean, `clippy --all-targets -D warnings` clean, Rust lib **501 passed**
++ 1 ignored, `ruff` clean, related Python suites 30 passed.
+
+**Re-analyze with the fix:** no abort, no warning, exit 0, 274 blobs. The run wrote the 743 edges
+the aborted one had left out, and all seven structural types are now open in the store:
+CALLS 8998, IMPORTS 1046, INSTANTIATES 576, OVERRIDES 138, REFERENCES 96, EXTENDS 77, DECORATES 77.
+
+One caveat on this session: `maturin develop` could not replace the repo's `_core.pyd` — two
+`coderadar mcp serve` processes hold it (the precedent noted above), and stopping them was not
+permitted here. The Python tests and the re-analyze therefore ran against the freshly built
+`core_indexer.dll` staged on `PYTHONPATH`, which is the same artifact `develop` would have
+installed. **The repo's installed extension is still the old binary** until those servers are
+restarted and `maturin develop` is re-run.

@@ -1853,6 +1853,23 @@ def blob_stats() -> dict:
                 "skipped_excluded": 0, "bytes": 0}
 
 
+def edge_persist_error() -> str | None:
+    """This generation's edge-persist failure, or `None` when clean (H-12).
+
+    Same lifetime as `blob_stats`: reset on `analyze`/`load_snapshot`, set
+    when `persist_edges` fails. Edge persistence is assert-only and flushed
+    in batches, so a failure part way through leaves the earlier batches
+    committed — a string here means the store's edges are **incomplete** for
+    the loaded generation, while concepts and blobs are unaffected. A
+    re-analyze is the repair.
+    """
+    try:
+        from coderadar._core import edge_persist_error as _edge_error_rust
+        return _edge_error_rust()
+    except ImportError:
+        return None
+
+
 __all__ = [
     "BatchContext",
     "CodeGraph",
@@ -1875,6 +1892,7 @@ __all__ = [
     "Watcher",
     "analyze",
     "blob_stats",
+    "edge_persist_error",
     "load",
     "ops",
     "watch",

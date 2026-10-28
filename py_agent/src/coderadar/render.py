@@ -1082,6 +1082,20 @@ def reindex(result: dict) -> str:
     elif "embeddings_error" in result:
         lines.append("")
         lines.append(f"- **Embeddings:** failed — {result['embeddings_error']}")
+    # H-12: the index is sound and the counts above are real, so this is a
+    # warning rather than a failure — but it must be impossible to miss.
+    if "edge_persist_error" in result:
+        lines += [
+            "",
+            (
+                "> **Edges are INCOMPLETE for this generation.** Edge "
+                "persistence failed part way through, so some edges were "
+                "never written (concepts and blobs are unaffected). "
+                "Re-run the reindex."
+            ),
+            "",
+            f"> Engine said: `{result['edge_persist_error']}`",
+        ]
     return "\n".join(lines)
 
 
