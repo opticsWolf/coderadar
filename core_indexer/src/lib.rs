@@ -2195,11 +2195,11 @@ fn fork_branch(py: Python<'_>, name: &str, from_branch: &str) -> PyResult<PyObje
 }
 
 /// Record divergent content for `path` on `branch` (P4, DR-40): blob put
-/// (policy-honoring) + content-addressed spine mint + close-any-open +
-/// assert `HAS_CONTENT` pointer, under one stamp. Multi-commit by
-/// construction (blob, spine, edge are three ledger acts); a re-point to
-/// identical bytes is a no-op. Returns the spine id (the pointer target),
-/// so callers can assert chain continuity. Refuses with `ValueError`
+/// (policy-honoring) plus content-addressed spine mint and same-id
+/// branch-pointer turnover in one bulk. Multi-commit by construction
+/// (blob, then spine + pointer); a re-point to identical bytes is a
+/// gate no-op. Returns the spine id, so callers can assert chain
+/// continuity. Refuses with `ValueError`
 /// for unknown branches and `RuntimeError` when no blob is recorded
 /// (disabled, excluded, oversize — a pointer without bytes would lie).
 #[pyfunction]

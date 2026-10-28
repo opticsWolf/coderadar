@@ -1877,8 +1877,9 @@ impl CodeGraphStore {
     /// resolved, one belief per edge key from the nearest lineage holding
     /// it. Concepts need no resolution — the schema forbids two lineages
     /// holding one id (D-225), so narrowing is all a concept needs — and
-    /// branch-divergent bytes ride `HAS_CONTENT` pointer edges, which this
-    /// is what resolves. On an unforked database this delegates to
+    /// branch-divergent bytes ride branch-minted pointer concepts
+    /// (`branch:{branch}:content:{path}`), which ancestry-narrowing
+    /// already scopes to the reader's lineage. On an unforked database this delegates to
     /// `reconstruct` unchanged (Macrame's `Trunk` shape pays nothing).
     /// Unknown branches refuse with `DbError::UnknownBranch`.
     pub fn reconstruct_on(&self, ts: &str, branch: &str) -> macrame::Result<MaterializedState> {
