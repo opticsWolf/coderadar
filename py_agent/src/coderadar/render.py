@@ -875,6 +875,31 @@ def verify_history(result: dict, *, offenders: int = 10) -> str:
     return "\n".join(out)
 
 
+def history_of(result: dict) -> str:
+    """A file's content chain as legible text (P3, DR-38).
+
+    One row per content version, newest first: short digest, interval,
+    parent link, payload size. The open head is marked; a closed head
+    means the file was deleted (retire cascade) or... nothing else
+    closes it — only new content does.
+    """
+    versions = result["versions"]
+    out = [
+        f"file             {result['file']}",
+        f"versions         {result['count']}",
+        "",
+        f"{'digest':10} {'valid_from':28} {'valid_to':28} {'parent':10} {'bytes':>8}",
+    ]
+    for v in versions:
+        mark = " (open)" if v["open"] else ""
+        parent = (v["parent_digest"] or "-")[:8]
+        out.append(
+            f"{v['digest'][:8]:10} {v['valid_from'][:28]:28} "
+            f"{v['valid_to'][:28]:28} {parent:10} {v['size_bytes']:>8}{mark}"
+        )
+    return "\n".join(out)
+
+
 def changes_between(result: dict, *, per_class: int = 25) -> str:
     """Entity diff between two instants as legible text (P2, DR-37).
 

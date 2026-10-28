@@ -80,6 +80,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(all_concept_ids, m)?)?;
     m.add_function(wrap_pyfunction!(canonical_id, m)?)?;
     m.add_function(wrap_pyfunction!(content_hashes_at, m)?)?;
+    m.add_function(wrap_pyfunction!(history_of, m)?)?;
     m.add_function(wrap_pyfunction!(archive, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -1020,8 +1021,32 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         // re-persist); a failed index for a blob problem would invert the
         // priority (graph primary, bytes secondary).
         if let Some(ref store) = graph.store {
-            let v2 = crate::storage::build_v2_concepts_all(&projection, &blob_digests);
+            let mut v2 = crate::storage::build_v2_concepts_all(&projection, &blob_digests);
             current_concept_ids = v2.iter().map(|concept| concept.id.clone()).collect();
+            // P3 (DR-38): content-version spine — computed here and
+            // appended to the SAME bulk: one flush, one commit, one
+            // generation (P1 `recorded_generations` counts DISTINCT
+            // `recorded_at` per commit). Digest-less modules (degraded
+            // puts) mint no spine; the next successful put starts
+            // their chain.
+            let spine_inputs: Vec<(String, String)> = projection
+                .modules
+                .keys()
+                .filter_map(|id| {
+                    id.strip_suffix("::module").and_then(|file| {
+                        blob_digests
+                            .get(file)
+                            .map(|digest| (id.clone(), digest.clone()))
+                    })
+                })
+                .collect();
+            if !spine_inputs.is_empty() {
+                let now = crate::storage::now_iso8601();
+                match store.spine_upserts_for(&spine_inputs, &now) {
+                    Ok(extra) => v2.extend(extra),
+                    Err(e) => eprintln!("[diag] spine computation failed: {e:?}"),
+                }
+            }
             if let Err(e) = store.upsert_concepts_bulk(&v2) {
                 concept_flush_succeeded = false;
                 eprintln!("[diag] v2 concept flush failed: {e:?}");
@@ -2102,7 +2127,42 @@ fn canonical_id(entity_id: &str) -> String {
     canonical_lookup_id(entity_id)
 }
 
-/// One entity's diff material out of a projection: the id it resolved
+/// Every content a file ever had, newest first (P3, DR-38).
+///
+/// Ledger-direct through `snapshot_store` (no fold, no projection): the
+/// chain is one row per content change. `file_path` accepts any id
+/// spelling (canonicalized like every other temporal read); the answer
+/// is a list of `{digest, valid_from, valid_to, open, parent_digest,
+/// size_bytes, line_count}` newest-first, `[]` for a file the spine
+/// never saw (digest-less modules mint no spine).
+#[pyfunction]
+fn history_of(py: Python<'_>, file_path: &str) -> PyResult<PyObject> {
+    let module_id = canonical_lookup_id(&format!("{file_path}::module"));
+    let path = module_id
+        .strip_suffix("::module")
+        .unwrap_or(file_path)
+        .to_string();
+    let store = snapshot_store()?;
+    let chain = py.allow_threads(|| store.history_of(&path)).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "history_of({file_path:?}) failed: {e:?}"
+        ))
+    })?;
+    let out = PyList::empty(py);
+    for v in &chain {
+        let d = PyDict::new(py);
+        d.set_item("digest", &v.digest)?;
+        d.set_item("valid_from", &v.valid_from)?;
+        d.set_item("valid_to", &v.valid_to)?;
+        d.set_item("open", v.open)?;
+        d.set_item("parent_digest", &v.parent_digest)?;
+        d.set_item("size_bytes", v.size_bytes)?;
+        d.set_item("line_count", v.line_count)?;
+        out.append(d)?;
+    }
+    Ok(out.into())
+}
+
 /// to, its `content_hash` (`None` for kinds the extractor never hashed —
 /// imports, constants, type aliases, routes), and its line span (`None`
 /// where the projection carries none: modules are the whole file, routes

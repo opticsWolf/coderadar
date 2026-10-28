@@ -57,6 +57,7 @@ __all__ = [
     "find_scaffolding",
     "friendly_entity_id",
     "get_smells",
+    "history_of",
     "module_children",
     "node",
     "normalize_query_spelling",
@@ -1371,6 +1372,47 @@ def verify_history(from_ts: str | None = None, to_ts: str | None = None,
         "offender_sample": {k: sorted(v)[:offenders] for k, v in offender_all.items()},
         "offender_distinct": {k: len(v) for k, v in offender_all.items()},
     }
+
+
+HISTORY_OF_CONTRACT_KEYS = ("file", "versions", "count")
+HISTORY_OF_VERSION_KEYS = (
+    "digest", "valid_from", "valid_to", "open",
+    "parent_digest", "size_bytes", "line_count",
+)
+
+
+def history_of(file: str, *, graph: Any = None) -> dict:
+    """Every content a file ever had, newest first (P3, DR-38).
+
+    Returns ``{"file", "versions": [...], "count"}`` where each
+    version is ``{"digest", "valid_from", "valid_to", "open",
+    "parent_digest", "size_bytes", "line_count"}`` newest-first.
+    The chain is the `HAD_CONTENT` spine: one row per content change
+    with contiguous intervals (close and open share one stamp), the
+    first content parentless, a deleted file's head closed by the
+    retire cascade. A digest-less file (degraded put, never
+    successfully blobbed) never mints spine rows and reads as ``[]``
+    — presence in the chain means the bytes were kept, so unlike
+    `verify_history` there is no `no_digest` class here. `file` is the
+    indexed path (root-relative posix); any store id spelling is
+    accepted and canonicalized. Like every `_core` temporal read, the
+    chain is read from the loaded graph (`graph` supplies the calling
+    convention only).
+    """
+    if not file or not str(file).strip():
+        raise InvalidRequest("Please provide a file path (e.g. 'pkg/mod.py').")
+    # No `_require_index` modules gate: a deleted file's chain must stay
+    # queryable after its last entity is gone (the spine outlives the
+    # projection by construction). The store-missing cases still raise
+    # below via the FFI errors.
+    _ = graph or _graph()
+    try:
+        from coderadar._core import history_of as _history_of
+        chain = _history_of(str(file))
+    except RuntimeError as e:
+        raise NoIndex(str(e)) from e
+    versions = [dict(v) for v in chain]
+    return {"file": str(file), "versions": versions, "count": len(versions)}
 
 
 def changes_between(t1: str, t2: str, scope: str | None = None,

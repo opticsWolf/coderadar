@@ -47,6 +47,93 @@ pub mod edge_type {
     pub const DECORATES: &str = "DECORATES";
     pub const INSTANTIATES: &str = "INSTANTIATES";
     pub const OVERRIDES: &str = "OVERRIDES";
+    /// P3 (DR-38): the content-version spine edge. Ledger-only — never in
+    /// the projection, never structural, never `synthetic:` — so neither
+    /// `retire_stale_edges`, nor the DR-42 hook sweep, nor the single-open
+    /// guard's fresh set touches it; `maintain_content_spine` owns it.
+    ///
+    /// RETIRED WITH THE EDGE (P3 as shipped, DR-38): the spine is
+    /// concepts-only. A `HAD_CONTENT` edge target names its concept
+    /// (`{path}@{digest}`), and Macrame's archive reference scan reads
+    /// link payloads — so every closed edge version would pin its blob
+    /// hot forever and kill retention (§3.4). The chain needs no edge:
+    /// concepts order by `valid_from` and intervals derive from chain
+    /// order. Kept as a reserved name, not a live kind.
+    pub const HAD_CONTENT: &str = "HAD_CONTENT";
+}
+
+/// Outcome of one [`CodeGraphStore::maintain_content_spine`] pass: how
+/// many flushed modules were seen, and how many spine concepts were
+/// upserted. Unchanged files report only in `files_seen` — the
+/// zero-growth property the P3 tests pin.
+#[derive(Debug, Default)]
+pub struct SpineReport {
+    pub files_seen: usize,
+    pub concepts_upserted: usize,
+}
+
+/// One link in a file's content chain, as [`CodeGraphStore::history_of`]
+/// returns it: the digest, its ledger interval, the previous digest (or
+/// `None` for the first content), and the payload size. `open` is true
+/// exactly for the head of the chain (`valid_to` still the open
+/// sentinel); a deleted file's chain ends closed via the retire cascade
+/// (`retire_entities` closes edges on either side of a retired
+/// endpoint), never by spine deletion — the concept is timeless.
+#[derive(Debug)]
+pub struct SpineVersion {
+    pub digest: String,
+    pub valid_from: String,
+    pub valid_to: String,
+    pub open: bool,
+    pub parent_digest: Option<String>,
+    pub size_bytes: u64,
+    pub line_count: u64,
+}
+
+/// Build the timeless `{path}@{digest}` spine concept upsert. The id is
+/// content-addressed, so re-indexing unchanged content re-upserts an
+/// identical row the [`CodeGraphStore::filter_unchanged`] gate absorbs;
+/// the payload is metadata-sized (path, size, lines) —
+/// never program text, which stays in the blob (P3b constraint) — and,
+/// critically, names no blob digest anywhere the archive reference scan
+/// reads. Concept payloads DO log `extra` (verified against the ledger,
+/// not assumed), so `extra` carries no digests at all: no `source_blob`
+/// (the digest is the id suffix) and no `parent_digest` (the parent is
+/// the next-older chain link, derived at read time). Title and content
+/// carry the path only; the digest lives solely in the id — an
+/// unscanned `entity_id` column, since the scan reads payloads. A
+/// superseded blob therefore stays archivable (§3.4); the spine pins
+/// metadata, never bytes.
+fn spine_concept_upsert(
+    path: &str,
+    digest: &str,
+    size: u64,
+    line_count: u64,
+    now: &str,
+) -> ConceptUpsert {
+    let id = format!("{path}@{digest}");
+    let content = serde_json::json!({
+        "meta_version": V2_META_VERSION,
+        "kind": "content_version",
+        "name": path,
+        "file_path": path,
+    });
+    let extra = serde_json::json!({
+        "coderadar": {
+            "format": 1,
+            "kind": "content_version",
+            "file_path": path,
+            "content_hash": serde_json::Value::Null,
+            "size": size,
+            "line_count": line_count,
+        }
+    });
+    ConceptUpsert::new(id, path.to_string())
+        .content(content.to_string())
+        .extra(extra.to_string())
+        .valid_from(now.to_string())
+        .valid_to(TS_OPEN.to_string())
+        .retired(false)
 }
 
 /// Serialises every libSQL open in this process — `Database::open` and
@@ -65,7 +152,9 @@ pub(crate) const FRAMEWORK_SYNTHETIC_EDGE_PREFIX: &str = "synthetic:";
 const CODERADAR_EXTRA_FILE_PATH: &str = "$.coderadar.file_path";
 
 const LIVE_IDS_BY_EXTRA_FILE_PATH_SQL: &str = "SELECT id FROM concepts WHERE retired = 0 \
-    AND json_extract(extra, '$.coderadar.file_path') = ?1";
+    AND json_extract(extra, '$.coderadar.file_path') = ?1 \
+    AND (json_extract(extra, '$.coderadar.kind') IS NULL \
+         OR json_extract(extra, '$.coderadar.kind') != 'content_version')";
 const LIVE_IDS_BY_ID_FILE_RANGE_SQL: &str = "SELECT id FROM concepts WHERE retired = 0 \
     AND id >= ?1 AND id < ?2";
 
@@ -342,8 +431,12 @@ impl CodeGraphStore {
     /// are write mechanics, not facts, and are deliberately not compared
     /// (every run stamps a fresh `valid_from`, which is what used to mint a
     /// new version per analyze — +26 rows per no-op analyze on the 7-file
-    /// fixture). Unhashable content (missing/unparseable hash) always
-    /// rewrites: the safe direction. Fail-open like [`Self::absent_concept_ids`].
+    /// fixture). Unhashable on exactly one side always rewrites (the safe
+    /// direction — a v1 row without a hash still upgrades); unhashable on
+    /// both sides falls back to full-content equality, so hashless
+    /// concepts (the P3 spine, which must not carry a digest in its
+    /// content) do not churn a fresh version per run. Fail-open like
+    /// [`Self::absent_concept_ids`]..
     pub fn filter_unchanged(&self, concepts: &[ConceptUpsert]) -> Vec<ConceptUpsert> {
         if concepts.is_empty() {
             return Vec::new();
@@ -1416,7 +1509,15 @@ impl CodeGraphStore {
         })
     }
 
-    /// Ids of every concept the ledger still holds to be true.
+    /// Ids of every live ENTITY concept the ledger still holds to be true.
+    ///
+    /// Entities only: the P3 content-version spine (`kind =
+    /// 'content_version'`) is ledger infrastructure, not an entity —
+    /// timeless, digest-addressed, owned by `maintain_content_spine`.
+    /// Every file-lifecycle sweep built on this listing (F14
+    /// non-canonical retirement, exclusion retirement) must never see
+    /// it, so the exclusion lives here rather than in each caller. Read
+    /// the spine through `history_of`.
     ///
     /// The counterpart to [`Self::retire_entities`]: retirement is only
     /// meaningful if something can tell the difference, and until now nothing
@@ -1425,7 +1526,13 @@ impl CodeGraphStore {
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         runtime().block_on(async {
             let mut rows = conn
-                .query("SELECT id FROM concepts WHERE retired = 0 ORDER BY id", ())
+                .query(
+                    "SELECT id FROM concepts WHERE retired = 0 \
+                     AND (json_extract(content, '$.kind') IS NULL \
+                          OR json_extract(content, '$.kind') != 'content_version') \
+                     ORDER BY id",
+                    (),
+                )
                 .await
                 .map_err(macrame::DbError::Engine)?;
             let mut out = Vec::new();
@@ -1740,6 +1847,12 @@ impl CodeGraphStore {
     /// Retired ids stay in (a deletion is a T1-only group); branch scope
     /// matches `transaction_log.branch_id` (`"main"` unless told
     /// otherwise). `ordering` is_id order — deterministic, not meaningful.
+    ///
+    /// The P3 spine is excluded by kind (P2's diff joins entities; a
+    /// timeless `{path}@{digest}` row would read as a perpetual
+    /// `uncompared` group at every T). The subquery is branch-agnostic
+    /// by id, which is exact here: spine ids are content-addressed, so
+    /// the same bytes are the same spine row on every branch.
     pub fn all_concept_ids(&self, branch: &str) -> macrame::Result<Vec<String>> {
         let (_guard, conn) = self.open_diagnostic_conn()?;
         runtime().block_on(async {
@@ -1747,6 +1860,8 @@ impl CodeGraphStore {
                 .query(
                     "SELECT DISTINCT entity_id FROM transaction_log \
                      WHERE table_name = 'concepts' AND branch_id = ?1 \
+                     AND entity_id NOT IN (SELECT id FROM concepts \
+                         WHERE json_extract(content, '$.kind') = 'content_version') \
                      ORDER BY entity_id",
                     libsql::params![branch],
                 )
@@ -1755,6 +1870,196 @@ impl CodeGraphStore {
             let mut out = Vec::new();
             while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
                 out.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok(out)
+        })
+    }
+
+    /// Compute the content-version spine upserts for freshly flushed
+    /// modules (P3, DR-38): one timeless `{path}@{digest}` concept per
+    /// actual content change, nothing for unchanged files. Pure compute
+    /// plus store reads — no writes — so both write sites append the
+    /// spine to their v2 bulk and flush ONCE: the spine must not mint
+    /// its own commit, because `recorded_generations` (P1) counts
+    /// DISTINCT `recorded_at` per commit and one flush stays one
+    /// generation.
+    ///
+    /// Concepts only, deliberately no edge: an edge target names its
+    /// concept, and Macrame's archive reference scan reads hot link
+    /// payloads — so every closed `HAD_CONTENT` version would pin its
+    /// blob hot forever and defeat retention (§3.4, DR-25). The chain
+    /// needs no edge: spine concepts order by `valid_from`, intervals
+    /// and parents derive from chain order. Likewise the concept
+    /// payload names no digest — title and content carry the path only
+    /// and `extra` carries numbers only (payloads DO log `extra`,
+    /// verified against the ledger, not assumed) — the digest lives
+    /// solely in the id, an unscanned `entity_id` column since the scan
+    /// reads payloads. A superseded blob therefore stays archivable.
+    ///
+    /// `module_digests` carries only modules with a validated digest
+    /// (degraded puts keep graph coverage but mint no spine; the next
+    /// successful put starts the chain). Unchanged content is ALWAYS
+    /// re-emitted, never skipped by digest comparison: the timeless id
+    /// makes "same digest" look like "nothing to do", but the open
+    /// row may still need the rewrite — a v1 row missing `meta_version`
+    /// is the case that bit (the v1→v2 upgrade silently skipped every
+    /// spine row). The [`CodeGraphStore::filter_unchanged`] gate absorbs
+    /// the true no-op (byte-identical re-upsert, no new version, no new
+    /// commit); emitting unconditionally also heals any metadata drift
+    /// or corruption from ground truth (blob bytes). A missing blob
+    /// skips the file loudly, never half-written.
+    pub fn spine_upserts_for(
+        &self,
+        module_digests: &[(String, String)],
+        now: &str,
+    ) -> macrame::Result<Vec<ConceptUpsert>> {
+        let mut out = Vec::new();
+        for (module_id, digest) in module_digests {
+            let Some(path) = module_id.strip_suffix("::module") else {
+                eprintln!("[diag] spine: skipping non-module id {module_id}");
+                continue;
+            };
+            let bytes = match self.blob_get(digest)? {
+                Some(b) => b,
+                None => {
+                    eprintln!("[diag] spine: blob missing for {digest} ({path}) — skipping");
+                    continue;
+                }
+            };
+            let size = bytes.len() as u64;
+            // Line count: newlines, plus the final unterminated line.
+            // A trailing newline does not start a new line.
+            let lines = if bytes.is_empty() {
+                0
+            } else {
+                let breaks = bytes.iter().filter(|b| **b == b'\n').count() as u64;
+                breaks + u64::from(!bytes.ends_with(b"\n"))
+            };
+            out.push(spine_concept_upsert(path, digest, size, lines, now));
+        }
+        Ok(out)
+    }
+
+    /// Maintain the content-version spine (P3, DR-38): compute via
+    /// [`CodeGraphStore::spine_upserts_for`] and flush in one commit.
+    /// The write sites (full analyze, `update_file`) inline the compute
+    /// into their v2 bulk instead — one flush, one generation — so this
+    /// wrapper exists for small callers and tests, not the hot path.
+    pub fn maintain_content_spine(
+        &self,
+        module_digests: &[(String, String)],
+        now: &str,
+    ) -> macrame::Result<SpineReport> {
+        let concepts = self.spine_upserts_for(module_digests, now)?;
+        Ok(SpineReport {
+            files_seen: module_digests
+                .iter()
+                .filter(|(id, _)| id.ends_with("::module"))
+                .count(),
+            concepts_upserted: self.upsert_concepts_bulk(&concepts)?,
+        })
+    }
+
+    /// Every content a file ever had, newest first (P3, DR-38): the
+    /// spine chain with derived intervals, plus the spine payload's
+    /// `parent_digest`/`size`/`line_count`.
+    ///
+    /// Ledger-direct, not a fold: the chain is one concept per content
+    /// change, so a full reconstruct to read it would be pure overhead.
+    /// Reads the timeless spine concepts by id prefix (`concepts.id`
+    /// is UNIQUE, so one row per content — no version fold); intervals
+    /// derive from chain order because maintain stamps one `now` per
+    /// content (each version's `valid_from` ends the previous one's
+    /// interval, contiguously by construction).
+    ///
+    /// The head is open while the module concept is live. A deleted
+    /// file's chain ends at the module's retire stamp (the retire
+    /// cascade owns entity death; the spine owns content, so it never
+    /// invents the stamp — it reports the module's). An unknown file
+    /// reads as `[]`: no spine rows, no chain.
+    ///
+    /// Branch is trunk for now — P4 (DR-40) threads lineage through
+    /// this read. A corrupt spine payload fails the read (INV-7
+    /// honesty, P0 precedent), with the concept id in the message.
+    pub fn history_of(&self, file_path: &str) -> macrame::Result<Vec<SpineVersion>> {
+        let module_id = format!("{file_path}::module");
+        let escaped = file_path
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let pattern = format!("{escaped}@%");
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT id, extra, valid_from FROM concepts \
+                     WHERE retired = 0 AND id LIKE ?1 ESCAPE '\\' \
+                     AND json_extract(content, '$.kind') = 'content_version' \
+                     ORDER BY valid_from DESC",
+                    libsql::params![pattern],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                let id: String = row.get(0).unwrap_or_default();
+                let extra: String = row.get(1).unwrap_or_default();
+                let payload: serde_json::Value = serde_json::from_str(&extra).map_err(|e| {
+                    macrame::DbError::Engine(libsql::Error::Misuse(format!(
+                        "spine concept {id} has unparseable extra: {e}",
+                    )))
+                })?;
+                let inner = payload.get("coderadar");
+                let get_u64 = |key: &str| {
+                    inner
+                        .and_then(|v| v.get(key))
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0)
+                };
+                let prefix = format!("{file_path}@");
+                out.push(SpineVersion {
+                    digest: id.strip_prefix(&prefix).unwrap_or(&id).to_string(),
+                    valid_from: row.get(2).unwrap_or_default(),
+                    valid_to: TS_OPEN.to_string(),
+                    open: true,
+                    // No stored parent: the parent is the next-older
+                    // link, derived below from chain order (`extra`
+                    // carries no digests — retention coexistence).
+                    parent_digest: None,
+                    size_bytes: get_u64("size"),
+                    line_count: get_u64("line_count"),
+                });
+            }
+            // Intervals and parents derive from chain order: each
+            // version's start ends the previous one's interval, and each
+            // version's parent is the next-older link (the oldest content
+            // is parentless).
+            for i in 1..out.len() {
+                let start = out[i - 1].valid_from.clone();
+                out[i].valid_to = start;
+                out[i].open = false;
+                let child = i - 1;
+                let parent_digest = out[i].digest.clone();
+                out[child].parent_digest = Some(parent_digest);
+            }
+            // The head ends where the file died, if it did: the module
+            // concept's retire stamp. A live module (or an untraceable
+            // one) leaves the head open.
+            if let Some(head) = out.first_mut() {
+                let mut mrows = conn
+                    .query(
+                        "SELECT retired, valid_to FROM concepts WHERE id = ?1",
+                        libsql::params![module_id],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                if let Some(mrow) = mrows.next().await.map_err(macrame::DbError::Engine)? {
+                    let retired: i64 = mrow.get(0).unwrap_or(0);
+                    if retired != 0 {
+                        head.valid_to = mrow.get(1).unwrap_or_default();
+                        head.open = false;
+                    }
+                }
             }
             Ok(out)
         })
@@ -2183,7 +2488,17 @@ fn concept_changed(
         cur.get(annotation::CONTENT_HASH).and_then(|h| h.as_str()),
     ) {
         (Some(a), Some(b)) => a != b,
-        // Unhashable on either side rewrites (safe direction).
+        // Neither side hashable: compare the full content (parsed, so
+        // key order cannot fake a change). The P3 spine deliberately
+        // carries no `content_hash` — a digest in content would land in
+        // the logged payload and pin the blob hot against retention —
+        // so without this arm every maintain would mint a fresh spine
+        // version per analyze, churning `valid_from` and scrambling the
+        // chain order the read derives. Byte-identical means no-op.
+        (None, None) => {
+            serde_json::from_str::<serde_json::Value>(&concept.content).map_or(true, |v| v != cur)
+        }
+        // Unhashable on exactly one side rewrites (safe direction).
         _ => true,
     }
 }
@@ -2525,6 +2840,14 @@ pub enum V2ConceptClass {
     /// Field entities (fields ride inside their Class), so these are
     /// skipped with a warning.
     StandaloneField,
+    /// P3 content-version spine concept (`kind = 'content_version'`).
+    /// Ledger infrastructure, not an entity: timeless,
+    /// digest-addressed, read through `history_of`. Skipped by entity
+    /// loaders exactly like standalone fields — matching it before the
+    /// canonical check is what keeps it out of `V1Leftover` (which
+    /// hard-fails the load) and out of `parse_v2_concept` (which has no
+    /// arm for it).
+    Spine,
     /// Content that is not JSON or has no kind.
     Unreadable,
 }
@@ -2539,6 +2862,9 @@ pub fn classify_v2_concept(content: &str) -> V2ConceptClass {
     };
     if kind == "field" {
         return V2ConceptClass::StandaloneField;
+    }
+    if kind == "content_version" {
+        return V2ConceptClass::Spine;
     }
     if V2_CANONICAL_KINDS.contains(&kind)
         && v.get("meta_version").and_then(|m| m.as_u64()) == Some(V2_META_VERSION)
@@ -3819,7 +4145,10 @@ mod tests {
             1
         );
         assert_eq!(store.upsert_concepts_bulk(&[tombstone]).unwrap(), 0);
-        // Unhashable content always rewrites (safe direction).
+        // Unhashable on both sides: byte-identical absorbs (no fresh
+        // version per run — the P3 spine must not carry a digest in its
+        // content, so without the full-content fallback every maintain
+        // would churn), any drift rewrites.
         let bare = v2_upsert(
             "f.py::bar",
             "bar",
@@ -3833,7 +4162,7 @@ mod tests {
                 .unwrap(),
             1
         );
-        assert_eq!(store.upsert_concepts_bulk(&[bare]).unwrap(), 1);
+        assert_eq!(store.upsert_concepts_bulk(&[bare]).unwrap(), 0);
         // A meta_version-less row with matching hash still upgrades (the
         // v1-store upgrade path); afterwards it skips like any v2 row.
         let legacy = ConceptUpsert::new("f.py::v1", "v1")
@@ -4416,6 +4745,158 @@ mod tests {
             .open_synthetic_triples(&now_iso8601())
             .unwrap()
             .is_empty());
+    }
+
+    /// P3 (DR-38): the spine writer's contract — one timeless concept
+    /// per actual content change (parents and intervals derived from
+    /// chain order), the unchanged gate absorbing true no-ops. Also pins
+    /// the retention coexistence: no SPINE log payload names a digest
+    /// (title/content carry the path, `extra` numbers only; the digest
+    /// lives in the unscanned id column), so a superseded blob stays
+    /// archivable. And the universe hygiene: spine ids appear in
+    /// neither `live_concept_ids*` nor `all_concept_ids`, so file sweeps
+    /// and the P2 diff never see ledger infrastructure as entities.
+    /// The v1-upgrade heal: a spine row stripped of `meta_version` is
+    /// rewritten on the next maintain (same digest, fresh metadata) —
+    /// the digest pre-skip that swallowed the upgrade is gone; the gate,
+    /// not the caller, decides no-op.
+    #[test]
+    fn spine_maintain_links_one_chain_per_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("spine.db")).unwrap();
+        let now = now_iso8601();
+        let module = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(now.clone())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[module]).unwrap(), 1);
+        let blob_put = |name: &str, bytes: &[u8]| match store.put_source_blob(name, bytes).unwrap()
+        {
+            BlobOutcome::Stored { digest, .. } => digest,
+            other => panic!("expected Stored, got {other:?}"),
+        };
+        let d1 = blob_put("m.py", b"x = 1\n");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let t1 = now_iso8601();
+        let r1 = store
+            .maintain_content_spine(&[("m.py::module".to_string(), d1.clone())], &t1)
+            .unwrap();
+        assert_eq!((r1.files_seen, r1.concepts_upserted), (1, 1));
+        // Unchanged content: the gate absorbs the re-upsert — the
+        // report shows zero upserts, no new version, no new commit.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let r_same = store
+            .maintain_content_spine(&[("m.py::module".to_string(), d1.clone())], &now_iso8601())
+            .unwrap();
+        assert_eq!((r_same.files_seen, r_same.concepts_upserted), (1, 0));
+        // v1-upgrade heal: a metadata-stripped row for the SAME digest
+        // is rewritten, not skipped. Write the stripped variant through
+        // the bulk API (the digest pre-skip is gone, so the gate sees
+        // it); the next maintain must count one healing upsert.
+        let full_content = spine_concept_upsert("m.py", &d1, 6, 1, &now_iso8601())
+            .content
+            .clone();
+        let mut stripped_value: serde_json::Value = serde_json::from_str(&full_content).unwrap();
+        stripped_value
+            .as_object_mut()
+            .unwrap()
+            .remove("meta_version");
+        let mut stripped_upsert = spine_concept_upsert("m.py", &d1, 6, 1, &now_iso8601());
+        stripped_upsert.content = stripped_value.to_string();
+        assert_eq!(
+            store
+                .upsert_concepts_bulk(std::slice::from_ref(&stripped_upsert))
+                .unwrap(),
+            1,
+            "the stripped variant must land (drift from the open row)"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let t_heal = now_iso8601();
+        let r_heal = store
+            .maintain_content_spine(&[("m.py::module".to_string(), d1.clone())], &t_heal)
+            .unwrap();
+        assert_eq!(
+            (r_heal.files_seen, r_heal.concepts_upserted),
+            (1, 1),
+            "a metadata-stripped row must heal, not skip"
+        );
+        // New content: one concept, parent-linked.
+        let d2 = blob_put("m.py", b"x = 1\ny = 2\n");
+        assert_ne!(d1, d2);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let t2 = now_iso8601();
+        let r2 = store
+            .maintain_content_spine(&[("m.py::module".to_string(), d2.clone())], &t2)
+            .unwrap();
+        assert_eq!((r2.files_seen, r2.concepts_upserted), (1, 1));
+        let chain = store.history_of("m.py").unwrap();
+        assert_eq!(chain.len(), 2);
+        assert_eq!(chain[0].digest, d2);
+        assert!(chain[0].open);
+        assert_eq!(chain[0].parent_digest.as_deref(), Some(d1.as_str()));
+        assert_eq!(chain[0].size_bytes, 12);
+        assert_eq!(chain[0].line_count, 2);
+        assert_eq!(chain[1].digest, d1);
+        assert!(!chain[1].open);
+        assert_eq!(chain[1].parent_digest, None);
+        assert_eq!(
+            chain[1].valid_from, t_heal,
+            "the heal rewrite restamps the same digest row"
+        );
+        assert_eq!(
+            chain[1].valid_to, chain[0].valid_from,
+            "intervals derive from chain order: contiguous by construction"
+        );
+        // Universe hygiene: no sweep and no diff universe lists spine rows.
+        assert_eq!(
+            store.live_concept_ids_for_file("m.py").unwrap(),
+            vec!["m.py::module".to_string()]
+        );
+        assert!(
+            !store
+                .live_concept_ids()
+                .unwrap()
+                .iter()
+                .any(|id| id.contains('@')),
+            "spine ids are not live entities"
+        );
+        assert!(
+            !store
+                .all_concept_ids("main")
+                .unwrap()
+                .iter()
+                .any(|id| id.contains('@')),
+            "spine ids are not diff-universe entities"
+        );
+        // Retention coexistence: no SPINE log payload names a spine digest.
+        // Concept payloads log (v, title, content, stamps) AND `extra`,
+        // so the spine title/content/extra carry the path and numbers
+        // only; the digest lives solely in the id — an unscanned
+        // `entity_id` column, since the archive scan reads payloads. A
+        // superseded blob therefore stays archivable. Scoped to spine
+        // rows: module payloads name their live digest by design (and
+        // age out via their successor row), which is exactly the
+        // mechanism the pin must not disturb.
+        let (_leak_guard, leak_conn) = store.open_diagnostic_conn().unwrap();
+        let leaked: i64 = runtime()
+            .block_on(async {
+                let mut rows = leak_conn
+                    .query(
+                        "SELECT COUNT(*) FROM transaction_log                          WHERE payload LIKE ?1 AND entity_id LIKE 'm.py@%'",
+                        libsql::params![format!("%{d1}%")],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .unwrap();
+                Ok::<_, macrame::DbError>(row.get(0).unwrap_or(0))
+            })
+            .unwrap();
+        assert_eq!(leaked, 0, "spine rows must not pin blobs via hot payloads");
     }
 
     /// §1.9 (DR-25): put round-trip + idempotent retry (the

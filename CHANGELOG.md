@@ -19,6 +19,11 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 - Temporal DR-42 (Q-2/H-3): `open_synthetic_triples` is an inclusion
   list — the hook sweeps exactly the `synthetic:` namespace it mints,
   not every future edge type (`600d689`).
+- Temporal P3 (DR-38): `content_version` spine — timeless
+  `{path}@{digest}` concepts, no edges (a `HAD_CONTENT` edge would pin
+  blobs hot against the archive scan); digest-free payloads, parent and
+  intervals derived from chain order; one flush one commit; `history_of`
+  read + CLI `history` (MCP surface stays 29 tools).
 
 ## 0.13.0 (2026-10-26)
 

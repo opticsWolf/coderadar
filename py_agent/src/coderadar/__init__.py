@@ -720,6 +720,15 @@ class CodeGraph:
         from . import ops
         return ops.changes_between(t1, t2, scope, branch, graph=self)
 
+    def history_of(self, file: str) -> dict[str, Any]:
+        """Every content a file ever had, newest first (P3, no MCP surface).
+
+        The `HAD_CONTENT` spine chain with intervals — use it to answer
+        "what did this file look like before" without folding time.
+        """
+        from . import ops
+        return ops.history_of(file, graph=self)
+
     def compute_embeddings(self, model_name: str | None = None,
                            batch_size: int = 32,
                            recompute: bool = False) -> dict[str, int]:

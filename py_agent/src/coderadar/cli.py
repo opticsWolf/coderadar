@@ -646,6 +646,17 @@ def changes_between(t1: str, t2: str, scope: str | None, branch: str, fmt: str):
         lambda result: render.changes_between(result))
 
 
+@main.command(name="history")
+@click.argument("file")
+@_format_option
+def history(file: str, fmt: str):
+    """Every content FILE ever had, newest first (P3 content spine)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.history_of(file),
+        lambda result: render.history_of(result))
+
+
 @main.command()
 @click.argument("entity_id")
 @click.option("--direction", default="both", show_default=True,

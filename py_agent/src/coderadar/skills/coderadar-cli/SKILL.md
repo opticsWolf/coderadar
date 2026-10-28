@@ -60,6 +60,7 @@ coderadar resolve '/users/:id' [--limit 5]   # routes, *Model / *View names
 coderadar as-of TIMESTAMP [SYMBOL]... [-q TEXT]   # names at T, not bytes at T
 coderadar verify-history [--from TS --to TS] [--generations 25 | --all]  # can the past be reconstructed
 coderadar changes-between --t1 TS --t2 TS [--scope FILE|PREFIX]  # what changed, hash-based
+coderadar history FILE                   # every content FILE ever had, newest first
 coderadar module-children MODULE_ID          # e.g. 'pkg/app.py::module'
 coderadar diagnose [--unresolved] [--low-confidence]
 ```
