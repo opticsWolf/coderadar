@@ -481,9 +481,13 @@ release.
   (`thoughts/coderadar-v0.12-impl/`, `…-v0.13-impl/`,
   `…-coderadar-temporal/`), and the temporal findings note. GPU-indexed
   (`cuda`, fp16 — the graph pins the precision, so every write needs
-  `--precision fp16`); register rows update same-session. Consolidated here
-  from the shared `OKFgraph/kb.db` on 2026-10-28, so the project's memory
-  travels with the checkout.
+  `--precision fp16`); register rows update same-session, and each release
+  adds its own record (`coderadar/release-0.14.0`). Consolidated here from
+  the shared `OKFgraph/kb.db` on 2026-10-28, so the project's memory sits
+  beside its code instead of in a store shared with other projects. It is
+  **not** in git — `.gitignore` excludes `*.db` — so a fresh clone has no
+  memory, and the file is kept by backing up the working directory, not by
+  pushing.
 - **This directory holds the live set only** (`v0.12-architecture-implementation.md` =
   architecture baseline + plan + deviations diary, store-and-retention +
   smell reference + open-items + BUGS_QUIRKS + CHANGELOG). The generated
