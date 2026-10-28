@@ -242,8 +242,10 @@ def render(report: dict, show_offenders: int) -> str:
         f"window           {report['window'][0]} .. {report['window'][1]}",
         f"generations      {report['sampled']} sampled of {report['total_generations']}",
         "",
-        f"{'generation':28} {'files':>6} {'ok':>6} {'no_digest':>10} "
-        f"{'unresolv':>9} {'mismatch':>9} {'cov%':>7}",
+        (
+            f"{'generation':28} {'files':>6} {'ok':>6} {'no_digest':>10} "
+            f"{'unresolv':>9} {'mismatch':>9} {'cov%':>7}"
+        ),
     ]
     for gen in report["generations"]:
         c = gen["counts"]
@@ -256,9 +258,11 @@ def render(report: dict, show_offenders: int) -> str:
     t = report["totals"]
     out += [
         "",
-        f"totals (file-generations)  ok={t.get('ok', 0)}  no_digest={t.get('no_digest', 0)}  "
-        f"unresolvable={t.get('unresolvable', 0)}  mismatch={t.get('digest_mismatch', 0)}  "
-        f"malformed={t.get('digest_malformed', 0)}",
+        (
+            f"totals (file-generations)  ok={t.get('ok', 0)}  no_digest={t.get('no_digest', 0)}  "
+            f"unresolvable={t.get('unresolvable', 0)}  mismatch={t.get('digest_mismatch', 0)}  "
+            f"malformed={t.get('digest_malformed', 0)}"
+        ),
         f"byte coverage              {report['byte_coverage_pct']:.1f}%",
         f"distinct digests checked   {report['distinct_digests']}",
     ]
@@ -274,11 +278,12 @@ def render(report: dict, show_offenders: int) -> str:
 
     if show_offenders:
         for outcome, paths in sorted(report["offender_sample"].items()):
+            total = report["offender_distinct"][outcome]
             shown = paths[:show_offenders]
-            out.append(f"\n{outcome} ({len(paths)} distinct files):")
+            out.append(f"\n{outcome} ({total} distinct files):")
             out += [f"  {p}" for p in shown]
-            if len(paths) > len(shown):
-                out.append(f"  ... and {len(paths) - len(shown)} more")
+            if total > len(shown):
+                out.append(f"  ... and {total - len(shown)} more")
     return "\n".join(out)
 
 
@@ -328,6 +333,15 @@ def main(argv: list[str] | None = None) -> int:
         for outcome, ids in gen["offenders"].items():
             offender_sample.setdefault(outcome, set()).update(ids)
 
+    # `--offenders` caps both renderings, not just the human one: an
+    # uncapped JSON report on this store is ~570 KB of entity ids, which
+    # is useless as a committed fixture and drowns the counts that matter.
+    # The counts above are computed from the full lists first, so capping
+    # here never changes a number — only how many examples travel with it.
+    cap = args.offenders
+    for gen in gens:
+        gen["offenders"] = {k: v[:cap] for k, v in gen["offenders"].items()}
+
     report = {
         "store": str(args.store),
         "root": args.root,
@@ -335,11 +349,15 @@ def main(argv: list[str] | None = None) -> int:
         "window": (stamps[0], stamps[-1]),
         "total_generations": len(stamps),
         "sampled": len(picked),
+        "offenders_per_outcome": cap,
         "generations": gens,
         "totals": totals,
         "byte_coverage_pct": round(coverage(totals), 2),
         "distinct_digests": len(verifier._verdicts),
-        "offender_sample": {k: sorted(v) for k, v in offender_sample.items()},
+        # The sample is capped; the distinct count beside it is not, so the
+        # report never understates how many files an outcome covers.
+        "offender_sample": {k: sorted(v)[:cap] for k, v in offender_sample.items()},
+        "offender_distinct": {k: len(v) for k, v in offender_sample.items()},
     }
     if args.crosscheck:
         report["crosscheck"] = crosscheck(verifier, _core, picked, args.crosscheck)

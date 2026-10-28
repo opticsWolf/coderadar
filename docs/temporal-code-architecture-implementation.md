@@ -11,6 +11,8 @@
 > conformance, whose five contracts are carried here as §3 invariants).
 > **Governs:** store-and-retention behaviour ([`store-and-retention.md`](store-and-retention.md))
 > once P5 changes what triggers a write.
+> **Decisions:** Q-1..Q-5 answered 2026-10-28 (§11); DR-39/P3b **withdrawn** on a false premise
+> (§5, §8); DR-41 deferred; DR-42 added.
 > **Method:** every claim in §0 was re-checked against the working tree at the baseline above.
 > File:line citations are the check, not the plan text.
 
@@ -25,7 +27,7 @@
 | `entity_source_ref_at` folds per call | `storage.rs:958` calls `self.reconstruct(timestamp)`, then reads one concept | **P0 exists because of this**; measured 0.36 s/call on the self-host store |
 | `lookup_entities_at` folds once but loses `extra` | `lib.rs:1752` one `reconstruct`; `entity_ref_to_dict` (`ffi_convert.rs:243`) builds from `ProjectedGraph`, which carries no `extra` | no batched digest route from Python today |
 | Per-entity body hash already versioned | `annotation::CONTENT_HASH` in content JSON (`storage.rs:1815`, writers `2014-2091`) **and** mirrored to `extra.coderadar.content_hash` (`storage.rs:1737`) | P2 needs no schema change |
-| Function body text already in the ledger | `v["source"] = f.source` (`storage.rs:2085`), carried in `concepts.content` via `build_concept` (`storage.rs:1757`) | §6 H-7 duplication decision; P3b |
+| No source text in the ledger — the blob is the only copy | the `source` key the writers emit (`storage.rs:2090`, `2121`, `2202`, `2219`) is `SourceType`, an `impl`/`stub` enum (`types.rs:634-639`); `concepts.content` carries metadata and byte spans only | **span + blob is the only read path at any granularity**; P3b/DR-39 withdrawn, and §2.5's 0% coverage means no recoverable text at all |
 | `concepts.id` is UNIQUE | hot schema: `id TEXT NOT NULL UNIQUE` | the hot table holds only current versions; **all** history is log replay, so every historical read costs a fold |
 | Macrame exposes no generation listing | no `DISTINCT recorded_at` or log-listing `pub async fn` in `Macrame/src/connection.rs` | P1 needs `recorded_generations` in CodeRadar (§5 P1.1), or upstream it (§11 Q-3) |
 | Non-fold SQL via diagnostic conn is in-pattern | `current_seq_anchor` runs `SELECT MAX(seq_id)` on `transaction_log` (`storage.rs:1575`), with the stated reason that folding to read one integer costs seconds | `recorded_generations` is the same shape and needs no new doctrine |
@@ -319,9 +321,17 @@ recorded. No schema change, no blob reads.
 
 **Hazards.** The two folds are two separate reconstructs and an entity can vanish between them if
 writes are concurrent; answer as absent rather than erroring (the precedent is
-`__init__.py:1559`, "vanished between the two folds; answer as absent"). Do not reach for
-`content.source` here even though it is present (§6 H-7) — the hash is the cheap path and the
-duplication's fate is undecided.
+`__init__.py:1559`, "vanished between the two folds; answer as absent"). There is no source text in
+the ledger to compare instead (§0, `types.rs:634-639`), so the hash is not merely the cheap path —
+it is the only path that does not require blob coverage, which on this store is 0%. That is why P2
+reports hash-based classes and points at `Snapshot.read_bytes` for proof rather than claiming to
+have diffed text.
+
+The second hazard is **H-11**, measured while capturing P1's baseline: entity ids changed spelling
+on 2026-10-03 (`.\core_indexer\…` → `core_indexer/…`) and the old concepts are retired rather than
+rewritten, so a window straddling that date yields ~6.3k spurious removals and ~6.3k spurious
+additions. `changes_between` must therefore either normalise ids before set-differencing, or detect
+the condition and say so in the report. A silent mass-change answer is worse than a refusal.
 
 **Tests.** `tests/test_changes_between.py`: a fixture with one body edit, one rename, one added
 function, one deleted file across two generations yields exactly the four classes; a pure
@@ -403,36 +413,36 @@ growth.
 
 ---
 
-### P3b — Decide the `content.source` duplication  (DR-39)
+### ~~P3b — Decide the `content.source` duplication~~  (DR-39 — **withdrawn 2026-10-28**)
 
-**Goal.** Stop carrying file bytes twice by accident, or carry them twice on purpose with the cost
-written down.
+**This phase does not exist.** It was raised on a false premise and is retracted rather than
+deleted, because the premise had consequences elsewhere in this plan and a reader of the merged
+analysis doc will have seen it.
 
-**The finding.** `v2_function` writes `v["source"] = f.source` (`storage.rs:2085`) and that JSON is
-the concept's canonical `content` (`build_concept`, `storage.rs:1757`). So function body text is
-stored per version inside ledger payloads, alongside the blob holding the same bytes as part of the
-whole file. Consequences: the archive's reference scan reads hot log payloads to decide blob
-liveness and reports `blob_scan_bytes` (D-287), so body text in payloads makes that scan
-proportionally more expensive; the hot file grows with body churn independently of blob dedup; and
-the two copies have different lifetimes (the blob is reclaimable by the scan, the payload copy is
-not until its row archives).
+**The premise, and why it was wrong.** The phase claimed that `v2_function` writes function body
+text into `concepts.content`, duplicating bytes the blob already holds. It does write a `source`
+key (`storage.rs:2121`, and `2090`, `2202`, `2219` for classes, constants and type aliases) — but
+the field's type is `SourceType` (`types.rs:634-639`), a two-variant enum serialised as `"impl"` or
+`"stub"`. It records whether an entity has a body, not what the body is. `module_content` emits no
+`source` key at all. **No concept writer stores program text.** `concepts.content` holds metadata
+and byte spans: name, kind, path, lines, docstring, decorators, parameters, metrics, resolved calls,
+the three xxHash64 digests, and `span`/`name_span`/`body_span`/`params_span`/`decorators_span`.
 
-**The two options, honestly.**
+**What replaces it — a constraint, not a decision.** The blob is the sole custodian of program text
+in the store, at every granularity. A body read is necessarily: resolve the generation's digest,
+read the blob, slice by the stored span — which is what `entity_source_ref_at` (`storage.rs:953`)
+and `_read_raw` (`__init__.py:1539`) already do. Three places in this plan inherit that:
 
-| | Lean on it | Trim it |
-|---|---|---|
-| What | declare `content.source` the body-diff path | store spans only, slice bodies from the blob on read |
-| Cost | hot file and scan grow with body churn | `content` schema change, `format` bump, read-compat path for every existing generation |
-| Gain | body diffing needs no blobs at all | smaller hot file, cheaper scan, one copy of the bytes |
-| Risk | P5 multiplies it per commit | a read path that must handle both shapes forever |
+- **§2.5's 0% coverage is total, not partial.** For 6,441 of 6,442 generations there is no
+  recoverable text of any kind. The spans survive; they point into bytes nobody kept.
+- **P2 must stay hash-based** and must not promise textual diffs (§5 P2, F-8).
+- **The scan-cost objection to the spine is void.** `blob_scan_bytes` (D-287) scales with
+  metadata-sized payloads, and a spine concept's payload — path, digest, parent digest — is smaller
+  than every concept already written. P3 loses its only quantitative objection.
 
-**Recommendation:** trim, but *not before P5 is decided* — if commit-driven ingestion is adopted,
-the multiplier makes trimming compulsory and the migration should happen once, together. If P5 is
-declined, leaning on it is defensible and must then be written into the architecture doc as
-intentional.
-
-**Required either way.** A decision-register row stating which, with the reason. This phase is a
-decision, not code.
+**Required.** Nothing to build. DR-39 is recorded as withdrawn with this reasoning, and no `format`
+bump, schema change, read-compat path or P5-coupled migration is needed for it — all four were
+consequences of the error.
 
 ---
 
@@ -519,10 +529,11 @@ Traps found in today's code while planning. H-1 to H-3 are detailed in P3.
 | H-4 | `entity_source_ref_at` folds per call; any new per-entity historical read inherits the cost | `storage.rs:958` | P0, P2 |
 | H-5 | `concepts.id` is UNIQUE — no concept history in the hot table, so every historical read is a replay | hot schema | performance of every phase |
 | H-6 | Watcher 1 MiB vs blob 8 MiB caps are paired by documentation only | `storage.rs:1601` + comment | P1 reporting, P5 volume |
-| H-7 | Function body text duplicated into log payloads, inflating the reference scan | `storage.rs:2085` | P3b, P5 |
+| H-7 | No source text anywhere but the blob, so a missing blob loses the text irrecoverably — there is no payload copy to fall back on | `types.rs:634-639`, `storage.rs:953` | P1 (what it measures), P5 (why it matters) |
 | H-8 | Naive/offset timestamps accepted at the Python boundary, rejected by Macrame `normalize` | philosophy doc mismatch #4 | every new temporal op's argument handling |
 | H-9 | `content_hash` is xxHash64: 64-bit, non-cryptographic | `storage.rs:1815` | P2's contract (F-8) |
 | H-10 | Hot-only backup is pointers; bytes live in hot **or** cold | `store-and-retention.md` | operational, all phases |
+| H-11 | **Entity ids changed spelling mid-history.** On the self-host store, `{file}::module` ids are `.\core_indexer\...` up to 2026-10-03T22:03:05Z and `core_indexer/...` from 2026-10-03T22:02:56Z on; the 6,308 old-spelling concepts are correctly `retired=1`, so nothing is wrong *now* — but a `changes_between` straddling that boundary classifies by id and reports ~6.3k removals plus ~6.3k additions for code that never changed | measured on `.coderadar/store/coderadar.db` | **P2**, and any future id-shape change |
 
 ---
 
@@ -558,9 +569,10 @@ before it counts as closed, per the v0.12 release-gate convention.
 | DR-36 | Batched `source_refs_at` primitive + `verify_history` integrity op; `recorded_generations` as a documented non-fold listing | proposed (P0, P1) |
 | DR-37 | `changes_between` over `extra.coderadar.content_hash`; hashes detect, bytes prove | proposed (P2) |
 | DR-38 | `content_version` spine with `HAD_CONTENT`; spine concepts timeless and sweep-excluded | proposed (P3) |
-| DR-39 | `content.source` duplication: lean on it or trim it | **open decision** (P3b) |
+| DR-39 | ~~`content.source` duplication: lean on it or trim it~~ | **withdrawn** 2026-10-28 — premise false, there is no duplication (P3b) |
 | DR-40 | Branch-aware reads: lineage resolves the reference, bytes stay branch-global | proposed (P4) |
-| DR-41 | Commit-driven ingestion; per-store stamping mode; migration path | **open decision** (P5) |
+| DR-41 | Commit-driven ingestion; per-store stamping mode; migration path | **deferred** 2026-10-28 until P0–P4 ship (Q-1) |
+| DR-42 | `open_synthetic_triples` inverted to an explicit inclusion list of framework edge types, as its own change before P3 | accepted 2026-10-28 (Q-2) |
 
 ---
 
@@ -572,12 +584,12 @@ before it counts as closed, per the v0.12 release-gate convention.
 | 2 | P1 `verify_history` | measures the gap before anything is built on assumptions | P0 |
 | 3 | P2 `changes_between` | no schema change; independent of the spine | P0 (optional) |
 | 4 | P3 spine | makes P5's per-commit writes natural; carries H-1/H-2/H-3 | P2 for shared read shapes |
-| 5 | P3b duplication decision | needs P5's direction to be decidable | P5 direction |
-| 6 | P4 branch reads | must precede P5: a branch-unaware reader over a branched ledger is wrong, not incomplete | P3 |
-| 7 | P5 ingestion | the semantic change; needs its own plan | P3, P4, DR-41 |
+| 5 | P4 branch reads | must precede P5: a branch-unaware reader over a branched ledger is wrong, not incomplete | P3 |
+| 6 | P5 ingestion — **deferred by decision (Q-1)**: revisit after P0–P4 ship, with coverage numbers from a re-analyzed store rather than the current 0% | the semantic change; needs its own plan | P3, P4, DR-41 |
 
-P0–P2 are additive, read-only and shippable in one release. P3 touches the write path. P4 touches
-every read signature. P5 is a different product decision and should not ride a point release.
+P3b is gone from this table (withdrawn — see §5). P0–P2 are additive, read-only and shippable in one
+release. P3 touches the write path. P4 touches every read signature. P5 is a different product
+decision and should not ride a point release.
 
 ---
 
@@ -586,8 +598,11 @@ every read signature. P5 is a different product decision and should not ride a p
 **Out of scope here:** repository-wide reconstruction of non-indexed files (§2.3 of the analysis doc
 — blobs exist only for files the walker visits, and that is a contract to state, not a gap to
 close); compression of stored bytes (belongs in Macrame); a diff *cache* (compute first, measure,
-then cache keyed `(digest_a, digest_b)` if a hot path appears); MCP exposure of the new ops until
-their shapes settle.
+then cache keyed `(digest_a, digest_b)` if a hot path appears).
+
+MCP exposure is no longer out of scope: Q-4 decided both ops get one, which makes their report
+shapes contracts from the first release rather than after they settle. Each phase specifies its
+shape for that reason.
 
 **Never:** delta blobs (F-1), stored diffs (F-3), CodeRadar-side blob GC (F-4/INV-5), per-branch
 blob copies (F-5), a second fold implementation in shipped code (F-6).
@@ -596,22 +611,40 @@ blob copies (F-5), a second fold implementation in shipped code (F-6).
 
 ## 11. Open questions for the maintainer
 
-- **Q-1 — P5: adopt or decline?** Everything above P3 is useful either way, but P3b's
-  recommendation and P5's migration path both hang on this. The measured 0% coverage is the
-  strongest argument for it; the cost is an ingestion rewrite and a per-store stamping mode.
-- **Q-2 — Invert `open_synthetic_triples` to an inclusion list?** The exclusion form (H-3) will trap
-  every future edge type, not just `HAD_CONTENT`. Fixing it inside P3 is a small change with a
-  blast radius in the framework-resolver path (§1.3), so it may deserve its own change.
-- **Q-3 — Upstream `recorded_generations` into Macrame?** A read-only listing of `transaction_log`
-  stamps is arguably Macrame's to own, and CodeRadar holding it means one more raw-SQL dependency on
-  the engine's schema. Keeping it local is faster now; upstreaming is cleaner and needs a Macrame
-  release.
-- **Q-4 — Do the new ops belong on MCP?** `verify_history` is an operator tool, not an agent tool;
-  `changes_between` plausibly is an agent tool. Deciding early avoids a surface that has to be
-  withdrawn.
-- **Q-5 — Does a full analyze get run on the self-host store now?** It would lift coverage for
-  current content and leave the 6,441 historical generations byte-less forever. Worth doing
-  regardless, but it also destroys the cleanest available before/after demonstration of P1.
+- **Q-1 — P5: adopt or decline? — DECIDED 2026-10-28: deferred until P0–P4 ship.** P5 is neither
+  adopted nor declined. P0–P4 are built on the current index-now ingestion; the decision is then
+  retaken against `verify_history` numbers from a re-analyzed store instead of the present 0%.
+  Accepted cost: the spine may need a second migration if P5 is later adopted, and P3's writer must
+  not assume per-commit stamping. The one thing this does *not* leave open is DR-39, which was
+  withdrawn on its own merits, not deferred with P5.
+- **Q-2 — Invert `open_synthetic_triples` to an inclusion list? — DECIDED 2026-10-28: yes, as its
+  own change, before P3.** The exclusion form (H-3) traps every future edge type, so it is fixed at
+  the form rather than worked around per type. It lands as a standalone change with its own tests
+  because its blast radius is the framework-resolver path (§1.3) and not P3's write path — a P3
+  revert must not take the fix with it. **Required:** enumerate the framework edge types from their
+  writers (an audit, not a guess) and state the list's membership rule in the code, so the next
+  edge type's author knows which side of it they are on. An inclusion list under-sweeps visibly; the
+  exclusion list over-sweeps silently, which is the whole reason for the change. New DR row: DR-42.
+- **Q-3 — Upstream `recorded_generations` into Macrame? — DECIDED 2026-10-28: implement locally,
+  upstream later.** It lands in CodeRadar via `open_diagnostic_conn`, on the `current_seq_anchor`
+  precedent (`storage.rs:1575`), so P1 does not block on a Macrame release. **Required:** the
+  schema dependency is recorded explicitly at the call site and in DR-36, and it is upstreamed the
+  next time a Macrame change is being cut for other reasons. The coupling is acceptable because it
+  breaks loudly — a renamed `transaction_log` column fails the query — rather than returning a
+  plausible wrong answer.
+- **Q-4 — Do the new ops belong on MCP? — DECIDED 2026-10-28: both, `verify_history` and
+  `changes_between`.** An agent reasoning over history should be able to ask whether that history
+  can be trusted, which is exactly what `verify_history` answers. **Required, because this is the
+  option with the real costs:** (a) both report shapes are treated as contracts from the first
+  release and specified in their phase sections, since MCP freezes them earlier than a CLI would;
+  (b) `verify_history` on MCP must carry bounded defaults — generation sampling on by default and a
+  cap on the scan — because its cost scales with generation count and an agent will call it
+  without knowing that. Removes the "MCP exposure of the new ops" entry from §10.
+- **Q-5 — Does a full analyze get run on the self-host store now? — DECIDED 2026-10-28: capture a
+  baseline, then run it.** The pre-analyze `verify_history --json` report is committed as a fixture
+  (`tests/fixtures/verify_history_baseline.json`) so the 0%-coverage evidence survives as a
+  regression baseline and as P1's no-coverage test input; the store is then re-analyzed. The 6,441
+  historical generations stay byte-less either way — only P5 could change that, and P5 is deferred.
 
 ---
 
@@ -663,3 +696,41 @@ Deviations from §5, all deliberate:
 - **Rebuild needed two `mcp serve` kills.** The repo `_core.pyd` was DLL-locked by stale
   `coderadar.exe mcp serve` processes — same precedent as the v0.13 session. Restart them before
   trusting MCP answers against the new binary.
+
+### 2026-10-28 — questionnaire decisions and a retraction
+
+Q-1..Q-5 answered (§11). One of them exposed an error of mine: the question "what is actually
+stored in `concepts.content`?" showed that **P3b/DR-39's premise was false**. The `source` key the
+concept writers emit is `SourceType` (`types.rs:634-639`), an `impl`/`stub` enum — not body text.
+No concept writer stores program text at all, so there was never any duplication to trim.
+
+Consequences, now carried through both docs: the blob is the sole custodian of program text at
+every granularity; §2.5's 0% coverage means **no** recoverable text rather than a partial loss; the
+scan-cost objection to the P3 spine is void; P2 stays hash-based out of necessity, not preference.
+Retracted in place rather than deleted (§5 P3b, §8 DR-39, §0, H-7), because the merged analysis
+doc stated the error and four of this plan's conclusions followed from it.
+
+Also decided: DR-41 deferred until P0–P4 ship; DR-42 added (invert `open_synthetic_triples` to an
+inclusion list, as its own change before P3); `recorded_generations` lands locally on the
+`current_seq_anchor` precedent and is upstreamed opportunistically; both new ops get an MCP
+surface, which makes their report shapes contracts from release one and requires bounded defaults
+on `verify_history`.
+
+### 2026-10-28 — P1 baseline captured (Q-5), and one new hazard
+
+`tests/fixtures/temporal/verify_history_baseline.json` is the pre-analyze report on the self-host
+store: 6,442 generations in the window, 25 sampled, `ok=1`, `no_digest=8659`, byte coverage 0.01%,
+1 distinct digest, 485 distinct files with no digest. Committed as P1's regression baseline and its
+no-coverage test input, so the re-analyze can proceed without destroying the evidence.
+
+Two fixes to the prototype fell out of capturing it. `--offenders` capped only the human render, so
+the JSON report was ~570 KB of entity ids (useless as a fixture); it now caps both, the cap is
+recorded in the report as `offenders_per_outcome`, and `offender_distinct` carries the uncapped
+count so the render's "N distinct files" stays true. Two pre-existing ISC004 lint errors in
+`render` fixed in passing.
+
+**H-11, new and measured:** entity ids changed spelling mid-history. `{file}::module` ids are
+`.\core_indexer\…` up to 2026-10-03T22:03:05Z and `core_indexer/…` from 2026-10-03T22:02:56Z on.
+The 6,308 old-spelling concepts are correctly `retired=1`, so the present state is sound — but P2
+classifies by id, so a window straddling that date would report ~6.3k removals and ~6.3k additions
+for code that never changed. P2 must normalise ids or detect and report the condition.
