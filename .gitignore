@@ -30,6 +30,11 @@ dist/
 .codegraph/
 .codegraph/
 *.db
+# Siblings of the store file: the single-writer lock, and SQLite's WAL pair.
+# Spelled out rather than `*.lock`, which would swallow Cargo.lock and uv.lock.
+*.db.lock
+*.db-wal
+*.db-shm
 
 # Harness runtime (generated, never committed)
 .harness/spill/
