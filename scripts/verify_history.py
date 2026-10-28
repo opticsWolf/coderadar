@@ -84,6 +84,10 @@ SELECT entity_id, payload FROM (
       AND branch_id = :branch
       AND recorded_at <= :ts
       AND entity_id LIKE :suffix
+      -- LIKE is case-insensitive for ASCII in SQLite, so `%::module` also
+      -- matches `types.rs::Module` (a struct named Module, not a module).
+      -- GLOB is case-sensitive; LIKE stays for the index, GLOB narrows.
+      AND entity_id GLOB :glob
 ) WHERE rn = 1
 """
 
@@ -142,7 +146,12 @@ class Verifier:
         """
         rows = self._conn.execute(
             FOLD_SQL,
-            {"branch": self._branch, "ts": ts, "suffix": f"%{MODULE_SUFFIX}"},
+            {
+                "branch": self._branch,
+                "ts": ts,
+                "suffix": f"%{MODULE_SUFFIX}",
+                "glob": f"*{MODULE_SUFFIX}",
+            },
         )
         out: dict[str, str | None] = {}
         for entity_id, payload in rows:

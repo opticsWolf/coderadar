@@ -533,6 +533,7 @@ Traps found in today's code while planning. H-1 to H-3 are detailed in P3.
 | H-8 | Naive/offset timestamps accepted at the Python boundary, rejected by Macrame `normalize` | philosophy doc mismatch #4 | every new temporal op's argument handling |
 | H-9 | `content_hash` is xxHash64: 64-bit, non-cryptographic | `storage.rs:1815` | P2's contract (F-8) |
 | H-10 | Hot-only backup is pointers; bytes live in hot **or** cold | `store-and-retention.md` | operational, all phases |
+| H-12 | **`persist_edges` is non-atomic and fails silently.** `INSTANTIATES` is derived from `Function.resolved_calls`, a `Vec` with no dedup (`persistence.rs:316-345`), so a function constructing the same class twice emits two identical assertions sharing one `valid_from` — a UNIQUE violation on `links`. The `?` on each 200-row `assert_edges_bulk` aborts the run *after* earlier batches committed, and the caller only prints `[diag]` (`lib.rs:1022-1023`), so analyze exits 0 and the report says nothing. Measured: 53 affected functions and a partial edge write on the 2026-10-28 re-analyze | `persistence.rs:316`, `lib.rs:1022` | **every phase that reads edges**; P3's `HAD_CONTENT` inherits the same non-atomicity |
 | H-11 | **Entity ids changed spelling mid-history.** On the self-host store, `{file}::module` ids are `.\core_indexer\...` up to 2026-10-03T22:03:05Z and `core_indexer/...` from 2026-10-03T22:02:56Z on; the 6,308 old-spelling concepts are correctly `retired=1`, so nothing is wrong *now* — but a `changes_between` straddling that boundary classifies by id and reports ~6.3k removals plus ~6.3k additions for code that never changed | measured on `.coderadar/store/coderadar.db` | **P2**, and any future id-shape change |
 
 ---
@@ -734,3 +735,45 @@ count so the render's "N distinct files" stays true. Two pre-existing ISC004 lin
 The 6,308 old-spelling concepts are correctly `retired=1`, so the present state is sound — but P2
 classifies by id, so a window straddling that date would report ~6.3k removals and ~6.3k additions
 for code that never changed. P2 must normalise ids or detect and report the condition.
+
+### 2026-10-28 — full re-analyze run (Q-5), and a write-path defect it exposed
+
+`reindex --full` (which routes to `coderadar.analyze`, `ops.py:1650`) on the self-host store.
+**The blob write path works.** Report: 273 blobs stored, 3,240,623 bytes, 0 oversize, 1 excluded.
+`verify_history` on the new generation: 274 files, 273 `ok`, 1 `no_digest`, **99.6% coverage**, 272
+distinct digests resolved against disk with 0 unresolvable and 0 mismatches. Across the whole
+window coverage is 3.19%, because the 6,441 historical generations stay byte-less — as expected,
+and the reason P5 exists. Crosscheck now meaningful rather than trivially true (before, engine and
+replay both answered `None` everywhere): **20/20 agreement**.
+
+After-report committed beside the baseline as `verify_history_after_reanalyze.json`.
+
+The one remaining `no_digest` is correct by design: `core_indexer/src/scaffold/secrets.rs` matches
+the built-in `*secret*` pattern in `SECRET_BLOB_EXCLUDE_DEFAULTS` (`graph/config.rs:39-54`). Worth
+knowing that the secret guard is **name**-based, so a source file that merely *implements* secret
+detection is permanently unreconstructible, silently. Not a bug; a policy cost to state.
+
+Second prototype fix: SQLite `LIKE` is case-insensitive for ASCII, so the `%::module` filter also
+matched `types.rs::Module` — a struct named `Module`, counted as a module with no digest. The fold
+now adds a case-sensitive `GLOB`, which is what moved the new generation from 99.3% to 99.6%.
+
+**H-12, the real find.** The run printed `[diag] persist_edges failed: UNIQUE constraint failed:
+links.source_id, links.target_id, links.edge_type, links.valid_from, links.recorded_at,
+links.branch_id` — and still exited 0 with a clean JSON report. Traced to the end:
+
+- `INSTANTIATES` is derived from `Function.resolved_calls`, a `Vec`, with no dedup
+  (`persistence.rs:316-345`). A function constructing the same class twice emits two identical
+  assertions, and every assertion in a run shares one `valid_from`, so the pair collides on the
+  `links` UNIQUE key. Measured on this repo: **53 functions** with duplicate `Constructor` targets
+  (e.g. `CodeGraph.apply` constructs `CodeRadarError` and `MutationResult` more than once each).
+- Each 200-row `assert_edges_bulk` is flushed with `?`, so the abort leaves earlier batches
+  committed: a **partial** edge write, not a failed one. 2,619 link rows landed on 2026-10-28.
+  The loops before `INSTANTIATES` (CALLS, IMPORTS, EXTENDS, IMPLEMENTS, DECORATES) persisted;
+  `INSTANTIATES`, `REFERENCES` and `OVERRIDES` were partly or wholly lost.
+- The caller only prints `[diag]` (`lib.rs:1022-1023`), so nothing in the exit code or the report
+  says the store's edge state is incomplete.
+
+`resolved_refs` has the same Vec-without-dedup shape but no duplicates on this repo (0 functions),
+so it is a latent instance of the same defect. The fix is one dedup set covering every loop, which
+is also the guard future edge types need — and P3's `HAD_CONTENT` would inherit the non-atomicity
+as it stands.
