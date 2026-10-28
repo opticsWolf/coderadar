@@ -939,23 +939,21 @@ impl CodeGraphStore {
         runtime().block_on(self.db.blob_get(digest))
     }
 
-    /// Where one entity's bytes live at one timestamp (§3.0, DR-25).
-    ///
-    /// One `reconstruct(T)` over the ledger: the entity concept's content
-    /// JSON gives `file_path` + byte `span` + line range, the file's module
-    /// concept at T gives the `source_blob` digest from its extra. `None`
-    /// = not in the graph at T (never asserted, not yet, or retired) — the
-    /// same answer as `lookup_entity_at`, never an error. `digest=None` =
-    /// no blob recorded (pre-blob generation, excluded, oversize, or
-    /// disabled); `has_span=false` = synthetic (routes) with no source
-    /// bytes. Takes the id as given — spelling resolution is the caller's
-    /// (`Snapshot` resolves via `find` first).
-    pub fn entity_source_ref_at(
-        &self,
+    /// Ref for one entity out of an already-folded state: the single
+    /// implementation behind `entity_source_ref_at` and `source_refs_at`
+    /// (P0, DR-36). `timestamp` is only used in error text — the state is
+    /// already the fold at T. `None` = not in the graph at T (never
+    /// asserted, not yet, or retired) — the same answer as
+    /// `lookup_entity_at`, never an error. `digest=None` = no blob recorded
+    /// (pre-blob generation, excluded, oversize, or disabled);
+    /// `has_span=false` = synthetic (routes) with no source bytes. Takes
+    /// the id as given — spelling resolution is the caller's (`Snapshot`
+    /// resolves via `find` first).
+    fn source_ref_from_state(
+        state: &MaterializedState,
         entity_id: &str,
         timestamp: &str,
     ) -> macrame::Result<Option<SourceRef>> {
-        let state = self.reconstruct(timestamp)?;
         let concept = match state.concepts.get(entity_id) {
             Some(c) => c,
             None => return Ok(None),
@@ -1001,6 +999,44 @@ impl CodeGraphStore {
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
         }))
+    }
+
+    /// Batched refs for N entities at one timestamp (P0, DR-36): one
+    /// `reconstruct(T)` serves every id, turning a sweep from O(files ×
+    /// generations) folds into O(generations). Ids absent at T are absent
+    /// from the map — never `None` entries — so "not in the graph" stays
+    /// distinct from "in the graph without bytes" (INV-7). Returns the
+    /// map plus `predates_recorded_history`, mirroring `entities_at`. A
+    /// corrupt concept fails the whole batch, exactly as the single call
+    /// fails its one read: a sweep must surface corruption, not skip it.
+    pub fn source_refs_at(
+        &self,
+        entity_ids: &[String],
+        timestamp: &str,
+    ) -> macrame::Result<(HashMap<String, SourceRef>, bool)> {
+        let state = self.reconstruct(timestamp)?;
+        let mut refs = HashMap::with_capacity(entity_ids.len());
+        for entity_id in entity_ids {
+            if let Some(r) = Self::source_ref_from_state(&state, entity_id, timestamp)? {
+                refs.insert(entity_id.clone(), r);
+            }
+        }
+        Ok((refs, state.predates_recorded_history))
+    }
+
+    /// Where one entity's bytes live at one timestamp (§3.0, DR-25).
+    ///
+    /// One `reconstruct(T)` over the ledger, then `source_ref_from_state`
+    /// — the fold-per-call cost that P0's batched `source_refs_at` exists
+    /// to avoid. Same answers as `lookup_entity_at`: `None` is data, never
+    /// an error.
+    pub fn entity_source_ref_at(
+        &self,
+        entity_id: &str,
+        timestamp: &str,
+    ) -> macrame::Result<Option<SourceRef>> {
+        let state = self.reconstruct(timestamp)?;
+        Self::source_ref_from_state(&state, entity_id, timestamp)
     }
 
     /// One archive session at `cutoff` (§3.4, DR-25): moves blobs last-put
@@ -3980,6 +4016,83 @@ mod tests {
         assert_eq!(source_blob_of_extra(bad), None);
         // Not JSON at all.
         assert_eq!(source_blob_of_extra("not json"), None);
+    }
+
+    /// P0 (DR-36) fixture: a module with a blob digest plus one function
+    /// concept, both asserted now. Returns the store and a pre-history
+    /// timestamp (before the first recorded write) for the predates pin.
+    fn source_ref_store(dir: &std::path::Path) -> (CodeGraphStore, String) {
+        let store = CodeGraphStore::open(dir.join("refs.db")).unwrap();
+        let digest = "c".repeat(64);
+        let module_extra = format!(r#"{{"coderadar":{{"format":1,"source_blob":"{digest}"}}}}"#);
+        let now = now_iso8601();
+        let module = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .extra(module_extra)
+            .valid_from(now.clone())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        let func = macrame::ConceptUpsert::new("m.py::f", "m.py::f")
+            .content(
+                r#"{"kind":"function","name":"f","file_path":"m.py","span":{"start":0,"end":10}}"#,
+            )
+            .valid_from(now.clone())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[module, func]).unwrap(), 2);
+        // Stamp AFTER the write: `now` above predates the recording (the
+        // upsert lands later), and a sweep must query at-or-after it.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        (store, now_iso8601())
+    }
+
+    /// P0 (DR-36) anti-divergence pin: the batched path returns exactly
+    /// what N single calls return, for present, digest-less and absent ids.
+    #[test]
+    fn source_refs_at_matches_single_calls() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, now) = source_ref_store(dir.path());
+        let ids = vec![
+            "m.py::f".to_string(),
+            "m.py::module".to_string(),
+            "m.py::ghost".to_string(),
+        ];
+        let (batch, predates) = store.source_refs_at(&ids, &now).unwrap();
+        assert!(!predates);
+        // Absent at T: absent from the map, never a None entry.
+        assert_eq!(batch.len(), 2);
+        assert!(!batch.contains_key("m.py::ghost"));
+        for id in ["m.py::f", "m.py::module"] {
+            let single = store.entity_source_ref_at(id, &now).unwrap().unwrap();
+            let batched = &batch[id];
+            assert_eq!(batched.id, single.id);
+            assert_eq!(batched.file_path, single.file_path);
+            assert_eq!(batched.digest, single.digest);
+            assert_eq!(batched.digest.as_deref(), Some("c".repeat(64).as_str()));
+            assert_eq!(
+                (batched.span_start, batched.span_end),
+                (single.span_start, single.span_end)
+            );
+            assert_eq!(batched.has_span, single.has_span);
+            assert_eq!(batched.full_file, single.full_file);
+        }
+        // The function carries a span; the module concept has none.
+        assert!(batch["m.py::f"].has_span);
+        assert!(!batch["m.py::module"].has_span);
+        assert!(batch["m.py::module"].full_file);
+    }
+
+    /// P0 (DR-36): a pre-floor T reports `predates_recorded_history` with
+    /// an empty map — the sweep's stop condition, matching `entities_at`.
+    #[test]
+    fn source_refs_at_predates_history_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _now) = source_ref_store(dir.path());
+        let (batch, predates) = store
+            .source_refs_at(&["m.py::f".to_string()], "2000-01-01T00:00:00.000000Z")
+            .unwrap();
+        assert!(predates);
+        assert!(batch.is_empty());
     }
 
     /// §1.9 (DR-25): put round-trip + idempotent retry (the

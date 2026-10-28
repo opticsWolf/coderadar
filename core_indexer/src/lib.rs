@@ -73,6 +73,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(search_symbols, m)?)?;
     m.add_function(wrap_pyfunction!(blob_get, m)?)?;
     m.add_function(wrap_pyfunction!(entity_source_ref_at, m)?)?;
+    m.add_function(wrap_pyfunction!(source_refs_at, m)?)?;
     m.add_function(wrap_pyfunction!(archive, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -1886,6 +1887,24 @@ fn blob_get(py: Python<'_>, digest: &str) -> PyResult<PyObject> {
     }
 }
 
+/// Dict shape for one `SourceRef`: the ten keys `entity_source_ref_at`
+/// already emits, built in exactly one place (P0, DR-36) so the single
+/// and batched paths cannot diverge in shape.
+fn source_ref_to_dict(py: Python<'_>, r: &crate::storage::SourceRef) -> PyResult<PyObject> {
+    let d = PyDict::new(py);
+    d.set_item("id", &r.id)?;
+    d.set_item("file_path", &r.file_path)?;
+    d.set_item("digest", &r.digest)?;
+    d.set_item("span_start", r.span_start)?;
+    d.set_item("span_end", r.span_end)?;
+    d.set_item("has_span", r.has_span)?;
+    d.set_item("full_file", r.full_file)?;
+    d.set_item("start_line", r.start_line)?;
+    d.set_item("end_line", r.end_line)?;
+    d.set_item("handler_id", &r.handler_id)?;
+    Ok(d.into())
+}
+
 /// Where one entity's bytes live at one timestamp (§3.0, DR-25):
 /// `{id, file_path, digest | None, span_start, span_end, has_span,
 /// full_file, start_line, end_line, handler_id | None} | None`. `None` = not in the
@@ -1908,22 +1927,50 @@ fn entity_source_ref_at(py: Python<'_>, entity_id: &str, timestamp: &str) -> PyR
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{e:?}")))
     })?;
     match found {
-        Some(r) => {
-            let d = PyDict::new(py);
-            d.set_item("id", r.id)?;
-            d.set_item("file_path", r.file_path)?;
-            d.set_item("digest", r.digest)?;
-            d.set_item("span_start", r.span_start)?;
-            d.set_item("span_end", r.span_end)?;
-            d.set_item("has_span", r.has_span)?;
-            d.set_item("full_file", r.full_file)?;
-            d.set_item("start_line", r.start_line)?;
-            d.set_item("end_line", r.end_line)?;
-            d.set_item("handler_id", r.handler_id)?;
-            Ok(d.into())
-        }
+        Some(r) => source_ref_to_dict(py, &r),
         None => Ok(py.None()),
     }
+}
+
+/// Batched `entity_source_ref_at` (P0, DR-36): one `reconstruct` serves
+/// every id, so a sweep over files × generations costs one fold per generation
+/// instead of one per entity. Returns `{"refs": {id: ref_dict},
+/// "predates_recorded_history": bool}` — ids absent at T are absent from
+/// the map, never `None` entries. A garbage timestamp is a `ValueError`; a
+/// missing graph or store is a `RuntimeError`. No Python surface: P1's
+/// `verify_history` and P2's `changes_between` are the only callers.
+#[pyfunction]
+#[pyo3(signature = (entity_ids, timestamp))]
+fn source_refs_at(py: Python<'_>, entity_ids: Vec<String>, timestamp: &str) -> PyResult<PyObject> {
+    let ts = normalize_timestamp(timestamp)?;
+    // Same snapshot-then-release discipline as `entities_at`: a slow
+    // reconstruct must not hold the graph lock or block a writer.
+    let store = {
+        let guard = GLOBAL_GRAPH.read();
+        let graph = guard.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
+        })?;
+        graph.store.clone().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "No persistent store — temporal lookup needs a .coderadar store",
+            )
+        })?
+    };
+    let (refs, predates) = py
+        .allow_threads(|| store.source_refs_at(&entity_ids, &ts))
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "source_refs_at({ts:?}) failed: {e:?}"
+            ))
+        })?;
+    let by_id = PyDict::new(py);
+    for (id, r) in refs {
+        by_id.set_item(id, source_ref_to_dict(py, &r)?)?;
+    }
+    let out = PyDict::new(py);
+    out.set_item("refs", by_id)?;
+    out.set_item("predates_recorded_history", predates)?;
+    Ok(out.into())
 }
 
 /// One archive session at `cutoff` (§3.4, DR-25): `{links_archived,
