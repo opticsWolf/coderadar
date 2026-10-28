@@ -15,6 +15,7 @@ served root, the CLI through the directory it runs in.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from collections import deque
@@ -75,6 +76,7 @@ __all__ = [
     "traverse",
     "update_file",
     "update_signature",
+    "verify_history",
 ]
 
 #: Every shared operation, by its one name. The MCP tool is
@@ -85,6 +87,7 @@ __all__ = [
 OPERATIONS = (
     "explore", "node", "search", "affected", "resolve", "query",
     "search_similar", "search_hybrid", "compute_embeddings", "module_children", "as_of",
+    "verify_history",
     "traverse", "get_smells", "dead_code", "find_clones", "find_scaffolding",
     "replace_body", "update_signature", "rename", "create_entity",
     "reindex", "update_file", "status", "set_project",
@@ -1208,6 +1211,163 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
         "names": names,
         "entities": {name: found.get(name) for name in names},
         "predates_recorded_history": bool(batch.get("predates_recorded_history", False)),
+    }
+
+
+def _sample_generations(stamps: list[str], n: int) -> list[str]:
+    """`n` stamps spread evenly across `stamps`, both ends always included.
+
+    A reader will conclude coverage is uniform when it is a step function
+    (it is a step function on real stores), so a sample that drops an end
+    is a lie by omission. Port of the `verify_history` prototype's rule.
+    """
+    if n <= 0 or len(stamps) <= n:
+        return list(stamps)
+    if n == 1:
+        return [stamps[-1]]
+    step = (len(stamps) - 1) / (n - 1)
+    picked = {round(i * step) for i in range(n)} | {0, len(stamps) - 1}
+    return [stamps[i] for i in sorted(picked)]
+
+
+def verify_history(from_ts: str | None = None, to_ts: str | None = None,
+                   generations: int = 25, all: bool = False,
+                   branch: str = "main", offenders: int = 10,
+                   max_generations: int | None = None,
+                   *, graph: Any = None) -> dict:
+    """Per-generation byte coverage of the ledger (P1, DR-36).
+
+    For every sampled recorded generation: what fraction of the files the
+    ledger describes at T can actually have their bytes reconstructed.
+    Returns the prototype's report shape as the contract (see
+    `scripts/verify_history.py`): ``{"store", "root", "branch",
+    "window", "total_generations", "sampled", "offenders_per_outcome",
+    "generations": [{timestamp, modules, counts, offenders}], "totals",
+    "byte_coverage_pct", "distinct_digests", "offender_sample",
+    "offender_distinct"}``. One fetch-and-re-hash per *distinct* digest,
+    not per occurrence: the address is the identity.
+
+    Outcomes per (generation, module): ``ok`` (bytes resolve, SHA-256
+    matches), ``no_digest`` (described at T, no blob — skipped, excluded,
+    oversize, disabled, or a pre-blob generation), ``unresolvable`` (bytes
+    gone), ``digest_mismatch`` (corruption), ``digest_malformed`` (not 64
+    lowercase hex: invisible to the archive's reference scan, so the bytes
+    were reclaimable — a different incident from bytes gone missing).
+
+    `generations` samples evenly with both window ends always included;
+    `all` sweeps every generation in the window. `max_generations` caps the
+    sweep (the MCP tool passes one — a blind agent must not be handed a
+    6,442-fold bill; Q-4). A window with no recorded generations is an
+    `InvalidRequest`, as is a garbage stamp or an inverted window.
+    """
+    _require_index()
+    if generations is True or generations is False or not isinstance(generations, int) \
+            or generations < 1:
+        raise InvalidRequest(
+            f"generations must be a positive integer, got {generations!r}.")
+    if not isinstance(offenders, int) or isinstance(offenders, bool) or offenders < 0:
+        raise InvalidRequest(f"offenders must be a non-negative integer, got {offenders!r}.")
+    try:
+        from coderadar._core import module_concept_ids as _ever_ids
+        from coderadar._core import normalize_timestamp as _normalize_ts
+        from coderadar._core import recorded_generations as _generations
+        from coderadar._core import source_refs_at as _refs_at
+        lo = _normalize_ts(from_ts) if from_ts else None
+        hi = _normalize_ts(to_ts) if to_ts else None
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    if lo is not None and hi is not None and lo > hi:
+        raise InvalidRequest(
+            f"empty window: from {from_ts!r} sorts after to {to_ts!r} once normalized.")
+    try:
+        stamps = _generations(lo, hi, branch)
+        ever = _ever_ids(branch)
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    if not stamps:
+        raise InvalidRequest(
+            "no recorded generations in that window"
+            + (f" for branch {branch!r}" if branch != "main" else "")
+            + "; the ledger has nothing to verify there.")
+    picked = list(stamps) if all else _sample_generations(stamps, generations)
+    if max_generations is not None and len(picked) > max_generations:
+        raise InvalidRequest(
+            f"{len(picked)} generations exceed max_generations={max_generations}; "
+            "sample with a smaller generations count or a narrower window.")
+    g = graph or _graph()
+    root = getattr(g, "_root", None) or os.getcwd()
+    db_path = getattr(g, "_db_path", None) or ".coderadar/store/coderadar.db"
+    db = Path(db_path)
+    store = str((Path(root) / db).resolve() if not db.is_absolute() else db.resolve())
+    verdicts: dict[str, str] = {}
+
+    def check_digest(digest: str) -> str:
+        cached = verdicts.get(digest)
+        if cached is not None:
+            return cached
+        try:
+            raw = blob_get(digest)
+        except InvalidRequest:
+            verdict = "digest_malformed"
+        else:
+            if raw is None:
+                verdict = "unresolvable"
+            elif hashlib.sha256(raw).hexdigest() != digest:
+                verdict = "digest_mismatch"
+            else:
+                verdict = "ok"
+        verdicts[digest] = verdict
+        return verdict
+
+    gens = []
+    offender_all: dict[str, set[str]] = {}
+    for ts in picked:
+        try:
+            batch = _refs_at(ever, ts)
+        except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+            raise EngineError(str(e)) from None
+        described = {
+            entity_id: ref.get("digest") or None
+            for entity_id, ref in batch["refs"].items()
+        }
+        counts: dict[str, int] = {}
+        full: dict[str, list[str]] = {}
+        for entity_id, digest in described.items():
+            outcome = "no_digest" if not digest else check_digest(digest)
+            counts[outcome] = counts.get(outcome, 0) + 1
+            if outcome != "ok":
+                full.setdefault(outcome, []).append(entity_id)
+                offender_all.setdefault(outcome, set()).add(entity_id)
+        # The counts above come from the full lists first; the cap below
+        # never changes a number — only how many examples travel with it.
+        gens.append({
+            "timestamp": ts,
+            "modules": len(described),
+            "counts": counts,
+            "offenders": {k: v[:offenders] for k, v in full.items()},
+        })
+    totals: dict[str, int] = {}
+    for gen in gens:
+        for outcome, n in gen["counts"].items():
+            totals[outcome] = totals.get(outcome, 0) + n
+    covered = totals.get("ok", 0)
+    total_files = sum(totals.values())
+    return {
+        "store": store,
+        "root": str(Path(root).resolve()),
+        "branch": branch,
+        "window": [stamps[0], stamps[-1]],
+        "total_generations": len(stamps),
+        "sampled": len(picked),
+        "offenders_per_outcome": offenders,
+        "generations": gens,
+        "totals": totals,
+        "byte_coverage_pct": round(covered / total_files * 100, 2) if total_files else 0.0,
+        "distinct_digests": len(verdicts),
+        "offender_sample": {k: sorted(v)[:offenders] for k, v in offender_all.items()},
+        "offender_distinct": {k: len(v) for k, v in offender_all.items()},
     }
 
 

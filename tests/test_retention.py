@@ -223,3 +223,17 @@ class TestBackup:
         _b_v1, _ = digests[("b.py::beta", "v1")]
         assert ops.blob_get(_b_v1) == B, "hot bytes must still resolve"
         assert g.as_of(t1).read_bytes("b.py::beta") == B[:-2]
+
+
+class TestVerifyHistoryAcrossArchive:
+    def test_coverage_unchanged_by_archive(self, generations):
+        _g, _t0, _t1, _digests = generations
+        before = ops.verify_history(all=True)
+        assert before["totals"] == {"ok": 4}
+        ops.archive(FUTURE)
+        after = ops.verify_history(all=True)
+        # Cold-archived blobs resolve transparently, so the sweep cannot
+        # tell the session happened: same totals, no unresolvable.
+        assert after["totals"] == before["totals"]
+        assert after["totals"].get("unresolvable", 0) == 0
+        assert after["byte_coverage_pct"] == 100.0

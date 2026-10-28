@@ -820,6 +820,61 @@ def as_of(result: dict, *,
     return "\n".join(lines)
 
 
+def verify_history(result: dict, *, offenders: int = 10) -> str:
+    """Per-generation byte coverage as legible text (P1, DR-36).
+
+    The table shape is the prototype's (`scripts/verify_history.py`): one
+    row per generation, file-generation totals, coverage, and the capped
+    offender sample beside its exact distinct count.
+    """
+    def coverage(counts: dict) -> float:
+        total = sum(counts.values())
+        return (counts.get("ok", 0) / total * 100.0) if total else 0.0
+
+    out = [
+        f"store            {result['store']}  (branch {result['branch']})",
+        f"window           {result['window'][0]} .. {result['window'][1]}",
+        (
+            f"generations      {result['sampled']} sampled of "
+            f"{result['total_generations']}"
+        ),
+        "",
+        (
+            f"{'generation':28} {'files':>6} {'ok':>6} {'no_digest':>10} "
+            f"{'unresolv':>9} {'mismatch':>9} {'cov%':>7}"
+        ),
+    ]
+    for gen in result["generations"]:
+        c = gen["counts"]
+        out.append(
+            f"{gen['timestamp'][:28]:28} {gen['modules']:>6} {c.get('ok', 0):>6} "
+            f"{c.get('no_digest', 0):>10} {c.get('unresolvable', 0):>9} "
+            f"{c.get('digest_mismatch', 0):>9} {coverage(c):>6.1f}%"
+        )
+    t = result["totals"]
+    out += [
+        "",
+        (
+            f"totals (file-generations)  ok={t.get('ok', 0)}  "
+            f"no_digest={t.get('no_digest', 0)}  "
+            f"unresolvable={t.get('unresolvable', 0)}  "
+            f"mismatch={t.get('digest_mismatch', 0)}  "
+            f"malformed={t.get('digest_malformed', 0)}"
+        ),
+        f"byte coverage              {result['byte_coverage_pct']:.1f}%",
+        f"distinct digests checked   {result['distinct_digests']}",
+    ]
+    if offenders:
+        for outcome, paths in sorted(result["offender_sample"].items()):
+            total = result["offender_distinct"][outcome]
+            shown = paths[:offenders]
+            out.append(f"\n{outcome} ({total} distinct files):")
+            out += [f"  {p}" for p in shown]
+            if total > len(shown):
+                out.append(f"  ... and {total - len(shown)} more")
+    return "\n".join(out)
+
+
 # ── Edits ─────────────────────────────────────────────────────────────────
 
 def edit(outcome: dict, apply_hint: str = "call again with `dry_run=False`") -> str:

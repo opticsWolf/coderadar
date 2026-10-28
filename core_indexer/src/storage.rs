@@ -1620,6 +1620,91 @@ impl CodeGraphStore {
             .unwrap_or(0);
         Ok(anchor)
     }
+
+    /// Every recorded generation in a window, oldest first (P1, DR-36).
+    ///
+    /// A listing, not a fold: one indexed `DISTINCT recorded_at` probe on
+    /// the `current_seq_anchor` precedent (folding to read scalars costs
+    /// seconds on a large log). `recorded_at` is when the ledger was told,
+    /// so one stamp is one act of indexing, not one commit of history.
+    /// Branch-scoped: the ledger holds every branch and a sweep must not
+    /// mix their stamps.
+    ///
+    /// Schema dependency (Q-3): this names the `transaction_log` columns
+    /// directly. It breaks loudly — a renamed column fails the query —
+    /// rather than returning a plausible wrong answer, which is why the
+    /// coupling is acceptable until it is upstreamed into Macrame.
+    pub fn recorded_generations(
+        &self,
+        from: Option<&str>,
+        to: Option<&str>,
+        branch: &str,
+    ) -> macrame::Result<Vec<String>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        let mut sql =
+            "SELECT DISTINCT recorded_at FROM transaction_log WHERE branch_id = ?1".to_string();
+        // Params are positional (?1 is branch); window bounds append in
+        // order so the numbering stays obvious.
+        let mut params: Vec<String> = vec![branch.to_string()];
+        if let Some(lo) = from {
+            sql.push_str(&format!(" AND recorded_at >= ?{}", params.len() + 1));
+            params.push(lo.to_string());
+        }
+        if let Some(hi) = to {
+            sql.push_str(&format!(" AND recorded_at <= ?{}", params.len() + 1));
+            params.push(hi.to_string());
+        }
+        sql.push_str(" ORDER BY recorded_at");
+        let libsql_params: Vec<libsql::Value> =
+            params.into_iter().map(libsql::Value::Text).collect();
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(&sql, libsql_params)
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok(out)
+        })
+    }
+
+    /// Ids of every module concept the ledger ever described on a branch
+    /// (P1, DR-36): the input universe for a per-generation sweep.
+    ///
+    /// EVER, not live: a `retired = 0` filter would drop every module that
+    /// no longer exists, and the sweep must still visit the generations
+    /// where it did. The per-generation `source_refs_at` batch then filters
+    /// this universe to present-at-T (absent ids are omitted, never `None`),
+    /// so retired and not-yet-asserted ids cost nothing but list membership.
+    /// Both id spellings are included (H-11: `{file}::module` changed
+    /// spelling mid-history); each generation's batch returns only the
+    /// spelling live at that T, so no generation double-counts.
+    /// The `LIKE`/`GLOB` pair is the prototype's (`scripts/verify_history.py`):
+    /// `LIKE` for the index, `GLOB` because SQLite `LIKE` is
+    /// case-insensitive for ASCII and would also match a struct named
+    /// `Module`.
+    pub fn module_concept_ids(&self, branch: &str) -> macrame::Result<Vec<String>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT DISTINCT entity_id FROM transaction_log \
+                     WHERE table_name = 'concepts' AND branch_id = ?1 \
+                     AND entity_id LIKE '%::module' AND entity_id GLOB '*::module' \
+                     ORDER BY entity_id",
+                    libsql::params![branch],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok(out)
+        })
+    }
 }
 
 // ── Source-blob write path (§1.9, DR-25/DR-30) ────────────────────────────
@@ -4126,6 +4211,70 @@ mod tests {
             .unwrap();
         assert!(predates);
         assert!(batch.is_empty());
+    }
+
+    /// P1 (DR-36) fixture: two recorded acts. The first asserts module
+    /// `m.py`; the second retires it and asserts `n.py`. Returns the store
+    /// plus the valid-from stamp of the second act and a post-write stamp.
+    fn generations_store(dir: &std::path::Path) -> (CodeGraphStore, String, String) {
+        let store = CodeGraphStore::open(dir.join("gens.db")).unwrap();
+        let digest = "d".repeat(64);
+        let m_extra = format!(r#"{{"coderadar":{{"format":1,"source_blob":"{digest}"}}}}"#);
+        let m_v1 = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .extra(m_extra)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[m_v1]).unwrap(), 1);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let s1 = now_iso8601();
+        let m_v2 = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(s1.clone())
+            .valid_to(TS_OPEN.to_string())
+            .retired(true);
+        let n_v1 = macrame::ConceptUpsert::new("n.py::module", "n.py::module")
+            .content(r#"{"kind":"module","name":"n.py","file_path":"n.py"}"#)
+            .valid_from(s1.clone())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[m_v2, n_v1]).unwrap(), 2);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        (store, s1, now_iso8601())
+    }
+
+    /// P1 (DR-36): the listing is one stamp per recorded act, oldest
+    /// first, and the window bounds narrow it.
+    #[test]
+    fn recorded_generations_lists_windowed_stamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _s1, _s2) = generations_store(dir.path());
+        let all = store.recorded_generations(None, None, "main").unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all[0] < all[1]);
+        let tail = store
+            .recorded_generations(Some(&all[1]), None, "main")
+            .unwrap();
+        assert_eq!(tail, vec![all[1].clone()]);
+    }
+
+    /// P1 (DR-36): ever-ids, not live ones — the retired `m.py::module`
+    /// is in the universe the sweep iterates.
+    #[test]
+    fn module_concept_ids_includes_retired() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _s1, _s2) = generations_store(dir.path());
+        let mut ids = store.module_concept_ids("main").unwrap();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec!["m.py::module".to_string(), "n.py::module".to_string()]
+        );
+        // And the live-only view disagrees, which is why the sweep must
+        // not use it.
+        let live = store.live_concept_ids().unwrap();
+        assert!(!live.contains(&"m.py::module".to_string()));
     }
 
     /// §1.9 (DR-25): put round-trip + idempotent retry (the

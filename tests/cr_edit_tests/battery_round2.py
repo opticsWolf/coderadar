@@ -330,8 +330,8 @@ try:
     names = []
     if tools_r and "result" in tools_r:
         names = [t.get("name", "") for t in tools_r["result"].get("tools", [])]
-    check(SEC, "mcp-tools-list-27", len(names) == 27, f"got {len(names)}: {names[:5]}")
-    ok22 = len(names) == 27
+    check(SEC, "mcp-tools-list-28", len(names) == 28, f"got {len(names)}: {names[:5]}")
+    ok22 = len(names) == 28
     if ok22:
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
               "params": {"name": "coderadar_search", "arguments": {"query": "combine", "top_k": 3}}})

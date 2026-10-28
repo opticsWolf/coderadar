@@ -1,6 +1,14 @@
 #!/usr/bin/env python
 """Prototype of `verify_history` (docs/temporal-code-reconstruction.md §6).
 
+**Shipped as `coderadar.ops.verify_history` (P1, DR-36): the engine now
+provides `recorded_generations` + `module_concept_ids` + `source_refs_at`,
+and the Python side is a loop over generations with one fold each — the
+log replay below is redundant for production use.** This script stays as
+the independent check on the op (two implementations, one of which is
+allowed to be wrong, is a test; two shipped ones is F-6) and as the
+fixture generator for `tests/fixtures/temporal/`.
+
 Answers one question per recorded generation: **what fraction of the files
 the ledger describes at T can actually have their bytes reconstructed?**
 

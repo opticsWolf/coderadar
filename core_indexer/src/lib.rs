@@ -75,6 +75,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(blob_get, m)?)?;
     m.add_function(wrap_pyfunction!(entity_source_ref_at, m)?)?;
     m.add_function(wrap_pyfunction!(source_refs_at, m)?)?;
+    m.add_function(wrap_pyfunction!(recorded_generations, m)?)?;
+    m.add_function(wrap_pyfunction!(module_concept_ids, m)?)?;
     m.add_function(wrap_pyfunction!(archive, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -1998,6 +2000,66 @@ fn source_refs_at(py: Python<'_>, entity_ids: Vec<String>, timestamp: &str) -> P
     out.set_item("refs", by_id)?;
     out.set_item("predates_recorded_history", predates)?;
     Ok(out.into())
+}
+
+/// Snapshot the store behind `GLOBAL_GRAPH` for a diagnostic-conn read.
+///
+/// The P1 listings (`recorded_generations`, `module_concept_ids`) run their
+/// own SQL through `open_diagnostic_conn`, so they need the store handle
+/// but must not hold the graph lock while the query runs.
+fn snapshot_store() -> PyResult<std::sync::Arc<crate::storage::CodeGraphStore>> {
+    let guard = GLOBAL_GRAPH.read();
+    let graph = guard.as_ref().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
+    })?;
+    graph.store.clone().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err(
+            "No persistent store — temporal reads need a .coderadar store",
+        )
+    })
+}
+
+/// Every recorded generation in a window, oldest first (P1, DR-36).
+///
+/// `from`/`to` are Macrame-canonical UTC stamps or `None` for open ends;
+/// garbage is a `ValueError` via `normalize_timestamp`, a missing graph or
+/// store a `RuntimeError`. Pure listing, no fold — safe to call in a sweep.
+#[pyfunction]
+#[pyo3(signature = (from, to, branch))]
+fn recorded_generations(
+    py: Python<'_>,
+    from: Option<String>,
+    to: Option<String>,
+    branch: &str,
+) -> PyResult<Vec<String>> {
+    let lo = from.map(|s| normalize_timestamp(&s)).transpose()?;
+    let hi = to.map(|s| normalize_timestamp(&s)).transpose()?;
+    let store = snapshot_store()?;
+    py.allow_threads(|| {
+        store
+            .recorded_generations(lo.as_deref(), hi.as_deref(), branch)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "recorded_generations({lo:?}..{hi:?}, {branch:?}) failed: {e:?}"
+                ))
+            })
+    })
+}
+
+/// Ids of every module concept the ledger ever described on `branch`
+/// (P1, DR-36): the input universe for a per-generation sweep. See
+/// `CodeGraphStore::module_concept_ids` for why ever-ids, not live ones.
+#[pyfunction]
+#[pyo3(signature = (branch,))]
+fn module_concept_ids(py: Python<'_>, branch: &str) -> PyResult<Vec<String>> {
+    let store = snapshot_store()?;
+    py.allow_threads(|| {
+        store.module_concept_ids(branch).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "module_concept_ids({branch:?}) failed: {e:?}"
+            ))
+        })
+    })
 }
 
 /// One archive session at `cutoff` (§3.4, DR-25): `{links_archived,

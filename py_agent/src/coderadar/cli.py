@@ -604,6 +604,30 @@ def as_of(timestamp: str, symbols: tuple, query_text: str, fmt: str):
             query="`coderadar query`", search="`coderadar search`"))
 
 
+@main.command(name="verify-history")
+@click.option("--from", "from_ts", default=None,
+              help="Window start (ISO 8601 UTC). Omit for the first generation.")
+@click.option("--to", "to_ts", default=None,
+              help="Window end (ISO 8601 UTC). Omit for the last generation.")
+@click.option("--generations", default=25, show_default=True, type=int,
+              help="How many generations to sample (both window ends always included).")
+@click.option("--all", "all_generations", is_flag=True,
+              help="Sweep every generation in the window instead of sampling.")
+@click.option("--branch", default="main", show_default=True,
+              help="Ledger branch to verify.")
+@click.option("--offenders", default=10, show_default=True, type=int,
+              help="Offending ids to list per outcome (0 hides the list).")
+@_format_option
+def verify_history(from_ts: str | None, to_ts: str | None, generations: int,
+                   all_generations: bool, branch: str, offenders: int, fmt: str):
+    """Report per-generation byte coverage (MCP coderadar_verify_history)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.verify_history(
+            from_ts, to_ts, generations, all_generations, branch, offenders),
+        lambda result: render.verify_history(result, offenders=offenders))
+
+
 @main.command()
 @click.argument("entity_id")
 @click.option("--direction", default="both", show_default=True,

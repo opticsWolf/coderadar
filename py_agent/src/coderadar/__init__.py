@@ -685,6 +685,26 @@ class CodeGraph:
         from . import ops
         return ops.search_hybrid(query, top_k)
 
+    @_bound_to_loaded_project
+    def verify_history(
+        self, from_ts: str | None = None, to_ts: str | None = None,
+        generations: int = 25, all_generations: bool = False,
+        branch: str = "main", offenders: int = 10,
+        max_generations: int | None = None,
+    ) -> dict[str, Any]:
+        """Per-generation byte coverage (MCP ``coderadar_verify_history``).
+
+        What fraction of the files the ledger describes at each recorded
+        generation can actually have their bytes reconstructed. Sampling
+        is on by default (`generations`, both window ends always
+        included); `all_generations` sweeps the whole window.
+        """
+        from . import ops
+        return ops.verify_history(
+            from_ts, to_ts, generations, all_generations, branch,
+            offenders, max_generations, graph=self,
+        )
+
     def compute_embeddings(self, model_name: str | None = None,
                            batch_size: int = 32,
                            recompute: bool = False) -> dict[str, int]:

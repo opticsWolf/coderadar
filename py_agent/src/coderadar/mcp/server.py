@@ -57,6 +57,7 @@ Need more? Call it again with more specific names.
 - `coderadar_traverse` — any edge kind, upstream or downstream
 - `coderadar_query` — structured queries, e.g. `functions where caller_count == 0` (full reference: resource `docs://query-language`)
 - `coderadar_as_of` — the graph at a past timestamp
+- `coderadar_verify_history` — per-generation byte coverage: whether the past can be reconstructed
 - `coderadar_resolve` — framework references: routes (`/users/:id`), `*Model` / `*View` names
 - `coderadar_get_smells`, `coderadar_dead_code`, `coderadar_find_clones`, `coderadar_find_scaffolding` — quality findings. Dead code is ranked evidence, not proof: check `coderadar_affected` before deleting.
 - `coderadar_diagnose` — graph self-health (unresolved targets, ambiguous bases); empty reads as clean.
@@ -132,7 +133,7 @@ def create_server(graph: Any) -> MCPServer:
     )
 
     # Agent-facing documents that ship in the wheel. Resources (not tools)
-    # keep the 26-tool surface intact while letting an MCP-only host read the
+    # keep the 28-tool surface intact while letting an MCP-only host read the
     # skill packs and the query-language reference without a repo checkout.
     @mcp.resource(
         "skills://coderadar-mcp",
@@ -584,6 +585,44 @@ def create_server(graph: Any) -> MCPServer:
             return mismatch
 
         return _as_of(graph, timestamp, query, symbols or [])
+
+    # ── coderadar_verify_history — per-generation byte coverage ──
+
+    @mcp.tool(
+        description=(
+            "Per-generation byte coverage of the code ledger: what fraction "
+            "of the files described at each recorded generation can actually "
+            "have their bytes reconstructed. Use it to ask whether history "
+            "can be trusted — before quoting a past version of the code, "
+            "verify the bytes are there. Sampling is on by default (25 "
+            "generations, both window ends always included); the scan is "
+            "capped, so pass all_generations=true only for a small window."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": True,
+        },
+    )
+    def coderadar_verify_history(
+        from_ts: str | None = None,
+        to_ts: str | None = None,
+        generations: int = 25,
+        all_generations: bool = False,
+        branch: str = "main",
+        offenders: int = 10,
+        project_path: str | None = None,
+    ) -> str:
+        """Byte coverage per recorded generation."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _verify_history(
+            graph, from_ts, to_ts, generations, all_generations,
+            branch, offenders,
+        )
 
     # ── coderadar_traverse — edge traversal ──────────────────────────
 
@@ -1511,6 +1550,21 @@ def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
     except ops.OpError as e:
         return _op_message(e)
     return render.as_of(result)
+
+
+def _verify_history(graph: Any, from_ts: str | None, to_ts: str | None,
+                    generations: int, all_generations: bool,
+                    branch: str, offenders: int) -> str:
+    """Per-generation byte coverage, scan-capped for blind callers (Q-4)."""
+    try:
+        result = ops.verify_history(
+            from_ts, to_ts, generations, all_generations, branch, offenders,
+            max_generations=200, graph=graph)
+    except ops.EngineError as e:
+        return f"History verification failed: {e}"
+    except ops.OpError as e:
+        return _op_message(e, failed="History verification")
+    return render.verify_history(result, offenders=offenders)
 
 
 def _traverse(

@@ -6,7 +6,7 @@ description: Use CodeRadar's MCP tools (coderadar_*) for codebase intelligence o
 # CodeRadar MCP
 
 CodeRadar is a local-first semantic code graph (tree-sitter + Macrame
-ledger + FTS5 + embeddings). Twenty-seven `coderadar_*` tools answer
+ledger + FTS5 + embeddings). Twenty-eight `coderadar_*` tools answer
 structural questions in one round-trip: what calls this, what breaks if
 this changes, what did this look like at time T, where are the smells.
 
@@ -53,6 +53,7 @@ this changes, what did this look like at time T, where are the smells.
 | `coderadar_get_smells` / `coderadar_dead_code` | smells / entry-point-aware dead code |
 | `coderadar_find_clones` / `coderadar_find_scaffolding` | clones / scaffolding |
 | `coderadar_as_of` | names+entities at timestamp T |
+| `coderadar_verify_history` | per-generation byte coverage (can the past be reconstructed) |
 | `coderadar_module_children` | a module's contents |
 | `coderadar_reindex` (`full`) / `coderadar_update_file` | refresh; full walk only on demand |
 | `coderadar_status` / `coderadar_set_project` | freshness + root switching |
@@ -81,6 +82,7 @@ coderadar_callees(entity_id)                      # 1 hop downstream
 coderadar_affected(entity_id, max_depth=5)        # transitive blast radius
 coderadar_resolve(name, limit=5)                  # '/users/:id', '*Model', '*View'
 coderadar_as_of(timestamp, query="", symbols=[])  # names at T, not bytes at T
+coderadar_verify_history(from_ts=None, to_ts=None, generations=25)  # trust in history
 coderadar_module_children(module_id)              # '{file_path}::module'
 coderadar_diagnose(unresolved=True, low_confidence=True)
 coderadar_status()
@@ -162,7 +164,8 @@ retained `recovery_path` values, recover manually, then resync.
 - Pre-blob generations have graph but no bytes — that is the honest
   answer, not a failure to retry.
 - History questions: `coderadar_as_of` for names, then byte reads at T.
-  There is no temporal query execution.
+  There is no temporal query execution. `coderadar_verify_history` says
+  whether those bytes exist at all — ask it before quoting a past version.
 - Mutations are dry-run by default: review the diff, then apply with
   `dry_run=false`. `recompute=true` on `coderadar_compute_embeddings`
   clears and regenerates (required for a model switch).
