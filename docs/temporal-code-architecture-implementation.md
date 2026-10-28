@@ -817,9 +817,12 @@ Gates: `cargo fmt --check` clean, `clippy --all-targets -D warnings` clean, Rust
 the aborted one had left out, and all seven structural types are now open in the store:
 CALLS 8998, IMPORTS 1046, INSTANTIATES 576, OVERRIDES 138, REFERENCES 96, EXTENDS 77, DECORATES 77.
 
-One caveat on this session: `maturin develop` could not replace the repo's `_core.pyd` — two
-`coderadar mcp serve` processes hold it (the precedent noted above), and stopping them was not
-permitted here. The Python tests and the re-analyze therefore ran against the freshly built
-`core_indexer.dll` staged on `PYTHONPATH`, which is the same artifact `develop` would have
-installed. **The repo's installed extension is still the old binary** until those servers are
-restarted and `maturin develop` is re-run.
+**Installed and re-verified (same day).** The first pass could not replace the repo's `_core.pyd` —
+`coderadar mcp serve` held it, the precedent noted above — so the tests and the re-analyze ran
+against the freshly built `core_indexer.dll` staged on `PYTHONPATH`. The servers have since been
+stopped and `maturin develop` run, and everything was re-run against the **installed** extension
+with no staging: `coderadar.edge_persist_error()` resolves through `_core` and answers `None`;
+related suites 35 passed; **full Python suite 1,160 passed** (excluding `tests/precision` and
+`tests/cr_edit_tests`); `reindex --full` renders a clean report with no warning block and nothing on
+stderr. Three `mcp serve` processes were killed to get there (one parent, two children) — restart
+them if they are wanted.
