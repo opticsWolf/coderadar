@@ -134,11 +134,13 @@ class TestSpineContract:
         # P2's ever-universe must never list ledger infrastructure:
         # `all_concept_ids` excludes `content_version` by kind (the
         # live-ids exclusion is pinned at the Rust level, where the
-        # sweeps consume it).
+        # sweeps consume it) — and the visible union P4's sweeps use
+        # excludes both kinds the same way.
         _rewrite_then_update(spine_project, V2)
-        from coderadar._core import all_concept_ids
+        from coderadar._core import all_concept_ids, visible_all_concept_ids
         assert all_concept_ids("main")
         assert not [i for i in all_concept_ids("main") if "@" in i]
+        assert not [i for i in visible_all_concept_ids("main") if "@" in i]
 
     def test_v1_downgrade_heals_spine_rows(self, spine_project):
         # The upgrade regression (cf. test_ensure_graph_falls_back_to_

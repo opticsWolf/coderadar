@@ -483,6 +483,54 @@ lineage-independent.
 **Done when.** Two lineages with different content for one path each read their own bytes, off one
 shared blob table.
 
+**As built (DR-40 closed 2026-10-28) — the pointer is a concept, not an edge.**
+The plan assumed Macrame resolves concepts by lineage; it does not (D-260:
+the schema forbids two lineages holding one id, so there is nothing to
+resolve — D-225, overlay deferred as D-214). The first implementation used
+a `HAS_CONTENT` pointer edge (edges ARE lineage-resolved) and the suite
+killed it on retention evidence: link log rows are terminal — a closed row
+is latest-for-its-entity forever and never archives — so every superseded
+branch version would pin its blob hot forever, the P3 failure returning
+through the back door (one archive session moved the rows and still
+reported `blobs_archived: 0`). The as-built pointer is a branch-minted
+concept, id `branch:{branch}:content:{path}` (stable per lineage+path, so
+every re-point is same-id turnover and the archive reclaims superseded
+bytes exactly like superseded module content — proven: supersede +
+archive goes cold in ONE session). Consequences:
+
+- **Read is a direct map lookup**, not a scan: the folded state's
+  `branch:{branch}:content:{path}` row wins when the reader's ancestry
+  holds it, else the module concept (trunk-frozen fallback). No edge
+  kind was added; `retire_stale_edges`, the DR-42 hook, and the
+  single-open guard are untouched — pointers are not edges at all.
+- **The row names its blob in content AND extra** (the read boundary is
+  `source_blob_of_extra`, mirrored from modules) and carries NO
+  `file_path` anywhere (H-1: a sweep matching it would retire live
+  branch views). The id sits outside every file range (`{path}::`,
+  `{path}@`); the kind is excluded from `live_concept_ids`,
+  `all_concept_ids`, and the cold-start classifier beside
+  `content_version`.
+- **`write_branch_content` is two commits** (blob put, then spine +
+  pointer in one bulk) — the P3 one-flush ethos applied to branch
+  writes. The gate gives idempotence free (same bytes → same row →
+  skip).
+- **Sweeps see inheritance**: `visible_module_concept_ids` /
+  `visible_all_concept_ids` union the ancestry (what P1's/P2's sweeps
+  run on a branch); the strict single-branch listings keep their
+  minted-where contract. Unknown branches refuse at the ancestry lookup
+  — never trunk-fallback.
+- **Branch reads are full-file by construction** (`full_file = true`,
+  `has_span = false`): spans belong to the lineage that wrote them.
+- **Read surface is ops + CodeGraph + Snapshot only** (`branch=` on
+  `as_of`/`Snapshot`/`verify_history`/`changes_between`, `ops.branches()`,
+  `_core` `fork_branch`/`write_branch_content` instruments P5 will
+  drive). No CLI, no MCP, no OPERATIONS entry — spec-conformant parity
+  (29 tools pinned).
+- **`history_of` is untouched**: the spine stays one branch-agnostic
+  content-addressed chain (every content the file ever had, on any
+  lineage). P5 owns branch write paths (new-file module concepts,
+  branch-scoped sweep rules, deletion semantics).
+
 ---
 
 ### P5 — Commit-driven ingestion  (DR-41)
@@ -578,7 +626,7 @@ before it counts as closed, per the v0.12 release-gate convention.
 | DR-37 | `changes_between` over `extra.coderadar.content_hash`; hashes detect, bytes prove | P2 closed (`92aafcb` on `dev` 2026-10-28) |
 | DR-38 | `content_version` spine, concepts-only (no `HAD_CONTENT` edge — retention evidence); timeless `{path}@{digest}`, digest-free payloads, derived intervals/parents | P3 closed (as-built below; on `dev` 2026-10-28) |
 | DR-39 | ~~`content.source` duplication: lean on it or trim it~~ | **withdrawn** 2026-10-28 — premise false, there is no duplication (P3b) |
-| DR-40 | Branch-aware reads: lineage resolves the reference, bytes stay branch-global | proposed (P4) |
+| DR-40 | Branch-aware reads: lineage resolves the reference, bytes stay branch-global | P4 closed (as-built below; on `dev` 2026-10-28) |
 | DR-41 | Commit-driven ingestion; per-store stamping mode; migration path | **deferred** 2026-10-28 until P0–P4 ship (Q-1) |
 | DR-42 | `open_synthetic_triples` inverted to an explicit inclusion list of framework edge types, as its own change before P3 | DR-42 closed (`600d689` on `dev` 2026-10-28) |
 
@@ -943,3 +991,32 @@ What shipped: `spine_concept_upsert` (timeless `{path}@{digest}`, title = path, 
 The failure chain that designed it (each layer verified, none assumed): edge-based spine → 13 retention failures (`blobs_archived` 0) → payload dumps prove `extra` is logged → concepts-only pivot with digest-free payloads → 6 generation-count failures (`recorded_generations` counts commits, spine bulk minted its own) → single-commit merge → 1 v1-upgrade failure (digest pre-skip blind to metadata) → always-emit + gate fallback → full green. Full gates at landing: Rust lib 506 passed + 1 ignored, Python 1214 passed + 1 skipped (`tests/`, `cr_edit_tests` excluded — battery legs stay manual except the CI dogfood job), `cargo fmt --check` / `clippy --all-targets -D warnings` / `ruff` clean, `_core` rebuilt after killing one stale `coderadar.exe mcp serve` holder (PID 30556, standing permission).
 
 Deviations from §5 are recorded in the P3 section's as-built note (no edges; no digests in any payload; parent derived; one-commit flush; gate refinement; no MCP op). One invariant for P4: spine `valid_from` is the flush stamp, shared with the module row — chain order relies on strictly increasing flush stamps, which the write path guarantees by construction (and the tests pin with sleeps).
+
+### 2026-10-28 — P4 branch-aware reads landed (DR-40 closed, on `dev`)
+
+What shipped: `reconstruct_on` beside `reconstruct` in `storage.rs` + `branch` (default `"main"`) on
+`source_refs_at` / `entity_source_ref_at` / `entities_at` / `content_hashes_at` / `traverse`-at-T
+FFIs; `branches()` + `fork_branch()` + `write_branch_content()` instruments; `visible_*` ancestry
+unions backing the P1/P2 sweeps on branches; `branch=` on `CodeGraph.as_of` / `Snapshot` (all reads:
+`find`, `traverse`, `predates`, `read_bytes`/`read_source`) / `ops.as_of` / `ops.verify_history` /
+`ops.changes_between`; `ops.branches()`. Unknown lineages refuse with `ValueError` → `InvalidRequest`
+at first fold or ancestry lookup, never trunk data.
+
+The failure chain that designed it (each layer verified, none assumed): plan assumed lineage-resolved
+concepts → Macrame D-225/D-260 says the tie cannot happen → edge-shaped pointer (`HAS_CONTENT`) →
+archive reports `blobs_archived: 0` with rows moved (terminal link rows pin forever) → concept-shaped
+pointer (`branch:{branch}:content:{path}`, same-id turnover) → supersede + archive goes cold in ONE
+session. P2's fold-count wrappers grew the branch arg; one respelling test moved to the visible
+universe. Full gates: Rust lib 513 passed + 1 ignored, Python 1224 passed + 1 skipped (`tests/`,
+`cr_edit_tests` excluded), `cargo fmt --check` / `clippy --all-targets -D warnings` / `ruff` clean,
+`_core` rebuilt with no lock fight. Rust pins: trunk-delegation, fork/refusals, divergence +
+fallback, idempotent turnover + trunk-invisibility, ancestry-union listings, classifier diversion.
+Python `tests/test_branch_reads.py`: 10 tests (setup/refusals, divergent reads, fork-time
+inheritance, shared-blob row, supersede + archive reclaim, sweep survival, branch ops smoke).
+
+Deviations from §5 are recorded in the P4 section's as-built note (concept pointer, no edge kind;
+direct lookup; two commits; full-file branch reads; visible unions; no CLI/MCP surface). Invariants
+for P5: pointer ids are stable per lineage+path (same-id turnover is the release path — a second id
+form would orphan pins); `history_of` stays branch-agnostic (the chain is content, not lineage);
+branch writes beyond `write_branch_content` (new-file module concepts, per-branch sweep scoping,
+deletion semantics) are P5's, explicitly not P4's.

@@ -19,6 +19,11 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 - Temporal DR-42 (Q-2/H-3): `open_synthetic_triples` is an inclusion
   list — the hook sweeps exactly the `synthetic:` namespace it mints,
   not every future edge type (`600d689`).
+- Temporal P4 (DR-40): branch-aware reads — lineage-resolved folds
+  (`reconstruct_on`) with `branch=` on every temporal read,
+  branch-minted pointer concepts (`branch:{branch}:content:{path}`,
+  same-id turnover so superseded bytes archive), ancestry-union sweep
+  universes, `ops.branches()` (MCP surface stays 29 tools).
 - Temporal P3 (DR-38): `content_version` spine — timeless
   `{path}@{digest}` concepts, no edges (a `HAD_CONTENT` edge would pin
   blobs hot against the archive scan); digest-free payloads, parent and

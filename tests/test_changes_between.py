@@ -135,8 +135,8 @@ class TestFourClasses:
         real = _core.content_hashes_at
         seen: list[str] = []
 
-        def rewritten(ids, ts):
-            out = real(ids, ts)
+        def rewritten(ids, ts, branch="main"):
+            out = real(ids, ts, branch)
             seen.append(ts)
             if len(seen) == 2:
                 for raw, entry in out["hashes"].items():
@@ -235,9 +235,9 @@ class TestFoldDiscipline:
         calls = []
         real = _core.content_hashes_at
 
-        def counting(ids, ts):
+        def counting(ids, ts, branch="main"):
             calls.append(ts)
-            return real(ids, ts)
+            return real(ids, ts, branch)
 
         monkeypatch.setattr(_core, "content_hashes_at", counting)
         ops.changes_between(t0, t1)
@@ -254,8 +254,8 @@ class TestRespellingMerge:
         assert _core.canonical_id(old) == _core.canonical_id(new) == new
         real = _core.content_hashes_at
 
-        def crafted(ids, ts):
-            out = real(ids, ts)
+        def crafted(ids, ts, branch="main"):
+            out = real(ids, ts, branch)
             entry = {"id": new, "content_hash": 12345,
                      "start_line": 1, "end_line": 3}
             out["hashes"][old] = dict(entry, id=old)
@@ -263,7 +263,7 @@ class TestRespellingMerge:
             return out
 
         monkeypatch.setattr(_core, "content_hashes_at", crafted)
-        monkeypatch.setattr(_core, "all_concept_ids", lambda branch: [old, new])
+        monkeypatch.setattr(_core, "visible_all_concept_ids", lambda branch: [old, new])
         report = ops.changes_between(t0, t0)
         assert report["normalized_ids"] is True
         assert report["normalized_groups"] == 1

@@ -533,22 +533,24 @@ class CodeGraph:
         from . import ops
         return ops.traverse(entity_id or "", direction, edge_kinds, max_depth)["results"]
 
-    def as_of(self, timestamp: str) -> Snapshot:
+    def as_of(self, timestamp: str, branch: str = "main") -> Snapshot:
         """Return a point-in-time snapshot: entity reads fold the ledger at
         recorded-time T (Macrame canonical UTC; anything else is
         `ops.InvalidRequest`). Signature decision (plan §0.1a): `as_of` stays
         — MCP/CLI/Python names are pinned by the parity test, and DR-17
         rules out another rename round. Bytes-at-T rides source blobs (§3.0:
-        `Snapshot.read_bytes` / `read_source`)."""
+        `Snapshot.read_bytes` / `read_source`). P4 (DR-40): `branch`
+        selects the lineage (trunk by default) — every snapshot read folds
+        `reconstruct_on(T, branch); unknown branches refuse at first fold."""
         from . import ops
         try:
             from coderadar._core import normalize_timestamp as _normalize_ts
             normalized = _normalize_ts(timestamp or "")
+            return Snapshot(self, normalized, branch)
         except ImportError as e:
             raise ops.EngineError(f"native extension unavailable: {e}") from e
         except ValueError as e:
             raise ops.InvalidRequest(str(e)) from None
-        return Snapshot(self, normalized)
 
     @_bound_to_loaded_project
     def callers(self, entity_id: str) -> list[dict[str, Any]]:
@@ -1405,10 +1407,20 @@ class Snapshot:
         entity = snapshot.find("src/models.py::User.save")  # None if absent at T
     """
 
-    def __init__(self, graph: CodeGraph, timestamp: str):
+    def __init__(self, graph: CodeGraph, timestamp: str, branch: str = "main"):
         self._graph = graph
         self._timestamp = timestamp
+        self._branch = branch
         self._predates: bool | None = None
+
+    @property
+    def branch(self) -> str:
+        """The lineage this snapshot reads (P4, DR-40): every `find` /
+        `traverse` / byte read folds `reconstruct_on(T, branch)`, so a
+        branch snapshot sees the lineage's own divergent content and the
+        trunk at the fork for everything else. Unknown branches refuse at
+        first fold (never trunk-fallback)."""
+        return self._branch
 
     @property
     def timestamp(self) -> str:
@@ -1426,7 +1438,7 @@ class Snapshot:
             from . import ops
             try:
                 from coderadar._core import lookup_entities_at as _lookup_at
-                batch = _lookup_at([], self._timestamp)
+                batch = _lookup_at([], self._timestamp, self._branch)
             except ValueError as e:  # normalized at construction; defensive
                 raise ops.InvalidRequest(str(e)) from None
             except RuntimeError as e:
@@ -1444,7 +1456,7 @@ class Snapshot:
         from . import ops
         try:
             from coderadar._core import lookup_entity_at as _lookup_at
-            result = _lookup_at(entity_id, self._timestamp)
+            result = _lookup_at(entity_id, self._timestamp, self._branch)
         except ValueError as e:  # normalized at construction; defensive
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
@@ -1487,7 +1499,7 @@ class Snapshot:
         from . import ops
         try:
             from coderadar._core import lookup_entities_at as _lookup_at
-            batch = _lookup_at(ids, self._timestamp)
+            batch = _lookup_at(ids, self._timestamp, self._branch)
         except ValueError as e:
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
@@ -1516,7 +1528,7 @@ class Snapshot:
         try:
             from coderadar._core import traverse as _traverse
             return _traverse(entity_id, max_depth, edge_kinds or [],
-                             direction, self._timestamp)
+                             direction, self._timestamp, self._branch)
         except ValueError as e:
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
@@ -1595,7 +1607,7 @@ class Snapshot:
         try:
             from coderadar._core import blob_get as _blob_get
             from coderadar._core import entity_source_ref_at as _ref_at
-            ref = _ref_at(entity["id"], self._timestamp)
+            ref = _ref_at(entity["id"], self._timestamp, self._branch)
         except ValueError as e:  # normalized at construction; defensive
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:

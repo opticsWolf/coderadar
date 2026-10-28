@@ -1154,8 +1154,28 @@ def _graph():
     return coderadar.CodeGraph()
 
 
+def branches(*, graph: Any = None) -> list[dict]:
+    """Every lineage the ledger knows, trunk first (P4, DR-40).
+
+    Returns ``[{"name", "parent" | None, "forked_at" | None,
+    "created_at"}]`` — the trunk has no parent and no fork instant; an
+    unforked database answers exactly the trunk. A listing, not a fold.
+    No MCP/CLI surface by decision (spec-conformant parity: reads go
+    through `Snapshot`/`as_of` with `branch=`, setup through the `_core`
+    `fork_branch` / `write_branch_content` instruments P5 will drive).
+    """
+    _require_index()
+    try:
+        from coderadar._core import branches as _branches
+        return [dict(b) for b in _branches()]
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from e
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+
+
 def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
-          *, graph: Any = None) -> dict:
+          branch: str = "main", *, graph: Any = None) -> dict:
     """Look symbols up as they were at a Macrame-canonical `timestamp`.
 
     Returns ``{"timestamp", "names", "entities": {name: entity | None},
@@ -1167,6 +1187,8 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     names only; there is no temporal query execution (use `coderadar_query`
     for present-tense search). Bytes-at-T rides source blobs (§3.0: use
     `Snapshot.read_bytes` / `read_source` for entity bytes at T.
+    `branch` (P4, DR-40) folds `reconstruct_on(T, branch)`: an unknown
+    lineage refuses with `InvalidRequest`, never trunk data.
     """
     if not timestamp:
         raise InvalidRequest(
@@ -1186,7 +1208,7 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     # Validation parity gate: the same timestamp must pass `CodeGraph.as_of`
     # (MCP/CLI/Python agree by construction — same normalizer, same fold).
     try:
-        (graph or _graph()).as_of(normalized)
+        (graph or _graph()).as_of(normalized, branch=branch)
     except InvalidRequest:
         raise
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
@@ -1203,7 +1225,7 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
             "predates_recorded_history": False,
         }
     try:
-        batch = _lookup_at(names, normalized)
+        batch = _lookup_at(names, normalized, branch)
     except ValueError as e:  # already normalized; defensive
         raise InvalidRequest(str(e)) from None
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
@@ -1257,6 +1279,9 @@ def verify_history(from_ts: str | None = None, to_ts: str | None = None,
     lowercase hex: invisible to the archive's reference scan, so the bytes
     were reclaimable — a different incident from bytes gone missing).
 
+    `branch` scopes listings AND folds (P4, DR-40): generations, the
+    ever-universe, and every per-generation batch fold on the lineage, so a
+    branch sweep sees the lineage's own divergent bytes.
     `generations` samples evenly with both window ends always included;
     `all` sweeps every generation in the window. `max_generations` caps the
     sweep (the MCP tool passes one — a blind agent must not be handed a
@@ -1271,10 +1296,10 @@ def verify_history(from_ts: str | None = None, to_ts: str | None = None,
     if not isinstance(offenders, int) or isinstance(offenders, bool) or offenders < 0:
         raise InvalidRequest(f"offenders must be a non-negative integer, got {offenders!r}.")
     try:
-        from coderadar._core import module_concept_ids as _ever_ids
         from coderadar._core import normalize_timestamp as _normalize_ts
         from coderadar._core import recorded_generations as _generations
         from coderadar._core import source_refs_at as _refs_at
+        from coderadar._core import visible_module_concept_ids as _ever_ids
         lo = _normalize_ts(from_ts) if from_ts else None
         hi = _normalize_ts(to_ts) if to_ts else None
     except ImportError as e:
@@ -1287,6 +1312,8 @@ def verify_history(from_ts: str | None = None, to_ts: str | None = None,
     try:
         stamps = _generations(lo, hi, branch)
         ever = _ever_ids(branch)
+    except ValueError as e:  # unknown lineage (ancestry lookup refuses)
+        raise InvalidRequest(str(e)) from None
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
         raise EngineError(str(e)) from None
     if not stamps:
@@ -1328,7 +1355,7 @@ def verify_history(from_ts: str | None = None, to_ts: str | None = None,
     offender_all: dict[str, set[str]] = {}
     for ts in picked:
         try:
-            batch = _refs_at(ever, ts)
+            batch = _refs_at(ever, ts, branch)
         except Exception as e:  # noqa: BLE001 - surfaced as EngineError
             raise EngineError(str(e)) from None
         described = {
@@ -1433,7 +1460,10 @@ def changes_between(t1: str, t2: str, scope: str | None = None,
     F-8, verbatim in spirit: an equal hash is *evidence* of no change,
     not proof — and the hash is 64-bit xxHash (H-9), so shared-text
     twins collide by construction, not by accident. `Snapshot.read_bytes`
-    is one call away when proof is wanted. `scope` is a file path as
+    is one call away when proof is wanted. `branch` scopes listings AND
+    folds (P4, DR-40): the ever-universe and both hash folds run on the
+    lineage, so the diff is the lineage's view at both instants.
+    `scope` is a file path as
     indexed (root-relative posix) or an id prefix, and bounds the only
     cost that scales: the two folds walk the whole ever-universe.
 
@@ -1447,10 +1477,10 @@ def changes_between(t1: str, t2: str, scope: str | None = None,
     """
     _require_index()
     try:
-        from coderadar._core import all_concept_ids as _ever_ids
         from coderadar._core import canonical_id as _canonical
         from coderadar._core import content_hashes_at as _hashes_at
         from coderadar._core import normalize_timestamp as _normalize_ts
+        from coderadar._core import visible_all_concept_ids as _ever_ids
         start = _normalize_ts(t1)
         end = _normalize_ts(t2)
     except ImportError as e:
@@ -1463,6 +1493,8 @@ def changes_between(t1: str, t2: str, scope: str | None = None,
     try:
         ever = _ever_ids(branch)
         canon = [(raw, _canonical(raw)) for raw in ever]
+    except ValueError as e:  # unknown lineage (ancestry lookup refuses)
+        raise InvalidRequest(str(e)) from None
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
         raise EngineError(str(e)) from None
     groups: dict[str, list[str]] = {}
@@ -1483,8 +1515,8 @@ def changes_between(t1: str, t2: str, scope: str | None = None,
         groups = {cid: raws for cid, raws in groups.items() if keep(cid)}
     raws = [raw for rs in groups.values() for raw in rs]
     try:
-        first = _hashes_at(raws, start)
-        second = _hashes_at(raws, end)
+        first = _hashes_at(raws, start, branch)
+        second = _hashes_at(raws, end, branch)
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
         raise EngineError(str(e)) from None
 
