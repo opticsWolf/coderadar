@@ -535,12 +535,25 @@ archive goes cold in ONE session). Consequences:
 
 ### P5 — Commit-driven ingestion  (DR-41)
 
+> **Planned in full: `temporal-p5-commit-ingestion.md`** (drafted 2026-10-28). That document is the
+> "own plan before code" this section asked for, and it **corrects the shape below**: the second
+> sentence of *Shape* describes two phases, not one. Read it before implementing any of this.
+
 **Goal.** Close gap 3. Make valid time mean the code's own history.
 
 **Shape.** One Macrame branch per git branch, forked at the merge-base. Per commit: `valid_from =`
 commit time, `recorded_at =` ingest time, blobs per file-at-commit. Then `as_of_valid` and
 `as_of_recorded`/`reconstruct` (D-174) stop being the same question asked twice, and backfilling an
 old branch becomes a legitimate retroactive correction rather than a lie told in valid time.
+
+**Correction (2026-10-28).** Those last two clauses cannot both ship at once. Every temporal read
+CodeRadar has folds on `recorded_at` (`storage.rs:1853-1856`), and Macrame exposes its valid-time
+axis for edges and attribute hydration but has no valid-axis *state fold*
+(`src/temporal/as_of.rs:18-48`) — which CodeRadar may not write itself (F-6, INV-6). So commit-time
+`valid_from` changes nothing about what today's reads answer, and an out-of-order ingest makes them
+answer the wrong question with no error raised. The plan splits this: **P5a** writes commit time and
+enforces append-only ingest per lineage (new INV-10), which makes every shipped read correct by
+construction; **P5b** is retroactive backfill and is blocked on an upstream valid-axis fold.
 
 **Why it is the only route to the measured gap.** The 6,441 byte-less generations on this store
 describe content that exists in no blob, no payload and no working tree. A full re-analyze fixes
@@ -1093,3 +1106,36 @@ numbers are in: 99.6% for a freshly written generation, **3.19% store-wide**, be
 fixes the present and never the past. That spread is the argument for P5 and the measure of what it
 would recover. DR-41 stays `deferred` until P5 has a plan of its own; it is no longer waiting on
 evidence.
+
+### 2026-10-28 — P5 planned (`temporal-p5-commit-ingestion.md`)
+
+The plan P5 was deferred for. Read against the code rather than against §5, which turned up the one
+thing the sketch had wrong: §5's *Shape* promises commit-time `valid_from` **and** legitimate
+retroactive backfill in the same phase, and they cannot ship together. Every temporal read folds on
+`recorded_at`, and Macrame has no valid-axis state fold to switch to — only `AsOf` over edges and
+attribute hydration — which F-6/INV-6 forbid CodeRadar from writing itself. Commit-time stamps
+therefore change nothing about what today's reads answer, and an out-of-order ingest makes those
+reads answer the wrong question silently. Split accordingly: **P5a** (commit time, append-only,
+INV-10 refuses history older than the lineage's high-water mark — correct on today's engine, no
+read-path change) and **P5b** (retroactive correction, blocked on an upstream valid-axis fold,
+proposed as DR-43).
+
+Four things the code settled that the sketch had left open. `ConceptUpsert.valid_from` is
+caller-supplied, so the axis is a parameter and needs no Macrame change. Extraction takes a `&str`
+(`extract/single_pass.rs:787`), so the walker feeds git blob bytes and no commit is ever checked out.
+`kv_put`/`kv_get` give the per-store mode flag and the resumable high-water mark a home outside the
+ledger — where no blob reference may ever go (INV-3). And the stale sweep takes the whole current id
+set (`lib.rs:1135`), so a per-commit ingest parses the delta but must sweep against the commit's full
+tree.
+
+Two hazards the measurements produced, both new: git committer time is second-resolution and **ties
+four times on this repo's `main`**, against a spine chain order that P3 and P4 both built on
+strictly increasing stamps (H-15, answered by INV-11's recorded nudge); and a commit-driven ingest
+stores every committed byte of every indexable file permanently, including secrets a later commit
+scrubbed, with path-pattern exclusion that cannot see a key hardcoded in an ordinary source file
+(H-16 — the question in the plan that measurement cannot answer).
+
+Cost, measured rather than estimated: 556 commits on `main`, ~2,130 `(commit, file)` parses, 2,134
+distinct indexable blob contents, largest 236 KB. The parses are affordable; **556 flushes** are the
+cost centre, and the plan says to measure before chunking commits, because chunking trades the
+per-commit stamp INV-11 rests on.
