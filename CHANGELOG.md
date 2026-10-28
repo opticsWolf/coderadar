@@ -16,6 +16,9 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
   per entity from recorded hashes over `all_concept_ids`, no byte reads;
   H-11 joined away by canonical grouping; CLI `changes-between`, MCP
   `coderadar_changes_between` (29 tools) (`92aafcb`).
+- Temporal DR-42 (Q-2/H-3): `open_synthetic_triples` is an inclusion
+  list — the hook sweeps exactly the `synthetic:` namespace it mints,
+  not every future edge type (`600d689`).
 
 ## 0.13.0 (2026-10-26)
 

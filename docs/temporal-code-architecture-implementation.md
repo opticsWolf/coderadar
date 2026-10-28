@@ -576,7 +576,7 @@ before it counts as closed, per the v0.12 release-gate convention.
 | DR-39 | ~~`content.source` duplication: lean on it or trim it~~ | **withdrawn** 2026-10-28 — premise false, there is no duplication (P3b) |
 | DR-40 | Branch-aware reads: lineage resolves the reference, bytes stay branch-global | proposed (P4) |
 | DR-41 | Commit-driven ingestion; per-store stamping mode; migration path | **deferred** 2026-10-28 until P0–P4 ship (Q-1) |
-| DR-42 | `open_synthetic_triples` inverted to an explicit inclusion list of framework edge types, as its own change before P3 | accepted 2026-10-28 (Q-2) |
+| DR-42 | `open_synthetic_triples` inverted to an explicit inclusion list of framework edge types, as its own change before P3 | DR-42 closed (`600d689` on `dev` 2026-10-28) |
 
 ---
 
@@ -927,3 +927,7 @@ Findings, all read-path-relevant:
 - **Deviations from §5:** MCP ships with P2 (Q-4 decided both ops get one — item 3 never
   excluded it, unlike P1's item 7); `uncompared` extends the four-class contract for the
   reason above; same-id `moved` tested via crafted folds, not the live fixture.
+
+### 2026-10-28 — DR-42 closed (`600d689` on `dev`)
+
+Q-2's standalone prerequisite for P3. The audit: ledger edge writers are (1) tree-sitter extraction — the 8 uppercase structural kinds, owned by `retire_stale_edges` (which was already an inclusion list); (2) the framework hook — `synthetic:{resolver}:{edge}` via the single choke point `framework.py::_ledger_synthetic_edge_kind` (13 resolvers, edge parts observed: handles, registers, navigation, callback, depends_on, association); (3) the direct `register_synthetic_edge(s)` path, which preserves caller-chosen kinds verbatim (tests use `DEPENDS_ON`, `HANDLES`). The old `open_synthetic_triples` exclusion list swept classes (2) and (3) plus the four structural kinds it did not exclude — so a 9th structural kind, or any new synthetic writer, would have landed in the hook's retire scope silently (H-3). The hook now sweeps `edge_type LIKE 'synthetic:%'`; the membership rule is stated at the choke point, the query, and the `FRAMEWORK_SYNTHETIC_EDGE_PREFIX` const. A new resolver is covered automatically through the namespace; a kind outside it is visibly not retired — that is the point. No behavior change in any existing test (the hook's scope filter only ever matched route-id sources, which carry only hook-written edges); pinned by a Rust test seeding all three classes plus the retire round-trip, and a Python guard proving route removal still retires while a same-file CALLS survives. Full gates: Rust 505 passed + 1 ignored, Python 1202 passed + 1 skipped, fmt/clippy/ruff clean, rebuilt `_core.pyd` with no lock fight.
