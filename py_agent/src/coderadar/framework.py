@@ -45,7 +45,15 @@ _INACTIVE_FILES: set[tuple[str, str]] = set()
 
 
 def _ledger_synthetic_edge_kind(resolver_name: str, edge_kind: str) -> str:
-    """Return a stable, application-namespaced Macrame edge kind."""
+    """Return a stable, application-namespaced Macrame edge kind.
+
+    The `synthetic:` namespace is the framework hook's retire scope
+    (DR-42): `open_synthetic_triples` sweeps exactly these rows, so an
+    edge minted here is closed when the route diff stops believing it.
+    A synthetic edge written with any other kind (e.g. the direct
+    `register_synthetic_edge` path) is owned by its writer — the hook
+    will never retire it.
+    """
     return f"synthetic:{resolver_name.strip().lower()}:{edge_kind.strip().lower()}"
 
 

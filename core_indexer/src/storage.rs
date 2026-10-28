@@ -56,6 +56,11 @@ static DIAGNOSTIC_OPEN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Key lifespan timestamp — the Macrame open sentinel for "still true".
 pub const TS_OPEN: &str = "9999-12-31T00:00:00.000000Z";
 
+/// Edge-kind namespace owned by the framework hook's scoped pair-retire
+/// (§1.3, DR-42). Minted only by `framework.py::_ledger_synthetic_edge_kind`;
+/// see `open_synthetic_triples` for the membership rule and the audit.
+pub(crate) const FRAMEWORK_SYNTHETIC_EDGE_PREFIX: &str = "synthetic:";
+
 /// Indexed application metadata namespace carried in Macrame's `concepts.extra`.
 const CODERADAR_EXTRA_FILE_PATH: &str = "$.coderadar.file_path";
 
@@ -1290,10 +1295,26 @@ impl CodeGraphStore {
         })
     }
 
-    /// Open non-structural edge triples with their `valid_from`, for the
-    /// framework hook's scoped pair-retire (§1.3). Structural kinds are
-    /// owned by `retire_stale_edges`; synthetic `synthetic:*` rows live
-    /// and die with the route diff instead.
+    /// Open framework-owned edge triples with their `valid_from`, for the
+    /// framework hook's scoped pair-retire (§1.3). The hook owns exactly
+    /// the `synthetic:` namespace: every framework-resolver edge passes
+    /// through `framework.py::_ledger_synthetic_edge_kind`, which mints
+    /// `synthetic:{resolver}:{edge}` (13 resolvers in `resolvers/`, edge
+    /// parts observed in the audit: handles, registers, navigation,
+    /// callback, depends_on, association).
+    ///
+    /// DR-42 (Q-2, H-3): this used to be an exclusion list (`NOT IN
+    /// ('CALLS', 'IMPORTS', 'EXTENDS', 'OVERRIDES')`), which silently
+    /// swept every future edge type — including the four structural kinds
+    /// it did not exclude (DECORATES, IMPLEMENTS, INSTANTIATES,
+    /// REFERENCES) — into the hook's retire scope. The inclusion list
+    /// under-sweeps visibly instead: structural rows belong to
+    /// `retire_stale_edges`, and direct-path synthetic rows with
+    /// non-namespaced kinds (e.g. `DEPENDS_ON`) belong to whoever wrote
+    /// them. If you add a resolver, its edges are covered automatically
+    /// as long as they pass through the `synthetic:` choke point; if you
+    /// add a new edge kind outside that namespace, this sweep will not
+    /// retire it — that is the point.
     pub fn open_synthetic_triples(
         &self,
         now: &str,
@@ -1302,9 +1323,11 @@ impl CodeGraphStore {
         runtime().block_on(async {
             let mut rows = conn
                 .query(
-                    "SELECT source_id, target_id, edge_type, valid_from \
-                     FROM links_current WHERE valid_to > ?1 \
-                     AND edge_type NOT IN ('CALLS', 'IMPORTS', 'EXTENDS', 'OVERRIDES')",
+                    &format!(
+                        "SELECT source_id, target_id, edge_type, valid_from \
+                         FROM links_current WHERE valid_to > ?1 \
+                         AND edge_type LIKE '{FRAMEWORK_SYNTHETIC_EDGE_PREFIX}%'"
+                    ),
                     libsql::params![now],
                 )
                 .await
@@ -4337,6 +4360,62 @@ mod tests {
         let modules = store.module_concept_ids("main").unwrap();
         assert!(modules.len() < ids.len());
         assert!(modules.iter().all(|m| ids.contains(m)));
+    }
+
+    /// DR-42 (Q-2, H-3): the framework hook's sweep is an inclusion list
+    /// over the `synthetic:` namespace. Structural rows — even DECORATES
+    /// and REFERENCES, which the old exclusion list swept — and
+    /// non-namespaced direct-path rows (`DEPENDS_ON`) are not returned;
+    /// a retired namespaced row leaves the sweep via `retire_synthetic_pairs`.
+    #[test]
+    fn open_synthetic_triples_returns_only_namespaced_framework_edges() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("syn.db")).unwrap();
+        let now = now_iso8601();
+        for id in ["r::route", "h.py::handler", "a.py::f", "b.py::g"] {
+            let up = macrame::ConceptUpsert::new(id, id)
+                .content(r#"{"kind":"function","name":"x","file_path":"f.py"}"#)
+                .valid_from(now.clone())
+                .valid_to(TS_OPEN.to_string())
+                .retired(false);
+            assert_eq!(store.upsert_concepts_bulk(&[up]).unwrap(), 1);
+        }
+        let triples = [
+            ("r::route", "h.py::handler", "synthetic:flask:handles"),
+            ("r::route", "h.py::handler", "synthetic:django:registers"),
+            ("a.py::f", "b.py::g", "DECORATES"),
+            ("a.py::f", "b.py::g", "REFERENCES"),
+            ("a.py::f", "b.py::g", "DEPENDS_ON"),
+        ];
+        let batch: Vec<macrame::graph::EdgeAssertion> = triples
+            .iter()
+            .map(|&(s, t, k)| {
+                macrame::graph::EdgeAssertion::new(s, t, k)
+                    .valid_from(now.clone())
+                    .weight(1.0)
+            })
+            .collect();
+        assert_eq!(store.assert_edges_bulk(batch).unwrap(), 5);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let mut got = store.open_synthetic_triples(&now_iso8601()).unwrap();
+        got.sort();
+        assert_eq!(
+            got.iter().map(|(_, _, k, _)| k.clone()).collect::<Vec<_>>(),
+            vec![
+                "synthetic:django:registers".to_string(),
+                "synthetic:flask:handles".to_string()
+            ]
+        );
+        // Retired namespaced rows leave the sweep (the hook's step-4
+        // close path converges: re-running finds nothing stale).
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let retired_at = now_iso8601();
+        assert_eq!(store.retire_synthetic_pairs(&got, &retired_at).unwrap(), 2);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(store
+            .open_synthetic_triples(&now_iso8601())
+            .unwrap()
+            .is_empty());
     }
 
     /// §1.9 (DR-25): put round-trip + idempotent retry (the

@@ -146,6 +146,29 @@ class TestStatsAndLifecycle:
         _fresh_load(flask_project)
         assert ops.resolve("/health")["results"] == []
 
+    def test_route_removal_keeps_structural_edges(self, flask_project):
+        # DR-42: the hook's retire sweep owns only the `synthetic:`
+        # namespace — removing a route must close its `synthetic:flask:*`
+        # edge while leaving a structural CALLS edge on the same file
+        # untouched.
+        _fresh_load(flask_project)
+        app = flask_project / "app.py"
+        app.write_text(
+            'from flask import Flask\napp = Flask(__name__)\n\n'
+            'def _helper():\n    return True\n\n'
+            '@app.route("/users/<id>")\ndef get_user(id):\n'
+            '    _helper()\n    return {}\n',
+            encoding="utf-8",
+        )
+        coderadar.CodeGraph().update_file("app.py")
+        # The hook still retires the removed route's synthetic edge...
+        assert ops.resolve("/health")["results"] == []
+        with pytest.raises(ops.NotFound):
+            ops.node("app.py::flask:route:/health")
+        # ...while the structural CALLS edge on the same file survives.
+        assert {c["id"] for c in ops.callees("app.py::get_user")} == {
+            "app.py::_helper"}
+
     def test_drop_path_retires_routes(self, flask_project):
         _fresh_load(flask_project)
         (flask_project / "app.py").unlink()
