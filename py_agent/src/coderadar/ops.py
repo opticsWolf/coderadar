@@ -45,6 +45,7 @@ __all__ = [
     "callers",
     "canonical_entity_id",
     "canonical_file_path",
+    "changes_between",
     "compute_embeddings",
     "create_entity",
     "dead_code",
@@ -88,6 +89,7 @@ OPERATIONS = (
     "explore", "node", "search", "affected", "resolve", "query",
     "search_similar", "search_hybrid", "compute_embeddings", "module_children", "as_of",
     "verify_history",
+    "changes_between",
     "traverse", "get_smells", "dead_code", "find_clones", "find_scaffolding",
     "replace_body", "update_signature", "rename", "create_entity",
     "reindex", "update_file", "status", "set_project",
@@ -1368,6 +1370,213 @@ def verify_history(from_ts: str | None = None, to_ts: str | None = None,
         "distinct_digests": len(verdicts),
         "offender_sample": {k: sorted(v)[:offenders] for k, v in offender_all.items()},
         "offender_distinct": {k: len(v) for k, v in offender_all.items()},
+    }
+
+
+def changes_between(t1: str, t2: str, scope: str | None = None,
+                    branch: str = "main", *, graph: Any = None) -> dict:
+    """Added / removed / modified / moved / uncompared entities between two instants (P2, DR-37).
+
+    Two folds, no byte reads: `content_hashes_at` at T1 and at T2 over the
+    ever-universe (`all_concept_ids`), joined by canonical id, compared by
+    `content_hash`. Classes: present only at T2 = ``added``; only at T1 =
+    ``removed``; both with different hash = ``modified``; both with equal
+    hash but a different span = ``moved``; both present but hash-less
+    (imports, constants, type aliases, routes — kinds the extractor never
+    hashed) = ``uncompared``. A T1-only/T2-only pair sharing one hash with
+    no rival claimant also reads as ``moved`` (a file move with identical
+    text); ambiguous twins stay added + removed. ``unmodified`` is a count
+    only — on a real store it is thousands.
+
+    F-8, verbatim in spirit: an equal hash is *evidence* of no change,
+    not proof — and the hash is 64-bit xxHash (H-9), so shared-text
+    twins collide by construction, not by accident. `Snapshot.read_bytes`
+    is one call away when proof is wanted. `scope` is a file path as
+    indexed (root-relative posix) or an id prefix, and bounds the only
+    cost that scales: the two folds walk the whole ever-universe.
+
+    H-11 is joined away, not reported away: raw ids group by
+    `canonical_id`, presence is any-member, and the T2 spelling is the
+    display id — a window straddling the 2026-10-03 respelling reports
+    `normalized_ids: true` with a count, not 6.3k phantom removals. The
+    concurrent-write hazard (§5 P2) is vacuous for immutable history:
+    each fold is deterministic at its T, and a vanished lookup answers
+    absent (the `__init__.py:1559` precedent) rather than erroring.
+    """
+    _require_index()
+    try:
+        from coderadar._core import all_concept_ids as _ever_ids
+        from coderadar._core import canonical_id as _canonical
+        from coderadar._core import content_hashes_at as _hashes_at
+        from coderadar._core import normalize_timestamp as _normalize_ts
+        start = _normalize_ts(t1)
+        end = _normalize_ts(t2)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    if start > end:
+        raise InvalidRequest(
+            f"empty window: t1 {t1!r} sorts after t2 {t2!r} once normalized.")
+    try:
+        ever = _ever_ids(branch)
+        canon = [(raw, _canonical(raw)) for raw in ever]
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    groups: dict[str, list[str]] = {}
+    for raw, cid in canon:
+        groups.setdefault(cid, []).append(raw)
+    normalized = sum(1 for raws in groups.values() if len(set(raws)) > 1)
+    if scope is not None:
+        if "::" in scope:
+            cscope = _canonical(scope)
+
+            def keep(cid: str) -> bool:
+                return cid == cscope or cid.startswith(cscope)
+        else:
+            head = scope.replace("\\", "/")
+
+            def keep(cid: str) -> bool:
+                return cid.split("::")[0] == head
+        groups = {cid: raws for cid, raws in groups.items() if keep(cid)}
+    raws = [raw for rs in groups.values() for raw in rs]
+    try:
+        first = _hashes_at(raws, start)
+        second = _hashes_at(raws, end)
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+
+    def _side_entry(raws: list[str], side: dict) -> dict | None:
+        found = [(raw, side[raw]) for raw in raws if side.get(raw) is not None]
+        if not found:
+            return None
+        # An exact spelling hit beats a canonical/fallback resolution when
+        # both spellings resolve at one T.
+        for raw, entry in found:
+            if entry["id"] == raw:
+                return entry
+        return found[0][1]
+
+    def _hex(value) -> str | None:
+        return format(value, "x") if value is not None else None
+
+    def _span(entry) -> list[int] | None:
+        if entry["start_line"] is None or entry["end_line"] is None:
+            return None
+        return [entry["start_line"], entry["end_line"]]
+
+    added, removed, modified, moved, uncompared = [], [], [], [], []
+    t1_only: dict[str, tuple[str, dict]] = {}
+    t2_only: dict[str, tuple[str, dict]] = {}
+    unmodified = 0
+    for cid in sorted(groups):
+        raws = groups[cid]
+        before = _side_entry(raws, first["hashes"])
+        after = _side_entry(raws, second["hashes"])
+        if before is not None and after is not None:
+            hb, ha = before["content_hash"], after["content_hash"]
+            if hb is None and ha is None:
+                uncompared.append({"id": after["id"]})
+            elif hb is not None and ha is not None and hb == ha:
+                sb, sa = _span(before), _span(after)
+                if sb is not None and sa is not None and sb != sa:
+                    moved.append({
+                        "id": after["id"],
+                        "content_hash": _hex(ha),
+                        "span_before": sb,
+                        "span_after": sa,
+                    })
+                else:
+                    unmodified += 1
+            else:
+                modified.append({
+                    "id": after["id"],
+                    "hash_before": _hex(hb),
+                    "hash_after": _hex(ha),
+                    "span_before": _span(before),
+                    "span_after": _span(after),
+                })
+        elif before is not None:
+            t1_only[cid] = (before["id"], before)
+        elif after is not None:
+            t2_only[cid] = (after["id"], after)
+    # Leftover pairing by hash: a file move with identical text is one
+    # move, not a removal plus an addition — but only with no rival
+    # claimant on either side (identical twins stay added + removed).
+    by_hash_before: dict[int, list[str]] = {}
+    by_hash_after: dict[int, list[str]] = {}
+    for cid, (_display_id, entry) in t1_only.items():
+        if entry["content_hash"] is not None:
+            by_hash_before.setdefault(entry["content_hash"], []).append(cid)
+    for cid, (_display_id, entry) in t2_only.items():
+        if entry["content_hash"] is not None:
+            by_hash_after.setdefault(entry["content_hash"], []).append(cid)
+    paired: set[str] = set()
+    for digest, cids in by_hash_before.items():
+        others = by_hash_after.get(digest, [])
+        if len(cids) == 1 and len(others) == 1 and others[0] != cids[0]:
+            cid_b, cid_a = cids[0], others[0]
+            _id_b, entry_b = t1_only[cid_b]
+            _id_a, entry_a = t2_only[cid_a]
+            moved.append({
+                "id_before": _id_b,
+                "id_after": _id_a,
+                "content_hash": _hex(digest),
+                "span_before": _span(entry_b),
+                "span_after": _span(entry_a),
+            })
+            paired.add(cid_b)
+            paired.add(cid_a)
+    for cid in sorted(t1_only):
+        if cid in paired:
+            continue
+        display_id, entry = t1_only[cid]
+        removed.append({
+            "id": display_id,
+            "content_hash": _hex(entry["content_hash"]),
+            "span": _span(entry),
+        })
+    for cid in sorted(t2_only):
+        if cid in paired:
+            continue
+        display_id, entry = t2_only[cid]
+        added.append({
+            "id": display_id,
+            "content_hash": _hex(entry["content_hash"]),
+            "span": _span(entry),
+        })
+    g = graph or _graph()
+    root = getattr(g, "_root", None) or os.getcwd()
+    db_path = getattr(g, "_db_path", None) or ".coderadar/store/coderadar.db"
+    db = Path(db_path)
+    store = str((Path(root) / db).resolve() if not db.is_absolute() else db.resolve())
+    counts = {
+        "added": len(added),
+        "removed": len(removed),
+        "modified": len(modified),
+        "moved": len(moved),
+        "uncompared": len(uncompared),
+    }
+    return {
+        "store": store,
+        "root": str(Path(root).resolve()),
+        "branch": branch,
+        "t1": start,
+        "t2": end,
+        "scope": scope,
+        "normalized_ids": normalized > 0,
+        "normalized_groups": normalized,
+        "added": added,
+        "removed": removed,
+        "modified": modified,
+        "moved": moved,
+        "uncompared": uncompared,
+        "counts": counts,
+        "unmodified": unmodified,
+        "predates": {
+            "t1": first["predates_recorded_history"],
+            "t2": second["predates_recorded_history"],
+        },
     }
 
 

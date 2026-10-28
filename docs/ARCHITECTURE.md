@@ -101,7 +101,7 @@ CodeRadar/
     __init__.py                 # CodeGraph facade, Snapshot, errors
     ops.py                      # OPERATIONS: validated shared op layer
     cli.py                      # click CLI (graph ops + local-only cmds)
-    mcp/server.py               # 28 tools, thin over ops
+    mcp/server.py               # 29 tools, thin over ops
     coldstart.py                # ledger load + changed-files refresh
     config.py                   # .coderadar.toml (pydantic, §12)
     resolvers/ framework.py     # L2–L4 cascade + framework routes (DR-10)
@@ -184,7 +184,7 @@ side never touches ledger handles.
   cwd-rooted serving state.
 - **`agent/graphrag.py`, `lsp/pool.py`** — kept as named seams with wiring
   triggers in their headers (DR-16); neither is on any hot path.
-- **`mcp/server.py`** — 28 tools, thin over `ops`, plus server instructions
+- **`mcp/server.py`** — 29 tools, thin over `ops`, plus server instructions
   (language count, staleness guidance — README-tested).
 - **`cli.py`** — graph ops plus local-only commands (`init`, `visualize`,
   `shell`, `git`, `exclude`, `watch`, `load-snapshot`, `store-repair`,

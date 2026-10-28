@@ -1705,6 +1705,37 @@ impl CodeGraphStore {
             Ok(out)
         })
     }
+
+    /// Ids of every concept the ledger ever described on `branch` (P2,
+    /// DR-37): the input universe for the entity diff. Same ever-not-live
+    /// contract as [`Self::module_concept_ids`] without the kind filter —
+    /// functions, classes, imports and the rest are in the diff's join,
+    /// not just files. Both id spellings are included (H-11); each
+    /// generation's batch returns only the spelling live at that T, and
+    /// `ops.changes_between` groups raw ids by canonical form, so no
+    /// generation double-counts and a respelling never reads as churn.
+    /// Retired ids stay in (a deletion is a T1-only group); branch scope
+    /// matches `transaction_log.branch_id` (`"main"` unless told
+    /// otherwise). `ordering` is_id order — deterministic, not meaningful.
+    pub fn all_concept_ids(&self, branch: &str) -> macrame::Result<Vec<String>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT DISTINCT entity_id FROM transaction_log \
+                     WHERE table_name = 'concepts' AND branch_id = ?1 \
+                     ORDER BY entity_id",
+                    libsql::params![branch],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok(out)
+        })
+    }
 }
 
 // ── Source-blob write path (§1.9, DR-25/DR-30) ────────────────────────────
@@ -4275,6 +4306,37 @@ mod tests {
         // not use it.
         let live = store.live_concept_ids().unwrap();
         assert!(!live.contains(&"m.py::module".to_string()));
+    }
+
+    /// P2 (DR-37): the full ever-universe, not just modules — a
+    /// function retired with its file stays diffable.
+    #[test]
+    fn all_concept_ids_lists_every_kind_and_retired() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _s1, _s2) = generations_store(dir.path());
+        // The fixture store holds two module concepts (one retired).
+        // Assert a function concept asserted alongside: the universe is
+        // not the module list.
+        let f_v1 = macrame::ConceptUpsert::new("m.py::f", "m.py::f")
+            .content(r#"{"kind":"function","name":"f"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[f_v1]).unwrap(), 1);
+        let mut ids = store.all_concept_ids("main").unwrap();
+        ids.sort();
+        assert_eq!(
+            ids,
+            vec![
+                "m.py::f".to_string(),
+                "m.py::module".to_string(),
+                "n.py::module".to_string()
+            ]
+        );
+        // Modules-only is the strict subset; the diff must use the full one.
+        let modules = store.module_concept_ids("main").unwrap();
+        assert!(modules.len() < ids.len());
+        assert!(modules.iter().all(|m| ids.contains(m)));
     }
 
     /// §1.9 (DR-25): put round-trip + idempotent retry (the

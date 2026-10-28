@@ -54,6 +54,7 @@ this changes, what did this look like at time T, where are the smells.
 | `coderadar_find_clones` / `coderadar_find_scaffolding` | clones / scaffolding |
 | `coderadar_as_of` | names+entities at timestamp T |
 | `coderadar_verify_history` | per-generation byte coverage (can the past be reconstructed) |
+| `coderadar_changes_between` | entity diff between two instants from hashes (works at 0% coverage) |
 | `coderadar_module_children` | a module's contents |
 | `coderadar_reindex` (`full`) / `coderadar_update_file` | refresh; full walk only on demand |
 | `coderadar_status` / `coderadar_set_project` | freshness + root switching |
@@ -83,6 +84,7 @@ coderadar_affected(entity_id, max_depth=5)        # transitive blast radius
 coderadar_resolve(name, limit=5)                  # '/users/:id', '*Model', '*View'
 coderadar_as_of(timestamp, query="", symbols=[])  # names at T, not bytes at T
 coderadar_verify_history(from_ts=None, to_ts=None, generations=25)  # trust in history
+coderadar_changes_between(t1, t2, scope=None)  # what changed, hash-based
 coderadar_module_children(module_id)              # '{file_path}::module'
 coderadar_diagnose(unresolved=True, low_confidence=True)
 coderadar_status()
@@ -166,6 +168,8 @@ retained `recovery_path` values, recover manually, then resync.
 - History questions: `coderadar_as_of` for names, then byte reads at T.
   There is no temporal query execution. `coderadar_verify_history` says
   whether those bytes exist at all — ask it before quoting a past version.
+  `coderadar_changes_between` says what changed between two instants from
+  hashes, so it works even where coverage is 0%.
 - Mutations are dry-run by default: review the diff, then apply with
   `dry_run=false`. `recompute=true` on `coderadar_compute_embeddings`
   clears and regenerates (required for a model switch).

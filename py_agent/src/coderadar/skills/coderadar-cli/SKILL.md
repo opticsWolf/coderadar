@@ -59,6 +59,7 @@ coderadar affected ENTITY_ID [--max-depth 5] # transitive callers, the blast rad
 coderadar resolve '/users/:id' [--limit 5]   # routes, *Model / *View names
 coderadar as-of TIMESTAMP [SYMBOL]... [-q TEXT]   # names at T, not bytes at T
 coderadar verify-history [--from TS --to TS] [--generations 25 | --all]  # can the past be reconstructed
+coderadar changes-between --t1 TS --t2 TS [--scope FILE|PREFIX]  # what changed, hash-based
 coderadar module-children MODULE_ID          # e.g. 'pkg/app.py::module'
 coderadar diagnose [--unresolved] [--low-confidence]
 ```
@@ -162,5 +163,6 @@ canonical commands and flags above.
   (`coderadar -C ../other status`). One process serves one root.
 - Keep using normal file tools for raw reads; use the graph for structure.
 - History reads are CLI-first-class: `as-of` for names at T,
-  `verify-history` for whether the bytes exist at all. Retention
+  `verify-history` for whether the bytes exist at all, `changes-between`
+  for what changed between two instants. Retention
   (`archive`) stays API/MCP-first.

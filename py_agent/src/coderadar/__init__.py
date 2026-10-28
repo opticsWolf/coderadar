@@ -705,6 +705,21 @@ class CodeGraph:
             offenders, max_generations, graph=self,
         )
 
+    @_bound_to_loaded_project
+    def changes_between(
+        self, t1: str, t2: str, scope: str | None = None,
+        branch: str = "main",
+    ) -> dict[str, Any]:
+        """Entity diff between two instants (MCP ``coderadar_changes_between``).
+
+        Added / removed / modified / moved per entity from recorded hashes
+        — no byte reads, so it works where `verify_history` reports 0%.
+        Equal hash is evidence of no change, not proof (F-8); `scope`
+        bounds the diff to one file or id prefix.
+        """
+        from . import ops
+        return ops.changes_between(t1, t2, scope, branch, graph=self)
+
     def compute_embeddings(self, model_name: str | None = None,
                            batch_size: int = 32,
                            recompute: bool = False) -> dict[str, int]:

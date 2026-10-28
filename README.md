@@ -48,7 +48,7 @@ CodeRadar wins on small-to-medium Python/Rust projects due to zero runtime boot 
 > Operator cheat sheet: [`docs/QUICKREF.md`](docs/QUICKREF.md).
 
 ```
-Surfaces (MCP 28 tools, CLI, Python CodeGraph — one name per op)
+Surfaces (MCP 29 tools, CLI, Python CodeGraph — one name per op)
         │
     ops.py (shared validated op layer)  +  synthetic-edge bridge
         │
@@ -458,7 +458,7 @@ py_agent/src/coderadar/    # Python layer
     lsp/                   # Persistent LSP warm pool
     mutation/              # Tool router for LLM
     mcp/                   # MCP server
-      server.py            #   28 tools + guidance
+      server.py            #   29 tools + guidance
       roots.py             #   project-root ladder and marker walk-up
       startup.py           #   background index, ensure_ready()
       lazy.py              #   roots/list retry on the first tool call

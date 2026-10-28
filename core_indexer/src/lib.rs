@@ -77,6 +77,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(source_refs_at, m)?)?;
     m.add_function(wrap_pyfunction!(recorded_generations, m)?)?;
     m.add_function(wrap_pyfunction!(module_concept_ids, m)?)?;
+    m.add_function(wrap_pyfunction!(all_concept_ids, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_id, m)?)?;
+    m.add_function(wrap_pyfunction!(content_hashes_at, m)?)?;
     m.add_function(wrap_pyfunction!(archive, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -1777,10 +1780,20 @@ fn entities_at(
     let entities = entity_ids
         .iter()
         .map(|id| {
-            // R2-16: existence checks accept any id spelling too.
+            // R2-16: existence checks accept any id spelling too. Raw
+            // first: the requested spelling resolves when IT is the one
+            // live at T (an old spelling at an old T — H-11); canonical
+            // covers the reverse (an old spelling at a new T). When both
+            // spellings are live under one canonical form they are the
+            // same concept, so order cannot double-count.
             let canon = canonical_lookup_id(id);
-            if let Some(found) = entity_ref_to_dict(py, &canon, &projection) {
+            if let Some(found) = entity_ref_to_dict(py, id, &projection) {
                 return Some(found);
+            }
+            if canon != *id {
+                if let Some(found) = entity_ref_to_dict(py, &canon, &projection) {
+                    return Some(found);
+                }
             }
             match resolve_qualified_name(&projection, &canon) {
                 Some(resolved) => entity_ref_to_dict(py, &resolved, &projection),
@@ -2060,6 +2073,153 @@ fn module_concept_ids(py: Python<'_>, branch: &str) -> PyResult<Vec<String>> {
             ))
         })
     })
+}
+
+/// Ids of every concept the ledger ever described on `branch` (P2,
+/// DR-37): the input universe for the entity diff. See
+/// `CodeGraphStore::all_concept_ids` for the ever-not-live contract.
+#[pyfunction]
+#[pyo3(signature = (branch,))]
+fn all_concept_ids(py: Python<'_>, branch: &str) -> PyResult<Vec<String>> {
+    let store = snapshot_store()?;
+    py.allow_threads(|| {
+        store.all_concept_ids(branch).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "all_concept_ids({branch:?}) failed: {e:?}"
+            ))
+        })
+    })
+}
+
+/// Canonical read-path form of one entity id (P2, DR-37): converges
+/// legacy spellings (`.\\main.py::main`) to the live form so the diff
+/// can join generations across the H-11 respelling. Thin wrapper over
+/// `canonical_lookup_id` — see its docstring for the carve-outs
+/// (`external::*`, bare names and symbolic spellings pass through).
+#[pyfunction]
+#[pyo3(signature = (entity_id,))]
+fn canonical_id(entity_id: &str) -> String {
+    canonical_lookup_id(entity_id)
+}
+
+/// One entity's diff material out of a projection: the id it resolved
+/// to, its `content_hash` (`None` for kinds the extractor never hashed —
+/// imports, constants, type aliases, routes), and its line span (`None`
+/// where the projection carries none: modules are the whole file, routes
+/// are synthetic, byte-span kinds would need a blob read to line-map).
+/// Same kind dispatch and dotted-name fallback as `entity_ref_to_dict`,
+/// so the diff's universe agrees with `find`.
+type HashSpanHit = (String, Option<u64>, Option<u64>, Option<u64>);
+
+fn entity_hash_span(snap: &ProjectedGraph, entity_id: &str) -> Option<HashSpanHit> {
+    if let Some(f) = snap.functions.get(entity_id) {
+        return Some((
+            f.id.clone(),
+            Some(f.content_hash),
+            Some(f.line as u64),
+            Some(f.exit_line as u64),
+        ));
+    }
+    if let Some(c) = snap.classes.get(entity_id) {
+        return Some((
+            c.id.clone(),
+            Some(c.content_hash),
+            Some(c.line as u64),
+            Some(c.exit_line as u64),
+        ));
+    }
+    if let Some(m) = snap.modules.get(entity_id) {
+        return Some((m.id.clone(), Some(m.content_hash), None, None));
+    }
+    if let Some(i) = snap.imports.get(entity_id) {
+        return Some((i.id.clone(), None, Some(i.line as u64), None));
+    }
+    if let Some(k) = snap.constants.get(entity_id) {
+        return Some((k.id.clone(), None, None, None));
+    }
+    if let Some(t) = snap.type_aliases.get(entity_id) {
+        return Some((t.id.clone(), None, None, None));
+    }
+    if let Some(r) = snap.routes.get(entity_id) {
+        return Some((r.id.clone(), None, None, None));
+    }
+    None
+}
+
+/// Per-entity diff material at one timestamp (P2, DR-37): one fold
+/// serves every id. Returns `{"hashes": {requested_id: entry | None},
+/// "predates_recorded_history": bool}`; an entry is `{"id",
+/// "content_hash", "start_line", "end_line"}` with `None` where the
+/// projection carries nothing (see `entity_hash_span`). Keyed by
+/// *requested* id — `ops.changes_between` groups by canonical form
+/// itself, so a respelling never double-counts. Same
+/// snapshot-then-release locking as `entities_at`: a slow reconstruct
+/// must not block a writer. A garbage timestamp is a `ValueError`; a
+/// missing graph or store is a `RuntimeError`.
+#[pyfunction]
+#[pyo3(signature = (entity_ids, timestamp))]
+fn content_hashes_at(
+    py: Python<'_>,
+    entity_ids: Vec<String>,
+    timestamp: &str,
+) -> PyResult<PyObject> {
+    use crate::graph::cold_start::projection_from_state;
+    let ts = normalize_timestamp(timestamp)?;
+    let store = {
+        let guard = GLOBAL_GRAPH.read();
+        let graph = guard.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
+        })?;
+        graph.store.clone().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "No persistent store — temporal lookup needs a .coderadar store",
+            )
+        })?
+    };
+    let state = py.allow_threads(|| store.reconstruct(&ts)).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("reconstruct({ts:?}) failed: {e:?}"))
+    })?;
+    let predates = state.predates_recorded_history;
+    let (projection, _stats) = projection_from_state(&state).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("projection at {ts:?} failed: {e}"))
+    })?;
+    let by_id = PyDict::new(py);
+    for id in &entity_ids {
+        // R2-16, H-11: raw first, then canonical — same discipline as
+        // `entities_at`, so the diff's universe agrees with `find` at
+        // every T (an old spelling resolves at an old T raw, at a new
+        // T via canonical).
+        let canon = canonical_lookup_id(id);
+        let found = entity_hash_span(&projection, id)
+            .or_else(|| {
+                if canon != *id {
+                    entity_hash_span(&projection, &canon)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                resolve_qualified_name(&projection, &canon)
+                    .and_then(|resolved| entity_hash_span(&projection, &resolved))
+            });
+        match found {
+            Some((actual, hash, start, end)) => {
+                let entry = PyDict::new(py);
+                entry.set_item("id", actual)?;
+                entry.set_item("content_hash", hash)?;
+                entry.set_item("start_line", start)?;
+                entry.set_item("end_line", end)?;
+                by_id.set_item(id, entry)?;
+            }
+            None => {
+                by_id.set_item(id, py.None())?;
+            }
+        }
+    }
+    let out = PyDict::new(py);
+    out.set_item("hashes", by_id)?;
+    out.set_item("predates_recorded_history", predates)?;
+    Ok(out.into())
 }
 
 /// One archive session at `cutoff` (§3.4, DR-25): `{links_archived,

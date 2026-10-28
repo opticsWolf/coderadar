@@ -875,6 +875,80 @@ def verify_history(result: dict, *, offenders: int = 10) -> str:
     return "\n".join(out)
 
 
+def changes_between(result: dict, *, per_class: int = 25) -> str:
+    """Entity diff between two instants as legible text (P2, DR-37).
+
+    Counts first, then one capped section per class (the render caps at
+    `per_class` entries with an explicit "... and N more" tail — the JSON
+    report is complete). Cross-id moves name both spellings; `uncompared`
+    ids are presence-only by construction.
+    """
+    c = result["counts"]
+    head = [
+        f"store            {result['store']}  (branch {result['branch']})",
+        f"t1               {result['t1']}",
+        f"t2               {result['t2']}",
+        (
+            f"scope            {result['scope']}"
+            if result["scope"] is not None
+            else "scope            (whole universe)"
+        ),
+        (
+            f"changed          added={c['added']}  removed={c['removed']}  "
+            f"modified={c['modified']}  moved={c['moved']}  "
+            f"uncompared={c['uncompared']}  "
+            f"unmodified={result['unmodified']}"
+        ),
+        (
+            f"ids              normalized across H-11 respelling: "
+            f"{result['normalized_groups']} merged groups"
+            if result["normalized_ids"]
+            else "ids              single spelling (no H-11 merge)"
+        ),
+    ]
+
+    def fmt_span(span) -> str:
+        if span is None:
+            return ""
+        return f"  @{span[0]}-{span[1]}"
+
+    def entry_added(e: dict) -> str:
+        return f"  + {e['id']}{fmt_span(e['span'])}"
+
+    def entry_removed(e: dict) -> str:
+        return f"  - {e['id']}{fmt_span(e['span'])}"
+
+    def entry_modified(e: dict) -> str:
+        return (
+            f"  ~ {e['id']}  "
+            f"{e['hash_before']} -> {e['hash_after']}"
+            f"{fmt_span(e['span_after'])}"
+        )
+
+    def entry_moved(e: dict) -> str:
+        if "id_before" in e:
+            return (
+                f"  > {e['id_before']} -> {e['id_after']}"
+                f"{fmt_span(e['span_after'])}"
+            )
+        return f"  > {e['id']}{fmt_span(e['span_after'])}"
+
+    sections = [
+        ("added", result["added"], entry_added),
+        ("removed", result["removed"], entry_removed),
+        ("modified", result["modified"], entry_modified),
+        ("moved", result["moved"], entry_moved),
+        ("uncompared", result["uncompared"], lambda e: f"  ? {e['id']}"),
+    ]
+    for name, items, fmt in sections:
+        head.append(f"\n{name} ({len(items)}):")
+        shown = items[:per_class]
+        head += [fmt(e) for e in shown]
+        if len(items) > len(shown):
+            head.append(f"  ... and {len(items) - len(shown)} more")
+    return "\n".join(head)
+
+
 # ── Edits ─────────────────────────────────────────────────────────────────
 
 def edit(outcome: dict, apply_hint: str = "call again with `dry_run=False`") -> str:

@@ -628,6 +628,24 @@ def verify_history(from_ts: str | None, to_ts: str | None, generations: int,
         lambda result: render.verify_history(result, offenders=offenders))
 
 
+@main.command(name="changes-between")
+@click.option("--t1", "t1", required=True,
+              help="Window start (ISO 8601 UTC).")
+@click.option("--t2", "t2", required=True,
+              help="Window end (ISO 8601 UTC).")
+@click.option("--scope", default=None,
+              help="File path as indexed, or an id prefix. Omit for the whole universe.")
+@click.option("--branch", default="main", show_default=True,
+              help="Ledger branch to diff.")
+@_format_option
+def changes_between(t1: str, t2: str, scope: str | None, branch: str, fmt: str):
+    """Report added/removed/modified/moved entities (MCP coderadar_changes_between)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.changes_between(t1, t2, scope, branch),
+        lambda result: render.changes_between(result))
+
+
 @main.command()
 @click.argument("entity_id")
 @click.option("--direction", default="both", show_default=True,
