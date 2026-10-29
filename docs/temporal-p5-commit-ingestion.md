@@ -283,6 +283,34 @@ returns that commit's state; `history_of` returns the chain in commit order; `ve
 from `kv` and is idempotent; an out-of-order commit is refused with a typed error; a store in
 `index-now` mode refuses the op (INV-12).
 
+**Status (2026-10-29): shipped on `dev` as `graph/ingest.rs` + `ops.ingest_history` + CLI
+`ingest-history` (no MCP tool).** As-built deviations from the above, each read off the code:
+
+- *Commit concepts are minted.* P5-D2's metadata (author time, both identities, `stamp_nudged`)
+  needed a home, so each commit mints `commit:{sha}` (`kind = 'commit'`, trunk lineage): no
+  file-path annotation (the stale sweep passes over it), no edges (P3's lesson), excluded from
+  `live_concept_ids` / `all_concept_ids` and from the cold-start classifier exactly like the
+  spine and the pointers.
+- *Reads take recorded stamps.* `reconstruct` at a commit's *commit* stamp is empty — nothing
+  was recorded then. Commit stamps are data carried in `valid_from`; the read index is the
+  recorded axis, where the Nth generation in order is the Nth commit's completed state. Each
+  commit's writes mint sub-generations (concept bulk, edge persists, sweep retires — the same
+  shape as analyze), so per-commit recorded boundaries come from incremental runs; the tests
+  fuse the done-when with the resume test that way. This is the plan's §2 "correct by
+  accident" made precise: correct by construction of the walk order, read through recorded
+  generations.
+- *Any git branch may be walked; the lineage written is always the trunk.* INV-10 confines
+  what the trunk accepts (a diverged branch fails closed), so no fork machinery was needed.
+  Non-trunk lineages — fork, branch-minted concepts, branch deletion semantics — stay P5a.4's.
+- *Standard excludes apply* on top of the walker's filtering, with the same matcher analyze
+  walks with (a committed `node_modules` tree is not history worth keeping either).
+- *Write amplification, measured:* this repository's `main` first-parent chain ingests
+  354 commits / 1,696 files in 72 s (~0.2 s/commit, 4,107 generations ≈ 12 ledger writes per
+  commit). No optimisation for a one-time migration.
+- *INV-12 closes both directions:* the index-now write paths (`analyze`, `update_file`,
+  `remove_file`) refuse commit-time stores, so a later reindex cannot mix clock stamps into
+  ingested history.
+
 ### P5a.4 — Branch ingestion
 
 **Goal.** More than one lineage, forked where git forked.

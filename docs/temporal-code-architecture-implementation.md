@@ -1182,3 +1182,46 @@ order, a stamped branch write landing on both rows — plus an H-14 pin proving 
 necessity: out-of-order stamps reorder the `history_of` chain silently, with no error anywhere.
 Gates: Rust lib 530 passed + 1 ignored, fmt/clippy/ruff clean, `_core` rebuilt after killing the
 stale `mcp serve` holder (os error 32 precedent).
+
+### 2026-10-29 — P5a.3 landed (the ingest op: `ingest_history` + CLI `ingest-history`)
+
+P5a.3 is in: one op takes a repository and a git branch and writes the trunk lineage, per
+commit in first-parent order — blob puts, one stamped flush (entity concepts + spine + the
+commit concept), scoped edge persistence, a tree-scoped sweep — then the `kv` cursor advance.
+`ops.ingest_history(repo, branch, from_sha, dry_run, store_path=...)`, CLI
+`ingest-history --repo --store [--branch] [--from] [--dry-run]`, FFI returning the report as
+JSON. No MCP tool (29 tools pinned; H-13 shape of mistake).
+
+Enforcement sits where the plan put it: INV-10 as a `from`-vs-cursor equality check plus a
+structural first-parent check (a diverged branch fails closed with `NotAncestor`/`OutOfOrder`);
+INV-11 through the P5a.2 nudge per commit with `stamps_nudged` counted; INV-12 through the
+`kv` stamping-mode flag — fresh paths are claimed commit-time, legacy/index-now stores refuse,
+and the index-now write paths (`analyze`, `update_file`, `remove_file`) now refuse commit-time
+stores the same way, which closes the stamp-mixing hole in the other direction.
+
+Three as-built deviations, all recorded in the plan's P5a.3 section: (1) commit concepts
+(`commit:{sha}`, kind `commit`) are minted per commit as P5-D2's metadata home — author time
+plus the author/committer identities and the nudge flag in `extra`, no file-path annotation
+(sweep-immune), no edges (P3's lesson), excluded from both entity listings and the cold-start
+classifier exactly like the spine and the pointers. (2) Any git branch may be walked — the
+lineage written is always the trunk, and INV-10 confines what the trunk accepts; non-trunk
+lineages (fork, branch-minted concepts, branch deletion) stay P5a.4's. (3) Standard excludes
+apply on top of the walker's blob-exclusion/language filtering, with the same matcher analyze
+walks with.
+
+The read-model finding the plan's §2 needed: commit stamps are DATA, recorded stamps are the
+read index. `as_of(commit_ts)` on an ingested store is empty (nothing was recorded then) —
+reads take recorded generations, and the Nth generation in order is the Nth commit's completed
+state. Each commit's writes mint sub-generations (concept bulk, edge persists, sweep retires —
+the same shape as analyze), so per-commit recorded boundaries come from incremental runs, and
+the tests fuse the done-when with the resume test that way. Self-host measurement answers the
+plan's write-amplification question: 354 commits / 1,696 files ingest in 72 s (~0.2 s/commit,
+4,107 generations ≈ 12 writes per commit), no optimisation for a one-time migration.
+
+Gates: Rust lib 534 passed + 1 ignored (4 new: stamped retire twins land stamps, commit-kind
+classifier, `kv` flag round-trip), Python 1,226 passed + 1 skipped, fmt/clippy/ruff clean.
+22 new Python tests (`test_ingest_history.py` 18: report contract, final-state-at-tip,
+100 % coverage, commit concepts + listing immunity, resume, idempotent noop, five refusals,
+dry-run, CLI; `test_commit_stamps.py` 4: committer-vs-author, offset folding, tie nudge,
+regression nudge). DR-41 stays deferred — the shape is built as recommended, the adopt-P5a
+decision is still the maintainer's (Q-6..Q-9).

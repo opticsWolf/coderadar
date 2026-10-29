@@ -11,17 +11,19 @@ impl CodeGraph {
     ///
     /// Best-effort by design: the projection is the source of truth for
     /// queries, and a ledger write that fails must not fail the update. It is
-    /// reported, not swallowed.
+    /// reported, not swallowed. `valid_from` is the retirement stamp — the
+    /// clock on the live path, commit time on the P5 ingest path (DR-41).
     pub(crate) fn try_retire_in_store<'a>(
         &self,
         ids: impl IntoIterator<Item = &'a EntityId>,
+        valid_from: &str,
     ) -> Option<String> {
         let store = self.store.as_ref()?;
         let ids: Vec<String> = ids.into_iter().cloned().collect();
         if ids.is_empty() {
             return None;
         }
-        if let Err(e) = store.retire_entities(&ids) {
+        if let Err(e) = store.retire_entities_at(&ids, valid_from) {
             return Some(format!(
                 "could not retire {} removed entities: {:?}",
                 ids.len(),
@@ -31,8 +33,12 @@ impl CodeGraph {
         None
     }
 
-    pub(crate) fn retire_in_store<'a>(&self, ids: impl IntoIterator<Item = &'a EntityId>) {
-        if let Some(message) = self.try_retire_in_store(ids) {
+    pub(crate) fn retire_in_store<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a EntityId>,
+        valid_from: &str,
+    ) {
+        if let Some(message) = self.try_retire_in_store(ids, valid_from) {
             eprintln!("Warning: {message}");
         }
     }
@@ -43,6 +49,7 @@ impl CodeGraph {
         &self,
         projection: &mut ProjectedGraph,
         file_path: &str,
+        valid_from: &str,
     ) -> BTreeSet<EntityId> {
         let mut removed = BTreeSet::new();
 
@@ -140,7 +147,7 @@ impl CodeGraph {
             projection
                 .synthetic_edges
                 .retain(|(s, t)| !removed.contains(s) && !removed.contains(t));
-            self.retire_in_store(removed.iter());
+            self.retire_in_store(removed.iter(), valid_from);
             return removed;
         }
 
@@ -251,7 +258,7 @@ impl CodeGraph {
             .synthetic_edges
             .retain(|(s, t)| !removed.contains(s) && !removed.contains(t));
 
-        self.retire_in_store(removed.iter());
+        self.retire_in_store(removed.iter(), valid_from);
         removed
     }
 
@@ -267,7 +274,8 @@ impl CodeGraph {
     pub fn remove_file(&self, file_path: &str) -> Vec<EntityId> {
         let normalized = normalize_path_str(file_path);
         let mut projection = (*self.snapshot()).clone();
-        let removed = self.remove_file_entities(&mut projection, &normalized);
+        let removed =
+            self.remove_file_entities(&mut projection, &normalized, &crate::storage::now_iso8601());
         // The file→module mapping outlives the module otherwise, and a
         // recreated file would resolve to an id that is no longer there.
         projection
@@ -292,6 +300,7 @@ impl CodeGraph {
         units: &[ExtractedUnit],
         file_path: &str,
         language: &Language,
+        valid_from: &str,
     ) -> (usize, usize, Option<String>) {
         // 1. Collect old entity hashes from projection.
         //    Normalize entity IDs for cross-platform prefix matching.
@@ -754,7 +763,7 @@ impl CodeGraph {
                 .retain(|(s, t)| !gone.contains(s) && !gone.contains(t));
         }
 
-        let retirement_error = self.try_retire_in_store(removed_ids.iter());
+        let retirement_error = self.try_retire_in_store(removed_ids.iter(), valid_from);
 
         (inserted, removed, retirement_error)
     }
@@ -872,8 +881,13 @@ impl CodeGraph {
         let before = self.snapshot();
         let epoch_before = self.epoch();
         let mut projection = (*before).clone();
-        let (new_count, removed_count, retirement_error) =
-            self.apply_diff_update(&mut projection, &units, file_path, &lang);
+        let (new_count, removed_count, retirement_error) = self.apply_diff_update(
+            &mut projection,
+            &units,
+            file_path,
+            &lang,
+            &crate::storage::now_iso8601(),
+        );
         // Keep the dotted-name fast path in sync (cheap; module set is
         // unchanged today, but a stale index would silently degrade the
         // cascade below to full scans).

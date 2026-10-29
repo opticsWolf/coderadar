@@ -900,6 +900,49 @@ def history_of(result: dict) -> str:
     return "\n".join(out)
 
 
+def ingest_history(result: dict) -> str:
+    """Commit-driven ingest report as legible text (P5a.3, DR-41).
+
+    Counts first, then the two auditable lists: skipped commits with
+    reasons, failed files with reasons. The JSON report is complete;
+    this render shows every skip and failure uncapped (they are the
+    signal, not the noise).
+    """
+    head = [
+        f"branch           {result['branch']}  (lineage {result['lineage']})",
+        f"from             {result['from'] or '(root)'}",
+        f"head             {result['head'] or '(unchanged)'}",
+        (
+            f"commits          ingested={result['commits_ingested']}  "
+            f"skipped={len(result['commits_skipped'])}  "
+            f"ghosts={result['ghost_commits']}"
+            f"{'  DRY RUN' if result['dry_run'] else ''}"
+        ),
+        (
+            f"files            parsed={result['files_parsed']}  "
+            f"failed={len(result['files_failed'])}  "
+            f"excluded={result['files_excluded']}"
+        ),
+        (
+            f"blobs            stored={result['blobs_stored']}  "
+            f"deduped={result['blobs_deduped']}  "
+            f"stamps_nudged={result['stamps_nudged']}"
+        ),
+        f"elapsed          {result['elapsed_secs']:.1f}s",
+    ]
+    out = head
+    if result["commits_skipped"]:
+        out.append("\nskipped commits:")
+        out += [f"  {s['sha'][:12]}  {s['reason']}" for s in result["commits_skipped"]]
+    if result["files_failed"]:
+        out.append("\nfailed files:")
+        out += [
+            f"  {f['sha'][:12]}  {f['path']}  {f['reason']}"
+            for f in result["files_failed"]
+        ]
+    return "\n".join(out)
+
+
 def changes_between(result: dict, *, per_class: int = 25) -> str:
     """Entity diff between two instants as legible text (P2, DR-37).
 

@@ -1442,6 +1442,65 @@ def history_of(file: str, *, graph: Any = None) -> dict:
     return {"file": str(file), "versions": versions, "count": len(versions)}
 
 
+def ingest_history(repo: str | Path, branch: str = "main",
+                   from_sha: str | None = None, dry_run: bool = False,
+                   *, store_path: str | Path | None = None,
+                   graph: Any = None) -> dict:
+    """Ingest one git branch's first-parent history into the trunk lineage
+    (P5a.3, DR-41).
+
+    Per commit, in topological order: blob puts for the changed files,
+    one stamped flush (entity concepts + spine + the commit concept),
+    scoped edge persistence, and a sweep scoped to the commit's tree —
+    then the ``kv`` cursor advance that makes an interrupted ingest
+    resumable. Returns the report as the contract:: ``{"branch",
+    "lineage", "from", "head", "dry_run", "commits_ingested",
+    "commits_skipped": [{"sha", "reason"}], "files_parsed",
+    "files_failed": [{"sha", "path", "reason"}], "files_excluded",
+    "blobs_stored", "blobs_deduped", "stamps_nudged",
+    "ghost_commits", "elapsed_secs"}``.
+
+    The store is ``store_path``, else the given graph's database.
+    There is deliberately no cwd default: the op creates a commit-time
+    store when the path is missing, and creating one by accident is the
+    mistake this signature refuses to make. A store file that already
+    exists without the commit-time flag is refused (INV-12, legacy
+    index-now) — ingest into a fresh path instead. ``from_sha`` is an
+    exclusive window start (``None`` resumes from the cursor); a
+    ``from_sha`` that is not the cursor is refused (INV-10). ``dry_run``
+    plans without writing anything, including no store creation.
+
+    No MCP tool in the first release: a long, writing, migration-grade
+    op an agent must not call without knowing that.
+    """
+    if not repo or not str(repo).strip():
+        raise InvalidRequest("Please provide a repository path.")
+    if not branch or not str(branch).strip():
+        raise InvalidRequest("Please provide a git branch (e.g. 'main').")
+    if store_path is None and graph is not None:
+        store_path = getattr(graph, "_db_path", None)
+    if store_path is None:
+        raise InvalidRequest(
+            "ingest_history needs a store_path (or a graph carrying one): "
+            "it creates a commit-time store when the path is missing.")
+    try:
+        from coderadar._core import ingest_history as _ingest
+        raw = _ingest(str(store_path), str(repo), str(branch),
+                      str(from_sha) if from_sha is not None else None,
+                      bool(dry_run))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"ingest_history returned unparseable JSON: {e}") from None
+
+
 def changes_between(t1: str, t2: str, scope: str | None = None,
                     branch: str = "main", *, graph: Any = None) -> dict:
     """Added / removed / modified / moved / uncompared entities between two instants (P2, DR-37).

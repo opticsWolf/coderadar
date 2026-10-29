@@ -86,6 +86,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fork_branch, m)?)?;
     m.add_function(wrap_pyfunction!(write_branch_content, m)?)?;
     m.add_function(wrap_pyfunction!(history_of, m)?)?;
+    m.add_function(wrap_pyfunction!(ingest_history, m)?)?;
     m.add_function(wrap_pyfunction!(archive, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -267,6 +268,32 @@ fn temporal_err(e: macrame::DbError) -> PyErr {
         other => pyo3::exceptions::PyRuntimeError::new_err(format!("{other:?}")),
     }
 }
+
+/// INV-12 enforcement for the index-now write paths (`analyze`,
+/// `update_file`, `remove_file`): a store whose stamping mode is
+/// commit-time refuses clock-stamped writes, because mixing the two axes
+/// in one store is exactly what the mode flag exists to prevent. The
+/// message names the one legal move.
+fn store_is_commit_time(store: &crate::storage::CodeGraphStore) -> bool {
+    store
+        .kv_get_sync(crate::graph::ingest::STAMPING_MODE_KEY)
+        .ok()
+        .flatten()
+        .as_deref()
+        == Some(crate::graph::ingest::MODE_COMMIT_TIME)
+}
+
+fn commit_time_refusal() -> String {
+    "refusing [commit-time]: this store's stamping mode is commit-time (written by \n\
+     ingest-history); index-now writes would mix stamps (INV-12) — re-ingest the range \n\
+     instead of analyzing or updating"
+        .to_string()
+}
+
+/// Map an ingest failure to the error the Python layer contracts on:
+/// caller-caused refusals (bad branch, bad revision, ancestry, cursor,
+/// mode) are `ValueError` → `InvalidRequest`; store and git-infrastructure
+/// failures are `RuntimeError` → `EngineError`.
 
 // ── PyO3-exposed Graph wrapper ─────────────────────────────────────────────
 
@@ -668,7 +695,9 @@ fn analyze(
     // `exclude` is the one-shot layer (CLI `--exclude`, library
     // `analyze(exclude=[…])`): merged with config + defaults for the run.
     let extra = exclude.unwrap_or_default();
-    let outcome = py.allow_threads(|| analyze_inner(root, create_store, &extra));
+    let outcome = py
+        .allow_threads(|| analyze_inner(root, create_store, &extra))
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     let dict = PyDict::new(py);
     dict.set_item("files_indexed", outcome.files_indexed)?;
@@ -684,7 +713,11 @@ fn analyze(
     Ok(dict.into())
 }
 
-fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> AnalyzeOutcome {
+fn analyze_inner(
+    root: &str,
+    create_store: bool,
+    extra_excludes: &[String],
+) -> Result<AnalyzeOutcome, String> {
     use crate::types::{Language, ParseQuality};
     use std::fs;
 
@@ -735,6 +768,15 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
             Err(e) => {
                 eprintln!("Warning: Macrame store not attached: {:?}", e);
             }
+        }
+    }
+    // INV-12: index-now writes must refuse a commit-time store. A reindex
+    // over ingested history would mix clock stamps into the commit-time
+    // axis — the one mixing the flag exists to refuse. Re-ingest the
+    // range instead.
+    if let Some(ref store) = graph.store {
+        if store_is_commit_time(store) {
+            return Err(commit_time_refusal());
         }
     }
 
@@ -1187,7 +1229,7 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
     *guard = Some(graph);
 
     let blob_totals = crate::storage::blob_stats_snapshot();
-    AnalyzeOutcome {
+    Ok(AnalyzeOutcome {
         files_indexed,
         total_entities,
         failures,
@@ -1196,7 +1238,7 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         blobs_skipped_oversize: blob_totals.skipped_oversize,
         blobs_skipped_excluded: blob_totals.skipped_excluded,
         blobs_bytes: blob_totals.bytes,
-    }
+    })
 }
 
 // ── query_graph() ──────────────────────────────────────────────────────────
@@ -1256,7 +1298,16 @@ fn update_file(
         .allow_threads(|| {
             let guard = GLOBAL_GRAPH.read();
             match guard.as_ref() {
-                Some(graph) => graph.update_file(file_path, content, force),
+                Some(graph) => {
+                    // INV-12: a live-updated file carries the clock, which
+                    // would mix stamps into a commit-time store.
+                    if let Some(store) = graph.store.as_ref() {
+                        if store_is_commit_time(store) {
+                            return Err(commit_time_refusal());
+                        }
+                    }
+                    graph.update_file(file_path, content, force)
+                }
                 None => Err("No graph loaded — run coderadar init first".to_string()),
             }
         })
@@ -1324,6 +1375,14 @@ fn update_file(
 fn remove_file(file_path: &str) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|graph, _snap| {
+        // INV-12: same clock-mixing refusal as `update_file`.
+        if let Some(store) = graph.store.as_ref() {
+            if store_is_commit_time(store) {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    commit_time_refusal(),
+                ));
+            }
+        }
         let started = std::time::Instant::now();
         // F14: remove by the canonical form or the walk-form entry is
         // never found (forward-slash input vs `\` -joined stored ids).
@@ -2247,6 +2306,59 @@ fn visible_all_concept_ids(py: Python<'_>, branch: &str) -> PyResult<Vec<String>
 #[pyo3(signature = (entity_id,))]
 fn canonical_id(entity_id: &str) -> String {
     canonical_lookup_id(entity_id)
+}
+
+/// Ingest one git branch's first-parent history into the trunk lineage
+/// (P5a.3, DR-41): per commit, blob puts, one stamped flush (concepts +
+/// spine + commit concept), scoped edge persistence, and a tree-scoped
+/// sweep — then the `kv` cursor advance that makes an interrupted ingest
+/// resumable. `from` is an exclusive window start (a sha; `None` resumes
+/// from the cursor or starts at the root); `dry_run` plans without writing
+/// anything. Returns the report as JSON.
+///
+/// No MCP tool in the first release: a long, writing, migration-grade op
+/// an agent must not call without knowing that (the H-13 shape).
+/// Refusals (bad branch/revision, out-of-order, legacy store) are
+/// `ValueError`; infrastructure failures are `RuntimeError`.
+#[pyfunction]
+#[pyo3(signature = (store_path, repo, branch = "main", from = None, dry_run = false))]
+fn ingest_history(
+    py: Python<'_>,
+    store_path: &str,
+    repo: &str,
+    branch: &str,
+    from: Option<&str>,
+    dry_run: bool,
+) -> PyResult<String> {
+    use crate::graph::ingest::IngestError;
+    let report = py
+        .allow_threads(|| {
+            crate::graph::ingest::ingest_history(store_path, repo, branch, from, dry_run)
+        })
+        .map_err(|e| {
+            let msg = e.to_string();
+            let user_error = match &e {
+                IngestError::Git(ge) => matches!(
+                    ge,
+                    crate::fs::git::GitError::UnknownBranch(_)
+                        | crate::fs::git::GitError::UnknownRevision(_)
+                        | crate::fs::git::GitError::NotAncestor(_)
+                        | crate::fs::git::GitError::PathNotFound { .. }
+                ),
+                IngestError::UnknownHighWater { .. }
+                | IngestError::OutOfOrder { .. }
+                | IngestError::NotDescendant { .. }
+                | IngestError::IndexNowRefused { .. } => true,
+                IngestError::Store(_) => false,
+            };
+            if user_error {
+                pyo3::exceptions::PyValueError::new_err(msg)
+            } else {
+                pyo3::exceptions::PyRuntimeError::new_err(msg)
+            }
+        })?;
+    serde_json::to_string(&report)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
 }
 
 /// Every content a file ever had, newest first (P3, DR-38).

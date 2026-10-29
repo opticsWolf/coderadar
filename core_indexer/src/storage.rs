@@ -85,6 +85,10 @@ pub mod edge_type {
     /// mints one. The row names its blob in content AND extra (the live
     /// pin, same as module `extra`); superseded rows release on turnover.
     pub const BRANCH_CONTENT_KIND: &str = "branch_content";
+    /// P5 commit concept (`kind = 'commit'`): one row per ingested commit,
+    /// carrying author/committer metadata in `extra`. Ledger infrastructure
+    /// like the spine — never an entity, never swept, never listed.
+    pub const COMMIT_KIND: &str = "commit";
 }
 
 /// One row of `branches()`: the lineage's name, its parent (`None` for
@@ -1444,11 +1448,18 @@ impl CodeGraphStore {
     /// instant still sees the entity alive.
     ///
     /// Returns `(concepts_retired, edges_retired)`.
-    pub fn retire_entities(&self, entity_ids: &[String]) -> macrame::Result<(usize, usize)> {
+    /// Stamped twin (P5a.3, DR-41): the same retirement at an explicit
+    /// `valid_from` — commit time on the P5 path. The un-stamped form
+    /// below keeps the live paths on the clock.
+    pub fn retire_entities_at(
+        &self,
+        entity_ids: &[String],
+        valid_from: &str,
+    ) -> macrame::Result<(usize, usize)> {
         if entity_ids.is_empty() {
             return Ok((0, 0));
         }
-        let ts = now_iso8601();
+        let ts = valid_from.to_string();
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         runtime().block_on(async {
             // Title, content and extra are carried over: the upsert overwrites
@@ -1533,6 +1544,11 @@ impl CodeGraphStore {
         })
     }
 
+    /// Un-stamped wrapper (live paths): retire at the clock.
+    pub fn retire_entities(&self, entity_ids: &[String]) -> macrame::Result<(usize, usize)> {
+        self.retire_entities_at(entity_ids, &now_iso8601())
+    }
+
     /// `(id, content)` of every concept the ledger still holds to be true.
     ///
     /// The content-carrying counterpart to [`Self::live_concept_ids`], for
@@ -1586,7 +1602,13 @@ impl CodeGraphStore {
     /// concepts avoids touching unrelated ledger rows; `keep_ids` is the exact
     /// set written from the new projection. This also removes stale v2 imports
     /// whose line-based ids disappeared between indexing passes.
-    pub fn retire_stale_file_concepts(&self, keep_ids: &HashSet<String>) -> macrame::Result<usize> {
+    /// Stamped twin (P5a.3, DR-41): the same file-concept sweep at an
+    /// explicit `valid_from`. The wrapper below keeps analyze on the clock.
+    pub fn retire_stale_file_concepts_at(
+        &self,
+        keep_ids: &HashSet<String>,
+        valid_from: &str,
+    ) -> macrame::Result<usize> {
         let stale_ids: Vec<String> = self
             .live_concept_contents()?
             .into_iter()
@@ -1615,7 +1637,12 @@ impl CodeGraphStore {
             })
             .map(|(id, _)| id)
             .collect();
-        Ok(self.retire_entities(&stale_ids)?.0)
+        Ok(self.retire_entities_at(&stale_ids, valid_from)?.0)
+    }
+
+    /// Un-stamped wrapper (live paths): sweep at the clock.
+    pub fn retire_stale_file_concepts(&self, keep_ids: &HashSet<String>) -> macrame::Result<usize> {
+        self.retire_stale_file_concepts_at(keep_ids, &now_iso8601())
     }
 
     /// Live ids of framework route concepts (§1.3), optionally scoped to
@@ -1805,7 +1832,7 @@ impl CodeGraphStore {
                     "SELECT id FROM concepts WHERE retired = 0 \
                      AND (json_extract(content, '$.kind') IS NULL \
                           OR json_extract(content, '$.kind') NOT IN \
-                             ('content_version', 'branch_content')) \
+                             ('content_version', 'branch_content', 'commit')) \
                      ORDER BY id",
                     (),
                 )
@@ -1871,9 +1898,14 @@ impl CodeGraphStore {
     /// for the five structural kinds, with CALLS pairs minus
     /// `synthetic_edges` (built by `stale_edge_keep_set` in lib.rs).
     /// Returns the number of edges retired.
-    pub fn retire_stale_edges(
+    /// Stamped twin (P5a.3, DR-41): the same structural-edge sweep at an
+    /// explicit `valid_from` — a call deleted in a commit closes at the
+    /// commit's stamp, not at ingest time. The wrapper keeps analyze on
+    /// the clock.
+    pub fn retire_stale_edges_at(
         &self,
         keep: &std::collections::HashSet<(String, String, String)>,
+        valid_from: &str,
     ) -> macrame::Result<usize> {
         const STRUCTURAL: [&str; 8] = [
             "CALLS",
@@ -1885,7 +1917,7 @@ impl CodeGraphStore {
             "REFERENCES",
             "OVERRIDES",
         ];
-        let ts = now_iso8601();
+        let ts = valid_from.to_string();
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         let stale: Vec<(String, String, String, String)> = runtime().block_on(async {
             let mut rows = conn
@@ -1941,6 +1973,14 @@ impl CodeGraphStore {
             n
         });
         Ok(retired)
+    }
+
+    /// Un-stamped wrapper (live paths): sweep at the clock.
+    pub fn retire_stale_edges(
+        &self,
+        keep: &std::collections::HashSet<(String, String, String)>,
+    ) -> macrame::Result<usize> {
+        self.retire_stale_edges_at(keep, &now_iso8601())
     }
 
     /// Assert a single edge.
@@ -2124,6 +2164,20 @@ impl CodeGraphStore {
         })
     }
 
+    /// Sync `kv_store` read for callers without a runtime handle (P5a.3,
+    /// DR-41): the ingest cursor and stamping-mode flag live in Macrame's
+    /// branch-global `kv`, outside the ledger by design (H-20 — never a
+    /// blob reference, only mode strings and commit shas).
+    pub(crate) fn kv_get_sync(&self, key: &str) -> macrame::Result<Option<String>> {
+        runtime().block_on(self.db.kv_get(key))
+    }
+
+    /// Sync `kv_store` write (P5a.3, DR-41). One or two keys per commit
+    /// (head + stamp); the write actor serializes them.
+    pub(crate) fn kv_put_sync(&self, key: &str, value: &str) -> macrame::Result<()> {
+        runtime().block_on(self.db.kv_put(key, value))
+    }
+
     /// Record divergent content for `path` on `branch` (P4, DR-40): the
     /// one branch-legal way to disagree with the trunk about a file's
     /// bytes. Concepts are lineage-frozen (D-225: a branch inherits and
@@ -2281,7 +2335,7 @@ impl CodeGraphStore {
                      WHERE table_name = 'concepts' AND branch_id = ?1 \
                      AND entity_id NOT IN (SELECT id FROM concepts \
                          WHERE json_extract(content, '$.kind') IN \
-                            ('content_version', 'branch_content')) \
+                            ('content_version', 'branch_content', 'commit')) \
                      ORDER BY entity_id",
                     libsql::params![branch],
                 )
@@ -3309,14 +3363,15 @@ pub enum V2ConceptClass {
     /// Field entities (fields ride inside their Class), so these are
     /// skipped with a warning.
     StandaloneField,
-    /// P3 content-version spine concept (`kind = 'content_version'`) and
-    /// P4 branch-content pointer (`kind = 'branch_content'`).
+    /// P3 content-version spine concept (`kind = 'content_version'`),
+    /// P4 branch-content pointer (`kind = 'branch_content'`), and P5
+    /// commit concept (`kind = 'commit'`).
     /// Ledger infrastructure, not entities: timeless,
     /// digest-addressed, read through `history_of` / the branch read
-    /// path. Skipped by entity loaders exactly like standalone fields —
-    /// matching them before the canonical check is what keeps them out
-    /// of `V1Leftover` (which hard-fails the load) and out of
-    /// `parse_v2_concept` (which has no arm for either).
+    /// path / the ingest report. Skipped by entity loaders exactly like
+    /// standalone fields — matching them before the canonical check is
+    /// what keeps them out of `V1Leftover` (which hard-fails the load)
+    /// and out of `parse_v2_concept` (which has no arm for any of them).
     Spine,
     /// Content that is not JSON or has no kind.
     Unreadable,
@@ -3333,7 +3388,10 @@ pub fn classify_v2_concept(content: &str) -> V2ConceptClass {
     if kind == "field" {
         return V2ConceptClass::StandaloneField;
     }
-    if kind == "content_version" || kind == edge_type::BRANCH_CONTENT_KIND {
+    if kind == "content_version"
+        || kind == edge_type::BRANCH_CONTENT_KIND
+        || kind == edge_type::COMMIT_KIND
+    {
         return V2ConceptClass::Spine;
     }
     if V2_CANONICAL_KINDS.contains(&kind)
@@ -5937,6 +5995,138 @@ mod stamped_write_tests {
         assert_eq!(
             stamps.get(&spine_id).map(String::as_str),
             Some(stamp.as_str())
+        );
+    }
+
+    /// P5a.3: retiring at an explicit stamp closes the concept row at
+    /// that stamp — a file deleted in a commit ends at the commit's
+    /// time, not at ingest time.
+    #[test]
+    fn retire_entities_at_lands_the_given_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("ret.db")).unwrap();
+        let v1 = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m"}"#)
+            .valid_from("2026-01-01T10:00:00.000000Z")
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[v1]).unwrap(), 1);
+        let (n, _) = store
+            .retire_entities_at(&["m.py::module".to_string()], "2026-01-02T10:00:00.000000Z")
+            .unwrap();
+        assert_eq!(n, 1);
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let valid_to: String = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT valid_to FROM concepts WHERE id = ?1 AND retired = 1",
+                        libsql::params!["m.py::module"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .expect("retired row exists");
+                Ok::<_, macrame::DbError>(row.get::<String>(0).unwrap_or_default())
+            })
+            .unwrap();
+        assert_eq!(valid_to, "2026-01-02T10:00:00.000000Z");
+    }
+
+    /// P5a.3: the tree-scoped edge sweep closes a deleted call at the
+    /// commit's stamp — `reconstruct` before the commit still sees it,
+    /// after does not.
+    #[test]
+    fn retire_stale_edges_at_closes_at_the_given_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("rete.db")).unwrap();
+        for id in ["a.py::f", "b.py::g"] {
+            let v = macrame::ConceptUpsert::new(id, id)
+                .content(r#"{"kind":"function","name":"x"}"#)
+                .valid_from("2026-01-01T10:00:00.000000Z")
+                .valid_to(TS_OPEN.to_string())
+                .retired(false);
+            store.upsert_concepts_bulk(&[v]).unwrap();
+        }
+        store
+            .assert_edge(
+                "a.py::f",
+                "b.py::g",
+                "CALLS",
+                "{}",
+                "2026-01-01T10:00:00.000000Z",
+                1.0,
+            )
+            .unwrap();
+        let retired = store
+            .retire_stale_edges_at(
+                &std::collections::HashSet::new(),
+                "2026-01-02T10:00:00.000000Z",
+            )
+            .unwrap();
+        assert_eq!(retired, 1);
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let valid_to: String = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT valid_to FROM links WHERE source_id = ?1 \
+                         AND target_id = ?2 AND edge_type = ?3 \
+                         ORDER BY valid_from DESC LIMIT 1",
+                        libsql::params!["a.py::f", "b.py::g", "CALLS"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .expect("edge row exists");
+                Ok::<_, macrame::DbError>(row.get::<String>(0).unwrap_or_default())
+            })
+            .unwrap();
+        assert_eq!(valid_to, "2026-01-02T10:00:00.000000Z");
+    }
+
+    /// P5a.3: the commit kind is ledger infrastructure — the cold-start
+    /// classifier skips it exactly like the spine and the pointers, so a
+    /// store with ingested history still loads.
+    #[test]
+    fn commit_kind_classifies_as_spine() {
+        let content = r#"{"meta_version":2,"kind":"commit","sha":"abc"}"#;
+        assert!(matches!(
+            classify_v2_concept(content),
+            V2ConceptClass::Spine
+        ));
+    }
+
+    /// P5a.3 (INV-12): the stamping-mode flag round-trips through `kv` —
+    /// the mechanism both the ingest claim and the analyze refusal read.
+    #[test]
+    fn stamping_mode_flag_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("kv.db")).unwrap();
+        assert_eq!(
+            store
+                .kv_get_sync(crate::graph::ingest::STAMPING_MODE_KEY)
+                .unwrap(),
+            None
+        );
+        store
+            .kv_put_sync(
+                crate::graph::ingest::STAMPING_MODE_KEY,
+                crate::graph::ingest::MODE_COMMIT_TIME,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .kv_get_sync(crate::graph::ingest::STAMPING_MODE_KEY)
+                .unwrap()
+                .as_deref(),
+            Some(crate::graph::ingest::MODE_COMMIT_TIME)
         );
     }
 }
