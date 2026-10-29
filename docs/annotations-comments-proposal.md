@@ -25,7 +25,27 @@ no new id scheme, just the rest of P5-D2.
 Every *type* is a concept id (`a.py::module`, `a.py::g`, routes,
 `{path}@{digest}`, `commit:{sha}`, `branch:{b}:content:{path}`).
 Every *edge* is a `(source_id, target_id, edge_type)` triple in the link
-ledger. Both are addressable as strings today.
+ledger, open over a `valid_from → valid_to` interval (edges retire, never
+delete). The traversable registry (`ALL_EDGE_KINDS`, `lib.rs`) is exactly
+this — all addressable as strings:
+
+| edge kind | meaning (one line) | derived by |
+|---|---|---|
+| `calls` | function → function it invokes | call resolution cascade |
+| `imports` | module → module it depends on | import graph |
+| `extends` | class → base class | MRO / base unfold (§2.6: by target declaration) |
+| `implements` | class → interface | same partition, interface side |
+| `decorates` | function → its decorator | unique-hits-only (§2.6 slice C) |
+| `instantiates` | function → class it constructs | overlaps `calls`, kept separate (slice D) |
+| `overrides` | method → parent method it overrides | inheritance analysis |
+| `references` | entity → entity it names without calling | overlap-free with `calls` (slice E) |
+| `synthetic:{resolver}:{kind}` | framework associations (`handles`, `registers`, `navigation`, `callback`, `depends_on`, … — 13 resolvers) | `framework.py` hook; swept by namespace (DR-42) |
+
+Not edges, though they read like them: `external::*` is a pseudo-target
+marker for callees outside the index (unresolved/builtin), not a kind —
+there is no row to annotate. Killed and gone: `HAS_CONTENT` (P4 considered
+it for branch pointers, retention evidence killed it — pointers are
+concepts). And per this proposal, no annotation edges either (§2, below).
 
 Proposal: **comments target concept ids only, never edges.** Rationale, three
 lessons already paid for:
