@@ -167,8 +167,15 @@ no new flush, no new generation). Commits already ingested without messages
 (the scratch migration) get them from a **`backfill_commit_messages`** op:
 reads `git log`, restates each commit row with the message fields, trunk
 lineage (legal restate — same mint lineage, §P5a.5 precedent), idempotent
-(`filter_unchanged` absorbs repeats). Old message-less commits without a
-backfill are an honest gap, not a silent one.
+(`filter_unchanged` absorbs repeats). **When it runs: only on explicit
+operator invocation, never automatically and never lazily on read** (reads
+don't write; and the repo must be present — a store can outlive its
+checkout, shallow clones may lack old messages). The concrete triggers are:
+(1) once per store created before the body field existed; (2) after a
+migrate that *resumed* such a store (new rows carry bodies, old rows get
+healed). Mixed-version resumes are the reason it exists as an op rather
+than a migrate step. Old message-less commits without a backfill are an
+honest gap, not a silent one.
 
 ## 6. Reads (the payoff)
 
