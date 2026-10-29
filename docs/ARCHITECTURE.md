@@ -466,9 +466,12 @@ ledger — no new schema, no stored diffs, no second fold implementation:
 on. A store indexed before this release has concepts for its history and no
 content behind them: the self-host store measured 0.01% coverage, and 3.19%
 after a full re-analyze, because a re-analyze fixes the present and never
-the past. Filling it needs commit-driven ingestion from git (P5, DR-41,
-deferred by Q-1), which is a semantic change to valid time and not a point
-release.
+the past. Filling it needs commit-driven ingestion from git (P5, DR-41) —
+a semantic change to valid time, adopted on dev (P5a: walker, stamped
+writes, `ingest_history`, branch ingestion, `migrate-to-commit-time`;
+P6c slice: message bodies on `commit:{sha}` rows plus the ops-only
+`backfill_commit_messages` healer for pre-body rows, documented in
+QUICKREF, deliberately not a CLI/MCP surface).
 
 ---
 

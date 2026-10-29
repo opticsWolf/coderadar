@@ -36,6 +36,7 @@ Never run two servers on one store — the second gets `DB_LOCKED`.
 | Trust that history | `coderadar verify-history` | `coderadar_verify_history` | `ops.verify_history()` |
 | What changed T1→T2 | `coderadar changes-between T1 T2` | `coderadar_changes_between` | `ops.changes_between(t1, t2)` |
 | Versions of a file | `coderadar history FILE` | — | `g.history_of("…")` |
+| Heal commit bodies | — (ops-only) | — | `ops.backfill_commit_messages(repo, store)` |
 | List branches | — (API-only) | — | `ops.branches()` |
 | Edit code | `coderadar replace-body … [--apply]` | `coderadar_replace_body` | plan → apply |
 | Archive old blobs | — (API-only) | — | `g.archive() # cutoff or archive_after_days` |

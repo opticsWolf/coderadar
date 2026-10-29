@@ -1642,6 +1642,52 @@ def migrate_to_commit_time(repo: str | Path, store: str | Path,
     }
 
 
+def backfill_commit_messages(repo: str | Path,
+                              store_path: str | Path | None = None,
+                              *, graph: Any = None) -> dict:
+    """Message bodies for commit rows minted before the body field existed
+    (P6c slice, DR-45).
+
+    New ingests carry `body` in `commit_concept` already; this heals the
+    subject-only rows (e.g. every P5a-era ingest, including the scratch
+    migration) from `git log` — restated on each row's own mint lineage,
+    idempotent (healed rows never re-qualify, so re-runs heal zero).
+    Unknown shas (shallow clones, gc'd objects) and body-less commits skip
+    auditable, never error. Explicit-op only: never automatic, never lazy
+    on read — the repo must be present, and mixed-version resumes are why
+    it exists as an op rather than a migrate step.
+
+    Returns the report as the contract:: ``{"store", "repo",
+    "commits_healed", "commits_skipped": [{"sha", "reason"}],
+    "elapsed_secs"}``. Refusals (bad repo, index-now store) are
+    ``InvalidRequest``; infrastructure failures are ``EngineError``.
+
+    No MCP tool: a writing, migration-grade op an agent must not call
+    without knowing that (the H-13 shape).
+    """
+    if not repo or not str(repo).strip():
+        raise InvalidRequest("Please provide a git repository path.")
+    if store_path is None and graph is not None:
+        store_path = getattr(graph, "_db_path", None)
+    if store_path is None:
+        raise InvalidRequest(
+            "backfill_commit_messages needs a store_path (or a graph carrying one).")
+    try:
+        from coderadar._core import backfill_commit_messages as _backfill
+        raw = _backfill(str(store_path), str(repo))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"backfill_commit_messages returned unparseable JSON: {e}") from None
+
+
 def changes_between(t1: str, t2: str, scope: str | None = None,
                     branch: str = "main", *, graph: Any = None) -> dict:
     """Added / removed / modified / moved / uncompared entities between two instants (P2, DR-37).

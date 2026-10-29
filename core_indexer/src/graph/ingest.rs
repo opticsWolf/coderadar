@@ -1498,6 +1498,7 @@ struct CommitMeta {
     committer_name: String,
     committer_email: String,
     subject: String,
+    body: String,
 }
 
 fn read_commit_meta(git: &git2::Repository, sha: &str) -> Result<CommitMeta, String> {
@@ -1513,6 +1514,16 @@ fn read_commit_meta(git: &git2::Repository, sha: &str) -> Result<CommitMeta, Str
         committer_name: committer.name().unwrap_or("").to_string(),
         committer_email: committer.email().unwrap_or("").to_string(),
         subject: commit.summary().ok().flatten().unwrap_or("").to_string(),
+        // P6c slice (DR-45): the body rides the same payload as the
+        // subject (one bulk, no new generation). `body()` is the message
+        // minus the subject line; absent or whitespace-only reads empty.
+        body: commit
+            .body()
+            .ok()
+            .flatten()
+            .unwrap_or("")
+            .trim()
+            .to_string(),
     })
 }
 
@@ -1537,6 +1548,7 @@ fn commit_concept(
         "lineage": lineage,
         "committer_ts": valid_from,
         "subject": meta.subject,
+        "body": meta.body,
     });
     let extra = serde_json::json!({
         "coderadar": {
@@ -1555,4 +1567,360 @@ fn commit_concept(
         .valid_from(valid_from.to_string())
         .valid_to(crate::storage::TS_OPEN.to_string())
         .retired(false)
+}
+
+/// Message bodies for commit rows minted before the body field existed
+/// (P6c slice, DR-45: P5a.3-era rows carry subject only). Explicit-op
+/// only — never automatic, never lazy on read: it needs the git repo
+/// present (a store can outlive its checkout), and mixed-version resumes
+/// are why it exists as an op rather than a migrate step (new rows arrive
+/// with bodies, old rows get healed here).
+///
+/// Reads `git log` per body-less row and restates the row on its OWN mint
+/// lineage via `backfill_commit_bodies` (trunk or branch — the §P5a.5
+/// choke-point rule). Unknown shas (shallow clones, gc'd objects) and
+/// body-less commits skip auditable, never error. Idempotent: healed rows
+/// never re-qualify, so re-runs heal zero.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BackfillSkip {
+    pub sha: String,
+    pub reason: String,
+}
+
+/// Report-shape-as-contract (P1/P2 rule): counts plus the auditable
+/// skip list, never just a number.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BackfillReport {
+    pub store: String,
+    pub repo: String,
+    pub commits_healed: usize,
+    pub commits_skipped: Vec<BackfillSkip>,
+    pub elapsed_secs: f64,
+}
+
+/// Refusals (bad repo, wrong store) vs infrastructure (open/query/write).
+/// Mirrors the ingest FFI split: `Repo`/`Refused` are user errors,
+/// `Store` is infrastructure.
+#[derive(Debug)]
+pub enum BackfillError {
+    Repo(String),
+    Refused(String),
+    Store(String),
+}
+
+impl std::fmt::Display for BackfillError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackfillError::Repo(e) => write!(f, "backfill-commit-messages [repo]: {e}"),
+            BackfillError::Refused(e) => write!(f, "backfill-commit-messages [refused]: {e}"),
+            BackfillError::Store(e) => write!(f, "backfill-commit-messages [store]: {e}"),
+        }
+    }
+}
+
+pub fn backfill_commit_messages(
+    store_path: &str,
+    repo_path: &str,
+) -> Result<BackfillReport, BackfillError> {
+    let started = std::time::Instant::now();
+    let store = crate::storage::CodeGraphStore::open(store_path)
+        .map_err(|e| BackfillError::Store(format!("cannot open {store_path:?}: {e:?}")))?;
+    // INV-12, same as ingest: commit rows only exist on commit-time
+    // stores, so a legacy store is a refusal, not an empty success.
+    // Flagless stores hold no commit rows by construction (every writer
+    // of such rows claims the flag first) — they read as zeros.
+    match store
+        .kv_get_sync(STAMPING_MODE_KEY)
+        .map_err(|e| BackfillError::Store(format!("cannot read stamping mode: {e:?}")))?
+        .as_deref()
+    {
+        Some(MODE_COMMIT_TIME) => {}
+        // Flagless with rows is a legacy index-now store (INV-12, same
+        // posture as ingest): the operator pointed at the wrong store.
+        // Flagless and empty is fresh — zeros, honestly.
+        None => {
+            let (_guard, conn) = store.open_diagnostic_conn().map_err(|e| {
+                BackfillError::Store(format!("cannot inspect {store_path:?}: {e:?}"))
+            })?;
+            let rows: i64 = crate::storage::runtime()
+                .block_on(async {
+                    let mut rows = conn
+                        .query("SELECT COUNT(*) FROM concepts", Vec::<libsql::Value>::new())
+                        .await
+                        .map_err(macrame::DbError::Engine)?;
+                    let n = match rows.next().await.map_err(macrame::DbError::Engine)? {
+                        Some(row) => row.get::<i64>(0).unwrap_or(0),
+                        None => 0,
+                    };
+                    Ok::<_, macrame::DbError>(n)
+                })
+                .map_err(|e| {
+                    BackfillError::Store(format!("cannot inspect {store_path:?}: {e:?}"))
+                })?;
+            if rows > 0 {
+                return Err(BackfillError::Refused(format!(
+                    "backfill needs a commit-time store: {store_path:?} has no stamping-mode \
+                     flag but holds {rows} concept rows, so it is a legacy index-now store"
+                )));
+            }
+        }
+        Some(MODE_INDEX_NOW) => {
+            return Err(BackfillError::Refused(format!(
+                "backfill needs a commit-time store: {store_path:?} is index-now"
+            )))
+        }
+        Some(other) => {
+            return Err(BackfillError::Store(format!(
+                "unknown stamping mode {other:?} on {store_path:?}"
+            )))
+        }
+    }
+    let git = git2::Repository::open(repo_path)
+        .map_err(|e| BackfillError::Repo(format!("cannot open {repo_path:?}: {e}")))?;
+    let (healed, skipped) = store
+        .backfill_commit_bodies(&|sha| {
+            let oid = git2::Oid::from_str(sha).map_err(|_| "unknown-sha".to_string())?;
+            let commit = git
+                .find_commit(oid)
+                .map_err(|_| "unknown-sha".to_string())?;
+            match commit
+                .body()
+                .ok()
+                .flatten()
+                .map(str::trim)
+                .filter(|b| !b.is_empty())
+            {
+                Some(body) => Ok(Some(body.to_string())),
+                None => Ok(None),
+            }
+        })
+        .map_err(|e| BackfillError::Store(format!("backfill failed: {e:?}")))?;
+    Ok(BackfillReport {
+        store: store_path.to_string(),
+        repo: repo_path.to_string(),
+        commits_healed: healed,
+        commits_skipped: skipped
+            .into_iter()
+            .map(|(sha, reason)| BackfillSkip { sha, reason })
+            .collect(),
+        elapsed_secs: started.elapsed().as_secs_f64(),
+    })
+}
+
+#[cfg(test)]
+mod backfill_tests {
+    use super::*;
+
+    fn write_and_stage(repo: &git2::Repository, name: &str, contents: &str) {
+        let workdir = repo.workdir().unwrap();
+        std::fs::write(workdir.join(name), contents).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new(name)).unwrap();
+        index.write().unwrap();
+    }
+
+    fn commit_on(
+        repo: &git2::Repository,
+        reference: &str,
+        message: &str,
+        parents: &[&git2::Commit],
+    ) -> String {
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = git2::Signature::now("t", "t@t.t").unwrap();
+        repo.commit(Some(reference), &sig, &sig, message, &tree, parents)
+            .unwrap()
+            .to_string()
+    }
+
+    /// main: c1 subject-only, c2 with a two-line body. Returns (dir, c1, c2).
+    fn tiny_repo() -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        write_and_stage(&repo, "a.py", "x = 1\n");
+        let c1 = commit_on(&repo, "refs/heads/main", "first subject", &[]);
+        let p1 = repo.find_commit(git2::Oid::from_str(&c1).unwrap()).unwrap();
+        write_and_stage(&repo, "a.py", "x = 2\n");
+        let c2 = commit_on(
+            &repo,
+            "refs/heads/main",
+            "second subject\n\nsecond body line one\nsecond body line two",
+            &[&p1],
+        );
+        (dir, c1, c2)
+    }
+
+    /// A P5a.3-era row: subject, no body — exactly what the scratch
+    /// migration minted before the body field existed.
+    fn legacy_row(sha: &str) -> macrame::ConceptUpsert {
+        macrame::ConceptUpsert::new(format!("commit:{sha}"), format!("commit:{sha}"))
+            .content(
+                serde_json::json!({
+                    "meta_version": 2, "kind": "commit", "sha": sha,
+                    "lineage": "main", "committer_ts": "2026-01-01T00:00:00.000000Z",
+                    "subject": "legacy subject",
+                })
+                .to_string(),
+            )
+            .extra(r#"{"coderadar":{"kind":"commit"}}"#.to_string())
+            .valid_from("2026-01-01T00:00:00.000000Z".to_string())
+            .valid_to(crate::storage::TS_OPEN.to_string())
+            .retired(false)
+    }
+
+    /// A backfilled store IS a commit-time store: claim the flag the way
+    /// a real ingest would, so the INV-12 gate reads it as one.
+    fn commit_time_store(path: &std::path::Path) -> crate::storage::CodeGraphStore {
+        let store = crate::storage::CodeGraphStore::open(path).unwrap();
+        store
+            .kv_put_sync(STAMPING_MODE_KEY, MODE_COMMIT_TIME)
+            .unwrap();
+        store
+    }
+
+    fn read_row(store: &crate::storage::CodeGraphStore, id: &str) -> (String, String) {
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        crate::storage::runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT content, branch_id FROM concepts WHERE id = ?1",
+                        libsql::params![id],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .expect("row exists");
+                Ok::<_, macrame::DbError>((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                ))
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn heals_a_subject_only_row() {
+        let (dir, _c1, c2) = tiny_repo();
+        let store_path = dir.path().join("bf.db");
+        let store = commit_time_store(&store_path);
+        store.upsert_concepts_bulk(&[legacy_row(&c2)]).unwrap();
+        let report =
+            backfill_commit_messages(store_path.to_str().unwrap(), dir.path().to_str().unwrap())
+                .unwrap();
+        assert_eq!(report.commits_healed, 1);
+        assert!(report.commits_skipped.is_empty());
+        let (content, branch_id) = read_row(&store, &format!("commit:{c2}"));
+        assert!(content.contains("second body line one"), "{content}");
+        assert!(
+            content.contains("legacy subject"),
+            "subject kept: {content}"
+        );
+        assert_ne!(branch_id, "", "trunk rows carry the trunk branch");
+    }
+
+    #[test]
+    fn rerun_heals_zero() {
+        let (dir, _c1, c2) = tiny_repo();
+        let store_path = dir.path().join("bf2.db");
+        commit_time_store(&store_path)
+            .upsert_concepts_bulk(&[legacy_row(&c2)])
+            .unwrap();
+        let run = || {
+            backfill_commit_messages(store_path.to_str().unwrap(), dir.path().to_str().unwrap())
+                .unwrap()
+        };
+        assert_eq!(run().commits_healed, 1);
+        let second = run();
+        assert_eq!(second.commits_healed, 0);
+        assert!(second.commits_skipped.is_empty());
+    }
+
+    #[test]
+    fn restate_rides_the_mint_lineage() {
+        // The §P5a.5 choke-point rule covers every restate, including this
+        // one: a branch-held commit row healed on the trunk would trip
+        // the cross-lineage trigger on its own id.
+        let (dir, _c1, c2) = tiny_repo();
+        let store_path = dir.path().join("bf3.db");
+        let store = commit_time_store(&store_path);
+        store.fork_branch("feat", "main").unwrap();
+        let branched = legacy_row(&c2).on_branch(macrame::BranchId::new("feat").unwrap());
+        store.upsert_concepts_bulk(&[branched]).unwrap();
+        let report =
+            backfill_commit_messages(store_path.to_str().unwrap(), dir.path().to_str().unwrap())
+                .unwrap();
+        assert_eq!(report.commits_healed, 1);
+        let (content, branch_id) = read_row(&store, &format!("commit:{c2}"));
+        assert!(content.contains("second body line two"), "{content}");
+        assert_eq!(branch_id, "feat");
+    }
+
+    #[test]
+    fn unknown_sha_and_bodiless_skip_auditable() {
+        let (dir, c1, _c2) = tiny_repo();
+        let store_path = dir.path().join("bf4.db");
+        let store = commit_time_store(&store_path);
+        // c1's git message is subject-only: nothing to heal.
+        store
+            .upsert_concepts_bulk(&[legacy_row(&c1), legacy_row(&"0".repeat(40))])
+            .unwrap();
+        let report =
+            backfill_commit_messages(store_path.to_str().unwrap(), dir.path().to_str().unwrap())
+                .unwrap();
+        assert_eq!(report.commits_healed, 0);
+        let mut reasons: Vec<_> = report
+            .commits_skipped
+            .iter()
+            .map(|s| (s.sha.clone(), s.reason.clone()))
+            .collect();
+        reasons.sort();
+        assert_eq!(
+            reasons,
+            vec![
+                ("0".repeat(40), "unknown-sha".to_string()),
+                (c1, "no-body".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn index_now_store_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("bf5.db");
+        let store = crate::storage::CodeGraphStore::open(&store_path).unwrap();
+        store
+            .kv_put_sync(STAMPING_MODE_KEY, MODE_INDEX_NOW)
+            .unwrap();
+        assert!(matches!(
+            backfill_commit_messages(store_path.to_str().unwrap(), dir.path().to_str().unwrap(),),
+            Err(BackfillError::Refused(_))
+        ));
+    }
+
+    #[test]
+    fn flagless_store_with_rows_refuses_as_legacy() {
+        // No flag + concept rows = a legacy index-now store (INV-12, same
+        // posture as ingest): the operator pointed at the wrong store.
+        // Flagless and empty stays zeros, honestly.
+        let dir = tempfile::tempdir().unwrap();
+        let store_path = dir.path().join("bf6.db");
+        let store = crate::storage::CodeGraphStore::open(&store_path).unwrap();
+        store
+            .upsert_concepts_bulk(
+                &[macrame::ConceptUpsert::new("a.py::module", "a.py::module")
+                    .content(r#"{"meta_version":2,"kind":"module"}"#.to_string())
+                    .valid_from(crate::storage::now_iso8601())
+                    .valid_to(crate::storage::TS_OPEN.to_string())
+                    .retired(false)],
+            )
+            .unwrap();
+        assert!(matches!(
+            backfill_commit_messages(store_path.to_str().unwrap(), dir.path().to_str().unwrap(),),
+            Err(BackfillError::Refused(_))
+        ));
+    }
 }

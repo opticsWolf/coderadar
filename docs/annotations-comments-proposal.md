@@ -177,6 +177,23 @@ healed). Mixed-version resumes are the reason it exists as an op rather
 than a migrate step. Old message-less commits without a backfill are an
 honest gap, not a silent one.
 
+**Status (2026-10-29): P6c built ahead of P6a, on `dev`.** `CommitMeta.body`
+(`git2 body()`, trimmed; empty when absent) rides `commit_concept`'s payload
+— subject and body in the same bulk, no new flush, no new generation — and
+`backfill_commit_messages(store, repo)` heals pre-body rows: reads `git log`
+per body-less row, restates on each row's OWN mint lineage (trunk or branch;
+the §P5a.5 choke-point rule needed no exception), idempotent at selection
+(`body IS NULL` re-qualifies nothing, so re-runs heal zero). Unknown shas
+(shallow clones, gc'd objects) and body-less commits skip auditable as
+`unknown-sha` / `no-body`, never error. Explicit-op only: refuses index-now
+stores (INV-12, including flagless-with-rows legacy stores — flagless *and
+empty* reads zeros, honestly), bad repos refuse as user errors. No MCP tool
+(H-13). Proven on the scratch migration: 259 healed, 103 `no-body` skips
+(merge/subject-only commits), re-run zero — bodies verified against `git
+log` bytes in sqlite. 6 Rust pins + 5 Python tests; ops $+$ render-free report dict (deliberately
+no CLI, no MCP, no SKILL line — QUICKREF $+$ ARCHITECTURE §14 carry it instead,
+per maintainer call); 29-tool MCP surface untouched.
+
 ## 6. Reads (the payoff)
 
 - `annotations_on(target)` / `comments_on(target)` → versions newest-first

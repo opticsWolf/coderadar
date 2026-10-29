@@ -88,6 +88,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(write_branch_content, m)?)?;
     m.add_function(wrap_pyfunction!(history_of, m)?)?;
     m.add_function(wrap_pyfunction!(ingest_history, m)?)?;
+    m.add_function(wrap_pyfunction!(backfill_commit_messages, m)?)?;
     m.add_function(wrap_pyfunction!(archive, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -2402,6 +2403,30 @@ fn ingest_history(
                 pyo3::exceptions::PyValueError::new_err(msg)
             } else {
                 pyo3::exceptions::PyRuntimeError::new_err(msg)
+            }
+        })?;
+    serde_json::to_string(&report)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Message bodies for commit rows minted before the body field existed
+/// (P6c slice, DR-45): subject-only rows get healed from `git log`, on
+/// each row's own mint lineage, idempotently. Explicit-op only — never
+/// automatic, never lazy on read. Refusals (bad repo, index-now store)
+/// are `ValueError`; infrastructure failures are `RuntimeError`.
+#[pyfunction]
+#[pyo3(signature = (store_path, repo))]
+fn backfill_commit_messages(py: Python<'_>, store_path: &str, repo: &str) -> PyResult<String> {
+    use crate::graph::ingest::BackfillError;
+    let report = py
+        .allow_threads(|| crate::graph::ingest::backfill_commit_messages(store_path, repo))
+        .map_err(|e| {
+            let msg = e.to_string();
+            match &e {
+                BackfillError::Repo(_) | BackfillError::Refused(_) => {
+                    pyo3::exceptions::PyValueError::new_err(msg)
+                }
+                BackfillError::Store(_) => pyo3::exceptions::PyRuntimeError::new_err(msg),
             }
         })?;
     serde_json::to_string(&report)

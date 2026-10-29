@@ -454,7 +454,7 @@ pub struct CodeGraphStore {
 /// enough stores existed in one process (5 bad runs in 15; 0 in 30 with a
 /// shared runtime). Production only ever opens one store, so this costs it
 /// nothing and gives the tests the same shape production has.
-fn runtime() -> &'static Runtime {
+pub(crate) fn runtime() -> &'static Runtime {
     static RUNTIME: std::sync::LazyLock<Runtime> =
         std::sync::LazyLock::new(|| Runtime::new().expect("tokio runtime for Macrame"));
     &RUNTIME
@@ -814,7 +814,7 @@ impl CodeGraphStore {
     /// hitting — sharing one tokio runtime across stores was (see
     /// [`runtime`]). It stays because the risk it bounds is real and
     /// documented upstream, and because it costs a diagnostic path nothing.
-    fn open_diagnostic_conn(
+    pub(crate) fn open_diagnostic_conn(
         &self,
     ) -> macrame::Result<(std::sync::MutexGuard<'static, ()>, libsql::Connection)> {
         // Poisoning carries no meaning here: the guard protects nothing but
@@ -1261,6 +1261,86 @@ impl CodeGraphStore {
             return Ok(0);
         }
         Ok(runtime().block_on(self.db.write_concepts(concepts))?)
+    }
+
+    /// Message bodies for commit rows minted before the body field existed
+    /// (P6c slice, DR-45: subject-only rows from P5a.3-era ingests).
+    /// `message_for(sha)` is the git boundary (owned by the caller — this
+    /// file never touches git2): `Ok(Some(body))` heals, `Ok(None)` skips
+    /// as `no-body`, `Err(reason)` skips auditable (unknown shas from
+    /// shallow clones and gc'd objects land here, never as errors).
+    /// Each restate rides the row's OWN mint lineage (trunk or branch —
+    /// the §P5a.5 choke-point rule covers every restate, including this
+    /// one). Selection is `body IS NULL`-at-read, so a healed row never
+    /// qualifies again: re-runs heal zero without relying on content
+    /// filtering. Returns `(healed, [(sha, reason)])`.
+    pub(crate) fn backfill_commit_bodies(
+        &self,
+        message_for: &dyn Fn(&str) -> std::result::Result<Option<String>, String>,
+    ) -> macrame::Result<(usize, Vec<(String, String)>)> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        let mut pending: Vec<(String, String, String, String, bool, String)> = Vec::new();
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT id, title, content, extra, retired, branch_id FROM concepts \
+                     WHERE id LIKE 'commit:%' AND retired = 0 \
+                     AND (json_extract(content, '$.body') IS NULL \
+                          OR json_extract(content, '$.body') = '')",
+                    Vec::<libsql::Value>::new(),
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                pending.push((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                    row.get::<String>(3).unwrap_or_else(|_| "{}".to_string()),
+                    row.get::<i64>(4).unwrap_or(0) != 0,
+                    row.get::<String>(5).unwrap_or_default(),
+                ));
+            }
+            Ok::<_, macrame::DbError>(())
+        })?;
+        drop(_guard);
+        let now = now_iso8601();
+        let mut concepts = Vec::new();
+        let mut skipped = Vec::new();
+        for (id, title, content, extra, retired, branch_id) in &pending {
+            let sha = id.strip_prefix("commit:").unwrap_or(id.as_str());
+            match message_for(sha) {
+                Err(reason) => skipped.push((sha.to_string(), reason)),
+                Ok(None) => skipped.push((sha.to_string(), "no-body".to_string())),
+                Ok(Some(body)) => {
+                    let mut v: serde_json::Value = match serde_json::from_str(content) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            skipped.push((sha.to_string(), format!("unparseable-content:{e}")));
+                            continue;
+                        }
+                    };
+                    v["body"] = serde_json::json!(body);
+                    let mut upsert = macrame::ConceptUpsert::new(id.clone(), title.clone())
+                        .content(v.to_string())
+                        .extra(extra.clone())
+                        .valid_from(now.clone())
+                        .valid_to(TS_OPEN.to_string())
+                        .retired(*retired);
+                    if !branch_id.is_empty() {
+                        if let Ok(bid) = macrame::BranchId::new(branch_id) {
+                            upsert = upsert.on_branch(bid);
+                        }
+                    }
+                    concepts.push(upsert);
+                }
+            }
+        }
+        let healed = concepts.len();
+        if !concepts.is_empty() {
+            runtime().block_on(self.db.write_concepts(concepts))?;
+        }
+        Ok((healed, skipped))
     }
 
     /// Hybrid keyword+vector search (DR-11 slice 4 / §2.10): RRF fusion

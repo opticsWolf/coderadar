@@ -946,7 +946,6 @@ def ingest_history(result: dict) -> str:
 
 def migrate_to_commit_time(result: dict) -> str:
     """Commit-time migration report as legible text (P5a.5, DR-41).
-
     One line per branch (ingested/skipped), then the embeddings pass and
     the per-branch coverage sweep. The per-branch ingest reports stay in
     the JSON; this render carries their totals.
@@ -990,6 +989,8 @@ def migrate_to_commit_time(result: dict) -> str:
                 f"{verdict['total_generations']} generations"
             )
     return "\n".join(out)
+
+
 
 
 def changes_between(result: dict, *, per_class: int = 25) -> str:

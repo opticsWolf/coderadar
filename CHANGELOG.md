@@ -17,6 +17,12 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
   a strict-descendant fork-scan bug, flush-failure now halts (both lineages),
   sweep/retire/embedding-hash writers carry the mint lineage, `list_branches` FFI.
   No MCP tools (H-13). The pre-migration store stays the only record of prior belief.
+- Temporal P6c slice, ahead of P6a (DR-45 filed as implemented): commit
+  message bodies. `CommitMeta.body` rides `commit_concept`'s payload for new
+  ingests; `backfill_commit_messages` ops-only healer (no CLI/MCP/SKILL surface) heals pre-body rows from
+  `git log` on each row's own mint lineage, idempotently; unknown shas and
+  body-less commits skip auditable. Proven on the scratch migration (259
+  healed, re-run zero). No MCP tool.
 
 ## 0.14.0 (2026-10-28)
 
