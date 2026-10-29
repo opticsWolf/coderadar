@@ -1139,3 +1139,11 @@ Cost, measured rather than estimated: 556 commits on `main`, ~2,130 `(commit, fi
 distinct indexable blob contents, largest 236 KB. The parses are affordable; **556 flushes** are the
 cost centre, and the plan says to measure before chunking commits, because chunking trades the
 per-commit stamp INV-11 rests on.
+
+### 2026-10-29 — P5a started (P5a.1 walker research)
+
+Maintainer confirmed P4 closed and directed P5a to start. DR-41 remains formally deferred pending
+§10 adoption answers; this begins P5a.1 only (commit walker, no ledger writes, no stamping or
+migration changes). Research so far: P5a.1 extends `fs/git.rs` beside `changed_files_between`, with
+language/blob-exclusion filtering in `plan_ingest` and byte access through `blob_bytes`; no commits
+or store mutations yet.
