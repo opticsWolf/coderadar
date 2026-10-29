@@ -183,6 +183,30 @@ pub fn plan_ingest(
     Ok(plans)
 }
 
+/// Short names of every local branch, sorted (P5a.5, DR-41): the
+/// migration's default branch set — the caller puts the trunk first.
+/// A detached HEAD contributes nothing (it is not a branch entry); a
+/// repository with no branches reads as empty rather than refusing (the
+/// caller decides what that means). Iteration failures surface as
+/// `Branches`; only names that are not valid UTF-8 are skipped (git
+/// allows arbitrary bytes, the lineage cannot).
+pub fn list_branches(repo_path: &str) -> Result<Vec<String>, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let mut out = Vec::new();
+    let branches = repo
+        .branches(Some(git2::BranchType::Local))
+        .map_err(GitError::Branches)?;
+    for branch in branches {
+        let (branch, _) = branch.map_err(GitError::Branches)?;
+        match branch.name().map_err(GitError::Branches)? {
+            Some(name) => out.push(name.to_string()),
+            None => continue,
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 /// Newest commit on `branch`'s first-parent chain that the parent ref's tip
 /// still reaches (P5a.4): the ingest's first-run window start, and the fork
 /// commit recorded in `kv`.
@@ -463,6 +487,9 @@ pub enum GitError {
         sha: String,
         path: String,
     },
+    /// P5a.5: branch enumeration failed mid-iteration (a corrupt ref).
+    /// Opening the repository is still `Open`; this is the walk itself.
+    Branches(git2::Error),
     /// P5a.4: `branch` shares no commit with `parent_ref` — an orphan or
     /// unrelated history. A lineage forked from the trunk with nothing in
     /// common is almost certainly a wrong ref, so refusing beats
@@ -980,6 +1007,44 @@ mod fork_point_tests {
         assert!(matches!(
             fork_point(root, "orphan", "main"),
             Err(GitError::NoCommonHistory { .. })
+        ));
+    }
+}
+
+#[cfg(test)]
+mod list_branches_tests {
+    use super::*;
+
+    #[test]
+    fn list_branches_names_every_local_branch_sorted() {
+        // main + two branches: the migration's default set, sorted, with
+        // no ref prefixes — including the checked-out branch (HEAD is not
+        // a branch entry, so there is nothing to exclude).
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("t", "t@t.t").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let m1 = repo
+            .commit(Some("refs/heads/main"), &sig, &sig, "m1", &tree, &[])
+            .unwrap();
+        let m1 = repo.find_commit(m1).unwrap();
+        repo.commit(Some("refs/heads/zebra"), &sig, &sig, "z1", &tree, &[&m1])
+            .unwrap();
+        repo.commit(Some("refs/heads/apple"), &sig, &sig, "a1", &tree, &[&m1])
+            .unwrap();
+        let root = dir.path().to_str().unwrap();
+        assert_eq!(
+            list_branches(root).unwrap(),
+            vec!["apple".to_string(), "main".to_string(), "zebra".to_string()]
+        );
+    }
+
+    #[test]
+    fn list_branches_unknown_repository_refuses() {
+        assert!(matches!(
+            list_branches("/nonexistent/path/that/is/not/a/repo"),
+            Err(GitError::Open(_))
         ));
     }
 }

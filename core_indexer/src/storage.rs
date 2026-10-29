@@ -721,6 +721,36 @@ impl CodeGraphStore {
     }
 
     /// Current `(title, content, extra, retired)` per id, one chunked PK lookup.
+    /// Mint lineage per concept id, in bulk (P5a.5, DR-41): the choke-point
+    /// companion to `fetch_current_states` for every writer that restates
+    /// rows it did not mint (sweep retire, embedding-hash flush). One
+    /// query per 500 ids; ids with no row or an empty branch read absent.
+    fn fetch_mint_lineages(&self, ids: &[String]) -> macrame::Result<HashMap<String, String>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        let mut out = HashMap::with_capacity(ids.len());
+        for chunk in ids.chunks(500) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!("SELECT id, branch_id FROM concepts WHERE id IN ({placeholders})");
+            let params: Vec<libsql::Value> = chunk
+                .iter()
+                .map(|s| libsql::Value::Text(s.clone()))
+                .collect();
+            let mut rows = runtime()
+                .block_on(conn.query(&sql, params))
+                .map_err(macrame::DbError::Engine)?;
+            while let Some(row) = runtime()
+                .block_on(rows.next())
+                .map_err(macrame::DbError::Engine)?
+            {
+                let branch: String = row.get::<String>(1).unwrap_or_default();
+                if !branch.is_empty() {
+                    out.insert(row.get::<String>(0).unwrap_or_default(), branch);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     fn fetch_current_states(
         &self,
         ids: &[String],
@@ -1182,6 +1212,11 @@ impl CodeGraphStore {
         }
         let ids: Vec<String> = pairs.iter().map(|(id, _)| id.clone()).collect();
         let current = self.fetch_current_states(&ids)?;
+        // P5a.5 (DR-41): the hash flush restates every touched concept, so
+        // each upsert must ride the row's mint lineage — a branch-minted
+        // entity restated on the trunk trips the cross-lineage trigger on
+        // its own id (the same choke-point rule as the sweep retire).
+        let lineages = self.fetch_mint_lineages(&ids)?;
         let hashes: std::collections::HashMap<&str, &str> = pairs
             .iter()
             .map(|(id, h)| (id.as_str(), h.as_str()))
@@ -1209,14 +1244,18 @@ impl CodeGraphStore {
             } else {
                 coderadar_extra(&v, None).to_string()
             };
-            concepts.push(
-                macrame::ConceptUpsert::new(id.clone(), title.clone())
-                    .content(v.to_string())
-                    .extra(new_extra)
-                    .valid_from(now.clone())
-                    .valid_to(TS_OPEN.to_string())
-                    .retired(*retired),
-            );
+            let mut upsert = macrame::ConceptUpsert::new(id.clone(), title.clone())
+                .content(v.to_string())
+                .extra(new_extra)
+                .valid_from(now.clone())
+                .valid_to(TS_OPEN.to_string())
+                .retired(*retired);
+            if let Some(branch) = lineages.get(id.as_str()) {
+                if let Ok(bid) = macrame::BranchId::new(branch) {
+                    upsert = upsert.on_branch(bid);
+                }
+            }
+            concepts.push(upsert);
         }
         if concepts.is_empty() {
             return Ok(0);
@@ -6410,6 +6449,51 @@ mod stamped_write_tests {
             .unwrap();
         assert_eq!(retired, 1);
         assert_eq!(branch_id, "feat");
+    }
+
+    /// P5a.5 (DR-41): the embedding-hash flush restates rows it did not
+    /// mint, so each upsert rides the row's mint lineage — a branch-minted
+    /// entity flushed on the trunk tripped the cross-lineage trigger on
+    /// its own id (fail-open `[diag]`, hashes never landed).
+    #[test]
+    fn embedding_hash_flush_carries_the_mint_lineage() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("embline.db")).unwrap();
+        store.fork_branch("feat", "main").unwrap();
+        let minted = macrame::ConceptUpsert::new("e.py::g", "e.py::g")
+            .content(r#"{"meta_version":2,"kind":"function","name":"g","file_path":"e.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(macrame::BranchId::new("feat").unwrap());
+        assert_eq!(store.upsert_concepts_bulk(&[minted]).unwrap(), 1);
+        let n = store
+            .flush_embedding_hashes(&[("e.py::g".to_string(), "keyed-hash".to_string())])
+            .unwrap();
+        assert_eq!(n, 1);
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let (content, branch_id): (String, String) = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT content, branch_id FROM concepts WHERE id = ?1",
+                        libsql::params!["e.py::g"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .expect("flushed row exists");
+                Ok::<_, macrame::DbError>((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(branch_id, "feat");
+        assert!(content.contains("keyed-hash"), "hash landed: {content}");
     }
 
     /// P5a.4 (DR-41): sweep candidates are mint-lineage rows. A trunk

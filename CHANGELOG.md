@@ -4,6 +4,20 @@ Patch releases accumulate toward the next minor (+0.0.1 per implemented feature,
 bump commit named in the feature's DR row). The v0.12 plan history lives
 in `docs/` (v1 frozen, consolidated trio authoritative).
 
+## Unreleased
+
+- Temporal P5a (DR-41, **deferred — built on dev, adoption pending Q-6..Q-9**):
+  commit-driven ingestion writes history at commit time. `plan_ingest` walker (P5a.1),
+  stamped valid_from threading with the INV-11 nudge and Zulu boundary (P5a.2),
+  `ingest_history` op + CLI `ingest-history` with per-commit stamped flushes, commit
+  concepts and `kv` cursors (P5a.3), branch ingestion with fork discipline, pointers,
+  tombstones and lineage-scoped sweeps (P5a.4), and `migrate-to-commit-time` op + CLI
+  (P5a.5): a new store, trunk first then each branch, one `compute_embeddings` pass
+  over the final state, per-branch coverage in the report. Fixed along the way:
+  a strict-descendant fork-scan bug, flush-failure now halts (both lineages),
+  sweep/retire/embedding-hash writers carry the mint lineage, `list_branches` FFI.
+  No MCP tools (H-13). The pre-migration store stays the only record of prior belief.
+
 ## 0.14.0 (2026-10-28)
 
 Temporal code reconstruction, phases P0–P4: the store can now be read at a

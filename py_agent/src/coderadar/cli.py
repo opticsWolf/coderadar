@@ -646,6 +646,43 @@ def changes_between(t1: str, t2: str, scope: str | None, branch: str, fmt: str):
         lambda result: render.changes_between(result))
 
 
+@main.command(name="migrate-to-commit-time")
+@click.option("--repo", required=True,
+              help="Git repository to migrate (history is read from git; "
+              "the working tree is never touched).")
+@click.option("--store", "store_path", required=True,
+              help="Destination store file (a new commit-time store; "
+              "the old store is never touched). Re-runs resume per branch.")
+@click.option("--branches", default=None,
+              help="Comma-separated branches to migrate (default: every "
+              "local branch, trunk first). The trunk is prepended when "
+              "missing and present — branch reads fall back to trunk rows.")
+@click.option("--parent-ref", default="main", show_default=True,
+              help="Trunk ref branch fork points are computed against.")
+@click.option("--no-embed", "no_embed", is_flag=True,
+              help="Skip the single compute_embeddings pass over the final state.")
+@click.option("--no-verify", "no_verify", is_flag=True,
+              help="Skip the per-branch verify_history coverage sweep.")
+@_format_option
+def migrate_to_commit_time(repo: str, store_path: str, branches: str | None,
+                           parent_ref: str, no_embed: bool,
+                           no_verify: bool, fmt: str):
+    """Build a commit-time store from a repository's git history (P5a.5, DR-41)."""
+    from pathlib import Path as _Path
+
+    from . import ops, render
+    repo = str(_Path(repo).resolve())
+    store_path = str(_Path(store_path).resolve())
+    branch_list = [b.strip() for b in branches.split(",")] if branches else None
+    if branch_list is not None and not all(branch_list):
+        raise click.BadParameter("--branches holds an empty name.")
+    _enter_project()
+    _op(fmt, lambda: ops.migrate_to_commit_time(
+        repo, store_path, branches=branch_list, parent_ref=parent_ref,
+        embed=not no_embed, verify=not no_verify),
+        lambda result: render.migrate_to_commit_time(result))
+
+
 @main.command(name="history")
 @click.argument("file")
 @_format_option
@@ -664,7 +701,7 @@ def history(file: str, fmt: str):
               help="Git branch whose first-parent history to ingest.")
 @click.option("--lineage", default=None,
               help="Lineage to write (default: the branch name; 'main' is the trunk). "
-              "A non-main branch without a lineage is refused.")
+              "An explicit 'main' lineage with a non-main branch is refused.")
 @click.option("--parent-ref", default="main", show_default=True,
               help="Trunk ref the branch fork point is computed against.")
 @click.option("--from", "from_sha", default=None,

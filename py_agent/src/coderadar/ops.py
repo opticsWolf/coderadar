@@ -1518,6 +1518,130 @@ def ingest_history(repo: str | Path, branch: str = "main",
         raise EngineError(f"ingest_history returned unparseable JSON: {e}") from None
 
 
+def migrate_to_commit_time(repo: str | Path, store: str | Path,
+                            branches: list[str] | None = None,
+                            parent_ref: str = "main",
+                            embed: bool = True, verify: bool = True) -> dict:
+    """Build a commit-time store from a repository's git history (P5a.5, DR-41).
+
+    A *new* store (P5-D4): the pre-migration store is left untouched and
+    stays the only record of what CodeRadar believed before the migration.
+    Per branch, oldest first: the trunk (``main``) through
+    ``ingest_history``, then each branch onto its own lineage — then one
+    ``compute_embeddings`` pass over the final state (H-19: embedding
+    every historical generation would dominate the project and buy a
+    vector index over text nobody searches), and a ``verify_history``
+    sweep per branch when asked.
+
+    ``branches`` defaults to every local branch with the trunk first; an
+    explicit list is honored as given, except the trunk is prepended when
+    the repository has one and it is missing — forks compute against the
+    parent ref and branch reads fall back to trunk rows, so a migration
+    without trunk data is hollow by construction. A repository with no
+    trunk refuses (pass an explicit list — but without a parent ref the
+    forks cannot compute, so say what you mean).
+
+    The op is idempotent per branch: every branch ingest resumes from its
+    ``kv`` cursor, so re-running a migration finishes it (completed
+    branches no-op, the embeddings pass and the verification run again).
+    A failed embeddings pass therefore fails the migration *after* the
+    history is safely ingested — fix the backend and re-run. Pass
+    ``embed=False`` to skip the vector pass (branch-unique content then
+    stays unembedded: the one pass covers the trunk-tip final state) and
+    ``verify=False`` to skip the coverage sweep.
+
+    Returns the report as the contract:: ``{"repo", "store",
+    "parent_ref", "branches", "branch_reports": {branch: report},
+    "commits_ingested", "commits_skipped", "files_failed",
+    "embeddings", "verify": {branch: coverage} | None,
+    "elapsed_secs"}``. As a side effect the migrated store is loaded as
+    the process-global graph (the embeddings pass and the verification
+    need it) — a library caller holding another graph should reload
+    afterwards.
+
+    No MCP tool: like ``ingest_history``, a long, writing, migration-grade
+    op an agent must not call without knowing that (the H-13 shape).
+    Refusals (bad repository, unknown branch, legacy store, out-of-order
+    history) are ``InvalidRequest``; infrastructure failures are
+    ``EngineError``.
+    """
+    import time as _time
+
+    if not repo or not str(repo).strip():
+        raise InvalidRequest("Please provide a git repository path.")
+    if not store or not str(store).strip():
+        raise InvalidRequest("Please provide a destination store path "
+                             "(a new file; the old store is never touched).")
+    if not parent_ref or not str(parent_ref).strip():
+        raise InvalidRequest("Please provide a parent ref (default 'main').")
+    repo_s, store_s = str(repo), str(store)
+    parent = Path(store_s).parent
+    if str(parent) and not parent.exists():
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise InvalidRequest(f"cannot create store directory {parent}: {e}") from None
+    try:
+        from coderadar._core import list_branches as _list_branches
+        listed = list(_list_branches(repo_s))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    if branches is None:
+        if "main" not in listed:
+            raise InvalidRequest(
+                "repository has no 'main' branch: pass branches=[...] explicitly "
+                f"(local branches: {listed or ['(none)']}).")
+        ordered = ["main", *[b for b in listed if b != "main"]]
+    else:
+        ordered = list(branches)
+        if not ordered:
+            raise InvalidRequest("branches=[...] is empty: nothing to migrate.")
+        if "main" in listed and "main" not in ordered:
+            ordered.insert(0, "main")
+    started = _time.perf_counter()
+    branch_reports: dict[str, dict] = {}
+    for branch in ordered:
+        branch_reports[branch] = ingest_history(
+            repo_s, branch, store_path=store_s, parent_ref=parent_ref)
+    commits_ingested = sum(r["commits_ingested"] for r in branch_reports.values())
+    commits_skipped = sum(len(r["commits_skipped"]) for r in branch_reports.values())
+    files_failed = sum(len(r["files_failed"]) for r in branch_reports.values())
+    # The final state, loaded globally: the embeddings pass and the
+    # verification sweep both read the loaded projection.
+    from coderadar import load as _cold_load
+    graph = _cold_load(store_s, root=repo_s)
+    embeddings: dict = {"embedded": False}
+    if embed:
+        embeddings = {"embedded": True, **compute_embeddings()}
+    coverage: dict | None = None
+    if verify:
+        coverage = {}
+        for branch in ordered:
+            verdict = graph.verify_history(all_generations=True, branch=branch)
+            coverage[branch] = {
+                "byte_coverage_pct": verdict["byte_coverage_pct"],
+                "totals": verdict["totals"],
+                "total_generations": verdict["total_generations"],
+            }
+    return {
+        "repo": repo_s,
+        "store": store_s,
+        "parent_ref": parent_ref,
+        "branches": ordered,
+        "branch_reports": branch_reports,
+        "commits_ingested": commits_ingested,
+        "commits_skipped": commits_skipped,
+        "files_failed": files_failed,
+        "embeddings": embeddings,
+        "verify": coverage,
+        "elapsed_secs": round(_time.perf_counter() - started, 3),
+    }
+
+
 def changes_between(t1: str, t2: str, scope: str | None = None,
                     branch: str = "main", *, graph: Any = None) -> dict:
     """Added / removed / modified / moved / uncompared entities between two instants (P2, DR-37).

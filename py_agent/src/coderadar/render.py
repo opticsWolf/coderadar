@@ -944,6 +944,54 @@ def ingest_history(result: dict) -> str:
     return "\n".join(out)
 
 
+def migrate_to_commit_time(result: dict) -> str:
+    """Commit-time migration report as legible text (P5a.5, DR-41).
+
+    One line per branch (ingested/skipped), then the embeddings pass and
+    the per-branch coverage sweep. The per-branch ingest reports stay in
+    the JSON; this render carries their totals.
+    """
+    out = [
+        f"migrated         {result['repo']}",
+        f"store            {result['store']}",
+        f"parent           {result['parent_ref']}",
+        (
+            f"commits          ingested={result['commits_ingested']}  "
+            f"skipped={result['commits_skipped']}  "
+            f"failed_files={result['files_failed']}  "
+            f"elapsed={result['elapsed_secs']}s"
+        ),
+    ]
+    for branch in result["branches"]:
+        report = result["branch_reports"][branch]
+        out.append(
+            f"  {branch}  ingested={report['commits_ingested']}  "
+            f"skipped={len(report['commits_skipped'])}  "
+            f"head={(report['head'] or '(unchanged)')[:12]}"
+        )
+    embeddings = result["embeddings"]
+    if embeddings.get("embedded"):
+        out.append(
+            f"embeddings       generated={embeddings['generated']}  "
+            f"cached={embeddings['cached']}  "
+            f"total={embeddings['total']}  "
+            f"persisted={embeddings['persisted']}"
+        )
+    else:
+        out.append("embeddings       skipped")
+    coverage = result.get("verify")
+    if coverage is None:
+        out.append("verify           skipped")
+    else:
+        for branch, verdict in coverage.items():
+            out.append(
+                f"verify[{branch}]    "
+                f"{verdict['byte_coverage_pct']}% over "
+                f"{verdict['total_generations']} generations"
+            )
+    return "\n".join(out)
+
+
 def changes_between(result: dict, *, per_class: int = 25) -> str:
     """Entity diff between two instants as legible text (P2, DR-37).
 

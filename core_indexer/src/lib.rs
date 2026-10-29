@@ -83,6 +83,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(visible_module_concept_ids, m)?)?;
     m.add_function(wrap_pyfunction!(visible_all_concept_ids, m)?)?;
     m.add_function(wrap_pyfunction!(branches, m)?)?;
+    m.add_function(wrap_pyfunction!(list_branches, m)?)?;
     m.add_function(wrap_pyfunction!(fork_branch, m)?)?;
     m.add_function(wrap_pyfunction!(write_branch_content, m)?)?;
     m.add_function(wrap_pyfunction!(history_of, m)?)?;
@@ -2210,6 +2211,24 @@ fn all_concept_ids(py: Python<'_>, branch: &str) -> PyResult<Vec<String>> {
     })
 }
 
+/// Short names of every local branch in a repository, sorted (P5a.5, DR-41):
+/// the migration's default branch set. A read, not a write — no store is
+/// touched, so there is no mode to refuse on. Unknown repositories refuse
+/// as `ValueError`; a corrupt ref mid-walk is a `RuntimeError`.
+#[pyfunction]
+#[pyo3(signature = (repo,))]
+fn list_branches(repo: &str) -> PyResult<Vec<String>> {
+    crate::fs::git::list_branches(repo).map_err(|e| {
+        use crate::fs::git::GitError;
+        match &e {
+            GitError::Open(_) => {
+                pyo3::exceptions::PyValueError::new_err(format!("list_branches: {e:?}"))
+            }
+            _ => pyo3::exceptions::PyRuntimeError::new_err(format!("list_branches: {e:?}")),
+        }
+    })
+}
+
 /// Every lineage the ledger knows, trunk first (P4, DR-40):
 /// `[{"name", "parent" | None, "forked_at" | None, "created_at"}]`.
 /// A listing, not a fold — one tiny table read under `snapshot_store`
@@ -2338,8 +2357,8 @@ fn ingest_history(
     use crate::graph::ingest::IngestError;
     // P5a.4 (DR-41): the lineage routes. No lineage (or the trunk's
     // name) on the main branch is the trunk ingest; anything else forks
-    // or resumes a branch lineage. A non-main git branch without a
-    // lineage refuses — its history is not the trunk's.
+    // or resumes a branch lineage (`lineage` defaults to the git branch
+    // name, so a bare non-main branch ingests onto its own lineage).
     let effective = lineage
         .map(str::to_string)
         .unwrap_or_else(|| branch.to_string());

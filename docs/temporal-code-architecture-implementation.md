@@ -1289,3 +1289,45 @@ immunity, tombstone hide/re-add, per-lineage 100 % coverage, one-blob sharing, d
 forks nothing, resume/noop, trunk refusal, fork mismatch, manual-fork refusal, merge trap,
 CLI). DR-41 stays deferred — Q-6..Q-9 still open; P5a.5 (migration + embeddings-once) is
 next, then P5b only on upstream DR-43.
+
+### 2026-10-29 — P5a.5 landed (migration: `migrate_to_commit_time` + `list_branches`)
+
+P5a.5 is in: `ops.migrate_to_commit_time(repo, store, branches=None, parent_ref="main",
+embed=True, verify=True)` + CLI `migrate-to-commit-time` builds the new store P5-D4 names —
+the trunk first, then each branch onto its own lineage, one `compute_embeddings` pass over
+the final state, a per-branch `verify_history` sweep in the report. No MCP tool (H-13:
+long, writing, migration-grade — Q-10's report-not-write reasoning applies unchanged).
+The op is orchestration over shipped surfaces: the one new Rust is `list_branches` (sorted
+short names + FFI + pins); everything else is `ingest_history`, `coderadar.load`,
+`compute_embeddings`, `verify_history` called in order. Migration completes P5a: the full
+chain walker → stamps → trunk op → branch op → migration now exists on `dev`.
+
+Three findings, all read off the code. First, `is_head` filtering in `list_branches`
+dropped the checked-out branch (HEAD is not a branch entry — there was nothing to
+exclude); caught by the first e2e, fixed by deleting the filter. Second, the loaded
+projection is the *union*: branch-minted entities are in the final state, their vectors
+persist fine, but the embedding-hash flush restated those rows on the trunk lineage until
+D-225 refused them — fail-open `[diag]`, hashes never landed. Third choke-point fix after
+the P5a.4 sweep and retire (`fetch_mint_lineages`, bulk and chunked, + pin
+`embedding_hash_flush_carries_the_mint_lineage`); the file now carries a standing note
+that the next restate-without-lineage writer should be found by audit, not by e2e.
+Third, the old-store test first hashed the db file — WAL mode moves bytes on checkpoint,
+so it caught lifecycle, not writes. The guarantee is logical (same generations, same
+concepts, old store still opens and answers), stated in the test.
+
+Deliberate deviations from the plan: defaults prepend the trunk (auditable in
+`branches`) instead of merely defaulting it, because a migration without trunk data is
+hollow (forks compute against the parent ref, branch reads fall back to trunk rows); and
+idempotent re-runs instead of fresh-only enforcement, because the per-branch guards
+already make re-entry safe and idempotency is what makes a failed embeddings pass
+recoverable (fix the backend, re-run — completed branches no-op). The embeddings pass
+is `embed=False`-skippable but never per-commit (H-19); a failed pass fails the migration
+after the history is safely ingested.
+
+Gates: Rust lib 545 passed + 1 ignored (3 new: 2 list_branches, 1 hash-flush lineage),
+Python 1,247 passed, fmt/clippy/ruff clean. 9 new Python tests
+(`tests/test_migrate_commit_time.py`: trunk+branch migration with per-lineage 100 %,
+lineage-blind chain order, trunk prepend, no-trunk refusal, list_branches, one-pass
+embeddings with durability across a fresh load, rerun no-op, old-store untouched, CLI).
+CHANGELOG gains an Unreleased P5a block (DR-41 still deferred). Next: maintainer decision
+on Q-6..Q-9 — the shape is built as recommended; P5b only on upstream DR-43.

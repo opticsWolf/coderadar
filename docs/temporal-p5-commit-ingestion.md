@@ -383,6 +383,52 @@ it is the only record of what CodeRadar believed before the migration.
 bytes, `verify_history` reports at or near 100% for the ingested range, and the pre-migration store
 still opens.
 
+**Status (2026-10-29): shipped on `dev` as `ops.migrate_to_commit_time` + CLI
+`migrate-to-commit-time` (no MCP tool).** As-built deviations, each read off the code:
+
+- *The op is orchestration, not engine.* Branch enumeration is the one new Rust
+  surface (`fs/git.rs:list_branches` + FFI — sorted short names; HEAD is not a
+  branch entry so there is nothing to exclude, which the first version got wrong
+  by filtering `is_head` and dropping the checked-out branch). Everything else
+  reuses shipped ops: per-branch `ingest_history`, `coderadar.load` for the final
+  state, the existing `compute_embeddings`, the existing per-branch
+  `verify_history`. A migration that needed new engine would be a sign the
+  phases below it were incomplete; it needed one 20-line walker.
+- *Defaults with the trunk prepended, not just defaulted.* No `branches` means
+  every local branch, trunk first; an explicit list without the trunk gains it
+  (reported in `branches`, so the prepend is auditable, not silent) — forks
+  compute against the parent ref and branch reads fall back to trunk rows, so a
+  migration without trunk data is hollow by construction. A repository with no
+  trunk refuses outright.
+- *Idempotent instead of fresh-only.* The plan said "a new store"; the op does
+  not enforce it — every branch ingest resumes from its `kv` cursor, so a
+  re-run finishes a migration (completed branches no-op, the embeddings pass
+  and the verification run again). The per-branch guards already make re-entry
+  safe (index-now stores refuse per branch, foreign histories fail the cursor
+  checks), and idempotency is what makes a failed embeddings pass recoverable:
+  fix the backend and re-run. A fresh-path check would trade that recovery for
+  a rule the guards already enforce.
+- *The embeddings pass is skippable but never per-commit.* `embed=False` opts
+  out (branch-unique content then stays unembedded — the one pass covers the
+  trunk-tip final state only, H-19's cost reasoning applied to branches too);
+  a failed pass fails the migration *after* the history is safely ingested.
+- *The loaded projection is the union, so branch rows flow through writers
+  that assumed the trunk.* The final state contains branch-minted entities
+  (their vectors persist fine), but the embedding-*hash* flush restated those
+  rows on the trunk lineage until D-225 refused them — fail-open `[diag]`,
+  hashes never landed. The third choke-point fix of the project:
+  `fetch_mint_lineages` (bulk, chunked like its companion) and the flush rides
+  each row's mint lineage, pinned by
+  `embedding_hash_flush_carries_the_mint_lineage`. (Retire in P5a.4, sweep
+  candidates in P5a.4, hash flush now — every writer that restates rows it
+  did not mint must carry lineage. The next one should be found by audit,
+  not by e2e.)
+- *The old-store test asserts logic, not bytes.* The first version hashed the db
+  file; WAL mode moves bytes on checkpoint (closing a handle checkpoints), so
+  the assertion caught lifecycle, not writes. The guarantee is the same
+  generations and the same concepts, plus the old store still opens and
+  answers.
+
 ### P5b — Retroactive correction (upstream-gated)
 
 **Blocked by** a valid-axis state fold in Macrame. **Unblocks** backfilling an old branch, ingesting

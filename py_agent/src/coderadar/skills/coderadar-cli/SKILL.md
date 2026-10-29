@@ -62,6 +62,7 @@ coderadar verify-history [--from TS --to TS] [--generations 25 | --all]  # can t
 coderadar changes-between --t1 TS --t2 TS [--scope FILE|PREFIX]  # what changed, hash-based
 coderadar history FILE                   # every content FILE ever had, newest first
 coderadar ingest-history --repo PATH --store PATH [--branch main] [--lineage NAME] [--parent-ref main] [--from SHA] [--dry-run]  # commit-driven history ingest (P5a.3/P5a.4)
+coderadar migrate-to-commit-time --repo PATH --store NEW [--branches a,b] [--parent-ref main] [--no-embed] [--no-verify]  # new commit-time store: trunk, branches, one embedding pass, coverage (P5a.5)
 coderadar module-children MODULE_ID          # e.g. 'pkg/app.py::module'
 coderadar diagnose [--unresolved] [--low-confidence]
 ```
