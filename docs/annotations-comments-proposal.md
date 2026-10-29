@@ -42,6 +42,20 @@ So the reference lives **in the comment payload**, and "all comments on X" is
 a read-time lookup, not a traversal. If edge annotation is ever needed, it is
 a second programme with its own edge kind — not a property of this one.
 
+**Which code entities are addressable** (read off `types.rs` / `walker.rs`,
+2026-10-29 — the `about` field can name any of these):
+
+| entity | concept? | id shape / note |
+|---|---|---|
+| module | yes (`module`) | `a.py::module` |
+| class | yes (`class`) | `a.py::C` |
+| function | yes (`function`) | `a.py::f` |
+| method | yes — **as `function`** | `a.py::C.m`; `FunctionKind::Method/...` + `parent_class` in payload, not a separate kind |
+| import / constant / type_alias / field | yes | extractor-minted ids |
+| route | yes (`route`) | resolver-minted ids |
+| spine / commit / pointer | yes | history reads stay pure (§6) — annotatable but pointless; not recommended |
+| **parameter** | **no** | `Vec<Parameter>` inside the `Function` payload — serialized into the function's concept JSON, never a standalone row. Annotate the function; a parameter concern is a checklist item (§4), not an id. Promoting parameters to concepts (new kind, new ids, sweep/retire/classifier/embeddings blast radius) is rejected for v1 — re-open only with a consumer that outgrows items. |
+
 ## 3. Identity and lookup
 
 ```
