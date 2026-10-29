@@ -230,8 +230,13 @@ is empty for it); a conflict-resolving merge (plan is non-empty); a rename; a de
 one second (ties reach the caller, un-nudged — nudging is the writer's job); a commit touching a
 `SECRET_BLOB_EXCLUDE_DEFAULTS` path (absent from `changed`, present in `tree`).
 
-**Done when** the plan for this repository is 556 commits with ~2,130 `(commit, file)` pairs, and
-`blob_bytes` round-trips a known blob byte-for-byte.
+**Done when** the plan for this repository's `main` first-parent chain is 354 commits with
+1,696 changed `(commit, file)` pairs (measured 2026-10-29: `plan_ingest(repo, "main", None)`),
+and `blob_bytes` round-trips a known blob byte-for-byte (verified against `git show` for
+`pyproject.toml` at the `main` tip). The §0 table's 556 commits / ~2,130 pairs count all commits
+reachable from `main`, including merged side-branch history; that history is not missing — P5-D7
+ingests second-parent commits through their own branches (P5a.4), so the per-branch plans union to
+the full reachable set.
 
 ### P5a.2 — Stamped writes
 

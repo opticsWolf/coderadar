@@ -1147,3 +1147,15 @@ Maintainer confirmed P4 closed and directed P5a to start. DR-41 remains formally
 migration changes). Research so far: P5a.1 extends `fs/git.rs` beside `changed_files_between`, with
 language/blob-exclusion filtering in `plan_ingest` and byte access through `blob_bytes`; no commits
 or store mutations yet.
+
+### 2026-10-29 — P5a.1 landed (commit walker, no writes)
+
+`fs/git.rs` gained `CommitPlan`, `plan_ingest` (first-parent, oldest-first, `from`-exclusive,
+`NotAncestor` on off-chain high-water marks), and `blob_bytes` (commit bytes without checkout).
+Filtering matches the analyze pipeline: indexable language with a tree-sitter grammar, minus
+blob-excluded paths from `changed` (secrets stay in `tree`, the sweep universe). Seven fixture
+tests pin linear deltas, `from` semantics, round-trips, renames, empty vs resolving merges,
+second-resolution ties (un-nudged), and secret-path handling. Self-host correction: `main`'s
+first-parent plan is 354 commits / 1,696 pairs (the plan's 556 / ~2,130 counts all reachable
+commits; side history arrives via branch plans per P5-D7) — `temporal-p5-commit-ingestion.md`
+P5a.1 done-when updated. Gates: Rust lib 520 passed + 1 ignored, fmt/clippy clean.
