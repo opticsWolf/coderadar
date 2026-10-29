@@ -1159,3 +1159,26 @@ second-resolution ties (un-nudged), and secret-path handling. Self-host correcti
 first-parent plan is 354 commits / 1,696 pairs (the plan's 556 / ~2,130 counts all reachable
 commits; side history arrives via branch plans per P5-D7) — `temporal-p5-commit-ingestion.md`
 P5a.1 done-when updated. Gates: Rust lib 520 passed + 1 ignored, fmt/clippy clean.
+
+### 2026-10-29 — P5a.2 landed (stamped writes: `valid_from` threading + INV-11 nudge)
+
+P5a.2 is in: every flush site gained a stamped `_at` twin taking an explicit `valid_from`
+(commit time on the P5 path), with the existing function as the now-stamping wrapper — additive,
+zero caller churn, default behavior byte-identical (the whole Python suite passes unchanged, which
+is the plan's default-behavior test). Sites: `persist_entities`, `persist_edges_scoped`,
+`register_synthetic_edge(s)_bulk`, `register_synthetic_routes`, `upsert_entities`,
+`build_v2_concepts_all`, `build_v2_concepts_for_file`, `write_branch_content`; the spine helpers
+already took a stamp. Two deviations from the plan's four-site list, both read off the code: the
+concept builders must take the stamp too (a changed concept rewritten without it would carry
+ingest time, not commit time), and Macrame's `normalize_timestamp` accepts ONLY Zulu microsecond
+stamps — so `zulu_valid_from` folds committer offsets into the instant at the write boundary (the
+offset rides in the commit extra per P5-D2, not in the stamp).
+
+INV-11 lives in `nudge_valid_from(prev, candidate) -> (stamp, nudged)`: instant comparison (never
+lexicographic — offsets would misrank), ties/regressions advance to `prev + 1µs` with the flag set
+for `stamp_nudged`, greater stamps pass through. Ten new tests: five nudge pins, the zulu
+normalizer, stamped concept build, three commit-stamped spine generations reading back in commit
+order, a stamped branch write landing on both rows — plus an H-14 pin proving the refusal's
+necessity: out-of-order stamps reorder the `history_of` chain silently, with no error anywhere.
+Gates: Rust lib 530 passed + 1 ignored, fmt/clippy/ruff clean, `_core` rebuilt after killing the
+stale `mcp serve` holder (os error 32 precedent).

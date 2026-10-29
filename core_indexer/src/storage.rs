@@ -272,6 +272,127 @@ pub fn now_iso8601() -> String {
     )
 }
 
+/// Nudge a candidate stamp past a lineage's high-water mark (P5a.2, INV-11).
+///
+/// Returns `(stamp, nudged)`: the candidate unchanged when it is strictly
+/// after `prev`, else `prev` advanced by one microsecond with `nudged =
+/// true`, so the caller can record `stamp_nudged` in the commit concept's
+/// extra (P5a.3). Comparison is on instants, not strings — committer
+/// stamps carry arbitrary offsets, and lexicographic order would misrank
+/// them. An unparseable candidate is returned as-is (Macrame refuses it
+/// at the write); an unparseable `prev` counts as no bound.
+pub fn nudge_valid_from(prev: Option<&str>, candidate: &str) -> (String, bool) {
+    let prev_us = prev.and_then(parse_rfc3339_epoch_micros);
+    let candidate_us = parse_rfc3339_epoch_micros(candidate);
+    match (prev_us, candidate_us) {
+        (Some(prev_us), Some(candidate_us)) if candidate_us <= prev_us => {
+            (format_epoch_micros_zulu(prev_us + 1), true)
+        }
+        _ => (candidate.to_string(), false),
+    }
+}
+
+/// Normalize any parseable stamp to the Zulu microsecond shape Macrame's
+/// `normalize_timestamp` accepts (`...SS.ffffffZ`). Committer stamps carry
+/// arbitrary offsets; the write boundary speaks only Zulu, so the offset is
+/// folded into the instant before the write. The offset itself rides in the
+/// commit concept's extra per P5-D2, not in the stamp. `None` when the
+/// shape is not a timestamp at all.
+pub fn zulu_valid_from(ts: &str) -> Option<String> {
+    parse_rfc3339_epoch_micros(ts).map(format_epoch_micros_zulu)
+}
+
+/// Epoch microseconds of an RFC3339 stamp (`Z` or `±HH:MM`, optional
+/// fractional seconds). `None` when the shape is not a timestamp at all.
+fn parse_rfc3339_epoch_micros(stamp: &str) -> Option<i128> {
+    let (date, time) = stamp.split_once('T')?;
+    let mut date_parts = date.split('-');
+    let year: i64 = date_parts.next()?.parse().ok()?;
+    let month: i64 = date_parts.next()?.parse().ok()?;
+    let day: i64 = date_parts.next()?.parse().ok()?;
+    if date_parts.next().is_some() {
+        return None;
+    }
+    let (clock, offset_minutes) = if let Some(bare) = time.strip_suffix(['Z', 'z']) {
+        (bare, 0i64)
+    } else {
+        let at = time.rfind(['+', '-'])?;
+        let (bare, zone) = time.split_at(at);
+        let (sign, digits) = zone.split_at(1);
+        let mut zone_parts = digits.split(':');
+        let hours: i64 = zone_parts.next()?.parse().ok()?;
+        let minutes: i64 = zone_parts.next()?.parse().ok()?;
+        if zone_parts.next().is_some() {
+            return None;
+        }
+        let magnitude = hours * 60 + minutes;
+        (bare, if sign == "-" { -magnitude } else { magnitude })
+    };
+    let mut clock_parts = clock.split(':');
+    let hours: i128 = clock_parts.next()?.parse().ok()?;
+    let minutes: i128 = clock_parts.next()?.parse().ok()?;
+    let seconds = clock_parts.next()?;
+    if clock_parts.next().is_some() {
+        return None;
+    }
+    let (whole, micros) = match seconds.split_once('.') {
+        Some((whole, frac)) => {
+            let mut padded = frac.to_string();
+            padded.truncate(6);
+            while padded.len() < 6 {
+                padded.push('0');
+            }
+            (whole.parse::<i128>().ok()?, padded.parse::<i128>().ok()?)
+        }
+        None => (seconds.parse::<i128>().ok()?, 0),
+    };
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hours > 23 || minutes > 59 || whole > 60 {
+        return None;
+    }
+    let days = days_since_epoch(year, month, day)?;
+    Some(
+        (days as i128 * 86_400 + hours * 3_600 + minutes * 60 + whole) * 1_000_000 + micros
+            - offset_minutes as i128 * 60 * 1_000_000,
+    )
+}
+
+/// Days from 1970-01-01 to a civil date (the inverse of
+/// [`civil_from_days`]).
+fn days_since_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let adjusted_year = if month <= 2 { year - 1 } else { year };
+    let era = adjusted_year.div_euclid(400);
+    let year_of_era = adjusted_year - era * 400;
+    let month_prime = (month + 9) % 12;
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
+}
+
+/// Render epoch microseconds as Zulu microsecond RFC3339 (the
+/// [`now_iso8601`] shape), so a nudged stamp stays comparable with every
+/// stamp the write path ever minted.
+fn format_epoch_micros_zulu(micros: i128) -> String {
+    let secs = micros.div_euclid(1_000_000);
+    let subsec = micros.rem_euclid(1_000_000);
+    let days = secs.div_euclid(86_400);
+    let rest = secs.rem_euclid(86_400);
+    // Epoch values from real stamps fit i64 comfortably; saturate rather
+    // than wrap on absurd input.
+    let (year, month, day) = civil_from_days(days.clamp(i64::MIN as i128, i64::MAX as i128) as i64);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{subsec:06}Z",
+        rest / 3_600,
+        (rest % 3_600) / 60,
+        rest % 60
+    )
+}
+
 // ── CodeGraphStore — owns the Macrame Database + Runtime ────────────────────
 
 pub struct CodeGraphStore {
@@ -451,12 +572,24 @@ impl CodeGraphStore {
         file_path: &str,
         language: &str,
     ) -> macrame::Result<()> {
+        self.upsert_entities_at(units, file_path, language, &now_iso8601())
+    }
+
+    /// Stamped twin (P5a.2, DR-41): the same bulk upsert at an explicit
+    /// `valid_from` — commit time on the P5 path.
+    pub fn upsert_entities_at(
+        &self,
+        units: &[ExtractedUnit],
+        file_path: &str,
+        language: &str,
+        valid_from: &str,
+    ) -> macrame::Result<()> {
         if units.is_empty() {
             return Ok(());
         }
         let concepts: Vec<ConceptUpsert> = units
             .iter()
-            .map(|unit| build_concept(unit, file_path, language))
+            .map(|unit| build_concept_at(unit, file_path, language, valid_from))
             .collect();
         let changed = self.filter_unchanged(&concepts);
         if changed.is_empty() {
@@ -2021,6 +2154,20 @@ impl CodeGraphStore {
         bytes: &[u8],
         branch: &str,
     ) -> macrame::Result<String> {
+        self.write_branch_content_at(path, bytes, branch, &now_iso8601())
+    }
+
+    /// Stamped twin (P5a.2, DR-41): the same branch write at an explicit
+    /// `valid_from` — commit time on the P5 path (P5a.4's first non-`now`
+    /// caller). The blob put stays engine-stamped: only the concept rows
+    /// carry the commit axis.
+    pub fn write_branch_content_at(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        branch: &str,
+        valid_from: &str,
+    ) -> macrame::Result<String> {
         BranchId::new(branch)?;
         let sha = match self.put_source_blob(path, bytes)? {
             BlobOutcome::Stored { digest, .. } => digest,
@@ -2030,7 +2177,7 @@ impl CodeGraphStore {
                 ))));
             }
         };
-        let now = now_iso8601();
+        let now = valid_from.to_string();
         let size = bytes.len() as u64;
         let lines = if bytes.is_empty() {
             0
@@ -2557,6 +2704,17 @@ fn coderadar_extra(content: &serde_json::Value, source_blob: Option<&str>) -> se
 /// Entity metadata is stored canonically in `content`; the small subset needed
 /// for indexed maintenance queries is mirrored in Macrame 0.18's `extra`.
 pub fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> ConceptUpsert {
+    build_concept_at(unit, file_path, language, &now_iso8601())
+}
+
+/// Stamped twin (P5a.2, DR-41): the same v1 pre-flush row at an explicit
+/// `valid_from` — commit time on the P5 path.
+pub fn build_concept_at(
+    unit: &ExtractedUnit,
+    file_path: &str,
+    language: &str,
+    valid_from: &str,
+) -> ConceptUpsert {
     let entity_id = unit.entity_id();
     let (title, _kind, metadata) = entity_meta(unit, file_path, language);
 
@@ -2565,7 +2723,7 @@ pub fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> C
     // same run); the digest-less shape is also what legacy rows look like.
     let extra = coderadar_extra(&metadata, None).to_string();
 
-    let valid_from = now_iso8601();
+    let valid_from = valid_from.to_string();
 
     ConceptUpsert::new(entity_id, title.to_string())
         .content(content)
@@ -3025,7 +3183,18 @@ pub fn build_v2_concepts_all(
     projection: &ProjectedGraph,
     digests: &SourceBlobDigests,
 ) -> Vec<ConceptUpsert> {
-    let now = now_iso8601();
+    build_v2_concepts_all_at(projection, digests, &now_iso8601())
+}
+
+/// Stamped twin (P5a.2, DR-41): the same post-cascade flush at an explicit
+/// `valid_from` — commit time on the P5 path. `now` below is the flush
+/// stamp, not the clock: wall-clock by default, commit time when told.
+pub fn build_v2_concepts_all_at(
+    projection: &ProjectedGraph,
+    digests: &SourceBlobDigests,
+    valid_from: &str,
+) -> Vec<ConceptUpsert> {
+    let now = valid_from.to_string();
     let mut out: Vec<ConceptUpsert> = Vec::new();
     for m in projection.modules.values() {
         let digest = digest_for_module(&m.id, digests);
@@ -3062,8 +3231,20 @@ pub fn build_v2_concepts_for_file(
     file_path: &str,
     digests: &SourceBlobDigests,
 ) -> Vec<ConceptUpsert> {
+    build_v2_concepts_for_file_at(projection, file_path, digests, &now_iso8601())
+}
+
+/// Stamped twin (P5a.2, DR-41): the same single-file flush at an explicit
+/// `valid_from` — commit time on the P5 path. `now` below is the flush
+/// stamp, not the clock.
+pub fn build_v2_concepts_for_file_at(
+    projection: &ProjectedGraph,
+    file_path: &str,
+    digests: &SourceBlobDigests,
+    valid_from: &str,
+) -> Vec<ConceptUpsert> {
+    let now = valid_from.to_string();
     let prefix = format!("{file_path}::");
-    let now = now_iso8601();
     let mut out: Vec<ConceptUpsert> = Vec::new();
     for m in projection.modules.values() {
         if m.id.starts_with(&prefix) {
@@ -5501,5 +5682,261 @@ mod tests {
             .block_on(store.db.blob_get(&"0".repeat(64)))
             .unwrap();
         assert_eq!(missing, None, "unknown digest reads as absent");
+    }
+}
+
+#[cfg(test)]
+mod stamped_write_tests {
+    use super::*;
+
+    #[test]
+    fn nudge_passes_greater_stamps_unnudged() {
+        let (stamp, nudged) = nudge_valid_from(
+            Some("2026-10-29T10:00:00+00:00"),
+            "2026-10-29T10:00:01+00:00",
+        );
+        assert!(!nudged);
+        assert_eq!(stamp, "2026-10-29T10:00:01+00:00");
+    }
+
+    #[test]
+    fn nudge_advances_ties_by_one_microsecond() {
+        let (stamp, nudged) = nudge_valid_from(
+            Some("2026-10-29T10:00:00+00:00"),
+            "2026-10-29T10:00:00+00:00",
+        );
+        assert!(nudged, "a tie must be flagged for stamp_nudged");
+        assert_eq!(stamp, "2026-10-29T10:00:00.000001Z");
+    }
+
+    #[test]
+    fn nudge_compares_instants_not_offset_spellings() {
+        // 10:00:01+01:00 is 09:00:01Z — before the 09:30Z bound despite
+        // sorting after it lexicographically. String comparison would
+        // pass this through; the nudge must catch it.
+        let (stamp, nudged) =
+            nudge_valid_from(Some("2026-10-29T09:30:00Z"), "2026-10-29T10:00:01+01:00");
+        assert!(nudged);
+        assert_eq!(stamp, "2026-10-29T09:30:00.000001Z");
+    }
+
+    #[test]
+    fn nudge_rejects_regressing_stamps() {
+        let (stamp, nudged) = nudge_valid_from(
+            Some("2026-10-29T10:00:00+00:00"),
+            "2026-10-28T10:00:00+00:00",
+        );
+        assert!(nudged, "a backwards stamp must never be written");
+        assert_eq!(stamp, "2026-10-29T10:00:00.000001Z");
+    }
+
+    #[test]
+    fn nudge_without_a_bound_passes_through() {
+        let (stamp, nudged) = nudge_valid_from(None, "2026-10-29T10:00:00+00:00");
+        assert!(!nudged);
+        assert_eq!(stamp, "2026-10-29T10:00:00+00:00");
+    }
+
+    #[test]
+    fn zulu_normalizer_folds_offsets_into_the_instant() {
+        // Macrame's normalize_timestamp accepts only ...SS.ffffffZ, so
+        // the write boundary speaks Zulu and the offset folds here.
+        assert_eq!(
+            zulu_valid_from("2026-10-29T10:00:01+01:00"),
+            Some("2026-10-29T09:00:01.000000Z".to_string())
+        );
+        assert_eq!(
+            zulu_valid_from("2026-10-29T10:00:00.000000Z"),
+            Some("2026-10-29T10:00:00.000000Z".to_string())
+        );
+        assert_eq!(zulu_valid_from("not a stamp"), None);
+    }
+
+    fn one_module_projection() -> ProjectedGraph {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        let mut modules = HashMap::new();
+        modules.insert(
+            "m.py::module".to_string(),
+            Arc::new(crate::types::Module {
+                id: "m.py::module".to_string(),
+                name: "m".to_string(),
+                path: std::path::PathBuf::from("m.py"),
+                language: crate::types::Language::Python,
+                package: None,
+                exports: Vec::new(),
+                star_exports: None,
+                uses: Vec::new(),
+                resolved_uses: Vec::new(),
+                attr_reads: Vec::new(),
+                classes: Vec::new(),
+                functions: Vec::new(),
+                imports: Vec::new(),
+                constants: Vec::new(),
+                type_aliases: Vec::new(),
+                parse_quality: crate::types::ParseQuality::Clean,
+                file_version: 1,
+                content_hash: 0x9e37,
+                embedding: crate::types::EmbeddingVec::default(),
+            }),
+        );
+        ProjectedGraph {
+            modules,
+            classes: HashMap::new(),
+            functions: HashMap::new(),
+            imports: HashMap::new(),
+            constants: HashMap::new(),
+            type_aliases: HashMap::new(),
+            routes: HashMap::new(),
+            file_to_modules: HashMap::new(),
+            module_by_dotted_name: HashMap::new(),
+            module_path_index: HashMap::new(),
+            importers: HashMap::new(),
+            imports_by_importer: HashMap::new(),
+            callers_by_callee: HashMap::new(),
+            callees_by_caller: HashMap::new(),
+            call_evidence: HashMap::new(),
+            subclasses: HashMap::new(),
+            implementers: HashMap::new(),
+            instantiated_by: HashMap::new(),
+            referenced_by: HashMap::new(),
+            path_maps: crate::graph::path_maps::PathMaps::default(),
+            decorated_by: HashMap::new(),
+            overridden_by: HashMap::new(),
+            overrides_base: HashMap::new(),
+            ambiguous_bases: Vec::new(),
+            synthetic_edges: Default::default(),
+        }
+    }
+
+    /// P5a.2: a stamped flush lands the given `valid_from` — every
+    /// concept the build mints carries the commit stamp, not the clock.
+    #[test]
+    fn stamped_concept_build_carries_the_given_stamp() {
+        let projection = one_module_projection();
+        let digests = SourceBlobDigests::new();
+        let stamp = "2026-10-29T10:00:00+00:00";
+        let built = build_v2_concepts_all_at(&projection, &digests, stamp);
+        assert_eq!(built.len(), 1);
+        assert!(built.iter().all(|c| c.valid_from == stamp));
+        let filed = build_v2_concepts_for_file_at(&projection, "m.py", &digests, stamp);
+        assert_eq!(filed.len(), 1);
+        assert!(filed.iter().all(|c| c.valid_from == stamp));
+        // And the default twin still stamps the clock.
+        let clocked = build_v2_concepts_all(&projection, &digests);
+        assert!(clocked.iter().all(|c| c.valid_from != stamp));
+    }
+
+    /// P5a.2: `history_of` over three commit-stamped generations returns
+    /// commit order (newest first), each version carrying its commit stamp.
+    #[test]
+    fn stamped_spine_generations_read_back_in_commit_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("p5a2.db")).unwrap();
+        let stamps = [
+            "2026-10-29T10:00:00.000000Z",
+            "2026-10-29T10:00:01.000000Z",
+            "2026-10-29T10:00:02.000000Z",
+        ];
+        let mut digests = Vec::new();
+        for (i, contents) in [b"x = 1\n".as_slice(), b"x = 2\n", b"x = 3\n"]
+            .iter()
+            .enumerate()
+        {
+            let digest = match store.put_source_blob("m.py", contents).unwrap() {
+                BlobOutcome::Stored { digest, .. } => digest,
+                outcome => panic!("blob {i} must store, got {outcome:?}"),
+            };
+            store
+                .maintain_content_spine(&[("m.py::module".to_string(), digest.clone())], stamps[i])
+                .unwrap();
+            digests.push(digest);
+        }
+        let chain = store.history_of("m.py").unwrap();
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].digest, digests[2]);
+        assert_eq!(chain[0].valid_from, stamps[2]);
+        assert_eq!(chain[1].digest, digests[1]);
+        assert_eq!(chain[1].valid_from, stamps[1]);
+        assert_eq!(chain[2].digest, digests[0]);
+        assert_eq!(chain[2].valid_from, stamps[0]);
+    }
+
+    /// P5a.2 (H-14 pin): the chain follows the stamps, not the insertion
+    /// order. An out-of-order ingest would silently reorder history with
+    /// no error anywhere — which is exactly why INV-10 refuses it (P5a.3)
+    /// instead of letting the reads sort it out.
+    #[test]
+    fn out_of_order_stamps_reorder_the_chain_silently() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("p5a2c.db")).unwrap();
+        // Inserted d1, d2, d3 — but d2's stamp predates d1's.
+        let stamps = [
+            "2026-10-29T10:00:00.000000Z",
+            "2026-10-29T09:00:01.000000Z",
+            "2026-10-29T10:00:02.000000Z",
+        ];
+        let mut digests = Vec::new();
+        for (i, contents) in [b"x = 1\n".as_slice(), b"x = 2\n", b"x = 3\n"]
+            .iter()
+            .enumerate()
+        {
+            let digest = match store.put_source_blob("m.py", contents).unwrap() {
+                BlobOutcome::Stored { digest, .. } => digest,
+                outcome => panic!("blob {i} must store, got {outcome:?}"),
+            };
+            store
+                .maintain_content_spine(&[("m.py::module".to_string(), digest.clone())], stamps[i])
+                .unwrap();
+            digests.push(digest);
+        }
+        let chain = store.history_of("m.py").unwrap();
+        assert_eq!(chain.len(), 3);
+        // Stamp order, not insertion order: d1 sorts between d3 and d2.
+        assert_eq!(chain[0].digest, digests[2]);
+        assert_eq!(chain[1].digest, digests[0]);
+        assert_eq!(chain[2].digest, digests[1]);
+    }
+
+    /// P5a.2: a stamped branch write lands the stamp on both rows it
+    /// mints — the spine concept and the branch pointer concept.
+    #[test]
+    fn stamped_branch_write_lands_the_given_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("p5a2b.db")).unwrap();
+        store.fork_branch("feat", "main").unwrap();
+        let stamp = zulu_valid_from("2026-10-29T10:00:00+00:00").unwrap();
+        let spine_id = store
+            .write_branch_content_at("m.py", b"x = 1\n", "feat", &stamp)
+            .unwrap();
+        let pointer_id = branch_pointer_id("m.py", "feat");
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let stamps: std::collections::HashMap<String, String> = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT id, valid_from FROM concepts WHERE id IN (?1, ?2)",
+                        libsql::params![pointer_id.as_str(), spine_id.as_str()],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let mut out = std::collections::HashMap::new();
+                while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                    out.insert(
+                        row.get::<String>(0).unwrap_or_default(),
+                        row.get::<String>(1).unwrap_or_default(),
+                    );
+                }
+                Ok::<_, macrame::DbError>(out)
+            })
+            .unwrap();
+        assert_eq!(
+            stamps.get(&pointer_id).map(String::as_str),
+            Some(stamp.as_str())
+        );
+        assert_eq!(
+            stamps.get(&spine_id).map(String::as_str),
+            Some(stamp.as_str())
+        );
     }
 }
