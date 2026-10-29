@@ -67,7 +67,7 @@ a second programme with its own edge kind — not a property of this one.
 
 | entity | concept? | id shape / note |
 |---|---|---|
-| module | yes (`module`) | `a.py::module` |
+| module (**the file's row** — there is no `file` kind; annotating "the file" means `about: a.py::module`) | yes (`module`) | `a.py::module` |
 | class | yes (`class`) | `a.py::C` |
 | function | yes (`function`) | `a.py::f` |
 | method | yes — **as `function`** | `a.py::C.m`; `FunctionKind::Method/...` + `parent_class` in payload, not a separate kind |
@@ -75,6 +75,15 @@ a second programme with its own edge kind — not a property of this one.
 | route | yes (`route`) | resolver-minted ids |
 | spine / commit / pointer | yes | history reads stay pure (§6) — annotatable but pointless; not recommended |
 | **parameter** | **no** | `Vec<Parameter>` inside the `Function` payload — serialized into the function's concept JSON, never a standalone row. Annotate the function; a parameter concern is a checklist item (§4), not an id. Promoting parameters to concepts (new kind, new ids, sweep/retire/classifier/embeddings blast radius) is rejected for v1 — re-open only with a consumer that outgrows items. |
+
+"Hard" is therefore exactly this: **a row in the concepts table with a stable
+id, a kind, and a lifecycle** (open → superseded → optionally retired). Files
+qualify *through* their module row — one indexed file is exactly one live
+`{path}::module` concept. What has no row is not annotatable: `external::*`
+markers, edges (addressable only as retiring triples), paths that never
+minted rows (excluded paths, non-indexable languages — the walker filters
+them before extraction), and groupings that never existed as rows
+(directories, the repo itself). v1 does not invent rows for any of these.
 
 ## 3. Identity and lookup
 
