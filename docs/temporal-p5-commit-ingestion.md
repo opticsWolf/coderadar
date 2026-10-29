@@ -41,6 +41,8 @@ Measured on this repository the same day (`git rev-list`, `git log`):
 | Largest indexable blob | 236 KB (under both the 1 MiB watcher and 8 MiB blob caps) |
 | Commit pairs sharing one committer **second** on `main` | 4 |
 | Non-monotonic committer steps along first-parent | 0 |
+| Historical text blobs holding secret-shaped content | 8 of 2,874 — **all false positives** (the scaffolding detector's own literals and one fixture; §10 Q-9) |
+| Paths in all history matching `SECRET_BLOB_EXCLUDE_DEFAULTS` | 1 (`core_indexer/src/scaffold/secrets.rs` — a source file, not a secret) |
 
 ---
 
@@ -383,10 +385,37 @@ P5a.1 and P5a.2 can proceed in parallel; everything after is a chain.
   P5b's machinery. Decide before P5a.2, because it is the stamp the spine chain is built on.
 - **Q-8 — Does the pre-migration store stay?** P5-D4 keeps it as frozen history. It is 100 MB and it
   is the only record of the pre-P5 belief, including the 0.01% baseline that started all of this.
-- **Q-9 — H-16: is a permanent, undeletable copy of every committed byte acceptable?** This is a
-  policy question, not an engineering one, and it is the one question in this document that cannot be
-  answered by measurement. Mismatch #7 of the philosophy note is still open and P5 is what makes it
-  load-bearing.
+- **Q-9 — H-16: is a permanent, undeletable copy of every committed byte acceptable?** A policy
+  question, not an engineering one. Mismatch #7 of the philosophy note is still open and P5 is what
+  makes it load-bearing.
+
+  **The exposure is measurable even though the policy is not, so it was measured** (2026-10-29, all
+  2,874 distinct text blobs in this repository's history, twelve secret shapes: AWS access-key ids,
+  GitHub classic/OAuth/fine-grained PATs, `sk-` keys, Slack tokens, private-key blocks, Google API
+  keys, and `api_key`/`secret_key`/`password`/`access_token` assignment forms). **Eight blobs match,
+  and all eight are false positives:** seven versions of `core_indexer/src/scaffold/mod.rs` plus
+  `core_indexer/src/scaffold/secrets.rs` — the scaffolding detector's own pattern literals — and
+  `tests/fixtures/python/scaffold/vibe.py`, a deliberate fixture. No real secret has been committed
+  to this repository. So for *this* store, option A below costs nothing today; the question is about
+  future commits and about any other repository CodeRadar is pointed at.
+
+  Options, with what each costs:
+
+  | | Shape | Impact |
+  |---|---|---|
+  | **A** | Accept as planned: path-pattern exclusion only | Full coverage, simplest build; the store becomes as sensitive as the repository, permanently. Zero measured marginal risk here |
+  | **B** | Content-scan each blob before the put, skip and record | Needs a design that does not exist; false negatives are inherent; and a skipped blob is a coverage gap `verify_history` cannot tell from a bug. The scan above ran at a 100% false-positive rate, which is the honest preview of this option's cost |
+  | **C** | Bounded window: ingest from a reviewed commit forward | Caps exposure to a range that was looked at, and caps recovery the same way — anything older stays byte-less. Cheap: it is P5a.1's `from` argument, so it is a per-run choice, not a design commitment |
+  | **D** | Decline P5a | No migration and no new exposure; the 3.19% stays 3.19% permanently, honestly reported |
+
+  Recommendation: **A** for this repository, **C** as the default for any repository whose history
+  has not been vetted.
+
+  One finding from the same scan, which belongs to the *present* path and not only to P5:
+  `core_indexer/src/scaffold/secrets.rs` matches `*secret*` under gitignore basename semantics
+  (`storage.rs:382-392`), so its bytes are skipped today. Harmless, and exactly the trade DR-30
+  chose — but it means byte coverage on this repository cannot reach 100% while that file exists,
+  which P5a.5's done-when has to allow for (§11).
 - **Q-10 — Does `ingest-history` get an MCP tool later?** P5a.3 says no for the first release.
   Q-4's reasoning (an agent should be able to ask what it can trust) argues for exposing the
   *report*, not the write.
@@ -399,3 +428,9 @@ A store built by `ingest-history` answers "what did this file look like at commi
 the bytes git has, `verify_history` reports at or near 100% coverage for the ingested range, both
 axes mean what they say (`recorded_at` = ingest, `valid_from` = commit, never blurred), and the op
 refuses out-of-order history instead of accepting it.
+
+"At or near" is load-bearing and has a known floor: every path excluded by
+`SECRET_BLOB_EXCLUDE_DEFAULTS` is byte-less by design, which on this repository is one legitimate
+source file (§0, §10 Q-9). The done-when is therefore *coverage equals the non-excluded tree*, and a
+`SkippedExcluded` count beside the percentage is what makes the difference auditable rather than
+assumed.
