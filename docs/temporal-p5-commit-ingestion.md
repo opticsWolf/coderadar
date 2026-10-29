@@ -325,6 +325,49 @@ P4 explicitly left to P5 — they land here, not earlier.
 the trunk never sees the branch's; `verify_history --branch` reports per-lineage coverage; the
 shared-content case stores one blob row.
 
+**Status (2026-10-29): shipped on `dev` as `ingest_branch_history` + `lineage`/`parent_ref`
+through `ops.ingest_history`, CLI `--lineage`/`--parent-ref` (no MCP tool).** As-built
+deviations and findings, each read off the code:
+
+- *The lineage defaults to the git branch name; only an explicit trunk claim refuses.*
+  `branch="feature"` without a lineage ingests onto the `feature` lineage (the only sane
+  reading now that lineages exist); `lineage="main"` with a non-main git branch refuses
+  (`TrunkBranchMismatch`). P5a.3's "walk any branch into the trunk" permissiveness is
+  tightened — a trunk walk of branch content would mint trunk entity concepts the branch
+  ingest can never restate (same id, D-225).
+- *One flush, one generation per commit.* Pointer and tombstone upserts join the commit's
+  single bulk instead of writing immediately (P4's instruments write at once); the re-point
+  no-op gate comes free via `filter_unchanged`. Mid-commit sub-generations still exist on
+  the trunk (blob/edge/sweep writes); the branch has none beyond the single bulk.
+- *A failed concept flush halts, on both lineages.* P5a.3 continued past a bulk abort and
+  counted the commit — but a chunked bulk abort is a partial write, so counting it bakes
+  the gap in. Halting leaves the cursor behind the commit for a retry (ghost-halt
+  precedent). Branch cursors advance stamp-before-head, so a crash between the two
+  re-ingests one commit instead of skipping one.
+- *The fork scan is newest-shared-point with a self-equality arm.* `graph_descendant_of`
+  is strict (a commit is not its own descendant), so the first version slid the fork a
+  commit too old and re-ingested the fork commit onto the branch until D-225 refused it
+  mid-bulk — the e2e caught it, and the halt above is what made the catch loud instead
+  of silent.
+- *No cascade, no edges on branches.* The running projection accumulates own-file diffs
+  only (INV-10's append-only property means no cross-run diff memory is needed — the
+  same reason the trunk starts empty); relations need cross-lineage edge semantics that
+  do not exist, so they are deferred, not smuggled.
+- *The merge trap is defused with `cross-lineage-id`.* A trunk ingest meeting a
+  branch-born id skips its concepts (bytes and spine land; the skip is auditable, never
+  sweep-gating) instead of aborting the bulk at the trigger. The entities live on the
+  mint lineage permanently — until the D-214 overlay exists, the trunk can never mint
+  those ids. Operational consequence: ingest branches before merging them, and expect
+  branch-born files to read on their lineage.
+- *`history_of` stays lineage-blind; `verify_history --branch` needed no changes.*
+  Branch content appears in the file's digest chain (the spine is content-addressed and
+  lineage-agnostic); lineage-scoped chains need lineage-tagged spine (future). Coverage
+  scopes through the existing visible unions + branch generations.
+- *Two latent trunk hazards fixed in the sweep/retire choke point:* sweep candidates are
+  mint-lineage rows (a trunk sweep would otherwise retire branch-minted modules on sight),
+  and the retire upsert round-trips the row's mint lineage (retiring a branch row through
+  a trunk upsert trips the cross-lineage trigger on its own id).
+
 ### P5a.5 — Migration, and the embedding bill
 
 **Goal.** Make the switch an operation with a stated cost, not a surprise.

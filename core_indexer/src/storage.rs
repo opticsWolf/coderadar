@@ -161,7 +161,50 @@ fn branch_pointer_id(path: &str, branch: &str) -> String {
 /// The blob address rides content AND extra (the read boundary is
 /// `source_blob_of_extra`, mirrored from modules); `file_path` appears
 /// nowhere (H-1: a sweep matching it would retire live branch views).
-fn branch_pointer_upsert(
+/// One branch-content pointer concept (P4, DR-40): the lineage's view of
+/// one path's bytes. Same-id turnover by construction (the id is stable
+/// per lineage+path), so re-pointing supersedes same-entity and the
+/// archive reclaims exactly like superseded module content.
+///
+/// The deletion twin (P5a.4, DR-41): the same stable id with a `deleted`
+/// marker and NO blob address anywhere — not in content, not in extra
+/// (P3's payload discipline: a bool is not an address, and there is no
+/// blob to pin). The read side (`source_ref_from_state`) checks the
+/// marker before the digest, so a tombstone reads as absent — never as
+/// trunk fallback, never as empty bytes. Un-deleting is the same id
+/// turned over to content again; the archive reclaims the tombstone row
+/// exactly like any other superseded version.
+pub(crate) fn branch_tombstone_upsert(
+    path: &str,
+    branch: &str,
+    now: &str,
+) -> macrame::Result<ConceptUpsert> {
+    let branch_id = macrame::BranchId::new(branch)?;
+    let content = serde_json::json!({
+        "meta_version": V2_META_VERSION,
+        "kind": edge_type::BRANCH_CONTENT_KIND,
+        "branch": branch,
+        "deleted": true,
+    });
+    let extra = serde_json::json!({
+        "coderadar": {
+            "format": 1,
+            "kind": edge_type::BRANCH_CONTENT_KIND,
+            "deleted": true,
+        },
+    });
+    Ok(
+        ConceptUpsert::new(branch_pointer_id(path, branch), path.to_string())
+            .content(content.to_string())
+            .extra(extra.to_string())
+            .valid_from(now.to_string())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(branch_id),
+    )
+}
+
+pub(crate) fn branch_pointer_upsert(
     path: &str,
     sha: &str,
     branch: &str,
@@ -1311,6 +1354,13 @@ impl CodeGraphStore {
         // P4 (DR-40): the branch's view first. A pointer names the blob
         // outright (`properties.source_blob`); the module concept is the
         // trunk-frozen fallback (a branch inherits it as of the fork).
+        // P5a.4 (DR-41): a tombstone pointer (deleted marker, no blob)
+        // reads as absent — the file is gone on this lineage even though
+        // the trunk still holds it. The marker is checked before the
+        // digest so a deletion never falls through to trunk content.
+        if Self::branch_pointer_deleted(state, file_path, branch) {
+            return Ok(None);
+        }
         if let Some(sha) = Self::branch_pointer_digest(state, file_path, branch) {
             return Ok(Some(SourceRef {
                 id: entity_id.to_string(),
@@ -1361,7 +1411,9 @@ impl CodeGraphStore {
     /// fold narrows to the ancestry, so a hit IS the lineage's view and
     /// a miss falls through to the module concept. Never another
     /// lineage's bytes: a sibling's pointer id names the sibling, and
-    /// the trunk never mints one.
+    /// the trunk never mints one. A tombstone (P5a.4: deleted marker,
+    /// no blob) names nothing — the deleted check above runs first, so
+    /// this returning `None` still means "no pointer", never "deleted".
     fn branch_pointer_digest(
         state: &MaterializedState,
         path: &str,
@@ -1369,6 +1421,21 @@ impl CodeGraphStore {
     ) -> Option<String> {
         let pointer = state.concepts.get(&branch_pointer_id(path, branch))?;
         source_blob_of_extra(&pointer.extra)
+    }
+
+    /// Whether the lineage's pointer for `path` is a deletion tombstone
+    /// (P5a.4, DR-41): the marker lives in `extra` — the same read
+    /// boundary `branch_pointer_digest` uses — so a corrupt or legacy
+    /// pointer (unparseable extra, no marker) keeps the old fail-open
+    /// behavior and falls through to the module concept.
+    fn branch_pointer_deleted(state: &MaterializedState, path: &str, branch: &str) -> bool {
+        let Some(pointer) = state.concepts.get(&branch_pointer_id(path, branch)) else {
+            return false;
+        };
+        serde_json::from_str::<serde_json::Value>(&pointer.extra)
+            .ok()
+            .and_then(|v| v.get("coderadar")?.get("deleted")?.as_bool())
+            .unwrap_or(false)
     }
 
     /// Batched refs for N entities at one timestamp (P0, DR-36): one
@@ -1467,23 +1534,34 @@ impl CodeGraphStore {
             // rather than a blank tombstone.
             let mut concepts: Vec<ConceptUpsert> = Vec::new();
             for id in entity_ids {
+                // P5a.4 (DR-41): the retire upsert carries the row's mint
+                // lineage. Concepts are globally unique by id but
+                // lineage-provenanced (D-225: `branch_id` is provenance, not
+                // identity), so retiring a branch-minted row through a
+                // trunk upsert would trip `trg_concepts_cross_lineage`.
+                // Round-tripping the stored value keeps every lineage's
+                // retire legal; trunk rows round-trip to the trunk default.
                 let mut rows = conn
                     .query(
-                        "SELECT title, content, extra, valid_from FROM concepts \
+                        "SELECT title, content, extra, valid_from, branch_id FROM concepts \
                          WHERE id = ?1 AND retired = 0",
                         libsql::params![id.as_str()],
                     )
                     .await
                     .map_err(macrame::DbError::Engine)?;
                 if let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
-                    concepts.push(
+                    let mut upsert =
                         ConceptUpsert::new(id.clone(), row.get::<String>(0).unwrap_or_default())
                             .content(row.get::<String>(1).unwrap_or_default())
                             .extra(row.get::<String>(2).unwrap_or_else(|_| "{}".to_string()))
                             .valid_from(row.get::<String>(3).unwrap_or_else(|_| ts.clone()))
                             .valid_to(ts.clone())
-                            .retired(true),
-                    );
+                            .retired(true);
+                    let mint: Option<String> = row.get(4).ok().flatten();
+                    if let Some(lineage) = mint.filter(|b| !b.is_empty()) {
+                        upsert = upsert.on_branch(macrame::BranchId::new(&lineage)?);
+                    }
+                    concepts.push(upsert);
                 }
             }
 
@@ -1604,13 +1682,24 @@ impl CodeGraphStore {
     /// whose line-based ids disappeared between indexing passes.
     /// Stamped twin (P5a.3, DR-41): the same file-concept sweep at an
     /// explicit `valid_from`. The wrapper below keeps analyze on the clock.
+    /// Retire file concepts the run no longer believes, scoped to the run's
+    /// lineage (P5a.4, DR-41).
+    ///
+    /// The candidate set is lineage-minted rows only: a trunk sweep must
+    /// never retire a branch-minted module (it is not in the trunk's tree
+    /// and never will be), and a branch sweep must never touch trunk rows
+    /// (global ids — retiring by id is lineage-blind, so the candidate set
+    /// is where the scoping lives). Commit concepts carry no file-path
+    /// annotation and pointers deliberately neither (H-1), so both pass
+    /// over without needing keep-set entries.
     pub fn retire_stale_file_concepts_at(
         &self,
         keep_ids: &HashSet<String>,
         valid_from: &str,
+        lineage: &str,
     ) -> macrame::Result<usize> {
         let stale_ids: Vec<String> = self
-            .live_concept_contents()?
+            .live_concept_contents_on(lineage)?
             .into_iter()
             .filter(|(id, content)| {
                 if keep_ids.contains(id) {
@@ -1640,9 +1729,38 @@ impl CodeGraphStore {
         Ok(self.retire_entities_at(&stale_ids, valid_from)?.0)
     }
 
-    /// Un-stamped wrapper (live paths): sweep at the clock.
+    /// Un-stamped wrapper (live paths: the analyze sweep runs on the trunk).
     pub fn retire_stale_file_concepts(&self, keep_ids: &HashSet<String>) -> macrame::Result<usize> {
-        self.retire_stale_file_concepts_at(keep_ids, &now_iso8601())
+        self.retire_stale_file_concepts_at(keep_ids, &now_iso8601(), "main")
+    }
+
+    /// `(id, content)` of every concept the ledger still holds to be true
+    /// on one lineage (P5a.4, DR-41): the sweep-scoped counterpart to
+    /// [`Self::live_concept_contents`]. Sweeps scope candidates by mint
+    /// lineage through this; the unscoped listing stays for health checks
+    /// that must classify rows wherever they were minted (v1 repair).
+    pub fn live_concept_contents_on(
+        &self,
+        lineage: &str,
+    ) -> macrame::Result<Vec<(String, String)>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT id, content FROM concepts WHERE retired = 0 AND branch_id = ?1",
+                    libsql::params![lineage],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                ));
+            }
+            Ok(out)
+        })
     }
 
     /// Live ids of framework route concepts (§1.3), optionally scoped to
@@ -2246,6 +2364,50 @@ impl CodeGraphStore {
         let pointer = branch_pointer_upsert(path, &sha, branch, &now)?;
         self.upsert_concepts_bulk(&[spine, pointer])?;
         Ok(spine_id)
+    }
+
+    /// Record a deletion on `branch` (P5a.4, DR-41): the tombstone twin of
+    /// [`Self::write_branch_content_at`]. Same stable pointer id, a
+    /// `deleted` marker, no blob — the read side omits the path instead
+    /// of falling back to trunk content. One stamped row, same-id
+    /// turnover: re-adding the file re-points to content, and the archive
+    /// reclaims the tombstone row like any other superseded version.
+    /// Unknown branches refuse exactly like the content write.
+    pub fn write_branch_tombstone_at(
+        &self,
+        path: &str,
+        branch: &str,
+        valid_from: &str,
+    ) -> macrame::Result<()> {
+        BranchId::new(branch)?;
+        let tombstone = branch_tombstone_upsert(path, branch, valid_from)?;
+        self.upsert_concepts_bulk(&[tombstone])?;
+        Ok(())
+    }
+
+    /// Which lineage minted `id`, if any row — current or retired — still
+    /// names it (P5a.4, DR-41): the D-225 backstop query. A branch ingest
+    /// mints entity concepts only for ids no other lineage holds; the
+    /// trunk ingest skips ids a branch minted. `None` is unminted (or
+    /// trunk-default, which the callers treat as unminted — the check is
+    /// "foreign to my lineage", never "present").
+    pub fn mint_lineage(&self, id: &str) -> macrame::Result<Option<String>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT branch_id FROM concepts WHERE id = ?1",
+                    libsql::params![id],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            Ok(rows
+                .next()
+                .await
+                .map_err(macrame::DbError::Engine)?
+                .map(|row| row.get::<String>(0).unwrap_or_default())
+                .filter(|b| !b.is_empty()))
+        })
     }
 
     /// Ids of every module concept the ledger ever described on a branch
@@ -6127,6 +6289,201 @@ mod stamped_write_tests {
                 .unwrap()
                 .as_deref(),
             Some(crate::graph::ingest::MODE_COMMIT_TIME)
+        );
+    }
+
+    /// P5a.4 (DR-41): a tombstone reads as absent on its lineage and
+    /// changes nothing on the trunk. The file is gone on the branch even
+    /// though the trunk still holds it — absence, never trunk fallback,
+    /// never empty bytes.
+    #[test]
+    fn tombstone_reads_as_absent_not_fallback() {
+        // Local twin of `tests::source_ref_store`: a trunk module with a
+        // digest plus one function (separate test modules, no shared
+        // fixtures across them).
+        fn trunk_module_store(dir: &std::path::Path) -> CodeGraphStore {
+            let store = CodeGraphStore::open(dir.join("refs.db")).unwrap();
+            let digest = "c".repeat(64);
+            let module_extra =
+                format!(r#"{{"coderadar":{{"format":1,"source_blob":"{digest}"}}}}"#);
+            let module = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+                .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+                .extra(module_extra)
+                .valid_from(now_iso8601())
+                .valid_to(TS_OPEN.to_string())
+                .retired(false);
+            assert_eq!(store.upsert_concepts_bulk(&[module]).unwrap(), 1);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            store
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = trunk_module_store(dir.path());
+        store.fork_branch("feat", "main").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let stamp = now_iso8601();
+        store
+            .write_branch_tombstone_at("m.py", "feat", &stamp)
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let at = now_iso8601();
+        let gone = store
+            .entity_source_ref_at("m.py::module", &at, "feat")
+            .unwrap();
+        assert!(gone.is_none(), "tombstoned on feat: {gone:?}");
+        let kept = store
+            .entity_source_ref_at("m.py::module", &at, "main")
+            .unwrap()
+            .expect("trunk still holds m.py");
+        assert_eq!(kept.digest.as_deref(), Some("c".repeat(64).as_str()));
+    }
+
+    /// P5a.4 (DR-41): restating a trunk-owned id on a branch refuses with
+    /// `CrossLineage` — the D-225 rule the whole branch-write design
+    /// stands on. Pointers and branch-minted ids exist because this
+    /// refuses; the ingest routes around it instead of catching it.
+    #[test]
+    fn branch_restate_of_trunk_id_refuses_cross_lineage() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("restate.db")).unwrap();
+        let module = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[module]).unwrap(), 1);
+        store.fork_branch("feat", "main").unwrap();
+        let restate = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py","changed":true}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(macrame::BranchId::new("feat").unwrap());
+        match store.upsert_concepts_bulk(&[restate]) {
+            Err(macrame::DbError::CrossLineage { .. }) => {}
+            other => {
+                panic!("restating a trunk id on a branch must refuse CrossLineage, got {other:?}")
+            }
+        }
+    }
+
+    /// P5a.4 (DR-41): retiring a branch-minted row carries its mint
+    /// lineage on the retire upsert — retiring through a trunk upsert
+    /// would trip `trg_concepts_cross_lineage` on the row's own id.
+    /// Trunk retires round-trip to the trunk default (existing tests
+    /// cover that path unchanged).
+    #[test]
+    fn retire_carries_the_mint_lineage() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("retline.db")).unwrap();
+        store.fork_branch("feat", "main").unwrap();
+        let minted = macrame::ConceptUpsert::new("n.py::module", "n.py::module")
+            .content(r#"{"meta_version":2,"kind":"module","name":"n.py","file_path":"n.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(macrame::BranchId::new("feat").unwrap());
+        assert_eq!(store.upsert_concepts_bulk(&[minted]).unwrap(), 1);
+        let (n, _) = store
+            .retire_entities_at(&["n.py::module".to_string()], &now_iso8601())
+            .unwrap();
+        assert_eq!(n, 1);
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let (retired, branch_id): (i64, String) = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT retired, branch_id FROM concepts WHERE id = ?1",
+                        libsql::params!["n.py::module"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .expect("retired row exists");
+                Ok::<_, macrame::DbError>((
+                    row.get::<i64>(0).unwrap_or(0),
+                    row.get::<String>(1).unwrap_or_default(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(retired, 1);
+        assert_eq!(branch_id, "feat");
+    }
+
+    /// P5a.4 (DR-41): sweep candidates are mint-lineage rows. A trunk
+    /// sweep never retires a branch-minted module (it is not in the
+    /// trunk's tree and never will be); a branch sweep never touches
+    /// trunk rows (global ids — the candidate set is where the scoping
+    /// lives).
+    #[test]
+    fn sweep_candidates_are_mint_lineage_scoped() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("sweep.db")).unwrap();
+        let trunk_module = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[trunk_module]).unwrap(), 1);
+        store.fork_branch("feat", "main").unwrap();
+        let minted = macrame::ConceptUpsert::new("n.py::module", "n.py::module")
+            .content(r#"{"meta_version":2,"kind":"module","name":"n.py","file_path":"n.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(macrame::BranchId::new("feat").unwrap());
+        assert_eq!(store.upsert_concepts_bulk(&[minted]).unwrap(), 1);
+        let trunk_keep: std::collections::HashSet<String> =
+            ["m.py::module".to_string()].into_iter().collect();
+        // The branch-minted module is live, file-annotated, and absent
+        // from the trunk keep set — an unscoped sweep would retire it.
+        let retired = store
+            .retire_stale_file_concepts_at(&trunk_keep, &now_iso8601(), "main")
+            .unwrap();
+        assert_eq!(retired, 0, "trunk sweep must spare branch-minted rows");
+        let retired = store
+            .retire_stale_file_concepts_at(
+                &std::collections::HashSet::new(),
+                &now_iso8601(),
+                "feat",
+            )
+            .unwrap();
+        assert_eq!(retired, 1, "branch sweep retires its own stale rows");
+    }
+
+    /// P5a.4 (DR-41): `mint_lineage` names the mint lineage — the query
+    /// both ingest lineages consult before minting entity concepts.
+    #[test]
+    fn mint_lineage_names_the_mint_lineage() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("mint.db")).unwrap();
+        let trunk_module = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[trunk_module]).unwrap(), 1);
+        assert!(
+            matches!(
+                store.mint_lineage("m.py::module").unwrap().as_deref(),
+                None | Some("main")
+            ),
+            "trunk rows read as trunk (or default)"
+        );
+        assert_eq!(store.mint_lineage("nope.py::module").unwrap(), None);
+        store.fork_branch("feat", "main").unwrap();
+        let minted = macrame::ConceptUpsert::new("n.py::module", "n.py::module")
+            .content(r#"{"meta_version":2,"kind":"module","name":"n.py","file_path":"n.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(macrame::BranchId::new("feat").unwrap());
+        assert_eq!(store.upsert_concepts_bulk(&[minted]).unwrap(), 1);
+        assert_eq!(
+            store.mint_lineage("n.py::module").unwrap().as_deref(),
+            Some("feat")
         );
     }
 }

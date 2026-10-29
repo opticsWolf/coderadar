@@ -1444,21 +1444,32 @@ def history_of(file: str, *, graph: Any = None) -> dict:
 
 def ingest_history(repo: str | Path, branch: str = "main",
                    from_sha: str | None = None, dry_run: bool = False,
+                   lineage: str | None = None, parent_ref: str = "main",
                    *, store_path: str | Path | None = None,
                    graph: Any = None) -> dict:
-    """Ingest one git branch's first-parent history into the trunk lineage
-    (P5a.3, DR-41).
+    """Commit-driven history ingest into the trunk or a branch lineage
+    (P5a.3/P5a.4, DR-41).
 
     Per commit, in topological order: blob puts for the changed files,
     one stamped flush (entity concepts + spine + the commit concept),
-    scoped edge persistence, and a sweep scoped to the commit's tree —
-    then the ``kv`` cursor advance that makes an interrupted ingest
-    resumable. Returns the report as the contract:: ``{"branch",
-    "lineage", "from", "head", "dry_run", "commits_ingested",
-    "commits_skipped": [{"sha", "reason"}], "files_parsed",
+    scoped edge persistence on the trunk (branches persist no edges —
+    cross-lineage relations are deferred, not smuggled), and a
+    lineage-scoped sweep — then the ``kv`` cursor advance that makes an
+    interrupted ingest resumable. Returns the report as the contract::
+    ``{"branch", "lineage", "fork_point", "from", "head",
+    "dry_run", "commits_ingested", "commits_skipped":
+    [{"sha", "reason"}], "files_parsed",
     "files_failed": [{"sha", "path", "reason"}], "files_excluded",
     "blobs_stored", "blobs_deduped", "stamps_nudged",
-    "ghost_commits", "elapsed_secs"}``.
+    "ghost_commits", "elapsed_secs"}``. ``fork_point`` is the branch
+    lineage's fork commit (``None`` on the trunk).
+
+    ``lineage`` defaults to the git branch name: ``branch="main"``
+    ingests the trunk, any other branch forks (or resumes) its own
+    lineage. Only an explicit ``lineage="main"`` with a non-main git
+    branch is refused — branch content is not trunk history.
+    ``parent_ref`` (default ``"main"``) is the trunk ref the fork point
+    is computed against.
 
     The store is ``store_path``, else the given graph's database.
     There is deliberately no cwd default: the op creates a commit-time
@@ -1466,9 +1477,11 @@ def ingest_history(repo: str | Path, branch: str = "main",
     mistake this signature refuses to make. A store file that already
     exists without the commit-time flag is refused (INV-12, legacy
     index-now) — ingest into a fresh path instead. ``from_sha`` is an
-    exclusive window start (``None`` resumes from the cursor); a
-    ``from_sha`` that is not the cursor is refused (INV-10). ``dry_run``
-    plans without writing anything, including no store creation.
+    exclusive window start (``None`` resumes from the cursor; a
+    ``from_sha`` that is not the cursor is refused (INV-10); a first
+    branch run starts at the fork, never mid-branch). ``dry_run``
+    plans without writing anything, including no store creation and no
+    fork.
 
     No MCP tool in the first release: a long, writing, migration-grade
     op an agent must not call without knowing that.
@@ -1477,6 +1490,8 @@ def ingest_history(repo: str | Path, branch: str = "main",
         raise InvalidRequest("Please provide a repository path.")
     if not branch or not str(branch).strip():
         raise InvalidRequest("Please provide a git branch (e.g. 'main').")
+    if not parent_ref or not str(parent_ref).strip():
+        raise InvalidRequest("Please provide a parent ref (default 'main').")
     if store_path is None and graph is not None:
         store_path = getattr(graph, "_db_path", None)
     if store_path is None:
@@ -1487,7 +1502,9 @@ def ingest_history(repo: str | Path, branch: str = "main",
         from coderadar._core import ingest_history as _ingest
         raw = _ingest(str(store_path), str(repo), str(branch),
                       str(from_sha) if from_sha is not None else None,
-                      bool(dry_run))
+                      bool(dry_run),
+                      str(lineage) if lineage is not None else None,
+                      str(parent_ref))
     except ImportError as e:
         raise EngineError(f"native extension unavailable: {e}") from None
     except ValueError as e:

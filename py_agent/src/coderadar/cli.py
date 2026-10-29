@@ -662,18 +662,25 @@ def history(file: str, fmt: str):
               help="Git repository to ingest (any path; history is read from git).")
 @click.option("--branch", default="main", show_default=True,
               help="Git branch whose first-parent history to ingest.")
+@click.option("--lineage", default=None,
+              help="Lineage to write (default: the branch name; 'main' is the trunk). "
+              "A non-main branch without a lineage is refused.")
+@click.option("--parent-ref", default="main", show_default=True,
+              help="Trunk ref the branch fork point is computed against.")
 @click.option("--from", "from_sha", default=None,
-              help="Exclusive window start (a sha). Omit to resume from the cursor. "
+              help="Exclusive window start (a sha). Omit to resume from the cursor "
+              "(or start at the root / fork). "
               "A sha that is not the cursor is refused (INV-10).")
 @click.option("--dry-run", is_flag=True,
-              help="Plan without writing anything (no store creation, no cursor).")
+              help="Plan without writing anything (no store creation, no fork, no cursor).")
 @click.option("--store", "store_path", required=True,
               help="Store file to write (created as a commit-time store when missing). "
               "A legacy index-now store is refused (INV-12).")
 @_format_option
-def ingest_history(repo: str, branch: str, from_sha: str | None,
+def ingest_history(repo: str, branch: str, lineage: str | None,
+                   parent_ref: str, from_sha: str | None,
                    dry_run: bool, store_path: str, fmt: str):
-    """Ingest a git branch's history into the trunk lineage (P5a.3, DR-41)."""
+    """Ingest a git branch's history onto the trunk or a branch lineage (P5a.3/P5a.4, DR-41)."""
     from pathlib import Path as _Path
 
     from . import ops, render
@@ -683,6 +690,7 @@ def ingest_history(repo: str, branch: str, from_sha: str | None,
     store_path = str(_Path(store_path).resolve())
     _enter_project()
     _op(fmt, lambda: ops.ingest_history(repo, branch, from_sha, dry_run,
+                                        lineage=lineage, parent_ref=parent_ref,
                                         store_path=store_path),
         lambda result: render.ingest_history(result))
 

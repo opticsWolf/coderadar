@@ -1225,3 +1225,67 @@ classifier, `kv` flag round-trip), Python 1,226 passed + 1 skipped, fmt/clippy/r
 dry-run, CLI; `test_commit_stamps.py` 4: committer-vs-author, offset folding, tie nudge,
 regression nudge). DR-41 stays deferred — the shape is built as recommended, the adopt-P5a
 decision is still the maintainer's (Q-6..Q-9).
+
+### 2026-10-29 — P5a.4 landed (branch ingestion: `ingest_branch_history` + `lineage`/`parent-ref`)
+
+P5a.4 is in: per git branch, a fork recorded once (ledger parentage + `kv` fork commit), then
+P5a.3's per-commit shape against that lineage — blob puts, one stamped flush, a lineage-scoped
+sweep, the `kv` cursor advance. `ops.ingest_history(..., lineage=None, parent_ref="main")`:
+the lineage defaults to the git branch name (`main` is the trunk); CLI gains `--lineage` and
+`--parent-ref`. No MCP tool (29 tools stay pinned; H-13). All three things P4 left to P5 land
+here: deletion semantics on a branch, per-branch sweep scoping, branch-minted new-file
+module concepts.
+
+What each changed file becomes depends on who minted its module id: trunk-inherited files
+diverge through pointers (bytes only — the entities stay the ancestor's rows, which branch
+reads reach through fallback); files the lineage itself minted re-mint entity concepts on the
+lineage like the trunk does; files no lineage holds are minted new, unless a sibling holds
+the id (then bytes land and the concepts are skipped as `cross-lineage-id` — D-225 refuses
+the write, D-214 names the overlay that would allow it). Deletions of inherited files mint
+tombstones — the same stable pointer id with a `deleted` marker and no blob, which the read
+side omits instead of falling back to trunk content; deletions of branch-minted files retire
+through the sweep; re-adding turns a tombstone back to content by same-id turnover. Branch
+runs persist no edges and run no cascade: relations on branches need cross-lineage edge
+semantics the ledger does not have (deferred, not smuggled).
+
+Enforcement: INV-10 per lineage (cursor + structural first-parent check, unchanged shape);
+INV-11 through the same nudge; INV-12 through the same mode flag. The fork is recorded once:
+a recorded fork that disagrees with the computed one refuses (`ForkMismatch`), a lineage the
+ledger knows but ingest never forked refuses (`LineageExists`), an orphan branch with no
+common history refuses (`NoCommonHistory`). The window always starts at the fork or the
+cursor past it — first runs accept only the fork, never mid-branch — so a lineage's history
+is complete, never partial, and recorded order stays commit order with no read-path change.
+The fork scan takes the newest branch-chain commit the parent ref still reaches (robust to
+trunk-merges and criss-crosses); a strict-descendant bug in the first version (`graph_
+descendant_of` is false for self-equality, sliding the fork a commit too old) was caught by
+the e2e and fixed with an equality arm. An explicit `lineage="main"` with a non-main git
+branch refuses (`TrunkBranchMismatch`) — branch history is not trunk history; P5a.3's "any
+branch into the trunk" permissiveness is tightened now that lineages exist.
+
+Two as-built hardenings beyond the plan: (1) pointer and tombstone upserts join the commit's
+single bulk (one flush, one generation per commit — `filter_unchanged` is the no-op gate for
+free), instead of writing immediately like P4's instruments do; (2) a failed concept flush
+halts the run on BOTH lineages (P5a.3 continued and counted the commit — a chunked bulk
+abort is a partial write, and counting it bakes the gap in; halting leaves the cursor behind
+it for a retry). Branch cursors advance stamp-before-head (a crash re-ingests one commit
+instead of skipping one). The trunk merge trap is defused, not solved: a merge bringing
+branch-born files skips their concepts with `cross-lineage-id` (bytes and spine land,
+entities stay on the branch) — the trunk can never mint those ids again while the branch
+row exists, which is the D-214 overlay gap stated plainly. `history_of` stays lineage-blind
+by design (branch content appears in the file's chain); `verify_history --branch` needed no
+changes (visible unions + branch generations already scope it).
+
+Two latent trunk hazards fixed along the way, both in the sweep/retire choke point: sweep
+candidates are now mint-lineage rows (`live_concept_contents_on`) — a trunk sweep would
+otherwise have retired every branch-minted module the moment P5a.4 created one — and the
+retire upsert round-trips the row's mint lineage, without which retiring a branch row trips
+`trg_concepts_cross_lineage` on its own id. Both are covered by Rust pins (including a
+`CrossLineage` refusal pin for the restate the whole design routes around).
+
+Gates: Rust lib 542 passed + 1 ignored (9 new: 3 fork-point, tombstone read, restate
+refusal, retire lineage, sweep scoping, mint lineage), Python 1,237 passed + 1 skipped,
+fmt/clippy/ruff clean. 11 new Python tests (`tests/test_branch_ingest.py`: diverge + trunk
+immunity, tombstone hide/re-add, per-lineage 100 % coverage, one-blob sharing, dry-run
+forks nothing, resume/noop, trunk refusal, fork mismatch, manual-fork refusal, merge trap,
+CLI). DR-41 stays deferred — Q-6..Q-9 still open; P5a.5 (migration + embeddings-once) is
+next, then P5b only on upstream DR-43.

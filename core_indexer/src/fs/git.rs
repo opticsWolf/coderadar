@@ -183,6 +183,53 @@ pub fn plan_ingest(
     Ok(plans)
 }
 
+/// Newest commit on `branch`'s first-parent chain that the parent ref's tip
+/// still reaches (P5a.4): the ingest's first-run window start, and the fork
+/// commit recorded in `kv`.
+///
+/// The scan walks newest-first and takes the first hit, so it is robust to
+/// the two shapes where a merge-base is not the answer: a branch that merged
+/// the trunk into itself (the merge commit is not parent-reachable, the fork
+/// stays where the branch left the trunk) and criss-cross merges (newest
+/// shared point wins — it is the INV-10 boundary, not a semantic merge-base).
+/// An orphan branch with nothing in common refuses (`NoCommonHistory`);
+/// unknown names surface as the walker's existing typed errors.
+pub fn fork_point(repo_path: &str, branch: &str, parent_ref: &str) -> Result<String, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let tip = repo
+        .revparse_single(branch)
+        .map_err(|_| GitError::UnknownBranch(branch.to_string()))?
+        .peel_to_commit()
+        .map_err(|_| GitError::UnknownBranch(branch.to_string()))?;
+    let parent_tip = repo
+        .revparse_single(parent_ref)
+        .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?
+        .peel_to_commit()
+        .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?
+        .id();
+    let mut current = Some(tip);
+    while let Some(commit) = current {
+        // `graph_descendant_of` is strict: a commit is not its own
+        // descendant, so the parent tip itself (the common case — the
+        // branch forked straight off the trunk) needs the equality arm.
+        // Without it the scan slides past the true fork to an older
+        // commit, and the ingest re-writes the fork commit onto the
+        // branch until D-225 refuses it mid-bulk.
+        if commit.id() == parent_tip
+            || repo
+                .graph_descendant_of(parent_tip, commit.id())
+                .unwrap_or(false)
+        {
+            return Ok(commit.id().to_string());
+        }
+        current = commit.parent(0).ok();
+    }
+    Err(GitError::NoCommonHistory {
+        branch: branch.to_string(),
+        parent: parent_ref.to_string(),
+    })
+}
+
 /// Raw bytes of `path` as committed in `sha` (P5a.1): the walker feeds git
 /// blob bytes, so no commit is ever checked out. `sha` must resolve to a
 /// commit and `path` must name a blob in that commit's tree.
@@ -415,6 +462,14 @@ pub enum GitError {
     PathNotFound {
         sha: String,
         path: String,
+    },
+    /// P5a.4: `branch` shares no commit with `parent_ref` — an orphan or
+    /// unrelated history. A lineage forked from the trunk with nothing in
+    /// common is almost certainly a wrong ref, so refusing beats
+    /// ingesting an unrelated tree as branch history.
+    NoCommonHistory {
+        branch: String,
+        parent: String,
     },
 }
 
@@ -801,5 +856,130 @@ mod ingest_plan_tests {
             plans[0].tree,
             vec![PathBuf::from("a.py"), PathBuf::from("my_secret_helper.py")]
         );
+    }
+}
+
+#[cfg(test)]
+mod fork_point_tests {
+    use super::*;
+
+    fn write_files_local(dir: &Path, files: &[(&str, &str)]) {
+        for (name, contents) in files {
+            let path = dir.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, contents).unwrap();
+        }
+    }
+
+    fn stage_paths_local(repo: &git2::Repository, paths: &[&str]) {
+        let mut index = repo.index().unwrap();
+        for path in paths {
+            index.add_path(Path::new(path)).unwrap();
+        }
+        index.write().unwrap();
+    }
+
+    // NOTE: the ingest_plan_tests helpers are private to that module; this
+    // module re-declares the two it needs rather than widening visibility.
+    fn now_sig_local() -> git2::Signature<'static> {
+        git2::Signature::now("t", "t@t.t").unwrap()
+    }
+
+    fn commit_to<'a>(
+        repo: &'a git2::Repository,
+        reference: &str,
+        message: &str,
+        parents: &[&git2::Commit<'_>],
+    ) -> git2::Commit<'a> {
+        let mut index = repo.index().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = now_sig_local();
+        let oid = repo
+            .commit(Some(reference), &sig, &sig, message, &tree, parents)
+            .unwrap();
+        repo.find_commit(oid).unwrap()
+    }
+
+    /// main: m1 - m2 (- m3); feature branched at m2, one commit f1.
+    fn forked_repo() -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let root = dir.path();
+        write_files_local(root, &[("a.py", "x = 1\n")]);
+        stage_paths_local(&repo, &["a.py"]);
+        let m1 = commit_to(&repo, "refs/heads/main", "m1", &[]);
+        write_files_local(root, &[("a.py", "x = 2\n")]);
+        stage_paths_local(&repo, &["a.py"]);
+        let m2 = commit_to(&repo, "refs/heads/main", "m2", &[&m1]);
+        write_files_local(root, &[("b.py", "y = 1\n")]);
+        stage_paths_local(&repo, &["b.py"]);
+        let f1 = commit_to(&repo, "refs/heads/feature", "f1", &[&m2]);
+        write_files_local(root, &[("a.py", "x = 3\n")]);
+        stage_paths_local(&repo, &["a.py"]);
+        let m3 = commit_to(&repo, "refs/heads/main", "m3", &[&m2]);
+        let _ = (f1, m3);
+        (dir, m2.id().to_string(), String::new())
+    }
+
+    #[test]
+    fn fork_point_is_the_branch_point_despite_later_main() {
+        let (dir, m2, _) = forked_repo();
+        let root = dir.path().to_str().unwrap();
+        // main has advanced past the fork (m3); the fork stays at m2.
+        assert_eq!(fork_point(root, "feature", "main").unwrap(), m2);
+    }
+
+    #[test]
+    fn fork_point_survives_a_trunk_merge_into_the_branch() {
+        let (dir, m2, _) = forked_repo();
+        let root = dir.path().to_str().unwrap();
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        // feature merges main (second parent): the merge commit is not
+        // main-reachable, so the fork stays at m2 and the resolution
+        // commit itself is ingested (P5-D7).
+        let f1 = repo
+            .revparse_single("feature")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        let m3 = repo
+            .revparse_single("main")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        repo.index().unwrap().write_tree().unwrap();
+        commit_to(&repo, "refs/heads/feature", "merge main", &[&f1, &m3]);
+        assert_eq!(fork_point(root, "feature", "main").unwrap(), m2);
+        let plan = plan_ingest(root, "feature", Some(&m2)).unwrap();
+        assert_eq!(plan.len(), 2, "merge resolution + branch tip: {plan:?}");
+    }
+
+    #[test]
+    fn fork_point_unknown_names_and_orphans_refuse() {
+        let (dir, _, _) = forked_repo();
+        let root = dir.path().to_str().unwrap();
+        assert!(matches!(
+            fork_point(root, "nope", "main"),
+            Err(GitError::UnknownBranch(_))
+        ));
+        assert!(matches!(
+            fork_point(root, "feature", "nope"),
+            Err(GitError::UnknownRevision(_))
+        ));
+        // An orphan root shares nothing with main: almost certainly a
+        // wrong ref, so refusing beats ingesting an unrelated tree.
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let sig = now_sig_local();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/orphan"), &sig, &sig, "o1", &tree, &[])
+            .unwrap();
+        assert!(matches!(
+            fork_point(root, "orphan", "main"),
+            Err(GitError::NoCommonHistory { .. })
+        ));
     }
 }

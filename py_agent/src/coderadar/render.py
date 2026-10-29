@@ -911,6 +911,7 @@ def ingest_history(result: dict) -> str:
     head = [
         f"branch           {result['branch']}  (lineage {result['lineage']})",
         f"from             {result['from'] or '(root)'}",
+        f"fork             {result.get('fork_point') or '(trunk)'}",
         f"head             {result['head'] or '(unchanged)'}",
         (
             f"commits          ingested={result['commits_ingested']}  "

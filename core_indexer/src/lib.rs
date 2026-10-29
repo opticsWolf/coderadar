@@ -2308,20 +2308,23 @@ fn canonical_id(entity_id: &str) -> String {
     canonical_lookup_id(entity_id)
 }
 
-/// Ingest one git branch's first-parent history into the trunk lineage
-/// (P5a.3, DR-41): per commit, blob puts, one stamped flush (concepts +
-/// spine + commit concept), scoped edge persistence, and a tree-scoped
-/// sweep — then the `kv` cursor advance that makes an interrupted ingest
-/// resumable. `from` is an exclusive window start (a sha; `None` resumes
-/// from the cursor or starts at the root); `dry_run` plans without writing
-/// anything. Returns the report as JSON.
+/// Ingest one git branch's first-parent history (P5a.3/P5a.4, DR-41): the
+/// trunk lineage for `branch = "main"` (no lineage), a forked branch
+/// lineage otherwise — per commit, blob puts, one stamped flush, and a
+/// lineage-scoped sweep, then the `kv` cursor advance. `from` is an
+/// exclusive window start (a sha; `None` resumes from the cursor, starts
+/// at the root on the trunk, or starts at the fork on a branch); `dry_run`
+/// plans without writing anything. `parent_ref` (default `"main"`) is
+/// the trunk ref the fork point is computed against. Returns the report
+/// as JSON.
 ///
 /// No MCP tool in the first release: a long, writing, migration-grade op
 /// an agent must not call without knowing that (the H-13 shape).
 /// Refusals (bad branch/revision, out-of-order, legacy store) are
 /// `ValueError`; infrastructure failures are `RuntimeError`.
 #[pyfunction]
-#[pyo3(signature = (store_path, repo, branch = "main", from = None, dry_run = false))]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (store_path, repo, branch = "main", from = None, dry_run = false, lineage = None, parent_ref = "main"))]
 fn ingest_history(
     py: Python<'_>,
     store_path: &str,
@@ -2329,11 +2332,31 @@ fn ingest_history(
     branch: &str,
     from: Option<&str>,
     dry_run: bool,
+    lineage: Option<&str>,
+    parent_ref: &str,
 ) -> PyResult<String> {
     use crate::graph::ingest::IngestError;
+    // P5a.4 (DR-41): the lineage routes. No lineage (or the trunk's
+    // name) on the main branch is the trunk ingest; anything else forks
+    // or resumes a branch lineage. A non-main git branch without a
+    // lineage refuses — its history is not the trunk's.
+    let effective = lineage
+        .map(str::to_string)
+        .unwrap_or_else(|| branch.to_string());
     let report = py
         .allow_threads(|| {
-            crate::graph::ingest::ingest_history(store_path, repo, branch, from, dry_run)
+            if effective == "main" {
+                if branch != "main" {
+                    return Err(IngestError::TrunkBranchMismatch {
+                        branch: branch.to_string(),
+                    });
+                }
+                crate::graph::ingest::ingest_history(store_path, repo, branch, from, dry_run)
+            } else {
+                crate::graph::ingest::ingest_branch_history(
+                    store_path, repo, branch, &effective, parent_ref, from, dry_run,
+                )
+            }
         })
         .map_err(|e| {
             let msg = e.to_string();
@@ -2343,12 +2366,17 @@ fn ingest_history(
                     crate::fs::git::GitError::UnknownBranch(_)
                         | crate::fs::git::GitError::UnknownRevision(_)
                         | crate::fs::git::GitError::NotAncestor(_)
+                        | crate::fs::git::GitError::NoCommonHistory { .. }
                         | crate::fs::git::GitError::PathNotFound { .. }
                 ),
                 IngestError::UnknownHighWater { .. }
                 | IngestError::OutOfOrder { .. }
                 | IngestError::NotDescendant { .. }
-                | IngestError::IndexNowRefused { .. } => true,
+                | IngestError::IndexNowRefused { .. }
+                | IngestError::TrunkBranchMismatch { .. }
+                | IngestError::ForkMismatch { .. }
+                | IngestError::LineageExists { .. }
+                | IngestError::InvalidLineage { .. } => true,
                 IngestError::Store(_) => false,
             };
             if user_error {
