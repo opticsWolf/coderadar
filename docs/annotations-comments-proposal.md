@@ -120,18 +120,26 @@ Two gates at the one write boundary, parser-based (a real markdown parser,
 never regex — the Zulu-boundary posture: refuse loudly, never silently
 coerce; the exact parser is a build-time choice, not a proposal decision):
 
-- **Gate 1 — lint, both kinds.** The body must parse as well-formed markdown
-  (balanced fences, closed constructs, consistent list indentation, valid
-  link/image syntax). Malformed input is refused with the offending line
-  cited; well-formed input is stored in **canonical normalized form** (one
-  shape in, one shape stored — Zulu micros for stamps is the template).
+- **Gate 1 — lint, both kinds: repair-or-refuse.** The body must parse as
+  markdown. Defects with a deterministic, meaning-preserving fix are
+  repaired by the linter itself (whitespace, fence closure, list
+  marker/indent canonicalization, blank-line insertion) and the *repaired
+  canonical form* is what gets stored — one shape in, one shape stored
+  (Zulu micros for stamps is the template). Refusal is the last resort,
+  not the first: only when the parser cannot produce a meaning-preserving
+  canonical form (non-UTF8 bytes, unparseable constructs) is the input
+  refused, with the offending span cited. Repair-then-store is the generous
+  direction; silent coercion never happens because the repair is
+  deterministic and the canonical form is what every read sees.
   Why lint freeform comments at all: it guarantees renderability and
   embeddability (`embed_body` assumes sane text), and it means a future
   aggregation never meets garbage. Cheap at write, expensive never.
-- **Gate 2 — list grammar, annotations only.** The document must consist
-  solely of list blocks: bullets, numbered, and/or checkable task lists
-  (`- [ ]` / `- [x]`). Headings, paragraphs, code blocks, anything else —
-  refused. Flat v1 (nesting deferred, not forbidden forever).
+- **Gate 2 — list grammar, annotations only.** After repair, the document
+  must consist solely of list blocks: bullets, numbered, and/or checkable
+  task lists (`- [ ]` / `- [x]`). Repair runs *first* (a missing space after
+  `-` gets fixed, then passes); what is still not a list after repair —
+  headings, paragraphs, code blocks — is refused. Flat v1 (nesting deferred,
+  not forbidden forever).
 
 Consequences, stated upfront:
 
@@ -188,9 +196,11 @@ backfill are an honest gap, not a silent one.
   `changes_between` (no hash → not `uncompared`, simply absent), from the
   sweep candidate sets, and from embeddings' entity counts. A store with ten
   thousand annotations verifies exactly like one with none.
-- **INV-14 — grammar and lint at the write boundary.** One linter, two gates
-  (§4), living at the one place that writes each kind; no read path repairs,
-  no fallback rendering. (P5a.2's Zulu boundary is the template.)
+- **INV-14 — repair-or-refuse at the write boundary.** One linter, two
+  gates (§4), living at the one place that writes each kind: repair when
+  deterministic, refuse only when repair is impossible (both kinds) or the
+  repaired form still fails the list grammar (annotations). No read path
+  repairs, no fallback rendering. (P5a.2's Zulu boundary is the template.)
 - **Annotation/comment stamps are present-tense.** Both always take the
   clock, mode-independent: they annotate from the present, never rewrite
   history, so INV-10/INV-11 do not apply to them. Ordering is safe by
@@ -224,10 +234,10 @@ backfill are an honest gap, not a silent one.
 
 - **Q-A — decided 2026-10-29:** annotations enforce lists + checkable lists,
   comments are freeform md. (Was: force vs free.)
-- **Q-A2 — lint strictness:** malformed markdown refuses (recommendation —
-  the write-boundary posture everywhere else in this project), or
-  warn-and-store with a `lint_warnings` field? Refusing keeps every stored
-  row renderable; warnings keep never losing user text. Pick one, no middle.
+- **Q-A2 — decided 2026-10-29: repair-or-refuse.** Repair when the fix is
+  deterministic and meaning-preserving (both kinds); refuse only when no
+  such repair exists, or when the repaired form still fails the annotation
+  list grammar. (Was: refuse vs warn-and-store.)
 - **Q-B — versioned-forever or editable?** Versions are free (ledger-native),
   but the UI may want "current only". (Recommendation: store versions, read
   current by default — `history_of`'s exact contract.)
