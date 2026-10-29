@@ -1331,3 +1331,30 @@ lineage-blind chain order, trunk prepend, no-trunk refusal, list_branches, one-p
 embeddings with durability across a fresh load, rerun no-op, old-store untouched, CLI).
 CHANGELOG gains an Unreleased P5a block (DR-41 still deferred). Next: maintainer decision
 on Q-6..Q-9 — the shape is built as recommended; P5b only on upstream DR-43.
+
+### 2026-10-29 — Q-6 answered yes; self-host migration measured (scratch)
+
+The maintainer adopted P5a. First the audit the plan's standing note asked for
+(every `ConceptUpsert::new` site, production code only): pointers/tombstones
+carry lineage, the spine is lineage-consistent by construction (always minted
+and restated as trunk-default), commit concepts ride trunk-default/branch-mapped,
+the trunk's foreign-file skip runs pre-build so `build_v2_concepts_for_file_at`
+never sees a branch-held id, `update_file`/`analyze` cannot touch commit-time
+stores (INV-12), route rows are never branch-minted (branch ingests register
+none; route ids cannot collide with extractor output), `fork_branch` writes
+branch rows not concepts, and `kv` lives outside the ledger. No fourth
+choke-point writer found — the audit, not an e2e, is now the record.
+
+Then the adoption measurement, to scratch
+(`%TEMP%/coderadar-migrate-scratch`, branches `main` + `dev` — the two live
+lineages; the other 18 local branches are stale experiments and stay out of
+the production set until decided): **362 commits ingested, 0 skipped,
+0 failed; 7,232 vectors generated, 0 errors, all persisted; verify 100.0% on
+both lineages (4,331 trunk generations, 128 dev); 1,741 s wall.** Spot check:
+`history_of(storage.rs)` returns 30 versions, head digest equals `git show
+dev:...` bytes. Two costs made concrete: the store is ~900 MB (WAL included,
+uncheckpointed) against the ~100 MB byte-less old store — H-16 with a number,
+every committed byte kept permanently — and the run is slow enough (embeddings
+over 7,232 entities + two full-generation sweeps) that production migration
+is a planned operation, not a background task. No repo files changed; the
+store of record still points at the old store until the production run.

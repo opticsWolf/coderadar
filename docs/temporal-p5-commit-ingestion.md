@@ -429,6 +429,12 @@ still opens.
   generations and the same concepts, plus the old store still opens and
   answers.
 
+  Self-host evidence (2026-10-29, scratch store, branches `main` + `dev`):
+  362 commits, 0 skipped, 0 failed; 7,232 vectors, 0 errors; verify 100.0%
+  on both lineages (4,331 + 128 generations); 1,741 s wall; ~900 MB store
+  (WAL included) vs ~100 MB byte-less. `history_of` head matches `git show`
+  bytes. The other 18 local branches were not migrated (stale experiments).
+
 ### P5b — Retroactive correction (upstream-gated)
 
 **Blocked by** a valid-axis state fold in Macrame. **Unblocks** backfilling an old branch, ingesting
