@@ -71,8 +71,11 @@ Rationale, three lessons already paid for:
   a payload reference (`about: <id>`) reads forever.
 
 So the reference lives **in the payload**, and "everything said about X" is
-a read-time lookup, not a traversal. If edge annotation is ever needed, it
-is a second programme with its own edge kind — not a property of this one.
+a read-time lookup, not a traversal. Edge annotation is rejected, not
+deferred (decided 2026-10-30): no second programme, no edge kind for it.
+The three lessons above are the whole argument — relations carry sweep,
+retire, and cross-lineage machinery that metadata must never inherit,
+and a payload reference outlives any target an edge would dangle from.
 
 **Which code entities are addressable** (read off `types.rs` / `walker.rs`,
 2026-10-29 — the `about` field can name any of these):
@@ -251,8 +254,12 @@ per maintainer call); 29-tool MCP surface untouched.
   alongside "what").
 - **P6c — commit messages.** Message fields in `commit_concept` for new
   ingests + `backfill_commit_messages` for existing stores.
-- **Deferred:** list nesting, branch-local rows, edge annotation (separate
-  programme if ever), MCP writes (same bar as Q-10).
+- **Deferred:** list nesting, branch-local rows, MCP writes (same bar as
+  Q-10).
+- **Rejected (2026-10-30, not deferred):** edge annotation. Payload
+  references cover every use the programme has; relations would drag in
+  sweep, retire, and cross-lineage semantics for metadata. No second
+  programme, no edge kind.
 
 ## 9. Open questions for the maintainer
 
