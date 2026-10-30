@@ -731,6 +731,65 @@ class CodeGraph:
         from . import ops
         return ops.history_of(file, graph=self)
 
+    def annotate(self, about: str, body: str) -> dict[str, Any]:
+        """Mint an annotation row on a concept (P6a, no MCP surface).
+
+        Enforced-list markdown about `about`; returns the stored report
+        (`id`, canonical `body`, unchecked `open`, `repaired`).
+        """
+        from . import ops
+        return ops.annotate(about, body, graph=self)
+
+    def comment(self, about: str, body: str) -> dict[str, Any]:
+        """Mint a comment row on a concept (P6a, no MCP surface).
+
+        Freeform markdown about `about`; same report shape as `annotate`.
+        """
+        from . import ops
+        return ops.comment(about, body, graph=self)
+
+    def revise_annotation(self, id: str, body: str) -> dict[str, Any]:
+        """Supersede an annotation/comment row (P6a, no MCP surface)."""
+        from . import ops
+        return ops.revise_annotation(id, body, graph=self)
+
+    def retire_annotation(self, id: str) -> dict[str, Any]:
+        """Soft-retire an annotation/comment row (P6a, no MCP surface)."""
+        from . import ops
+        return ops.retire_annotation(id, graph=self)
+
+    def annotations_on(self, target: str) -> dict[str, Any]:
+        """Every annotation version on a concept, newest first (P6a).
+
+        MCP ``coderadar_annotations_on``.
+        """
+        from . import ops
+        return ops.annotations_on(target, graph=self)
+
+    def comments_on(self, target: str) -> dict[str, Any]:
+        """Every comment version on a concept, newest first (P6a).
+
+        MCP ``coderadar_comments_on``.
+        """
+        from . import ops
+        return ops.comments_on(target, graph=self)
+
+    def annotation_history(self, id: str) -> dict[str, Any]:
+        """Every version of one annotation row, newest first (P6a).
+
+        MCP ``coderadar_annotation_history``.
+        """
+        from . import ops
+        return ops.annotation_history(id, graph=self)
+
+    def comment_history(self, id: str) -> dict[str, Any]:
+        """Every version of one comment row, newest first (P6a).
+
+        MCP ``coderadar_comment_history``.
+        """
+        from . import ops
+        return ops.comment_history(id, graph=self)
+
     def compute_embeddings(self, model_name: str | None = None,
                            batch_size: int = 32,
                            recompute: bool = False) -> dict[str, int]:

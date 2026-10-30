@@ -2050,13 +2050,16 @@ impl CodeGraphStore {
     /// Ids of every live ENTITY concept the ledger still holds to be true.
     ///
     /// Entities only: the P3 content-version spine (`kind =
-    /// 'content_version'`) and the P4 branch-content pointers (`kind =
-    /// 'branch_content'`) are ledger infrastructure, not entities —
-    /// timeless, digest-addressed, owned by `maintain_content_spine` /
-    /// `write_branch_content`. Every file-lifecycle sweep built on this
+    /// 'content_version'`), the P4 branch-content pointers (`kind =
+    /// 'branch_content'`), commit markers (`kind = 'commit'`), and the P6a
+    /// annotation/comment rows (`kind = 'annotation'` / `'comment'`) are
+    /// ledger infrastructure or user metadata, not entities — timeless or
+    /// present-tense rows owned by their own writers, never by the
+    /// file-lifecycle sweeps. Every file-lifecycle sweep built on this
     /// listing (F14 non-canonical retirement, exclusion retirement) must
     /// never see them, so the exclusion lives here rather than in each
-    /// caller. Read the spine through `history_of`.
+    /// caller. Read the spine through `history_of`, annotations through
+    /// `annotations_on` / `comments_on`.
     ///
     /// The counterpart to [`Self::retire_entities`]: retirement is only
     /// meaningful if something can tell the difference, and until now nothing
@@ -2069,7 +2072,8 @@ impl CodeGraphStore {
                     "SELECT id FROM concepts WHERE retired = 0 \
                      AND (json_extract(content, '$.kind') IS NULL \
                           OR json_extract(content, '$.kind') NOT IN \
-                             ('content_version', 'branch_content', 'commit')) \
+                             ('content_version', 'branch_content', 'commit', \
+                              'annotation', 'comment')) \
                      ORDER BY id",
                     (),
                 )
@@ -2588,9 +2592,13 @@ impl CodeGraphStore {
     /// DR-37): the input universe for the entity diff. Same ever-not-live
     /// contract as [`Self::module_concept_ids`] without the kind filter —
     /// functions, classes, imports and the rest are in the diff's join,
-    /// not just files. Excludes both infrastructure kinds (`content_version`
-    /// spine, P4 `branch_content` pointers) the way `live_concept_ids`
-    /// does — the diff joins entities, not ledger machinery. Both id spellings are included (H-11); each
+    /// not just files. Excludes the non-entity kinds (`content_version`
+    /// spine, P4 `branch_content` pointers, commit markers, P6a
+    /// annotation/comment rows) the way `live_concept_ids`
+    /// does — the diff joins entities, not ledger machinery or user
+    /// metadata (an annotation has no content hash, so without the
+    /// exclusion it would read as a perpetual `uncompared` group).
+    /// Both id spellings are included (H-11); each
     /// generation's batch returns only the spelling live at that T, and
     /// `ops.changes_between` groups raw ids by canonical form, so no
     /// generation double-counts and a respelling never reads as churn.
@@ -2616,7 +2624,8 @@ impl CodeGraphStore {
                      WHERE table_name = 'concepts' AND branch_id = ?1 \
                      AND entity_id NOT IN (SELECT id FROM concepts \
                          WHERE json_extract(content, '$.kind') IN \
-                            ('content_version', 'branch_content', 'commit')) \
+                            ('content_version', 'branch_content', 'commit', \
+                             'annotation', 'comment')) \
                      ORDER BY entity_id",
                     libsql::params![branch],
                 )

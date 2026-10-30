@@ -91,6 +91,7 @@ OPERATIONS = (
     "search_similar", "search_hybrid", "compute_embeddings", "module_children", "as_of",
     "verify_history",
     "changes_between",
+    "annotations_on", "comments_on", "annotation_history", "comment_history",
     "traverse", "get_smells", "dead_code", "find_clones", "find_scaffolding",
     "replace_body", "update_signature", "rename", "create_entity",
     "reindex", "update_file", "status", "set_project",
@@ -1440,6 +1441,260 @@ def history_of(file: str, *, graph: Any = None) -> dict:
         raise NoIndex(str(e)) from e
     versions = [dict(v) for v in chain]
     return {"file": str(file), "versions": versions, "count": len(versions)}
+
+
+def annotate(about: str, body: str, *, graph: Any = None) -> dict:
+    """Mint an annotation row on a concept (P6a, DR-44).
+
+    An annotation is enforced-list markdown (bullets, numbered, and/or
+    checkable task lists, flat in v1) about a concept id — the rationale,
+    checklist, or review note that lives with the code without living in
+    it. The id mints as ``annotation:{about}:{n}`` (per-target sequence,
+    never reused — a retire-then-re-annotate advances, by the log scan).
+    The body lints at the write boundary (INV-14): deterministic repairs
+    are applied and reported (``repaired``), prose/non-list blocks refuse
+    with the offending line cited, empty refuses. Stamps are
+    present-tense on the trunk, mode-independent: annotations describe
+    the present, never rewrite history. No existence gate on ``about`` —
+    annotations outlive their target (retire-first) and existence is
+    branch-relative while rows are trunk-global; dangling is legal.
+
+    Returns ``{"id", "about", "n", "body", "open", "repaired"}``
+    where ``body`` is the stored canonical form and ``open`` the
+    unchecked-item count. Lint/kind/id failures are ``InvalidRequest``;
+    infrastructure failures are ``EngineError``.
+
+    No MCP tool: a user/agent write, like every other write surface
+    (the H-13 shape) — agents read annotations through the four list
+    tools, they do not mint them.
+    """
+    _require_index()
+    if not about or not str(about).strip():
+        raise InvalidRequest("Please provide a target concept id to annotate.")
+    if not isinstance(body, str):
+        raise InvalidRequest("The annotation body must be markdown text.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import annotate as _annotate
+        raw = _annotate(str(about), body)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"annotate returned unparseable JSON: {e}") from None
+
+
+def comment(about: str, body: str, *, graph: Any = None) -> dict:
+    """Mint a comment row on a concept (P6a, DR-44).
+
+    A comment is freeform markdown about a concept id — rationale,
+    context, archaeology — linted (Gate 1: repair-or-refuse) but never
+    grammar-checked. Same identity, stamping, and no-existence-gate
+    rules as `annotate`. Returns ``{"id", "about", "n", "body",
+    "open", "repaired"}`` with ``open`` always 0. No MCP tool (the
+    H-13 shape — agents read, they do not mint).
+    """
+    _require_index()
+    if not about or not str(about).strip():
+        raise InvalidRequest("Please provide a target concept id to comment on.")
+    if not isinstance(body, str):
+        raise InvalidRequest("The comment body must be markdown text.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import comment as _comment
+        raw = _comment(str(about), body)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"comment returned unparseable JSON: {e}") from None
+
+
+def revise_annotation(id: str, body: str, *, graph: Any = None) -> dict:
+    """Supersede an annotation/comment row with a re-linted body (P6a).
+
+    The row's own kind picks the gates (an annotation stays a list, a
+    comment stays freeform). Toggle is a revise with one item flipped —
+    the checklist's history answers "who checked what when".
+    Byte-identical bodies are a no-op (``revised: false``, no version
+    minted). Revising a retired row refuses (annotate anew instead);
+    rows of other kinds refuse loudly — user writes never touch code.
+    Returns ``{"id", "revised", "repaired", "open"}``. No MCP
+    tool (the H-13 shape).
+    """
+    _require_index()
+    if not id or not str(id).strip():
+        raise InvalidRequest("Please provide an annotation or comment id.")
+    if not isinstance(body, str):
+        raise InvalidRequest("The revised body must be markdown text.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import revise_annotation as _revise
+        raw = _revise(str(id), body)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"revise_annotation returned unparseable JSON: {e}") from None
+
+
+def retire_annotation(id: str, *, graph: Any = None) -> dict:
+    """Soft-retire an annotation/comment row (P6a, retire-first).
+
+    The row stays as an audit trail and every read keeps serving its
+    versions; a second retire is a no-op report, not an error.
+    Returns ``{"id", "retired"}``. No MCP tool (the H-13 shape).
+    """
+    _require_index()
+    if not id or not str(id).strip():
+        raise InvalidRequest("Please provide an annotation or comment id.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import retire_annotation as _retire
+        raw = _retire(str(id))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"retire_annotation returned unparseable JSON: {e}") from None
+
+
+def annotations_on(target: str, *, graph: Any = None) -> dict:
+    """Every version of every annotation on a concept, newest-first (P6a).
+
+    Returns ``{"target", "versions", "count"}`` where each version
+    is ``{"id", "n", "body", "open", "valid_from", "valid_to",
+    "retired", "current"}``. Current-by-default, versions stored
+    (Q-B decided): the first version is the live row. Retired rows stay
+    listed (retire-first audit trail); dangling targets read their rows
+    anyway. MCP tool ``coderadar_annotations_on`` (reads yes, writes
+    no — Q-4/H-13).
+    """
+    _require_index()
+    if not target or not str(target).strip():
+        raise InvalidRequest("Please provide a target concept id.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import annotations_on as _on
+        raw = _on(str(target))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        versions = list(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"annotations_on returned unparseable JSON: {e}") from None
+    return {"target": str(target), "versions": versions, "count": len(versions)}
+
+
+def comments_on(target: str, *, graph: Any = None) -> dict:
+    """Every version of every comment on a concept, newest-first (P6a).
+
+    Same shape as `annotations_on`. MCP tool ``coderadar_comments_on``
+    (reads yes, writes no).
+    """
+    _require_index()
+    if not target or not str(target).strip():
+        raise InvalidRequest("Please provide a target concept id.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import comments_on as _on
+        raw = _on(str(target))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        versions = list(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"comments_on returned unparseable JSON: {e}") from None
+    return {"target": str(target), "versions": versions, "count": len(versions)}
+
+
+def annotation_history(id: str, *, graph: Any = None) -> dict:
+    """Every version of one annotation row, newest-first (P6a, DR-44).
+
+    Returns ``{"id", "versions", "count"}``. Unknown ids read
+    ``[]`` — the `history_of` honesty, not an error. MCP tool
+    ``coderadar_annotation_history`` (reads yes, writes no).
+    """
+    _require_index()
+    if not id or not str(id).strip():
+        raise InvalidRequest("Please provide an annotation id.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import annotation_history as _hist
+        raw = _hist(str(id))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        versions = list(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"annotation_history returned unparseable JSON: {e}") from None
+    return {"id": str(id), "versions": versions, "count": len(versions)}
+
+
+def comment_history(id: str, *, graph: Any = None) -> dict:
+    """Every version of one comment row, newest-first (P6a, DR-44).
+
+    Same shape as `annotation_history`. MCP tool
+    ``coderadar_comment_history`` (reads yes, writes no).
+    """
+    _require_index()
+    if not id or not str(id).strip():
+        raise InvalidRequest("Please provide a comment id.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import comment_history as _hist
+        raw = _hist(str(id))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        versions = list(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"comment_history returned unparseable JSON: {e}") from None
+    return {"id": str(id), "versions": versions, "count": len(versions)}
 
 
 def ingest_history(repo: str | Path, branch: str = "main",

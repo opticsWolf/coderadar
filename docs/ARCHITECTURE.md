@@ -101,7 +101,7 @@ CodeRadar/
     __init__.py                 # CodeGraph facade, Snapshot, errors
     ops.py                      # OPERATIONS: validated shared op layer
     cli.py                      # click CLI (graph ops + local-only cmds)
-    mcp/server.py               # 29 tools, thin over ops
+    mcp/server.py               # 33 tools, thin over ops
     coldstart.py                # ledger load + changed-files refresh
     config.py                   # .coderadar.toml (pydantic, §12)
     resolvers/ framework.py     # L2–L4 cascade + framework routes (DR-10)
@@ -184,7 +184,7 @@ side never touches ledger handles.
   cwd-rooted serving state.
 - **`agent/graphrag.py`, `lsp/pool.py`** — kept as named seams with wiring
   triggers in their headers (DR-16); neither is on any hot path.
-- **`mcp/server.py`** — 29 tools, thin over `ops`, plus server instructions
+- **`mcp/server.py`** — 33 tools, thin over `ops`, plus server instructions
   (language count, staleness guidance — README-tested).
 - **`cli.py`** — graph ops plus local-only commands (`init`, `visualize`,
   `shell`, `git`, `exclude`, `watch`, `load-snapshot`, `store-repair`,
@@ -472,6 +472,17 @@ writes, `ingest_history`, branch ingestion, `migrate-to-commit-time`;
 P6c slice: message bodies on `commit:{sha}` rows plus the ops-only
 `backfill_commit_messages` healer for pre-body rows, documented in
 QUICKREF, deliberately not a CLI/MCP surface).
+
+P6a (DR-44) puts user metadata on the same ledger: `annotation` +
+`comment` concepts (`{kind}:{about}:{n}`, per-target sequences that never
+reuse retired ids), a parser-based linter at the one write boundary
+(INV-14: repair-or-refuse, list grammar for annotations, commit
+messages pass through neither gate), present-tense trunk-global stamps,
+reads newest-first (`annotations_on` / `comments_on` + per-row
+histories, Q-B decided: versions stored, current reads first), and
+INV-13 exclusion pins (verify verdict, diff universe, and embedding
+counts identical with both kinds present). Writes are ops + CLI;
+reads add four MCP tools (33 total).
 
 ---
 

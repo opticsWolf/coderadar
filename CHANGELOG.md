@@ -23,6 +23,11 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
   `git log` on each row's own mint lineage, idempotently; unknown shas and
   body-less commits skip auditable. Proven on the scratch migration (259
   healed, re-run zero). No MCP tool.
+- Temporal P6a (DR-44 filed as implemented): annotation + comment
+  concepts. Parser-based lint at the write boundary (repair-or-refuse,
+  list grammar for annotations); present-tense trunk stamps; newest-first
+  reads (ops + CLI + 4 MCP read tools, 33 total); retire-first deletion;
+  INV-13 exclusion pins. 25 Rust + 19 Python tests.
 
 ## 0.14.0 (2026-10-28)
 

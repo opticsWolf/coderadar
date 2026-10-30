@@ -1,0 +1,51 @@
+# P6a landed: annotation + comment concepts (DR-44) — build notes
+
+Maintainer said "implement messages and annotation" after re-reading the
+proposal. Messages (P6c: bodies + ops-only backfill `fa4104e`) were already
+built and proven on scratch (259 healed, rerun zero), so the work was P6a.
+
+## What shipped (`core_indexer/src/annotations.rs`, new)
+
+Two-gate linter over pulldown-cmark with tasklists + tables extensions.
+Empty options would have parsed `- [ ]` as plain text — caught before it
+mattered. Gate 1 repairs deterministically (trailing WS, tabs outside
+fences, unclosed fences, marker spacing/canonicalization, blank insertion)
+and stores the canonical form; Gate 2 refuses non-list blocks and nested
+lists for annotations with line + snippet. Canonical renderer is a fixpoint
+(lint-of-lint byte-identical, pinned over HTML/table/hard-break battery).
+
+Store ops: `create` / `revise` / `retire` / `versions_for` / `history` on
+present-tense trunk stamps (`{kind}:{about}:{n}`, per-target sequences
+scanning rows AND the log so retired ids never reuse). Reads derive
+intervals from chain order (history_of pattern), re-derive `open` from
+bytes. Guards: WrongKind (user writes never touch code), AlreadyRetired,
+InvalidId; unknown ids read []. INV-13 exclusions in live/all_concept_ids.
+
+## Incidents (for the next reader)
+
+1. DIAGNOSTIC_OPEN_LOCK is non-reentrant; failure mode is silent hang.
+   `versions_for` held its guard across `versions_of` (same-thread
+   re-lock deadlocks; parallel tests then all look hung). Fix: scope the
+   guard to drop before nested opens. Commented at site.
+2. One live stream per connection: second query behind an open stream
+   waits forever. Exhaust-or-drop first. Commented at both sites.
+3. The bash tool collapses `\\` to `\`. Half a day of ESCAPE errors and
+   phantom hangs traced to heredoc-authored probes; the edit-tool module
+   was byte-correct all along. Probes via edit tool or backslash-free
+   SQL (`ESCAPE char(92)`).
+4. CLI dash-bodies need `--` (click reads `- [ ] x` as a flag); `-` alone
+   still means stdin. Pinned in tests.
+5. Writes mint generations: INV-13 pins the verdict (pct, per-generation
+   outcomes, offenders), not the generation list.
+
+## Decisions
+
+Q-B decided per recommendation (versions stored, current-first reads).
+Q-C stays P6b. Q-D closed (DR-44/DR-45 filed as implemented). `about`
+naming annotation/comment refuses (v1 flat); dangling about legal
+(outlive-by-design); no write-time existence gate (branch-relative
+existence vs trunk-global rows). Writes ops+CLI only (H-13); reads +4
+MCP (33 total). 8 CodeGraph methods. 25 Rust + 19 Python tests.
+
+Gates: Rust 576+1, Python 1268+1 (precision dead-code failure
+pre-existing, fails on stashed tree too). fmt/clippy/ruff clean.

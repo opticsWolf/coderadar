@@ -1,6 +1,6 @@
 # Annotations & comments proposal (P6 programme sketch)
 
-**Status (2026-10-29): proposal only — no code, no schema change, no DR filed.**
+**Status (2026-10-30): P6a built on `dev` (DR-44 filed as implemented); P6c built ahead of it (DR-45 filed as implemented). Q-B decided below; Q-C stays P6b; Q-D closed by the two DR rows.**
 Answers the maintainer's "annotate every type/edge with structured markdown,
 store comments in the database, store commit messages separately" as structure,
 architecture, and ideas. Intended reader: whoever scopes the next programme
@@ -263,8 +263,22 @@ per maintainer call); 29-tool MCP surface untouched.
   such repair exists, or when the repaired form still fails the annotation
   list grammar. (Was: refuse vs warn-and-store.)
 - **Q-B — versioned-forever or editable?** Versions are free (ledger-native),
-  but the UI may want "current only". (Recommendation: store versions, read
-  current by default — `history_of`'s exact contract.)
+  but the UI may want "current only". (Decided 2026-10-30 per the
+  recommendation: store versions, read current by default — `history_of`'s
+  exact contract. `annotations_on` returns newest-first; the first version
+  is the live row.)
 - **Q-C — embed both kinds?** (§6 argues yes; cost is small but nonzero.)
 - **Q-D — DR rows:** `DR-44` (annotation/comment kinds + gates), `DR-45`
   (commit message storage)? File when P6a scopes, not before.
+
+**P6a as-built (2026-10-30, on `dev`):** `annotation` + `comment` kinds
+landed with the linter (pulldown-cmark, tasklists + tables extensions),
+`create` / `revise` / `retire` on present-tense trunk stamps,
+`versions_for` / `history` newest-first, ops + 8 CLI commands + 4 MCP
+read tools (33 total), CodeGraph methods for all eight, INV-13 pins
+green (verify verdict, diff universe, and embedding counts identical
+with both kinds present), DR-44 filed. 25 Rust + 19 Python tests. Full
+gates at landing: Rust 576 passed + 1 ignored; Python 1268 passed +
+1 skipped (the precision dead-code failure is pre-existing — fails
+without P6a too); `cargo fmt --check` / `clippy --all-targets
+-D warnings` / `ruff` clean.

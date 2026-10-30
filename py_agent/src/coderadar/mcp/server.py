@@ -59,6 +59,7 @@ Need more? Call it again with more specific names.
 - `coderadar_as_of` — the graph at a past timestamp
 - `coderadar_verify_history` — per-generation byte coverage: whether the past can be reconstructed
 - `coderadar_changes_between` — entity diff between two instants from recorded hashes (no byte reads)
+- `coderadar_annotations_on` / `coderadar_comments_on` — annotation/comment versions on a concept (the why); `coderadar_annotation_history` / `coderadar_comment_history` — one row's chain
 - `coderadar_resolve` — framework references: routes (`/users/:id`), `*Model` / `*View` names
 - `coderadar_get_smells`, `coderadar_dead_code`, `coderadar_find_clones`, `coderadar_find_scaffolding` — quality findings. Dead code is ranked evidence, not proof: check `coderadar_affected` before deleting.
 - `coderadar_diagnose` — graph self-health (unresolved targets, ambiguous bases); empty reads as clean.
@@ -655,6 +656,105 @@ def create_server(graph: Any) -> MCPServer:
             return mismatch
 
         return _changes_between(graph, t1, t2, scope, branch)
+
+    # ── coderadar_annotations_on / coderadar_comments_on — rationale reads ──
+
+    @mcp.tool(
+        description=(
+            "Every version of every annotation on a concept, newest first: "
+            "the enforced-list markdown (checklists, review notes, rationale) "
+            "agents and users wrote about the code, with who-checked-what-when "
+            "in each version's interval. Use it to ask why the code is the "
+            "way it is — the ledger's answer to what the code cannot say."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_annotations_on(
+        target: str,
+        project_path: str | None = None,
+    ) -> str:
+        """Annotation versions on a concept, newest first."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _annotations_on(graph, target)
+
+    @mcp.tool(
+        description=(
+            "Every version of every freeform comment on a concept, newest "
+            "first: the rationale and archaeology agents and users wrote "
+            "about the code. Use it alongside annotations_on — comments are "
+            "prose where annotations are lists."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_comments_on(
+        target: str,
+        project_path: str | None = None,
+    ) -> str:
+        """Comment versions on a concept, newest first."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _comments_on(graph, target)
+
+    @mcp.tool(
+        description=(
+            "Every version of one annotation row, newest first: the full "
+            "checklist history behind a single annotation id."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_annotation_history(
+        id: str,
+        project_path: str | None = None,
+    ) -> str:
+        """Version chain of one annotation row."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _annotation_history(graph, id)
+
+    @mcp.tool(
+        description=(
+            "Every version of one comment row, newest first: the full "
+            "prose history behind a single comment id."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_comment_history(
+        id: str,
+        project_path: str | None = None,
+    ) -> str:
+        """Version chain of one comment row."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _comment_history(graph, id)
 
     # ── coderadar_traverse — edge traversal ──────────────────────────
 
@@ -1609,6 +1709,50 @@ def _changes_between(graph: Any, t1: str, t2: str,
     except ops.OpError as e:
         return _op_message(e, failed="History diff")
     return render.changes_between(result)
+
+
+def _annotations_on(graph: Any, target: str) -> str:
+    """Annotation versions on a concept, newest first (P6a, DR-44)."""
+    try:
+        result = ops.annotations_on(target, graph=graph)
+    except ops.EngineError as e:
+        return f"Annotations read failed: {e}"
+    except ops.OpError as e:
+        return _op_message(e, failed="Annotations read")
+    return render.annotation_versions(result)
+
+
+def _comments_on(graph: Any, target: str) -> str:
+    """Comment versions on a concept, newest first (P6a, DR-44)."""
+    try:
+        result = ops.comments_on(target, graph=graph)
+    except ops.EngineError as e:
+        return f"Comments read failed: {e}"
+    except ops.OpError as e:
+        return _op_message(e, failed="Comments read")
+    return render.annotation_versions(result)
+
+
+def _annotation_history(graph: Any, id: str) -> str:
+    """Version chain of one annotation row (P6a, DR-44)."""
+    try:
+        result = ops.annotation_history(id, graph=graph)
+    except ops.EngineError as e:
+        return f"Annotation history failed: {e}"
+    except ops.OpError as e:
+        return _op_message(e, failed="Annotation history")
+    return render.annotation_versions(result)
+
+
+def _comment_history(graph: Any, id: str) -> str:
+    """Version chain of one comment row (P6a, DR-44)."""
+    try:
+        result = ops.comment_history(id, graph=graph)
+    except ops.EngineError as e:
+        return f"Comment history failed: {e}"
+    except ops.OpError as e:
+        return _op_message(e, failed="Comment history")
+    return render.annotation_versions(result)
 
 
 def _traverse(

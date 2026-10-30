@@ -694,6 +694,100 @@ def history(file: str, fmt: str):
         lambda result: render.history_of(result))
 
 
+@main.command(name="annotate")
+@click.argument("about")
+@click.argument("body")
+@_format_option
+def annotate_cmd(about: str, body: str, fmt: str):
+    """Mint an annotation on ABOUT; BODY '-' reads stdin (P6a kinds)."""
+    from . import ops, render
+    _enter_project()
+    text = _text_arg(body)
+    _op(fmt, lambda: ops.annotate(about, text),
+        lambda result: render.annotation_stored(result))
+
+
+@main.command(name="comment")
+@click.argument("about")
+@click.argument("body")
+@_format_option
+def comment_cmd(about: str, body: str, fmt: str):
+    """Mint a comment on ABOUT; BODY '-' reads stdin (P6a kinds)."""
+    from . import ops, render
+    _enter_project()
+    text = _text_arg(body)
+    _op(fmt, lambda: ops.comment(about, text),
+        lambda result: render.annotation_stored(result))
+
+
+@main.command(name="revise-annotation")
+@click.argument("id")
+@click.argument("body")
+@_format_option
+def revise_annotation_cmd(id: str, body: str, fmt: str):
+    """Supersede annotation/comment ID; BODY '-' reads stdin (P6a)."""
+    from . import ops, render
+    _enter_project()
+    text = _text_arg(body)
+    _op(fmt, lambda: ops.revise_annotation(id, text),
+        lambda result: render.annotation_stored(result))
+
+
+@main.command(name="retire-annotation")
+@click.argument("id")
+@_format_option
+def retire_annotation_cmd(id: str, fmt: str):
+    """Soft-retire annotation/comment ID, audit trail kept (P6a)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.retire_annotation(id),
+        lambda result: render.annotation_stored(result))
+
+
+@main.command(name="annotations-on")
+@click.argument("target")
+@_format_option
+def annotations_on_cmd(target: str, fmt: str):
+    """Every annotation version on TARGET, newest first (P6a)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.annotations_on(target),
+        lambda result: render.annotation_versions(result))
+
+
+@main.command(name="comments-on")
+@click.argument("target")
+@_format_option
+def comments_on_cmd(target: str, fmt: str):
+    """Every comment version on TARGET, newest first (P6a)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.comments_on(target),
+        lambda result: render.annotation_versions(result))
+
+
+@main.command(name="annotation-history")
+@click.argument("id")
+@_format_option
+def annotation_history_cmd(id: str, fmt: str):
+    """Every version of annotation ID, newest first (P6a)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.annotation_history(id),
+        lambda result: render.annotation_versions(result))
+
+
+@main.command(name="comment-history")
+@click.argument("id")
+@_format_option
+def comment_history_cmd(id: str, fmt: str):
+    """Every version of comment ID, newest first (P6a)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.comment_history(id),
+        lambda result: render.annotation_versions(result))
+
+
 @main.command(name="ingest-history")
 @click.option("--repo", required=True,
               help="Git repository to ingest (any path; history is read from git).")

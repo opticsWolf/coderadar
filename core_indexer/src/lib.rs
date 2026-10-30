@@ -1,6 +1,7 @@
 // CodeRadar v3.6 — Rust Core Library
 // PyO3 bindings for the Python layer (MCP server, CLI, resolvers).
 
+pub mod annotations;
 pub mod clones;
 pub mod extract;
 mod ffi_config;
@@ -89,6 +90,14 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(history_of, m)?)?;
     m.add_function(wrap_pyfunction!(ingest_history, m)?)?;
     m.add_function(wrap_pyfunction!(backfill_commit_messages, m)?)?;
+    m.add_function(wrap_pyfunction!(annotate, m)?)?;
+    m.add_function(wrap_pyfunction!(comment, m)?)?;
+    m.add_function(wrap_pyfunction!(revise_annotation, m)?)?;
+    m.add_function(wrap_pyfunction!(retire_annotation, m)?)?;
+    m.add_function(wrap_pyfunction!(annotations_on, m)?)?;
+    m.add_function(wrap_pyfunction!(comments_on, m)?)?;
+    m.add_function(wrap_pyfunction!(annotation_history, m)?)?;
+    m.add_function(wrap_pyfunction!(comment_history, m)?)?;
     m.add_function(wrap_pyfunction!(archive, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -2431,6 +2440,141 @@ fn backfill_commit_messages(py: Python<'_>, store_path: &str, repo: &str) -> PyR
         })?;
     serde_json::to_string(&report)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Mint `annotation:{about}:{n}` with a linted body (P6a, DR-44).
+///
+/// Writes go through the loaded graph's store (`snapshot_store`, the
+/// mutation precedent) and always stamp the clock on the trunk —
+/// present-tense, mode-independent (INV-14's clock rule). Returns the
+/// report as JSON: `{id, about, n, body, open, repaired}`.
+#[pyfunction]
+#[pyo3(signature = (about, body))]
+fn annotate(py: Python<'_>, about: &str, body: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let created = py
+        .allow_threads(|| {
+            crate::annotations::create(&store, crate::annotations::ANNOTATION_KIND, about, body)
+        })
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&created)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Mint `comment:{about}:{n}` with a linted body (P6a, DR-44). Same
+/// write path and report shape as [`annotate`].
+#[pyfunction]
+#[pyo3(signature = (about, body))]
+fn comment(py: Python<'_>, about: &str, body: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let created = py
+        .allow_threads(|| {
+            crate::annotations::create(&store, crate::annotations::COMMENT_KIND, about, body)
+        })
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&created)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Supersede an annotation/comment row with a re-linted body (P6a).
+/// The row's kind picks the gates. Returns `{id, revised, repaired,
+/// open}` — `revised: false` when the body is byte-identical (the
+/// ledger absorbs the no-op, no version minted).
+#[pyfunction]
+#[pyo3(signature = (id, body))]
+fn revise_annotation(py: Python<'_>, id: &str, body: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let revised = py
+        .allow_threads(|| crate::annotations::revise(&store, id, body))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&revised)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Soft-retire an annotation/comment row (P6a, retire-first). Returns
+/// `{id, retired}` — `retired: false` when the row was already retired
+/// (idempotent no-op, not an error).
+#[pyfunction]
+#[pyo3(signature = (id,))]
+fn retire_annotation(py: Python<'_>, id: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let retired = py
+        .allow_threads(|| crate::annotations::retire(&store, id))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&serde_json::json!({ "id": id, "retired": retired }))
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Every version of every annotation on `about`, newest-first (P6a).
+/// Dangling targets (retired or never-indexed) read their rows anyway —
+/// annotations outlive their target by design. Returns the version list
+/// as JSON: `[{id, n, body, open, valid_from, valid_to, retired,
+/// current}]`.
+#[pyfunction]
+#[pyo3(signature = (target,))]
+fn annotations_on(py: Python<'_>, target: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let versions = py
+        .allow_threads(|| {
+            crate::annotations::versions_for(&store, crate::annotations::ANNOTATION_KIND, target)
+        })
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&versions)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Every version of every comment on `about`, newest-first (P6a). Same
+/// shape as [`annotations_on`].
+#[pyfunction]
+#[pyo3(signature = (target,))]
+fn comments_on(py: Python<'_>, target: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let versions = py
+        .allow_threads(|| {
+            crate::annotations::versions_for(&store, crate::annotations::COMMENT_KIND, target)
+        })
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&versions)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Every version of one annotation row, newest-first (P6a). Unknown ids
+/// read `[]` — the `history_of` honesty, not an error.
+#[pyfunction]
+#[pyo3(signature = (id,))]
+fn annotation_history(py: Python<'_>, id: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let versions = py
+        .allow_threads(|| crate::annotations::history(&store, id))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&versions)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Every version of one comment row, newest-first (P6a). Same shape as
+/// [`annotation_history`].
+#[pyfunction]
+#[pyo3(signature = (id,))]
+fn comment_history(py: Python<'_>, id: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let versions = py
+        .allow_threads(|| crate::annotations::history(&store, id))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&versions)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Map an annotation write/read failure onto the Python error the
+/// surface expects: user errors (bad id, bad target, lint refusal,
+/// wrong kind, retired) refuse as `ValueError`; ledger failures
+/// surface as `RuntimeError`.
+fn annotation_ffi_error(e: crate::annotations::AnnError) -> pyo3::PyErr {
+    use crate::annotations::AnnError;
+    let msg = e.to_string();
+    match e {
+        AnnError::Store(_) => pyo3::exceptions::PyRuntimeError::new_err(msg),
+        _ => pyo3::exceptions::PyValueError::new_err(msg),
+    }
 }
 
 /// Every content a file ever had, newest first (P3, DR-38).

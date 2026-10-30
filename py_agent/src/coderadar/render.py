@@ -900,6 +900,59 @@ def history_of(result: dict) -> str:
     return "\n".join(out)
 
 
+def annotation_versions(result: dict) -> str:
+    """Annotation/comment versions as legible text (P6a, DR-44).
+
+    One row per version, newest first: id, open count, interval, and
+    whether the version is the live head or retired. Shared by the four
+    read surfaces (the body itself is in the JSON — text shows the
+    chain, not the prose).
+    """
+    versions = result["versions"]
+    subject = result.get("target", result.get("id", "?"))
+    out = [
+        f"subject          {subject}",
+        f"versions         {result['count']}",
+        "",
+        f"{'id':34} {'open':>4} {'valid_from':28} {'valid_to':28} {'state'}",
+    ]
+    for v in versions:
+        if v["current"]:
+            state = "current"
+        elif v["retired"]:
+            state = "retired"
+        else:
+            state = "superseded"
+        out.append(
+            f"{v['id']:34} {v['open']:>4} {v['valid_from'][:28]:28} "
+            f"{v['valid_to'][:28]:28} {state}"
+        )
+    return "\n".join(out)
+
+
+def annotation_stored(result: dict) -> str:
+    """An annotation/comment write as legible text (P6a, DR-44).
+
+    Shared by annotate/comment (minted) and revise (superseded) / retire
+    (closed): the id, what happened, and whether the linter repaired
+    the input on the way in.
+    """
+    if "repaired" in result and "about" in result:
+        action = "minted"
+    elif result.get("revised"):
+        action = "revised"
+    elif "revised" in result:
+        action = "unchanged"
+    else:
+        action = "retired" if result.get("retired") else "already retired"
+    lines = [f"{action:16} {result['id']}"]
+    if "open" in result:
+        lines.append(f"open             {result['open']}")
+    if result.get("repaired"):
+        lines.append("repaired         input repaired by the linter (stored canonically)")
+    return "\n".join(lines)
+
+
 def ingest_history(result: dict) -> str:
     """Commit-driven ingest report as legible text (P5a.3, DR-41).
 

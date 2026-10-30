@@ -43,8 +43,8 @@ class TestTheSchema:
 
     def test_every_tool_offers_project_path(self):
         tools = server_mod.create_server(None)._tool_manager.list_tools()
-        # 29 tools since coderadar_changes_between joined (temporal P2).
-        assert len(tools) == 29
+        # 33 tools since the four annotation reads joined (P6a, DR-44).
+        assert len(tools) == 33
 
         without = [
             t.name for t in tools

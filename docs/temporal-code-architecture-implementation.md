@@ -1358,3 +1358,73 @@ every committed byte kept permanently — and the run is slow enough (embeddings
 over 7,232 entities + two full-generation sweeps) that production migration
 is a planned operation, not a background task. No repo files changed; the
 store of record still points at the old store until the production run.
+
+### 2026-10-30 — P6a landed (annotation + comment kinds, DR-44)
+
+The maintainer said "implement messages and annotation" after re-reading
+the proposal. Messages (P6c: bodies + ops-only backfill) were already built
+and proven, so the work was P6a: `annotation` + `comment` concepts with the
+linter at the one write boundary (INV-14).
+
+What shipped, in `core_indexer/src/annotations.rs` (new, ~1,100 lines with
+tests): a two-gate linter over pulldown-cmark (tasklists + tables extensions
+— empty options would have parsed checkboxes as plain text, caught before
+it mattered). Gate 1 repairs deterministically (trailing whitespace, tabs
+outside fences, unclosed fences, marker spacing/canonicalization, blank-line
+insertion) and stores the repaired canonical form; Gate 2 refuses non-list
+blocks and nested lists for annotations with line + snippet cited. The
+canonical renderer is a fixpoint (lint-of-lint is byte-identical, pinned
+over a nasty-HTML/table/hard-break battery). Store ops: `create` / `revise`
+/ `retire` / `versions_for` / `history` on trunk-global present-tense stamps
+(`{kind}:{about}:{n}`, per-target sequences that scan current rows AND the
+log so retired ids never reuse). Reads derive intervals from chain order
+(the `history_of` pattern) and re-derive `open` from stored bytes. User
+writes refuse code rows (`WrongKind`), retired rows refuse revise, unknown
+ids read `[]`. `live_concept_ids` + `all_concept_ids` exclude both kinds
+(INV-13 — the diff would otherwise read annotations as perpetual
+`uncompared` groups, since they have no content hash).
+
+Deviations and incidents, all recorded because the next reader will trip
+over the same stones:
+
+- **DIAGNOSTIC_OPEN_LOCK is non-reentrant and the failure mode is a silent
+  hang.** `versions_for` held its diagnostic guard across the `versions_of`
+  call, which re-locks the same process mutex — the thread deadlocked
+  against itself, and every parallel test then appeared "hung" as the
+  binary never exited. Fix: scope the guard so it drops before the nested
+  open (commented at the site). Any future ledger-direct reader that
+  composes two guarded helpers must do the same.
+- **One live stream per connection.** A second query behind an unconsumed
+  stream waits forever (found while scoping the head lookup in
+  `versions_of`). Exhaust-or-drop before opening the next stream —
+  commented at both sites.
+- **The bash tool collapses `\\` to `\`.** Half a day of "ESCAPE
+  expression must be a single character" and phantom hangs traced to probe
+  code authored through heredocs: every doubled backslash arrived single,
+  so LIKE...ESCAPE probes failed while the (edit-tool-authored, byte-verified)
+  module was correct all along. Probes now go through files written by the
+  edit tool, or avoid backslashes entirely (`ESCAPE char(92)`).
+- **CLI bodies starting with `-` need `--`.** Click reads `- [ ] x` as an
+  option flag; the tests pin the `--` separator and the `-`-means-stdin
+  convention (`_text_arg`).
+- **Writes mint generations.** INV-13 pins the *verdict* (same pct, same
+  per-generation outcomes, same offenders), not the generation list —
+  every ledger write, annotations included, is a generation.
+- **Q-B decided** per the recommendation (versions stored, current reads
+  first); **Q-C stays P6b** (embed targets); **Q-D closed** by DR-44/DR-45.
+  `about` naming an annotation/comment refuses (v1 is flat); dangling
+  `about` stays legal (annotations outlive their target by design); no
+  write-time existence gate (existence is branch-relative, rows are
+  trunk-global).
+
+Surface: 8 ops + 8 CLI commands + 4 MCP read tools (33 total, pins
+updated in `test_project_path`, `battery_round2`, ARCHITECTURE) +
+CodeGraph methods for all eight + SKILL/server-instruction lines (both
+drift tests require taught-everything). Writes are ops + CLI only (H-13).
+Tests: 25 Rust (16 linter incl. fixpoint battery, 9 store) + 19 Python
+(round-trip, repairs, refusals, toggle history, retire-first, no-reuse,
+code-row guards, CLI/MCP existence, INV-13 verify/diff/universe pins).
+Full gates at landing: Rust 576 passed + 1 ignored; Python 1268 passed +
+1 skipped (`fmt --check` / `clippy --all-targets -D warnings` / `ruff`
+clean; the precision dead-code failure is pre-existing — verified failing
+on the stashed tree).
