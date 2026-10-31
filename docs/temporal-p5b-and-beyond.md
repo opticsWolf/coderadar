@@ -146,7 +146,7 @@ Each has a recommendation. D-1 is a Macrame decision, recorded here because P5b 
 
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
-| **D-1** | Accept Macrame 0.21.0's state rule (D-303): *a concept's state is its open belief, else its latest-starting belief* | **a** accept (flips 0.20.0 gate 7 to the valid-consistent answer) · **b** keep "row written last" (leaves the backfill defect unfixable without the projection and the fold disagreeing) | **a.** It is the only rule under which a backfill — P5b's write — leaves current reads correct |
+| **D-1** | Accept Macrame 0.21.0's state rule (D-303): *a concept's state is its open belief, else its latest-starting belief* | **a** accept (flips 0.20.0 gate 7 to the valid-consistent answer) · **b** keep "row written last" (leaves the backfill defect unfixable without the projection and the fold disagreeing) | **Decided 2026-10-31: a** (Macrame register D-303). It is the only rule under which a backfill — P5b's write — leaves current reads correct, and it gives the recorded default (D-3) "the state among what was recorded", never a past fragment written last |
 | **D-2** | How a deletion is written | **a** close the interval at the deleting commit, `retired: true` on that closing row · **b** today's separate retired row with its own start (refused from 0.19.2) | **a** (A-4) |
 | **D-3** | Default axis for temporal reads | **a** valid (`at`), recorded opt-in · **b** recorded stays the default, valid opt-in | **Decided 2026-10-31: b**, with the horizon rule of §3.1 so a git-filled store never answers empty |
 | **D-4** | What a read with no `at` sees | **a** recorded observations of edits included · **b** always the committed head | **a**, now by recording edits (§3.1.3) rather than an overlay. An agent mid-edit means the code in front of it |
@@ -268,7 +268,8 @@ lineage of their own, which needs a fork that can move with its parent (U-3). It
 
 CodeRadar cannot build any of these (A-10). They are listed in the order P5b needs them.
 
-**U-1 — 0.21.0's concept state rule (D-303).** Planned upstream; waits on D-1. It fixes the 0.20.0
+**U-1 — 0.21.0's concept state rule (D-303).** Planned upstream; D-1 accepted 2026-10-31, so it is
+unblocked, not yet implemented. It fixes the 0.20.0
 backfill defect and is the minimum version CodeRadar adopts.
 
 **U-2 — A lineage-resolved valid fold.** `reconstruct_as_of` takes no lineage, and `reconstruct_on`
@@ -482,7 +483,7 @@ identically. All five P5b.0 truth tests pass without `xfail`.
 
 ## 11. Open questions
 
-- **Q-11 — D-1..D-7** (§3). D-1 is the one an upstream release waits on.
+- **Q-11 — D-1..D-7** (§3). D-1 (a) and D-3 (b) decided 2026-10-31; D-2, D-4..D-7 open.
 - **Q-12** — *withdrawn 2026-10-31* with the overlay (§3.1.4).
 - **Q-14 — Does the git-history arm bind belief at the horizon or at now?** §3.1.1 answers from
   the store's current belief, so a later re-ingest after a parser fix changes past answers, as it
