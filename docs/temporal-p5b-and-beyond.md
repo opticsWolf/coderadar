@@ -129,7 +129,8 @@ stay commit-pure by reporting, not hiding, what was observed but uncommitted. (F
 
 **A-8. Ingestion is driven by git, continuously.** A ref change (commit, merge, branch creation,
 checkout) triggers an incremental ingest of the affected lineages, before any later observation is
-recorded (H-26). History
+recorded (H-26). A checkout also returns the left lineage's dirty files to its committed content
+by observation (D-4 a1). History
 rewritten by a rebase or force push becomes a new generation of that lineage; the old one stays
 readable. Nothing recorded is ever retracted (P5-D8).
 
@@ -152,7 +153,7 @@ Each has a recommendation. D-1 is a Macrame decision, recorded here because P5b 
 | **D-1** | Accept Macrame 0.21.0's state rule (D-303): *a concept's state is its open belief, else its latest-starting belief* | **a** accept (flips 0.20.0 gate 7 to the valid-consistent answer) · **b** keep "row written last" (leaves the backfill defect unfixable without the projection and the fold disagreeing) | **Decided 2026-10-31: a** (Macrame register D-303). It is the only rule under which a backfill — P5b's write — leaves current reads correct, and it gives the recorded default (D-3) "the state among what was recorded", never a past fragment written last |
 | **D-2** | How a deletion is written | **a** close the interval at the deleting commit, `retired: true` on that closing row; a branch deleting an inherited file writes an open tombstone on its pointer · **b** close with no marker, "deleted" inferred from no successor · **c** a new open retired row at the deletion's start | **Decided 2026-10-31: a** (A-4). Already what every production path writes (`retire_entities_at`, `storage.rs:1640`, used by ingest, the sweep and annotation retire). Left for P5b.1: close the branch pointer before its tombstone, and rewrite the one fixture with shape c (`storage.rs:5626`). b would make a torn close-then-open write indistinguishable from a deletion |
 | **D-3** | Default axis for temporal reads | **a** valid (`at`), recorded opt-in · **b** recorded stays the default, valid opt-in | **Decided 2026-10-31: b**, with the horizon rule of §3.1 so a git-filled store never answers empty |
-| **D-4** | What a read with no `at` sees | **a** recorded observations of edits included · **b** always the committed head | **a**, now by recording edits (§3.1.3) rather than an overlay. An agent mid-edit means the code in front of it |
+| **D-4** | What a read with no `at` sees | **a** recorded observations of edits included · **b** always the committed head | **Decided 2026-10-31: a, with a1.** No `at` on the checked-out lineage = its committed history plus every recorded observation; results list `uncommitted: [paths]`; `at="HEAD"` is the committed head. **a1:** on a HEAD change, after commit sync, every file still dirty on the old lineage gets an observation back to its committed blob (`source: "checkout"`), and carried edits are recorded on the new lineage, so a lineage not checked out reads as its committed head. Edits made while CodeRadar was off are recorded at startup (`source: "startup"`), stamped when seen. Rejected: b (a mutation vanishes from current reads until committed; needs a `live=` flag everywhere) and a2 (a left lineage keeps claiming edits that moved with the tree) |
 | **D-5** | A rebased or force-pushed branch | **a** a new lineage generation (`feat` → `feat#2`, forked at its new merge-base; `feat` resolves to the newest) · **b** refuse until an operator acts · **c** retract the old commits | **a.** **b** stalls every rebase workflow; **c** contradicts P5-D8 |
 | **D-6** | Which branches are ingested | **a** every local branch plus remote-tracking branches, with a deny-list · **b** local only (today) | **a**, with the deny-list defaulting to nothing |
 | **D-7** | Release policy for the commit-time path until P5b.3 and P5d land | **a** ship `ingest-history` and `migrate-to-commit-time` marked experimental · **b** hold them out of releases · **c** ship as is | **a**, with the docs stating F1 and F5 in one sentence each |
@@ -396,7 +397,9 @@ retired, along with the lineage-blind `history_of`, which gains a lineage-tagged
 watcher and `analyze` record edits on a git-filled store, tagged with their source, after syncing
 pending commits; a successful mutation reports `Applied` again. Then commit-driven sync (A-8): a
 ref watcher on `.git/HEAD` and `.git/refs`, or a post-commit hook, runs the incremental ingest for
-the affected lineages. Checkout switches which lineage observations are written to. Needs P5b.1
+the affected lineages. Checkout switches which lineage observations are written to, after
+recording the left lineage's dirty files back to its head (D-4 a1); startup records what changed
+while CodeRadar was off. Needs P5b.1
 because every observation opens a new start. **Flips** F5's test. Independent of every upstream
 request.
 
@@ -486,7 +489,7 @@ identically. All five P5b.0 truth tests pass without `xfail`.
 
 ## 11. Open questions
 
-- **Q-11 — D-1..D-7** (§3). D-1 (a), D-2 (a) and D-3 (b) decided 2026-10-31; D-4..D-7 open.
+- **Q-11 — D-1..D-7** (§3). D-1 (a), D-2 (a), D-3 (b) and D-4 (a, a1) decided 2026-10-31; D-5..D-7 open.
 - **Q-12** — *withdrawn 2026-10-31* with the overlay (§3.1.4).
 - **Q-14 — Does the git-history arm bind belief at the horizon or at now?** §3.1.1 answers from
   the store's current belief, so a later re-ingest after a parser fix changes past answers, as it
