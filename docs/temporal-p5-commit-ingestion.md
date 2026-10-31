@@ -440,6 +440,11 @@ still opens.
 
 ### P5b — Retroactive correction (upstream-gated)
 
+> **Superseded (2026-10-31) by `temporal-p5b-and-beyond.md`.** P5b is not only retroactive
+> correction: P5a's commit times cannot be queried until reads move to the valid axis (that
+> document's F1), and the Macrame pin cannot move until writes close intervals before opening new
+> ones (F2). The paragraph below is kept as the original framing.
+
 **Blocked by** a valid-axis state fold in Macrame. **Unblocks** backfilling an old branch, ingesting
 a second remote, and re-ingesting a range after a parser improvement — all of which P5a refuses.
 Shape: `AsOf`-taking `reconstruct` upstream (Macrame's `AsOf` already carries both axes), then
@@ -517,9 +522,7 @@ P5a.1 and P5a.2 can proceed in parallel; everything after is a chain.
 
 ## 10. Open questions for the maintainer
 
-State at 2026-10-31: **Q-6 answered; Q-7..Q-10 open.** Q-7 is open in name only — P5a.2 was built
-on committer time, so answering "author" now means a re-ingest — but it has not been answered in
-words, and the record keeps that difference.
+State at 2026-10-31: **Q-6, Q-7 and Q-8 answered; Q-9 and Q-10 open.**
 
 - **Q-6 — Adopt P5a?** It is a semantic change to what the store means, it costs a migration, and
   §2's refusal (INV-10) is a real constraint on future ingests, not a formality. The alternative is
@@ -534,14 +537,20 @@ words, and the record keeps that difference.
   maintainer who wants "when the author wrote it" is choosing a non-monotonic axis and therefore
   P5b's machinery. Decide before P5a.2, because it is the stamp the spine chain is built on.
 
-  *Open, built as committer.* P5a.2 shipped P5-D2; author time rides the commit concept's `extra`,
-  so a later choice needs a re-ingest, not a schema change.
+  **Answered: committer time, 2026-10-31.** Chosen on its merits, not for compatibility: the
+  axis records when content became true *on a branch*, and after a rebase or cherry-pick author
+  time can predate the parent it was applied to. Author time stays on the commit concept's `extra`
+  as an attribute of the change. Measured on `dev`'s first-parent line: 2 of 440 commits differ,
+  max gap 0.4 days, no regressions on either clock — the choice changes nothing on this repository
+  and is what keeps a rebasing repository correct.
 - **Q-8 — Does the pre-migration store stay?** P5-D4 keeps it as frozen history. It is 100 MB and it
   is the only record of the pre-P5 belief, including the 0.01% baseline that started all of this.
 
-  *Open, and due at the production migration*, which is when the old store either becomes frozen
-  history or goes. `migrate-to-commit-time` writes a new store and never touches the old one, so
-  nothing is lost by deciding late.
+  **Answered: keep it, frozen, 2026-10-31.** Moved out of `.coderadar/store` and made read-only at
+  the production migration, because INV-12 does not stop `analyze` from writing to an index-now
+  store. It is 159 MB (measured 2026-10-31) and the only record of what CodeRadar observed before
+  P5. The production migration itself waits for the live-tree overlay
+  (`temporal-p5b-and-beyond.md` §8).
 - **Q-9 — H-16: is a permanent, undeletable copy of every committed byte acceptable?** A policy
   question, not an engineering one. Mismatch #7 of the philosophy note is still open and P5 is what
   makes it load-bearing.
