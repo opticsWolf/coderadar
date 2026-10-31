@@ -107,6 +107,9 @@ through its commit concept to `(lineage, committer time)`. Users ask about commi
 **A-4. Intervals are real.** A version of a concept is `[its start, the next version's start)`.
 Writing a new version first closes the open one. Deleting a file closes its concepts' intervals at
 the deleting commit. `retired` stays as a marker on the closing row, never as a second open row.
+The one open "absent" row is a branch's tombstone for a file it inherited: the branch cannot close
+the parent's concept (D-225), and absence on the branch holds until the file is re-added. A re-added
+file opens a new interval on the same id (D-2).
 At most one interval per concept is open, and successive versions abut. (F2, and the shape D-291
 already enforces)
 
@@ -147,7 +150,7 @@ Each has a recommendation. D-1 is a Macrame decision, recorded here because P5b 
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
 | **D-1** | Accept Macrame 0.21.0's state rule (D-303): *a concept's state is its open belief, else its latest-starting belief* | **a** accept (flips 0.20.0 gate 7 to the valid-consistent answer) · **b** keep "row written last" (leaves the backfill defect unfixable without the projection and the fold disagreeing) | **Decided 2026-10-31: a** (Macrame register D-303). It is the only rule under which a backfill — P5b's write — leaves current reads correct, and it gives the recorded default (D-3) "the state among what was recorded", never a past fragment written last |
-| **D-2** | How a deletion is written | **a** close the interval at the deleting commit, `retired: true` on that closing row · **b** today's separate retired row with its own start (refused from 0.19.2) | **a** (A-4) |
+| **D-2** | How a deletion is written | **a** close the interval at the deleting commit, `retired: true` on that closing row; a branch deleting an inherited file writes an open tombstone on its pointer · **b** close with no marker, "deleted" inferred from no successor · **c** a new open retired row at the deletion's start | **Decided 2026-10-31: a** (A-4). Already what every production path writes (`retire_entities_at`, `storage.rs:1640`, used by ingest, the sweep and annotation retire). Left for P5b.1: close the branch pointer before its tombstone, and rewrite the one fixture with shape c (`storage.rs:5626`). b would make a torn close-then-open write indistinguishable from a deletion |
 | **D-3** | Default axis for temporal reads | **a** valid (`at`), recorded opt-in · **b** recorded stays the default, valid opt-in | **Decided 2026-10-31: b**, with the horizon rule of §3.1 so a git-filled store never answers empty |
 | **D-4** | What a read with no `at` sees | **a** recorded observations of edits included · **b** always the committed head | **a**, now by recording edits (§3.1.3) rather than an overlay. An agent mid-edit means the code in front of it |
 | **D-5** | A rebased or force-pushed branch | **a** a new lineage generation (`feat` → `feat#2`, forked at its new merge-base; `feat` resolves to the newest) · **b** refuse until an operator acts · **c** retract the old commits | **a.** **b** stalls every rebase workflow; **c** contradicts P5-D8 |
@@ -483,7 +486,7 @@ identically. All five P5b.0 truth tests pass without `xfail`.
 
 ## 11. Open questions
 
-- **Q-11 — D-1..D-7** (§3). D-1 (a) and D-3 (b) decided 2026-10-31; D-2, D-4..D-7 open.
+- **Q-11 — D-1..D-7** (§3). D-1 (a), D-2 (a) and D-3 (b) decided 2026-10-31; D-4..D-7 open.
 - **Q-12** — *withdrawn 2026-10-31* with the overlay (§3.1.4).
 - **Q-14 — Does the git-history arm bind belief at the horizon or at now?** §3.1.1 answers from
   the store's current belief, so a later re-ingest after a parser fix changes past answers, as it
