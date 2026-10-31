@@ -155,7 +155,7 @@ Each has a recommendation. D-1 is a Macrame decision, recorded here because P5b 
 | **D-3** | Default axis for temporal reads | **a** valid (`at`), recorded opt-in · **b** recorded stays the default, valid opt-in | **Decided 2026-10-31: b**, with the horizon rule of §3.1 so a git-filled store never answers empty |
 | **D-4** | What a read with no `at` sees | **a** recorded observations of edits included · **b** always the committed head | **Decided 2026-10-31: a, with a1.** No `at` on the checked-out lineage = its committed history plus every recorded observation; results list `uncommitted: [paths]`; `at="HEAD"` is the committed head. **a1:** on a HEAD change, after commit sync, every file still dirty on the old lineage gets an observation back to its committed blob (`source: "checkout"`), and carried edits are recorded on the new lineage, so a lineage not checked out reads as its committed head. Edits made while CodeRadar was off are recorded at startup (`source: "startup"`), stamped when seen. Rejected: b (a mutation vanishes from current reads until committed; needs a `live=` flag everywhere) and a2 (a left lineage keeps claiming edits that moved with the tree) |
 | **D-5** | A rebased or force-pushed branch | **a** a new lineage generation (`feat` → `feat#2`, forked at its new merge-base; `feat` resolves to the newest) · **b** refuse until an operator acts · **c** retract the old commits | **Decided 2026-10-31: a for branches; the trunk refuses.** Today both cases stop at `NotAncestor`/`ForkMismatch` (b by accident). A branch whose cursor left its history syncs main, forks a new generation from main now, and ingests from the new fork point; the name resolves to the newest generation; the old one stays readable, sha reads included. Exact for a rebase onto main's tip. Until U-4, files the branch minted itself land as bytes without entities on the new generation (`cross-lineage-id`, reported); a rebase onto an older base leaks newer main content until U-3. A rewritten trunk refuses with `TrunkRewritten { old, new }` and points at a rebuild (P8): `main` is the only root, so it has no generation. Rejected: b (stalls every rebase), c (contradicts P5-D8), d same lineage continued (its fork cannot move, so inherited files go stale after a rebase onto newer main) |
-| **D-6** | Which branches are ingested | **a** every local branch plus remote-tracking branches, with a deny-list · **b** local only (today) | **a**, with the deny-list defaulting to nothing |
+| **D-6** | Which branches are ingested | **a** every local branch plus remote-tracking branches, with a deny-list · **b** local only (today) · **c** only branches with commits of their own; every other name is a commit address | **Decided 2026-10-31: c.** A branch, local or remote-tracking, whose tip lies on an ingested lineage's first-parent chain gets no lineage: its name resolves to that tip commit and reads go through the commit index (§3.1.2), exact today with no fork and no F3 leak. A branch with commits of its own is a lineage. Every branch read reports `parent_drift`, the parent commits after its fork point it can see (0 on main's tip), until U-3. Deny-list kept, empty by default; a deleted branch's name resolves to its last tip. Measured on this repository: 17 local branches, 15 fully merged; 16 remote-tracking, 13 equal to local, none remote-only — so main plus 3 lineages instead of 33, every name still readable. Rejected: a and b (a merged branch would fork now and read as today's main, 203–518 commits wrong here, unlabelled; a also duplicates local lineages and trips `cross-lineage-id`) |
 | **D-7** | Release policy for the commit-time path until P5b.3 and P5d land | **a** ship `ingest-history` and `migrate-to-commit-time` marked experimental · **b** hold them out of releases · **c** ship as is | **a**, with the docs stating F1 and F5 in one sentence each |
 
 ### 3.1 D-3 decided: recorded stays the default — and a git-filled store never answers empty
@@ -383,21 +383,29 @@ correction on the recorded axis and leaves valid-axis answers for untouched file
 as ingesting them in order, at every commit, and different recorded-axis answers exactly where the
 order differed. That pair of assertions is Doctrine VIII as a test.
 
-### P5b.6 — Branch generations (no dependency)
+### P5b.6 — Branch names: selection, addresses, generations (needs P5b.3a)
 
-D-5 on today's pin: detect a branch cursor that left its history, sync main, fork the next
+**Selection (D-6 c).** The ingest set is the trunk plus every branch, local or remote-tracking,
+whose tip is not on an ingested lineage's first-parent chain, minus the deny-list. Every other name
+is an address: resolved to its tip commit and read through the commit index, which is why this
+phase needs P5b.3a. The commit index records which lineage holds each sha, so resolution is one
+lookup. Every branch read reports `parent_drift`. `migrate_to_commit_time`'s default branch set
+follows the same rule.
+
+**Generations (D-5).** Detect a branch cursor that left its history, sync main, fork the next
 generation now, ingest from the new fork point, and resolve the name to the newest generation in
 `kv` (`coderadar.ingest.generation.{branch}`). A rewritten trunk refuses with `TrunkRewritten`.
 Branch-minted files report `cross-lineage-id` on the new generation until U-4.
-**Proves it:** a rebase-onto-tip fixture reads exactly on the new generation, and every sha of the
-old one still resolves.
+
+**Proves it:** a merged branch reads equal to the trunk at its tip sha; a rebase-onto-tip fixture
+reads exactly on the new generation, and every sha of the old one still resolves; a stale-branch
+fixture reports the expected `parent_drift`.
 
 ### P5c — Lineage fidelity (blocked by U-3 and U-4)
 
 Branches fork at their merge-base on the valid axis (A-5); merges assert merged files on the
 receiving lineage (A-6); a new generation takes over the ids its predecessor minted (D-5, via
-U-4); remote-tracking branches join the
-ingest set (D-6). P5a.4's "ingest branches before merging them" and the `cross-lineage-id` skip are
+U-4); `parent_drift` drops to 0 on every lineage (D-6). P5a.4's "ingest branches before merging them" and the `cross-lineage-id` skip are
 retired, along with the lineage-blind `history_of`, which gains a lineage-tagged chain.
 **Flips** F3's and F4's tests.
 
@@ -443,7 +451,7 @@ already require.
 | 2 | P5b.1 close-then-open | — | P5b.3a, P6b, P8 |
 | 2 | P5b.3a horizon + commit index | — | P5b.1, P6b, P8 |
 | 2 | P6b, P8 | — | each other |
-| 2 | P5b.6 branch generations | — | P5b.1, P5b.3a |
+| 3 | P5b.6 branch names + generations | P5b.3a | P5d, P5b.2 |
 | 3 | P5d live tree | P5b.1 | P5b.2 |
 | 3 | P5b.2 adopt 0.21.0 | U-1 (D-1), P5b.1 | P5d |
 | 4 | P5b.3 valid reads (trunk) | P5b.2 | — |
@@ -500,8 +508,8 @@ identically. All five P5b.0 truth tests pass without `xfail`.
 
 ## 11. Open questions
 
-- **Q-11 — D-1..D-7** (§3). D-1 (a), D-2 (a), D-3 (b), D-4 (a, a1) and D-5 (a; trunk refuses) decided 2026-10-31;
-  D-6, D-7 open.
+- **Q-11 — D-1..D-7** (§3). D-1 (a), D-2 (a), D-3 (b), D-4 (a, a1), D-5 (a; trunk refuses) and D-6 (c) decided
+  2026-10-31; D-7 open.
 - **Q-12** — *withdrawn 2026-10-31* with the overlay (§3.1.4).
 - **Q-14 — Does the git-history arm bind belief at the horizon or at now?** §3.1.1 answers from
   the store's current belief, so a later re-ingest after a parser fix changes past answers, as it
