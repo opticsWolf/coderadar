@@ -1,11 +1,14 @@
 # CodeRadar — P5: Commit-Driven Ingestion (DR-41)
 
-> **Plan, not a landing.** P5 is the phase §5 of
+> **Plan, now built.** P5 is the phase §5 of
 > `temporal-code-architecture-implementation.md` sketched and deferred (Q-1). This document is the
-> "own plan" that sketch said it needed. Nothing here is built.
+> "own plan" that sketch said it needed.
 >
-> **Status:** drafted 2026-10-28, against `dev` at `9b9f698` (v0.14.0 released). DR-41 stays
-> `deferred` until the maintainer answers §10.
+> **Status (2026-10-31):** drafted 2026-10-28 against `dev` at `9b9f698` (v0.14.0 released). P5a.1–
+> P5a.5 built on `dev` 2026-10-29 (`8cf8cbc`..`13315d8`), unreleased. Q-6 answered **yes**
+> (`bf618e0`), so DR-41 is **accepted**; the production migration has not run, and the store of
+> record is still the index-now store. P5b's upstream half exists — Macrame 0.20.0 ships the
+> valid-axis fold (§5 P5b) — and CodeRadar has not adopted it. §8 and §10 carry the detail.
 
 ---
 
@@ -444,6 +447,16 @@ Shape: `AsOf`-taking `reconstruct` upstream (Macrame's `AsOf` already carries bo
 question changes meaning. Not scheduled; the trigger is the first real need for an out-of-order
 ingest.
 
+**Upstream update (2026-10-31).** The fold exists: Macrame 0.20.0 (tag `v0.20.0`) ships
+`reconstruct_as_of` (D-292, D-293), its Python surface (D-294), and — the concept half of D-060 this
+plan's request asked for — a concept interval guard (D-291). CodeRadar still pins `macrame-db`
+0.19.1 (`core_indexer/Cargo.toml:30`), so none of it is reachable yet. Do not adopt 0.20.0 for P5b
+as it stands: its README lists a known defect, **a backfill overwrites the live `concepts`
+projection** — the guard admits a non-overlapping past interval, and current-mode reads then show
+the backfilled version (`reconstruct_as_of` answers correctly). A backfill is exactly P5b's write.
+Macrame's 0.21.0 plan (D-303, draft, not started) fixes it, so 0.21.0, not 0.20.0, is P5b's floor.
+P5a is unaffected either way: INV-10 means it never writes a past interval.
+
 ---
 
 ## 6. Hazard register (continues §6 of the implementation plan)
@@ -482,8 +495,8 @@ out passes every other test in this file.
 
 | ID | Decision | Status |
 |---|---|---|
-| DR-41 | Commit-driven ingestion: commit time in `valid_from`, append-only per lineage (P5a); retroactive correction upstream-gated (P5b) | **deferred** — plan drafted 2026-10-28, awaiting §10 |
-| DR-43 | *(proposed)* Valid-axis state fold in Macrame, on the Q-3 precedent: implement upstream, because F-6/INV-6 forbid a second fold in CodeRadar | proposed, blocked on a real need |
+| DR-41 | Commit-driven ingestion: commit time in `valid_from`, append-only per lineage (P5a); retroactive correction upstream-gated (P5b) | **accepted** — Q-6 yes 2026-10-29 (`bf618e0`); P5a built on `dev` (`8cf8cbc`..`13315d8`), unreleased; production migration not run; P5b not started |
+| DR-43 | Valid-axis state fold in Macrame, on the Q-3 precedent: implement upstream, because F-6/INV-6 forbid a second fold in CodeRadar | **implemented upstream, not adopted** — Macrame 0.20.0 (D-291..D-294); CodeRadar pins 0.19.1; 0.20.0's backfill defect makes 0.21.0 the floor for P5b (§5 P5b) |
 
 ---
 
@@ -496,7 +509,7 @@ out passes every other test in this file.
 | 3 | P5a.3 ingest op | 1, 2 |
 | 4 | P5a.4 branch ingestion | 3 |
 | 5 | P5a.5 migration + embeddings | 4 |
-| — | P5b | Macrame DR-43 |
+| — | P5b | Macrame DR-43 — shipped in 0.20.0, but adopt from 0.21.0 (§5 P5b) |
 
 P5a.1 and P5a.2 can proceed in parallel; everything after is a chain.
 
@@ -504,15 +517,31 @@ P5a.1 and P5a.2 can proceed in parallel; everything after is a chain.
 
 ## 10. Open questions for the maintainer
 
+State at 2026-10-31: **Q-6 answered; Q-7..Q-10 open.** Q-7 is open in name only — P5a.2 was built
+on committer time, so answering "author" now means a re-ingest — but it has not been answered in
+words, and the record keeps that difference.
+
 - **Q-6 — Adopt P5a?** It is a semantic change to what the store means, it costs a migration, and
   §2's refusal (INV-10) is a real constraint on future ingests, not a formality. The alternative is
   to keep index-now stamping and accept that history means "what CodeRadar saw", documented — which
   is what v0.14 ships and what `verify_history` now measures honestly.
+
+  **Answered yes, 2026-10-29** (`bf618e0`), after the adoption audit (every production
+  `ConceptUpsert::new` site; no fourth choke-point writer) and the scratch self-host migration in
+  §5 P5a.5: 100.0% coverage on both lineages, 1,741 s, ~900 MB. The production run is a planned
+  operation and has not happened; the store of record is still the index-now one.
 - **Q-7 — Committer time, or author time with a monotonicity repair?** P5-D2 chooses committer. A
   maintainer who wants "when the author wrote it" is choosing a non-monotonic axis and therefore
   P5b's machinery. Decide before P5a.2, because it is the stamp the spine chain is built on.
+
+  *Open, built as committer.* P5a.2 shipped P5-D2; author time rides the commit concept's `extra`,
+  so a later choice needs a re-ingest, not a schema change.
 - **Q-8 — Does the pre-migration store stay?** P5-D4 keeps it as frozen history. It is 100 MB and it
   is the only record of the pre-P5 belief, including the 0.01% baseline that started all of this.
+
+  *Open, and due at the production migration*, which is when the old store either becomes frozen
+  history or goes. `migrate-to-commit-time` writes a new store and never touches the old one, so
+  nothing is lost by deciding late.
 - **Q-9 — H-16: is a permanent, undeletable copy of every committed byte acceptable?** A policy
   question, not an engineering one. Mismatch #7 of the philosophy note is still open and P5 is what
   makes it load-bearing.
@@ -544,9 +573,16 @@ P5a.1 and P5a.2 can proceed in parallel; everything after is a chain.
   (`storage.rs:382-392`), so its bytes are skipped today. Harmless, and exactly the trade DR-30
   chose — but it means byte coverage on this repository cannot reach 100% while that file exists,
   which P5a.5's done-when has to allow for (§11).
+
+  *Open.* The scratch migration put a number on option A: ~900 MB against ~100 MB byte-less, every
+  committed byte kept permanently. Due before the production run, which is the write that makes
+  the choice irreversible for this store.
 - **Q-10 — Does `ingest-history` get an MCP tool later?** P5a.3 says no for the first release.
   Q-4's reasoning (an agent should be able to ask what it can trust) argues for exposing the
   *report*, not the write.
+
+  *Open, built as no.* P5a ships CLI-only; the MCP surface grew to 33 with P6a's read tools, none of
+  them an ingest.
 
 ---
 

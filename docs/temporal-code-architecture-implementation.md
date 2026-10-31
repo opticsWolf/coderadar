@@ -1428,3 +1428,26 @@ Full gates at landing: Rust 576 passed + 1 ignored; Python 1268 passed +
 1 skipped (`fmt --check` / `clippy --all-targets -D warnings` / `ruff`
 clean; the precision dead-code failure is pre-existing — verified failing
 on the stashed tree).
+
+### 2026-10-31 — Records synced to what is decided (no code)
+
+Three records had fallen behind the work. DR-41 still read `deferred`
+in the P5 plan, ARCHITECTURE §16 and the CHANGELOG after Q-6 was answered
+yes (`bf618e0`); it now reads **accepted**, with the two things that are
+still true beside it — the production migration has not run (the store
+of record is the index-now one), and P5b has not started. The P5 plan's
+§10 records Q-6's answer under the question instead of only in a commit
+message, and marks Q-7..Q-10 open: Q-7 and Q-10 are open *but built*
+(committer time; CLI-only), Q-8 and Q-9 are due at the production run,
+which is the write that makes Q-9 irreversible for this store.
+
+DR-43 moved without CodeRadar doing anything. Macrame 0.20.0 (`v0.20.0`)
+ships `reconstruct_as_of` (D-292, D-293), its Python surface (D-294), and
+the concept interval guard the upstream request found missing (D-291), so
+the row reads *implemented upstream, not adopted*: the pin is still
+`macrame-db = "0.19.1"`. It is not a pin to move yet. 0.20.0's README
+lists a backfill that overwrites the live `concepts` projection, and a
+backfill is exactly P5b's write; Macrame's 0.21.0 plan (D-303, draft)
+fixes it, so 0.21.0 is P5b's floor. P5a is unaffected — INV-10 means it
+never writes a past interval. ARCHITECTURE §16 also gains the DR-43..DR-45
+rows it never had.

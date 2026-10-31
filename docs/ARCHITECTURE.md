@@ -467,7 +467,8 @@ on. A store indexed before this release has concepts for its history and no
 content behind them: the self-host store measured 0.01% coverage, and 3.19%
 after a full re-analyze, because a re-analyze fixes the present and never
 the past. Filling it needs commit-driven ingestion from git (P5, DR-41) —
-a semantic change to valid time, adopted on dev (P5a: walker, stamped
+a semantic change to valid time, adopted on dev (Q-6 yes; the store of
+record is not migrated yet) (P5a: walker, stamped
 writes, `ingest_history`, branch ingestion, `migrate-to-commit-time`;
 P6c slice: message bodies on `commit:{sha}` rows plus the ops-only
 `backfill_commit_messages` healer for pre-body rows, documented in
@@ -518,7 +519,8 @@ reads add four MCP tools (33 total).
 ## 16. Decision index
 
 Full rationale per row lives in the register (`coderadar-decision-register`
-in `okfgraph.db` at the repo root). Statuses at v0.14.0:
+in `okfgraph.db` at the repo root). Statuses at v0.14.0, with DR-41 and
+DR-43..DR-45 brought to `dev` as of 2026-10-31 (unreleased):
 
 | ID | Decision | Status |
 |---|---|---|
@@ -562,8 +564,11 @@ in `okfgraph.db` at the repo root). Statuses at v0.14.0:
 | DR-38 | `content_version` spine: concepts-only, digest-free payloads (P3) | closed (v0.14.0; `f3625c6`) |
 | DR-39 | Duplicate `content.source` beside the blob | withdrawn (2026-10-28) |
 | DR-40 | Branch-aware reads: `reconstruct_on` + pointer concepts (P4) | closed (v0.14.0; `a4ac405`) |
-| DR-41 | Commit-driven ingestion (P5) | deferred (Q-1; revisit now that P0–P4 ship) |
+| DR-41 | Commit-driven ingestion (P5) | accepted (Q-6 yes, `bf618e0`); P5a built on dev (`8cf8cbc`..`13315d8`); production migration not run; P5b not started |
 | DR-42 | `open_synthetic_triples` is an inclusion list (H-3) | closed (v0.14.0; `600d689`) |
+| DR-43 | Valid-axis state fold lives upstream in Macrame (F-6/INV-6) | implemented upstream (Macrame 0.20.0, D-291..D-294), not adopted — pin is 0.19.1; P5b waits for 0.21.0's backfill fix |
+| DR-44 | `annotation` + `comment` concepts with write-boundary lint (P6a) | implemented (dev; `b4eeb2c`, edge annotation rejected `21e6082`) |
+| DR-45 | Commit message bodies + ops-only `backfill_commit_messages` (P6c slice) | implemented (dev; `fa4104e`) |
 
 ---
 
