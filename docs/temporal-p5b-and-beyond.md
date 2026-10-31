@@ -41,7 +41,7 @@ changed the plan.
 
 ---
 
-## 1. Five findings that shape everything
+## 1. Six findings that shape everything
 
 **F1 — P5a's commit times cannot be queried.** P5a writes commit time into `valid_from`, but every
 read folds on `recorded_at`, and in a commit-time store every `recorded_at` is the day of the
@@ -73,7 +73,19 @@ branch is ingested before it merges, which is the normal order once ingestion is
 born on that branch is minted on the branch. When the merge commit reaches the trunk, the trunk may
 not mint those ids (D-225), so the trunk's graph never contains the merged files. P5a.4 avoids this
 during migration by ingesting the trunk first and documents it as "ingest branches before merging
-them". Ongoing ingestion cannot rely on that order.
+them". Ongoing ingestion cannot rely on that order. *(Added 2026-10-31.)* D-6 c makes this the
+common case, not an edge: every branch with commits of its own is ingested before it merges,
+colleagues' PR branches included. On this repository, `dev` (26 commits of its own) is one: when it
+merges, every file `dev` created arrives on the trunk as bytes without entities, reported as
+`cross-lineage-id`, until U-4. Nothing is lost, since the branch keeps the rows and the bytes land,
+but the trunk's symbol reads miss those files (H-28, Q-15).
+
+**F6 — A rename breaks identity.** *(Added 2026-10-31.)* Concept ids are built from the path, and
+`plan_ingest` reports a rename as a delete plus an add. The old file's concepts close (D-2), the new
+file's open under new ids, and nothing links them. Annotations and comments are keyed by the id they
+are about (`annotation:{about}:{n}`, `annotations.rs:1016`) and are never re-keyed, so an annotation
+on `old.py::foo` stays readable but no longer reaches the live code at `new.py::foo`. `history_of`
+stops at the rename the same way. Nothing is wiped; the link is missing (A-11, P5b.7).
 
 **F5 — A commit-time store cannot see the working tree.** INV-12 makes `analyze`, `update_file`
 and `remove_file` refuse a commit-time store, so the watcher path is closed and uncommitted edits
@@ -141,6 +153,12 @@ answer to H-16: if a secret is ever committed, rewrite git, rebuild, re-import.
 
 **A-10. One fold, in the engine.** CodeRadar never folds (INV-6, F-6). Every capability above that
 needs a fold Macrame does not have becomes an upstream request (§4), not a CodeRadar workaround.
+
+**A-11. Identity survives a rename, by link, not by re-keying.** *(Added 2026-10-31.)* A rename
+git detects is recorded as a link from the old id to the new one, for the file and for each entity
+whose name survives it. Nothing is re-keyed: old ids, their history and their annotations stay
+where they are. Reads follow the link forward, so an annotation on the old id is listed with the
+new one (`via_rename`), and `history_of` continues across it. (F6)
 
 ---
 
@@ -288,7 +306,8 @@ cuts can coexist: recorded for what the branch could know, valid for what was tr
 
 **U-4 — Merge.** An engine operation that lets a lineage assert concepts first minted on a lineage
 it merges from, under the same id, with provenance recorded. This is the D-214 overlay the P5a.4
-as-built names, given a write path. Without it A-6 is not buildable and F4 stands.
+as-built names, given a write path. Without it A-6 is not buildable and F4 stands. *(2026-10-31:
+requested next to U-1, because D-6 c ingests branches before they merge — Q-15.)*
 
 **U-5 — Supersede in one call (small; optional).** An upsert that closes the previous open start
 of the same concept at its own `valid_from` and opens the new one, atomically. D-291 deliberately
@@ -328,10 +347,11 @@ Each phase lists what it delivers, what blocks it, and what proves it. The order
 
 ### P5b.0 — Truth tests first (no dependency)
 
-Write the tests that state F1, F3, F4 and F5 against a fixture repository: a read at a commit's
-own time returns that commit's content; a branch does not see a file the trunk added after the
-merge-base; after a merge the trunk sees the merged file; an uncommitted edit is visible to a
-no-`at` read. Mark each `xfail` with the phase that will flip it. These are the programme's
+Write the tests that state F1, F3, F4, F5 and F6 against a fixture repository: a read at a
+commit's own time returns that commit's content; a branch does not see a file the trunk added after
+the merge-base; after merging a branch that was ingested first, the trunk sees the merged file's
+entities; an uncommitted edit is visible to a no-`at` read; an annotation on an entity is listed
+with that entity after its file is renamed. Mark each `xfail` with the phase that will flip it. These are the programme's
 acceptance gates. They also settle F3 by demonstration rather than by reading.
 
 ### P5b.1 — Close-then-open writes, on today's pin (no dependency)
@@ -401,6 +421,18 @@ Branch-minted files report `cross-lineage-id` on the new generation until U-4.
 reads exactly on the new generation, and every sha of the old one still resolves; a stale-branch
 fixture reports the expected `parent_drift`.
 
+### P5b.7 — Rename links (no dependency)
+
+A-11 on today's pin. `plan_ingest` turns on git's rename detection (`CommitPlan.renamed:
+Vec<(old, new)>`, similarity threshold per Q-16). The ingest closes the old file's concepts as
+today (D-2) and writes one link row per rename, `renamed:{old_id}`, naming the new id, the commit
+and the similarity, for the module and for each entity whose name exists in both files. Links are
+ordinary rows, so they have history, and a later rename chains. Annotation and comment listings,
+`history_of` and id lookups follow the chain forward and mark what they found with `via_rename`. The
+watcher and mutation paths do the same for a rename they observe (`source` as in §3.1.3). An
+annotation is never moved.
+**Flips** F6's test.
+
 ### P5c — Lineage fidelity (blocked by U-3 and U-4)
 
 Branches fork at their merge-base on the valid axis (A-5); merges assert merged files on the
@@ -451,6 +483,7 @@ already require.
 | 2 | P5b.1 close-then-open | — | P5b.3a, P6b, P8 |
 | 2 | P5b.3a horizon + commit index | — | P5b.1, P6b, P8 |
 | 2 | P6b, P8 | — | each other |
+| 2 | P5b.7 rename links | — | everything in order 2 |
 | 3 | P5b.6 branch names + generations | P5b.3a | P5d, P5b.2 |
 | 3 | P5d live tree | P5b.1 | P5b.2 |
 | 3 | P5b.2 adopt 0.21.0 | U-1 (D-1), P5b.1 | P5d |
@@ -462,7 +495,9 @@ already require.
 | — | P9 | each phase it exposes | — |
 
 The critical path is upstream: U-1 gates the pin, U-2 gates branch reads, U-3 and U-4 gate P5c.
-Everything CodeRadar can do alone (P5b.0, P5b.1, P5b.3a, P5b.6, P5d, P6b, P8) comes first, so the
+U-4 is also what lets an ingested branch merge without losing entities on the trunk (F4, H-28), so
+it is requested next to U-1, not after U-2 (Q-15). Everything CodeRadar can do alone (P5b.0, P5b.1,
+P5b.3a, P5b.6, P5b.7, P5d, P6b, P8) comes first, so the
 upstream work never waits on CodeRadar and CodeRadar never idles on upstream.
 
 **Suggested releases.** 0.15.0: P6a, P6c, P5b.0, P5b.1, P5b.3a, P5b.6, and with them P5a's two
@@ -489,6 +524,8 @@ Q-8's answers then applies (keep frozen, decided 2026-10-31) is unaffected.
 | H-22 | *(Withdrawn 2026-10-31 with the overlay; see H-26.)* | — |
 | H-26 | **Observations ahead of a late commit.** A commit fetched from elsewhere can carry a committer time earlier than an edit already observed on the same lineage, which would open a start behind the open one | Sync before every observation write (§3.1.3); a commit that still lands behind is nudged after the latest start and flagged `stamp_nudged`, as INV-11 does for ties |
 | H-27 | **The horizon is a `kv` row.** Lost, every past read falls back to the recorded arm and answers empty again | Rebuildable from the ledger (the first `commit:` row per lineage); `verify_history` reports a missing horizon on a git-filled store as an error, not a warning |
+| H-28 | **Merging an ingested branch before U-4.** Files the branch minted reach the trunk as bytes without entities; the trunk's symbol reads miss them | The ingest report lists them (`cross-lineage-id`) and the merge commit's summary counts them; a trunk read for such a path reports `minted_on: <lineage>` instead of answering absent; U-4 requested next to U-1 (Q-15) |
+| H-29 | **A rename git does not detect.** Below the similarity threshold, or a rename combined with a large edit, stays a delete plus an add, and annotations stay on the old id | Annotations on a closed id are listed by `annotations --orphaned`; a manual `link-rename old new` writes the same link row P5b.7 writes |
 | H-23 | **Valid-axis branch reads before U-2.** Answering a branch question from a trunk-only fold is F-6's failure in a new place | P5b.3 refuses branch reads on the valid axis, naming U-2 |
 | H-24 | **Lineage generations multiply.** Every rebase adds a lineage, and lineages are append-only | Generations are cheap rows; D-5's resolution keeps the name pointing at the newest; measure on a rebase-heavy fixture before P5c ships |
 | H-25 | **Clock-stamped annotations in a commit-time store.** A valid-axis read at a commit instant never sees an annotation written later, which is right, and is surprising | Document it in the read's rustdoc and QUICKREF; annotation reads take no `at` in v1 |
@@ -500,10 +537,11 @@ Q-8's answers then applies (keep frozen, decided 2026-10-31) is unaffected.
 A store built and kept current by git answers, on every lineage: what the code was at any commit or
 date, what CodeRadar believed at any instant (recorded axis, never empty for a time git has history
 for, §3.1), and what the code is right now including uncommitted edits (recorded observations). A branch sees its parent only up to its merge-base,
-a merge brings merged files into the receiving lineage, a rebase leaves the old history readable,
+a merge brings merged files into the receiving lineage, a rename carries annotations and history
+to the new id, a rebase leaves the old history readable,
 and ingesting history in any order yields the same valid-axis answers. Every concept has at most one
 open interval. The store can be rebuilt from git plus an annotation export, and the rebuild answers
-identically. All five P5b.0 truth tests pass without `xfail`.
+identically. All P5b.0 truth tests pass without `xfail`.
 
 ---
 
@@ -520,3 +558,14 @@ identically. All five P5b.0 truth tests pass without `xfail`.
 - **Q-13 — Who files U-2..U-5.** One request per item in Macrame's `docs/`, or one combined
   "lineage fidelity" request for U-2..U-4? Recommendation: U-2 alone first, since P5b.3's branch
   reads need it soonest, then U-3 and U-4 together, since they share the fork model.
+  *(Revised 2026-10-31 with Q-15: U-4 now goes with U-1, ahead of U-2.)*
+- **Q-15 — Merging an ingested branch before U-4** (F4, H-28). **a** request U-4 now, next to U-1,
+  and until it lands accept the gap with the H-28 reporting · **b** an interim engine rule letting
+  the trunk mint a branch-minted id under its own ownership, the branch's copy kept as history (also
+  a Macrame change, barely cheaper than U-4) · **c** ingest no branch until U-4 exists (reverses
+  D-6 c and blinds every branch read). Recommendation: **a**. On this repository, `dev` merging to
+  `main` is the first time it bites.
+- **Q-16 — Rename detection threshold** (P5b.7). git's default similarity is 50%. Lower finds
+  more renames and links more wrong pairs; a wrong link is visible (`via_rename` names the commit
+  and similarity) and correctable by a later link row. Recommendation: git's default, the similarity
+  recorded on every link, and H-29's manual link for the rest.
