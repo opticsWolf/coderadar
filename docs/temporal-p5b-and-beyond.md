@@ -95,10 +95,10 @@ commit that made a fact true on a lineage. *Recorded* time is CodeRadar's: when 
 fact. No row, read or report uses either axis to mean the other. (INV-8, unchanged, now enforced
 by the reads as well as the writes.)
 
-**A-2. Reads name their axis and default to valid.** Every temporal read takes `at` (valid; the
-user's question: "at this commit, on this date") and an optional `recorded` (the audit question:
-"as CodeRadar believed then"). Omitting both is "now on both". The recorded-only form stays,
-spelled explicitly. (F1)
+**A-2. Reads name their axis and default to recorded.** *(Revised 2026-10-31, D-3 decided.)* A
+temporal read's default question stays "what had CodeRadar recorded by then". Valid-axis reads
+(`valid=`) and commit addresses (`at=<sha>`) are explicit. A git-filled store must still never answer
+empty for a time it has history for. §3.1 is the rule that guarantees it. (F1)
 
 **A-3. Commits are addresses.** `at` accepts a timestamp, a commit sha, or a ref. A sha resolves
 through its commit concept to `(lineage, committer time)`. Users ask about commits, not instants.
@@ -118,13 +118,15 @@ after the merge-base on the parent are invisible to the branch until a merge bri
 branch-born files into a lineage, that lineage asserts them under their canonical ids. A concept id
 names a file or entity, never a lineage (Macrame D-214's own principle, extended to merges). (F4)
 
-**A-7. The working tree is a view, never history.** Uncommitted state lives in an overlay above
-the ledger state at the checked-out lineage's head. `analyze` and the watcher update the overlay;
-nothing uncommitted is ever stamped into the ledger. Reads with no `at` see the overlay when one
-exists. Temporal reads never do. (F5)
+**A-7. Observed edits are recorded.** *(Revised 2026-10-31, replaces the overlay.)* A successful
+mutation, and a watcher-seen edit, is an event that CodeRadar records in the ledger, stamped at the
+moment it was observed on both axes and tagged with where it came from (§3.1.3). Under a recorded
+default, that is what "what had CodeRadar recorded by then" has to include. Commit-addressed reads
+stay commit-pure by reporting, not hiding, what was observed but uncommitted. (F5)
 
 **A-8. Ingestion is driven by git, continuously.** A ref change (commit, merge, branch creation,
-checkout) triggers an incremental ingest of the affected lineages and rebases the overlay. History
+checkout) triggers an incremental ingest of the affected lineages, before any later observation is
+recorded (H-26). History
 rewritten by a rebase or force push becomes a new generation of that lineage; the old one stays
 readable. Nothing recorded is ever retracted (P5-D8).
 
@@ -146,11 +148,119 @@ Each has a recommendation. D-1 is a Macrame decision, recorded here because P5b 
 |---|---|---|---|
 | **D-1** | Accept Macrame 0.21.0's state rule (D-303): *a concept's state is its open belief, else its latest-starting belief* | **a** accept (flips 0.20.0 gate 7 to the valid-consistent answer) · **b** keep "row written last" (leaves the backfill defect unfixable without the projection and the fold disagreeing) | **a.** It is the only rule under which a backfill — P5b's write — leaves current reads correct |
 | **D-2** | How a deletion is written | **a** close the interval at the deleting commit, `retired: true` on that closing row · **b** today's separate retired row with its own start (refused from 0.19.2) | **a** (A-4) |
-| **D-3** | Default axis for temporal reads | **a** valid (`at`), recorded opt-in · **b** recorded stays the default, valid opt-in | **a** (A-2). Users ask about commits and dates. **b** keeps F1 as the default answer |
-| **D-4** | What a read with no `at` sees | **a** the working-tree overlay when present, else the head · **b** always the committed head | **a** (A-7). An agent mid-edit means the code in front of it |
+| **D-3** | Default axis for temporal reads | **a** valid (`at`), recorded opt-in · **b** recorded stays the default, valid opt-in | **Decided 2026-10-31: b**, with the horizon rule of §3.1 so a git-filled store never answers empty |
+| **D-4** | What a read with no `at` sees | **a** recorded observations of edits included · **b** always the committed head | **a**, now by recording edits (§3.1.3) rather than an overlay. An agent mid-edit means the code in front of it |
 | **D-5** | A rebased or force-pushed branch | **a** a new lineage generation (`feat` → `feat#2`, forked at its new merge-base; `feat` resolves to the newest) · **b** refuse until an operator acts · **c** retract the old commits | **a.** **b** stalls every rebase workflow; **c** contradicts P5-D8 |
 | **D-6** | Which branches are ingested | **a** every local branch plus remote-tracking branches, with a deny-list · **b** local only (today) | **a**, with the deny-list defaulting to nothing |
 | **D-7** | Release policy for the commit-time path until P5b.3 and P5d land | **a** ship `ingest-history` and `migrate-to-commit-time` marked experimental · **b** hold them out of releases · **c** ship as is | **a**, with the docs stating F1 and F5 in one sentence each |
+
+### 3.1 D-3 decided: recorded stays the default — and a git-filled store never answers empty
+
+**The problem, precisely.** A store filled from git on day *E* holds commits from months before
+*E*, but every row was recorded on *E*. A recorded-axis read at any `t < E` folds an empty prefix of
+the ledger and returns nothing, although the store holds exactly the history the caller is asking
+about. The fix is not to change what the default read means where CodeRadar was watching. It is
+to define what the read means where CodeRadar was not.
+
+**What is not available.** Stamping imported rows with `recorded_at` = commit time. The engine
+stamps `recorded_at`, a monotonic trigger floors it, and INV-8 forbids it: it would claim CodeRadar
+knew in August what it learned in October.
+
+#### 3.1.1 The knowledge horizon
+
+Every lineage gets a **horizon** *H(L)*: the recorded instant at which its first import into this
+store completed, caught up to the lineage's head at that time. It is written once into `kv`
+(`coderadar.horizon.{lineage}`) when the first ingest of *L* finishes, and never moved. A store
+filled by `analyze` alone (index-now) has no horizon; its reads are unchanged.
+
+The default read `as_of(t)` on lineage *L* then has two arms, chosen by one comparison:
+
+| Arm | When | Answers | `basis` in the result |
+|---|---|---|---|
+| **Recorded** | `t >= H(L)`, or no horizon | the recorded fold at *t*, exactly as today | `"recorded"` |
+| **Git history** | `t < H(L)` | the state of the last commit on *L* whose committer time is at or before *t* | `"git-history"`, with the commit's sha |
+
+Every result names its `basis` and *H(L)*, so a caller can always tell an observation from a
+reconstruction. A time before the lineage's first commit is not empty either: it refuses with
+`BeforeHistory { first_commit, horizon }`, which is a reason, not a blank. A `strict=True` read
+refuses on the git-history arm too (`BeforeHorizon`), for callers who want the recorded question
+and nothing else.
+
+The rule keeps D-3's meaning wherever it has one. After *H(L)*, CodeRadar was watching: commits are
+ingested as they land (A-8) and edits are recorded as they happen (§3.1.3), so the recorded fold at
+*t* is what was known at *t*. Before *H(L)*, CodeRadar knew nothing, and the only honest non-empty
+answer is what git says, labelled as such.
+
+#### 3.1.2 The git-history arm runs on today's engine
+
+It needs no valid-axis fold and no Macrame upgrade, because of INV-10. While ingest is append-only
+per lineage, the recorded instant at which commit *C*'s ingest completed is a point at which the
+ledger holds exactly the state at *C*. So the arm is two steps, neither of them a fold CodeRadar
+owns (F-6 holds):
+
+1. **Commit index.** Resolve *t* to the last commit on *L* with committer time ≤ *t*, and that
+   commit to its **completion instant** — the recorded instant after its last sub-generation (the
+   concept flush, then edges and sweep) and before the next commit's first write. The ingest
+   records it explicitly in `kv` (`coderadar.commit_done.{lineage}.{sha}`) rather than inferring
+   it from neighbouring rows. The commit concept `commit:{sha}` is already written in the commit's
+   own flush (`graph/ingest.rs:720,1408`), so the index can be rebuilt from the ledger if `kv` is
+   lost (H-20).
+2. **Recorded fold** at the completion instant, through the existing `reconstruct_on`.
+
+The same index serves `at=<sha>` (A-3). When P5b.5 lifts INV-10, recorded order stops matching
+commit order and step 2 is replaced by the valid fold (`reconstruct_as_of`, valid = committer time
+of *C*). The read's API and its `basis` label do not change, only how it is computed.
+
+Branch caveat: until P5c, a branch read on this arm inherits whatever F3 leaks, because the
+recorded fold at the completion instant sees the parent as it was at the fork. The arm makes the
+answer non-empty; P5c makes it right for branches.
+
+#### 3.1.3 The mutation event, and edits on a git-filled store
+
+**Today.** After a mutation installs its files, `CodeGraph.apply` re-records them through
+`_synchronize_mutation_files` → `update_file` (`py_agent/src/coderadar/__init__.py:1151-1215`).
+On an index-now store that is already the "record on success" event. On a commit-time store
+`update_file` refuses (INV-12, `lib.rs:1316`), so every successful edit ends `ApplyIncomplete`.
+
+**Proposed.** A successful mutation emits one **observation write**:
+
+1. **Sync first.** Ingest any commits that have landed on the checked-out lineage since its cursor,
+   so the observation's start is later than every commit start on the lineage (the D-291 chain stays
+   in order, and INV-11's nudge covers clock skew).
+2. **Record.** Re-extract the affected files and write their concepts with `valid_from` =
+   `recorded_at` = now, closing the previous open interval first (P5b.1). Each row carries
+   provenance in `extra`: `{"source": "mutation", "tool", "plan_id", "attempt_id"}`.
+3. **Report.** The mutation's `sync` summary reports the observation generation, and the result is
+   `Applied`.
+
+The watcher and `analyze` write the same kind of row with `"source": "watcher"` /
+`"source": "analyze"`. INV-12 narrows from "one stamping mode per store" to **"every row's axes
+mean what its `source` says"**: commit rows carry commit time, observation rows carry the
+observation instant, and no row carries a mix. The mode flag stays, and now records how the store
+was filled (`git` or `observed`), not what it may accept.
+
+**When the edit is committed,** the commit's rows open a new start at committer time and supersede
+the observation's. If the edit is discarded instead, the watcher records the reverted file as
+another observation. Nothing is retracted.
+
+**What a commit-addressed read does with observations.** `at=<sha>` folds at the commit's
+completion instant. If files were observed dirty at that instant and the commit did not include
+them, the fold shows their observed content, which is true of the working tree and not of the
+commit. The read therefore **reports** them (`dirty_at_commit: [paths]`), rather than hiding them,
+and `strict=True` refuses. Making `at=<sha>` exactly commit-pure means keeping observations on a
+lineage of their own, which needs a fork that can move with its parent (U-3). It is deferred to P5c.
+
+#### 3.1.4 What this changes elsewhere in the plan
+
+- **P5d** becomes observation writes plus commit-driven sync. The in-memory overlay and Q-12 are
+  withdrawn.
+- **INV-16** reads: every temporal read names its axis internally, and every result names its
+  `basis`.
+- **INV-17** reads: the ledger holds committed history and observed edits, each tagged with its
+  source. Nothing is stamped on an axis it does not belong to.
+- **H-22** is replaced by H-26 (§9).
+- **The horizon and commit index ship before Macrame moves** (new phase P5b.3a, §6). The empty
+  answers end on 0.19.1.
 
 ---
 
@@ -195,10 +305,12 @@ Inherits INV-1..INV-14. INV-10 is replaced; the rest are new.
 - **INV-15 — One open interval, abutting versions.** For every concept, at most one interval is
   open, and each version's `valid_to` equals its successor's `valid_from`. Checked after every
   ingest by `verify_concept_intervals`, which must report nothing.
-- **INV-16 — Every temporal read names its axis.** Internally there is no "timestamp" parameter
-  whose axis is implied. The public default is valid (D-3), and the recorded form is spelled.
-- **INV-17 — The ledger holds only committed history.** Uncommitted content is never stamped.
-  Annotations and comments are the exception, stamped present-tense by design (INV-14 programme).
+- **INV-16 — Every temporal read names its axis, and every result names its basis.** Internally
+  there is no "timestamp" parameter whose axis is implied. The public default is recorded (D-3);
+  results say whether they came from the recorded fold or from git history (§3.1.1).
+- **INV-17 — Every row's axes mean what its source says.** Commit rows carry commit time;
+  observation rows (mutation, watcher, analyze) carry the instant they were observed; annotations
+  and comments are present-tense by design. No row mixes the two (§3.1.3).
 - **INV-18 — Rebuildable from git plus exported user data.** A store rebuilt from the same
   repository and the same annotation/comment export answers every code read identically. Tested,
   not asserted.
@@ -234,13 +346,22 @@ Move the pin, resolve whatever API drift remains, rerun the full gate bundle and
 migration, and require `verify_concept_intervals` to report nothing. Not 0.20.0: its backfill
 defect is P5b.5's write.
 
+### P5b.3a — Horizon and commit index (no dependency)
+
+§3.1.1–3.1.2 on today's pin: the per-lineage horizon in `kv`, the per-commit completion instant,
+the git-history arm of the default read with its `basis` label, `BeforeHistory`, `strict=`, and
+`at=<sha>` with `dirty_at_commit`. **Flips** F1's test on 0.19.1. Must ship together with the
+existing stores' backfill of the index: a store ingested before this phase rebuilds its commit
+index from the `commit:{sha}` rows once, auditable.
+
 ### P5b.3 — Valid-axis reads (blocked by P5b.2; branch reads by U-2)
 
 Every temporal op (`as_of`, `entities_at`, `source_refs_at`, `changes_between`, `verify_history`,
-`history_of`'s intervals) takes `at` and `recorded` (A-2, D-3, INV-16), lowered to
-`reconstruct_as_of`. Trunk reads ship as soon as P5b.2 lands. Branch reads wait for U-2 and
-meanwhile refuse on the valid axis with an error that names U-2, rather than answering for the
-trunk. **Flips** F1's test.
+`history_of`'s intervals) gains an explicit `valid=` (A-2, D-3, INV-16), lowered to
+`reconstruct_as_of`. The recorded default and P5b.3a's horizon rule stay. The git-history arm
+switches from the commit index to the valid fold only when P5b.5 lifts INV-10. Trunk reads ship as
+soon as P5b.2 lands. Branch reads wait for U-2 and meanwhile refuse on the valid axis with an error
+that names U-2, rather than answering for the trunk.
 
 ### P5b.4 — Commits as addresses (blocked by P5b.3)
 
@@ -265,15 +386,15 @@ ingest set (D-6). P5a.4's "ingest branches before merging them" and the `cross-l
 retired, along with the lineage-blind `history_of`, which gains a lineage-tagged chain.
 **Flips** F3's and F4's tests.
 
-### P5d — The live tree (no upstream dependency)
+### P5d — The live tree (needs P5b.1)
 
-The working-tree overlay (A-7, D-4, INV-17): an in-memory layer over the head state of the
-checked-out lineage. The watcher, `analyze` and `update_file` write the overlay on a commit-time
-store instead of refusing. Then commit-driven sync (A-8): a ref watcher on `.git/HEAD` and
-`.git/refs`, or a post-commit hook, runs the incremental ingest for the affected lineages and
-rebases the overlay onto the new head. Checkout switches the overlay's base lineage.
-**Flips** F5's test. Independent of P5b.1–P5b.5 and of every upstream request, so it can run in
-parallel with them.
+*(Revised 2026-10-31.)* Observation writes (A-7, D-4, INV-17, §3.1.3): the mutation event, the
+watcher and `analyze` record edits on a git-filled store, tagged with their source, after syncing
+pending commits; a successful mutation reports `Applied` again. Then commit-driven sync (A-8): a
+ref watcher on `.git/HEAD` and `.git/refs`, or a post-commit hook, runs the incremental ingest for
+the affected lineages. Checkout switches which lineage observations are written to. Needs P5b.1
+because every observation opens a new start. **Flips** F5's test. Independent of every upstream
+request.
 
 ### P6b — Aggregation and vectors (no dependency)
 
@@ -302,9 +423,10 @@ already require.
 | Order | Phase | Blocked by | Can run beside |
 |---|---|---|---|
 | 1 | P5b.0 truth tests | — | everything |
-| 2 | P5b.1 close-then-open | — | P5d, P6b, P8 |
-| 2 | P5d live tree | — | P5b.1, P6b, P8 |
+| 2 | P5b.1 close-then-open | — | P5b.3a, P6b, P8 |
+| 2 | P5b.3a horizon + commit index | — | P5b.1, P6b, P8 |
 | 2 | P6b, P8 | — | each other |
+| 3 | P5d live tree | P5b.1 | P5b.2 |
 | 3 | P5b.2 adopt 0.21.0 | U-1 (D-1), P5b.1 | P5d |
 | 4 | P5b.3 valid reads (trunk) | P5b.2 | — |
 | 5 | P5b.4 sha addressing | P5b.3 | P5b.5 |
@@ -314,19 +436,20 @@ already require.
 | — | P9 | each phase it exposes | — |
 
 The critical path is upstream: U-1 gates the pin, U-2 gates branch reads, U-3 and U-4 gate P5c.
-Everything CodeRadar can do alone (P5b.0, P5b.1, P5d, P6b, P8) has no dependency and comes first,
-so the upstream work never waits on CodeRadar and CodeRadar never idles on upstream.
+Everything CodeRadar can do alone (P5b.0, P5b.1, P5b.3a, P5d, P6b, P8) comes first, so the
+upstream work never waits on CodeRadar and CodeRadar never idles on upstream.
 
-**Suggested releases.** 0.15.0: P6a, P6c, P5a (experimental per D-7), P5b.0, P5b.1. 0.16.0: P5d
-and P8. 0.17.0: P5b.2–P5b.5 on 0.21.0. 0.18.0: P5c, when U-3 and U-4 exist.
+**Suggested releases.** 0.15.0: P6a, P6c, P5a (experimental per D-7), P5b.0, P5b.1, P5b.3a — the
+first release in which a git-filled store answers every past time. 0.16.0: P5d and P8. 0.17.0:
+P5b.2–P5b.5 on 0.21.0. 0.18.0: P5c, when U-3 and U-4 exist.
 
 ---
 
 ## 8. The one ordering constraint that touches the existing store
 
 Not migration planning, only a dependency to respect: **do not make a commit-time store the store of
-record before P5d.** Until the overlay exists, a commit-time store blinds the watcher and every
-uncommitted edit (F5). The production migration of the self-host store waits for P5d; whichever of
+record before P5d.** Until observation writes exist, a commit-time store blinds the watcher, ends
+every mutation `ApplyIncomplete`, and hides every uncommitted edit (F5). The production migration of the self-host store waits for P5d; whichever of
 Q-8's answers then applies (keep frozen, decided 2026-10-31) is unaffected.
 
 ---
@@ -336,7 +459,9 @@ Q-8's answers then applies (keep frozen, decided 2026-10-31) is unaffected.
 | ID | Hazard | Mitigation |
 |---|---|---|
 | H-21 | **The two-flush window.** Between the close flush and the open flush a concept is valid nowhere | P5b.1: shared stamp, cursor after the open flush, resumable; U-5 removes it |
-| H-22 | **The overlay diverges from the ledger.** An overlay built on a head that has since moved answers for a tree nobody has | P5d rebases on every ref change; a read reports the overlay's base sha |
+| H-22 | *(Withdrawn 2026-10-31 with the overlay; see H-26.)* | — |
+| H-26 | **Observations ahead of a late commit.** A commit fetched from elsewhere can carry a committer time earlier than an edit already observed on the same lineage, which would open a start behind the open one | Sync before every observation write (§3.1.3); a commit that still lands behind is nudged after the latest start and flagged `stamp_nudged`, as INV-11 does for ties |
+| H-27 | **The horizon is a `kv` row.** Lost, every past read falls back to the recorded arm and answers empty again | Rebuildable from the ledger (the first `commit:` row per lineage); `verify_history` reports a missing horizon on a git-filled store as an error, not a warning |
 | H-23 | **Valid-axis branch reads before U-2.** Answering a branch question from a trunk-only fold is F-6's failure in a new place | P5b.3 refuses branch reads on the valid axis, naming U-2 |
 | H-24 | **Lineage generations multiply.** Every rebase adds a lineage, and lineages are append-only | Generations are cheap rows; D-5's resolution keeps the name pointing at the newest; measure on a rebase-heavy fixture before P5c ships |
 | H-25 | **Clock-stamped annotations in a commit-time store.** A valid-axis read at a commit instant never sees an annotation written later, which is right, and is surprising | Document it in the read's rustdoc and QUICKREF; annotation reads take no `at` in v1 |
@@ -346,8 +471,8 @@ Q-8's answers then applies (keep frozen, decided 2026-10-31) is unaffected.
 ## 10. Done when
 
 A store built and kept current by git answers, on every lineage: what the code was at any commit or
-date (valid axis), what CodeRadar believed at any instant (recorded axis), and what the code is
-right now including uncommitted edits (overlay). A branch sees its parent only up to its merge-base,
+date, what CodeRadar believed at any instant (recorded axis, never empty for a time git has history
+for, §3.1), and what the code is right now including uncommitted edits (recorded observations). A branch sees its parent only up to its merge-base,
 a merge brings merged files into the receiving lineage, a rebase leaves the old history readable,
 and ingesting history in any order yields the same valid-axis answers. Every concept has at most one
 open interval. The store can be rebuilt from git plus an annotation export, and the rebuild answers
@@ -358,9 +483,12 @@ identically. All five P5b.0 truth tests pass without `xfail`.
 ## 11. Open questions
 
 - **Q-11 — D-1..D-7** (§3). D-1 is the one an upstream release waits on.
-- **Q-12 — Overlay persistence.** Should the overlay survive a process restart (a sidecar file
-  outside the ledger), or be rebuilt from the working tree on start? Rebuilding is simpler and is
-  the recommendation until a cold start is measured as too slow.
+- **Q-12** — *withdrawn 2026-10-31* with the overlay (§3.1.4).
+- **Q-14 — Does the git-history arm bind belief at the horizon or at now?** §3.1.1 answers from
+  the store's current belief, so a later re-ingest after a parser fix changes past answers, as it
+  should for a reconstruction. Binding at *H(L)* would make them reproducible forever, and would
+  keep serving a parse the store has since corrected. Recommendation: current belief, with the
+  `recorded=` parameter available for anyone who needs reproducibility.
 - **Q-13 — Who files U-2..U-5.** One request per item in Macrame's `docs/`, or one combined
   "lineage fidelity" request for U-2..U-4? Recommendation: U-2 alone first, since P5b.3's branch
   reads need it soonest, then U-3 and U-4 together, since they share the fork model.

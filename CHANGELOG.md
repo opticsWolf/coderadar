@@ -7,7 +7,7 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 ## Unreleased
 
 - Temporal P5a (DR-41, **accepted — Q-6 yes (`bf618e0`); built on dev; production
-  migration not run, Q-7..Q-10 open**):
+  migration not run; Q-7, Q-8 answered, Q-9, Q-10 open**):
   commit-driven ingestion writes history at commit time. `plan_ingest` walker (P5a.1),
   stamped valid_from threading with the INV-11 nudge and Zulu boundary (P5a.2),
   `ingest_history` op + CLI `ingest-history` with per-commit stamped flushes, commit
