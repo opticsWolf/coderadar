@@ -4,6 +4,10 @@
 > `c1f1ec8` (P5a, P6a and P6c built, unreleased; Macrame pin `0.19.1`) and Macrame `main` at
 > `634740f` (`v0.20.0`; `dev/0.21.0` holds an unstarted 0.21.0 plan).
 >
+> **Updated 2026-11-01: Macrame `v0.21.0` is released** (tag `8ffba57`, `main`). It ships U-1
+> (D-303) and nothing else this plan requests; §0's 0.21.0 rows, U-1, P5b.2 and §7 say what that
+> changes. U-2..U-5 are not filed yet (Q-13).
+>
 > **Scope.** Everything after P5a that the temporal architecture needs in order to mean what it
 > says: reads on the axis the store writes, a write discipline the current engine accepts, branches
 > and merges that behave like git's, the uncommitted working tree, and the boundary between data
@@ -36,6 +40,10 @@ changed the plan.
 | `reconstruct_as_of(at: AsOf)` exists and takes **no lineage**; `reconstruct_on` does not resolve concepts by lineage | Macrame `src/connection.rs:3641`, `reconstruct_on` rustdoc | **→** U2 |
 | 0.20.0 known defect: a backfill overwrites the live `concepts` projection | Macrame `README.md:334` at `v0.20.0` | **→** U1: 0.21.0 is the floor |
 | 0.21.0 proposes "a concept's state is its open belief, else its latest-starting belief" (D-303) and needs the maintainer's decision | Macrame `docs/Macrame Update Plan v0.21.0.md` §2.4 | **→** D-1 |
+| *(2026-11-01)* **0.21.0 released with D-303.** Mechanism: the guard admits a backfill, the projection keeps its row, and the pair is marked in a new `concept_disorder` table that never clears; recorded reads correct only marked pairs. Schema v23 → **v24** on open; libSQL 0.9.30 → **0.10.0**; old Macrame snapshots skipped | Macrame `docs/releases/v0.21.0.md`; `src/temporal/replay.rs:1187` | **→** U-1 done; P5b.2 unblocked |
+| *(2026-11-01)* 0.21.0's one break, `Overlap.within_batch` → `provenance`, does not reach CodeRadar: no use of `within_batch` or `OverlappingIntervalError` in `core_indexer` or `py_agent` | grep at `ad7d7c5` | **→** P5b.2 has no API drift from it |
+| *(2026-11-01)* CodeRadar must move `libsql` with the pin: `core_indexer/Cargo.toml:50` pins `libsql = "0.9"` because `diagnostic_conn()` hands out Macrame's own connections | `core_indexer/Cargo.toml:30,47-50` | **→** P5b.2 |
+| *(2026-11-01)* Merge is recorded upstream as "its own decision", out of branching's scope (Doctrine III has no neutral superseder), not as refused forever | Macrame `docs/Macrame Road to 1.0.md` §15.4, §16 | **→** U-4 needs a Macrame decision before any design (Q-15) |
 | `migrate_to_commit_time` builds only from git and never reads the old store | `py_agent/src/coderadar/ops.py:1776-1900` | annotations and comments are not carried (§6 P8) |
 | Annotations and comments are stamped by the clock, trunk-global, mode-independent | `annotations.rs:1017-1043`; `annotations-comments-proposal.md` §7 | they remain the only non-derivable data (§2 A-9) |
 
@@ -94,7 +102,7 @@ primary use case, and the plan has no story for it.
 
 Two upstream facts complete the picture. Macrame 0.20.0 has the valid-axis fold but no
 lineage-resolved form of it, and it carries a backfill defect whose fix (0.21.0, D-303) waits on a
-decision.
+decision. *(2026-11-01: decided and released in 0.21.0.)*
 
 ---
 
@@ -168,7 +176,7 @@ Each has a recommendation. D-1 is a Macrame decision, recorded here because P5b 
 
 | # | Decision | Options | Recommendation |
 |---|---|---|---|
-| **D-1** | Accept Macrame 0.21.0's state rule (D-303): *a concept's state is its open belief, else its latest-starting belief* | **a** accept (flips 0.20.0 gate 7 to the valid-consistent answer) · **b** keep "row written last" (leaves the backfill defect unfixable without the projection and the fold disagreeing) | **Decided 2026-10-31: a** (Macrame register D-303). It is the only rule under which a backfill — P5b's write — leaves current reads correct, and it gives the recorded default (D-3) "the state among what was recorded", never a past fragment written last |
+| **D-1** | Accept Macrame 0.21.0's state rule (D-303): *a concept's state is its open belief, else its latest-starting belief* | **a** accept (flips 0.20.0 gate 7 to the valid-consistent answer) · **b** keep "row written last" (leaves the backfill defect unfixable without the projection and the fold disagreeing) | **Decided 2026-10-31: a** (Macrame register D-303); **released in Macrame 0.21.0, 2026-11-01**. It is the only rule under which a backfill — P5b's write — leaves current reads correct, and it gives the recorded default (D-3) "the state among what was recorded", never a past fragment written last |
 | **D-2** | How a deletion is written | **a** close the interval at the deleting commit, `retired: true` on that closing row; a branch deleting an inherited file writes an open tombstone on its pointer · **b** close with no marker, "deleted" inferred from no successor · **c** a new open retired row at the deletion's start | **Decided 2026-10-31: a** (A-4). Already what every production path writes (`retire_entities_at`, `storage.rs:1640`, used by ingest, the sweep and annotation retire). Left for P5b.1: close the branch pointer before its tombstone, and rewrite the one fixture with shape c (`storage.rs:5626`). b would make a torn close-then-open write indistinguishable from a deletion |
 | **D-3** | Default axis for temporal reads | **a** valid (`at`), recorded opt-in · **b** recorded stays the default, valid opt-in | **Decided 2026-10-31: b**, with the horizon rule of §3.1 so a git-filled store never answers empty |
 | **D-4** | What a read with no `at` sees | **a** recorded observations of edits included · **b** always the committed head | **Decided 2026-10-31: a, with a1.** No `at` on the checked-out lineage = its committed history plus every recorded observation; results list `uncommitted: [paths]`; `at="HEAD"` is the committed head. **a1:** on a HEAD change, after commit sync, every file still dirty on the old lineage gets an observation back to its committed blob (`source: "checkout"`), and carried edits are recorded on the new lineage, so a lineage not checked out reads as its committed head. Edits made while CodeRadar was off are recorded at startup (`source: "startup"`), stamped when seen. Rejected: b (a mutation vanishes from current reads until committed; needs a `live=` flag everywhere) and a2 (a left lineage keeps claiming edits that moved with the tree) |
@@ -290,9 +298,12 @@ lineage of their own, which needs a fork that can move with its parent (U-3). It
 
 CodeRadar cannot build any of these (A-10). They are listed in the order P5b needs them.
 
-**U-1 — 0.21.0's concept state rule (D-303).** Planned upstream; D-1 accepted 2026-10-31, so it is
-unblocked, not yet implemented. It fixes the 0.20.0
-backfill defect and is the minimum version CodeRadar adopts.
+**U-1 — 0.21.0's concept state rule (D-303).** **Done: released in Macrame `v0.21.0`
+(2026-11-01).** It fixes the 0.20.0 backfill defect and is the minimum version CodeRadar adopts.
+One property of the shipped rule matters from P5b.5 on: for a pair with a recorded backfill, the
+recorded read answers *per instant* — a row whose `valid_from` is beyond the read instant is not
+state yet. In-order ingest (INV-10) and close-then-open (P5b.1) never mark a pair, so nothing before
+P5b.5 sees it (H-30).
 
 **U-2 — A lineage-resolved valid fold.** `reconstruct_as_of` takes no lineage, and `reconstruct_on`
 does not resolve concepts by lineage. CodeRadar needs "state of lineage L, valid at V, as believed
@@ -365,11 +376,21 @@ flush, and a resumed ingest re-runs the open half. If U-5 lands first, this phas
 **Proves it:** INV-15 holds on the migration fixture and on a scratch self-host run; the suite runs
 green against a local Macrame 0.20.0 build with the guard active.
 
-### P5b.2 — Adopt Macrame 0.21.0 (blocked by U-1)
+### P5b.2 — Adopt Macrame 0.21.0 (needs P5b.1; U-1 released 2026-11-01)
 
-Move the pin, resolve whatever API drift remains, rerun the full gate bundle and the scratch
-migration, and require `verify_concept_intervals` to report nothing. Not 0.20.0: its backfill
-defect is P5b.5's write.
+Move `macrame-db` to `0.21.0` and `libsql` to `0.10` in one change (`core_indexer/Cargo.toml:30,50`;
+the two must match, because `diagnostic_conn()` hands out Macrame's connections). No API drift is
+known: the one break (`Overlap.within_batch`) is unused here. Rerun the full gate bundle and the
+scratch migration, and require `verify_concept_intervals` to report nothing and `concept_disorder`
+to stay empty on an in-order ingest. Not 0.20.0: its backfill defect is P5b.5's write.
+
+**P5b.1 first, strictly.** The interval guard (0.19.2+) refuses today's open-then-open writes, so
+moving the pin before close-then-open breaks every second version of every concept (F2).
+
+**The ladder is one-way.** The first open by a 0.21.0 build upgrades a store to schema v24, and a
+0.19.1 build cannot open it again. The scratch stores do not matter; the frozen pre-migration store
+(Q-8) and any store a released 0.14.0 still reads must not be opened by a P5b.2 build. Copy first,
+or read the frozen store with a 0.14.0 build only (H-31).
 
 ### P5b.3a — Horizon and commit index (no dependency)
 
@@ -486,7 +507,7 @@ already require.
 | 2 | P5b.7 rename links | — | everything in order 2 |
 | 3 | P5b.6 branch names + generations | P5b.3a | P5d, P5b.2 |
 | 3 | P5d live tree | P5b.1 | P5b.2 |
-| 3 | P5b.2 adopt 0.21.0 | U-1 (D-1), P5b.1 | P5d |
+| 3 | P5b.2 adopt 0.21.0 | P5b.1 (U-1 released 2026-11-01) | P5d |
 | 4 | P5b.3 valid reads (trunk) | P5b.2 | — |
 | 5 | P5b.4 sha addressing | P5b.3 | P5b.5 |
 | 5 | P5b.5 out-of-order ingest | P5b.3 | P5b.4 |
@@ -494,16 +515,19 @@ already require.
 | 7 | P5c lineage fidelity | U-3, U-4 | — |
 | — | P9 | each phase it exposes | — |
 
-The critical path is upstream: U-1 gates the pin, U-2 gates branch reads, U-3 and U-4 gate P5c.
-U-4 is also what lets an ingested branch merge without losing entities on the trunk (F4, H-28), so
-it is requested next to U-1, not after U-2 (Q-15). Everything CodeRadar can do alone (P5b.0, P5b.1,
+The critical path is upstream: U-1 gated the pin and is released (0.21.0, 2026-11-01); U-2 gates
+branch reads, U-3 and U-4 gate P5c. U-4 is also what lets an ingested branch merge without losing
+entities on the trunk (F4, H-28), so it is the next request, ahead of U-2 (Q-15). Macrame records
+merge as its own decision under Doctrine III, so U-4 starts with that decision, not a design. Everything CodeRadar can do alone (P5b.0, P5b.1,
 P5b.3a, P5b.6, P5b.7, P5d, P6b, P8) comes first, so the
 upstream work never waits on CodeRadar and CodeRadar never idles on upstream.
 
 **Suggested releases.** 0.15.0: P6a, P6c, P5b.0, P5b.1, P5b.3a, P5b.6, and with them P5a's two
 commands at store format 1 (D-7 d) — the first release in which a git-filled store answers every
-past time. If 0.15.0 is cut before those three phases, it ships without the commands. 0.16.0: P5d and P8. 0.17.0:
-P5b.2–P5b.5 on 0.21.0. 0.18.0: P5c, when U-3 and U-4 exist.
+past time. If 0.15.0 is cut before those three phases, it ships without the commands.
+*(Revised 2026-11-01, 0.21.0 released.)* 0.16.0: P5b.2 (pin 0.21.0 + libSQL 0.10), P5d, P5b.7 and
+P8 — the release that may make a commit-time store the store of record (§8). 0.17.0: P5b.3 (trunk),
+P5b.4, P5b.5. Branch valid reads when U-2 exists; P5c when U-3 and U-4 exist.
 
 ---
 
@@ -526,6 +550,8 @@ Q-8's answers then applies (keep frozen, decided 2026-10-31) is unaffected.
 | H-27 | **The horizon is a `kv` row.** Lost, every past read falls back to the recorded arm and answers empty again | Rebuildable from the ledger (the first `commit:` row per lineage); `verify_history` reports a missing horizon on a git-filled store as an error, not a warning |
 | H-28 | **Merging an ingested branch before U-4.** Files the branch minted reach the trunk as bytes without entities; the trunk's symbol reads miss them | The ingest report lists them (`cross-lineage-id`) and the merge commit's summary counts them; a trunk read for such a path reports `minted_on: <lineage>` instead of answering absent; U-4 requested next to U-1 (Q-15) |
 | H-29 | **A rename git does not detect.** Below the similarity threshold, or a rename combined with a large edit, stays a delete plus an add, and annotations stay on the old id | Annotations on a closed id are listed by `annotations --orphaned`; a manual `link-rename old new` writes the same link row P5b.7 writes |
+| H-30 | **Per-instant answers for backfilled pairs (0.21.0's D-303).** Once P5b.5 writes out of order, a marked pair's recorded read at an instant before a row's `valid_from` does not see that row as state; a commit whose committer clock runs ahead of the ingest clock would not be state until real time reaches it | INV-11's nudge already keeps a commit's start at or after its lineage's latest start; P5b.5 additionally clamps a start beyond its own recorded instant and flags it `stamp_nudged` |
+| H-31 | **The v24 ladder is one-way.** A 0.21.0 build upgrades a store on first open; a 0.14.0 (pin 0.19.1) build then cannot read it | P5b.2 notes it; the frozen pre-migration store (Q-8) is read only by a 0.14.0 build or from a copy; the 0.16.0 release notes say it |
 | H-23 | **Valid-axis branch reads before U-2.** Answering a branch question from a trunk-only fold is F-6's failure in a new place | P5b.3 refuses branch reads on the valid axis, naming U-2 |
 | H-24 | **Lineage generations multiply.** Every rebase adds a lineage, and lineages are append-only | Generations are cheap rows; D-5's resolution keeps the name pointing at the newest; measure on a rebase-heavy fixture before P5c ships |
 | H-25 | **Clock-stamped annotations in a commit-time store.** A valid-axis read at a commit instant never sees an annotation written later, which is right, and is surprising | Document it in the read's rustdoc and QUICKREF; annotation reads take no `at` in v1 |
@@ -558,13 +584,17 @@ identically. All P5b.0 truth tests pass without `xfail`.
 - **Q-13 — Who files U-2..U-5.** One request per item in Macrame's `docs/`, or one combined
   "lineage fidelity" request for U-2..U-4? Recommendation: U-2 alone first, since P5b.3's branch
   reads need it soonest, then U-3 and U-4 together, since they share the fork model.
-  *(Revised 2026-10-31 with Q-15: U-4 now goes with U-1, ahead of U-2.)*
+  *(Revised 2026-10-31 with Q-15: U-4 now goes with U-1, ahead of U-2.)* *(2026-11-01: U-1
+  shipped in 0.21.0 from Macrame's own plan; U-2..U-5 are still unfiled, and U-4 is next.)*
 - **Q-15 — Merging an ingested branch before U-4** (F4, H-28). **a** request U-4 now, next to U-1,
   and until it lands accept the gap with the H-28 reporting · **b** an interim engine rule letting
   the trunk mint a branch-minted id under its own ownership, the branch's copy kept as history (also
   a Macrame change, barely cheaper than U-4) · **c** ingest no branch until U-4 exists (reverses
   D-6 c and blinds every branch read). Recommendation: **a**. On this repository, `dev` merging to
-  `main` is the first time it bites.
+  `main` is the first time it bites. *(2026-11-01:)* Macrame's Road to 1.0 (§15.4, §16) records
+  merge as "its own decision" because Doctrine III has no neutral superseder. For CodeRadar's case
+  there is one — git's merge commit says which content wins — so the U-4 request should propose
+  that the caller names the superseder (the merge commit), not the engine.
 - **Q-16 — Rename detection threshold** (P5b.7). git's default similarity is 50%. Lower finds
   more renames and links more wrong pairs; a wrong link is visible (`via_rename` names the commit
   and similarity) and correctable by a later link row. Recommendation: git's default, the similarity

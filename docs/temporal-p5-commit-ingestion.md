@@ -501,7 +501,7 @@ out passes every other test in this file.
 | ID | Decision | Status |
 |---|---|---|
 | DR-41 | Commit-driven ingestion: commit time in `valid_from`, append-only per lineage (P5a); retroactive correction upstream-gated (P5b) | **accepted** — Q-6 yes 2026-10-29 (`bf618e0`); P5a built on `dev` (`8cf8cbc`..`13315d8`), unreleased; production migration not run; P5b not started |
-| DR-43 | Valid-axis state fold in Macrame, on the Q-3 precedent: implement upstream, because F-6/INV-6 forbid a second fold in CodeRadar | **implemented upstream, not adopted** — Macrame 0.20.0 (D-291..D-294); CodeRadar pins 0.19.1; 0.20.0's backfill defect makes 0.21.0 the floor for P5b (§5 P5b) |
+| DR-43 | Valid-axis state fold in Macrame, on the Q-3 precedent: implement upstream, because F-6/INV-6 forbid a second fold in CodeRadar | **implemented upstream, not adopted** — Macrame 0.20.0 (D-291..D-294); CodeRadar pins 0.19.1; 0.20.0's backfill defect makes 0.21.0 the floor for P5b (§5 P5b). 0.21.0 released 2026-11-01 with D-303; adoption is P5b.2 in `temporal-p5b-and-beyond.md` |
 
 ---
 
