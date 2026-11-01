@@ -3663,6 +3663,12 @@ pub enum V2ConceptClass {
     /// what keeps them out of `V1Leftover` (which hard-fails the load)
     /// and out of `parse_v2_concept` (which has no arm for any of them).
     Spine,
+    /// P6a annotation or comment (`kind = 'annotation' | 'comment'`).
+    /// User data read ledger-direct by `annotations::versions_for`, never
+    /// projected into the graph. Without this arm they fell to
+    /// `V1Leftover`: the load refused, and the analyze fallback's v1
+    /// sweep retired every annotation in the store.
+    Note,
     /// Content that is not JSON or has no kind.
     Unreadable,
 }
@@ -3683,6 +3689,9 @@ pub fn classify_v2_concept(content: &str) -> V2ConceptClass {
         || kind == edge_type::COMMIT_KIND
     {
         return V2ConceptClass::Spine;
+    }
+    if kind == crate::annotations::ANNOTATION_KIND || kind == crate::annotations::COMMENT_KIND {
+        return V2ConceptClass::Note;
     }
     if V2_CANONICAL_KINDS.contains(&kind)
         && v.get("meta_version").and_then(|m| m.as_u64()) == Some(V2_META_VERSION)
@@ -4509,6 +4518,10 @@ mod concept_v2_tests {
             classify_v2_concept(field),
             V2ConceptClass::StandaloneField
         ));
+        for kind in ["annotation", "comment"] {
+            let note = format!(r#"{{"kind": "{kind}", "about": "a.py::f", "body": "- x\n"}}"#);
+            assert!(matches!(classify_v2_concept(&note), V2ConceptClass::Note));
+        }
         assert!(matches!(
             classify_v2_concept("not json"),
             V2ConceptClass::Unreadable

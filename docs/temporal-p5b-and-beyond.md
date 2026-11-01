@@ -73,8 +73,8 @@ recorded time, at the instant `fork()` runs. Git forks at a commit. The migratio
 trunk and then forks each branch, so every trunk row is recorded before the cutoff, and the branch
 ingest classifies the trunk's whole visible state as inherited. A file the trunk added after the
 merge-base therefore reads as present on the branch, and a file the trunk changed after the
-merge-base reads with the trunk's newer content wherever the branch never touched it. Read from the
-code, not yet shown by a test; P5b.0 writes that test first.
+merge-base reads with the trunk's newer content wherever the branch never touched it. *(Shown by
+test 2026-11-01, P5b.0: a file the trunk adds after the fork reads as present on the branch.)*
 
 **F4 — Merges cannot be represented.** A concept id belongs to the lineage that minted it. If a
 branch is ingested before it merges, which is the normal order once ingestion is live, every file
@@ -365,6 +365,17 @@ entities; an uncommitted edit is visible to a no-`at` read; an annotation on an 
 with that entity after its file is renamed. Mark each `xfail` with the phase that will flip it. These are the programme's
 acceptance gates. They also settle F3 by demonstration rather than by reading.
 
+*Done 2026-11-01:* `tests/test_p5b_truth.py`, six tests (F2 included: no concept holds two open
+intervals), each `xfail(strict=True)` naming its phase, so a landing phase fails the run until its
+marker comes off. Under `--runxfail` each fails for its stated reason: F1 reads an empty prefix; F2
+finds `a.py::module` open three times; F3 sees `d.py` on the branch; F4 reports
+`cross-lineage-id:feature`; F5 ends `ApplyIncomplete` on the INV-12 refusal; F6 lists no annotation
+on `new.py::foo`. Writing F6 found a P6a defect, fixed in the same change: the cold loader classed
+annotation and comment rows as v1 leftovers, so a store holding one refused to load. `build_graph`
+then fell back to `analyze`, whose v1 sweep retired every annotation on an index-now store; a
+commit-time store refuses that fallback and stopped loading. `classify_v2_concept` now skips them
+(`V2ConceptClass::Note`); `tests/test_annotations.py::TestColdReload` pins both stores.
+
 ### P5b.1 — Close-then-open writes, on today's pin (no dependency)
 
 Every concept writer closes before it opens (A-4, D-2): entity and module flushes, spine rows,
@@ -500,7 +511,7 @@ already require.
 
 | Order | Phase | Blocked by | Can run beside |
 |---|---|---|---|
-| 1 | P5b.0 truth tests | — | everything |
+| 1 | P5b.0 truth tests *(done 2026-11-01)* | — | everything |
 | 2 | P5b.1 close-then-open | — | P5b.3a, P6b, P8 |
 | 2 | P5b.3a horizon + commit index | — | P5b.1, P6b, P8 |
 | 2 | P6b, P8 | — | each other |

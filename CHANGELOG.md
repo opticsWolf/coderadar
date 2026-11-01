@@ -6,6 +6,12 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Temporal P5b.0: truth tests (`tests/test_p5b_truth.py`), one per finding F1–F6 of
+  `docs/temporal-p5b-and-beyond.md`, each `xfail(strict=True)` with the phase that flips it.
+  **Fix (P6a):** the cold loader classed annotation and comment rows as v1 leftovers, so a
+  store holding one refused to load; on an index-now store the `build_graph` fallback then ran
+  `analyze`, whose v1 sweep retired every annotation, and a commit-time store stopped loading.
+  They now classify as `V2ConceptClass::Note` and are skipped.
 - Temporal P5a (DR-41, **accepted — Q-6 yes (`bf618e0`); built on dev; production
   migration not run; Q-7, Q-8 answered, Q-9, Q-10 open; releases only once P5b.1, P5b.3a and
   P5b.6 land, at store format 1 — D-7 d in `docs/temporal-p5b-and-beyond.md`**):

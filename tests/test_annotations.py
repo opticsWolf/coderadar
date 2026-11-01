@@ -272,3 +272,36 @@ class TestInv13:
         ops.annotate("a.py::alpha", "- [ ] x\n")
         ops.comment("a.py::alpha", "y\n")
         assert _core.graph_stats() == before
+
+
+class TestColdReload:
+    """The cold loader skips annotation and comment rows. Until 2026-11-01
+    it counted them as v1 leftovers: the load refused, the build_graph
+    fallback ran analyze, and its v1 sweep retired every annotation (on a
+    git-filled store the fallback is refused, so the store stopped loading)."""
+
+    def test_index_now_reload_keeps_notes_current(self, project):
+        from coderadar import coldstart
+        ops.annotate("a.py::alpha", "- [ ] x\n")
+        ops.comment("a.py::alpha", "y\n")
+        coldstart.build_graph(str(project))
+        for listed in (ops.annotations_on("a.py::alpha"),
+                       ops.comments_on("a.py::alpha")):
+            assert [v["retired"] for v in listed["versions"]] == [False], listed
+
+    def test_git_filled_store_with_a_note_still_loads(self, tmp_path, monkeypatch):
+        import subprocess
+        from coderadar import coldstart
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "a.py").write_text(A, encoding="utf-8", newline="\n")
+        for args in (["init", "-q", "-b", "main", "."], ["add", "-A"],
+                     ["-c", "user.name=T", "-c", "user.email=t@t.t",
+                      "commit", "-qm", "c1"]):
+            subprocess.run(["git", *args], cwd=str(tmp_path), check=True,
+                           capture_output=True)
+        store = tmp_path / ".coderadar" / "store" / "coderadar.db"
+        ops.ingest_history(str(tmp_path), store_path=str(store))
+        coldstart.build_graph(str(tmp_path))
+        ops.annotate("a.py::alpha", "- [ ] x\n")
+        coldstart.build_graph(str(tmp_path))
+        assert ops.annotations_on("a.py::alpha")["count"] == 1
