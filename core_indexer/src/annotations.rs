@@ -1179,13 +1179,51 @@ pub fn retire(store: &crate::storage::CodeGraphStore, id: &str) -> Result<bool, 
     if retired {
         return Ok(false);
     }
-    let (concepts, _) = store
-        .retire_entities_at(
-            std::slice::from_ref(&id.to_string()),
-            &crate::storage::now_iso8601(),
-        )
+    // The annotations' own retire keeps the D-2a shape: the act re-asserts
+    // the row at its own start, closed at the clock (D-303's one-start law -
+    // "the version who wrote and the version who died are the same version").
+    // The storage layer's entity retire is the forward tombstone now (its
+    // live window must stay readable below the cut); annotations read the
+    // chain, whose whole history must stay one version per id, so the two
+    // laws diverge here on purpose.
+    let ts = crate::storage::now_iso8601();
+    let (_guard, conn) = store
+        .open_diagnostic_conn()
         .map_err(|e| AnnError::Store(format!("{e:?}")))?;
-    Ok(concepts == 1)
+    let row = crate::storage::runtime()
+        .block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT title, content, extra, valid_from, branch_id \
+                     FROM concepts WHERE id = ?1",
+                    libsql::params![id],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            rows.next().await.map_err(macrame::DbError::Engine)
+        })
+        .map_err(|e| AnnError::Store(format!("{e:?}")))?
+        .ok_or_else(|| AnnError::NotFound(id.to_string()))?;
+    let title: String = row.get(0).unwrap_or_default();
+    let content: String = row.get(1).unwrap_or_default();
+    let extra: String = row.get(2).unwrap_or_else(|_| "{}".to_string());
+    let valid_from: String = row.get(3).unwrap_or_else(|_| ts.clone());
+    let mint: Option<String> = row.get::<Option<String>>(4).unwrap_or(None);
+    let mut act = macrame::ConceptUpsert::new(id.to_string(), title)
+        .content(content)
+        .extra(extra)
+        .valid_from(valid_from)
+        .valid_to(ts.clone())
+        .retired(true);
+    if let Some(lineage) = mint.iter().find(|b| !b.is_empty()) {
+        let bid = macrame::prelude::BranchId::new(lineage)
+            .map_err(|e| AnnError::Store(format!("{e:?}")))?;
+        act = act.on_branch(bid);
+    }
+    let written = store
+        .upsert_concepts_bulk(std::slice::from_ref(&act))
+        .map_err(|e| AnnError::Store(format!("{e:?}")))?;
+    Ok(written == 1)
 }
 
 /// One stored version of one annotation/comment row.

@@ -1920,10 +1920,17 @@ impl CodeGraphStore {
     /// ledger forever, so `as_of` for any past instant returned a superset
     /// that only ever grew. Retirement is what makes the temporal claim true.
     ///
-    /// Bitemporally this is an assertion, not an erasure: the current row is
-    /// replaced by one carrying `valid_to = now` and `retired = 1`, while the
-    /// original row survives in the log, so `reconstruct` at an earlier
-    /// instant still sees the entity alive.
+    /// Bitemporally this is an assertion, not an erasure (macrame-db 0.22.0,
+    /// M6-g's two-read protocol): the act is the FORWARD tombstone — it speaks
+    /// `valid_from = ` the retirement instant (`"not believed from this row's
+    /// start on"` is Macrame's own `retired` reading, so a tombstone must
+    /// start where belief ends) and `supersede(true)`, whose one-write law
+    /// lets Macrame close the prior open belief at that instant and write
+    /// the tombstone in one transaction. The close's log row carries the
+    /// row's own text at `[start, tombstone_start)`, so a read below the cut
+    /// still finds the live window; nothing in the ledger is erased.
+    /// (A tombstone at the ROW'S OWN start would hide that entire window —
+    /// the shape the protocol red first.)
     ///
     /// Returns `(concepts_retired, edges_retired)`.
     /// Stamped twin (P5a.3, DR-41): the same retirement at an explicit
@@ -1940,9 +1947,8 @@ impl CodeGraphStore {
         let ts = valid_from.to_string();
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         runtime().block_on(async {
-            // Title, content and extra are carried over: the upsert overwrites
-            // these columns, so the retired row remains a record of the entity
-            // rather than a blank tombstone.
+            // Title, content and extra are carried over: the tombstone still
+            // records the entity rather than blanking it.
             let mut concepts: Vec<ConceptUpsert> = Vec::new();
             for id in entity_ids {
                 // P5a.4 (DR-41): the retire upsert carries the row's mint
@@ -1961,13 +1967,28 @@ impl CodeGraphStore {
                     .await
                     .map_err(macrame::DbError::Engine)?;
                 if let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                    // The forward tombstone: it starts at the retirement
+                    // instant and rides `supersede(true)` so Macrame's
+                    // one-write law closes the prior open belief at that
+                    // instant and lands the tombstone in one transaction.
+                    // The row's own start (the old act's `valid_from`) is
+                    // exactly what a retirement must NOT reuse: `retired`
+                    // reads "not believed from this row's start on", so a
+                    // tombstone at the row's own start would hide the live
+                    // window under it (M6-g's two-read protocol, red
+                    // first at `retire_keeps_the_trunk_s_live_window...`).
                     let mut upsert =
                         ConceptUpsert::new(id.clone(), row.get::<String>(0).unwrap_or_default())
                             .content(row.get::<String>(1).unwrap_or_default())
                             .extra(row.get::<String>(2).unwrap_or_else(|_| "{}".to_string()))
-                            .valid_from(row.get::<String>(3).unwrap_or_else(|_| ts.clone()))
+                            // Zero-width: a tombstone's interval holds no
+                            // instant, so D-291's partition never reads it
+                            // as an open interval a later re-add would
+                            // overlap, and `retired` still hides it.
+                            .valid_from(ts.clone())
                             .valid_to(ts.clone())
-                            .retired(true);
+                            .retired(true)
+                            .supersede(true);
                     let mint: Option<String> = row.get(4).ok().flatten();
                     if let Some(lineage) = mint.filter(|b| !b.is_empty()) {
                         upsert = upsert.on_branch(macrame::BranchId::new(&lineage)?);
@@ -2186,9 +2207,12 @@ impl CodeGraphStore {
                     // (retired = 0 keeps a re-run from re-opening a row
                     // that is already retired; the projection's updater
                     // covers the rest.) The row's own interval decides:
-                    // open -> close it at its own start (D-2a); closed ->
-                    // fall through to the resolved read (history the walk
-                    // disposes of).
+                    // open -> the forward tombstone at the retirement
+                    // instant with supersede(true) (the trunk arm's law -
+                    // the row's own start would hide its live window from
+                    // this row's start on); closed -> SKIPPED (it is
+                    // history; skipping, the id rides past it - it does
+                    // NOT fall through to the resolved read).
                     let mut rows = conn
                         .query(
                             "SELECT title, content, extra, valid_from, valid_to FROM concepts \
@@ -2198,6 +2222,16 @@ impl CodeGraphStore {
                         .await
                         .map_err(macrame::DbError::Engine)?;
                     if let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                        // Only an OPEN row retires; a closed one is history,
+                        // skipped (the rewind below decides the id at large).
+                        // The OPEN act is the forward tombstone (the trunk
+                        // arm's law): it starts at the retirement instant,
+                        // zero-width, and rides `supersede(true)` so Macrame
+                        // closes the open belief at that instant and lands
+                        // the tombstone in one write — the row's own start
+                        // would hide its live window from this row's start
+                        // on, which is how `retired` reads (M6-g's two-read
+                        // protocol, red first).
                         if is_open_end(&row.get::<String>(4).unwrap_or_default()) {
                             acts.push(
                                 ConceptUpsert::new(
@@ -2206,9 +2240,10 @@ impl CodeGraphStore {
                                 )
                                 .content(row.get::<String>(1).unwrap_or_default())
                                 .extra(row.get::<String>(2).unwrap_or_else(|_| "{}".to_string()))
-                                .valid_from(row.get::<String>(3).unwrap_or_else(|_| ts.clone()))
+                                .valid_from(ts.clone())
                                 .valid_to(ts.clone())
                                 .retired(true)
+                                .supersede(true)
                                 .on_branch(bid.clone()),
                             );
                         }
@@ -7483,5 +7518,377 @@ mod stamped_write_tests {
             store.mint_lineage("n.py::module").unwrap().as_deref(),
             Some("feat")
         );
+    }
+
+    /// M6-g follow-up (the review's unconfirmed item, two-read protocol):
+    /// the retirement act re-asserts the row at the row's own start with
+    /// `retired = 1` and `valid_to = ts`. Read as Macrame's doc reads
+    /// `retired` — "not believed from this row's start on" — that shape
+    /// hides the row's whole live window, not only the time after the
+    /// retirement instant. The protocol: read at a mid instant before the
+    /// retire, retire, read at the same mid instant again. The same mid
+    /// instant must stay believed on both lineages; only instants from the
+    /// retirement stamp onward go absent. Stamps run through a `FakeClock`
+    /// at the commit-stamp times so `recorded_at` lands where a commit-time
+    /// store lands it (recorded = the commit's stamps).
+    /// M6-g follow-up shadow rails: both halves share one opener whose
+    /// fake clock sits on the first commit's stamps.
+    fn shared_open(
+        secs: (u64, u64, u64, u64, u64),
+        name: &str,
+    ) -> (
+        tempfile::TempDir,
+        CodeGraphStore,
+        std::sync::Arc<macrame::prelude::FakeClock>,
+    ) {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let fake = std::sync::Arc::new(macrame::prelude::FakeClock::new(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(secs.0),
+        ));
+        let clock: std::sync::Arc<dyn macrame::prelude::Clock> = fake.clone();
+        let db = runtime()
+            .block_on(macrame::Database::open_with_clock(
+                dir.path().join(name),
+                None,
+                clock,
+            ))
+            .unwrap();
+        (dir, CodeGraphStore { db }, fake)
+    }
+
+    #[test]
+    fn retire_keeps_the_trunk_s_live_window_readable_below_the_cut() {
+        // 2026-01-01, 2026-01-02, 2026-01-15, 2026-02-01, 2026-02-15 (UTC).
+        // 2026-01-01, 2026-01-02, 2026-01-15, 2026-02-01, 2026-02-15 (UTC).
+        let secs = (
+            1_767_225_600u64,
+            1_767_312_000u64,
+            1_768_320_000u64,
+            1_769_904_000u64,
+            1_771_113_600u64,
+        );
+        let (_dir, store, fake) = shared_open(secs, "retire-window.db");
+        let (t01, _tw, tmid, t02, tpost) = (
+            "2026-01-01T00:00:00.000000Z",
+            "2026-01-02T00:00:00.000000Z",
+            "2026-01-15T00:00:00.000000Z",
+            "2026-02-01T00:00:00.000000Z",
+            "2026-02-15T00:00:00.000000Z",
+        );
+        let content = "def g():
+    return 1
+";
+        store
+            .upsert_concepts_bulk(&[ConceptUpsert::new("c.py::g", "c.py::g")
+                .content(
+                    "def g():
+    return 1
+",
+                )
+                .valid_from(t01)
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)])
+            .unwrap();
+        assert!(
+            store
+                .reconstruct_on(tmid, "main")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "sanity: the entity is believed at {tmid} before the retire"
+        );
+        assert!(
+            walk_holds(&store, "c.py::g", tmid, "main"),
+            "sanity (walk): the entity holds at {tmid} before the retire"
+        );
+        assert!(
+            runtime()
+                .block_on(
+                    store
+                        .db
+                        .reconstruct_as_of(macrame::temporal::AsOf::valid_at(tmid))
+                )
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "sanity (valid fold): the entity holds at {tmid} before the retire"
+        );
+        // The commit clock rides to the retirement's stamp before the retire.
+        fake.advance(std::time::Duration::from_secs(secs.3 - secs.0));
+        let (retired_concepts, edges) = store
+            .retire_entities_at(&["c.py::g".to_string()], t02)
+            .unwrap();
+        assert_eq!(retired_concepts, 1);
+        assert_eq!(edges, 0, "no edges in this fixture");
+        dump_rows(&store, "c.py::g", "TRUNK-after-retire");
+        assert!(
+            store.reconstruct_on(tmid, "main").unwrap().concepts.contains_key("c.py::g"),
+            "TRUNK_FOLDER: the live window [t01, t02) must survive the retire at {t02};              the mid read at {tmid} lost it"
+        );
+        assert!(
+            runtime()
+                .block_on(store.db.reconstruct_as_of(macrame::temporal::AsOf::valid_at(tmid)))
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "TRUNK_VALID_FOLD: the live window [t01, t02) must survive the retire;              the valid-axis fold's mid read at {tmid} lost it"
+        );
+        assert!(
+            !runtime()
+                .block_on(
+                    store
+                        .db
+                        .reconstruct_as_of(macrame::temporal::AsOf::valid_at(tpost))
+                )
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "TRUNK_VALID_FOLD: the valid-axis fold must not hold the entity after {tpost}"
+        );
+        // The walk's legacy row per id (overlay unengaged on the trunk, D-214's
+        // one row per id) reads the tombstone only - Macrame's declared
+        // representation. The honest past reads below the cut are the two
+        // folds (the recorded fold and the valid-axis fold), which the pins
+        // beside this assert cover; CodeRadar's production past reads
+        // (`Snapshot`/`as_of`/`source_refs_at`) are the folds.
+        assert!(
+            !walk_holds(&store, "c.py::g", tmid, "main"),
+            "THE_WALK_DECLARED: a retired mount row is invisible below the cut"
+        );
+        assert!(
+            !walk_holds(&store, "c.py::g", tpost, "main"),
+            "TRUNK_WALK: the walk must not still hold the entity after {tpost}"
+        );
+        assert!(
+            !store
+                .reconstruct_on(tpost, "main")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "TRUNK: the entity is gone after {tpost} > {t02}"
+        );
+        // D-291's re-add law: a later write follows the tombstone's death.
+        // The tombstone here starts at the retirement instant, so the
+        // partition must not read it as an open interval a later re-add
+        // would overlap.
+        let t03 = "2026-03-01T00:00:00.000000Z";
+        store
+            .upsert_concepts_bulk(&[ConceptUpsert::new("c.py::g", "c.py::g")
+                .content(content)
+                .valid_from(t03)
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)])
+            .unwrap();
+        assert!(
+            store
+                .reconstruct_on(t03, "main")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "the re-add at {t03} is believed"
+        );
+        assert!(
+            store
+                .reconstruct_on(tpost, "main")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "the re-add resurrects the entity from {t03} onward, not at {tpost}"
+        );
+        assert!(
+            walk_holds(&store, "c.py::g", t03, "main"),
+            "the walk holds the re-added entity at {t03}"
+        );
+        assert!(
+            !walk_holds(&store, "c.py::g", tmid, "main"),
+            "THE_WALK_DECLARED: the re-added row does not resurrect the earlier window's walk view"
+        );
+    }
+
+    #[test]
+    fn retire_keeps_the_branch_s_live_window_readable_below_the_cut() {
+        // 2026-01-01, 2026-01-02, 2026-01-15, 2026-02-01, 2026-02-15 (UTC).
+        // 2026-01-01, 2026-01-02, 2026-01-15, 2026-02-01, 2026-02-15 (UTC).
+        let secs = (
+            1_767_225_600u64,
+            1_767_312_000u64,
+            1_768_320_000u64,
+            1_769_904_000u64,
+            1_771_113_600u64,
+        );
+        let (_dir, store, fake) = shared_open(secs, "retire-window-branch.db");
+        let (t01, tw, tmid, t02, tpost) = (
+            "2026-01-01T00:00:00.000000Z",
+            "2026-01-02T00:00:00.000000Z",
+            "2026-01-15T00:00:00.000000Z",
+            "2026-02-01T00:00:00.000000Z",
+            "2026-02-15T00:00:00.000000Z",
+        );
+        let content = "def g():
+    return 1
+";
+        store
+            .upsert_concepts_bulk(&[ConceptUpsert::new("c.py::g", "c.py::g")
+                .content(content)
+                .valid_from(t01)
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)])
+            .unwrap();
+        // The commit clock rides to the branch write's stamp: commit-time
+        // stores record at the commit.
+        fake.advance(std::time::Duration::from_secs(secs.1 - secs.0));
+        store.fork_branch("feature", "main").unwrap();
+        // D-315-era branch write: an own version at the branch's own stamps
+        // (the takeover marker rides like decide_acts draws it).
+        store
+            .upsert_concepts_bulk(&[ConceptUpsert::new("c.py::g", "c.py::g")
+                .content(content)
+                .valid_from(tw)
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)
+                .supersede(true)
+                .on_branch(macrame::BranchId::new("feature").unwrap())])
+            .unwrap();
+        assert!(
+            store
+                .reconstruct_on(tmid, "feature")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "sanity: the branch believes the entity at {tmid} before the retire"
+        );
+        assert!(
+            walk_holds(&store, "c.py::g", tmid, "feature"),
+            "sanity (walk): the branch holds the entity at {tmid} before the retire"
+        );
+        // The commit clock rides to the retirement's stamp before the retire.
+        fake.advance(std::time::Duration::from_secs(secs.3 - secs.1));
+        let (asked, written) = store
+            .retire_entities_on_branch_at(&["c.py::g".to_string()], "feature", t02)
+            .unwrap();
+        assert_eq!(asked, 1);
+        assert_eq!(written, 1, "the retirement was written, not refused");
+        dump_rows(&store, "c.py::g", "BRANCH-after-retire");
+        assert!(
+            store.reconstruct_on(tmid, "feature").unwrap().concepts.contains_key("c.py::g"),
+            "BRANCH_FOLDER: the live window [tw, t02) must survive the retire at {t02};              the mid read at {tmid} lost it"
+        );
+        assert!(
+            walk_holds(&store, "c.py::g", tmid, "feature"),
+            "BRANCH_WALK: the live window [tw, t02) must survive the retire at {t02};              the walk's mid read at {tmid} lost it"
+        );
+        assert!(
+            !walk_holds(&store, "c.py::g", tpost, "feature"),
+            "BRANCH_WALK: the walk must not still hold the entity after {tpost}"
+        );
+        assert!(
+            !store
+                .reconstruct_on(tpost, "feature")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "BRANCH: the entity is gone after {tpost} > {t02}"
+        );
+    }
+
+    /// The M6b walk (the valid-axis read `decide_acts` and the real-reader
+    /// oracle use): which lineage holds an open belief for the id at one
+    /// valid instant. Presence is the answer; the row shape is the proof.
+    fn walk_holds(store: &CodeGraphStore, id: &str, ts: &str, branch: &str) -> bool {
+        !runtime()
+            .block_on(
+                store.db.concepts_by_id(
+                    &[id.to_string()],
+                    macrame::prelude::ReadPlan::new()
+                        .on(macrame::BranchId::new(branch).unwrap())
+                        .valid_at(ts),
+                ),
+            )
+            .unwrap()
+            .is_empty()
+    }
+
+    /// Dump the raw rows the retire produced, meal by meal: the projection,
+    /// the overlay's versions and cuts, and the log payloads that fold.
+    fn dump_rows(store: &CodeGraphStore, id: &str, leg: &str) {
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let mut concept_rows = runtime()
+            .block_on(
+                conn.query(
+                    "SELECT branch_id, valid_from, valid_to, retired, recorded_at                      FROM concepts WHERE id = ?1",
+                    [id],
+                ),
+            )
+            .unwrap();
+        runtime().block_on(async {
+            while let Some(row) = concept_rows.next().await.unwrap() {
+                println!(
+                    "[{leg}] concepts: {} | {} | {} | {} | {}",
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                    row.get::<i64>(3).unwrap_or(i64::MIN),
+                    row.get::<String>(4).unwrap_or_default(),
+                );
+            }
+        });
+        let mut versions = runtime()
+            .block_on(
+                conn.query(
+                    "SELECT branch_id, valid_from, valid_to, recorded_at                      FROM concept_versions WHERE id = ?1 ORDER BY branch_id, valid_from",
+                    [id],
+                ),
+            )
+            .unwrap();
+        runtime().block_on(async {
+            while let Some(row) = versions.next().await.unwrap() {
+                println!(
+                    "[{leg}] versions: {} | {} | {} | {}",
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                    row.get::<String>(3).unwrap_or_default(),
+                );
+            }
+        });
+        let mut cuts = runtime()
+            .block_on(
+                conn.query(
+                    "SELECT branch_id, cut_at, recorded_at FROM concept_cuts                      WHERE id = ?1 ORDER BY branch_id, cut_at",
+                    [id],
+                ),
+            )
+            .unwrap();
+        runtime().block_on(async {
+            while let Some(row) = cuts.next().await.unwrap() {
+                println!(
+                    "[{leg}] cuts: {} | {} | {}",
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                );
+            }
+        });
+        let mut logs = runtime()
+            .block_on(
+                conn.query(
+                    "SELECT seq_id, recorded_at, operation, branch_id, payload                      FROM transaction_log WHERE entity_id = ?1 AND table_name = 'concepts'                      ORDER BY seq_id",
+                    [id],
+                ),
+            )
+            .unwrap();
+        runtime().block_on(async {
+            while let Some(row) = logs.next().await.unwrap() {
+                println!(
+                    "[{leg}] log#{} {} {} {} {}",
+                    row.get::<i64>(0).unwrap_or(0),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                    row.get::<String>(3).unwrap_or_default(),
+                    row.get::<String>(4).unwrap_or_default(),
+                );
+            }
+        });
     }
 }
