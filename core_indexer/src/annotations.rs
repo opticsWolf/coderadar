@@ -1252,7 +1252,14 @@ fn versions_of(
                     Some(h) => h,
                     None => continue,
                 };
+                // macrame-db 0.22.0 (U-5): a supersession writes TWO log
+                // rows - the close of the previous version and the new row -
+                // both at one stamp (D-312). A version is one start, not one
+                // log row: within one start, the row written last carries the
+                // belief (D-291's rule), so the scan folds per start, keeping
+                // the newest row of each start (this scan is recorded-DESC).
                 let mut versions = Vec::new();
+                let mut seen_starts = std::collections::HashSet::new();
                 let mut log_rows = conn
                     .query(
                         "SELECT payload FROM transaction_log \
@@ -1269,6 +1276,12 @@ fn versions_of(
                             "annotation log payload for {id:?} does not parse: {e}"
                         )))
                     })?;
+                    let start = v.get("valid_from").and_then(|sk| sk.as_str());
+                    if let Some(start) = start {
+                        if !seen_starts.insert(start.to_string()) {
+                            continue;
+                        }
+                    }
                     let content: serde_json::Value = serde_json::from_str(
                         v.get("content").and_then(|c| c.as_str()).unwrap_or("{}"),
                     )
@@ -1662,7 +1675,12 @@ mod store_tests {
         assert!(retire(&store, &c.id).unwrap());
         assert!(!retire(&store, &c.id).unwrap()); // idempotent no-op
         let chain = history(&store, &c.id).unwrap();
-        assert_eq!(chain.len(), 2);
+        // The retirement re-asserted the version's own start (D-2a): within
+        // one start the row written last carries the belief (D-291's rule,
+        // macrame-db 0.22.0's fold), so the chain keeps ONE version - the
+        // version who wrote and the version who died are the same version -
+        // and the entry shows it retired and not current.
+        assert_eq!(chain.len(), 1);
         assert!(chain[0].retired);
         assert!(!chain[0].current);
         assert!(matches!(
@@ -1674,7 +1692,7 @@ mod store_tests {
             versions_for(&store, ANNOTATION_KIND, "a.py::g")
                 .unwrap()
                 .len(),
-            2
+            1
         );
     }
 
