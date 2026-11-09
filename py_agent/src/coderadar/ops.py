@@ -1709,16 +1709,18 @@ def ingest_history(repo: str | Path, branch: str = "main",
     (P5a.3/P5a.4, DR-41).
 
     Per commit, in topological order: blob puts for the changed files,
-    one stamped flush (entity concepts + spine + the commit concept),
-    scoped edge persistence on the trunk (branches persist no edges —
-    cross-lineage relations are deferred, not smuggled), and a
-    lineage-scoped sweep — then the ``kv`` cursor advance that makes an
+    one stamped flush (entity concepts + entity cuts + spine + the commit
+    concept), scoped edge persistence on the trunk (branches persist no
+    edges - cross-lineage relations are deferred, not smuggled), and a
+    lineage-scoped sweep, then the ``kv`` cursor advance that makes an
     interrupted ingest resumable. Returns the report as the contract::
     ``{"branch", "lineage", "fork_point", "from", "head",
     "dry_run", "commits_ingested", "commits_skipped":
     [{"sha", "reason"}], "files_parsed",
     "files_failed": [{"sha", "path", "reason"}], "files_excluded",
     "blobs_stored", "blobs_deduped", "stamps_nudged",
+    "adoptions": [{"sha", "path", "reason"}],
+    "commits_adopted_concepts", "inherited_cuts",
     "ghost_commits", "elapsed_secs"}``. ``fork_point`` is the branch
     lineage's fork commit (``None`` on the trunk).
 
@@ -1740,6 +1742,15 @@ def ingest_history(repo: str | Path, branch: str = "main",
     branch run starts at the fork, never mid-branch). ``dry_run``
     plans without writing anything, including no store creation and no
     fork.
+
+    ``adoptions`` (macrame-db 0.22.0, D-315): a merge file whose
+    module id was minted on the merging lineage is an ADOPTED first
+    version - the trunk mints its own from the merge's bytes,
+    auditable here instead of a failure; ``commits_adopted_concepts``
+    counts the ids so minted, and ``inherited_cuts`` counts the
+    branch's own module cuts of inherited files it deleted
+    (entities retire in the sweep; only the module cut rides the
+    commit's bulk).
 
     No MCP tool in the first release: a long, writing, migration-grade
     op an agent must not call without knowing that.

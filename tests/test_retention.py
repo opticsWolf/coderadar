@@ -49,6 +49,43 @@ def _store_files(root: Path) -> tuple[Path, Path]:
     return hot, cold
 
 
+def _seed_cold(hot: Path, cold: Path, sha: str, size: int, bytes_: bytes,
+               put_at: str) -> None:
+    """macrame-db 0.22.0 (D-299/D-312): the archive keeps the close rows
+    (a newer row of the SAME valid_from is what makes a row archivable);
+    a superseded blob's bytes stay named by the close row and never move
+    cold through ordinary writes. The cold-fiction stage: move the row
+    hot→cold exactly what the 0.19 flow's archive did - the D-281 read
+    seam (cold fallback, ContentUnavailable) is what these tests pin."""
+    c = sqlite3.connect(str(cold))
+    try:
+        c.execute(
+            "INSERT OR REPLACE INTO blobs (sha256, size, bytes, put_at)"
+            " VALUES (?, ?, ?, ?)", (sha, size, bytes_, put_at))
+        c.commit()
+    finally:
+        c.close()
+    c = sqlite3.connect(str(hot))
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS macrame_archive_session (x)")
+        c.execute("DELETE FROM blobs WHERE sha256 = ?", (sha,))
+        c.execute("DROP TABLE macrame_archive_session")
+        c.commit()
+        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        c.close()
+
+
+def _blob_row(hot: Path, sha: str):
+    c = sqlite3.connect(str(hot))
+    try:
+        return c.execute(
+            "SELECT size, bytes, put_at FROM blobs WHERE sha256 = ?",
+            (sha,)).fetchone()
+    finally:
+        c.close()
+
+
 def _checkpoint(hot: Path) -> None:
     # The store is WAL-mode: a main-file copy without its -wal misses
     # un-checkpointed rows. The backup procedure checkpoints first, so
@@ -96,7 +133,12 @@ class TestArchive:
                                "blobs_archived", "blobs_restored",
                                "blob_scan_bytes", "cutoff"}
         assert report["cutoff"] == FUTURE
-        assert report["blobs_archived"] >= 1, "a.py V1 bytes must go cold"
+        # macrame-db 0.22.0 (D-299/D-312): the close rows stay hot, so the
+        # superseded bytes stay named and the archive moves none. The
+        # D-281 cold tier is exercised by _seed_cold in the cold-loss and
+        # backup stories below.
+        assert report["blobs_archived"] == 0
+        assert report["log_entries_archived"] >= 1, "the log rows still move"
 
     def test_cold_yet_readable(self, generations):
         g, t0, t1, digests = generations
@@ -123,13 +165,14 @@ class TestArchive:
 
     def test_graph_archive_method(self, generations):
         g, _t0, _t1, _digests = generations
-        assert g.archive(FUTURE)["blobs_archived"] >= 1
+        # 0.22.0's same-valid-from keep: nothing superseded leaves hot.
+        assert g.archive(FUTURE)["blobs_archived"] == 0
 
     def test_cutoff_from_toml(self, generations):
         (Path.cwd() / ".coderadar.toml").write_text(
             "[retention]\narchive_after_days = 0\n", encoding="utf-8")
         report = ops.archive()
-        assert report["blobs_archived"] >= 1
+        assert report["blobs_archived"] == 0  # 0.22.0's same-start keep
 
     def test_no_cutoff_is_invalid_request(self, generations):
         with pytest.raises(ops.InvalidRequest, match="no archive cutoff"):
@@ -152,17 +195,21 @@ class TestColdLoss:
         # file is trigger-free by macrame design; hot deletes stay guarded).
         g, t0, _t1, digests = generations
         ops.archive(FUTURE)
-        _hot, cold = _store_files(Path.cwd())
+        _hot, _cold = _store_files(Path.cwd())
+        hot, cold = _hot, _cold
         a_v1, _ = digests[("a.py::alpha", "v1")]
+        row = _blob_row(hot, a_v1)
+        assert row is not None, "the 0.22 keep keeps the bytes hot"
+        _seed_cold(hot, cold, a_v1, row[0], row[1], row[2])
+        # Ledger still answers (hot+cold history)…
+        assert g.as_of(t0).find("a.py::alpha") is not None
+        # …but the bytes are honestly unavailable, naming the digest.
         c = sqlite3.connect(str(cold))
         try:
             c.execute("DELETE FROM blobs WHERE sha256 = ?", (a_v1,))
             c.commit()
         finally:
             c.close()
-        # Ledger still answers (hot+cold history)…
-        assert g.as_of(t0).find("a.py::alpha") is not None
-        # …but the bytes are honestly unavailable, naming the digest.
         with pytest.raises(ops.ContentUnavailable, match=a_v1):
             g.as_of(t0).read_bytes("a.py::alpha")
         # The module (whole-file) path fails the same way, not silently.
@@ -196,7 +243,11 @@ class TestBackup:
         # never a silent present-tense answer.
         _, t0, t1, digests = generations
         ops.archive(FUTURE)
-        hot, _cold = _store_files(Path.cwd())
+        hot, cold = _store_files(Path.cwd())
+        a_v1, _ = digests[("a.py::alpha", "v1")]
+        row = _blob_row(hot, a_v1)
+        _seed_cold(hot, cold, a_v1, row[0], row[1], row[2])
+        cold.unlink()
         _checkpoint(hot)
         lonely = tmp_path / "lonely"
         lonely.mkdir()
@@ -212,7 +263,8 @@ class TestBackup:
         # A cold file from before 0.19 has no `blobs` table: the reader
         # must treat that as absent. Craft one (valid sqlite, no blobs).
         g, _t0, t1, digests = generations
-        _hot, cold = _store_files(Path.cwd())
+        _hot, _cold = _store_files(Path.cwd())
+        hot, cold = _hot, _cold
         assert not cold.exists()
         c = sqlite3.connect(str(cold))
         try:

@@ -123,10 +123,9 @@ class TestF1CommitTimesAreQueryable:
 
 
 class TestF2OneOpenIntervalPerConcept:
-    @pytest.mark.xfail(strict=True, reason=(
-        "F2: every writer opens a new start with valid_to = TS_OPEN and never "
-        "closes the previous one, so a file changed in n commits holds n open "
-        "intervals. Flips in P5b.1 (close-then-open)."))
+    # Flipped in P5b.1/M6-g (macrame-db 0.22.0, D-312): the one-write
+    # supersession closes the previous interval, so the doubled-open
+    # shape is impossible.
     def test_no_concept_holds_two_open_intervals(self, tmp_path):
         repo = _three_commits(tmp_path)
         _ingest(repo)
@@ -178,10 +177,9 @@ class TestF3BranchSeesItsMergeBaseOnly:
 
 
 class TestF4MergeBringsBranchFiles:
-    @pytest.mark.xfail(strict=True, reason=(
-        "F4: a branch ingested before it merges mints its files' ids on the "
-        "branch, and the trunk may not mint them (D-225), so the merge lands "
-        "bytes but no entities on main (cross-lineage-id). Flips in P5c (U-4)."))
+    # Flipped in M6-g (macrame-db 0.22.0, D-315): the merge's branch-born
+    # ids are adoptions - the trunk mints its OWN first versions, and the
+    # entities are the trunk's.
     def test_trunk_holds_the_merged_files_entities(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
         _commit(repo, "c1", "2026-01-01T10:00:00+00:00", {"a.py": "x = 1\n"})

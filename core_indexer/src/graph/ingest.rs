@@ -105,6 +105,12 @@ pub struct IngestReport {
     pub commits_skipped: Vec<SkippedCommit>,
     pub files_parsed: usize,
     pub files_failed: Vec<FailedFile>,
+    /// Files the run adopted under D-315 (a first version minted on a
+    /// foreign lineage; M6-g). The failure alleys' shape so the audit
+    /// reads beside them, one entry per adopted file.
+    pub adoptions: Vec<FailedFile>,
+    pub commits_adopted_concepts: usize,
+    pub inherited_cuts: usize,
     pub files_excluded: usize,
     pub blobs_stored: usize,
     pub blobs_deduped: usize,
@@ -276,6 +282,9 @@ pub fn ingest_history(
         commits_skipped: Vec::new(),
         files_parsed: 0,
         files_failed: Vec::new(),
+        adoptions: Vec::new(),
+        commits_adopted_concepts: 0,
+        inherited_cuts: 0,
         files_excluded: 0,
         blobs_stored: 0,
         blobs_deduped: 0,
@@ -485,13 +494,16 @@ pub fn ingest_history(
         // blobs at worst — never a live digest pointing at absent bytes.
         let mut digests = SourceBlobDigests::new();
         let mut commit_failed_files: Vec<FailedFile> = Vec::new();
-        // P5a.4: files whose module id was minted on another lineage
-        // (branch-born, brought in by a merge). Bytes and spine land;
-        // entities stay on the mint lineage (D-225 refuses the restate,
-        // D-214 names the overlay that would allow it). Auditable in
-        // `files_failed`, but NOT sweep-gating: the file has no trunk
-        // rows, so the sweep has nothing it could wrongly retire.
-        let mut cross_lineage: Vec<FailedFile> = Vec::new();
+        // P5a.4, superseded by D-315 (macrame-db 0.22.0, M6-g): the old
+        // `cross-lineage-id` skip is an adoption path now. Files whose
+        // module id was minted on a lineage this one cannot see (a
+        // branch-born id brought in by a merge) mint entity concepts as
+        // ordinary first versions — nothing copied from the minting
+        // lineage, nothing closed, cut or superseded, the id's provenance
+        // row unmoved — and the write joins the commit's own bulk at the
+        // commit's stamps. A hard refusal still audits in
+        // `files_failed`, and NOT sweep-gating carries over (the write
+        // joins the lineage's own set below as it lands).
         let mut parsed_units: Vec<(
             String,
             crate::types::Language,
@@ -540,11 +552,12 @@ pub fn ingest_history(
                     eprintln!("[ingest] blob put failed for {canonical_path}: {e:?} — continuing");
                 }
             }
-            // P5a.4 (D-225 backstop position): the mint-lineage check.
-            // A foreign-minted module id refuses the upsert at the
-            // trigger; skipping here keeps the rest of the commit's flush
-            // intact instead of aborting the whole bulk. A failed check
-            // degrades to proceeding (the trigger stays loud if it must).
+            // macrame-db 0.22.0 (D-315, M6-g item 1): a module id minted
+            // on a foreign lineage (branch-born, brought in by a merge)
+            // is an adoption — the trunk mints its OWN first version from
+            // this commit's own bytes, and the adoption is auditable in
+            // the report rather than a skip. Nothing is copied and the
+            // id's provenance row stays where D-214 put it.
             let foreign = graph
                 .store
                 .as_ref()
@@ -555,13 +568,12 @@ pub fn ingest_history(
                     None
                 })
                 .filter(|minted| minted != lineage);
-            if let Some(minted) = foreign {
-                cross_lineage.push(FailedFile {
+            if foreign.is_some() {
+                report.adoptions.push(FailedFile {
                     sha: sha.clone(),
-                    path: canonical_path,
-                    reason: format!("cross-lineage-id:{minted}"),
+                    path: canonical_path.clone(),
+                    reason: "adopted-first-version".to_string(),
                 });
-                continue;
             }
             // Extraction from the same bytes (P5-D9: bytes land even when
             // the file no longer parses — historical commits do that).
@@ -676,8 +688,8 @@ pub fn ingest_history(
         // one commit back — diffs touch disjoint id sets.
         let mut projection = (*graph.snapshot()).clone();
         for (canonical_path, lang, units) in &parsed_units {
-            let (_, _, retirement_error) =
-                graph.apply_diff_update(&mut projection, units, canonical_path, lang, &stamp);
+            let (_, _, _, retirement_error) =
+                graph.apply_diff_update(&mut projection, units, canonical_path, lang, &stamp, true);
             if let Some(error) = retirement_error {
                 eprintln!("[ingest] retire-after-diff failed for {canonical_path}: {error}");
             }
@@ -804,10 +816,6 @@ pub fn ingest_history(
             }
         }
         report.files_failed.extend(commit_failed_files);
-        // P5a.4: cross-lineage skips are auditable but never sweep-gating
-        // (there are no trunk rows to protect — the entities live on the
-        // mint lineage).
-        report.files_failed.extend(cross_lineage);
 
         // The cursor advances per commit (H-20): an interrupted ingest
         // resumes after the last completed commit, never inside one.
@@ -839,15 +847,20 @@ pub fn ingest_history(
 ///
 /// What each changed file becomes depends on who minted its module id:
 /// trunk-inherited files diverge through `write_branch_content_at`
-/// (pointer turnover, bytes only — the entities stay trunk rows the
-/// branch reads through fallback); files the branch itself minted
-/// (branch-born, or re-changed after minting) re-mint entity concepts
-/// on the lineage like the trunk does; files no lineage holds are
-/// minted new, unless a sibling lineage holds the id (then bytes land
-/// and the concepts are skipped with `cross-lineage-id` — D-225 refuses
-/// the write, D-214 names the overlay that would allow it). Deletions of
-/// inherited files mint tombstones (absence, not trunk fallback);
-/// deletions of branch-minted files retire through the sweep.
+/// (since macrame-db 0.22.0 / schema v26, the entity arm: the branch
+/// writes its own TAKEOVER of the entities with `supersede(true)` — the
+/// cut + own version at one stamp on the branch's own lineage, U-5's
+/// one-write supersession, and the trunk row never moves); files the
+/// branch itself minted (branch-born, or re-changed after minting)
+/// re-mint entity concepts on the lineage like the trunk does; files no
+/// lineage holds are minted new, and a sibling lineage holding the id is
+/// an ADOPTION now (macrame-db 0.22.0, D-315, U-4: an ordinary first
+/// version at the commit's stamps, nothing copied, the provenance row
+/// unmoved — the `cross-lineage-id` skip is over). Deletions of
+/// inherited files mint tombstones beside the module cut (absence, not
+/// trunk fallback — the cut is the branch's own rejection of the
+/// inheritance); deletions of branch-minted files retire through the
+/// sweep.
 ///
 /// The fork is recorded once (`kv` fork commit + ledger parentage) and
 /// never re-derived: a recorded fork that disagrees with the computed
@@ -881,6 +894,9 @@ pub fn ingest_branch_history(
         commits_skipped: Vec::new(),
         files_parsed: 0,
         files_failed: Vec::new(),
+        adoptions: Vec::new(),
+        commits_adopted_concepts: 0,
+        inherited_cuts: 0,
         files_excluded: 0,
         blobs_stored: 0,
         blobs_deduped: 0,
@@ -1139,12 +1155,18 @@ pub fn ingest_branch_history(
 
         let mut digests = SourceBlobDigests::new();
         let mut commit_failed_files: Vec<FailedFile> = Vec::new();
-        let mut cross_lineage: Vec<FailedFile> = Vec::new();
+        let mut ids_adopted: usize = 0;
         // Pointer and tombstone upserts join the commit's single bulk
         // (one flush, one generation) instead of writing immediately:
         // bytes are already put above, and `filter_unchanged` drops a
         // re-point to identical bytes for free.
         let mut pointer_upserts: Vec<macrame::ConceptUpsert> = Vec::new();
+        // Trunk-route files whose entity rows are the branch's takeovers
+        // (the cut + own version) rather than plain first mints.
+        let mut trunk_divergence: HashSet<String> = HashSet::new();
+        // Deletions of inherited files mint the module cut beside the
+        // tombstone marker (M6-g §10 item 2).
+        let mut entity_cuts: Vec<macrame::ConceptUpsert> = Vec::new();
         let mut parsed_units: Vec<(
             String,
             crate::types::Language,
@@ -1197,8 +1219,13 @@ pub fn ingest_branch_history(
             if let Some(digest) = digest {
                 digests.insert(canonical_path.clone(), digest);
             }
-            // Sibling-minted ids (D-225 backstop position): bytes and
-            // spine land, concepts stay on the mint lineage.
+            // Sibling-minted ids (D-315, M6-g): bytes and spine land, and
+            // the entity concepts mint as the lineage's adoption — the
+            // parse below builds them from THIS commit's own bytes
+            // (D-315: content asserted by the caller, the other lineage
+            // never read). A hard write refusal still audits, and the
+            // write joining the lineage's own set keeps the later routes
+            // honest.
             if route == Route::New {
                 let foreign = graph
                     .store
@@ -1210,38 +1237,41 @@ pub fn ingest_branch_history(
                         None
                     })
                     .filter(|minted| minted != lineage);
-                if let Some(minted) = foreign {
-                    cross_lineage.push(FailedFile {
+                if foreign.is_some() {
+                    ids_adopted += 1;
+                    report.adoptions.push(FailedFile {
                         sha: sha.clone(),
-                        path: canonical_path,
-                        reason: format!("cross-lineage-id:{minted}"),
+                        path: canonical_path.clone(),
+                        reason: "adopted-first-version".to_string(),
                     });
-                    continue;
                 }
             }
-            // Trunk-route files diverge by pointer: bytes only, no parse,
-            // no entities — the entities stay the ancestor's rows, which
-            // branch reads reach through fallback. The pointer upsert joins
-            // the commit's single bulk (one flush, one generation); the
-            // no-op gate comes free via `filter_unchanged`, which drops a
-            // re-point to identical bytes.
+            // Trunk-route files (inherited, changed by this commit): the
+            // pointer upsert joins the commit's single bulk; the ENTITY
+            // arm (macrame-db 0.22.0, M6-g §10 item 2) writes the branch's
+            // own versions of the entities with `supersede(true)` — the
+            // cut + own version at one stamp on the branch's own lineage
+            // (the takeover the overlay exists for), no trunk row moved.
+            // The entities build below from THIS commit's own parse; the
+            // pointer upsert keeps read-side shape `filter_unchanged`
+            // drops a re-point to identical bytes.
             if route == Route::Trunk {
-                match digests.get(&canonical_path) {
-                    Some(sha) => {
+                match digests.get(&canonical_path).cloned() {
+                    Some(digest) => {
                         pointer_upserts.push(
-                            branch_pointer_upsert(&canonical_path, sha, lineage, &stamp)
+                            branch_pointer_upsert(&canonical_path, &digest, lineage, &stamp)
                                 .expect("lineage validated at fork-ensure"),
                         );
                     }
                     None => {
                         commit_failed_files.push(FailedFile {
                             sha: sha.clone(),
-                            path: canonical_path,
+                            path: canonical_path.clone(),
                             reason: "pointer-failed:no-blob".to_string(),
                         });
                     }
                 }
-                continue;
+                trunk_divergence.insert(canonical_path.clone());
             }
             // Own and new files mint entity concepts: extraction from the
             // same bytes (P5-D9: bytes land even when the file no longer
@@ -1355,9 +1385,21 @@ pub fn ingest_branch_history(
         // retires what the tree no longer holds); deleted inherited
         // files mint tombstones — absence, not trunk fallback.
         let mut projection = (*graph.snapshot()).clone();
+        // M6-g review (macrame-db 0.22.0): the projection's exact removals
+        // (in-file deletes, stale respellings) are the sweep's entity-level
+        // candidates - their file may stay in the tree, so the tree filter
+        // alone would keep the ids alive.
+        let mut removed_ids: Vec<String> = Vec::new();
         for (canonical_path, lang, units) in &parsed_units {
-            let (_, _, retirement_error) =
-                graph.apply_diff_update(&mut projection, units, canonical_path, lang, &stamp);
+            let (_, _, removed, retirement_error) = graph.apply_diff_update(
+                &mut projection,
+                units,
+                canonical_path,
+                lang,
+                &stamp,
+                false,
+            );
+            removed_ids.extend(removed);
             if let Some(error) = retirement_error {
                 eprintln!("[ingest] retire-after-diff failed for {canonical_path}: {error}");
             }
@@ -1370,6 +1412,21 @@ pub fn ingest_branch_history(
                     .file_to_modules
                     .remove(&PathBuf::from(canonical_path));
             } else if inherited.contains(&module_id) {
+                // macrame-db 0.22.0 (M6-g §10 item 2): the tombstone marker
+                // keeps the read side's shape, and the module cut is the
+                // branch's own rejection of the inheritance — `retired(true)`
+                // on the branch is W2's bare cut row, the inheritance hidden
+                // from the cut's instant on whatever the ancestor's rows do
+                // later. Entities join the commit's bulk below; the cut rides
+                // the overlay's own law inside macrame.
+                entity_cuts.push(
+                    macrame::ConceptUpsert::new(module_id.clone(), String::new())
+                        .valid_from(stamp.clone())
+                        .valid_to(crate::storage::TS_OPEN.to_string())
+                        .retired(true)
+                        .on_branch(lineage_id.clone()),
+                );
+                report.inherited_cuts += 1;
                 pointer_upserts.push(
                     branch_tombstone_upsert(canonical_path, lineage, &stamp)
                         .expect("lineage validated at fork-ensure"),
@@ -1390,6 +1447,9 @@ pub fn ingest_branch_history(
             .as_ref()
             .expect("ingest graph always holds a store");
         let mut concepts: Vec<macrame::ConceptUpsert> = Vec::new();
+        // The commit's own-parse entities: every id this tree still
+        // actively holds for the touched paths (class (c)'s keep set).
+        let mut kept_ids: HashSet<String> = HashSet::new();
         for (canonical_path, _, _) in &parsed_units {
             // The module id joins the lineage's own set as it lands, so a
             // later commit in the same run routes the file OWN (entity
@@ -1401,17 +1461,33 @@ pub fn ingest_branch_history(
                 &digests,
                 &stamp,
             ) {
+                // M6-g §10 item 2 (macrame-db 0.22.0): an inherited file
+                // changed by this commit writes the branch's own TAKEOVER
+                // — the cut + own version at one stamp on the branch's own
+                // lineage (D-312's discipline, the overlay's turn off the
+                // trunk). A first branch write of the same id (no overlay
+                // row yet) rides the same marker: Macrame's route answers
+                // the plain version row when nothing is open its side, so
+                // the marker never invents a cut that is not there.
+                let built = if trunk_divergence.contains(canonical_path) {
+                    built.supersede(true)
+                } else {
+                    built
+                };
+                kept_ids.insert(built.id.clone());
                 concepts.push(built.on_branch(lineage_id.clone()));
             }
         }
+        report.commits_adopted_concepts += ids_adopted;
         concepts.push(
             commit_concept(&sha, lineage, &stamp, &commit.author_ts, &meta, was_nudged)
                 .on_branch(lineage_id.clone()),
         );
-        // Views join the same bulk: pointers, tombstones, entities, the
-        // commit concept and the spine write together or not at all — one
-        // flush, one generation per commit.
+        // Views join the same bulk: pointers, tombstones, entity cuts,
+        // entities, the commit concept and the spine write together or
+        // not at all — one flush, one generation per commit.
         concepts.extend(pointer_upserts);
+        concepts.extend(entity_cuts);
         let spine_inputs: Vec<(String, String)> = digests
             .iter()
             .map(|(file, digest)| (format!("{file}::module"), digest.clone()))
@@ -1453,7 +1529,20 @@ pub fn ingest_branch_history(
                 .filter(|p| !excluded(p.as_path()))
                 .map(|p| canonical(p.as_path()))
                 .collect();
-            let retire: Vec<String> = store
+            // M6-g review (macrame-db 0.22.0): three candidate classes,
+            // all disposed by the sweep's own resolved reads (an id the
+            // branch answers absent skips its second cut):
+            //   (a) the lineage's ever-universe ids whose file left the
+            //       tree (deleted own files, W1/overlay rows);
+            //   (b) the projection diff's exact removals (an entity
+            //       deleted from a touched file: its file STAYS in the
+            //       tree, so (a)'s file filter would keep it);
+            //   (c) the trunk-held entities of every touched path the
+            //       commit no longer keeps - inherited ids the lineage
+            //       never wrote (a deleted inherited file's functions, an
+            //       in-file delete of an inherited file on first touch)
+            //       are not in the ever-universe at all.
+            let mut retire: HashSet<String> = store
                 .all_concept_ids(lineage)
                 .unwrap_or_else(|e| {
                     eprintln!("[ingest] branch universe listing failed at {sha}: {e:?}");
@@ -1466,12 +1555,32 @@ pub fn ingest_branch_history(
                     !tree.contains(file)
                 })
                 .collect();
-            if let Err(e) = store.retire_entities_at(&retire, &stamp) {
-                eprintln!("[ingest] branch sweep failed at {sha}: {e:?}");
+            retire.extend(removed_ids.iter().filter(|id| id.contains("::")).cloned());
+            for canonical_path in parsed_units.iter().map(|(p, _, _)| p).chain(deleted.iter()) {
+                for lineages in ["IN ('', 'main')", &format!("= '{lineage}'")] {
+                    match store.ids_under_path_live(canonical_path, lineages) {
+                        Ok(ids) => {
+                            for id in ids {
+                                if !kept_ids.contains(&id) {
+                                    retire.insert(id);
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!(
+                            "[ingest] ids under {canonical_path} ({lineages}) failed: {e:?}"
+                        ),
+                    }
+                }
+            }
+            let retire: Vec<String> = retire.into_iter().collect();
+            match store.retire_entities_on_branch_at(&retire, lineage, &stamp) {
+                Ok((asked, written)) => {
+                    eprintln!("[m6g-dbg] sweep at {sha}: candidates={} asked={asked} written={written} retire={retire:?}", retire.len());
+                }
+                Err(e) => eprintln!("[ingest] branch sweep failed at {sha}: {e:?}"),
             }
         }
         report.files_failed.extend(commit_failed_files);
-        report.files_failed.extend(cross_lineage);
 
         // Stamp before head: a crash between the two re-ingests one
         // commit (idempotent) instead of skipping one (a hole).

@@ -49,6 +49,42 @@ def _recorded_max(db_path):
         c.close()
 
 
+def _seed_cold(hot, cold, sha, size, bytes_, put_at):
+    """macrame-db 0.22.0 (D-299/D-312): the close rows stay hot, so
+    superseded bytes never reach the cold tier through ordinary writes
+    (test_retention pins that). Seed hot→cold, then the failure-mode
+    arms below act on the cold copy."""
+    c = sqlite3.connect(str(cold))
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS macrame_archive_session (x)")
+        c.execute(
+            "INSERT OR REPLACE INTO blobs (sha256, size, bytes, put_at)"
+            " VALUES (?, ?, ?, ?)", (sha, size, bytes_, put_at))
+        c.execute("DROP TABLE macrame_archive_session")
+        c.commit()
+        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        c.close()
+    c = sqlite3.connect(str(hot))
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS macrame_archive_session (x)")
+        c.execute("DELETE FROM blobs WHERE sha256 = ?", (sha,))
+        c.execute("DROP TABLE macrame_archive_session")
+        c.commit()
+        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        c.close()
+
+
+def _blob_row(hot, sha):
+    c = sqlite3.connect(str(hot))
+    try:
+        return c.execute(
+            "SELECT size, bytes, put_at FROM blobs WHERE sha256 = ?",
+            (sha,)).fetchone()
+    finally:
+        c.close()
+
 @pytest.fixture()
 def history(tmp_path, monkeypatch):
     """a.py (V1→V2) + b.py (blobbed) + sk_secret.py (indexed, no blob)."""
@@ -120,11 +156,17 @@ class TestFailureModes:
 
     def test_deleted_cold_blob_is_unresolvable_not_no_digest(self, history):
         g, cold = self._cold(history)
-        _g, _hot, t0, _t1 = history
+        _g, hot, t0, _t1 = history
         ref = _core.entity_source_ref_at("a.py::module", t0)
         assert ref is not None and ref["digest"]
         # Cold is trigger-free by macrame design: bytes can go missing
-        # there while the ledger stays intact (cf. test_retention).
+        # there while the ledger stays intact (cf. test_retention). The
+        # 0.22 same-start keep never moves them cold on its own, so the
+        # seed stages the cold copy first.
+        row = _blob_row(hot, ref["digest"])
+        assert row is not None
+        _seed_cold(hot, cold, ref["digest"], row[0], row[1], row[2])
+        assert _blob_row(hot, ref["digest"]) is None, "the seed moved it cold"
         c = sqlite3.connect(str(cold))
         try:
             c.execute("DELETE FROM blobs WHERE sha256 = ?", (ref["digest"],))
@@ -140,11 +182,14 @@ class TestFailureModes:
 
     def test_doctored_cold_bytes_are_mismatch(self, history):
         g, cold = self._cold(history)
-        _g, _hot, t0, _t1 = history
+        _g, hot, t0, _t1 = history
         # Only superseded blobs go cold (still-referenced ones stay hot),
         # so the doctored address is V1's, read at the t0 generation.
         ref = _core.entity_source_ref_at("a.py::module", t0)
         assert ref is not None and ref["digest"]
+        row = _blob_row(hot, ref["digest"])
+        assert row is not None, "the seeded copy needs the hot bytes"
+        _seed_cold(hot, cold, ref["digest"], row[0], row[1], row[2])
         c = sqlite3.connect(str(cold))
         try:
             c.execute(

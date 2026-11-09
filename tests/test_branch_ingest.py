@@ -293,13 +293,13 @@ class TestForkDiscipline:
         assert "ingested=2" in result.output
         assert shas["c2"][:12] in result.output
 
-
-class TestMergeTrap:
-    def test_merge_with_branch_born_file_skips_concepts(self, tmp_path):
+    def test_merge_with_branch_born_file_adopts_the_entities(self, tmp_path):
         # feature2 born at c3 adds e.py; main advances to c4; m1 merges.
-        # The trunk can never mint e.py's branch-born id (D-225) — bytes
-        # and spine land, entities stay on the branch, and the skip is
-        # auditable instead of aborting the merge ingest.
+        # The old cross-lineage skip is an adoption path now (macrame-db
+        # 0.22.0, D-315 / M6-g item 1): the trunk mints e.py's ids as its
+        # OWN ordinary first versions from the merge's own bytes - nothing
+        # copied, nothing superseded, the id's provenance row unmoved -
+        # and the adoption is auditable in the report, not a failure.
         repo, shas = _forked_repo(tmp_path / "repo")
         _ingest_trunk_to_c4(repo, shas)
         ops.ingest_history(str(repo), branch="feature2",
@@ -309,17 +309,168 @@ class TestMergeTrap:
         report = ops.ingest_history(str(repo), store_path=str(_store_path(repo)))
         assert report["commits_ingested"] == 1
         assert report["head"] == shas["m1"]
-        # e.py's bytes and spine land; its entities stay on feature2.
-        failed = {f["path"]: f["reason"] for f in report["files_failed"]}
-        assert failed.get("e.py", "").startswith("cross-lineage-id:feature2"), failed
+        # The adoption is reported as one, and no cross-lineage failure
+        # remains.
+        adopted = {f["path"]: f["reason"] for f in report["adoptions"]}
+        assert adopted.get("e.py") == "adopted-first-version", adopted
+        assert not [
+            f for f in report["files_failed"]
+            if f["reason"].startswith("cross-lineage-id")
+        ], report["files_failed"]
         from coderadar._core import all_concept_ids
         graph = _load(repo)
-        assert "e.py::module" not in all_concept_ids("main")
+        assert "e.py::module" in all_concept_ids("main")
         assert "e.py::module" in all_concept_ids("feature2")
         graph = _load(repo)
+        # The trunk's own version reads the merge's bytes, and feature2
+        # keeps its own belief about the same id untouched.
         chain = graph.history_of("e.py")
         assert chain["count"] == 1
         assert chain["versions"][0]["digest"] == _digest("e = 1\n")
         # And the trunk merge itself is honestly covered.
         verdict = graph.verify_history(all_generations=True)
         assert verdict["byte_coverage_pct"] == 100.0, verdict["totals"]
+
+
+class TestBranchSweepRetires:
+    """The branch sweep's retire law (M6-g review): a branch deleting
+    entities must reclaim them ON THE BRANCH - the same-start close of
+    its own rows, the cut of inherited ones it never wrote - without
+    hanging or refusing when the candidates are real."""
+
+    def _last_generation(self, lineage):
+        from coderadar._core import recorded_generations
+        return recorded_generations(None, None, lineage)[-1]
+
+    def _cuts(self, repo, pattern, branch):
+        with sqlite3.connect(str(_store_path(repo))) as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM concept_cuts "
+                "WHERE id LIKE ? AND branch_id = ?", (pattern, branch)
+            ).fetchone()[0]
+
+    def _closes(self, repo, pattern, branch):
+        with sqlite3.connect(str(_store_path(repo))) as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM concepts "
+                "WHERE id LIKE ? AND branch_id = ? "
+                "AND retired = 1 AND valid_to != ''", (pattern, branch)
+            ).fetchone()[0]
+
+    def _mini_repo(self, path, a_py):
+        """c1 on main with functions in a.py, forked feature at c1."""
+        path.mkdir(parents=True, exist_ok=True)
+        _git(path, "init", "-q", "-b", "main", ".")
+        _git(path, "config", "user.name", "T")
+        _git(path, "config", "user.email", "t@t.t")
+        _git(path, "config", "core.autocrlf", "false")
+        _commit(path, "c1", "2026-01-01T10:00:00+00:00", {"a.py": a_py})
+        c1 = _sha(path, "main")
+        _git(path, "checkout", "-qb", "feature", c1)
+        return path, {"c1": c1}
+
+    def test_deleting_a_branch_born_file_closes_its_rows(self, tmp_path):
+        # feature's c.py is the branch's own mint (module + the g
+        # function). Deleting it sweeps both closed at their own starts -
+        # the review's hang shape, first green here.
+        repo, shas = _forked_repo(tmp_path / "repo")
+        _ingest_trunk_to_c4(repo, shas)
+        _ingest_feature(repo, shas)
+        _git(repo, "checkout", "-q", "feature")
+        _commit(repo, "f3", "2026-01-08T10:00:00+00:00", {},
+                delete=("c.py",))
+        sha_f3 = _sha(repo, "feature")
+        report = ops.ingest_history(str(repo), branch="feature",
+                                    store_path=str(_store_path(repo)))
+        assert report["commits_ingested"] == 1
+        assert report["head"] == sha_f3
+        # D-2a: each row's own start carries its close. The pre-fix code
+        # marked a same-start superside and the bulk refused (swallowed by
+        # the caller's eprintln), leaving the rows live - and the sweep
+        # deadlocked inside the guard before either could happen.
+        assert self._closes(repo, "c.py::%", "feature") == 2
+        _load(repo)
+        gens = self._last_generation("feature")
+        refs = _refs(["c.py::module"], gens, "feature")
+        assert refs.get("c.py::module") is None
+
+    def test_deleting_an_inherited_file_cuts_its_entities(self, tmp_path):
+        # a.py is trunk-minted (a function the branch never wrote);
+        # deleting the file mints the module tombstone AND cuts the
+        # inherited entity (the review's "only ::module got a marker" gap).
+        repo, shas = self._mini_repo(tmp_path / "repo", "def f():\n    return 1\n")
+        ops.ingest_history(str(repo), store_path=str(_store_path(repo)))
+        _commit(repo, "d1", "2026-01-05T10:00:00+00:00", {},
+                delete=("a.py",))
+        sha_d1 = _sha(repo, "feature")
+        report = ops.ingest_history(str(repo), branch="feature",
+                                    store_path=str(_store_path(repo)))
+        assert report["commits_ingested"] == 1
+        assert report["head"] == sha_d1
+        assert report["inherited_cuts"] >= 1
+        # Two cuts stand for the branch: the module's (the bulk) and the
+        # function's (the sweep; the branch answers the module absent by
+        # then, so the sweep does not cut it twice).
+        assert self._cuts(repo, "a.py::%", "feature") == 2
+        graph = _load(repo)
+        gens = self._last_generation("feature")
+        refs = _refs(["a.py::module", "a.py::f"], gens, "feature")
+        assert refs.get("a.py::module") is None
+        assert refs.get("a.py::f") is None
+        # The trunk's own belief about a.py is untouched.
+        graph = _load(repo)
+        trunk_tip = graph.verify_history(all_generations=True)["generations"][-1]["timestamp"]
+        trunk_refs = _refs(["a.py::f"], trunk_tip, "main")
+        assert trunk_refs["a.py::f"]["digest"] == _digest("def f():\n    return 1\n")
+
+    def test_editing_an_inherited_file_cuts_the_departed_entities(self, tmp_path):
+        # An inherited file's edit that drops f must cut a.py::f through
+        # the sweep (an in-file delete never leaves the tree, so the file
+        # filter alone would keep it alive). h survives, riding its
+        # takeover.
+        repo, shas = self._mini_repo(
+            tmp_path / "repo", "def f():\n    return 1\ndef h():\n    return 2\n")
+        ops.ingest_history(str(repo), store_path=str(_store_path(repo)))
+        _commit(repo, "e1", "2026-01-05T10:00:00+00:00",
+                {"a.py": "def h():\n    return 2\n"})
+        sha_e1 = _sha(repo, "feature")
+        report = ops.ingest_history(str(repo), branch="feature",
+                                    store_path=str(_store_path(repo)))
+        assert report["commits_ingested"] == 1
+        assert report["head"] == sha_e1
+        graph = _load(repo)
+        gens = self._last_generation("feature")
+        refs = _refs(["a.py::f", "a.py::h"], gens, "feature")
+        assert refs.get("a.py::f") is None, refs
+        assert refs.get("a.py::h") is not None
+        assert self._cuts(repo, "a.py::f", "feature") == 1
+
+    def test_a_branch_reversion_writes_the_trunk_text(self, tmp_path):
+        # The branch reverts a.py to the trunk's exact bytes. The old
+        # all-mints filter saw the trunk row and dropped the write as
+        # "unchanged", so the branch kept reading its f1 version. The
+        # branch compares its RESOLVED state: the revert writes.
+        repo, shas = self._mini_repo(tmp_path / "repo", "def f():\n    return 1\n")
+        ops.ingest_history(str(repo), store_path=str(_store_path(repo)))
+        _commit(repo, "f1", "2026-01-04T10:00:00+00:00",
+                {"a.py": "def g():\n    return 1\n"})
+        ops.ingest_history(str(repo), branch="feature",
+                           store_path=str(_store_path(repo)))
+        _commit(repo, "f3", "2026-01-06T10:00:00+00:00",
+                {"a.py": "def f():\n    return 1\n"})
+        sha_f3 = _sha(repo, "feature")
+        report = ops.ingest_history(str(repo), branch="feature",
+                                    store_path=str(_store_path(repo)))
+        assert report["commits_ingested"] == 1
+        assert report["head"] == sha_f3
+        graph = _load(repo)
+        gens = self._last_generation("feature")
+        refs = _refs(["a.py::f", "a.py::g"], gens, "feature")
+        # The trunk's own row held f's digest already; the WRITE still
+        # happened because the branch's own state differs.
+        assert refs["a.py::f"]["digest"] == _digest("def f():\n    return 1\n")
+        # The departed branch-owned entity closed on the branch: the
+        # row carries retired = 1 with the closing stamp (the refs read
+        # at the closing instant still reports the row - the half-open
+        # boundary read is inclusive - so the row itself is the fact).
+        assert self._closes(repo, "a.py::g", "feature") == 1

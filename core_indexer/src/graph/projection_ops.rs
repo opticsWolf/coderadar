@@ -293,7 +293,9 @@ impl CodeGraph {
     /// entities and only insert/remove entities that actually changed. Unchanged
     /// entities (same ID + same content hashes) are left in place, avoiding
     /// unnecessary hashmap churn and edge recalculation.
-    /// Returns (inserted_count, removed_count, retirement_error).
+    /// Returns (inserted_count, removed_count, removed_ids,
+    /// retirement_error). Compared and retired in-store only when
+    /// `retire_in_store` says so.
     pub fn apply_diff_update(
         &self,
         projection: &mut ProjectedGraph,
@@ -301,7 +303,8 @@ impl CodeGraph {
         file_path: &str,
         language: &Language,
         valid_from: &str,
-    ) -> (usize, usize, Option<String>) {
+        retire_in_store: bool,
+    ) -> (usize, usize, Vec<EntityId>, Option<String>) {
         // 1. Collect old entity hashes from projection.
         //    Normalize entity IDs for cross-platform prefix matching.
         let normalized_file_path = normalize_path_str(file_path);
@@ -763,9 +766,17 @@ impl CodeGraph {
                 .retain(|(s, t)| !gone.contains(s) && !gone.contains(t));
         }
 
-        let retirement_error = self.try_retire_in_store(removed_ids.iter(), valid_from);
+        // The M6-g review: the diff's own retire stays the CALLER's choice
+        // - the branch ingest collects `removed_ids` and retires them on
+        // its own lineage through the branch sweep; retiring here would
+        // close an inherited id's trunk row for a branch-local delete.
+        let retirement_error = if retire_in_store {
+            self.try_retire_in_store(removed_ids.iter(), valid_from)
+        } else {
+            None
+        };
 
-        (inserted, removed, retirement_error)
+        (inserted, removed, removed_ids.clone(), retirement_error)
     }
 
     /// Update a single file in-place: re-index and diff against the current graph.
@@ -881,12 +892,13 @@ impl CodeGraph {
         let before = self.snapshot();
         let epoch_before = self.epoch();
         let mut projection = (*before).clone();
-        let (new_count, removed_count, retirement_error) = self.apply_diff_update(
+        let (new_count, removed_count, _removed_ids, retirement_error) = self.apply_diff_update(
             &mut projection,
             &units,
             file_path,
             &lang,
             &crate::storage::now_iso8601(),
+            true,
         );
         // Keep the dotted-name fast path in sync (cheap; module set is
         // unchanged today, but a stale index would silently degrade the

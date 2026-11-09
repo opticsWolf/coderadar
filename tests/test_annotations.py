@@ -120,11 +120,16 @@ class TestReviseRetire:
         # A second retire is a no-op report, not an error.
         assert ops.retire_annotation(created["id"])["retired"] is False
         chain = ops.annotation_history(created["id"])
-        assert chain["count"] == 2
+        # macrame-db 0.22.0 (D-303): the retire rides the row's own
+        # valid_from, so one start carries one version (the fold keeps
+        # the start's newest row): one row, retired, closed to edits.
+        assert chain["count"] == 1
         assert chain["versions"][0]["retired"] is True
         assert chain["versions"][0]["current"] is False
         # …but the audit trail still reads, and the row is closed to edits.
-        assert ops.annotations_on("a.py::alpha")["count"] == 2
+        # Same-start fold (D-303): the retire is inside the row's own start,
+        # so the listing shows the row's one version, retired.
+        assert ops.annotations_on("a.py::alpha")["count"] == 1
         with pytest.raises(ops.InvalidRequest, match="retired"):
             ops.revise_annotation(created["id"], "- two\n")
 

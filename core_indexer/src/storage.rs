@@ -701,7 +701,10 @@ impl CodeGraphStore {
         if concepts.is_empty() {
             return Ok(0);
         }
-        let acts = self.decide_acts(&self.filter_unchanged(concepts))?;
+        // Decide first (the reads one decision makes serve the filter
+        // too), then drop the acts the ledger already holds byte-identically.
+        let (mut acts, projection) = self.decide_acts(concepts)?;
+        acts.retain(|a| act_is_new(a, &projection));
         if acts.is_empty() {
             return Ok(0);
         }
@@ -712,73 +715,203 @@ impl CodeGraphStore {
         Ok(runtime().block_on(self.db.write_concepts(acts))?)
     }
 
-    /// The write decision, per changed row, from the store's current-state
-    /// projection (0.22.0 uptake; "replace close then open with the one
+    /// The write decision, per changed row, from the projection the
+    /// WRITER reads (0.22.0 uptake; "replace close then open with the one
     /// write" reviewed at: refuse-or-filter front-loaded, close mechanics
-    /// upstream).
+    /// upstream, and the branch writes read the branch's own projection —
+    /// reading the concepts table there would miss the branch's own
+    /// versions, which since schema v26 live on the overlay).
     ///
-    /// No live row → the write as built (a first mint — or a re-add after a
-    /// D-2a retirement: no projection row may be an open one then; the
-    /// retired row's death is the gap the re-add follows). `retired` →
-    /// ditto. A live row whose start **equals** the write's → the write as
-    /// built, no superside: replaying a commit's stamps is D-291's re-assert
-    /// of one start (within one start, the row written last carries the
-    /// belief), and a superside there would refuse an empty close. A live
-    /// row starting strictly **before** → `supersede(true)`: Macrame closes
-    /// and opens in one transaction at one stamp. A live row starting
-    /// **after** → an out-of-order version, refused whole before anything
-    /// is written, naming the id and both starts: per-chunk committed
-    /// prefixes are the shape code intake repairs without audit (all-or-
-    /// nothing is the state adapter's own remix), and 0.22's single-open
-    /// law refuses it inside the batch anyway.
-    fn decide_acts(&self, changed: &[ConceptUpsert]) -> macrame::Result<Vec<ConceptUpsert>> {
+    /// The trunk projection is the chunked concepts read (one row per id
+    /// whatever lineage minted it). A branch writer's projection is
+    /// Macrame's per-lineage read — `concepts_by_id` with
+    /// `ReadPlan::on(branch)`, at each write's own stamp, grouped by stamp
+    /// so one read covers a commit's batch — the walk the write law
+    /// itself runs: its own version rows first, the visible ancestors
+    /// after, a covering cut answering absent, the passed stamp EXCLUDING
+    /// ancestor rows recorded after the fork (a branch writing an
+    /// inherited id while the trunk advanced past the fork times out of
+    /// the truth correctly, because the trunk's later write was never
+    /// seen).
+    ///
+    /// No live resolved row → the write as built (a first mint — or a
+    /// re-add after a D-2a retirement: the retired row's death is the gap
+    /// the re-add follows; a covering CUT is not a belief and falls
+    /// through to a plain write). A resolved row whose interval **ends**
+    /// before... i.e. is closed → the plain route: the takeover needs an
+    /// open row, a covered closed row is the ancestor's history the
+    /// branch stands behind. A resolved row whose start **equals** the
+    /// write's → the write as built, no superside: replaying a commit's
+    /// stamps is D-291's re-assert of one start. A resolved row starting
+    /// strictly **before** → `supersede(true)`: Macrame closes and opens
+    /// in one transaction at one stamp (a takeover on an inherited id;
+    /// the row the walk resolved is the target Macrame itself cuts or
+    /// closes). An out-of-order resolution cannot arise from a
+    /// covering-row read — a row covering the write's instant starts at
+    /// or before it — and CodeRadar's commit stamps are nudged forward
+    /// per lineage, so the law's own refuse-backward guard inside the
+    /// write transaction is the final referee on the pathological edge.
+    /// The returned projection map is the unchanged-filter's side: what
+    /// each row was compared against ([`Self::act_is_new`]).
+    fn decide_acts(
+        &self,
+        changed: &[ConceptUpsert],
+    ) -> macrame::Result<(Vec<ConceptUpsert>, HashMap<String, ProjectionRow>)> {
         if changed.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), HashMap::new()));
         }
-        let ids: Vec<String> = changed.iter().map(|c| c.id.clone()).collect();
-        // The trunk projection answers any mint: `concepts` holds one row
-        // per id whatever lineage minted it, and a live open row on that
-        // lineage is a live open row for the write decision. Branch-scoped
-        // projections are Macrame's reads (`concepts_by_id` with
-        // `ReadPlan::on`), which the branch write arms call directly.
-        let current = self.fetch_current_states(&ids)?;
         let mut acts = Vec::with_capacity(changed.len());
+        // What every row was decided against, keyed writer + stamp + id
+        // (NUL-separated): the bulk's unchanged filter compares each act
+        // against the SAME read this decision made - one read per bulk,
+        // and a branch row's comparison is its resolved overlay/ancestor
+        // state, never the trunk's mint row (which answers a different
+        // lineage's belief about the id).
+        let mut projection: HashMap<String, ProjectionRow> = HashMap::new();
+        // Split by the writer: rows carrying no branch write through the
+        // trunk projection; rows carrying a branch read that branch's
+        // resolved state at its own stamps.
+        let mut groups: std::collections::HashMap<String, Vec<&ConceptUpsert>> =
+            std::collections::HashMap::new();
         for c in changed {
-            match current.get(c.id.as_str()) {
-                None => acts.push(c.clone()),
-                Some(row) => {
-                    if row.retired {
-                        acts.push(c.clone());
-                    } else if !is_open_end(&row.valid_to) {
-                        return Err(macrame::DbError::Engine(libsql::Error::Misuse(format!(
-                            "upsert_concepts_bulk: {id} holds a settled non-retired row \
-                             [{start}, {end}) — the ledger's own record is inconsistent \
-                             with a forward write; refusing before anything lands",
-                            id = c.id.as_str(),
-                            start = row.valid_from,
-                            end = row.valid_to,
-                        ))));
-                    } else if row.valid_from == c.valid_from {
-                        // Same-start replay: the D-291 re-assert, no superside.
-                        acts.push(c.clone());
-                    } else if row.valid_from < c.valid_from {
-                        acts.push(c.clone().supersede(true));
+            let writer = c
+                .branch
+                .as_ref()
+                .map(|b| b.as_str().to_string())
+                .unwrap_or_default();
+            groups.entry(writer).or_default().push(c);
+        }
+        for (writer, rows) in &groups {
+            if writer.is_empty() {
+                let ids: Vec<String> = rows.iter().map(|c| c.id.clone()).collect();
+                let current = self.fetch_trunk_states(&ids)?;
+                for c in rows {
+                    projection.insert(
+                        projection_key("", &c.valid_from, &c.id),
+                        current.get(c.id.as_str()).cloned(),
+                    );
+                    match current.get(c.id.as_str()) {
+                        None => acts.push((*c).clone()),
+                        Some(row) => {
+                            if row.retired {
+                                acts.push((*c).clone());
+                            } else if c.retired {
+                                // A retire asks one fact of the trunk's own
+                                // W1 row. D-312's close rides the caller's
+                                // superside marker; a same-start ask is the
+                                // replay, and a covered CLOSED row is the
+                                // retired row's own history - nothing to
+                                // close, the ask rides.
+                                if is_open_end(&row.valid_to) && row.valid_from < c.valid_from {
+                                    acts.push((*c).clone().supersede(true));
+                                } else {
+                                    acts.push((*c).clone());
+                                }
+                            } else if !is_open_end(&row.valid_to) {
+                                return Err(macrame::DbError::Engine(libsql::Error::Misuse(
+                                    format!(
+                                        "upsert_concepts_bulk: {id} holds a settled \
+                                         non-retired row [{start}, {end}) — the ledger's own \
+                                         record is inconsistent with a forward write; \
+                                         refusing before anything lands",
+                                        id = c.id.as_str(),
+                                        start = row.valid_from,
+                                        end = row.valid_to,
+                                    ),
+                                )));
+                            } else if row.valid_from == c.valid_from {
+                                acts.push((*c).clone());
+                            } else if row.valid_from < c.valid_from {
+                                acts.push((*c).clone().supersede(true));
+                            } else {
+                                return Err(macrame::DbError::Engine(libsql::Error::Misuse(
+                                    format!(
+                                        "upsert_concepts_bulk: {id}'s incoming version \
+                                         starts {start}, before the live row's {live} — \
+                                         versions per id go forward; refusing before \
+                                         anything is written",
+                                        id = c.id.as_str(),
+                                        start = c.valid_from,
+                                        live = row.valid_from,
+                                    ),
+                                )));
+                            }
+                        }
+                    }
+                }
+            } else {
+                let bid = macrame::BranchId::new(writer)?;
+                // Group by the write's own stamp: the resolution of each
+                // row is its instance at the WRITE instant (the walk the
+                // route itself runs), so the reads group on `valid_from`.
+                let mut by_stamp: std::collections::HashMap<&str, Vec<&&ConceptUpsert>> =
+                    std::collections::HashMap::new();
+                for c in rows {
+                    by_stamp.entry(c.valid_from.as_str()).or_default().push(c);
+                }
+                // Keyed by (valid_from, id): each id is written at one
+                // stamp per bulk, so the per-stamp reads never collide.
+                let mut resolved_all: HashMap<(String, String), macrame::temporal::ConceptVersion> =
+                    HashMap::new();
+                for (stamp, group) in &by_stamp {
+                    let gids: Vec<String> = group.iter().map(|c| c.id.clone()).collect();
+                    let plan = macrame::ReadPlan::new()
+                        .on(bid.clone())
+                        .valid_at((*stamp).to_string());
+                    let resolved = runtime().block_on(self.db.concepts_by_id(&gids, plan))?;
+                    for v in resolved {
+                        resolved_all.insert(((*stamp).to_string(), v.id.clone()), v);
+                    }
+                }
+                for c in rows {
+                    let resolved = resolved_all
+                        .get(&(c.valid_from.clone(), c.id.clone()))
+                        .map(version_row);
+                    projection.insert(projection_key(writer, &c.valid_from, &c.id), resolved);
+                    let Some(v) = resolved_all.get(&(c.valid_from.clone(), c.id.clone())) else {
+                        // No live resolved row: the write as built (a first
+                        // mint, or a re-add after a retirement - a covering
+                        // CUT is not a belief and falls through).
+                        acts.push((*c).clone());
+                        continue;
+                    };
+                    let (vf, vt) = match (&v.valid_from, &v.valid_to) {
+                        (Some(a), Some(b)) => (a.clone(), b.clone()),
+                        // A v1 log row predates validity; the write
+                        // stands plainly.
+                        _ => {
+                            acts.push((*c).clone());
+                            continue;
+                        }
+                    };
+                    if !is_open_end(&vt) {
+                        // A covered closed row is history the branch stands
+                        // behind: the plain route. A retire asking over it
+                        // rides as built in the same code path - the walk
+                        // finds nothing of the lineage's open and cuts or
+                        // refuses itself; no marker needed (0.22.0's two
+                        // route classes).
+                        acts.push((*c).clone());
+                    } else if vf == c.valid_from {
+                        // The same start: D-291's replay - and, for a
+                        // retire, the W1 close shape (D-2a): the row's own
+                        // start carries the close. Plainly, no superside:
+                        // a superside start >= an open start is refused
+                        // outright (ConceptSingleOpen). The trunk arm is
+                        // the same law (row.valid_from < c.valid_from).
+                        acts.push((*c).clone());
                     } else {
-                        return Err(macrame::DbError::Engine(libsql::Error::Misuse(format!(
-                            "upsert_concepts_bulk: {id}'s incoming version starts {start}, \
-                             before the live row's {live} — versions per id go forward; \
-                             writing it would leave two open intervals (0.22's single-open \
-                             law refuses the bulk after the first chunk commits). Refusing \
-                             before anything is written",
-                            id = c.id.as_str(),
-                            start = c.valid_from,
-                            live = row.valid_from,
-                        ))));
+                        // The covering open row starts strictly before the
+                        // write: the takeover - Macrame closes and opens in
+                        // one transaction at one stamp. Retires ride
+                        // D-312's close marker (the W1 route needs it; the
+                        // walking route takes the verb itself).
+                        acts.push((*c).clone().supersede(true));
                     }
                 }
             }
         }
-        Ok(acts)
+        Ok((acts, projection))
     }
 
     /// Ids with no row in the store's current-state projection.
@@ -819,29 +952,73 @@ impl CodeGraphStore {
         if concepts.is_empty() {
             return Vec::new();
         }
-        let ids: Vec<String> = concepts.iter().map(|c| c.id.clone()).collect();
-        let current = match self.fetch_current_states(&ids) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("[diag] filter_unchanged failed, writing all: {e:?}");
-                return concepts.to_vec();
+        // Per writer: a trunk row compares within the TRUNK's own
+        // projection (an adoption must write - the trunk holds no row of
+        // its own, whatever a foreign mint's row says). Branch rows are
+        // the bulk path's business (their comparison must be their own
+        // resolved state, not these tables); this fn only ever sees
+        // lineageless maintenance writes.
+        let mut by_writer: std::collections::HashMap<&str, Vec<&ConceptUpsert>> =
+            std::collections::HashMap::new();
+        for c in concepts {
+            let writer = c.branch.as_ref().map(|b| b.as_str()).unwrap_or("main");
+            by_writer.entry(writer).or_default().push(c);
+        }
+        let mut out = Vec::with_capacity(concepts.len());
+        for (writer, rows) in &by_writer {
+            let ids: Vec<String> = rows.iter().map(|c| c.id.clone()).collect();
+            let read = match *writer {
+                "main" => self.fetch_trunk_states(&ids),
+                _ => self.fetch_current_states(&ids),
+            };
+            let current = match read {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("[diag] filter_unchanged failed, writing all: {e:?}");
+                    for c in rows {
+                        out.push((*c).clone());
+                    }
+                    continue;
+                }
+            };
+            for c in rows {
+                if concept_changed(c, current.get(&c.id)) {
+                    out.push((*c).clone());
+                }
             }
-        };
-        concepts
-            .iter()
-            .filter(|c| concept_changed(c, current.get(&c.id)))
-            .cloned()
-            .collect()
+        }
+        out
     }
 
+    /// The trunk's OWN projection: only the rows whose mint lineage is
+    /// the trunk. `concepts` holds one row per id whatever lineage minted
+    /// it, so the all-mints read overstates the trunk's beliefs about a
+    /// foreign-minted id - the exact shape that swallowed an adoption
+    /// (macrame-db 0.22.0 / D-315 / M6-g: the trunk must MINT, and the
+    /// pre-uptake filter compared it against another lineage's row and
+    /// declared the id already held). Trunk-minted rows write their
+    /// lineage as `main` (older rows: empty).
+    fn fetch_trunk_states(&self, ids: &[String]) -> macrame::Result<HashMap<String, CurrentRow>> {
+        self.fetch_states_where(ids, "IN ('', 'main')")
+    }
+
+    /// Ids' rows with no lineage restriction (the legacy all-mints view).
     fn fetch_current_states(&self, ids: &[String]) -> macrame::Result<HashMap<String, CurrentRow>> {
+        self.fetch_states_where(ids, "IS NOT NULL")
+    }
+
+    fn fetch_states_where(
+        &self,
+        ids: &[String],
+        lineages: &str,
+    ) -> macrame::Result<HashMap<String, CurrentRow>> {
         let (_guard, conn) = self.open_diagnostic_conn()?;
         let mut out = HashMap::with_capacity(ids.len());
         for chunk in ids.chunks(500) {
             let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let sql = format!(
                 "SELECT id, title, content, extra, retired, valid_from, valid_to, branch_id \
-                 FROM concepts WHERE id IN ({placeholders})"
+                 FROM concepts WHERE id IN ({placeholders}) AND (branch_id {lineages})"
             );
             let params: Vec<libsql::Value> = chunk
                 .iter()
@@ -1963,6 +2140,137 @@ impl CodeGraphStore {
         Ok(self.retire_entities_at(&stale_ids, valid_from)?.0)
     }
 
+    /// The branch-side sweep retire (macrame-db 0.22.0, M6-g item 2): the
+    /// ids absent from `lineage`'s tree leave the caller with the
+    /// lineage's one retirement act on them, AS BUILT - `retired`
+    /// carries no superside, so Macrame's own resolution walk picks the
+    /// verb: a lineage whose own open overlay row holds the belief gets
+    /// the close, a lineage whose belief came from the mount gets the
+    /// bare cut, and a W1 row of the lineage's own mints is retired
+    /// through the W1 shape D-303 records. The trunk's rows enter this
+    /// act only as the ancestor's belief the lineage speaks against -
+    /// nothing here closes them; the trunk's own sweep closes those on
+    /// its own ingest.
+    pub fn retire_entities_on_branch_at(
+        &self,
+        entity_ids: &[String],
+        branch: &str,
+        valid_from: &str,
+    ) -> macrame::Result<(usize, usize)> {
+        if entity_ids.is_empty() {
+            return Ok((0, 0));
+        }
+        let ts = valid_from.to_string();
+        let bid = macrame::BranchId::new(branch)?;
+        // The branch's own W1 rows (its mints, D-303's row space) carry
+        // title/content/extra and their start into the retire, exactly as
+        // the trunk's retire round-trips the mint's row - but only an
+        // OPEN own row retires; a closed one is history, and the
+        // resolution below decides the id's rest. Anything the concepts
+        // table does not hold for the lineage is the overlay or the
+        // ancestor's belief: the upsert is the bare retirement ASK at its
+        // own instant, and whichever verb Macrame's walk resolves is the
+        // act.
+        //
+        // Structure per the M6-g review: the acts collect under the
+        // diagnostic guard, the guard drops before any WRITE - the bulk
+        // takes this same lock again in its own reads, and a same-thread
+        // second take deadlocks. Returns (asked, written) - the bulk's
+        // row count, not the ask count.
+        let acts: Vec<ConceptUpsert> = {
+            let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+            runtime().block_on(async {
+                let mut acts: Vec<ConceptUpsert> = Vec::new();
+                for id in entity_ids {
+                    // The concepts arm: W1 rows of the lineage's own mints.
+                    // (retired = 0 keeps a re-run from re-opening a row
+                    // that is already retired; the projection's updater
+                    // covers the rest.) The row's own interval decides:
+                    // open -> close it at its own start (D-2a); closed ->
+                    // fall through to the resolved read (history the walk
+                    // disposes of).
+                    let mut rows = conn
+                        .query(
+                            "SELECT title, content, extra, valid_from, valid_to FROM concepts \
+                             WHERE id = ?1 AND branch_id = ?2 AND retired = 0 LIMIT 1",
+                            libsql::params![id.as_str(), branch],
+                        )
+                        .await
+                        .map_err(macrame::DbError::Engine)?;
+                    if let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                        if is_open_end(&row.get::<String>(4).unwrap_or_default()) {
+                            acts.push(
+                                ConceptUpsert::new(
+                                    id.clone(),
+                                    row.get::<String>(0).unwrap_or_default(),
+                                )
+                                .content(row.get::<String>(1).unwrap_or_default())
+                                .extra(row.get::<String>(2).unwrap_or_else(|_| "{}".to_string()))
+                                .valid_from(row.get::<String>(3).unwrap_or_else(|_| ts.clone()))
+                                .valid_to(ts.clone())
+                                .retired(true)
+                                .on_branch(bid.clone()),
+                            );
+                        }
+                        continue;
+                    }
+                    // Overlay or ancestor-side belief. The resolved read
+                    // says whether the branch holds the id at the instant
+                    // at all; an id it already answers absent needs no
+                    // second cut (a cut from this same commit's bulk may
+                    // already stand).
+                    let plan = macrame::ReadPlan::new()
+                        .on(bid.clone())
+                        .valid_at(ts.clone());
+                    let resolved = self
+                        .db
+                        .concepts_by_id(std::slice::from_ref(id), plan)
+                        .await?;
+                    if resolved.is_empty() {
+                        continue;
+                    }
+                    let mut upsert = ConceptUpsert::new(id.clone(), "")
+                        .valid_from(ts.clone())
+                        .retired(true)
+                        .on_branch(bid.clone());
+                    upsert.content = String::new();
+                    acts.push(upsert);
+                }
+                Ok::<_, macrame::DbError>(acts)
+            })?
+        };
+        let written = self.upsert_concepts_bulk(&acts)?;
+        Ok((acts.len(), written))
+    }
+
+    /// Open ids under one file path whose mint lineage rides `lineages`
+    /// (encoded as a SQL fragment like ``IN ('', 'main')``), for the
+    /// branch sweep's touched-path candidates (M6-g review): the
+    /// ever-universe holds only the ids a lineage itself wrote, and the
+    /// trunk-held ones and the lineage's own live rows under a TOUCHED
+    /// path are both candidate classes the run's keep-set disposes of -
+    /// compared and filled by the sweep's own resolved reads.
+    pub fn ids_under_path_live(&self, path: &str, lineages: &str) -> macrame::Result<Vec<String>> {
+        let pattern = format!("{}::%", crate::annotations::escape_like(path));
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut out = Vec::new();
+            let sql = format!(
+                "SELECT DISTINCT id FROM concepts \
+                     WHERE id LIKE ?1 ESCAPE char(92) \
+                       AND branch_id {lineages} AND retired = 0"
+            );
+            let mut rows = conn
+                .query(sql.as_str(), libsql::params![pattern])
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok::<_, macrame::DbError>(out)
+        })
+    }
+
     /// Un-stamped wrapper (live paths: the analyze sweep runs on the trunk).
     pub fn retire_stale_file_concepts(&self, keep_ids: &HashSet<String>) -> macrame::Result<usize> {
         self.retire_stale_file_concepts_at(keep_ids, &now_iso8601(), "main")
@@ -2718,8 +3026,12 @@ impl CodeGraphStore {
     /// `ops.changes_between` groups raw ids by canonical form, so no
     /// generation double-counts and a respelling never reads as churn.
     /// Retired ids stay in (a deletion is a T1-only group); branch scope
-    /// matches `transaction_log.branch_id` (`"main"` unless told
-    /// otherwise). `ordering` is_id order — deterministic, not meaningful.
+    /// is the lineage's own ledger: `concepts` rows minted on the branch,
+    /// 0.22.0's overlay `concept_versions`/`concept_cuts` rows (the
+    /// D-315 adoption mint is an overlay row — the branch-owned version
+    /// of a foreign-minted id lives there, and `concepts` keeps the mint
+    /// lineage's row). `ordering` is id order — deterministic, not
+    /// meaningful.
     ///
     /// Infrastructure kinds (`content_version` spine, P4
     /// `branch_content` pointers) are excluded by kind (P2's diff joins
@@ -2735,9 +3047,14 @@ impl CodeGraphStore {
         runtime().block_on(async {
             let mut rows = conn
                 .query(
-                    "SELECT DISTINCT entity_id FROM transaction_log \
-                     WHERE table_name = 'concepts' AND branch_id = ?1 \
-                     AND entity_id NOT IN (SELECT id FROM concepts \
+                    "SELECT DISTINCT entity_id FROM ( \
+                        SELECT entity_id FROM transaction_log \
+                        WHERE table_name = 'concepts' AND branch_id = ?1 \
+                        UNION SELECT id FROM concepts WHERE branch_id = ?1 \
+                        UNION SELECT id FROM concept_versions WHERE branch_id = ?1 \
+                        UNION SELECT id FROM concept_cuts WHERE branch_id = ?1 \
+                     ) \
+                     WHERE entity_id NOT IN (SELECT id FROM concepts \
                          WHERE json_extract(content, '$.kind') IN \
                             ('content_version', 'branch_content', 'commit', \
                              'annotation', 'comment')) \
@@ -3362,6 +3679,42 @@ fn v2_common(
 /// or a stale envelope version (a v1 row can agree on all three yet still
 /// need the v2 upgrade rewrite — and any future meta_version bump must
 /// rewrite every row exactly once).
+/// One resolved overlay/ancestor version as a write-side comparison row.
+/// The `retired` flag the mint row carries is not exposed by the
+/// resolution type; a retired belief reads closed through its interval,
+/// which is exactly what the bulk law compares.
+fn version_row(v: &macrame::temporal::ConceptVersion) -> CurrentRow {
+    CurrentRow {
+        title: v.title.clone(),
+        content: v.content.clone(),
+        extra: v.extra.clone(),
+        valid_from: v.valid_from.clone().unwrap_or_default(),
+        valid_to: v.valid_to.clone().unwrap_or_default(),
+        retired: false,
+        branch_id: v.branch_id.clone(),
+    }
+}
+
+/// The bulk's projection key: one read per (writer, stamp, id).
+type ProjectionRow = Option<CurrentRow>;
+fn projection_key(writer: &str, stamp: &str, id: &str) -> String {
+    format!("{writer}\u{0}{stamp}\u{0}{id}")
+}
+
+/// The bulk's unchanged filter: an act whose candidate is byte-identical
+/// to the projection row its own decision read is dropped. A row the
+/// decision found ABSENT always writes (a first mint must land, and
+/// fail-open toward facts is the settled direction). Attachment to the
+/// decided projection is what makes this lawful for branch rows: their
+/// comparison is their resolved state, not another lineage's row.
+fn act_is_new(act: &ConceptUpsert, projection: &HashMap<String, Option<CurrentRow>>) -> bool {
+    let writer = act.branch.as_ref().map(|b| b.as_str()).unwrap_or_default();
+    match projection.get(&projection_key(writer, &act.valid_from, &act.id)) {
+        None => true,
+        Some(row) => concept_changed(act, row.as_ref()),
+    }
+}
+
 fn concept_changed(concept: &ConceptUpsert, current: Option<&CurrentRow>) -> bool {
     let Some(row) = current else {
         return true;
