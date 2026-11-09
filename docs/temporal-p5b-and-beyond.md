@@ -583,6 +583,28 @@ record before P5d.** Until observation writes exist, a commit-time store blinds 
 every mutation `ApplyIncomplete`, and hides every uncommitted edit (F5). The production migration of the self-host store waits for P5d; whichever of
 Q-8's answers then applies (keep frozen, decided 2026-10-31) is unaffected.
 
+**K8 — the post-merge re-ingest for hollow stores (P5a.5's step, spec'd 2026-11-09).** A store
+whose trunk walk ran while the engine was pre-D-315 holds merged files as bytes and spine with
+their concepts skipped, and its trunk cursor sits past those merge commits, so a resume never
+heals it — and under the 0.22 pin the hollow state cannot even be produced by today's ops (a
+trunk walk meeting a branch-born id either adopts inline, when the branch lineage is already
+minted, or mints it as ordinary when nothing is minted yet). The carrier is therefore a
+**named-commit re-walk, not a cursor rewind**: `reingest_merged_commits` (Rust FFI beside
+`ingest_history`; a py `ops` wrapper; the migration op calls it after each branch) walks the
+trunk's first-parent chain, keeps the same INV-11 nudge chain state, and processes only the
+merge commits, and in them only the files whose module ids are hollow on the main lineage
+(`mint_lineage(id)` names another lineage → adoption at the merge's own nudged stamp; no minting
+lineage with no branch mapping → the skip reason remains, per §10 item 1 of the Amendment 2
+spec), only files still present in HEAD's tree (the absent ones are named `gone by head`, not
+half-minted). One bulk flush per commit; scoped-edge persistence from an own-files-only cascade
+(the branch walk's rule, not a head-state approximation); the commit concept and the spine
+touched nothing (they landed at the original walk); the `kv` cursor untouched. A second run
+re-adopts nothing (an id the first run minted on `main` routes ordinary and `filter_unchanged`
+drops it) — the heal is idempotent by construction, and P-9's pricing counts its write volume
+under the same D-299 keep law. The unit tests are Rust-side (`kv_put_sync` forges the
+past-the-merge cursor shape; py has no kv surface), the py layer takes the wrapper and the
+report contract.
+
 ---
 
 ## 9. Hazards (continue H-14..H-20)
