@@ -89,6 +89,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(write_branch_content, m)?)?;
     m.add_function(wrap_pyfunction!(history_of, m)?)?;
     m.add_function(wrap_pyfunction!(ingest_history, m)?)?;
+    m.add_function(wrap_pyfunction!(reingest_merged_commits, m)?)?;
     m.add_function(wrap_pyfunction!(backfill_commit_messages, m)?)?;
     m.add_function(wrap_pyfunction!(annotate, m)?)?;
     m.add_function(wrap_pyfunction!(comment, m)?)?;
@@ -2407,6 +2408,59 @@ fn ingest_history(
                 | IngestError::LineageExists { .. }
                 | IngestError::InvalidLineage { .. } => true,
                 IngestError::Store(_) => false,
+            };
+            if user_error {
+                pyo3::exceptions::PyValueError::new_err(msg)
+            } else {
+                pyo3::exceptions::PyRuntimeError::new_err(msg)
+            }
+        })?;
+    serde_json::to_string(&report)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// The K8 heal (Amendment 2 §10 item 4): re-ingest the trunk's merge
+/// commits whose files the original trunk walk skipped hollow, adopting
+/// the entity concepts at the merge commits' own stamps. No MCP tool: a
+/// long, writing, migration-grade op an agent must not call without
+/// knowing that (the H-13 shape — the wrapper docstring carries the same
+/// warning). Refusals (store missing, wrong store mode, non-trunk
+/// branch) are `ValueError`; infrastructure failures are
+/// `RuntimeError`; the report is the same `IngestReport` JSON the walk
+/// returns (adoptions = healed files; `files_failed` carries the
+/// `gone-by-head`, `no-mint` and flush-error audits).
+#[pyfunction]
+#[pyo3(signature = (store_path, repo, branch = "main", dry_run = false))]
+fn reingest_merged_commits(
+    py: Python<'_>,
+    store_path: &str,
+    repo: &str,
+    branch: &str,
+    dry_run: bool,
+) -> PyResult<String> {
+    use crate::graph::ingest::IngestError;
+    let report = py
+        .allow_threads(|| {
+            crate::graph::ingest::reingest_merged_commits(store_path, repo, branch, dry_run)
+        })
+        .map_err(|e| {
+            let msg = e.to_string();
+            let user_error = match &e {
+                IngestError::Git(ge) => {
+                    matches!(
+                        ge,
+                        crate::fs::git::GitError::UnknownBranch(_)
+                            | crate::fs::git::GitError::UnknownRevision(_)
+                            | crate::fs::git::GitError::NotAncestor(_)
+                            | crate::fs::git::GitError::NoCommonHistory { .. }
+                            | crate::fs::git::GitError::PathNotFound { .. }
+                    )
+                }
+                IngestError::IndexNowRefused { .. } | IngestError::TrunkBranchMismatch { .. } => {
+                    true
+                }
+                IngestError::Store(_) => false,
+                _ => false,
             };
             if user_error {
                 pyo3::exceptions::PyValueError::new_err(msg)

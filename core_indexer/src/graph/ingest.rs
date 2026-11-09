@@ -1576,11 +1576,8 @@ pub fn ingest_branch_history(
                 }
             }
             let retire: Vec<String> = retire.into_iter().collect();
-            match store.retire_entities_on_branch_at(&retire, lineage, &stamp) {
-                Ok((asked, written)) => {
-                    eprintln!("[m6g-dbg] sweep at {sha}: candidates={} asked={asked} written={written} retire={retire:?}", retire.len());
-                }
-                Err(e) => eprintln!("[ingest] branch sweep failed at {sha}: {e:?}"),
+            if let Err(e) = store.retire_entities_on_branch_at(&retire, lineage, &stamp) {
+                eprintln!("[ingest] branch sweep failed at {sha}: {e:?}");
             }
         }
         report.files_failed.extend(commit_failed_files);
@@ -1594,6 +1591,508 @@ pub fn ingest_branch_history(
             .kv_put_sync(&ingest_head_key(lineage), &sha)
             .map_err(|e| IngestError::Store(format!("cannot advance cursor: {e:?}")))?;
         stamp_prev = Some(stamp);
+        report.head = Some(sha);
+        report.commits_ingested += 1;
+    }
+    report.elapsed_secs = started.elapsed().as_secs_f64();
+    Ok(report)
+}
+
+/// K8 (Amendment 2 §10 item 4): re-ingest the trunk's MERGE commits whose
+/// files the original trunk walk skipped hollow — bytes and spine landed,
+/// the entity concepts did not — so the D-315 adoption path mints them
+/// now, at the merge commits' own stamps, on stores that predate the
+/// adoption law. The trunk cursor sits past those commits, so a resume
+/// never reaches them; this op is the re-ingest WITHOUT a cursor rewind:
+/// the rewind is not a carrier (it would double every history row the
+/// chain already holds and re-run its sweeps), and the hollow state is
+/// otherwise unreachable under an adoption-law engine (a trunk walk
+/// meeting a branch-born id either adopts inline, when the branch lineage
+/// is already minted, or mints it as ordinary when nothing is minted).
+///
+/// The walk keeps the full first-parent chain in plan (from the root) so
+/// the INV-11 nudge chain state is replayed across every commit — the
+/// stamps the heal uses are the stamps a full pass would have used, which
+/// is what keeps a heal row's start equal to its spine row's start from
+/// the original walk. Only merge commits process; in them only the files
+/// whose module id is **hollow on the main lineage**:
+///
+/// - `mint_lineage(id)` names another lineage → the vintage skip → the
+///   adoption (an ordinary first version at the commit's stamp, nothing
+///   copied, the provenance row unmoved), audited in `adoptions`.
+/// - `mint_lineage(id)` names `main` → ingested at the original walk →
+///   untouched (a re-run reads every healed id this way, so the op is
+///   idempotent by construction).
+/// - no mint anywhere → not the vintage-skip shape → named `no-mint` in
+///   `files_failed`, untouched (the regular walk's own business).
+///
+/// And only files still present in HEAD's tree heal; the absent ones are
+/// named `gone-by-head`, never half-minted (a heal's correct history for
+/// them needs the closes of later commits, which is not this op's shape).
+///
+/// Per commit: blob puts (content-addressed dedup as usual), the same
+/// extraction and cascade the walk runs — over an own-files projection
+/// (the branch walk's rule; edges between a healed file and files outside
+/// the heal's set do not resolve here) — one bulk flush of the healed
+/// entities at the commit's stamp (no commit concept, no spine, no sweep:
+/// all three landed at the original walk and the sweep owns removals),/// and scoped edge persistence for the healed files. The `kv` cursor and
+/// the head/stamp keys are untouched by definition: this op writes no
+/// history windows beyond the entities the vintage skip left out.
+///
+/// A failed bulk is audited loudly (ghost-commit precedent's spirit) and
+/// the run continues — there is no cursor to stop behind — so the report
+/// is the operator's repair list; a partially written bulk is re-read as
+/// `main`-minted by the next run (already) and the residual ids are named
+/// in the audit.
+pub fn reingest_merged_commits(
+    store_path: &str,
+    repo: &str,
+    branch: &str,
+    dry_run: bool,
+) -> Result<IngestReport, IngestError> {
+    // The heal is trunk-only: merges land entity concepts on the lineage
+    // the merge commit belongs to, and that is the trunk.
+    if branch != "main" {
+        return Err(IngestError::TrunkBranchMismatch {
+            branch: branch.to_string(),
+        });
+    }
+    let started = Instant::now();
+    let lineage = "main";
+    let mut report = IngestReport {
+        branch: branch.to_string(),
+        lineage: lineage.to_string(),
+        fork_point: None,
+        from: None,
+        head: None,
+        dry_run,
+        commits_ingested: 0,
+        commits_skipped: Vec::new(),
+        files_parsed: 0,
+        files_failed: Vec::new(),
+        adoptions: Vec::new(),
+        commits_adopted_concepts: 0,
+        inherited_cuts: 0,
+        files_excluded: 0,
+        blobs_stored: 0,
+        blobs_deduped: 0,
+        stamps_nudged: 0,
+        ghost_commits: 0,
+        elapsed_secs: 0.0,
+    };
+    let store_file = std::path::Path::new(store_path);
+    if !store_file.exists() {
+        return Err(IngestError::Store(format!(
+            "the heal runs on an existing commit-time store; {store_path:?} does not exist — ingest_history builds stores"
+        )));
+    }
+    let store = CodeGraphStore::open(store_file)
+        .map_err(|e| IngestError::Store(format!("cannot open {store_path:?}: {e:?}")))?;
+    // INV-12, same as every ingest surface: commit time is the only mode
+    // the heal writes under.
+    let mode = store
+        .kv_get_sync(STAMPING_MODE_KEY)
+        .map_err(|e| IngestError::Store(format!("cannot read stamping mode: {e:?}")))?;
+    match mode.as_deref() {
+        Some(MODE_COMMIT_TIME) => {}
+        Some(MODE_INDEX_NOW) => {
+            return Err(IngestError::IndexNowRefused {
+                path: store_path.to_string(),
+                legacy: false,
+            })
+        }
+        Some(other) => {
+            return Err(IngestError::Store(format!(
+                "unknown stamping mode {other:?} on {store_path:?}"
+            )))
+        }
+        None => {
+            return Err(IngestError::Store(format!(
+                "no stamping mode on {store_path:?} — the pre-flag era's store shape, which the heal does not guess at"
+            )))
+        }
+    }
+
+    // The heal's graph: the same store-backed CodeGraph the walk builds.
+    // The projection starts empty and accumulates the heal's files across
+    // its commits (the walk's running-projection rule, narrowed to the
+    // merge commits' own files).
+    let graph = CodeGraph::new(GraphConfig::default()).with_store(store);
+    {
+        let mut projection = (*graph.snapshot()).clone();
+        projection.path_maps =
+            crate::graph::path_maps::PathMaps::discover(repo, &graph.config.project, &[]);
+        graph.commit_projection(projection);
+    }
+
+    // The full first-parent chain, purely in git: the nudge chain state
+    // replays across every commit, so the heal's stamps are the stamps a
+    // full pass would have used (the vintage walks ran exactly one).
+    let plans = plan_ingest(repo, branch, None)?;
+    if plans.is_empty() {
+        report.elapsed_secs = started.elapsed().as_secs_f64();
+        return Ok(report);
+    }
+    // HEAD's tree, in the canonical spelling the same way `changed` is
+    // compared: the heal's presence gate (files gone by the tip are named
+    // before anything writes).
+    let head_tree: std::collections::HashSet<String> = plans
+        .last()
+        .expect("non-empty")
+        .tree
+        .iter()
+        .map(|p| {
+            canonical_file_form_with_root(&p.to_string_lossy().replace('\\', "/"), Path::new(repo))
+        })
+        .collect();
+
+    let std_excludes = crate::exclusion_gitignore(&[]);
+    let excluded = |rel: &Path| -> bool {
+        match &std_excludes {
+            Some(matcher) => crate::path_excluded(matcher, rel, false),
+            None => false,
+        }
+    };
+    let repo_root = Path::new(repo);
+    let canonical = |rel: &Path| -> String {
+        canonical_file_form_with_root(&rel.to_string_lossy().replace('\\', "/"), repo_root)
+    };
+    let mut query_cache: HashMap<crate::types::Language, crate::extract::tagger::CompiledQuery> =
+        HashMap::new();
+    let mut parser = tree_sitter::Parser::new();
+    let mut seen_digests: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let mut stamp_prev: Option<String> = None;
+    for commit in plans.iter() {
+        let sha = commit.sha.clone();
+        let (nudged, was_nudged) = nudge_valid_from(stamp_prev.as_deref(), &commit.committer_ts);
+        let stamp = zulu_valid_from(&nudged).expect("nudge output is always a timestamp");
+        if was_nudged {
+            report.stamps_nudged += 1;
+        }
+        stamp_prev = Some(stamp.clone());
+        // Merge commits only: a hollow trunk walk skipped at a merge's
+        // first-parent diff, and that is the shape the heal re-reads.
+        if commit.parents.len() < 2 {
+            continue;
+        }
+        if dry_run {
+            report.commits_skipped.push(SkippedCommit {
+                sha: sha.clone(),
+                reason: "dry-run".to_string(),
+            });
+        }
+        // The heal's file set, classified from the ledger before anything
+        // writes: hollow → adopt; main → already (untouched); no mint →
+        // no-mint (named, untouched); gone from HEAD's tree → named.
+        let mut parsed_units: Vec<(
+            String,
+            crate::types::Language,
+            Vec<crate::types::ExtractedUnit>,
+        )> = Vec::new();
+        let mut bad_languages: std::collections::HashSet<crate::types::Language> =
+            std::collections::HashSet::new();
+        let mut digests = SourceBlobDigests::new();
+        let mut commit_failed_files: Vec<FailedFile> = Vec::new();
+        let mut ghost_detail: Option<String> = None;
+        for rel in commit.changed.iter().filter(|p| !excluded(p.as_path())) {
+            let canonical_path = canonical(rel);
+            let module_id = format!("{canonical_path}::module");
+            match graph
+                .store
+                .as_ref()
+                .expect("heal graph always holds a store")
+                .mint_lineage(&module_id)
+            {
+                Ok(Some(mint)) if mint == lineage => {
+                    // Ingested at the original walk: nothing to heal. A
+                    // re-run reads every id it healed last time exactly
+                    // here.
+                    continue;
+                }
+                Ok(Some(_)) => {
+                    // The mint names ANOTHER lineage: either the vintage
+                    // skip (adopt here, its first version lands on the
+                    // trunk while the mint row keeps the branch) — or a
+                    // file the trunk spine already claims (a previous
+                    // heal's adoption lives in the spine, and the
+                    // provenance row never moves). The D-315 law in both
+                    // shapes. A re-run reads every id it healed last
+                    // time exactly there.
+                    let taken = graph
+                        .store
+                        .as_ref()
+                        .expect("heal graph always holds a store")
+                        .trunk_version_live(&module_id)
+                        .unwrap_or(false);
+                    if taken {
+                        commit_failed_files.push(FailedFile {
+                            sha: sha.clone(),
+                            path: canonical_path.clone(),
+                            reason: if dry_run {
+                                "dry-run:already-adopted".to_string()
+                            } else {
+                                "already-adopted".to_string()
+                            },
+                        });
+                        continue;
+                    }
+                    report.adoptions.push(FailedFile {
+                        sha: sha.clone(),
+                        path: canonical_path.clone(),
+                        reason: if dry_run {
+                            "dry-run".to_string()
+                        } else {
+                            "adopted-first-version".to_string()
+                        },
+                    });
+                    // A dry run names its would-heal set and writes
+                    // nothing - no blob puts, no parse, no flush.
+                    if dry_run {
+                        continue;
+                    }
+                }
+                Ok(None) => {
+                    if dry_run {
+                        commit_failed_files.push(FailedFile {
+                            sha: sha.clone(),
+                            path: canonical_path.clone(),
+                            reason: "dry-run:no-mint".to_string(),
+                        });
+                    } else {
+                        commit_failed_files.push(FailedFile {
+                            sha: sha.clone(),
+                            path: canonical_path.clone(),
+                            reason: "no-mint".to_string(),
+                        });
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("[ingest] mint-lineage check failed for {canonical_path}: {e:?}");
+                    commit_failed_files.push(FailedFile {
+                        sha: sha.clone(),
+                        path: canonical_path.clone(),
+                        reason: "mint-lineage-check".to_string(),
+                    });
+                    continue;
+                }
+            }
+            if !head_tree.contains(&canonical_path) {
+                // A file the merge brought in and later commits deleted:
+                // named, never half-minted. The adoption entry just pushed
+                // for the same file is withdrawn - one verdict per file.
+                report
+                    .adoptions
+                    .retain(|f| !(f.sha == sha && f.path == canonical_path));
+                commit_failed_files.push(FailedFile {
+                    sha: sha.clone(),
+                    path: canonical_path.clone(),
+                    reason: "gone-by-head".to_string(),
+                });
+                continue;
+            }
+            // Blob puts first (put-then-assert, per commit), the walk's
+            // own order.
+            let bytes = match blob_bytes(repo, &sha, rel) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    ghost_detail = Some(format!("bytes for {} vanished: {e:?}", rel.display()));
+                    break;
+                }
+            };
+            let put_outcome = graph
+                .store
+                .as_ref()
+                .expect("heal graph always holds a store")
+                .put_source_blob(&canonical_path, &bytes);
+            match put_outcome {
+                Ok(BlobOutcome::Stored { digest, .. }) => {
+                    if seen_digests.insert(digest.clone()) {
+                        report.blobs_stored += 1;
+                    } else {
+                        report.blobs_deduped += 1;
+                    }
+                    digests.insert(canonical_path.clone(), digest);
+                }
+                Ok(BlobOutcome::SkippedOversize { .. }) => {
+                    // No digest, no spine row — the walk's same degrade.
+                    continue;
+                }
+                Ok(BlobOutcome::SkippedExcluded) => {
+                    report.files_excluded += 1;
+                    continue;
+                }
+                Ok(BlobOutcome::Disabled) => {}
+                Err(e) => {
+                    eprintln!("[ingest] blob put failed for {canonical_path}: {e:?} — continuing");
+                }
+            }
+            // Extraction from the same bytes (P5-D9: bytes land even when
+            // the file does not parse exactly as the walk reads it).
+            let lang = crate::types::Language::from_extension(
+                rel.extension().and_then(|e| e.to_str()).unwrap_or(""),
+            );
+            if bad_languages.contains(&lang) {
+                commit_failed_files.push(FailedFile {
+                    sha: sha.clone(),
+                    path: canonical_path,
+                    reason: "query-compile".to_string(),
+                });
+                continue;
+            }
+            let Some(ts_lang) = CodeGraph::ts_language(&lang) else {
+                commit_failed_files.push(FailedFile {
+                    sha: sha.clone(),
+                    path: canonical_path,
+                    reason: "no-grammar".to_string(),
+                });
+                continue;
+            };
+            let query = match query_cache.entry(lang) {
+                std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+                std::collections::hash_map::Entry::Vacant(v) => {
+                    match crate::extract::tagger::CompiledQuery::new(lang, &ts_lang) {
+                        Some(compiled) => v.insert(compiled),
+                        None => {
+                            bad_languages.insert(lang);
+                            commit_failed_files.push(FailedFile {
+                                sha: sha.clone(),
+                                path: canonical_path,
+                                reason: "query-compile".to_string(),
+                            });
+                            continue;
+                        }
+                    }
+                }
+            };
+            match String::from_utf8(bytes) {
+                Ok(source) => {
+                    parser
+                        .set_language(&ts_lang)
+                        .expect("ts_language agreed, so the parser accepts it");
+                    if let Some(tree) = parser.parse(&source, None) {
+                        let mut units = crate::extract::single_pass::extract_single_pass(
+                            &source,
+                            tree.root_node(),
+                            query,
+                            &canonical_path,
+                        );
+                        units.insert(
+                            0,
+                            CodeGraph::synthesize_module_unit(
+                                &canonical_path,
+                                &lang,
+                                &source,
+                                tree.root_node(),
+                            ),
+                        );
+                        report.files_parsed += 1;
+                        parsed_units.push((canonical_path, lang, units));
+                    } else {
+                        commit_failed_files.push(FailedFile {
+                            sha: sha.clone(),
+                            path: canonical_path,
+                            reason: "parse".to_string(),
+                        });
+                    }
+                }
+                Err(_) => {
+                    commit_failed_files.push(FailedFile {
+                        sha: sha.clone(),
+                        path: canonical_path,
+                        reason: "non-utf8".to_string(),
+                    });
+                }
+            }
+        }
+        report.files_excluded += commit
+            .changed
+            .iter()
+            .chain(commit.deleted.iter())
+            .filter(|p| excluded(p.as_path()))
+            .count();
+        if let Some(detail) = ghost_detail {
+            // P5-D8: the commit's bytes vanished mid-run. The ledger keeps
+            // its prefix; this commit is skipped auditable, and the next
+            // run re-names it.
+            commit_failed_files.push(FailedFile {
+                sha: sha.clone(),
+                path: "<whole-commit>".to_string(),
+                reason: format!("ghost: {detail}"),
+            });
+            eprintln!("[ingest] ghost commit {sha} in the heal: {detail}");
+            report.files_failed.extend(commit_failed_files);
+            continue;
+        }
+        if dry_run {
+            report.files_failed.extend(commit_failed_files);
+            continue;
+        }
+        // The heal's own projection: empty at the run's start, the heal's
+        // files accumulate across its commits (the walk's running-
+        // projection rule, narrowed to the heal's own set — edges between
+        // a healed file and files outside the heal's set do not resolve
+        // here, the branch walk's own-file cascade rule).
+        let mut projection = (*graph.snapshot()).clone();
+        for (canonical_path, lang, units) in &parsed_units {
+            // retire=false, stated: the vintage skip minted nothing, so
+            // the heal retires nothing — the sweep's end-of-chain owns all
+            // removals on this store.
+            graph.apply_diff_update(&mut projection, units, canonical_path, lang, &stamp, false);
+        }
+        rebuild_module_path_index(&mut projection);
+        graph.resolve_imports(&mut projection);
+        graph.populate_class_methods(&mut projection);
+        graph.compute_all_mro(&mut projection);
+        graph.resolve_class_hierarchy(&mut projection);
+        graph.resolve_overrides(&mut projection);
+        graph.resolve_decorators(&mut projection);
+        graph.resolve_all_calls(&mut projection);
+        graph.resolve_instantiations(&mut projection);
+        graph.resolve_references(&mut projection);
+        graph.commit_projection(projection);
+        let projection = graph.snapshot();
+
+        // One flush, one commit: the healed entities only.
+        let mut concepts: Vec<macrame::ConceptUpsert> = Vec::new();
+        for (canonical_path, _, _) in &parsed_units {
+            concepts.extend(crate::storage::build_v2_concepts_for_file_at(
+                &projection,
+                canonical_path,
+                &digests,
+                &stamp,
+            ));
+        }
+        if !concepts.is_empty() {
+            // A failed flush is audited loud, not silent: there is no
+            // cursor to stop behind, so the report is the repair list and
+            // the next run re-names the commit's residual ids.
+            if let Err(e) = graph
+                .store
+                .as_ref()
+                .expect("heal graph always holds a store")
+                .upsert_concepts_bulk(&concepts)
+            {
+                eprintln!(
+                    "[ingest] heal concept flush failed at {sha}: {e:?} — audited, continuing"
+                );
+                commit_failed_files.push(FailedFile {
+                    sha: sha.clone(),
+                    path: "<bulk>".to_string(),
+                    reason: format!("flush-failed-partial: {e:?}"),
+                });
+            }
+        }
+        for (canonical_path, _, _) in &parsed_units {
+            if let Err(e) = graph.persist_edges_scoped_at(&projection, Some(canonical_path), &stamp)
+            {
+                crate::storage::record_edge_persist_error(format!("{sha}:{canonical_path}: {e:?}"));
+                eprintln!("[ingest] heal edge persistence failed for {canonical_path}: {e:?}");
+            }
+        }
+        report.files_failed.extend(commit_failed_files);
+        report.commits_adopted_concepts += concepts.len();
         report.head = Some(sha);
         report.commits_ingested += 1;
     }
@@ -2033,6 +2532,253 @@ mod backfill_tests {
         assert!(matches!(
             backfill_commit_messages(store_path.to_str().unwrap(), dir.path().to_str().unwrap(),),
             Err(BackfillError::Refused(_))
+        ));
+    }
+    // ── K8: the merge-commit heal (Amendment 2 §10 item 4, spec'd in
+    // CodeRadar's temporal plan §8, 2026-11-09) ─────────────────────────
+
+    /// A→B(feat: lib_x.py + gone.py, main still at A). The merge itself
+    /// (adding fresh.py) and the tail (deleting gone.py) build **after**
+    /// the branch ingest this fixture pairs with — the operator order
+    /// the heal serves: `fork_point` slides to the branch tip through a
+    /// merged main (its walk accepts the first branch-chain commit main's
+    /// tip still reaches, and a merge makes that the tip), so a
+    /// post-merged branch ingest walks nothing, and the mint the heal
+    /// adopts has to predate the merge's arrival in the ledger.
+    fn pre_merge_repo() -> (tempfile::TempDir, git2::Repository, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        write_and_stage(
+            &repo, "a.py", "x = 1
+",
+        );
+        let a = commit_on(&repo, "refs/heads/main", "one", &[]);
+        let b = {
+            let pa = repo.find_commit(git2::Oid::from_str(&a).unwrap()).unwrap();
+            write_and_stage(
+                &repo,
+                "lib_x.py",
+                "def x_fn():
+    return 1
+",
+            );
+            write_and_stage(
+                &repo,
+                "gone.py",
+                "def gone_fn():
+    return 2
+",
+            );
+            commit_on(&repo, "refs/heads/feat", "feature", &[&pa])
+        };
+        (dir, repo, a, b)
+    }
+
+    /// The trunk's side of the story, built after the branch ingest: M
+    /// merges feat onto main and adds a file of its own, C deletes
+    /// gone.py. `a` and `b` name both merge parents.
+    fn apply_merge(repo: &git2::Repository, a: &str, b: &str) -> (String, String) {
+        let pa = repo.find_commit(git2::Oid::from_str(a).unwrap()).unwrap();
+        let pb = repo.find_commit(git2::Oid::from_str(b).unwrap()).unwrap();
+        repo.set_head("refs/heads/main").unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+        let a_tree = pa.tree().unwrap();
+        let mut index = repo.index().unwrap();
+        index.read_tree(&a_tree).unwrap();
+        index.write().unwrap();
+        write_and_stage(repo, "lib_x.py", "def x_fn():\n    return 1\n");
+        write_and_stage(repo, "gone.py", "def gone_fn():\n    return 2\n");
+        write_and_stage(repo, "fresh.py", "def fresh_fn():\n    return 3\n");
+        let m = commit_on(repo, "refs/heads/main", "merge", &[&pa, &pb]);
+        let pm = repo.find_commit(git2::Oid::from_str(&m).unwrap()).unwrap();
+        let mut index = repo.index().unwrap();
+        index.remove_path(std::path::Path::new("gone.py")).unwrap();
+        index.write().unwrap();
+        let _ = std::fs::remove_file(repo.workdir().unwrap().join("gone.py"));
+        let c = commit_on(repo, "refs/heads/main", "tail", &[&pm]);
+        (m, c)
+    }
+
+    /// The feat lineage, ingested while main still sits at the merge
+    /// base: the store the heal's vintage shape needs, with the mode
+    /// claim a real write carries.
+    fn ingest_feat(store_path: &std::path::Path, repo: &str) {
+        crate::graph::ingest::ingest_branch_history(
+            &store_path.to_string_lossy(),
+            repo,
+            "feat",
+            "feat",
+            "main",
+            None,
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn the_heal_adopts_the_vintage_skip_at_the_merge_s_stamp() {
+        let (dir, repo, a, b) = pre_merge_repo();
+        let store_path = dir.path().join("heal.db");
+        let repo_s = dir.path().to_string_lossy().to_string();
+        ingest_feat(&store_path, &repo_s);
+        let (m, _c) = apply_merge(&repo, &a, &b);
+        // the precondition: the mint is away from the trunk
+        {
+            let store_check = crate::storage::CodeGraphStore::open(&store_path).unwrap();
+            assert_eq!(
+                store_check
+                    .mint_lineage("lib_x.py::module")
+                    .unwrap()
+                    .unwrap(),
+                "feat",
+                "the branch-born id is minted on feat before the heal"
+            );
+        }
+        let report = crate::graph::ingest::reingest_merged_commits(
+            &store_path.to_string_lossy(),
+            &repo_s,
+            "main",
+            false,
+        )
+        .unwrap();
+        assert_eq!(report.commits_ingested, 1, "one merge commit on the chain");
+        let adoptions: Vec<&FailedFile> = report
+            .adoptions
+            .iter()
+            .filter(|f| f.path == "lib_x.py")
+            .collect();
+        assert_eq!(adoptions.len(), 1, "the healed id is audited once");
+        assert_eq!(
+            adoptions[0].reason, "adopted-first-version",
+            "the adoption shape, not a skip"
+        );
+        let reasons: Vec<(String, String)> = report
+            .files_failed
+            .iter()
+            .map(|f| (f.path.clone(), f.reason.clone()))
+            .collect();
+        assert!(
+            reasons.contains(&("gone.py".to_string(), "gone-by-head".to_string())),
+            "the merge's deleted-by-head file is named: {reasons:?}"
+        );
+        assert!(
+            reasons.contains(&("fresh.py".to_string(), "no-mint".to_string())),
+            "a merge-only add with no mint anywhere is named, not half-minted: {reasons:?}"
+        );
+        // The healed shape: the write lands as the trunk's first version
+        // while the provenance row keeps the mint lineage (D-315 by
+        // construction - the id's concepts row is never retouched).
+        let store_check = crate::storage::CodeGraphStore::open(&store_path).unwrap();
+        let (_content, branch_id) = read_row(&store_check, "lib_x.py::module");
+        assert_eq!(
+            branch_id, "feat",
+            "the provenance row keeps the mint lineage after the heal"
+        );
+        assert!(
+            store_check.trunk_version_live("lib_x.py::module").unwrap(),
+            "the healed version lives on the trunk spine"
+        );
+    }
+
+    #[test]
+    fn the_heal_is_idempotent_a_second_run_adopts_nothing() {
+        let (dir, repo, a, b) = pre_merge_repo();
+        let store_path = dir.path().join("heal.db");
+        let repo_s = dir.path().to_string_lossy().to_string();
+        let store_s = store_path.to_string_lossy().to_string();
+        ingest_feat(&store_path, &repo_s);
+        let (m, _c) = apply_merge(&repo, &a, &b);
+        let first = crate::graph::ingest::reingest_merged_commits(
+            &store_s,
+            &dir.path().to_string_lossy(),
+            "main",
+            false,
+        )
+        .unwrap();
+        assert!(first.commits_adopted_concepts > 0, "the first run heals");
+        let second = crate::graph::ingest::reingest_merged_commits(
+            &store_s,
+            &dir.path().to_string_lossy(),
+            "main",
+            false,
+        )
+        .unwrap();
+        assert_eq!(second.commits_ingested, 1, "the merge commit re-walks");
+        assert!(
+            second.adoptions.iter().all(|f| f.path != "lib_x.py"),
+            "the second run re-reads the healed id as minted on main: {:?}",
+            second.adoptions
+        );
+        let reasons: Vec<(String, String)> = second
+            .files_failed
+            .iter()
+            .map(|f| (f.path.clone(), f.reason.clone()))
+            .collect();
+        assert!(
+            reasons.contains(&("gone.py".to_string(), "gone-by-head".to_string())),
+            "the gone file stays named on a re-run"
+        );
+    }
+
+    #[test]
+    fn the_dry_run_names_the_set_and_writes_nothing() {
+        let (dir, repo, a, b) = pre_merge_repo();
+        let store_path = dir.path().join("heal.db");
+        let repo_s = dir.path().to_string_lossy().to_string();
+        let store_s = store_path.to_string_lossy().to_string();
+        ingest_feat(&store_path, &repo_s);
+        let (m, _c) = apply_merge(&repo, &a, &b);
+        let report = crate::graph::ingest::reingest_merged_commits(
+            &store_s,
+            &dir.path().to_string_lossy(),
+            "main",
+            true,
+        )
+        .unwrap();
+        assert!(
+            report
+                .adoptions
+                .iter()
+                .any(|f| f.path == "lib_x.py" && f.reason == "dry-run"),
+            "the dry run names the would-heal: {:?}",
+            report.adoptions
+        );
+        let store_check = crate::storage::CodeGraphStore::open(&store_path).unwrap();
+        assert_eq!(
+            store_check
+                .mint_lineage("lib_x.py::module")
+                .unwrap()
+                .unwrap(),
+            "feat",
+            "the dry run wrote nothing"
+        );
+    }
+
+    #[test]
+    fn the_heal_refuses_a_missing_store_and_a_non_trunk_branch() {
+        let (dir, repo, a, b) = pre_merge_repo();
+        let repo_s = dir.path().to_string_lossy().to_string();
+        let missing = dir.path().join("absent.db");
+        let report = crate::graph::ingest::reingest_merged_commits(
+            &missing.to_string_lossy(),
+            &repo_s,
+            "main",
+            false,
+        );
+        assert!(matches!(report, Err(IngestError::Store(_))));
+        let store_path = dir.path().join("feats.db");
+        ingest_feat(&store_path, &repo_s);
+        let (m, _c) = apply_merge(&repo, &a, &b);
+        let report = crate::graph::ingest::reingest_merged_commits(
+            &store_path.to_string_lossy(),
+            &repo_s,
+            "feat",
+            false,
+        );
+        assert!(matches!(
+            report,
+            Err(IngestError::TrunkBranchMismatch { .. })
         ));
     }
 }

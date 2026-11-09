@@ -1787,6 +1787,78 @@ def ingest_history(repo: str | Path, branch: str = "main",
         raise EngineError(f"ingest_history returned unparseable JSON: {e}") from None
 
 
+def reingest_merged_commits(repo: str | Path, branch: str = "main",
+                            dry_run: bool = False,
+                            *, store_path: str | Path | None = None,
+                            graph: Any = None) -> dict:
+    """Re-ingest the trunk's merge commits the original walk skipped
+    hollow (Amendment 2 §10 item 4, K8).
+
+    A pre-0.22 trunk walk met a merge whose files the merging lineage
+    had not ingested yet: spine and bytes landed, the old shape refused
+    its own minting, and that refusal was NOT yet the D-315 adoption —
+    the module id exists on the merging branch, but the trunk spine
+    never learned it. The heal re-walks those commits at their own
+    stamps and gives the foreign-minted ids their trunk-side first
+    version through the same adoption path a full pass uses.
+
+    Trunk only and store required: the heal serves the temporal walk's
+    own skipped set, never a branch (branch history belongs to its
+    lineage ingest), and it opens an existing commit-time store rather
+    than creating one (INV-12).
+
+    What it does not touch: the cursor and stamp kv keys (the heal
+    never advances or rewinds any ingest cursor — its stamps come from
+    replaying the INV-11 nudge chain over the full first-parent plan,
+    so they equal a full pass's), the commit concepts and spine rows
+    the original walk wrote, and removals (the sweep owns those) — no
+    retire is issued and nothing already readable is re-minted, so a
+    second run is a no-op beyond accounting (``already-adopted``).
+
+    Per merge commit, classed from the ledger before any write:
+    foreign mint → an adoption
+    ("adopted-first-version"); the trunk spine already claiming the id
+    → "already-adopted", untouched; no mint anywhere → "no-mint",
+    named but never half-minted; deleted by HEAD's tree →
+    "gone-by-head", named. A failed concept flush is audited and the
+    run continues — there is no cursor behind which a fine-grained
+    resume is possible.
+
+    ``dry_run`` names its would-heal set ("dry-run" / "dry-run:no-mint"
+    / "dry-run:already-adopted") and writes nothing.
+
+    There is deliberately no cwd default for the store, and no MCP tool
+    in the first release: a writing, migration-grade op an agent must
+    not call without knowing that.
+
+    Signature note: the store path is the FIRST native argument (the
+    heal opens a store; the ingest creates one), so pass ``store_path``
+    or a ``graph`` carrying one — never expect creation.
+    """
+    if not repo or not str(repo).strip():
+        raise InvalidRequest("Please provide a repository path.")
+    if store_path is None and graph is not None:
+        store_path = getattr(graph, "_db_path", None)
+    if store_path is None:
+        raise InvalidRequest(
+            "reingest_merged_commits needs a store_path (or a graph carrying one): "
+            "the heal opens an existing commit-time store, it never creates one.")
+    try:
+        from coderadar._core import reingest_merged_commits as _heal
+        raw = _heal(str(store_path), str(repo), str(branch), bool(dry_run))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"reingest_merged_commits returned unparseable JSON: {e}") from None
+
+
 def migrate_to_commit_time(repo: str | Path, store: str | Path,
                             branches: list[str] | None = None,
                             parent_ref: str = "main",
@@ -1819,10 +1891,17 @@ def migrate_to_commit_time(repo: str | Path, store: str | Path,
     stays unembedded: the one pass covers the trunk-tip final state) and
     ``verify=False`` to skip the coverage sweep.
 
+    After the branches, the merge-commit heal runs once over the trunk
+    (K8) and its report comes back under ``merge_heal`` — every merge
+    commit the in-store walk can name, adopted for ids the trunk spine
+    never claimed. It is a re-walk, not new history: its numbers are
+    not folded into the migration totals.
+
     Returns the report as the contract:: ``{"repo", "store",
     "parent_ref", "branches", "branch_reports": {branch: report},
     "commits_ingested", "commits_skipped", "files_failed",
-    "embeddings", "verify": {branch: coverage} | None,
+    "merge_heal": report | None, "embeddings",
+    "verify": {branch: coverage} | None,
     "elapsed_secs"}``. As a side effect the migrated store is loaded as
     the process-global graph (the embeddings pass and the verification
     need it) — a library caller holding another graph should reload
@@ -1876,6 +1955,14 @@ def migrate_to_commit_time(repo: str | Path, store: str | Path,
     for branch in ordered:
         branch_reports[branch] = ingest_history(
             repo_s, branch, store_path=store_s, parent_ref=parent_ref)
+    # The merge-commit heal (K8, Amendment 2 §10 item 4), once after all
+    # branches: the vintage shape it serves is a pre-0.22 store whose
+    # trunk walk met a merge hollow (spine and bytes, no adoption); a
+    # fresh migration of this shape adopts inline, so the pass usually
+    # names nothing — run anyway, as the one path a rebuilt-from-vintage
+    # ledger has for its merge-day gaps. Its counts stay separate: the
+    # heal RE-walks commits the trunk ingest already counted.
+    merge_heal = reingest_merged_commits(repo_s, store_path=store_s)
     commits_ingested = sum(r["commits_ingested"] for r in branch_reports.values())
     commits_skipped = sum(len(r["commits_skipped"]) for r in branch_reports.values())
     files_failed = sum(len(r["files_failed"]) for r in branch_reports.values())
@@ -1905,6 +1992,7 @@ def migrate_to_commit_time(repo: str | Path, store: str | Path,
         "commits_ingested": commits_ingested,
         "commits_skipped": commits_skipped,
         "files_failed": files_failed,
+        "merge_heal": merge_heal,
         "embeddings": embeddings,
         "verify": coverage,
         "elapsed_secs": round(_time.perf_counter() - started, 3),

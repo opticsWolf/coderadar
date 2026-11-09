@@ -605,6 +605,22 @@ under the same D-299 keep law. The unit tests are Rust-side (`kv_put_sync` forge
 past-the-merge cursor shape; py has no kv surface), the py layer takes the wrapper and the
 report contract.
 
+*(2026-11-09: built. Rust op `reingest_merged_commits` in `graph::ingest` beside
+`ingest_history`, trunk-only and store-required, INV-12-bound; py wrapper
+`ops.reingest_merged_commits`, no MCP tool (H-13); `migrate_to_commit_time` calls it once
+after the branch ingests and reports it as `merge_heal`, its counts kept out of the
+migration totals — the heal re-walks commits the trunk ingest already counted. Two build
+notes the spec's wording narrows: the already-adopted pulse reads the TRUNK SPINE's claim
+(`concepts` under either trunk spelling, an overlay version, a branch-dispatched log row),
+not the mint row alone, because the adoption retouches nothing — `concepts` keeps the mint
+lineage's row forever — and the already-adopted re-run names the file audit-side rather
+than silently skipping; and the py ingest path writes the healed version with
+`valid_from` at the merge's own stamp and `recorded_at` at the heal's day, the same
+bitemporal split every ingest bulk write carries (§H-21's now-stamps, F1's truth). The
+fixture-built test order mirrors the operator order: the branch ingest runs BEFORE the
+merge lands, because once main reaches the branch tip `fork_point` slides past the branch
+tip and a post-merged branch ingest walks nothing.)*
+
 ---
 
 ## 9. Hazards (continue H-14..H-20)

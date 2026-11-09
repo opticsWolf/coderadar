@@ -2996,6 +2996,33 @@ impl CodeGraphStore {
         })
     }
 
+    /// Does the trunk spine hold a row for `id` under either trunk
+    /// spelling (P-9: `''` vintage rows / `'main'` since the naming
+    /// rung)? `concepts` (the mint row of trunk-owned ids),
+    /// `concept_versions` (overlay rows — the D-315 adoption writes
+    /// there; the mint lineage's row is never retouched), and
+    /// `transaction_log` (branch-dispatched log rows). The K8 heal's
+    /// already-taken pulse: a foreign-minted id that the spine already
+    /// claims is ingested or healed, never re-adopted.
+    pub fn trunk_version_live(&self, id: &str) -> macrame::Result<bool> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT EXISTS(                         SELECT 1 FROM concepts                             WHERE branch_id IN ('', 'main') AND id = ?1                         UNION ALL                         SELECT 1 FROM concept_versions                             WHERE branch_id IN ('', 'main') AND id = ?1                         UNION ALL                         SELECT 1 FROM transaction_log                             WHERE table_name = 'concepts' AND branch_id IN ('', 'main') AND entity_id = ?1)",
+                    libsql::params![id],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            Ok(rows
+                .next()
+                .await
+                .map_err(macrame::DbError::Engine)?
+                .map(|row| row.get::<i64>(0).unwrap_or(0) != 0)
+                .unwrap_or(false))
+        })
+    }
+
     /// Ids of every module concept the ledger ever described on a branch
     /// (P1, DR-36): the input universe for a per-generation sweep.
     ///
