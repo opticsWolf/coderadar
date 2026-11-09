@@ -7646,15 +7646,16 @@ mod stamped_write_tests {
                 .contains_key("c.py::g"),
             "TRUNK_VALID_FOLD: the valid-axis fold must not hold the entity after {tpost}"
         );
-        // The walk's legacy row per id (overlay unengaged on the trunk, D-214's
-        // one row per id) reads the tombstone only - Macrame's declared
-        // representation. The honest past reads below the cut are the two
-        // folds (the recorded fold and the valid-axis fold), which the pins
-        // beside this assert cover; CodeRadar's production past reads
-        // (`Snapshot`/`as_of`/`source_refs_at`) are the folds.
+        // The trunk walk's undecided rows paste the log's own per-start
+        // window for the id (Macrame D-316: the same method answers the same
+        // past date whatever the branch spelling), so the mid instant reads
+        // the close row's live window - the same truth the two folds assert
+        // beside this pin. CodeRadar's production past reads
+        // (`Snapshot`/`as_of`/`source_refs_at`) are the folds; the walk now
+        // agrees with them below the cut.
         assert!(
-            !walk_holds(&store, "c.py::g", tmid, "main"),
-            "THE_WALK_DECLARED: a retired mount row is invisible below the cut"
+            walk_holds(&store, "c.py::g", tmid, "main"),
+            "THE_WALK_PASTES: the pre-cut instant reads the close row's live window"
         );
         assert!(
             !walk_holds(&store, "c.py::g", tpost, "main"),
@@ -7701,8 +7702,8 @@ mod stamped_write_tests {
             "the walk holds the re-added entity at {t03}"
         );
         assert!(
-            !walk_holds(&store, "c.py::g", tmid, "main"),
-            "THE_WALK_DECLARED: the re-added row does not resurrect the earlier window's walk view"
+            walk_holds(&store, "c.py::g", tmid, "main"),
+            "TRUNK_WALK: the earlier window's close row still answers the mid instant (the re-add's own window starts later)"
         );
     }
 

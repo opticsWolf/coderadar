@@ -17,6 +17,22 @@
 //! pattern): neither kind joins the projection, so search, stats,
 //! embeddings, and the coverage universes cannot see them (INV-13 — the
 //! exclusions live in `live_concept_ids` / `all_concept_ids`).
+//!
+//! # The retirement shape is the D-2a one-start shape, on purpose
+//!
+//! Code concept rows retire with the forward tombstone (0.22.0: the act
+//! starts at the retirement instant with `supersede(true)`, so its live
+//! window stays readable at earlier instants). Annotations and comments
+//! deliberately keep the D-2a shape — the act re-asserts the row at its
+//! OWN start, closed at the clock — because D-303's one-start law ("the
+//! version who wrote and the version who died are the same version") is
+//! what their readers walk (`annotations_on`, `versions_of`): the chain.
+//! The consequence, stated so nobody "fixes" it back: after a retire,
+//! the row's live period does NOT reappear in `valid_at` reads below the
+//! cut — the retired mount row answers absent at every instant, the same
+//! reading Macrame's doc gives `retired`. The audit trail is the
+//! chain's own history (nearest-first with `open`/`retired` flags), not
+//! a valid-axis read.
 
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 

@@ -241,6 +241,20 @@ per maintainer call); 29-tool MCP surface untouched.
   hard delete only through the archive-session discipline that already
   governs physical removal. Neither kind invents its own deleter
   (INV-5's spirit: one removal discipline, not two).
+  **And the retire keeps the D-2a shape — stated so it does not get
+  "fixed" back:** code concept rows retire with the forward tombstone
+  (the act starts at the retirement instant, `supersede(true)`, so a
+  `valid_at` read below the cut still answers the live window), but
+  annotations and comments retire with the D-2a own-start act
+  (re-assert at the row's own start, closed at the clock, no superside),
+  because D-303's one-start law is what their readers walk —
+  `annotations_on` / `versions_of` read the chain, where the version who
+  wrote and the version who died are one version. The consequence:
+  after a retire, a row's live period does **not** reappear in
+  `valid_at` reads below the cut — the retired mount row answers absent
+  at every instant, exactly the reading Macrame's doc gives `retired`.
+  The audit trail is the chain's own history (nearest-first with
+  `open`/`retired` flags), not a valid-axis read.
 
 ## 8. Phasing (each independently shippable)
 
