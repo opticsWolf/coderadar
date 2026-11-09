@@ -554,10 +554,13 @@ pub fn ingest_history(
             }
             // macrame-db 0.22.0 (D-315, M6-g item 1): a module id minted
             // on a foreign lineage (branch-born, brought in by a merge)
-            // is an adoption — the trunk mints its OWN first version from
-            // this commit's own bytes, and the adoption is auditable in
-            // the report rather than a skip. Nothing is copied and the
-            // id's provenance row stays where D-214 put it.
+            // is an adoption — the trunk asserts its OWN first version
+            // from this commit's own bytes, and the adoption is auditable
+            // in the report rather than a skip. Since schema v26 the
+            // version is an overlay row (a first version in
+            // `concept_versions` on the writer's own lineage); nothing is
+            // copied and the id's provenance row stays where D-214 put
+            // it.
             let foreign = graph
                 .store
                 .as_ref()

@@ -66,18 +66,23 @@ pub mod edge_type {
     /// row carries no `file_path`, and the kind is excluded from the
     /// entity listings beside `content_version`.
     ///
-    /// Why a concept and not an edge: Macrame concepts are
-    /// lineage-frozen — a branch inherits its parent's concepts and
-    /// cannot restate one (D-225; the overlay is deferred as D-214) — so
-    /// divergent bytes cannot live in the module concept. A branch
-    /// therefore mints its OWN pointer concept per path, id
-    /// `branch:{branch}:content:{path}` (stable per lineage+path, so
-    /// every re-point is same-id turnover and the archive reclaims
-    /// superseded bytes exactly like superseded module content). An
-    /// earlier edge-shaped pointer died on retention evidence: link log
-    /// rows are terminal (a closed row is latest-for-its-entity
-    /// forever), so every superseded branch version would pin its blob
-    /// hot forever; concept turnover has no such trap.
+    /// Why a concept and not an edge: when this was built, Macrame
+    /// concepts were lineage-frozen — a branch inherited its parent's
+    /// concepts and could not restate one (D-225; the overlay was
+    /// deferred as D-214) — so divergent bytes could not live in the
+    /// module concept. Since schema v26 the overlay carries a branch's
+    /// own version beside the immutable mint and D-315's adoption arms
+    /// have a lineage assert its own first version — but the pointer
+    /// concept stays, built on the shape the old law forced and kept by
+    /// its own retention evidence: a branch mints its OWN pointer
+    /// concept per path, id `branch:{branch}:content:{path}` (stable per
+    /// lineage+path, so every re-point is same-id turnover and the
+    /// archive reclaims superseded bytes exactly like superseded module
+    /// content). An earlier edge-shaped pointer died on retention
+    /// evidence: link log rows are terminal (a closed row is
+    /// latest-for-its-entity forever), so every superseded branch
+    /// version would pin its blob hot forever; concept turnover has no
+    /// such trap.
     ///
     /// The read side is a direct map lookup (no scan): the branch's
     /// pointer wins when present, else the module concept (trunk-frozen

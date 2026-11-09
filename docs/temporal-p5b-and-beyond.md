@@ -8,6 +8,16 @@
 > (D-303) and nothing else this plan requests; §0's 0.21.0 rows, U-1, P5b.2 and §7 say what that
 > changes. U-2..U-5 are not filed yet (Q-13).
 >
+> **Updated 2026-11-09: Macrame `0.22.0` is on `dev/0.22.0-revA` at `5288876`** (CodeRadar pins
+> it there; the release tail is pending). It delivers **U-5** as D-312 (supersede in one call)
+> and **U-4's substance** as D-315 adoption (a lineage asserts what it merged from, provenance
+> at the mint; the merge itself remains Doctrine III's own decision, so U-4 is marked
+> "delivered through adoption", not "done"). It also ships **D-314** (the concept overlay:
+> per-lineage versions and cuts, the read walk, the search and archive arms) and **D-316** (a
+> past instant still reads below a cut or supersede through the walk, capped at the ancestry
+> cutoff). **U-2 and U-3 remain unfiled**; they are the remaining upstream path (§7 and Q-13
+> mark it).
+>
 > **Scope.** Everything after P5a that the temporal architecture needs in order to mean what it
 > says: reads on the axis the store writes, a write discipline the current engine accepts, branches
 > and merges that behave like git's, the uncommitted working tree, and the boundary between data
@@ -43,7 +53,7 @@ changed the plan.
 | *(2026-11-01)* **0.21.0 released with D-303.** Mechanism: the guard admits a backfill, the projection keeps its row, and the pair is marked in a new `concept_disorder` table that never clears; recorded reads correct only marked pairs. Schema v23 → **v24** on open; libSQL 0.9.30 → **0.10.0**; old Macrame snapshots skipped | Macrame `docs/releases/v0.21.0.md`; `src/temporal/replay.rs:1187` | **→** U-1 done; P5b.2 unblocked |
 | *(2026-11-01)* 0.21.0's one break, `Overlap.within_batch` → `provenance`, does not reach CodeRadar: no use of `within_batch` or `OverlappingIntervalError` in `core_indexer` or `py_agent` | grep at `ad7d7c5` | **→** P5b.2 has no API drift from it |
 | *(2026-11-01)* CodeRadar must move `libsql` with the pin: `core_indexer/Cargo.toml:50` pins `libsql = "0.9"` because `diagnostic_conn()` hands out Macrame's own connections | `core_indexer/Cargo.toml:30,47-50` | **→** P5b.2 |
-| *(2026-11-01)* Merge is recorded upstream as "its own decision", out of branching's scope (Doctrine III has no neutral superseder), not as refused forever | Macrame `docs/Macrame Road to 1.0.md` §15.4, §16 | **→** U-4 needs a Macrame decision before any design (Q-15) |
+| *(2026-11-01)* Merge is recorded upstream as "its own decision", out of branching's scope (Doctrine III has no neutral superseder), not as refused forever | Macrame `docs/Macrame Road to 1.0.md` §15.4, §16 | **→** U-4 needs a Macrame decision before any design (Q-15) *(2026-11-09: 0.22.0 ships D-315 adoption **instead of** the decision — U-4's substance is delivered without it; the merge itself stays Doctrine III's own decision)* |
 | `migrate_to_commit_time` builds only from git and never reads the old store | `py_agent/src/coderadar/ops.py:1776-1900` | annotations and comments are not carried (§6 P8) |
 | Annotations and comments are stamped by the clock, trunk-global, mode-independent | `annotations.rs:1017-1043`; `annotations-comments-proposal.md` §7 | they remain the only non-derivable data (§2 A-9) |
 
@@ -86,7 +96,10 @@ common case, not an edge: every branch with commits of its own is ingested befor
 colleagues' PR branches included. On this repository, `dev` (26 commits of its own) is one: when it
 merges, every file `dev` created arrives on the trunk as bytes without entities, reported as
 `cross-lineage-id`, until U-4. Nothing is lost, since the branch keeps the rows and the bytes land,
-but the trunk's symbol reads miss those files (H-28, Q-15).
+but the trunk's symbol reads miss those files (H-28, Q-15). *(2026-11-09: 0.22.0's D-315 closes
+the substance — the trunk asserts its own first version from the merge commit's bytes and the
+report names `adoptions` for it; `cross-lineage-id`names only what adoption did not reach, and
+the pre-overlay pin stores keep the bytes-only wording.)*
 
 **F6 — A rename breaks identity.** *(Added 2026-10-31.)* Concept ids are built from the path, and
 `plan_ingest` reports a rename as a delete plus an add. The old file's concepts close (D-2), the new
@@ -180,7 +193,10 @@ Each has a recommendation. D-1 is a Macrame decision, recorded here because P5b 
 | **D-2** | How a deletion is written | **a** close the interval at the deleting commit, `retired: true` on that closing row; a branch deleting an inherited file writes an open tombstone on its pointer · **b** close with no marker, "deleted" inferred from no successor · **c** a new open retired row at the deletion's start | **Decided 2026-10-31: a** (A-4). Already what every production path writes (`retire_entities_at`, `storage.rs:1640`, used by ingest, the sweep and annotation retire). Left for P5b.1: close the branch pointer before its tombstone, and rewrite the one fixture with shape c (`storage.rs:5626`). b would make a torn close-then-open write indistinguishable from a deletion |
 | **D-3** | Default axis for temporal reads | **a** valid (`at`), recorded opt-in · **b** recorded stays the default, valid opt-in | **Decided 2026-10-31: b**, with the horizon rule of §3.1 so a git-filled store never answers empty |
 | **D-4** | What a read with no `at` sees | **a** recorded observations of edits included · **b** always the committed head | **Decided 2026-10-31: a, with a1.** No `at` on the checked-out lineage = its committed history plus every recorded observation; results list `uncommitted: [paths]`; `at="HEAD"` is the committed head. **a1:** on a HEAD change, after commit sync, every file still dirty on the old lineage gets an observation back to its committed blob (`source: "checkout"`), and carried edits are recorded on the new lineage, so a lineage not checked out reads as its committed head. Edits made while CodeRadar was off are recorded at startup (`source: "startup"`), stamped when seen. Rejected: b (a mutation vanishes from current reads until committed; needs a `live=` flag everywhere) and a2 (a left lineage keeps claiming edits that moved with the tree) |
-| **D-5** | A rebased or force-pushed branch | **a** a new lineage generation (`feat` → `feat#2`, forked at its new merge-base; `feat` resolves to the newest) · **b** refuse until an operator acts · **c** retract the old commits | **Decided 2026-10-31: a for branches; the trunk refuses.** Today both cases stop at `NotAncestor`/`ForkMismatch` (b by accident). A branch whose cursor left its history syncs main, forks a new generation from main now, and ingests from the new fork point; the name resolves to the newest generation; the old one stays readable, sha reads included. Exact for a rebase onto main's tip. Until U-4, files the branch minted itself land as bytes without entities on the new generation (`cross-lineage-id`, reported); a rebase onto an older base leaks newer main content until U-3. A rewritten trunk refuses with `TrunkRewritten { old, new }` and points at a rebuild (P8): `main` is the only root, so it has no generation. Rejected: b (stalls every rebase), c (contradicts P5-D8), d same lineage continued (its fork cannot move, so inherited files go stale after a rebase onto newer main) |
+| **D-5** | A rebased or force-pushed branch | **a** a new lineage generation (`feat` → `feat#2`, forked at its new merge-base; `feat` resolves to the newest) · **b** refuse until an operator acts · **c** retract the old commits | **Decided 2026-10-31: a for branches; the trunk refuses.** Today both cases stop at `NotAncestor`/`ForkMismatch` (b by accident). A branch whose cursor left its history syncs main, forks a new generation from main now, and ingests from the new fork point; the name resolves to the newest generation; the old one stays readable, sha reads included. Exact for a rebase onto main's tip. *(2026-11-09: the first clause is delivered — with 0.22.0's
+D-315 a rebased generation **adopts the ids its predecessor minted, so it gets entities, not just
+bytes**, auditable in the report; a rebase onto an older base still leaks newer main content
+until U-3.)* A rewritten trunk refuses with `TrunkRewritten { old, new }` and points at a rebuild (P8): `main` is the only root, so it has no generation. Rejected: b (stalls every rebase), c (contradicts P5-D8), d same lineage continued (its fork cannot move, so inherited files go stale after a rebase onto newer main) |
 | **D-6** | Which branches are ingested | **a** every local branch plus remote-tracking branches, with a deny-list · **b** local only (today) · **c** only branches with commits of their own; every other name is a commit address | **Decided 2026-10-31: c.** A branch, local or remote-tracking, whose tip lies on an ingested lineage's first-parent chain gets no lineage: its name resolves to that tip commit and reads go through the commit index (§3.1.2), exact today with no fork and no F3 leak. A branch with commits of its own is a lineage. Every branch read reports `parent_drift`, the parent commits after its fork point it can see (0 on main's tip), until U-3. Deny-list kept, empty by default; a deleted branch's name resolves to its last tip. Measured on this repository: 17 local branches, 15 fully merged; 16 remote-tracking, 13 equal to local, none remote-only — so main plus 3 lineages instead of 33, every name still readable. Rejected: a and b (a merged branch would fork now and read as today's main, 203–518 commits wrong here, unlabelled; a also duplicates local lineages and trips `cross-lineage-id`) |
 | **D-7** | Release policy for the commit-time path until P5b.3 and P5d land | **a** ship `ingest-history` and `migrate-to-commit-time` marked experimental · **b** hold them out of releases until P5b.3 and P5d · **c** ship as is · **d** ship when the written shape is final: P5b.1, P5b.3a and P5b.6 landed | **Decided 2026-10-31: d.** A store P5a builds today is not in its final shape: open-open overlaps (F2) that the valid fold cannot read and Macrame does not repair, no horizon or commit index (F1), and every local branch as a lineage, merged ones included (D-6) — so it needs a rebuild from git. After those three phases (none upstream-blocked) later phases change reads, not writes. The store records `coderadar.commit_time.format = 1` in `kv`; a store without it, or older, refuses temporal reads with "rebuild from git". The release note states §8 in one sentence. A release cut before the three phases leaves both CLI commands out and keeps the ops internal. Rejected: a (every store built needs a rebuild), b (waits on U-1 for a format that is settled earlier), c |
 
@@ -319,11 +335,18 @@ cuts can coexist: recorded for what the branch could know, valid for what was tr
 it merges from, under the same id, with provenance recorded. This is the D-214 overlay the P5a.4
 as-built names, given a write path. Without it A-6 is not buildable and F4 stands. *(2026-10-31:
 requested next to U-1, because D-6 c ingests branches before they merge — Q-15.)*
+**(2026-11-09: delivered through D-315 adoption, not as the merge)** — 0.22.0 lets a lineage
+assert concepts first minted on a lineage it cannot see, its own first version at its own stamps,
+nothing copied, provenance staying at the mint. The register treats adoption as separate from the
+merge, and this row's ask is what adoption provides; the merge as a Doctrine III operation is
+another decision, still upstream.)
 
 **U-5 — Supersede in one call (small; optional).** An upsert that closes the previous open start
 of the same concept at its own `valid_from` and opens the new one, atomically. D-291 deliberately
 refused the implicit form; this is the explicit opt-in. Without it, F2's two-flush window must be
 handled on the CodeRadar side (P5b.1 does so). With it, one commit is one flush again.
+**Done: 0.22.0 delivers it as D-312** (`upsert_concept_superseding`; the close and the new start
+land as one write at one stamp, and the batch path carries the same close beside its row).
 
 Each is filed as its own request document in Macrame's `docs/`, in the shape of
 `macrame-0.20.0-valid-axis-state-fold-request.md`, which worked: it became 0.20.0.
@@ -384,6 +407,8 @@ sweep retirement. On 0.19.1 nothing checks this, which is why it goes first: the
 changes nothing for writes. The two-flush window is handled by ordering, not by hoping: the close
 flush and the open flush share the commit's stamp, the kv cursor advances only after the open
 flush, and a resumed ingest re-runs the open half. If U-5 lands first, this phase uses it instead.
+*(2026-11-09: it did — 0.22.0's D-312 one-write supersession; P5b.1 builds on it, and the
+two-flush window shrinks to the ordering discipline above.)*
 **Proves it:** INV-15 holds on the migration fixture and on a scratch self-host run; the suite runs
 green against a local Macrame 0.20.0 build with the guard active.
 
@@ -447,7 +472,9 @@ follows the same rule.
 **Generations (D-5).** Detect a branch cursor that left its history, sync main, fork the next
 generation now, ingest from the new fork point, and resolve the name to the newest generation in
 `kv` (`coderadar.ingest.generation.{branch}`). A rewritten trunk refuses with `TrunkRewritten`.
-Branch-minted files report `cross-lineage-id` on the new generation until U-4.
+Branch-minted files report `cross-lineage-id` on the new generation until U-4. *(2026-11-09:
+0.22.0's D-315 has the new generation adopt its predecessor's minted ids — entities, not bytes;
+the report names what adoption did not reach.)*
 
 **Proves it:** a merged branch reads equal to the trunk at its tip sha; a rebase-onto-tip fixture
 reads exactly on the new generation, and every sha of the old one still resolves; a stale-branch
@@ -465,13 +492,16 @@ watcher and mutation paths do the same for a rename they observe (`source` as in
 annotation is never moved.
 **Flips** F6's test.
 
-### P5c — Lineage fidelity (blocked by U-3 and U-4)
+### P5c — Lineage fidelity (blocked by U-3; U-4's substance delivered by D-315)
 
 Branches fork at their merge-base on the valid axis (A-5); merges assert merged files on the
 receiving lineage (A-6); a new generation takes over the ids its predecessor minted (D-5, via
 U-4); `parent_drift` drops to 0 on every lineage (D-6). P5a.4's "ingest branches before merging them" and the `cross-lineage-id` skip are
 retired, along with the lineage-blind `history_of`, which gains a lineage-tagged chain.
-**Flips** F3's and F4's tests.
+**Flips** F3's and F4's tests. *(2026-11-09: the adoption arm is already writable — 0.22.0's
+D-315 has the receiving lineage assert merged files' concepts and a windowing generation adopt
+its predecessor's minted ids. What remains of P5c is the valid-axis cut and reads (U-2, U-3)
+and `parent_drift`'s drop to 0.)*
 
 ### P5d — The live tree (needs P5b.1)
 
@@ -523,7 +553,7 @@ already require.
 | 5 | P5b.4 sha addressing | P5b.3 | P5b.5 |
 | 5 | P5b.5 out-of-order ingest | P5b.3 | P5b.4 |
 | 6 | P5b.3 branch reads | U-2 | — |
-| 7 | P5c lineage fidelity | U-3, U-4 | — |
+| 7 | P5c lineage fidelity | U-3 (U-4's substance: D-315, 0.22.0) | — |
 | — | P9 | each phase it exposes | — |
 
 The critical path is upstream: U-1 gated the pin and is released (0.21.0, 2026-11-01); U-2 gates
@@ -532,13 +562,17 @@ entities on the trunk (F4, H-28), so it is the next request, ahead of U-2 (Q-15)
 merge as its own decision under Doctrine III, so U-4 starts with that decision, not a design. Everything CodeRadar can do alone (P5b.0, P5b.1,
 P5b.3a, P5b.6, P5b.7, P5d, P6b, P8) comes first, so the
 upstream work never waits on CodeRadar and CodeRadar never idles on upstream.
+*(2026-11-09 revised: U-4's substance is delivered — D-315 adoption ships in 0.22.0 without
+taking the merge decision, so the next request is **U-2**, ahead of U-3; the unfiled upstream
+path is U-2 then U-3.)*
 
 **Suggested releases.** 0.15.0: P6a, P6c, P5b.0, P5b.1, P5b.3a, P5b.6, and with them P5a's two
 commands at store format 1 (D-7 d) — the first release in which a git-filled store answers every
 past time. If 0.15.0 is cut before those three phases, it ships without the commands.
 *(Revised 2026-11-01, 0.21.0 released.)* 0.16.0: P5b.2 (pin 0.21.0 + libSQL 0.10), P5d, P5b.7 and
 P8 — the release that may make a commit-time store the store of record (§8). 0.17.0: P5b.3 (trunk),
-P5b.4, P5b.5. Branch valid reads when U-2 exists; P5c when U-3 and U-4 exist.
+P5b.4, P5b.5. Branch valid reads when U-2 exists; P5c when U-3 exists (U-4's substance rides
+D-315).
 
 ---
 
@@ -555,11 +589,11 @@ Q-8's answers then applies (keep frozen, decided 2026-10-31) is unaffected.
 
 | ID | Hazard | Mitigation |
 |---|---|---|
-| H-21 | **The two-flush window.** Between the close flush and the open flush a concept is valid nowhere | P5b.1: shared stamp, cursor after the open flush, resumable; U-5 removes it |
+| H-21 | **The two-flush window.** Between the close flush and the open flush a concept is valid nowhere | P5b.1: shared stamp, cursor after the open flush, resumable; U-5 removes it *(2026-11-09: U-5 is D-312, ships in 0.22.0; P5b.1 builds on it)* |
 | H-22 | *(Withdrawn 2026-10-31 with the overlay; see H-26.)* | — |
 | H-26 | **Observations ahead of a late commit.** A commit fetched from elsewhere can carry a committer time earlier than an edit already observed on the same lineage, which would open a start behind the open one | Sync before every observation write (§3.1.3); a commit that still lands behind is nudged after the latest start and flagged `stamp_nudged`, as INV-11 does for ties |
 | H-27 | **The horizon is a `kv` row.** Lost, every past read falls back to the recorded arm and answers empty again | Rebuildable from the ledger (the first `commit:` row per lineage); `verify_history` reports a missing horizon on a git-filled store as an error, not a warning |
-| H-28 | **Merging an ingested branch before U-4.** Files the branch minted reach the trunk as bytes without entities; the trunk's symbol reads miss them | The ingest report lists them (`cross-lineage-id`) and the merge commit's summary counts them; a trunk read for such a path reports `minted_on: <lineage>` instead of answering absent; U-4 requested next to U-1 (Q-15) |
+| H-28 | **Merging an ingested branch before U-4.** Files the branch minted reach the trunk as bytes without entities; the trunk's symbol reads miss them | The ingest report lists them (`cross-lineage-id`) and the merge commit's summary counts them; a trunk read for such a path reports `minted_on: <lineage>` instead of answering absent; U-4 requested next to U-1 (Q-15) *(2026-11-09: 0.22.0's D-315 resolves the substance — the trunk asserts its own first version and reads answer; this mitigation is the wording for pre-overlay pin stores)* |
 | H-29 | **A rename git does not detect.** Below the similarity threshold, or a rename combined with a large edit, stays a delete plus an add, and annotations stay on the old id | Annotations on a closed id are listed by `annotations --orphaned`; a manual `link-rename old new` writes the same link row P5b.7 writes |
 | H-30 | **Per-instant answers for backfilled pairs (0.21.0's D-303).** Once P5b.5 writes out of order, a marked pair's recorded read at an instant before a row's `valid_from` does not see that row as state; a commit whose committer clock runs ahead of the ingest clock would not be state until real time reaches it | INV-11's nudge already keeps a commit's start at or after its lineage's latest start; P5b.5 additionally clamps a start beyond its own recorded instant and flags it `stamp_nudged` |
 | H-31 | **The v24 ladder is one-way.** A 0.21.0 build upgrades a store on first open; a 0.14.0 (pin 0.19.1) build then cannot read it | P5b.2 notes it; the frozen pre-migration store (Q-8) is read only by a 0.14.0 build or from a copy; the 0.16.0 release notes say it |
@@ -597,6 +631,9 @@ identically. All P5b.0 truth tests pass without `xfail`.
   reads need it soonest, then U-3 and U-4 together, since they share the fork model.
   *(Revised 2026-10-31 with Q-15: U-4 now goes with U-1, ahead of U-2.)* *(2026-11-01: U-1
   shipped in 0.21.0 from Macrame's own plan; U-2..U-5 are still unfiled, and U-4 is next.)*
+  *(2026-11-09: 0.22.0 shipped U-5 (D-312) and U-4's substance (D-315 adoption, marked
+  "delivered through adoption, not as the merge"); U-2 and U-3 remain unfiled, and **U-2 is
+  next** — P5b.3's branch reads.)*
 - **Q-15 — Merging an ingested branch before U-4** (F4, H-28). **a** request U-4 now, next to U-1,
   and until it lands accept the gap with the H-28 reporting · **b** an interim engine rule letting
   the trunk mint a branch-minted id under its own ownership, the branch's copy kept as history (also
@@ -605,7 +642,10 @@ identically. All P5b.0 truth tests pass without `xfail`.
   `main` is the first time it bites. *(2026-11-01:)* Macrame's Road to 1.0 (§15.4, §16) records
   merge as "its own decision" because Doctrine III has no neutral superseder. For CodeRadar's case
   there is one — git's merge commit says which content wins — so the U-4 request should propose
-  that the caller names the superseder (the merge commit), not the engine.
+  that the caller names the superseder (the merge commit), not the engine. *(2026-11-09: 0.22.0's
+  D-315 took a fourth path — the receiving lineage asserts its own first version and the provenance
+  row stays at the mint, which for CodeRadar's ingest answers Q-15 without a Doctrine III
+  decision; the superseder question rides any future merge op, unfiled.)*
 - **Q-16 — Rename detection threshold** (P5b.7). git's default similarity is 50%. Lower finds
   more renames and links more wrong pairs; a wrong link is visible (`via_rename` names the commit
   and similarity) and correctable by a later link row. Recommendation: git's default, the similarity

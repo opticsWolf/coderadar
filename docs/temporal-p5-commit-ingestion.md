@@ -359,9 +359,14 @@ deviations and findings, each read off the code:
 - *The merge trap is defused with `cross-lineage-id`.* A trunk ingest meeting a
   branch-born id skips its concepts (bytes and spine land; the skip is auditable, never
   sweep-gating) instead of aborting the bulk at the trigger. The entities live on the
-  mint lineage permanently — until the D-214 overlay exists, the trunk can never mint
-  those ids. Operational consequence: ingest branches before merging them, and expect
-  branch-born files to read on their lineage.
+  mint lineage permanently — when this was written, the trunk could never mint those
+  ids. **Since macrame-db 0.22.0 (schema v26) the skip is an adoption path instead**
+  (D-315; the framing above is kept for the pre-overlay stores it described): the
+  trunk asserts its own first version from the merge commit's own bytes, the
+  provenance row stays at the mint, and the adoption is auditable in the report.
+  Operational consequence, unchanged in spirit: a pre-overlay store still wants
+  branches ingested before they are merged, and `cross-lineage-id` now names only
+  what adoption did not reach.
 - *`history_of` stays lineage-blind; `verify_history --branch` needed no changes.*
   Branch content appears in the file's digest chain (the spine is content-addressed and
   lineage-agnostic); lineage-scoped chains need lineage-tagged spine (future). Coverage
