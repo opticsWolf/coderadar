@@ -1649,7 +1649,10 @@ pub fn ingest_branch_history(
 /// (the branch walk's rule; edges between a healed file and files outside
 /// the heal's set do not resolve here) — one bulk flush of the healed
 /// entities at the commit's stamp (no commit concept, no spine, no sweep:
-/// all three landed at the original walk and the sweep owns removals),/// and scoped edge persistence for the healed files. The `kv` cursor and
+/// all three landed at the original walk), the trunk retire of the ids a
+/// healed file dropped at this commit (main's own version closes; the
+/// minting lineage is never touched), and scoped edge persistence for
+/// the healed files. The `kv` cursor and
 /// the head/stamp keys are untouched by definition: this op writes no
 /// history windows beyond the entities the vintage skip left out.
 ///
@@ -2059,10 +2062,21 @@ pub fn reingest_merged_commits(
         // here, the branch walk's own-file cascade rule).
         let mut projection = (*graph.snapshot()).clone();
         for (canonical_path, lang, units) in &parsed_units {
-            // retire=false, stated: the vintage skip minted nothing, so
-            // the heal retires nothing — the sweep's end-of-chain owns all
-            // removals on this store.
-            graph.apply_diff_update(&mut projection, units, canonical_path, lang, &stamp, false);
+            // retire=true: an id this file held at the heal's previous
+            // commit and no longer holds was deleted HERE, and no sweep
+            // runs over the trunk after the heal. The trunk retire closes
+            // main's own (adopted) version at this stamp and leaves the
+            // minting lineage alone; an id main no longer holds (a re-run,
+            // or a full walk's own tombstone) is a no-op.
+            let (_, _, _, retire_err) =
+                graph.apply_diff_update(&mut projection, units, canonical_path, lang, &stamp, true);
+            if let Some(e) = retire_err {
+                commit_failed_files.push(FailedFile {
+                    sha: sha.clone(),
+                    path: canonical_path.clone(),
+                    reason: format!("retire-failed: {e}"),
+                });
+            }
         }
         rebuild_module_path_index(&mut projection);
         graph.resolve_imports(&mut projection);

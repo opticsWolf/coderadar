@@ -235,6 +235,53 @@ class TestHeal:
         real = ops.reingest_merged_commits(str(repo), store_path=str(store))
         assert [f for f in real["adoptions"] if f["path"] == "lib_x.py"] != []
 
+    def test_a_function_dropped_after_the_merge_retires_on_main_only(
+            self, tmp_path):
+        # The tail removes y_fn from the merged file. Both the heal and a
+        # full trunk walk retire it on main at the tail's stamp; the
+        # branch that minted it keeps believing it (post-merge review).
+        two = _nl("def x_fn():", "    return 1", "",
+                  "def y_fn():", "    return 2")
+        open_end = "9999-12-31T23:59:59.999999Z"
+        open_sql = ("SELECT COUNT(*) FROM concept_versions"
+                    " WHERE id = 'lib_x.py::y_fn' AND branch_id = 'main'"
+                    " AND valid_to = ?")
+        mint_sql = ("SELECT branch_id, retired, valid_to FROM concepts"
+                    " WHERE id = 'lib_x.py::y_fn'")
+        for walk_first in (False, True):
+            repo = tmp_path / f"repo{int(walk_first)}"
+            repo.mkdir()
+            _git(repo, "init", "-q", "-b", "main", ".")
+            _git(repo, "config", "user.name", "T")
+            _git(repo, "config", "user.email", "t@t.t")
+            _git(repo, "config", "core.autocrlf", "false")
+            _commit(repo, "one", "2026-01-01T10:00:00+00:00", {"a.py": ONE})
+            _git(repo, "checkout", "-qb", "feat")
+            _commit(repo, "feature", "2026-01-04T10:00:00+00:00",
+                    {"lib_x.py": two})
+            _git(repo, "checkout", "-q", "main")
+            store = _store_path(repo)
+            ops.ingest_history(str(repo), branch="feat",
+                               store_path=str(store))
+            _git(repo, "merge", "-q", "--no-ff", "-m", "merge", "feat",
+                 env=_stamp_env("2026-02-01T10:00:00+00:00"))
+            _commit(repo, "tail", "2026-02-02T10:00:00+00:00",
+                    {"lib_x.py": LIB_X_EDIT})
+            if walk_first:
+                walk = ops.ingest_history(str(repo), branch="main",
+                                          store_path=str(store))
+                assert walk["files_failed"] == []
+            heal = ops.reingest_merged_commits(str(repo),
+                                               store_path=str(store))
+            assert [f for f in heal["files_failed"]
+                    if f["reason"].startswith("retire-failed")] == []
+            with sqlite3.connect(str(store)) as conn:
+                (still_open,) = conn.execute(open_sql, (open_end,)).fetchone()
+                mint = conn.execute(mint_sql).fetchone()
+            assert still_open == 0, f"main still believes y_fn ({walk_first})"
+            assert mint == ("feat", 0, open_end), \
+                f"the branch's mint was touched ({walk_first}): {mint}"
+
     def test_the_heal_refuses_a_branch_and_a_missing_store(self, tmp_path):
         repo = tmp_path / "repo"
         _build_merge_side(repo)

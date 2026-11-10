@@ -796,11 +796,14 @@ impl CodeGraphStore {
                 // it), so the chunked `concepts` read answered nothing for
                 // exactly the ids an adoption wrote there, and the plain
                 // write it then authorized was refused by the single-open
-                // law — finding 1 of the M6-g post-merge round. The trunk's
-                // W1 rows stay in `concepts` and answer below when the
-                // overlay resolution does not; the two sets are disjoint by
-                // D-315 (a mint the trunk wrote is never an adoption's
-                // object).
+                // law — finding 1 of the M6-g post-merge round. The
+                // resolution answers trunk-minted ids too (their W1 rows
+                // are main's own), so the `concepts` fallback below only
+                // speaks when the walk answered absent at the instant —
+                // and the Misuse refusal on a settled W1 row is reachable
+                // only there; a write inside a settled window the walk
+                // DID answer rides to Macrame, whose interval guard
+                // refuses it by name (`OverlappingConcept`).
                 let ids: Vec<String> = rows.iter().map(|c| c.id.clone()).collect();
                 let w1_rows = self.fetch_trunk_states(&ids)?;
                 let bid = macrame::BranchId::new("main")?;
@@ -823,11 +826,11 @@ impl CodeGraphStore {
                 }
                 for c in rows {
                     // The resolution at the write's own instant wins; the
-                    // `concepts` row answers the ids the overlay walk left
-                    // undecided (a trunk-minted id's W1 state). The source
-                    // matters below: an overlay row's settled span is the
-                    // chain's own ancestor state (the branch arm's law),
-                    // a state row's settled span is the ledger bent.
+                    // `concepts` row answers only the ids the walk left
+                    // absent at that instant. The source matters below: a
+                    // resolved row's settled span is the chain's own
+                    // state (the branch arm's law), a fallback state
+                    // row's settled span is the ledger bent.
                     let overlay_hit =
                         overlay_all.contains_key(&(c.valid_from.clone(), c.id.clone()));
                     let current = overlay_all
@@ -865,14 +868,18 @@ impl CodeGraphStore {
                                     // name.
                                     acts.push((*c).clone());
                                 } else {
-                                    return Err(macrame::DbError::Engine(
-                                        libsql::Error::Misuse(format!(
-                                            "upsert_concepts_bulk: {id} holds a                                              settled non-retired row [{start}, {end}) -                                              the ledger's own record is inconsistent                                              with a forward write; refusing before                                              anything lands",
+                                    return Err(macrame::DbError::Engine(libsql::Error::Misuse(
+                                        format!(
+                                            "upsert_concepts_bulk: {id} holds a \
+                                             settled non-retired row [{start}, {end}) - \
+                                             the ledger's own record is inconsistent \
+                                             with a forward write; refusing before \
+                                             anything lands",
                                             id = c.id.as_str(),
                                             start = row.valid_from,
                                             end = row.valid_to,
-                                        )),
-                                    ));
+                                        ),
+                                    )));
                                 }
                             } else if row.valid_from == c.valid_from {
                                 acts.push((*c).clone());
@@ -1996,23 +2003,45 @@ impl CodeGraphStore {
         entity_ids: &[String],
         valid_from: &str,
     ) -> macrame::Result<(usize, usize)> {
+        self.retire_entities_as_trunk(entity_ids, valid_from, false)
+    }
+
+    /// The trunk's retire. A trunk-minted row retires through its own W1
+    /// row as before. Any other id is retired as the TRUNK's belief
+    /// (0.22.0 post-merge review): when the trunk's resolution holds it
+    /// at the instant — an adoption (D-315) lives on the overlay under
+    /// `main` — the tombstone is a trunk act through the bulk's decision,
+    /// and the minting lineage's row is never touched (the trunk deleting
+    /// a merged function says nothing about the branch that wrote it).
+    /// An id the trunk does not hold is left alone, unless
+    /// `mint_fallback` asks for the pre-overlay mint-lineage retire
+    /// (P5a.4) — the v1-leftover repair, whose garbage rows may sit on any
+    /// lineage.
+    fn retire_entities_as_trunk(
+        &self,
+        entity_ids: &[String],
+        valid_from: &str,
+        mint_fallback: bool,
+    ) -> macrame::Result<(usize, usize)> {
         if entity_ids.is_empty() {
             return Ok((0, 0));
         }
         let ts = valid_from.to_string();
-        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
-        runtime().block_on(async {
+        let main = macrame::BranchId::new("main")?;
+        let (diag_guard, conn) = self.open_diagnostic_conn()?;
+        // Trunk acts on ids another lineage minted: written through the
+        // bulk after the guard drops (the bulk takes the same lock).
+        let mut trunk_acts: Vec<ConceptUpsert> = Vec::new();
+        let result = runtime().block_on(async {
             // Title, content and extra are carried over: the tombstone still
             // records the entity rather than blanking it.
             let mut concepts: Vec<ConceptUpsert> = Vec::new();
             for id in entity_ids {
-                // P5a.4 (DR-41): the retire upsert carries the row's mint
-                // lineage. Concepts are globally unique by id but
+                // P5a.4 (DR-41): a trunk-minted row round-trips to the
+                // trunk default. Concepts are globally unique by id but
                 // lineage-provenanced (D-225: `branch_id` is provenance, not
-                // identity), so retiring a branch-minted row through a
-                // trunk upsert would trip `trg_concepts_cross_lineage`.
-                // Round-tripping the stored value keeps every lineage's
-                // retire legal; trunk rows round-trip to the trunk default.
+                // identity), so a branch-minted row never retires through
+                // a plain trunk upsert (`trg_concepts_cross_lineage`).
                 let mut rows = conn
                     .query(
                         "SELECT title, content, extra, valid_from, branch_id FROM concepts \
@@ -2021,7 +2050,40 @@ impl CodeGraphStore {
                     )
                     .await
                     .map_err(macrame::DbError::Engine)?;
-                if let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                let row = rows.next().await.map_err(macrame::DbError::Engine)?;
+                let mint: Option<String> = row
+                    .as_ref()
+                    .and_then(|r| r.get::<Option<String>>(4).ok().flatten())
+                    .filter(|b| !b.is_empty() && b != "main");
+                if row.is_none() || mint.is_some() {
+                    // Another lineage's mint (or no live W1 row at all):
+                    // the trunk's own resolution decides.
+                    let plan = macrame::ReadPlan::new()
+                        .on(main.clone())
+                        .valid_at(ts.clone());
+                    let resolved = self
+                        .db
+                        .concepts_by_id(std::slice::from_ref(id), plan)
+                        .await?;
+                    if let Some(v) = resolved.into_iter().next() {
+                        // Zero-width forward tombstone, as below; the
+                        // bulk's trunk arm adds the supersede marker when
+                        // an earlier open trunk version stands.
+                        trunk_acts.push(
+                            ConceptUpsert::new(id.clone(), v.title.clone())
+                                .content(v.content.clone())
+                                .extra(v.extra.clone())
+                                .valid_from(ts.clone())
+                                .valid_to(ts.clone())
+                                .retired(true),
+                        );
+                        continue;
+                    }
+                    if !mint_fallback {
+                        continue;
+                    }
+                }
+                if let Some(row) = row {
                     // The forward tombstone: it starts at the retirement
                     // instant and rides `supersede(true)` so Macrame's
                     // one-write law closes the prior open belief at that
@@ -2044,8 +2106,7 @@ impl CodeGraphStore {
                             .valid_to(ts.clone())
                             .retired(true)
                             .supersede(true);
-                    let mint: Option<String> = row.get(4).ok().flatten();
-                    if let Some(lineage) = mint.filter(|b| !b.is_empty()) {
+                    if let Some(lineage) = mint {
                         upsert = upsert.on_branch(macrame::BranchId::new(&lineage)?);
                     }
                     concepts.push(upsert);
@@ -2105,8 +2166,15 @@ impl CodeGraphStore {
             if concepts_retired > 0 {
                 self.db.write_concepts(concepts).await?;
             }
-            Ok((concepts_retired, edges_retired))
-        })
+            Ok::<_, macrame::DbError>((concepts_retired, edges_retired))
+        });
+        drop(conn);
+        drop(diag_guard);
+        let (concepts_retired, edges_retired) = result?;
+        if !trunk_acts.is_empty() {
+            self.upsert_concepts_bulk(&trunk_acts)?;
+        }
+        Ok((concepts_retired + trunk_acts.len(), edges_retired))
     }
 
     /// Un-stamped wrapper (live paths): retire at the clock.
@@ -2157,7 +2225,8 @@ impl CodeGraphStore {
             })
             .map(|(id, _)| id)
             .collect();
-        self.retire_entities(&v1_ids)
+        // Leftovers may sit on any lineage: the mint-lineage fallback.
+        self.retire_entities_as_trunk(&v1_ids, &now_iso8601(), true)
     }
 
     /// Retire canonical file concepts absent from a complete fresh projection.
@@ -2213,7 +2282,15 @@ impl CodeGraphStore {
             })
             .map(|(id, _)| id)
             .collect();
-        Ok(self.retire_entities_at(&stale_ids, valid_from)?.0)
+        // A branch's own stale rows retire as that branch's act; the trunk
+        // retire would leave another lineage's mint alone.
+        if lineage.is_empty() || lineage == "main" {
+            Ok(self.retire_entities_at(&stale_ids, valid_from)?.0)
+        } else {
+            Ok(self
+                .retire_entities_on_branch_at(&stale_ids, lineage, valid_from)?
+                .0)
+        }
     }
 
     /// The branch-side sweep retire (macrame-db 0.22.0, M6-g item 2): the
@@ -7445,13 +7522,11 @@ mod stamped_write_tests {
         assert_eq!(cuts, 1, "one cut at the takeover's stamp");
     }
 
-    /// P5a.4 (DR-41): retiring a branch-minted row carries its mint
-    /// lineage on the retire upsert — retiring through a trunk upsert
-    /// would trip `trg_concepts_cross_lineage` on the row's own id.
-    /// Trunk retires round-trip to the trunk default (existing tests
-    /// cover that path unchanged).
+    /// The trunk's retire never speaks for another lineage (0.22.0
+    /// post-merge review; P5a.4's mint-lineage round-trip before it): a
+    /// branch-minted row the trunk does not hold is left alone.
     #[test]
-    fn retire_carries_the_mint_lineage() {
+    fn trunk_retire_leaves_a_branch_mint_alone() {
         let dir = tempfile::tempdir().unwrap();
         let store = CodeGraphStore::open(dir.path().join("retline.db")).unwrap();
         store.fork_branch("feat", "main").unwrap();
@@ -7465,7 +7540,7 @@ mod stamped_write_tests {
         let (n, _) = store
             .retire_entities_at(&["n.py::module".to_string()], &now_iso8601())
             .unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(n, 0, "the trunk holds nothing to retire");
         let (_guard, conn) = store.open_diagnostic_conn().unwrap();
         let (retired, branch_id): (i64, String) = runtime()
             .block_on(async {
@@ -7487,8 +7562,75 @@ mod stamped_write_tests {
                 ))
             })
             .unwrap();
-        assert_eq!(retired, 1);
+        assert_eq!(retired, 0, "the branch's mint is untouched");
         assert_eq!(branch_id, "feat");
+    }
+
+    /// The trunk deletes a function it adopted at a merge (0.22.0
+    /// post-merge review): the tombstone lands on main — the adoption's
+    /// own lineage — and the branch that minted it still believes it.
+    #[test]
+    fn trunk_retire_of_an_adopted_id_closes_main_not_the_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("retadopt.db")).unwrap();
+        store.fork_branch("feat", "main").unwrap();
+        let row = |title: &str, from: &str| {
+            macrame::ConceptUpsert::new("c.py::g", title)
+                .content(format!(
+                    r#"{{"meta_version":2,"kind":"function","name":"g","file_path":"c.py","content_hash":"{title}"}}"#
+                ))
+                .valid_from(from.to_string())
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)
+        };
+        let feat = macrame::BranchId::new("feat").unwrap();
+        store
+            .upsert_concepts_bulk(
+                &[row("f", "2026-01-01T00:00:00.000000Z").on_branch(feat.clone())],
+            )
+            .unwrap();
+        store
+            .upsert_concepts_bulk(&[row("adopted", "2026-02-01T00:00:00.000000Z")])
+            .unwrap();
+        let (n, _) = store
+            .retire_entities_at(&["c.py::g".to_string()], "2026-03-01T00:00:00.000000Z")
+            .unwrap();
+        assert_eq!(n, 1);
+        let at = |branch: &macrame::BranchId, instant: &str| {
+            runtime()
+                .block_on(
+                    store.db.concepts_by_id(
+                        &["c.py::g".to_string()],
+                        macrame::ReadPlan::new()
+                            .on(branch.clone())
+                            .valid_at(instant.to_string()),
+                    ),
+                )
+                .unwrap()
+                .len()
+        };
+        let main = macrame::BranchId::new("main").unwrap();
+        assert_eq!(
+            at(&main, "2026-02-15T00:00:00.000000Z"),
+            1,
+            "the adopted window stands"
+        );
+        assert_eq!(
+            at(&main, "2026-04-01T00:00:00.000000Z"),
+            0,
+            "retired on main"
+        );
+        assert_eq!(
+            at(&feat, "2026-04-01T00:00:00.000000Z"),
+            1,
+            "the branch still believes it"
+        );
+        // A re-run is a no-op: the trunk no longer holds the id.
+        let (again, _) = store
+            .retire_entities_at(&["c.py::g".to_string()], "2026-03-01T00:00:00.000000Z")
+            .unwrap();
+        assert_eq!(again, 0);
+        assert_eq!(at(&feat, "2026-04-01T00:00:00.000000Z"), 1);
     }
 
     /// P5a.5 (DR-41): the embedding-hash flush restates rows it did not

@@ -1813,9 +1813,11 @@ def reingest_merged_commits(repo: str | Path, branch: str = "main",
     never advances or rewinds any ingest cursor — its stamps come from
     replaying the INV-11 nudge chain over the full first-parent plan,
     so they equal a full pass's), the commit concepts and spine rows
-    the original walk wrote, and removals (the sweep owns those) — no
-    retire is issued and nothing already readable is re-minted, so a
-    second run is a no-op beyond accounting (``already-adopted``).
+    the original walk wrote, and the minting branch's own rows. An id a
+    healed file drops at a commit is retired on the trunk at that
+    commit's stamp (main's own version closes); nothing already
+    readable is re-minted or re-retired, so a second run is a no-op
+    beyond accounting (``already-adopted``).
 
     The whole first-parent chain walks (the hollow shape is per FILE,
     not per merge). Classed from the ledger before any write: foreign
