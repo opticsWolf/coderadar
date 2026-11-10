@@ -1652,7 +1652,7 @@ dependencies = [
 [[package]]
 name = "macrame-db"
 version = "0.22.0"
-source = "git+https://github.com/opticsWolf/Macrame?branch=dev%2F0.22.0-revA#5288876857eb47593105b058e8c7787ce65c0fbe"
+source = "git+https://github.com/opticsWolf/Macrame?branch=dev%2F0.22.0-revA#40719ac4e73584a49fba56f18edf673f4a825a47"
 dependencies = [
  "bincode",
  "libsql",

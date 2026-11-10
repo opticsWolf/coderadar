@@ -788,14 +788,54 @@ impl CodeGraphStore {
         }
         for (writer, rows) in &groups {
             if writer.is_empty() {
+                // The trunk's state, read the way the ROUTE reads it:
+                // macrame's per-branch resolution for `main` at the write
+                // instant — the same grouped read the branch arm runs. An
+                // adopted id's trunk versions live in `concept_versions`
+                // (the mint row never moves off the lineage that minted
+                // it), so the chunked `concepts` read answered nothing for
+                // exactly the ids an adoption wrote there, and the plain
+                // write it then authorized was refused by the single-open
+                // law — finding 1 of the M6-g post-merge round. The trunk's
+                // W1 rows stay in `concepts` and answer below when the
+                // overlay resolution does not; the two sets are disjoint by
+                // D-315 (a mint the trunk wrote is never an adoption's
+                // object).
                 let ids: Vec<String> = rows.iter().map(|c| c.id.clone()).collect();
-                let current = self.fetch_trunk_states(&ids)?;
+                let w1_rows = self.fetch_trunk_states(&ids)?;
+                let bid = macrame::BranchId::new("main")?;
+                let mut by_stamp: std::collections::HashMap<&str, Vec<&&ConceptUpsert>> =
+                    std::collections::HashMap::new();
                 for c in rows {
-                    projection.insert(
-                        projection_key("", &c.valid_from, &c.id),
-                        current.get(c.id.as_str()).cloned(),
-                    );
-                    match current.get(c.id.as_str()) {
+                    by_stamp.entry(c.valid_from.as_str()).or_default().push(c);
+                }
+                let mut overlay_all: HashMap<(String, String), CurrentRow> = HashMap::new();
+                for (stamp, group) in &by_stamp {
+                    let gids: Vec<String> = group.iter().map(|c| c.id.clone()).collect();
+                    let plan = macrame::ReadPlan::new()
+                        .on(bid.clone())
+                        .valid_at((*stamp).to_string());
+                    let resolved: Vec<macrame::temporal::ConceptVersion> =
+                        runtime().block_on(self.db.concepts_by_id(&gids, plan))?;
+                    for v in resolved {
+                        overlay_all.insert(((*stamp).to_string(), v.id.clone()), version_row(&v));
+                    }
+                }
+                for c in rows {
+                    // The resolution at the write's own instant wins; the
+                    // `concepts` row answers the ids the overlay walk left
+                    // undecided (a trunk-minted id's W1 state). The source
+                    // matters below: an overlay row's settled span is the
+                    // chain's own ancestor state (the branch arm's law),
+                    // a state row's settled span is the ledger bent.
+                    let overlay_hit =
+                        overlay_all.contains_key(&(c.valid_from.clone(), c.id.clone()));
+                    let current = overlay_all
+                        .get(&(c.valid_from.clone(), c.id.clone()))
+                        .or_else(|| w1_rows.get(c.id.as_str()))
+                        .cloned();
+                    projection.insert(projection_key("", &c.valid_from, &c.id), current.clone());
+                    match current.as_ref() {
                         None => acts.push((*c).clone()),
                         Some(row) => {
                             if row.retired {
@@ -813,17 +853,27 @@ impl CodeGraphStore {
                                     acts.push((*c).clone());
                                 }
                             } else if !is_open_end(&row.valid_to) {
-                                return Err(macrame::DbError::Engine(libsql::Error::Misuse(
-                                    format!(
-                                        "upsert_concepts_bulk: {id} holds a settled \
-                                         non-retired row [{start}, {end}) — the ledger's own \
-                                         record is inconsistent with a forward write; \
-                                         refusing before anything lands",
-                                        id = c.id.as_str(),
-                                        start = row.valid_from,
-                                        end = row.valid_to,
-                                    ),
-                                )));
+                                if overlay_hit {
+                                    // An overlay row's covered closed span is
+                                    // the chain's own ancestor state - the
+                                    // branch arm's law ("a covered closed
+                                    // row is history the write stands
+                                    // behind"): the plain route; the
+                                    // unchanged filter drops the
+                                    // byte-identical replay and Macrame
+                                    // refuses a real clash with its own
+                                    // name.
+                                    acts.push((*c).clone());
+                                } else {
+                                    return Err(macrame::DbError::Engine(
+                                        libsql::Error::Misuse(format!(
+                                            "upsert_concepts_bulk: {id} holds a                                              settled non-retired row [{start}, {end}) -                                              the ledger's own record is inconsistent                                              with a forward write; refusing before                                              anything lands",
+                                            id = c.id.as_str(),
+                                            start = row.valid_from,
+                                            end = row.valid_to,
+                                        )),
+                                    ));
+                                }
                             } else if row.valid_from == c.valid_from {
                                 acts.push((*c).clone());
                             } else if row.valid_from < c.valid_from {
@@ -3009,7 +3059,16 @@ impl CodeGraphStore {
         runtime().block_on(async {
             let mut rows = conn
                 .query(
-                    "SELECT EXISTS(                         SELECT 1 FROM concepts                             WHERE branch_id IN ('', 'main') AND id = ?1                         UNION ALL                         SELECT 1 FROM concept_versions                             WHERE branch_id IN ('', 'main') AND id = ?1                         UNION ALL                         SELECT 1 FROM transaction_log                             WHERE table_name = 'concepts' AND branch_id IN ('', 'main') AND entity_id = ?1)",
+                    "SELECT EXISTS( \
+                        SELECT 1 FROM concepts \
+                          WHERE branch_id IN ('', 'main') AND id = ?1 \
+                        UNION ALL \
+                        SELECT 1 FROM concept_versions \
+                          WHERE branch_id IN ('', 'main') AND id = ?1 \
+                        UNION ALL \
+                        SELECT 1 FROM transaction_log \
+                          WHERE table_name = 'concepts' \
+                            AND branch_id IN ('', 'main') AND entity_id = ?1)",
                     libsql::params![id],
                 )
                 .await

@@ -2428,7 +2428,13 @@ fn ingest_history(
 /// branch) are `ValueError`; infrastructure failures are
 /// `RuntimeError`; the report is the same `IngestReport` JSON the walk
 /// returns (adoptions = healed files; `files_failed` carries the
-/// `gone-by-head`, `no-mint` and flush-error audits).
+/// `gone-by-head`, `no-mint` and flush-error audits). The healed set's
+/// shape is scoped: every chain commit walks and a healed file's own
+/// re-asserts land at their commits, but edges between a healed entity
+/// and entities of files outside the heal set are not written (the
+/// own-files projection cannot see the other side) — a healed file's
+/// link to an unchanged trunk file arrives the next time that file's own
+/// ingest re-asserts it.
 #[pyfunction]
 #[pyo3(signature = (store_path, repo, branch = "main", dry_run = false))]
 fn reingest_merged_commits(

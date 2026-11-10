@@ -1614,21 +1614,35 @@ pub fn ingest_branch_history(
 /// the INV-11 nudge chain state is replayed across every commit — the
 /// stamps the heal uses are the stamps a full pass would have used, which
 /// is what keeps a heal row's start equal to its spine row's start from
-/// the original walk. Only merge commits process; in them only the files
-/// whose module id is **hollow on the main lineage**:
+/// the original walk. Only the files whose module id is **hollow on the
+/// main lineage** process; a file whose trunk side the store already
+/// holds past this commit's stamp is named and skipped (the chain's own
+/// history is there, nothing to heal):
 ///
-/// - `mint_lineage(id)` names another lineage → the vintage skip → the
-///   adoption (an ordinary first version at the commit's stamp, nothing
-///   copied, the provenance row unmoved), audited in `adoptions`.
-/// - `mint_lineage(id)` names `main` → ingested at the original walk →
-///   untouched (a re-run reads every healed id this way, so the op is
-///   idempotent by construction).
+/// - `mint_lineage(id)` names another lineage → the vintage skip: the
+///   trunk's own version of the id at this commit lands on the trunk.
+///   The first claim is an adoption (an ordinary first version at the
+///   commit's stamp, nothing copied, the provenance row unmoved,
+///   audited in `adoptions`); a re-walk that finds the trunk already
+///   claiming a healed id re-asserts this commit's content through the
+///   same resolution a full pass uses (the trunk's supersede chain, the
+///   fix the adopted-id read camp had to make first), so a later trunk
+///   edit of a hollow file heals at its own commit — the healed set
+///   carries the trunk's content, not just merge-day's. Re-asserts land
+///   silently beyond `files_parsed`: the write's own unchanged filter
+///   drops a byte-identical one, which is where the op's idempotence
+///   lives.
+/// - `mint_lineage(id)` names `main` → the walk wrote it → untouched.
 /// - no mint anywhere → not the vintage-skip shape → named `no-mint` in
 ///   `files_failed`, untouched (the regular walk's own business).
 ///
-/// And only files still present in HEAD's tree heal; the absent ones are
-/// named `gone-by-head`, never half-minted (a heal's correct history for
-/// them needs the closes of later commits, which is not this op's shape).
+/// Every commit on the chain walks: the hollow shape is per FILE — a
+/// post-merge trunk commit that edits a hollow id was skipped by the old
+/// walk exactly like the merge itself, so healing only merges would leave
+/// those files frozen at merge-day content. And only files still present
+/// in HEAD's tree heal; the absent ones are named `gone-by-head`, never
+/// half-minted (a heal's correct history for them needs the closes of
+/// later commits, which is not this op's shape).
 ///
 /// Per commit: blob puts (content-addressed dedup as usual), the same
 /// extraction and cascade the walk runs — over an own-files projection
@@ -1643,7 +1657,17 @@ pub fn ingest_branch_history(
 /// the run continues — there is no cursor to stop behind — so the report
 /// is the operator's repair list; a partially written bulk is re-read as
 /// `main`-minted by the next run (already) and the residual ids are named
-/// in the audit.
+/// in the audit. What the healed set will not carry lives in wording, not
+/// fields: edges between a healed entity and entities of files outside
+/// the heal's set are not written by the heal (the own-files projection
+/// cannot see the other side) and neither the JSON nor `adoptions`
+/// announces them — a healed file's link to an unchanged trunk file
+/// arrives the next time that file's own ingest re-asserts it. The counts
+/// only grow with a settled flush:
+/// `commits_ingested` and `commits_adopted_concepts` move for a commit
+/// whose bulk did not fail, while `head` still names the commit the run
+/// reached (the audit names the failure's bulk; an inflated count would
+/// report the merge-day shape as healed when it is not).
 pub fn reingest_merged_commits(
     store_path: &str,
     repo: &str,
@@ -1771,11 +1795,10 @@ pub fn reingest_merged_commits(
             report.stamps_nudged += 1;
         }
         stamp_prev = Some(stamp.clone());
-        // Merge commits only: a hollow trunk walk skipped at a merge's
-        // first-parent diff, and that is the shape the heal re-reads.
-        if commit.parents.len() < 2 {
-            continue;
-        }
+        // Every commit: the hollow shape is per FILE (the walk's
+        // classification names it per commit), and only the ids the mint
+        // check decides are the walk's skips — a merge commit is just the
+        // first commit on the chain that reaches that shape.
         if dry_run {
             report.commits_skipped.push(SkippedCommit {
                 sha: sha.clone(),
@@ -1811,41 +1834,55 @@ pub fn reingest_merged_commits(
                     continue;
                 }
                 Ok(Some(_)) => {
-                    // The mint names ANOTHER lineage: either the vintage
-                    // skip (adopt here, its first version lands on the
-                    // trunk while the mint row keeps the branch) — or a
-                    // file the trunk spine already claims (a previous
-                    // heal's adoption lives in the spine, and the
-                    // provenance row never moves). The D-315 law in both
-                    // shapes. A re-run reads every id it healed last
-                    // time exactly there.
+                    // The mint names ANOTHER lineage: the file the walk
+                    // would have skipped. The head-tree gate first — one
+                    // verdict per file — then the trunk-spine claim tells
+                    // the write's shape: a first version (adoption) when
+                    // the spine holds nothing, a re-assert (the trunk's
+                    // own supersede chain) when it does.
                     let taken = graph
                         .store
                         .as_ref()
                         .expect("heal graph always holds a store")
                         .trunk_version_live(&module_id)
                         .unwrap_or(false);
-                    if taken {
+                    if !head_tree.contains(&canonical_path) {
+                        // A file the trunk deleted afterwards: named,
+                        // never half-minted. Both verdicts (the real
+                        // run's adopt and the dry run's would-adopt
+                        // naming) drop to the same auditable name.
                         commit_failed_files.push(FailedFile {
                             sha: sha.clone(),
-                            path: canonical_path.clone(),
+                            path: canonical_path,
                             reason: if dry_run {
-                                "dry-run:already-adopted".to_string()
+                                "dry-run:gone-by-head".to_string()
                             } else {
-                                "already-adopted".to_string()
+                                "gone-by-head".to_string()
                             },
                         });
                         continue;
                     }
-                    report.adoptions.push(FailedFile {
-                        sha: sha.clone(),
-                        path: canonical_path.clone(),
-                        reason: if dry_run {
-                            "dry-run".to_string()
-                        } else {
-                            "adopted-first-version".to_string()
-                        },
-                    });
+                    if !taken {
+                        report.adoptions.push(FailedFile {
+                            sha: sha.clone(),
+                            path: canonical_path.clone(),
+                            reason: if dry_run {
+                                "dry-run".to_string()
+                            } else {
+                                "adopted-first-version".to_string()
+                            },
+                        });
+                    } else if dry_run {
+                        // A re-run (or a store where the trunk's walk
+                        // already healed a copy) would re-assert, and
+                        // the write's filter may drop it: named here so
+                        // a dry run does not promise a fresh adoption.
+                        commit_failed_files.push(FailedFile {
+                            sha: sha.clone(),
+                            path: canonical_path.clone(),
+                            reason: "dry-run:already-adopted".to_string(),
+                        });
+                    }
                     // A dry run names its would-heal set and writes
                     // nothing - no blob puts, no parse, no flush.
                     if dry_run {
@@ -1877,20 +1914,6 @@ pub fn reingest_merged_commits(
                     });
                     continue;
                 }
-            }
-            if !head_tree.contains(&canonical_path) {
-                // A file the merge brought in and later commits deleted:
-                // named, never half-minted. The adoption entry just pushed
-                // for the same file is withdrawn - one verdict per file.
-                report
-                    .adoptions
-                    .retain(|f| !(f.sha == sha && f.path == canonical_path));
-                commit_failed_files.push(FailedFile {
-                    sha: sha.clone(),
-                    path: canonical_path.clone(),
-                    reason: "gone-by-head".to_string(),
-                });
-                continue;
             }
             // Blob puts first (put-then-assert, per commit), the walk's
             // own order.
@@ -2064,6 +2087,7 @@ pub fn reingest_merged_commits(
                 &stamp,
             ));
         }
+        let mut flush_ok = true;
         if !concepts.is_empty() {
             // A failed flush is audited loud, not silent: there is no
             // cursor to stop behind, so the report is the repair list and
@@ -2074,6 +2098,7 @@ pub fn reingest_merged_commits(
                 .expect("heal graph always holds a store")
                 .upsert_concepts_bulk(&concepts)
             {
+                flush_ok = false;
                 eprintln!(
                     "[ingest] heal concept flush failed at {sha}: {e:?} — audited, continuing"
                 );
@@ -2092,9 +2117,11 @@ pub fn reingest_merged_commits(
             }
         }
         report.files_failed.extend(commit_failed_files);
-        report.commits_adopted_concepts += concepts.len();
+        if flush_ok {
+            report.commits_adopted_concepts += concepts.len();
+            report.commits_ingested += 1;
+        }
         report.head = Some(sha);
-        report.commits_ingested += 1;
     }
     report.elapsed_secs = started.elapsed().as_secs_f64();
     Ok(report)
@@ -2592,12 +2619,19 @@ mod backfill_tests {
         write_and_stage(repo, "fresh.py", "def fresh_fn():\n    return 3\n");
         let m = commit_on(repo, "refs/heads/main", "merge", &[&pa, &pb]);
         let pm = repo.find_commit(git2::Oid::from_str(&m).unwrap()).unwrap();
+        write_and_stage(
+            repo,
+            "lib_x.py",
+            "def x_fn():
+    return 5
+",
+        );
         let mut index = repo.index().unwrap();
         index.remove_path(std::path::Path::new("gone.py")).unwrap();
         index.write().unwrap();
         let _ = std::fs::remove_file(repo.workdir().unwrap().join("gone.py"));
-        let c = commit_on(repo, "refs/heads/main", "tail", &[&pm]);
-        (m, c)
+        let e = commit_on(repo, "refs/heads/main", "tail", &[&pm]);
+        (m, e)
     }
 
     /// The feat lineage, ingested while main still sits at the merge
@@ -2616,25 +2650,97 @@ mod backfill_tests {
         .unwrap();
     }
 
+    /// The trunk walk's own run (findings 1 and 2's shape): the whole
+    /// plan, commit-time stamps, everything the walk writes.
+    fn ingest_main(store_path: &std::path::Path, repo: &str) {
+        crate::graph::ingest::ingest_history(
+            &store_path.to_string_lossy(),
+            repo,
+            "main",
+            None,
+            false,
+        )
+        .unwrap();
+    }
+
+    /// The vintage shape, forged on a store where the walk already ran
+    /// (under the fixed read): the trunk-side evidence for every id under
+    /// each prefix removed under the archive-session marker the delete
+    /// guards arm from — overlay rows, their FTS shadow rows, the
+    /// projection rows, and the log rows both spellings write. The branch
+    /// mints (their own branch_id) are untouched: that is the vintage
+    /// shape's story, the file's whole id tree hollow on the trunk.
+    fn forge_hollow(store_path: &std::path::Path, ids: &[&str]) {
+        let path = store_path.to_string_lossy().to_string();
+        crate::storage::runtime().block_on(async {
+            // The diagnostic conn is readonly; the forge writes through a
+            // throwaway local connection against the live store (no
+            // reopen: `open` verifies and would refuse the tampered file
+            // first).
+            let db = libsql::Builder::new_local(&path).build().await.unwrap();
+            let conn = db.connect().unwrap();
+            conn.execute("CREATE TABLE macrame_archive_session (x)", ())
+                .await
+                .unwrap();
+            for id in ids {
+                let id = id.to_string();
+                for sql in [
+                    "DELETE FROM concept_version_fts_rows                       WHERE id LIKE ?1 AND branch_id IN ('', 'main')",
+                    "DELETE FROM concept_versions                       WHERE id LIKE ?1 AND branch_id IN ('', 'main')",
+                    "DELETE FROM transaction_log                       WHERE entity_id LIKE ?1 AND branch_id IN ('', 'main')",
+                    "DELETE FROM concepts                       WHERE id LIKE ?1 AND branch_id IN ('', 'main')",
+                ] {
+                    conn.execute(sql, libsql::params![id.clone()])
+                        .await
+                        .unwrap();
+                }
+            }
+            conn.execute("DROP TABLE macrame_archive_session", ())
+                .await
+                .unwrap();
+        });
+    }
+
+    /// The overlay rows a foreign-minted id's trunk version holds: a
+    /// content-equality reader for the tests (the rows' own payloads).
+    fn overlay_rows_at(store: &crate::storage::CodeGraphStore, id: &str) -> Vec<(String, String)> {
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        crate::storage::runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT valid_from, content FROM concept_versions                       WHERE id = ?1 AND branch_id IN ('', 'main') ORDER BY valid_from",
+                    libsql::params![id],
+                )
+                .await
+                .unwrap();
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.unwrap() {
+                out.push((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                ));
+            }
+            out
+        })
+    }
+
     #[test]
     fn the_heal_adopts_the_vintage_skip_at_the_merge_s_stamp() {
         let (dir, repo, a, b) = pre_merge_repo();
-        let store_path = dir.path().join("heal.db");
         let repo_s = dir.path().to_string_lossy().to_string();
+        let store_path = dir.path().join("heal.db");
         ingest_feat(&store_path, &repo_s);
-        let (m, _c) = apply_merge(&repo, &a, &b);
+        let (m, _e) = apply_merge(&repo, &a, &b);
         // the precondition: the mint is away from the trunk
-        {
-            let store_check = crate::storage::CodeGraphStore::open(&store_path).unwrap();
-            assert_eq!(
-                store_check
-                    .mint_lineage("lib_x.py::module")
-                    .unwrap()
-                    .unwrap(),
-                "feat",
-                "the branch-born id is minted on feat before the heal"
-            );
-        }
+        let store_check = crate::storage::CodeGraphStore::open(&store_path).unwrap();
+        assert_eq!(
+            store_check
+                .mint_lineage("lib_x.py::module")
+                .unwrap()
+                .unwrap(),
+            "feat",
+            "the branch-born id is minted on feat before either walk touched it"
+        );
         let report = crate::graph::ingest::reingest_merged_commits(
             &store_path.to_string_lossy(),
             &repo_s,
@@ -2642,16 +2748,19 @@ mod backfill_tests {
             false,
         )
         .unwrap();
-        assert_eq!(report.commits_ingested, 1, "one merge commit on the chain");
+        // Every chain commit walks: the vintage skip is per FILE, so the
+        // tail's lib_x edit belongs to the heal too (finding 2).
+        assert_eq!(report.commits_ingested, 3);
         let adoptions: Vec<&FailedFile> = report
             .adoptions
             .iter()
             .filter(|f| f.path == "lib_x.py")
             .collect();
         assert_eq!(adoptions.len(), 1, "the healed id is audited once");
+        assert_eq!(adoptions[0].reason, "adopted-first-version");
         assert_eq!(
-            adoptions[0].reason, "adopted-first-version",
-            "the adoption shape, not a skip"
+            adoptions[0].sha, m,
+            "the first trunk version rides the merge"
         );
         let reasons: Vec<(String, String)> = report
             .files_failed
@@ -2666,72 +2775,74 @@ mod backfill_tests {
             reasons.contains(&("fresh.py".to_string(), "no-mint".to_string())),
             "a merge-only add with no mint anywhere is named, not half-minted: {reasons:?}"
         );
-        // The healed shape: the write lands as the trunk's first version
-        // while the provenance row keeps the mint lineage (D-315 by
-        // construction - the id's concepts row is never retouched).
-        let store_check = crate::storage::CodeGraphStore::open(&store_path).unwrap();
-        let (_content, branch_id) = read_row(&store_check, "lib_x.py::module");
+        // The healed shape: the mint keeps its lineage, the trunk spine
+        // claims the id, and the tail's edit re-asserted at its own stamp
+        // (two overlay rows, different contents).
         assert_eq!(
-            branch_id, "feat",
+            read_row(&store_check, "lib_x.py::module").1,
+            "feat",
             "the provenance row keeps the mint lineage after the heal"
         );
-        assert!(
-            store_check.trunk_version_live("lib_x.py::module").unwrap(),
-            "the healed version lives on the trunk spine"
-        );
+        assert!(store_check.trunk_version_live("lib_x.py::module").unwrap());
+        let rows = overlay_rows_at(&store_check, "lib_x.py::module");
+        assert_eq!(rows.len(), 2, "the merge's row and the tail's re-assert");
+        assert_ne!(rows[0].1, rows[1].1, "the values differ per commit");
     }
 
     #[test]
     fn the_heal_is_idempotent_a_second_run_adopts_nothing() {
         let (dir, repo, a, b) = pre_merge_repo();
-        let store_path = dir.path().join("heal.db");
         let repo_s = dir.path().to_string_lossy().to_string();
-        let store_s = store_path.to_string_lossy().to_string();
+        let store_path = dir.path().join("heal.db");
         ingest_feat(&store_path, &repo_s);
-        let (m, _c) = apply_merge(&repo, &a, &b);
+        let (m, _e) = apply_merge(&repo, &a, &b);
         let first = crate::graph::ingest::reingest_merged_commits(
-            &store_s,
-            &dir.path().to_string_lossy(),
+            &store_path.to_string_lossy(),
+            &repo_s,
             "main",
             false,
         )
         .unwrap();
-        assert!(first.commits_adopted_concepts > 0, "the first run heals");
+        assert!(first.adoptions.iter().any(|f| f.path == "lib_x.py"));
         let second = crate::graph::ingest::reingest_merged_commits(
-            &store_s,
-            &dir.path().to_string_lossy(),
+            &store_path.to_string_lossy(),
+            &repo_s,
             "main",
             false,
         )
         .unwrap();
-        assert_eq!(second.commits_ingested, 1, "the merge commit re-walks");
-        assert!(
-            second.adoptions.iter().all(|f| f.path != "lib_x.py"),
-            "the second run re-reads the healed id as minted on main: {:?}",
-            second.adoptions
-        );
-        let reasons: Vec<(String, String)> = second
+        // Both commits walk again; nothing is adopted twice, and the
+        // re-walk's writes land byte-identically (the filter drops them),
+        // which is why neither `adoptions` nor `files_failed` carries a
+        // lib_x entry.
+        assert_eq!(second.commits_ingested, 3);
+        assert!(second.adoptions.iter().all(|f| f.path != "lib_x.py"));
+        let named: Vec<(String, String)> = second
             .files_failed
             .iter()
             .map(|f| (f.path.clone(), f.reason.clone()))
             .collect();
         assert!(
-            reasons.contains(&("gone.py".to_string(), "gone-by-head".to_string())),
-            "the gone file stays named on a re-run"
+            named.contains(&("gone.py".to_string(), "gone-by-head".to_string())),
+            "the gone file stays named"
+        );
+        assert!(
+            !named.iter().any(|(p, _)| p == "lib_x.py"),
+            "a re-assert of what the spine holds is no failure and no news"
         );
     }
 
     #[test]
     fn the_dry_run_names_the_set_and_writes_nothing() {
         let (dir, repo, a, b) = pre_merge_repo();
-        let store_path = dir.path().join("heal.db");
         let repo_s = dir.path().to_string_lossy().to_string();
-        let store_s = store_path.to_string_lossy().to_string();
+        let store_path = dir.path().join("heal.db");
         ingest_feat(&store_path, &repo_s);
-        let (m, _c) = apply_merge(&repo, &a, &b);
+        let (m, _e) = apply_merge(&repo, &a, &b);
+        let _ = m;
         let report = crate::graph::ingest::reingest_merged_commits(
-            &store_s,
-            &dir.path().to_string_lossy(),
+            &store_path.to_string_lossy(),
+            &repo_s,
             "main",
             true,
         )
@@ -2741,9 +2852,21 @@ mod backfill_tests {
                 .adoptions
                 .iter()
                 .any(|f| f.path == "lib_x.py" && f.reason == "dry-run"),
-            "the dry run names the would-heal: {:?}",
-            report.adoptions
+            "the dry run names the would-heal"
         );
+        // Finding 3: the dry run and the real run agree about a file the
+        // trunk deleted afterwards — the same auditable verdict, not a
+        // promised adoption.
+        let named: Vec<(String, String)> = report
+            .files_failed
+            .iter()
+            .map(|f| (f.path.clone(), f.reason.clone()))
+            .collect();
+        assert!(
+            named.contains(&("gone.py".to_string(), "dry-run:gone-by-head".to_string())),
+            "the dry run names the gone file the way the real run would: {named:?}"
+        );
+        // The dry run's writes: none.
         let store_check = crate::storage::CodeGraphStore::open(&store_path).unwrap();
         assert_eq!(
             store_check
@@ -2752,6 +2875,10 @@ mod backfill_tests {
                 .unwrap(),
             "feat",
             "the dry run wrote nothing"
+        );
+        assert!(
+            !store_check.trunk_version_live("lib_x.py::module").unwrap(),
+            "no overlay claim exists, so the dry run's verdict is the only answer"
         );
     }
 
@@ -2769,7 +2896,8 @@ mod backfill_tests {
         assert!(matches!(report, Err(IngestError::Store(_))));
         let store_path = dir.path().join("feats.db");
         ingest_feat(&store_path, &repo_s);
-        let (m, _c) = apply_merge(&repo, &a, &b);
+        let (m, _e) = apply_merge(&repo, &a, &b);
+        let _ = m;
         let report = crate::graph::ingest::reingest_merged_commits(
             &store_path.to_string_lossy(),
             &repo_s,
@@ -2780,5 +2908,134 @@ mod backfill_tests {
             report,
             Err(IngestError::TrunkBranchMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn the_trunk_edits_a_merged_file_after_the_merge_adopts_it() {
+        let (dir, repo, a, b) = pre_merge_repo();
+        let store_path = dir.path().join("walk.db");
+        let repo_s = dir.path().to_string_lossy().to_string();
+        ingest_feat(&store_path, &repo_s);
+        let (m, e) = apply_merge(&repo, &a, &b);
+        // The trunk's own walks read the write's own resolution: the
+        // merged file's next edit lands the trunk's next version there,
+        // instead of a refused whole-commit bulk halting the walk.
+        let report = crate::graph::ingest::ingest_history(
+            &store_path.to_string_lossy(),
+            &repo_s,
+            "main",
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(report.commits_ingested, 3, "one, the merge, the edit");
+        assert_eq!(
+            report.head.as_deref(),
+            Some(e.as_str()),
+            "the walk reached the tip, not the refusal's position"
+        );
+        assert!(report.files_failed.is_empty(), "{:?}", report.files_failed);
+        let store_check = crate::storage::CodeGraphStore::open(&store_path).unwrap();
+        let rows = overlay_rows_at(&store_check, "lib_x.py::module");
+        assert_eq!(rows.len(), 2, "the merge's adoption, the edit's version");
+        assert!(
+            rows[0].0 < rows[1].0,
+            "the overlay rows order by valid_from cleanly",
+        );
+        assert_ne!(
+            rows[0].1, rows[1].1,
+            "the edit's content, not merge-day's, is the trunk's version"
+        );
+        assert!(
+            store_check.trunk_version_live("lib_x.py::module").unwrap(),
+            "the trunk spine claims the adopted id, which is the read's own truth"
+        );
+    }
+
+    #[test]
+    fn the_heal_restores_the_trunk_s_later_edits_of_a_hollow_file() {
+        // The shape a real vintage store carries: the trunk walk ran past
+        // the merge day under the old shape — the merge and every later
+        // edit of the hollow file were skipped — and the trunk's cursor
+        // sits past all of it, so a resume heals nothing. Under the fixed
+        // read the whole chain (whole commits) re-heals against the forge:
+        // the merge day's adoption, then the tail's content through the
+        // trunk's own supersede chain — the trunk's content matches what a
+        // full pass would have written, at every commit, not merge-day.
+        let (dir, repo, a, b) = pre_merge_repo();
+        let store_path = dir.path().join("hollow.db");
+        let repo_s = dir.path().to_string_lossy().to_string();
+        ingest_feat(&store_path, &repo_s);
+        let (m, e) = apply_merge(&repo, &a, &b);
+        let _ = m;
+        let walk = crate::graph::ingest::ingest_history(
+            &store_path.to_string_lossy(),
+            &repo_s,
+            "main",
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(walk.commits_ingested, 3);
+        let truth = {
+            let store_check = crate::storage::CodeGraphStore::open(&store_path).unwrap();
+            overlay_rows_at(&store_check, "lib_x.py::module")
+        };
+        assert_eq!(truth.len(), 2, "the walk wrote both versions");
+        // The forge: the trunk-side evidence erased (the vintage shape the
+        // store carries), the branch mint untouched.
+        forge_hollow(&store_path, &["lib_x.py::%"]);
+        {
+            let store_check = crate::storage::CodeGraphStore::open(&store_path).unwrap();
+            assert!(
+                !store_check.trunk_version_live("lib_x.py::module").unwrap(),
+                "the trunk side of the id is hollow before the heal"
+            );
+            assert_eq!(
+                store_check
+                    .mint_lineage("lib_x.py::module")
+                    .unwrap()
+                    .unwrap(),
+                "feat",
+                "the mint row keeps the branch lineage"
+            );
+        }
+        let report = crate::graph::ingest::reingest_merged_commits(
+            &store_path.to_string_lossy(),
+            &repo_s,
+            "main",
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            report.commits_ingested, 3,
+            "the chain walks: the trunk commit, the merge, the edit"
+        );
+        assert_eq!(
+            report
+                .adoptions
+                .iter()
+                .filter(|f| f.path == "lib_x.py")
+                .count(),
+            1,
+            "the first trunk version is the merge's adoption"
+        );
+        let store_check = crate::storage::CodeGraphStore::open(&store_path).unwrap();
+        let healed = overlay_rows_at(&store_check, "lib_x.py::module");
+        assert_eq!(
+            healed.len(),
+            truth.len(),
+            "the heal wrote one row per skipped commit"
+        );
+        assert_eq!(
+            healed.last().expect("rows").1,
+            truth.last().expect("rows").1,
+            "the healed content at the tip equals what a full pass wrote"
+        );
+        assert_eq!(
+            report.head.as_deref(),
+            Some(e.as_str()),
+            "the heal reached the tip"
+        );
     }
 }

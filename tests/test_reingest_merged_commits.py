@@ -97,6 +97,7 @@ def _store_path(repo):
 
 
 LIB_X = _nl("def x_fn():", "    return 1")
+LIB_X_EDIT = _nl("def x_fn():", "    return 5")
 GONE = _nl("def gone_fn():", "    return 2")
 FRESH = _nl("def fresh_fn():", "    return 3")
 
@@ -125,12 +126,16 @@ def _apply_merge(path):
     # main receives feat: the merge commit carries a file of its own
     # (fresh.py, a staged add inside the merge state -- its tree change
     # belongs to the merge and is minted nowhere until the heal runs),
-    # then a tail commit deletes gone.py.
+    # then a tail commit EDITS lib_x.py and deletes gone.py -- the
+    # post-merge trunk commit that edits a merged file is the shape the
+    # trunk-edit findings need, the E commit.
     _git(path, "merge", "--no-commit", "--no-ff", "feat")
     _commit(path, "merge", "2026-02-01T10:00:00+00:00", {"fresh.py": FRESH})
     m = _sha(path, "main")
-    _commit(path, "tail", "2026-02-02T10:00:00+00:00", delete=["gone.py"])
-    return m
+    _commit(path, "tail", "2026-02-02T10:00:00+00:00",
+            {"lib_x.py": LIB_X_EDIT}, delete=["gone.py"])
+    e = _sha(path, "main")
+    return m, e
 
 
 class TestHeal:
@@ -142,11 +147,14 @@ class TestHeal:
         feat = ops.ingest_history(str(repo), branch="feat",
                                   store_path=str(store))
         assert feat["commits_ingested"] == 1
-        m = _apply_merge(repo)
+        m, e = _apply_merge(repo)
 
         report = ops.reingest_merged_commits(str(repo), store_path=str(store))
         assert report["branch"] == "main"
-        assert report["commits_ingested"] == 1
+        # Every chain commit walks and settles its flush: the trunk
+        # commit, the merge, the edit.
+        assert report["commits_ingested"] == 3
+        assert report["head"] == e
         adoptions = [f for f in report["adoptions"]
                      if f["path"] == "lib_x.py"]
         assert len(adoptions) == 1
@@ -163,16 +171,20 @@ class TestHeal:
                     " WHERE id = 'lib_x.py::module'")
         ver_sql = ("SELECT valid_from, recorded_at FROM concept_versions"
                    " WHERE id = 'lib_x.py::module'"
-                   " AND branch_id IN ('', 'main')")
+                   " AND branch_id IN ('', 'main')"
+                   " ORDER BY valid_from")
         with sqlite3.connect(str(store)) as conn:
             (mint_branch,) = conn.execute(mint_sql).fetchone()
-            (stamp, _t,) = conn.execute(ver_sql).fetchone()
+            rows = conn.execute(ver_sql).fetchall()
         assert mint_branch == "feat"
+        assert len(rows) == 2, "the merge's version and the edit's re-assert"
         # The bitemporal ingest rule: valid_from is the commit's own
         # stamp (P5b's commit index), recorded_at is the writer's now --
-        # the heal is no exception, so the version asserts the MERGE's
-        # instant, not the heal's day.
-        assert zulu(stamp) == zulu(_committer_date(repo, m))
+        # the heal is no exception, so the versions assert the MERGE's
+        # and the edit's instants, not the heal's day.
+        stamps = [zulu(v) for (v, _t) in rows]
+        assert stamps[0] == zulu(_committer_date(repo, m))
+        assert stamps[1] == zulu(_committer_date(repo, e))
 
     def test_the_heal_is_idempotent_a_second_run_adopts_nothing(
             self, tmp_path):
@@ -185,11 +197,14 @@ class TestHeal:
         assert [f for f in first["adoptions"] if f["path"] == "lib_x.py"]
 
         second = ops.reingest_merged_commits(str(repo), store_path=str(store))
-        assert second["commits_ingested"] == 1
+        assert second["commits_ingested"] == 3
         assert [f for f in second["adoptions"]
                 if f["path"] == "lib_x.py"] == []
         named = {(f["path"], f["reason"]) for f in second["files_failed"]}
-        assert ("lib_x.py", "already-adopted") in named
+        # A re-read's re-asserts land byte-identically (the write's own
+        # unchanged filter drops them): no lib_x entry in either list,
+        # which is where the op's idempotence lives.
+        assert ("lib_x.py", "already-adopted") not in named
         assert ("gone.py", "gone-by-head") in named
 
     def test_the_dry_run_names_the_set_and_writes_nothing(self, tmp_path):
@@ -203,6 +218,10 @@ class TestHeal:
         named = {(f["path"], f["reason"]) for f in dry["adoptions"]}
         assert ("lib_x.py", "dry-run") in named
         assert dry["commits_ingested"] == 0
+        # Finding 3: the dry run agrees with the real run about a file
+        # the trunk deleted afterwards -- the same verdict, prefixed.
+        failed = {(f["path"], f["reason"]) for f in dry["files_failed"]}
+        assert ("gone.py", "dry-run:gone-by-head") in failed
         ver_count_sql = ("SELECT COUNT(*) FROM concept_versions"
                          " WHERE id = 'lib_x.py::module'")
         claim_sql = ("SELECT COUNT(*) FROM concepts"

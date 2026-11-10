@@ -1798,9 +1798,11 @@ def reingest_merged_commits(repo: str | Path, branch: str = "main",
     had not ingested yet: spine and bytes landed, the old shape refused
     its own minting, and that refusal was NOT yet the D-315 adoption —
     the module id exists on the merging branch, but the trunk spine
-    never learned it. The heal re-walks those commits at their own
-    stamps and gives the foreign-minted ids their trunk-side first
-    version through the same adoption path a full pass uses.
+    never learned it. The heal re-walks the whole first-parent chain
+    at each commit's own stamp and gives the foreign-minted ids their
+    trunk-side first version through the same adoption path a full pass
+    uses; a later trunk edit of a hollow file is its own re-assert, so
+    the healed set carries the trunk's content, not just merge-day's.
 
     Trunk only and store required: the heal serves the temporal walk's
     own skipped set, never a branch (branch history belongs to its
@@ -1815,17 +1817,27 @@ def reingest_merged_commits(repo: str | Path, branch: str = "main",
     retire is issued and nothing already readable is re-minted, so a
     second run is a no-op beyond accounting (``already-adopted``).
 
-    Per merge commit, classed from the ledger before any write:
-    foreign mint → an adoption
-    ("adopted-first-version"); the trunk spine already claiming the id
-    → "already-adopted", untouched; no mint anywhere → "no-mint",
-    named but never half-minted; deleted by HEAD's tree →
-    "gone-by-head", named. A failed concept flush is audited and the
-    run continues — there is no cursor behind which a fine-grained
-    resume is possible.
+    The whole first-parent chain walks (the hollow shape is per FILE,
+    not per merge). Classed from the ledger before any write: foreign
+    mint → an adoption ("adopted-first-version") when the trunk spine
+    holds nothing yet, a silent re-assert when it does; no mint
+    anywhere → "no-mint", named but never half-minted; deleted by
+    HEAD's tree → "gone-by-head", named. A failed concept flush is
+    audited and the run continues — the counts only grow with a settled
+    flush — so there is no cursor behind which a fine-grained resume is
+    possible.
 
-    ``dry_run`` names its would-heal set ("dry-run" / "dry-run:no-mint"
-    / "dry-run:already-adopted") and writes nothing.
+    ``dry_run`` names its would-heal set ("dry-run" /
+    "dry-run:no-mint" / "dry-run:already-adopted" /
+    "dry-run:gone-by-head") and writes nothing; the names mirror the
+    real run's so a dry run never promises what the real run would not
+    do.
+
+    Edges beyond the heal set are not written: the heal's own-files
+    projection cannot see the other side of a healed file's link to an
+    unchanged trunk file, so that join arrives the next time the
+    unchanged file's own ingest re-asserts it. Nothing in the report
+    JSON announces the join's absence — this doc is its stated shape.
 
     There is deliberately no cwd default for the store, and no MCP tool
     in the first release: a writing, migration-grade op an agent must

@@ -590,18 +590,22 @@ heals it — and under the 0.22 pin the hollow state cannot even be produced by 
 trunk walk meeting a branch-born id either adopts inline, when the branch lineage is already
 minted, or mints it as ordinary when nothing is minted yet). The carrier is therefore a
 **named-commit re-walk, not a cursor rewind**: `reingest_merged_commits` (Rust FFI beside
-`ingest_history`; a py `ops` wrapper; the migration op calls it after each branch) walks the
-trunk's first-parent chain, keeps the same INV-11 nudge chain state, and processes only the
-merge commits, and in them only the files whose module ids are hollow on the main lineage
-(`mint_lineage(id)` names another lineage → adoption at the merge's own nudged stamp; no minting
-lineage with no branch mapping → the skip reason remains, per §10 item 1 of the Amendment 2
-spec), only files still present in HEAD's tree (the absent ones are named `gone by head`, not
-half-minted). One bulk flush per commit; scoped-edge persistence from an own-files-only cascade
-(the branch walk's rule, not a head-state approximation); the commit concept and the spine
-touched nothing (they landed at the original walk); the `kv` cursor untouched. A second run
-re-adopts nothing (an id the first run minted on `main` routes ordinary and `filter_unchanged`
-drops it) — the heal is idempotent by construction, and P-9's pricing counts its write volume
-under the same D-299 keep law. The unit tests are Rust-side (`kv_put_sync` forges the
+`ingest_history`; a py `ops` wrapper; the migration op calls it once after the branch ingests)
+walks the trunk's first-parent chain, keeps the same INV-11 nudge chain state, and processes
+every commit — the hollow shape is per FILE, not per merge, and a post-merge trunk edit of a
+hollow id was skipped exactly like the merge itself — only the files whose module ids are
+hollow on the main lineage (`mint_lineage(id)` names another lineage → adoption at the
+commit's own nudged stamp; a re-assert when the trunk spine already claims it, which is why a
+later edit heals at its own commit rather than freezing at merge-day; no mint anywhere →
+named `no-mint`, per §10 item 1 of the Amendment 2 spec), only files still present in HEAD's
+tree (the absent ones are named `gone-by-head`, not half-minted). One bulk flush per commit;
+scoped-edge persistence from an own-files-only cascade (the branch walk's rule, not a
+head-state approximation — edges between a healed file and files outside the heal's set do
+not resolve, so a healed file's link to an unchanged trunk file arrives the next time that
+file's own ingest re-asserts it); the commit concept and the spine touched nothing (they
+landed at the original walk); the `kv` cursor untouched. A second run re-adopts nothing (the
+re-asserts land byte-identically and `filter_unchanged` drops them) — the heal is idempotent
+by construction, and P-9's pricing counts its write volume under the same D-299 keep law. The unit tests are Rust-side (`kv_put_sync` forges the
 past-the-merge cursor shape; py has no kv surface), the py layer takes the wrapper and the
 report contract.
 
@@ -619,7 +623,26 @@ than silently skipping; and the py ingest path writes the healed version with
 bitemporal split every ingest bulk write carries (§H-21's now-stamps, F1's truth). The
 fixture-built test order mirrors the operator order: the branch ingest runs BEFORE the
 merge lands, because once main reaches the branch tip `fork_point` slides past the branch
-tip and a post-merged branch ingest walks nothing.)*
+tip and a post-merged branch ingest walks nothing.*
+
+*(2026-11-10: the review round. Finding 1 — once the trunk adopted a merged entity, the
+NEXT trunk commit editing it was refused and the ingest stalled — the trunk arm of the
+write decision read the write's own state from the `concepts` table, where an adopted id
+holds no row; it now reads Macrame's per-branch resolution for `main` at each write's own
+stamp, the same read a branch writer runs. Finding 2 — the heal re-read only merge commits
+and its healed set froze at merge-day content — the whole first-parent chain walks, and a
+healed id's later edit re-asserts at its own commit through the fixed read. Finding 3 —
+the dry run promised "would adopt" for a file the trunk later deleted while the real run
+said deleted — both runs now classify per file before anything writes and carry the same
+verdict, `gone-by-head` under the dry run's `dry-run:` prefix. Finding 4 — a commit counted
+done when its bulk flush refused — the counters only move on a settled flush while `head`
+still names the commit the run reached. Finding 6's wording, not fields: the healed set's
+edges to files outside the heal's set are not written and nothing in the JSON announces
+that; the py and lib report contracts state it. Same day, one shape deeper: the trunk
+arm's resolution turned out to read Macrame's overlay-scan slot-swap — the resolution row's
+`extra` answered the model's slot (Macrame `concept_lineage.rs::overlay_scan`'s consumer),
+so the unchanged filter believed every resolved row changed and a re-assert refused as
+same-start; the slot fix lands upstream (40719ac) with its own reader-side pin.)*
 
 ---
 
