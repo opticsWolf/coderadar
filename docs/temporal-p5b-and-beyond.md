@@ -18,6 +18,17 @@
 > cutoff). **U-2 and U-3 remain unfiled**; they are the remaining upstream path (§7 and Q-13
 > mark it).
 >
+> **Updated 2026-11-11: Macrame `v0.22.0` is released** - tag `v0.22.0` on `69336d7` (all three
+> branches ff-merged there; the docs record at `1d57dae`), published to crates.io and PyPI the
+> same day (release run `42984353021`, wheels run `42984353081`), the CI replication green on
+> every leg (Rust `42984290027`: 1,048 / 1,026 / 1,074 across the three runners, Python
+> `42984289951`: 749 + 3 skipped on all five legs). The release carried a fix round the
+> 2026-11-09 note predates: python.yml's clippy leg gained mypy `--strict` on the binding
+> (`67ced5a`, `69336d7`), and the py3.10 floor leg came back after M1b's `datetime.UTC` import
+> had silenced it since Nov 7. CodeRadar pins the release commit. **U-2 and U-3 remain
+> unfiled**; they are the remaining upstream path (§7 and Q-13 mark it), and the v0.23.0
+> plan files them.
+>
 > **Scope.** Everything after P5a that the temporal architecture needs in order to mean what it
 > says: reads on the axis the store writes, a write discipline the current engine accepts, branches
 > and merges that behave like git's, the uncommitted working tree, and the boundary between data
