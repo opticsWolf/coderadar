@@ -29,7 +29,14 @@ except ImportError:  # pragma: no cover - gate for CI without the extension
 
 pytestmark = pytest.mark.skipif(not _CORE, reason="Rust _core extension not built")
 
-TS_OPEN = "9999-12-31T00:00:00.000000Z"
+# The open end, either spelling: the engine's OPEN_SENTINEL on 0.22-pin
+# stores, the pre-0.22 spelling on older ones (storage.rs TS_OPEN /
+# TS_OPEN_LEGACY; is_open_end reads both). Fixed 2026-11-11 in P5b.1's
+# proof: the lone legacy spelling matched nothing on a 0.22-pin store,
+# so the test passed vacuously — a forged doubled-open read clean.
+TS_OPEN = "9999-12-31T23:59:59.999999Z"
+TS_OPEN_LEGACY = "9999-12-31T00:00:00.000000Z"
+TS_OPEN_ENDS = (TS_OPEN, TS_OPEN_LEGACY)
 
 
 def _digest(content: str) -> str:
@@ -144,7 +151,7 @@ class TestF2OneOpenIntervalPerConcept:
             belief[(entity_id, row["valid_from"])] = row["valid_to"]
         open_starts = defaultdict(int)
         for (entity_id, _start), valid_to in belief.items():
-            if valid_to == TS_OPEN:
+            if valid_to in TS_OPEN_ENDS:
                 open_starts[entity_id] += 1
         doubled = {i: n for i, n in open_starts.items() if n > 1}
         assert doubled == {}, doubled
