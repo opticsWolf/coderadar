@@ -29,6 +29,8 @@
 > unfiled**; they are the remaining upstream path (§7 and Q-13 mark it), and the v0.23.0
 > plan files them.
 >
+> **Updated 2026-11-11 (2): U-2 and U-3 are filed.** Macrame's `v0.23.0` plan takes them as D-317 (U-2, the lineage-resolved valid fold) and D-318 (U-3, the fork's valid-axis cut). The 11-11 paragraph above is history as to filing; §7's 11-11 paragraph is the operative order.
+>
 > **Scope.** Everything after P5a that the temporal architecture needs in order to mean what it
 > says: reads on the axis the store writes, a write discipline the current engine accepts, branches
 > and merges that behave like git's, the uncommitted working tree, and the boundary between data
@@ -410,7 +412,7 @@ then fell back to `analyze`, whose v1 sweep retired every annotation on an index
 commit-time store refuses that fallback and stopped loading. `classify_v2_concept` now skips them
 (`V2ConceptClass::Note`); `tests/test_annotations.py::TestColdReload` pins both stores.
 
-### P5b.1 — Close-then-open writes, on today's pin (no dependency)
+### P5b.1 — Close-then-open writes (no dependency) *(2026-11-11: `on today's pin` is history — the pin is `0.22.0`, the mechanism is D-312's one-write supersession, §7 holds the order)*
 
 Every concept writer closes before it opens (A-4, D-2): entity and module flushes, spine rows,
 branch pointers and tombstones, commit concepts where versioned, annotation and comment edits,
@@ -421,13 +423,13 @@ flush, and a resumed ingest re-runs the open half. If U-5 lands first, this phas
 *(2026-11-09: it did — 0.22.0's D-312 one-write supersession; P5b.1 builds on it, and the
 two-flush window shrinks to the ordering discipline above.)*
 **Proves it:** INV-15 holds on the migration fixture and on a scratch self-host run; the suite runs
-green against a local Macrame 0.20.0 build with the guard active.
+green against the pinned Macrame build with the guard active *(2026-11-11: `0.20.0` in the prior wording is history — the proof runs on the `0.22.0` pin)*.
 
-### P5b.2 — Adopt Macrame 0.21.0 (needs P5b.1; U-1 released 2026-11-01)
+### P5b.2 — Adopt Macrame 0.22.0 (needs P5b.1; U-1 released 2026-11-01) *(2026-11-11: retitled from 0.21.0 — the pin already rides a `0.22.0` rev at `40719ac`; what remains is the registry switch, §7)*
 
-Move `macrame-db` to `0.21.0` and `libsql` to `0.10` in one change (`core_indexer/Cargo.toml:30,50`;
+Move `macrame-db` to `0.22.0` and `libsql` to `0.10` in one change (`core_indexer/Cargo.toml:30,50`;
 the two must match, because `diagnostic_conn()` hands out Macrame's connections). No API drift is
-known: the one break (`Overlap.within_batch`) is unused here. Rerun the full gate bundle and the
+known: the 0.21.0 break (`Overlap.within_batch`) is unused here, and the 0.22.0 breaks ride the M6-g uptake *(2026-11-11: version retitled; the rev pin at `40719ac` becomes the registry pin)*. Rerun the full gate bundle and the
 scratch migration, and require `verify_concept_intervals` to report nothing and `concept_disorder`
 to stay empty on an in-order ingest. Not 0.20.0: its backfill defect is P5b.5's write.
 
@@ -435,15 +437,15 @@ to stay empty on an in-order ingest. Not 0.20.0: its backfill defect is P5b.5's 
 moving the pin before close-then-open breaks every second version of every concept (F2).
 
 **The ladder is one-way.** The first open by a 0.21.0 build upgrades a store to schema v24, and a
-0.19.1 build cannot open it again. The scratch stores do not matter; the frozen pre-migration store
+0.19.1 build cannot open it again *(2026-11-11: the ladder has moved on — the `0.22.0` pin opens schema v29, floor v24; the frozen-store caution (copy first, H-31) still holds)*. The scratch stores do not matter; the frozen pre-migration store
 (Q-8) and any store a released 0.14.0 still reads must not be opened by a P5b.2 build. Copy first,
 or read the frozen store with a 0.14.0 build only (H-31).
 
 ### P5b.3a — Horizon and commit index (no dependency)
 
-§3.1.1–3.1.2 on today's pin: the per-lineage horizon in `kv`, the per-commit completion instant,
+§3.1.1–3.1.2 on the `0.22.0` pin *(2026-11-11: `on today's pin` meant 0.19.1 at filing; the arm needs no valid fold so it rides the current pin)*: the per-lineage horizon in `kv`, the per-commit completion instant,
 the git-history arm of the default read with its `basis` label, `BeforeHistory`, `strict=`, and
-`at=<sha>` with `dirty_at_commit`. **Flips** F1's test on 0.19.1. Must ship together with the
+`at=<sha>` with `dirty_at_commit`. **Flips** F1's test *(written against 0.19.1)*. Must ship together with the
 existing stores' backfill of the index: a store ingested before this phase rebuilds its commit
 index from the `commit:{sha}` rows once, auditable.
 
@@ -559,7 +561,7 @@ already require.
 | 2 | P5b.7 rename links | — | everything in order 2 |
 | 3 | P5b.6 branch names + generations | P5b.3a | P5d, P5b.2 |
 | 3 | P5d live tree | P5b.1 | P5b.2 |
-| 3 | P5b.2 adopt 0.21.0 *(the pin already rides a `0.22.0` rev at `40719ac`; the registry switch to the published `0.22.0` remains)* | P5b.1 (U-1 released 2026-11-01) | P5d |
+| 3 | P5b.2 adopt 0.22.0 *(retitled 2026-11-11 from 0.21.0; the pin already rides a `0.22.0` rev at `40719ac`, the registry switch remains)* | P5b.1 (U-1 released 2026-11-01) | P5d |
 | 4 | P5b.3 valid reads (trunk) | P5b.2 | — |
 | 5 | P5b.4 sha addressing | P5b.3 | P5b.5 |
 | 5 | P5b.5 out-of-order ingest | P5b.3 | P5b.4 |
@@ -597,7 +599,7 @@ never idles on upstream.)*
 **Suggested releases.** 0.15.0: P6a, P6c, P5b.0, P5b.1, P5b.3a, P5b.6, and with them P5a's two
 commands at store format 1 (D-7 d) — the first release in which a git-filled store answers every
 past time. If 0.15.0 is cut before those three phases, it ships without the commands.
-*(Revised 2026-11-01, 0.21.0 released.)* 0.16.0: P5b.2 (pin 0.21.0 + libSQL 0.10), P5d, P5b.7 and
+*(Revised 2026-11-01, 0.21.0 released; 2026-11-11: P5b.2 is now the 0.22.0 registry switch.)* 0.16.0: P5b.2 (pin 0.22.0 + libSQL 0.10), P5d, P5b.7 and
 P8 — the release that may make a commit-time store the store of record (§8). 0.17.0: P5b.3 (trunk),
 P5b.4, P5b.5. Branch valid reads when U-2 exists; P5c when U-3 exists (U-4's substance rides
 D-315).
@@ -723,6 +725,7 @@ identically. All P5b.0 truth tests pass without `xfail`.
   *(2026-11-09: 0.22.0 shipped U-5 (D-312) and U-4's substance (D-315 adoption, marked
   "delivered through adoption, not as the merge"); U-2 and U-3 remain unfiled, and **U-2 is
   next** — P5b.3's branch reads.)*
+  *(2026-11-11 (2): filed — Macrame's `v0.23.0` plan takes U-2 as D-317 and U-3 as D-318; the filing-order recommendation above is history, §7's 11-11 paragraph is the operative order.)*
 - **Q-15 — Merging an ingested branch before U-4** (F4, H-28). **a** request U-4 now, next to U-1,
   and until it lands accept the gap with the H-28 reporting · **b** an interim engine rule letting
   the trunk mint a branch-minted id under its own ownership, the branch's copy kept as history (also
