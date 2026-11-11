@@ -6,6 +6,38 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Temporal M6-g — macrame-db `0.22.0` uptake (P5b.1's mechanism delivered: `622bde4`,
+  `af64b61`, review `a879070`): the stashed close-then-open draft (written against 0.19.1)
+  is replaced by D-312's one-write supersession — the close of the prior open belief and
+  the new row land in one call, one transaction, one stamp; a branch writer's takeover
+  writes the cut and its own version on its own lineage. Slice 2 resolves each branch
+  write through Macrame's own walk at the write's own stamp and compares every act
+  against that same read (trunk rows against the trunk projection, branch rows against
+  their resolved overlay/ancestor state); the sweep reclaims its own deletes. Review:
+  retire is a forward tombstone on every path (trunk and the branch concepts arm);
+  annotations keep the D-2a chain. Pin rides `dev/0.22.0-revA` (slot-fix `40719ac`).
+  What remains of P5b.1 is the INV-15 proof and the recording (§7 order item 2).
+- Temporal D-316 uptake (`29118b2`, amended pin `c84d9cd`, docs `4c9be77`): the trunk walk
+  pastes the log's past below a cut or supersede through the walk, capped at the ancestry
+  cutoff — the same past instant reads the same whatever the branch spelling; the
+  annotations carve-out is written down. Amended D-316 caps the paste at the ancestor's
+  fork cutoff, so a branch read of an inherited id no longer surfaces the ancestor's
+  post-fork backfill. Gates at the pin: 582 lib green; pytest 1298 passed / 1 skipped /
+  4 xfailed.
+- Temporal K8 — post-merge heal for hollow stores (spec `7b66fb8`, built `51d8300`,
+  review `b831d7e`, trunk-retire `f4663e5`): `reingest_merged_commits` (Rust op beside
+  `ingest_history`, py `ops.reingest_merged_commits`, no MCP tool) re-walks the trunk's
+  first-parent chain by named commit — never a cursor rewind — and heals only files still
+  present in HEAD's tree whose module ids are hollow on the main lineage (foreign mint →
+  adoption at the commit's own nudged stamp; trunk-claimed → named already-adopted;
+  nothing minted → `no-mint`; absent → `gone-by-head`). `migrate_to_commit_time` runs it
+  once after the branch ingests and reports it as `merge_heal`, counts kept out of the
+  migration totals. Review: the whole chain walks (a healed id's later edit re-asserts at
+  its own commit), the trunk arm reads Macrame's per-branch resolution for `main` (with
+  the upstream slot-swap fix pinned), dry run and real run share verdicts, counters move
+  only on a settled flush; a trunk retire speaks only for main (adopted ids retire as a
+  trunk act, the mint lineage untouched). 8 Rust heal tests; py 4 (adopt, idempotent
+  re-run, dry run, refusals). Gates at the review: 588 lib green; pytest 1302 / 1 / 4 xfailed.
 - Temporal P5b.0: truth tests (`tests/test_p5b_truth.py`), one per finding F1–F6 of
   `docs/temporal-p5b-and-beyond.md`, each `xfail(strict=True)` with the phase that flips it.
   **Fix (P6a):** the cold loader classed annotation and comment rows as v1 leftovers, so a
