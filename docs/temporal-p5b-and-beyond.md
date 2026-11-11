@@ -552,14 +552,14 @@ already require.
 
 | Order | Phase | Blocked by | Can run beside |
 |---|---|---|---|
-| 1 | P5b.0 truth tests *(done 2026-11-01)* | — | everything |
-| 2 | P5b.1 close-then-open | — | P5b.3a, P6b, P8 |
+| 1 | P5b.0 truth tests *(done 2026-11-01; F2 and F4 flipped with the 0.22.0 uptake and the adoption heal, F1/F3/F5/F6 still `xfail`)* | — | everything |
+| 2 | P5b.1 close-then-open *(mechanism delivered — the draft was replaced by 0.22.0's D-312 one-write supersession, M6-g slice 1; the INV-15 proof and the recording remain)* | — | P5b.3a, P6b, P8 |
 | 2 | P5b.3a horizon + commit index | — | P5b.1, P6b, P8 |
 | 2 | P6b, P8 | — | each other |
 | 2 | P5b.7 rename links | — | everything in order 2 |
 | 3 | P5b.6 branch names + generations | P5b.3a | P5d, P5b.2 |
 | 3 | P5d live tree | P5b.1 | P5b.2 |
-| 3 | P5b.2 adopt 0.21.0 | P5b.1 (U-1 released 2026-11-01) | P5d |
+| 3 | P5b.2 adopt 0.21.0 *(the pin already rides a `0.22.0` rev at `40719ac`; the registry switch to the published `0.22.0` remains)* | P5b.1 (U-1 released 2026-11-01) | P5d |
 | 4 | P5b.3 valid reads (trunk) | P5b.2 | — |
 | 5 | P5b.4 sha addressing | P5b.3 | P5b.5 |
 | 5 | P5b.5 out-of-order ingest | P5b.3 | P5b.4 |
@@ -576,6 +576,23 @@ upstream work never waits on CodeRadar and CodeRadar never idles on upstream.
 *(2026-11-09 revised: U-4's substance is delivered — D-315 adoption ships in 0.22.0 without
 taking the merge decision, so the next request is **U-2**, ahead of U-3; the unfiled upstream
 path is U-2 then U-3.)*
+*(2026-11-11 revised again: Macrame `v0.22.0` shipped and its `v0.23.0` plan **files U-2 and
+U-3** — the upstream path is no longer unfiled, it has a cycle. The 0.22.0 uptake absorbed
+two order-2 items' mechanisms, so the order to work in is now explicit. **(1)** The release-tail
+doc sweep: the CHANGELOG's Unreleased section names neither the M6-g slices nor the K8 rounds,
+and the P5b.1 row's story (draft replaced by D-312) lives only in the commit messages.
+**(2)** P5b.1's formal close: the mechanism is adopted; what remains is the INV-15 proof on the
+migration fixture and a scratch self-host run, then the row's status marker. **(3)** P5b.2's
+formal close: switch the pin from the git rev to the published `macrame-db = "0.22.0"`, rerun
+the gate bundle and the scratch migration, `verify_concept_intervals` clean. **(4)** P5b.3a,
+the next build item — P5b.6, a release gate (D-7 d), waits on it; F1 flips here. **(5)** P5b.6
+(branch names, addresses, generations). **(6)** P5b.7 (F6), P6b and P8, in any order beside.
+**(7)** P5b.3's trunk valid reads once (3) lands; the branch leg of that phase waits for U-2.
+**(8)** P5d (F5) once P5b.1 closes. **(9)** The 0.15.0 release, once P5b.1, P5b.3a and P5b.6
+have landed — it needs nothing from Macrame. What stays blocked on the 0.23 cycle: P5b.3's
+branch reads (U-2), P5c's valid-axis cut and reads (U-3), F3's flip, P5b.4/P5b.5's full value.
+Everything else runs beside the Macrame cycle — the sequencing law's own shape: CodeRadar
+never idles on upstream.)*
 
 **Suggested releases.** 0.15.0: P6a, P6c, P5b.0, P5b.1, P5b.3a, P5b.6, and with them P5a's two
 commands at store format 1 (D-7 d) — the first release in which a git-filled store answers every
