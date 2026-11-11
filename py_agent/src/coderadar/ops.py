@@ -40,6 +40,7 @@ __all__ = [
     "affected",
     "archive",
     "as_of",
+    "backfill_commit_index",
     "backfill_commit_messages",
     "blob_get",
     "branches",
@@ -1871,6 +1872,46 @@ def reingest_merged_commits(repo: str | Path, branch: str = "main",
         return dict(_json.loads(raw))
     except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
         raise EngineError(f"reingest_merged_commits returned unparseable JSON: {e}") from None
+
+
+def backfill_commit_index(branch: str = "main",
+                            *, store_path: str | Path | None = None,
+                            graph: Any = None) -> dict:
+    """Rebuild one lineage's horizon + commit index from the ledger (P5b.3a).
+
+    The pre-phase store's repair, and the first import's inline finish:
+    every commit's completion instant (``coderadar.commit_done.{lineage}.{sha}``),
+    the horizon (``coderadar.horizon.{lineage}``), and the D-7 format flag —
+    all recomputed from the ``commit:{sha}`` rows and the ledger's recorded
+    stamps. Returns the auditable ``{"lineage", "horizon",
+    "commits_indexed"}``. ``branch`` routes like ``ingest_history``
+    (anything but ``"main"`` is its own lineage). The store is
+    ``store_path``, else the given graph's database.
+
+    No MCP tool in the first release: a writing, migration-grade op an
+    agent must not call without knowing that.
+    """
+    if not branch or not str(branch).strip():
+        raise InvalidRequest("Please provide a lineage branch (e.g. 'main').")
+    if store_path is None and graph is not None:
+        store_path = getattr(graph, "_db_path", None)
+    if store_path is None:
+        raise InvalidRequest(
+            "backfill_commit_index needs a store_path (or a graph carrying one).")
+    try:
+        from coderadar._core import backfill_commit_index as _backfill
+        raw = _backfill(str(store_path), str(branch))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"backfill_commit_index returned unparseable JSON: {e}") from None
 
 
 def migrate_to_commit_time(repo: str | Path, store: str | Path,

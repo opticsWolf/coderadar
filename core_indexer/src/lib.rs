@@ -90,6 +90,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(history_of, m)?)?;
     m.add_function(wrap_pyfunction!(ingest_history, m)?)?;
     m.add_function(wrap_pyfunction!(reingest_merged_commits, m)?)?;
+    m.add_function(wrap_pyfunction!(backfill_commit_index, m)?)?;
     m.add_function(wrap_pyfunction!(backfill_commit_messages, m)?)?;
     m.add_function(wrap_pyfunction!(annotate, m)?)?;
     m.add_function(wrap_pyfunction!(comment, m)?)?;
@@ -2415,6 +2416,29 @@ fn ingest_history(
                 pyo3::exceptions::PyRuntimeError::new_err(msg)
             }
         })?;
+    serde_json::to_string(&report)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Rebuild one lineage's horizon + commit index from the ledger (P5b.3a,
+/// §3.1.1–3.1.2): the pre-phase store's repair, also the first import's
+/// inline finish. `branch` routes like `ingest_history` (anything but
+/// `main` is its own lineage). No MCP tool: a writing, migration-grade
+/// op an agent must not call without knowing that. Refusals (store
+/// missing) are `ValueError`; the report is the auditable
+/// `CommitIndexReport` JSON (`lineage`, `horizon`, `commits_indexed`).
+#[pyfunction]
+#[pyo3(signature = (store_path, branch = "main"))]
+fn backfill_commit_index(store_path: &str, branch: &str) -> PyResult<String> {
+    let store = crate::storage::CodeGraphStore::open(store_path).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "backfill_commit_index cannot open {store_path:?}: {e:?} — ingest_history builds stores"
+        ))
+    })?;
+    let lineage = if branch == "main" { "main" } else { branch };
+    let report = crate::graph::ingest::backfill_commit_index(&store, lineage).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("backfill_commit_index failed: {e}"))
+    })?;
     serde_json::to_string(&report)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
 }

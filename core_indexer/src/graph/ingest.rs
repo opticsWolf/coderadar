@@ -69,6 +69,29 @@ pub fn ingest_fork_key(lineage: &str) -> String {
     format!("coderadar.ingest.fork.{lineage}")
 }
 
+/// First-import completion per lineage (P5b.3a, §3.1.1): the recorded
+/// instant at which the lineage's first import into this store completed,
+/// caught up to its head at that time. Written once, never moved. Absent
+/// on pre-phase stores (the backfill writes it) and on analyze-built
+/// stores (no horizon — reads unchanged).
+pub fn horizon_key(lineage: &str) -> String {
+    format!("coderadar.horizon.{lineage}")
+}
+
+/// Per-commit completion instant (P5b.3a, §3.1.2): the recorded instant
+/// after the commit's last sub-generation (flush, edges, sweep) and before
+/// the next commit's first write. Forward ingest stamps it with the write
+/// clock; the backfill recomputes it from the ledger's recorded stamps.
+pub fn commit_done_key(lineage: &str, sha: &str) -> String {
+    format!("coderadar.commit_done.{lineage}.{sha}")
+}
+
+/// Commit-time store format (D-7): `1` marks the settled shape P5b.1/3a
+/// write (one open interval per concept, horizon + commit index). A store
+/// without it predates the shape; temporal reads name the rebuild.
+pub const COMMIT_TIME_FORMAT_KEY: &str = "coderadar.commit_time.format";
+pub const COMMIT_TIME_FORMAT: &str = "1";
+
 // ── report + errors ───────────────────────────────────────────────────────
 
 /// One skipped commit and why it never wrote.
@@ -116,6 +139,10 @@ pub struct IngestReport {
     pub blobs_deduped: usize,
     pub stamps_nudged: usize,
     pub ghost_commits: usize,
+    /// Commits whose completion instants this run (re)built from the
+    /// ledger (P5b.3a): the first import's inline backfill, or the heal's
+    /// refresh. Zero on a steady-state run (per-commit writes land inline).
+    pub commits_reindexed: usize,
     pub elapsed_secs: f64,
 }
 
@@ -290,6 +317,7 @@ pub fn ingest_history(
         blobs_deduped: 0,
         stamps_nudged: 0,
         ghost_commits: 0,
+        commits_reindexed: 0,
         elapsed_secs: 0.0,
     };
 
@@ -828,9 +856,36 @@ pub fn ingest_history(
         store
             .kv_put_sync(&ingest_stamp_key(lineage), &stamp)
             .map_err(|e| IngestError::Store(format!("cannot advance stamp: {e:?}")))?;
+        // P5b.3a: the commit's completion instant — recorded after the
+        // sweep and cursor, before the next commit's first write. A fold
+        // at this instant sees exactly this commit's state (INV-10).
+        let completion = crate::storage::now_iso8601();
+        store
+            .kv_put_sync(&commit_done_key(lineage, &sha), &completion)
+            .map_err(|e| IngestError::Store(format!("cannot record completion: {e:?}")))?;
+        // The next commit's first write must stamp strictly later (below).
+        wait_past_instant(&completion);
         stamp_prev = Some(stamp);
         report.head = Some(sha);
         report.commits_ingested += 1;
+    }
+    // P5b.3a: the first import that finishes on this phase backfills the
+    // index it never wrote — horizon, completions, format flag — from the
+    // ledger in one auditable pass (the pre-phase store's own repair;
+    // steady-state runs land their completions inline, above).
+    if report.commits_ingested > 0 {
+        let store_ref = graph
+            .store
+            .as_ref()
+            .expect("ingest graph always holds a store");
+        let horizon = horizon_key(lineage);
+        let known = store_ref
+            .kv_get_sync(&horizon)
+            .map_err(|e| IngestError::Store(format!("cannot read horizon: {e:?}")))?;
+        if known.is_none() {
+            report.commits_reindexed =
+                backfill_commit_index(store_ref, lineage)?.commits_indexed;
+        }
     }
     report.elapsed_secs = started.elapsed().as_secs_f64();
     Ok(report)
@@ -905,6 +960,7 @@ pub fn ingest_branch_history(
         blobs_deduped: 0,
         stamps_nudged: 0,
         ghost_commits: 0,
+        commits_reindexed: 0,
         elapsed_secs: 0.0,
     };
 
@@ -1590,9 +1646,33 @@ pub fn ingest_branch_history(
         store
             .kv_put_sync(&ingest_head_key(lineage), &sha)
             .map_err(|e| IngestError::Store(format!("cannot advance cursor: {e:?}")))?;
+        // P5b.3a: the commit's completion instant (trunk loop carries
+        // the same write — one rule for both lineages).
+        let completion = crate::storage::now_iso8601();
+        store
+            .kv_put_sync(&commit_done_key(lineage, &sha), &completion)
+            .map_err(|e| IngestError::Store(format!("cannot record completion: {e:?}")))?;
+        // The next commit's first write must stamp strictly later (below).
+        wait_past_instant(&completion);
         stamp_prev = Some(stamp);
         report.head = Some(sha);
         report.commits_ingested += 1;
+    }
+    // P5b.3a: same first-import backfill as the trunk loop — one rule
+    // for both lineages.
+    if report.commits_ingested > 0 {
+        let store_ref = graph
+            .store
+            .as_ref()
+            .expect("ingest graph always holds a store");
+        let horizon = horizon_key(lineage);
+        let known = store_ref
+            .kv_get_sync(&horizon)
+            .map_err(|e| IngestError::Store(format!("cannot read horizon: {e:?}")))?;
+        if known.is_none() {
+            report.commits_reindexed =
+                backfill_commit_index(store_ref, lineage)?.commits_indexed;
+        }
     }
     report.elapsed_secs = started.elapsed().as_secs_f64();
     Ok(report)
@@ -1705,6 +1785,7 @@ pub fn reingest_merged_commits(
         blobs_deduped: 0,
         stamps_nudged: 0,
         ghost_commits: 0,
+        commits_reindexed: 0,
         elapsed_secs: 0.0,
     };
     let store_file = std::path::Path::new(store_path);
@@ -1790,6 +1871,10 @@ pub fn reingest_merged_commits(
     let mut seen_digests: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     let mut stamp_prev: Option<String> = None;
+    // P5b.3a: commits this run rewrites get their completion instants
+    // refreshed at the end (the heal's rows carry old stamps with new
+    // recorded instants).
+    let mut healed_shas: Vec<String> = Vec::new();
     for commit in plans.iter() {
         let sha = commit.sha.clone();
         let (nudged, was_nudged) = nudge_valid_from(stamp_prev.as_deref(), &commit.committer_ts);
@@ -2134,8 +2219,21 @@ pub fn reingest_merged_commits(
         if flush_ok {
             report.commits_adopted_concepts += concepts.len();
             report.commits_ingested += 1;
+            healed_shas.push(sha.clone());
         }
         report.head = Some(sha);
+    }
+    // P5b.3a: the heal's rows land after every recorded completion, so
+    // every completion on the lineage predates them — recompute the whole
+    // index from the ledger (backfill keeps an existing horizon: the heal
+    // completes no import).
+    if !healed_shas.is_empty() {
+        let store_ref = graph
+            .store
+            .as_ref()
+            .expect("heal graph always holds a store");
+        let bf = backfill_commit_index(store_ref, lineage)?;
+        report.commits_reindexed = bf.commits_indexed;
     }
     report.elapsed_secs = started.elapsed().as_secs_f64();
     Ok(report)
@@ -2219,6 +2317,242 @@ fn commit_concept(
         .valid_from(valid_from.to_string())
         .valid_to(crate::storage::TS_OPEN.to_string())
         .retired(false)
+}
+
+/// What the backfill rebuilt, auditable per lineage (P5b.3a).
+#[derive(Debug, Clone, Serialize)]
+pub struct CommitIndexReport {
+    pub lineage: String,
+    pub horizon: String,
+    pub commits_indexed: usize,
+    /// Commit stamps whose completion shares a microsecond with the next
+    /// commit's first row (pre-phase stores only — forward ingest waits
+    /// out the tick, so it never mints these). A fold at such a
+    /// completion includes the next commit's same-tick rows: an honest,
+    /// bounded imprecision the git-history arm inherits.
+    pub collisions: Vec<String>,
+}
+
+/// P5b.3a: completion instants must strictly separate consecutive
+/// commits' rows — a shared microsecond folds the next commit's rows into
+/// this commit's state (the ledger stamps at microsecond precision, and a
+/// fast machine fits a commit's tail and the next commit's head into one
+/// tick). After recording a completion, wait out its tick, so the next
+/// commit's first write stamps strictly later. Cross-process gaps are
+/// milliseconds by construction; only the in-run chain needs the wait.
+fn wait_past_instant(completion: &str) {
+    let mut spins = 0u32;
+    while crate::storage::now_iso8601().as_str() <= completion {
+        spins += 1;
+        if spins & 1023 == 0 {
+            std::thread::yield_now();
+        } else {
+            std::hint::spin_loop();
+        }
+    }
+}
+
+/// Completion instants for a lineage's commits, recomputed from the
+/// ledger (P5b.3a, §3.1.2): for each commit, the newest `recorded_at`
+/// among the rows carrying its stamp — concept opens (`valid_from`) and
+/// closes (`valid_to`, the sweep's rows), plus the `links` rows the
+/// scoped edge flush wrote. Under INV-10 a commit's rows are all
+/// recorded before the next commit's first row, so the max bounds the
+/// commit from above and a fold at the instant sees exactly its state.
+fn commit_completion_map(
+    store: &CodeGraphStore,
+    lineage: &str,
+) -> Result<(Vec<(String, String)>, Vec<String>), IngestError> {
+    let err = |what: &str, e: String| IngestError::Store(format!("backfill {what}: {e}"));
+    let (_guard, conn) = store
+        .open_diagnostic_conn()
+        .map_err(|e| err("open", format!("{e:?}")))?;
+    let branch = libsql::Value::Text(lineage.to_string());
+    // (sha, stamp) per commit concept on the lineage, oldest first. The
+    // stamp is the EARLIEST version's valid_from (the original mint):
+    // commit rows superseded later (P6c's body heal, valid_from = now)
+    // must not read as new commits.
+    let mut first: HashMap<String, String> = HashMap::new();
+    crate::storage::runtime()
+        .block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT entity_id, payload FROM transaction_log \
+                     WHERE table_name = 'concepts' AND branch_id = ?1 \
+                     AND entity_id LIKE 'commit:%'",
+                    vec![branch.clone()],
+                )
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            while let Some(row) = rows.next().await.map_err(|e| format!("{e:?}"))? {
+                let entity_id: String = row.get(0).map_err(|e| format!("{e:?}"))?;
+                let payload: String = row.get(1).map_err(|e| format!("{e:?}"))?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&payload).map_err(|e| format!("{e:?}"))?;
+                let stamp = v
+                    .get("valid_from")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if stamp.is_empty() {
+                    continue;
+                }
+                let sha = entity_id.strip_prefix("commit:").unwrap_or("").to_string();
+                first
+                    .entry(sha)
+                    .and_modify(|s| {
+                        if stamp < *s {
+                            *s = stamp.clone();
+                        }
+                    })
+                    .or_insert(stamp);
+            }
+            Ok::<_, String>(())
+        })
+        .map_err(|e| err("commit rows", e))?;
+    let mut commits: Vec<(String, String)> = first.into_iter().collect();
+    commits.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+    // Newest AND oldest recorded stamp per valid-axis stamp, over concept
+    // rows (opens AND closes) and link rows.
+    let mut newest: HashMap<String, String> = HashMap::new();
+    let mut oldest: HashMap<String, String> = HashMap::new();
+    let mut note = |stamp: &str, recorded_at: &str| {
+        if stamp.is_empty() {
+            return;
+        }
+        newest
+            .entry(stamp.to_string())
+            .and_modify(|r| {
+                if recorded_at > r.as_str() {
+                    *r = recorded_at.to_string();
+                }
+            })
+            .or_insert_with(|| recorded_at.to_string());
+        oldest
+            .entry(stamp.to_string())
+            .and_modify(|r| {
+                if recorded_at < r.as_str() {
+                    *r = recorded_at.to_string();
+                }
+            })
+            .or_insert_with(|| recorded_at.to_string());
+    };
+    crate::storage::runtime()
+        .block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT payload, recorded_at FROM transaction_log \
+                     WHERE table_name = 'concepts' AND branch_id = ?1",
+                    vec![branch.clone()],
+                )
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            while let Some(row) = rows.next().await.map_err(|e| format!("{e:?}"))? {
+                let payload: String = row.get(0).map_err(|e| format!("{e:?}"))?;
+                let recorded_at: String = row.get(1).map_err(|e| format!("{e:?}"))?;
+                let v: serde_json::Value =
+                    serde_json::from_str(&payload).map_err(|e| format!("{e:?}"))?;
+                // Write-time snapshot rule: an open still shows the open
+                // end (attribute the writer's stamp); a close carries the
+                // closing stamp (attribute that). A close row's valid_from
+                // is an OLDER commit's stamp and must never join its group.
+                let valid_to = v.get("valid_to").and_then(|s| s.as_str());
+                let is_open = match valid_to {
+                    Some(s) => {
+                        s == crate::storage::TS_OPEN || s == crate::storage::TS_OPEN_LEGACY
+                    }
+                    None => true,
+                };
+                if is_open {
+                    if let Some(s) = v.get("valid_from").and_then(|s| s.as_str()) {
+                        note(s, &recorded_at);
+                    }
+                } else if let Some(s) = valid_to {
+                    note(s, &recorded_at);
+                }
+            }
+            let mut rows = conn
+                .query(
+                    "SELECT valid_from, valid_to, recorded_at FROM links WHERE branch_id = ?1",
+                    vec![branch],
+                )
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            while let Some(row) = rows.next().await.map_err(|e| format!("{e:?}"))? {
+                let from: String = row.get(0).map_err(|e| format!("{e:?}"))?;
+                let to: String = row.get(1).map_err(|e| format!("{e:?}"))?;
+                let at: String = row.get(2).map_err(|e| format!("{e:?}"))?;
+                if to == crate::storage::TS_OPEN || to == crate::storage::TS_OPEN_LEGACY {
+                    note(&from, &at);
+                } else {
+                    note(&to, &at);
+                }
+            }
+            Ok::<_, String>(())
+        })
+        .map_err(|e| err("ledger scan", e))?;
+    let mut out = Vec::with_capacity(commits.len());
+    for (sha, stamp) in &commits {
+        match newest.get(stamp) {
+            Some(completion) => out.push((sha.clone(), completion.clone())),
+            None => return Err(err("missing stamp", format!("no rows carry {stamp}"))),
+        }
+    }
+    // Same-tick adjacencies: the next commit's first row shares this
+    // completion's microsecond, so a fold at the completion includes it.
+    // Recorded order bounds every group below the next, so equality is
+    // the whole test.
+    let mut collisions = Vec::new();
+    for i in 0..commits.len().saturating_sub(1) {
+        if let Some(next_first) = oldest.get(&commits[i + 1].1) {
+            if out[i].1 == *next_first {
+                collisions.push(commits[i].1.clone());
+            }
+        }
+    }
+    Ok((out, collisions))
+}
+
+/// Rebuild one lineage's commit index from the ledger (P5b.3a): every
+/// commit's completion instant, the horizon (now — the store is caught up
+/// to its head when the backfill runs), and the D-7 format flag. The
+/// pre-phase store's own repair, and the first import's inline finish:
+/// ingest calls this when the horizon is absent. Auditable — the report
+/// names the lineage, the horizon, and the commit count.
+pub fn backfill_commit_index(
+    store: &CodeGraphStore,
+    lineage: &str,
+) -> Result<CommitIndexReport, IngestError> {
+    let err = |what: &str, e: String| IngestError::Store(format!("backfill {what}: {e}"));
+    let (completions, collisions) = commit_completion_map(store, lineage)?;
+    for (sha, completion) in &completions {
+        store
+            .kv_put_sync(&commit_done_key(lineage, sha), completion)
+            .map_err(|e| err("kv", format!("{e:?}")))?;
+    }
+    // Written once, never moved: the heal and the explicit op both
+    // route here, and neither completes an import.
+    let horizon = match store
+        .kv_get_sync(&horizon_key(lineage))
+        .map_err(|e| err("kv", format!("{e:?}")))? {
+        Some(known) => known,
+        None => {
+            let fresh = crate::storage::now_iso8601();
+            store
+                .kv_put_sync(&horizon_key(lineage), &fresh)
+                .map_err(|e| err("kv", format!("{e:?}")))?;
+            fresh
+        }
+    };
+    store
+        .kv_put_sync(COMMIT_TIME_FORMAT_KEY, COMMIT_TIME_FORMAT)
+        .map_err(|e| err("kv", format!("{e:?}")))?;
+    Ok(CommitIndexReport {
+        lineage: lineage.to_string(),
+        horizon,
+        commits_indexed: completions.len(),
+        collisions,
+    })
 }
 
 /// Message bodies for commit rows minted before the body field existed
