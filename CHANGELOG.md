@@ -15,7 +15,7 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
   against that same read (trunk rows against the trunk projection, branch rows against
   their resolved overlay/ancestor state); the sweep reclaims its own deletes. Review:
   retire is a forward tombstone on every path (trunk and the branch concepts arm);
-  annotations keep the D-2a chain. Pin rides `dev/0.22.0-revA` (slot-fix `40719ac`).
+  annotations keep the D-2a chain. Pin rides crates.io `0.22.0` (registry switch closed P5b.2 2026-11-11; engine identical to the rev pin).
   P5b.1 closed 2026-11-11: INV-15 proved on the migration fixture and a scratch self-host run (disorder 0 both); F2's sentinel fixed to both spellings (§7 order item 2 done).
 - Temporal D-316 uptake (`29118b2`, amended pin `c84d9cd`, docs `4c9be77`): the trunk walk
   pastes the log's past below a cut or supersede through the walk, capped at the ancestry

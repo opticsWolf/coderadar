@@ -11,8 +11,5 @@ homepage = "https://opticswolf.github.io/coderadar/"
 repository = "https://github.com/opticsWolf/coderadar"
 documentation = "https://opticswolf.github.io/coderadar/"
 
-# Temporary M6-g uptake pin: macrame-db 0.22.0's overlay (the W2 takeover
-# arms, D-314/D-315) rides the upstream dev branch until it publishes to
-# crates.io. The 0.22.0 uptake commit flips this to the registry pin.
-[patch.crates-io]
-macrame-db = { git = "https://github.com/opticsWolf/Macrame", branch = "dev/0.22.0-revA" }
+# macrame-db rides the crates.io registry (0.22.0 uptake closed P5b.2;
+# the M6-g-era git [patch] is retired).

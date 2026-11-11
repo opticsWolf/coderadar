@@ -431,7 +431,7 @@ Move `macrame-db` to `0.22.0` and `libsql` to `0.10` in one change (`core_indexe
 the two must match, because `diagnostic_conn()` hands out Macrame's connections). No API drift is
 known: the 0.21.0 break (`Overlap.within_batch`) is unused here, and the 0.22.0 breaks ride the M6-g uptake *(2026-11-11: version retitled; the rev pin at `40719ac` becomes the registry pin)*. Rerun the full gate bundle and the
 scratch migration, and require `verify_concept_intervals` to report nothing and `concept_disorder`
-to stay empty on an in-order ingest. Not 0.20.0: its backfill defect is P5b.5's write.
+to stay empty on an in-order ingest *(closed 2026-11-11: [patch] retired for the crates.io pin, bundle 589 lib + 1303/1/4xf, scratch migration disorder 0 — overlap check replicated at ledger level, the py binding pins v21)*. Not 0.20.0: its backfill defect is P5b.5's write.
 
 **P5b.1 first, strictly.** The interval guard (0.19.2+) refuses today's open-then-open writes, so
 moving the pin before close-then-open breaks every second version of every concept (F2).
@@ -561,7 +561,7 @@ already require.
 | 2 | P5b.7 rename links | — | everything in order 2 |
 | 3 | P5b.6 branch names + generations | P5b.3a | P5d, P5b.2 |
 | 3 | P5d live tree | P5b.1 | P5b.2 |
-| 3 | P5b.2 adopt 0.22.0 *(retitled 2026-11-11 from 0.21.0; the pin already rides a `0.22.0` rev at `40719ac`, the registry switch remains)* | P5b.1 (U-1 released 2026-11-01) | P5d |
+| 3 | P5b.2 adopt 0.22.0 *(closed 2026-11-11 — [patch] retired, the lock rides crates.io `0.22.0`; engine identical to the rev pin (no src/ diff 40719ac to tag); gates 589 lib + pytest 1303/1/4xf, scratch migration disorder 0)* | P5b.1 (U-1 released 2026-11-01) | P5d |
 | 4 | P5b.3 valid reads (trunk) | P5b.2 | — |
 | 5 | P5b.4 sha addressing | P5b.3 | P5b.5 |
 | 5 | P5b.5 out-of-order ingest | P5b.3 | P5b.4 |
@@ -596,6 +596,7 @@ branch reads (U-2), P5c's valid-axis cut and reads (U-3), F3's flip, P5b.4/P5b.5
 Everything else runs beside the Macrame cycle — the sequencing law's own shape: CodeRadar
 never idles on upstream.)*
 *(2026-11-11 (3): item (2) closed — P5b.1's INV-15 proof ran green on both legs, disorder 0 both, F2's sentinel fixed; the table row and §6 P5b.1 carry the record.)*
+*(2026-11-11 (4): item (3) closed — P5b.2's registry switch ran green across the bundle; the row carries the figures.)*
 
 **Suggested releases.** 0.15.0: P6a, P6c, P5b.0, P5b.1, P5b.3a, P5b.6, and with them P5a's two
 commands at store format 1 (D-7 d) — the first release in which a git-filled store answers every
