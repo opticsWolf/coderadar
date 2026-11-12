@@ -1746,8 +1746,19 @@ def ingest_history(repo: str | Path, branch: str = "main",
     "blobs_stored", "blobs_deduped", "stamps_nudged",
     "adoptions": [{"sha", "path", "reason"}],
     "commits_adopted_concepts", "inherited_cuts",
-    "ghost_commits", "elapsed_secs"}``. ``fork_point`` is the branch
-    lineage's fork commit (``None`` on the trunk).
+    "ghost_commits", "generation", "superseded", "trunk_synced",
+    "elapsed_secs"}``. ``fork_point`` is the branch lineage's fork commit
+    (``None`` on the trunk).
+
+    Two shapes of moved history (P5b.6): a branch whose cursor left its
+    history — a rebase, a force-push, a rewritten commit — takes a new
+    lineage generation (``{branch}#{n}``), reported as ``generation`` +
+    ``superseded`` and resolved by name from then on; the old generation
+    stays readable, its shas included. A rewritten *trunk* refuses with
+    ``TrunkRewritten`` (no generation repairs it — rebuild the store from
+    git), and a branch whose tip has moved onto the trunk's own chain
+    refuses with ``BranchNowMerged`` (D-6 c: that name is an address now,
+    and an empty generation would answer nothing).
 
     ``lineage`` defaults to the git branch name: ``branch="main"``
     ingests the trunk, any other branch forks (or resumes) its own
