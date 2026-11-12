@@ -269,12 +269,42 @@ def display_file(d: dict) -> str:
 
 
 def find_entity(entity_id: str) -> dict | None:
-    """The entity for any accepted id spelling, or None."""
+    """The entity for any accepted id spelling, or None.
+
+    An id that was renamed resolves forward (P5b.7, A-11): the returned
+    entity is the one the id became, carrying ``via_rename`` — the hop
+    ``{from, to, commit, similarity}`` that led there. A direct hit never
+    carries the marker, so a pre-phase response is unchanged.
+    """
+    canonical = canonical_entity_id(entity_id)
     try:
         from coderadar._core import lookup_entity
-        return lookup_entity(canonical_entity_id(entity_id))
-    except (ImportError, RuntimeError):
+    except ImportError:
         return None
+    try:
+        found = lookup_entity(canonical)
+    except RuntimeError:
+        return None
+    if found is not None:
+        return found
+    try:
+        import json as _json
+        from coderadar._core import rename_chain
+        chain = _json.loads(rename_chain(canonical))
+    except (ImportError, RuntimeError, ValueError):
+        return None
+    hops = chain.get("hops") or []
+    if not hops:
+        return None
+    try:
+        found = lookup_entity(chain.get("id") or canonical)
+    except RuntimeError:
+        return None
+    if found is None:
+        return None
+    found = dict(found)
+    found["via_rename"] = hops[0]
+    return found
 
 
 def _text_search(query: str, top_k: int, kind: str | None = None) -> list[dict]:

@@ -553,6 +553,30 @@ watcher and mutation paths do the same for a rename they observe (`source` as in
 annotation is never moved.
 **Flips** F6's test.
 
+*(Landed 2026-11-12. The mechanism is git's own detection at its default 50 % (Q-16), turned on in
+`plan_ingest` — `CommitPlan.renamed` names the pair, and the ingest writes one row per id under
+`renamed:{old_id}` naming the new id, the commit and the score, for the module and for every entity
+whose name survives the rename. The link is ordinary rows: the same payload is also written under
+`became:{new_id}`, which is a lookup path rather than a second fact, because the reads walk
+*backwards* too and an id lookup is the only walk this store does cheaply. Rows of kind `rename`
+join the INV-13 exclusions, so no listing, search universe or coverage set sees them.)*
+
+*(The similarity is honest rather than complete: git2 does not expose the score it computed — its
+own `DiffDelta::similarity` is commented out upstream — so a link records `100` only when the blobs
+are byte-identical and `null` when the pair needed content changes to match. A measured-looking
+number nobody measured would be worse than the gap; Q-16's point (a wrong pair is visible) survives
+because the pair and the commit are on the row.)*
+
+*(Reads: `annotations_on` and `comments_on` walk the chain both ways — an annotation minted before
+the rename lives on the old id, one minted after on the new — and every version reached through a
+link carries `via_rename {from, to, commit, similarity}`, so a direct target's response is unchanged
+in shape. `history_of` walks backwards and appends each older file's chain below the newer one,
+newest-first, marking those versions with the hop and with the `file` they belong to. `find_entity`
+resolves a retired id forward through `_core.rename_chain` and marks the hit. A cycle (a file
+renamed back to an earlier name) stops at the first id already visited — the id inside the cycle is
+the answer. `tests/test_p5b7_renames.py` pins the report, the unclaimed score, a two-rename chain,
+both annotation directions, the comment listing, `history_of` across the chain and the id lookup.)*
+
 ### P5c — Lineage fidelity (blocked by U-3; U-4's substance delivered by D-315)
 
 Branches fork at their merge-base on the valid axis (A-5); merges assert merged files on the
@@ -606,7 +630,7 @@ already require.
 | 2 | P5b.1 close-then-open *(closed 2026-11-11 — mechanism via D-312's one-write supersession (M6-g slice 1); INV-15 proved on the migration fixture (17 concepts / 21 versions) and a scratch self-host run (354 commits, 16,701 concepts / 33,641 versions), disorder 0 both; F2's sentinel fixed to both spellings after the proof caught its vacuous pass)* | — | P5b.3a, P6b, P8 |
 | 2 | P5b.3a horizon + commit index *(closed 2026-11-12 — horizon + per-commit completion in `kv`, the git-history arm of every temporal read with its `basis`/`sha`/`horizon`, `BeforeHistory`/`BeforeHorizon`, `at=<sha>` with `dirty_at_commit`; F1 flipped. Two defects the tests caught: the first import's tail backfill clobbered the completion the loop had just written (now fill-only), and the derived completion ignored `concept_cuts`, so a branch's sweep landed after the instant the arm folds (the derivation reads cuts now). Gates: 589 lib, pytest 1324/1/3xf)* | — | P5b.1, P6b, P8 |
 | 2 | P6b, P8 | — | each other |
-| 2 | P5b.7 rename links | — | everything in order 2 |
+| 2 | P5b.7 rename links *(closed 2026-11-12 — git detection at the default 50 %, `CommitPlan.renamed`, one row per id under `renamed:{old_id}` plus the reverse `became:{new_id}` key, `rename` in the INV-13 exclusions; reads follow the chain and mark `via_rename` (annotations/comments both directions, `history_of` across the chain, `find_entity` via `_core.rename_chain`). The score is `100` only for a byte-identical pair and `null` otherwise — git2 exposes no score. F6 flipped. Gates: 592 lib, pytest 1346/1/2xf)* | — | everything in order 2 |
 | 3 | P5b.6 branch names + generations *(closed 2026-11-12 — D-6 c selection: one lineage per own-commit tip, every other name an address read through the commit index (`parent_drift` reported); D-5 generations: a rebase or rewrite starts `{branch}#n`, the trunk refuses `TrunkRewritten`, a tip moved onto the trunk refuses `BranchNowMerged`. Two defects the tests caught: the address fold ran on the name (Macrame refuses a lineage-less name) and `#` is illegal in kv keys (D-280) — keys hex-encode unsafe names behind a `:` marker, plain names unchanged. Gates: 591 lib, pytest 1338/1/3xf)* | P5b.3a | P5d, P5b.2 |
 | 3 | P5d live tree | P5b.1 | P5b.2 |
 | 3 | P5b.2 adopt 0.22.0 *(closed 2026-11-11 — [patch] retired, the lock rides crates.io `0.22.0`; engine identical to the rev pin (no src/ diff 40719ac to tag); gates 589 lib + pytest 1303/1/4xf, scratch migration disorder 0)* | P5b.1 (U-1 released 2026-11-01) | P5d |
@@ -636,7 +660,7 @@ migration fixture and a scratch self-host run, then the row's status marker. **(
 formal close: switch the pin from the git rev to the published `macrame-db = "0.22.0"`, rerun
 the gate bundle and the scratch migration, `verify_concept_intervals` clean. **(4)** P5b.3a,
 the next build item — P5b.6, a release gate (D-7 d), waits on it; F1 flips here. **(5)** P5b.6
-(branch names, addresses, generations). **(6)** P5b.7 (F6), P6b and P8, in any order beside.
+(branch names, addresses, generations). **(6)** P5b.7 (F6), P6b and P8, in any order beside. *(P5b.7 closed 2026-11-12; P6b and P8 stand.)*
 **(7)** P5b.3's trunk valid reads once (3) lands; the branch leg of that phase waits for U-2.
 **(8)** P5d (F5) once P5b.1 closes. **(9)** The 0.15.0 release, once P5b.1, P5b.3a and P5b.6
 have landed — it needs nothing from Macrame. What stays blocked on the 0.23 cycle: P5b.3's

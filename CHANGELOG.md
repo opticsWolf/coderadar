@@ -6,6 +6,16 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Temporal P5b.7 — rename links (A-11, F6 flipped): `plan_ingest` turns on git's rename detection at
+  its default 50 %, and the ingest writes one ordinary ledger row per renamed id under
+  `renamed:{old_id}` (the new id, the commit, both paths and the score), plus the same payload under
+  `became:{new_id}` so reads can walk backwards by id lookup. Kind `rename` joins the INV-13
+  exclusions. `annotations_on` and `comments_on` follow the chain in both directions and mark rows
+  reached through a link with `via_rename`; `history_of` continues across a chain of renames
+  (newest-first, older files' versions tagged with `file` + `via_rename`); `find_entity` resolves a
+  retired id forward. An annotation is never moved. The similarity is `100` only for a byte-identical
+  pair and `null` otherwise — git2 exposes no score, so nothing is guessed. Gates: 592 lib; pytest
+  1346 passed / 1 skipped / 2 xfailed.
 - Temporal P5b.6 slice B — branch generations (D-5): a branch whose cursor left its history (a
   rebase, or a rewrite that keeps the base) takes a new lineage generation `{branch}#{n+1}` instead
   of refusing — the trunk is synced first so the new generation forks at today's tip, the name

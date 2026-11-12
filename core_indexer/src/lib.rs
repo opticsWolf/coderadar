@@ -90,6 +90,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fork_branch, m)?)?;
     m.add_function(wrap_pyfunction!(write_branch_content, m)?)?;
     m.add_function(wrap_pyfunction!(history_of, m)?)?;
+    m.add_function(wrap_pyfunction!(rename_chain, m)?)?;
     m.add_function(wrap_pyfunction!(ingest_history, m)?)?;
     m.add_function(wrap_pyfunction!(reingest_merged_commits, m)?)?;
     m.add_function(wrap_pyfunction!(backfill_commit_index, m)?)?;
@@ -2758,6 +2759,32 @@ fn retire_annotation(py: Python<'_>, id: &str) -> PyResult<String> {
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
 }
 
+/// Where an id points after its renames (P5b.7, A-11): `{"id": "...",
+/// "hops": [{"from", "to", "commit", "similarity"}]}`. An id that was
+/// never renamed reads back itself with no hops — a missing link is not
+/// an error, it is the ordinary case.
+#[pyfunction]
+#[pyo3(signature = (id,))]
+fn rename_chain(py: Python<'_>, id: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let (resolved, hops) = py.allow_threads(|| store.rename_chain(id)).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("rename_chain({id:?}) failed: {e:?}"))
+    })?;
+    let hops: Vec<serde_json::Value> = hops
+        .iter()
+        .map(|link| {
+            serde_json::json!({
+                "from": link.old_id,
+                "to": link.new_id,
+                "commit": link.commit,
+                "similarity": link.similarity,
+            })
+        })
+        .collect();
+    serde_json::to_string(&serde_json::json!({ "id": resolved, "hops": hops }))
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
 /// Every version of every annotation on `about`, newest-first (P6a).
 /// Dangling targets (retired or never-indexed) read their rows anyway —
 /// annotations outlive their target by design. Returns the version list
@@ -2769,7 +2796,11 @@ fn annotations_on(py: Python<'_>, target: &str) -> PyResult<String> {
     let store = snapshot_store()?;
     let versions = py
         .allow_threads(|| {
-            crate::annotations::versions_for(&store, crate::annotations::ANNOTATION_KIND, target)
+            crate::annotations::versions_for_chain(
+                &store,
+                crate::annotations::ANNOTATION_KIND,
+                target,
+            )
         })
         .map_err(annotation_ffi_error)?;
     serde_json::to_string(&versions)
@@ -2784,7 +2815,7 @@ fn comments_on(py: Python<'_>, target: &str) -> PyResult<String> {
     let store = snapshot_store()?;
     let versions = py
         .allow_threads(|| {
-            crate::annotations::versions_for(&store, crate::annotations::COMMENT_KIND, target)
+            crate::annotations::versions_for_chain(&store, crate::annotations::COMMENT_KIND, target)
         })
         .map_err(annotation_ffi_error)?;
     serde_json::to_string(&versions)
@@ -2851,9 +2882,45 @@ fn history_of(py: Python<'_>, file_path: &str) -> PyResult<PyObject> {
             "history_of({file_path:?}) failed: {e:?}"
         ))
     })?;
+    // P5b.7 (A-11): history continues across a rename. Walk the links
+    // backwards to the oldest name the file had, and append each older
+    // file's chain below the newer one — newest-first overall — marking
+    // the versions reached through a link with the hop that led to them
+    // and the path they belong to. A file that was never renamed keeps
+    // exactly the shape it had.
+    let predecessors = py
+        .allow_threads(|| store.rename_predecessors(&module_id))
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "history_of({file_path:?}) rename chain failed: {e:?}"
+            ))
+        })?;
+    let mut older: Vec<(
+        crate::storage::RenameLink,
+        Vec<crate::storage::SpineVersion>,
+    )> = Vec::new();
+    for link in predecessors.iter().rev() {
+        let old_path = link
+            .old_id
+            .strip_suffix("::module")
+            .unwrap_or(&link.old_path)
+            .to_string();
+        let chain = py
+            .allow_threads(|| store.history_of(&old_path))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "history_of({old_path:?}) failed: {e:?}"
+                ))
+            })?;
+        older.push((link.clone(), chain));
+    }
     let out = PyList::empty(py);
-    for v in &chain {
-        let d = PyDict::new(py);
+    let push_version = |py: Python<'_>,
+                        d: &pyo3::Bound<'_, PyDict>,
+                        v: &crate::storage::SpineVersion,
+                        file: &str,
+                        via: Option<&crate::storage::RenameLink>|
+     -> PyResult<()> {
         d.set_item("digest", &v.digest)?;
         d.set_item("valid_from", &v.valid_from)?;
         d.set_item("valid_to", &v.valid_to)?;
@@ -2861,7 +2928,33 @@ fn history_of(py: Python<'_>, file_path: &str) -> PyResult<PyObject> {
         d.set_item("parent_digest", &v.parent_digest)?;
         d.set_item("size_bytes", v.size_bytes)?;
         d.set_item("line_count", v.line_count)?;
+        if let Some(link) = via {
+            d.set_item("file", file)?;
+            let hop = PyDict::new(py);
+            hop.set_item("from", &link.old_id)?;
+            hop.set_item("to", &link.new_id)?;
+            hop.set_item("commit", &link.commit)?;
+            hop.set_item("similarity", link.similarity)?;
+            d.set_item("via_rename", hop)?;
+        }
+        Ok(())
+    };
+    for v in &chain {
+        let d = PyDict::new(py);
+        push_version(py, &d, v, &path, None)?;
         out.append(d)?;
+    }
+    for (link, old_chain) in &older {
+        let old_path = link
+            .old_id
+            .strip_suffix("::module")
+            .unwrap_or(&link.old_path)
+            .to_string();
+        for v in old_chain {
+            let d = PyDict::new(py);
+            push_version(py, &d, v, &old_path, Some(link))?;
+            out.append(d)?;
+        }
     }
     Ok(out.into())
 }

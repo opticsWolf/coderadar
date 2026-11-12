@@ -2663,7 +2663,7 @@ impl CodeGraphStore {
                      AND (json_extract(content, '$.kind') IS NULL \
                           OR json_extract(content, '$.kind') NOT IN \
                              ('content_version', 'branch_content', 'commit', \
-                              'annotation', 'comment')) \
+                              'annotation', 'comment', 'rename')) \
                      ORDER BY id",
                     (),
                 )
@@ -3260,7 +3260,7 @@ impl CodeGraphStore {
                      WHERE entity_id NOT IN (SELECT id FROM concepts \
                          WHERE json_extract(content, '$.kind') IN \
                             ('content_version', 'branch_content', 'commit', \
-                             'annotation', 'comment')) \
+                             'annotation', 'comment', 'rename')) \
                      ORDER BY entity_id",
                     libsql::params![branch],
                 )
@@ -4345,6 +4345,114 @@ pub enum V2ConceptClass {
     Unreadable,
 }
 
+/// One rename link row (P5b.7, A-11).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenameLink {
+    pub old_id: String,
+    pub new_id: String,
+    pub old_path: String,
+    pub new_path: String,
+    pub commit: String,
+    pub similarity: Option<u16>,
+    pub valid_from: String,
+}
+
+impl CodeGraphStore {
+    /// One rename row by its exact key: `renamed:{old_id}` for the forward
+    /// hop, `became:{new_id}` for the reverse one.
+    fn rename_row(&self, key: &str) -> macrame::Result<Option<RenameLink>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT content, valid_from FROM concepts WHERE id = ?1                      ORDER BY retired ASC, valid_from DESC LIMIT 1",
+                    libsql::params![key],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? else {
+                return Ok(None);
+            };
+            let content: String = row.get(0).unwrap_or_default();
+            let valid_from: String = row.get(1).unwrap_or_default();
+            Ok(rename_link_from_content(&content, &valid_from))
+        })
+    }
+
+    /// Follow one id forward through its renames (P5b.7). Returns the id it
+    /// resolves to now and the hops taken, oldest first. The walk stops at
+    /// the first id it has already visited — a file renamed *back* to an
+    /// earlier name is a cycle, and the id inside it is the answer.
+    pub fn rename_chain(&self, id: &str) -> macrame::Result<(String, Vec<RenameLink>)> {
+        let mut hops: Vec<RenameLink> = Vec::new();
+        let mut current = id.to_string();
+        let mut seen: Vec<String> = vec![current.clone()];
+        loop {
+            let Some(link) = self.rename_row(&format!("renamed:{current}"))? else {
+                break;
+            };
+            if seen.contains(&link.new_id) {
+                current = link.new_id;
+                break;
+            }
+            seen.push(link.new_id.clone());
+            current = link.new_id.clone();
+            hops.push(link);
+            if hops.len() > 64 {
+                break;
+            }
+        }
+        Ok((current, hops))
+    }
+
+    /// Walk backwards from an id to the ids it was renamed from (P5b.7),
+    /// oldest first. Same cycle guard as [`Self::rename_chain`].
+    pub fn rename_predecessors(&self, id: &str) -> macrame::Result<Vec<RenameLink>> {
+        let mut hops: Vec<RenameLink> = Vec::new();
+        let mut current = id.to_string();
+        let mut seen: Vec<String> = vec![current.clone()];
+        loop {
+            let Some(link) = self.rename_row(&format!("became:{current}"))? else {
+                break;
+            };
+            if seen.contains(&link.old_id) {
+                break;
+            }
+            seen.push(link.old_id.clone());
+            current = link.old_id.clone();
+            hops.push(link);
+            if hops.len() > 64 {
+                break;
+            }
+        }
+        hops.reverse();
+        Ok(hops)
+    }
+}
+
+/// Parse a link row's payload. A row that is not a rename row (or is torn)
+/// reads as no link: the read paths treat a missing link as "not renamed",
+/// never as an error.
+fn rename_link_from_content(content: &str, valid_from: &str) -> Option<RenameLink> {
+    let v: serde_json::Value = serde_json::from_str(content).ok()?;
+    if v.get("kind").and_then(|k| k.as_str()) != Some(crate::graph::ingest::RENAME_KIND) {
+        return None;
+    }
+    let field = |key: &str| v.get(key).and_then(|x| x.as_str()).map(str::to_string);
+    Some(RenameLink {
+        old_id: field("old_id")?,
+        new_id: field("new_id")?,
+        old_path: field("old_path")?,
+        new_path: field("new_path")?,
+        commit: field("commit")?,
+        similarity: v
+            .get("similarity")
+            .and_then(|s| s.as_u64())
+            .map(|s| s as u16),
+        valid_from: valid_from.to_string(),
+    })
+}
+
 /// Pre-scan classification for cold start (cheap: parses content once).
 pub fn classify_v2_concept(content: &str) -> V2ConceptClass {
     let Ok(v) = serde_json::from_str::<serde_json::Value>(content) else {
@@ -4362,7 +4470,13 @@ pub fn classify_v2_concept(content: &str) -> V2ConceptClass {
     {
         return V2ConceptClass::Spine;
     }
-    if kind == crate::annotations::ANNOTATION_KIND || kind == crate::annotations::COMMENT_KIND {
+    if kind == crate::annotations::ANNOTATION_KIND
+        || kind == crate::annotations::COMMENT_KIND
+        // P5b.7: a rename link is a note about two ids, the way an
+        // annotation is — it stays out of the projection, the listings,
+        // search and the coverage sets.
+        || kind == crate::graph::ingest::RENAME_KIND
+    {
         return V2ConceptClass::Note;
     }
     if V2_CANONICAL_KINDS.contains(&kind)

@@ -226,10 +226,8 @@ class TestF5RecordedEdits:
 
 
 class TestF6RenameKeepsAnnotations:
-    @pytest.mark.xfail(strict=True, reason=(
-        "F6: ids are built from the path and a rename ingests as delete + add, "
-        "so an annotation on the old id does not reach the renamed entity. "
-        "Flips in P5b.7 (rename links)."))
+    # F6 flipped in P5b.7: the rename is a link row (A-11), so the
+    # annotation minted on the old id is listed for the new one.
     def test_an_annotation_follows_its_entity_across_a_rename(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")
         body = "def foo():\n    return 1\n"

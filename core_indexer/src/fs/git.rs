@@ -135,6 +135,26 @@ pub struct CommitPlan {
     pub changed: Vec<PathBuf>,
     pub deleted: Vec<PathBuf>,
     pub tree: Vec<PathBuf>,
+    /// Renames git's similarity detection found in this commit (P5b.7,
+    /// A-11). The old path is closed as a delete and the new one ingested
+    /// as a change, exactly as before; this list is what the ingest turns
+    /// into link rows.
+    pub renamed: Vec<RenameEntry>,
+}
+
+/// One rename as git reported it: the two paths and what can honestly be
+/// said about the similarity. Q-16 records a score on every link so a
+/// wrong pair is visible and a later row can correct it — and lot of the
+/// score git actually used is 100 only when the blobs are byte-identical,
+/// because git2 does not expose the computed score (its own
+/// `DiffDelta::similarity` is commented out upstream with "TODO: expose
+/// when diffs are more exposed"). A pair that needed content changes to
+/// match is reported as `None` rather than as a number nobody measured.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameEntry {
+    pub old: PathBuf,
+    pub new: PathBuf,
+    pub similarity: Option<u16>,
 }
 
 /// Walk first-parent history, oldest-first, from `from` (exclusive) to the
@@ -390,6 +410,7 @@ fn commit_plan_for_commit(
     let tree = commit.tree().map_err(GitError::Commit)?;
     let mut changed = Vec::new();
     let mut deleted = Vec::new();
+    let mut renamed = Vec::new();
     if commit.parent_count() == 0 {
         for path in indexable_tree_paths(&tree)? {
             if is_blob_eligible(&path, excludes) {
@@ -400,8 +421,15 @@ fn commit_plan_for_commit(
         let parent = commit.parent(0).map_err(GitError::Commit)?;
         let parent_tree = parent.tree().map_err(GitError::Commit)?;
         let mut diff_opts = DiffOptions::new();
-        let diff = repo
+        let mut diff = repo
             .diff_tree_to_tree(Some(&parent_tree), Some(&tree), Some(&mut diff_opts))
+            .map_err(GitError::Diff)?;
+        // git's default similarity (Q-16): 50 %. Lower finds more pairs and
+        // links more wrong ones; the score rides every row, so a wrong one
+        // is visible and correctable.
+        let mut find_opts = git2::DiffFindOptions::new();
+        find_opts.rename_threshold(50);
+        diff.find_similar(Some(&mut find_opts))
             .map_err(GitError::Diff)?;
         diff.foreach(
             &mut |delta, _| {
@@ -423,16 +451,26 @@ fn commit_plan_for_commit(
                         }
                     }
                     Delta::Renamed => {
-                        if let Some(path) = delta.new_file().path() {
-                            let path = PathBuf::from(path);
-                            if is_blob_eligible(&path, excludes) {
-                                changed.push(path);
+                        let old_path = delta.old_file().path().map(PathBuf::from);
+                        let new_path = delta.new_file().path().map(PathBuf::from);
+                        if let Some(path) = new_path.as_ref() {
+                            if is_blob_eligible(path, excludes) {
+                                changed.push(path.clone());
                             }
                         }
-                        if let Some(path) = delta.old_file().path() {
-                            let path = PathBuf::from(path);
-                            if is_indexable_path(&path) {
-                                deleted.push(path);
+                        if let Some(path) = old_path.as_ref() {
+                            if is_indexable_path(path) {
+                                deleted.push(path.clone());
+                            }
+                        }
+                        if let (Some(old), Some(new)) = (old_path, new_path) {
+                            if is_indexable_path(&old) && is_blob_eligible(&new, excludes) {
+                                let same_blob = delta.old_file().id() == delta.new_file().id();
+                                renamed.push(RenameEntry {
+                                    old,
+                                    new,
+                                    similarity: same_blob.then_some(100),
+                                });
                             }
                         }
                     }
@@ -474,6 +512,7 @@ fn commit_plan_for_commit(
         changed,
         deleted,
         tree: tree_paths,
+        renamed,
     })
 }
 
@@ -884,6 +923,61 @@ mod ingest_plan_tests {
         assert_eq!(plans[1].changed, vec![PathBuf::from("new.py")]);
         assert_eq!(plans[1].deleted, vec![PathBuf::from("old.py")]);
         assert_eq!(plans[1].tree, vec![PathBuf::from("new.py")]);
+        // P5b.7: the same diff, with detection on, states the pair and the
+        // only score this side can honestly claim (identical blobs).
+        assert_eq!(
+            plans[1].renamed,
+            vec![RenameEntry {
+                old: PathBuf::from("old.py"),
+                new: PathBuf::from("new.py"),
+                similarity: Some(100),
+            }]
+        );
+        // The first commit is a root: nothing was renamed into it.
+        assert!(plans[0].renamed.is_empty());
+    }
+
+    #[test]
+    fn a_content_changing_rename_records_no_score_it_cannot_measure() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        write_files(
+            dir.path(),
+            &[(
+                "old.py",
+                "x = 1
+y = 2
+z = 3
+w = 4
+",
+            )],
+        );
+        stage_paths(&repo, &["old.py"]);
+        let c1 = commit_index(&repo, "c1", &now_sig(), &[]);
+        // One line changes out of four: well inside git's 50 % default, so
+        // the pair is still a rename — and the score stays unclaimed.
+        write_files(
+            dir.path(),
+            &[(
+                "new.py",
+                "x = 1
+y = 2
+z = 3
+w = 5
+",
+            )],
+        );
+        std::fs::remove_file(dir.path().join("old.py")).unwrap();
+        stage_paths(&repo, &["new.py"]);
+        remove_paths(&repo, &["old.py"]);
+        let c2 = commit_index(&repo, "rename", &now_sig(), &[&c1]);
+        let root = dir.path().to_str().unwrap();
+        let plans = plan_ingest(root, "HEAD", None).unwrap();
+        assert_eq!(plans[1].sha, c2.id().to_string());
+        assert_eq!(plans[1].renamed.len(), 1, "{:?}", plans[1].renamed);
+        assert_eq!(plans[1].renamed[0].old, PathBuf::from("old.py"));
+        assert_eq!(plans[1].renamed[0].new, PathBuf::from("new.py"));
+        assert_eq!(plans[1].renamed[0].similarity, None);
     }
 
     #[test]

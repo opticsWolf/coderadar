@@ -1253,6 +1253,12 @@ pub struct AnnVersion {
     pub valid_to: String,
     pub retired: bool,
     pub current: bool,
+    /// Set only when this row was reached through a rename link (P5b.7):
+    /// `{from, to, commit, similarity}` — the hop that led here from the
+    /// target the caller asked about. Absent on a direct target, so the
+    /// shape of every pre-phase response is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via_rename: Option<serde_json::Value>,
 }
 
 /// One logged version before chain-derivation: `(body, valid_from, retired)`.
@@ -1380,6 +1386,7 @@ fn versions_of(
                         },
                         retired: *retired,
                         current: i == 0 && !head_retired,
+                        via_rename: None,
                     });
                 }
             }
@@ -1444,6 +1451,60 @@ pub fn versions_for(
     // ids only. The kind predicate already excludes cross-kind lookalikes.
     ids.retain(|id| id.starts_with(&prefix));
     versions_of(store, &ids)
+}
+
+/// Every version of every row about `about` *or about any id it was
+/// renamed to or from* (P5b.7, A-11). The chain is walked both ways — an
+/// annotation minted before the rename lives on the old id, one minted
+/// after lives on the new — and rows reached through a link carry
+/// `via_rename` naming the hop. Rows are newest-first across the whole
+/// chain; the target's own rows are never marked.
+pub fn versions_for_chain(
+    store: &crate::storage::CodeGraphStore,
+    kind: &str,
+    about: &str,
+) -> Result<Vec<AnnVersion>, AnnError> {
+    let mut ids: Vec<String> = store
+        .rename_predecessors(about)
+        .map_err(|e| AnnError::Store(format!("{e:?}")))?
+        .into_iter()
+        .map(|link| link.old_id)
+        .collect();
+    ids.push(about.to_string());
+    let (resolved, hops) = store
+        .rename_chain(about)
+        .map_err(|e| AnnError::Store(format!("{e:?}")))?;
+    let _ = resolved;
+    ids.extend(hops.iter().map(|link| link.new_id.clone()));
+    ids.dedup();
+    let mut versions = versions_for(store, kind, about)?;
+    for id in ids.iter().filter(|id| id.as_str() != about) {
+        let mut reached = versions_for(store, kind, id)?;
+        let hop = hops
+            .iter()
+            .find(|link| &link.new_id == id)
+            .cloned()
+            .or_else(|| {
+                store
+                    .rename_predecessors(about)
+                    .ok()
+                    .and_then(|preds| preds.into_iter().find(|link| &link.old_id == id))
+            });
+        if let Some(link) = hop {
+            let via = serde_json::json!({
+                "from": link.old_id,
+                "to": link.new_id,
+                "commit": link.commit,
+                "similarity": link.similarity,
+            });
+            for version in &mut reached {
+                version.via_rename = Some(via.clone());
+            }
+        }
+        versions.extend(reached);
+    }
+    versions.sort_by(|a, b| b.valid_from.cmp(&a.valid_from));
+    Ok(versions)
 }
 
 /// Every version of one annotation/comment row, newest-first. Unknown ids

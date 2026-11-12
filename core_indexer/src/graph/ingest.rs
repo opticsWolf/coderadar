@@ -223,8 +223,28 @@ pub struct IngestReport {
     /// Trunk commits ingested to catch up before this new generation
     /// forked (D-5's "sync main"); 0 unless a generation was created.
     pub trunk_synced: usize,
+    /// Rename links this run wrote (P5b.7, A-11), and what they were:
+    /// `renames` has one entry per detected rename, `renames_recorded`
+    /// counts the rows — the module link plus one per entity whose name
+    /// survived the rename.
+    pub renames_recorded: usize,
+    pub renames: Vec<RenameReport>,
     pub elapsed_secs: f64,
 }
+
+/// One detected rename as the report states it (P5b.7).
+#[derive(Debug, Clone, Serialize)]
+pub struct RenameReport {
+    pub old: String,
+    pub new: String,
+    /// 100 for a byte-identical rename; `None` when the content had to
+    /// change to match (git2 exposes no similarity score — see
+    /// [`crate::fs::git::RenameEntry`]).
+    pub similarity: Option<u16>,
+}
+
+/// A rename row's payload marker (P5b.7).
+pub const RENAME_KIND: &str = "rename";
 
 /// Typed refusals and failures. User-caused variants (unknown branch,
 /// unknown revision, out-of-order, legacy store) map to `InvalidRequest`
@@ -428,6 +448,8 @@ pub fn ingest_history(
         generation: 1,
         superseded: None,
         trunk_synced: 0,
+        renames_recorded: 0,
+        renames: Vec::new(),
         elapsed_secs: 0.0,
     };
 
@@ -887,6 +909,30 @@ pub fn ingest_history(
                 &stamp,
             ));
         }
+        // P5b.7 (A-11): rename links ride the same flush. One row per
+        // rename for the module and one per entity whose name survived it;
+        // the ids the flush writes are the set a link may point at.
+        let new_ids: HashSet<String> = concepts.iter().map(|c| c.id.clone()).collect();
+        let renamed: Vec<RenamePaths> = commit
+            .renamed
+            .iter()
+            .filter(|r| !excluded(r.old.as_path()) && !excluded(r.new.as_path()))
+            .map(|r| RenamePaths {
+                old: canonical(&r.old),
+                new: canonical(&r.new),
+                similarity: r.similarity,
+            })
+            .collect();
+        let (links, linked) = rename_link_upserts(store, &renamed, &sha, &stamp, &new_ids, None);
+        for rename in &renamed {
+            report.renames.push(RenameReport {
+                old: rename.old.clone(),
+                new: rename.new.clone(),
+                similarity: rename.similarity,
+            });
+        }
+        report.renames_recorded += linked;
+        concepts.extend(links);
         concepts.push(commit_concept(
             &sha,
             lineage,
@@ -1112,6 +1158,8 @@ pub fn ingest_branch_history(
         generation: 1,
         superseded: None,
         trunk_synced: 0,
+        renames_recorded: 0,
+        renames: Vec::new(),
         elapsed_secs: 0.0,
     };
 
@@ -1689,6 +1737,31 @@ pub fn ingest_branch_history(
             }
         }
         report.commits_adopted_concepts += ids_adopted;
+        // P5b.7 (A-11): rename links ride the same flush. One row per
+        // rename for the module and one per entity whose name survived it;
+        // the ids the flush writes are the set a link may point at.
+        let new_ids: HashSet<String> = concepts.iter().map(|c| c.id.clone()).collect();
+        let renamed: Vec<RenamePaths> = commit
+            .renamed
+            .iter()
+            .filter(|r| !excluded(r.old.as_path()) && !excluded(r.new.as_path()))
+            .map(|r| RenamePaths {
+                old: canonical(&r.old),
+                new: canonical(&r.new),
+                similarity: r.similarity,
+            })
+            .collect();
+        let (links, linked) =
+            rename_link_upserts(store, &renamed, &sha, &stamp, &new_ids, Some(&lineage_id));
+        for rename in &renamed {
+            report.renames.push(RenameReport {
+                old: rename.old.clone(),
+                new: rename.new.clone(),
+                similarity: rename.similarity,
+            });
+        }
+        report.renames_recorded += linked;
+        concepts.extend(links);
         concepts.push(
             commit_concept(&sha, lineage, &stamp, &commit.author_ts, &meta, was_nudged)
                 .on_branch(lineage_id.clone()),
@@ -2101,6 +2174,8 @@ pub fn reingest_merged_commits(
         generation: 1,
         superseded: None,
         trunk_synced: 0,
+        renames_recorded: 0,
+        renames: Vec::new(),
         elapsed_secs: 0.0,
     };
     let store_file = std::path::Path::new(store_path);
@@ -2651,6 +2726,114 @@ fn read_commit_meta(git: &git2::Repository, sha: &str) -> Result<CommitMeta, Str
             .trim()
             .to_string(),
     })
+}
+
+/// One row per rename git detected (P5b.7, A-11): `renamed:{old_id}` names
+/// the id the old path became, the commit, both paths and the similarity.
+/// Ordinary rows, so a later rename chains and a read walks forward; the
+/// old id keeps its own history and its annotations, nothing is re-keyed.
+///
+/// The old ids are read from the store's live rows for the old path — the
+/// sweep that retires them runs in this same flush, after this compute —
+/// and a pair is linked only when the new parse actually holds the new id
+/// (`new_ids` is the flush's own id set), so a rename of a file this
+/// lineage does not own cannot mint a link to nothing.
+/// One rename's two canonical paths, as the ingest resolved them.
+#[derive(Debug, Clone)]
+struct RenamePaths {
+    old: String,
+    new: String,
+    similarity: Option<u16>,
+}
+
+fn rename_link_upserts(
+    store: &crate::storage::CodeGraphStore,
+    renames: &[RenamePaths],
+    sha: &str,
+    stamp: &str,
+    new_ids: &HashSet<String>,
+    lineage: Option<&macrame::BranchId>,
+) -> (Vec<macrame::ConceptUpsert>, usize) {
+    let mut out = Vec::new();
+    let mut forward = 0usize;
+    for rename in renames {
+        let (old_path, new_path) = (&rename.old, &rename.new);
+        let old_ids = match store.live_concept_ids_for_file(old_path) {
+            Ok(ids) => ids,
+            Err(e) => {
+                eprintln!("[ingest] rename link skipped at {sha}: cannot read {old_path}: {e:?}");
+                continue;
+            }
+        };
+        let old_module = format!("{old_path}::module");
+        let new_module = format!("{new_path}::module");
+        let mut pairs: Vec<(String, String)> = Vec::new();
+        if old_ids.contains(&old_module) && new_ids.contains(&new_module) {
+            pairs.push((old_module, new_module));
+        }
+        let prefix = format!("{old_path}::");
+        for id in &old_ids {
+            let Some(name) = id.strip_prefix(&prefix) else {
+                continue;
+            };
+            if name == "module" {
+                continue;
+            }
+            let new_id = format!("{new_path}::{name}");
+            if new_ids.contains(&new_id) {
+                pairs.push((id.clone(), new_id));
+            }
+        }
+        for (old_id, new_id) in pairs {
+            out.extend(rename_concept(
+                &old_id, &new_id, rename, sha, stamp, lineage,
+            ));
+            forward += 1;
+        }
+    }
+    (out, forward)
+}
+
+/// The link rows themselves (P5b.7): `renamed:{old_id}` says what the old
+/// id became, and `became:{new_id}` is the same payload under the reverse
+/// key. The second is a lookup path, not a second fact — reads walk
+/// *backwards* too (`history_of`, an annotation listed on the renamed id),
+/// and an id lookup is the only walk this store does cheaply.
+fn rename_concept(
+    old_id: &str,
+    new_id: &str,
+    rename: &RenamePaths,
+    sha: &str,
+    stamp: &str,
+    lineage: Option<&macrame::BranchId>,
+) -> Vec<macrame::ConceptUpsert> {
+    let content = serde_json::json!({
+        "meta_version": 2,
+        "kind": RENAME_KIND,
+        "old_id": old_id,
+        "new_id": new_id,
+        "old_path": rename.old,
+        "new_path": rename.new,
+        "commit": sha,
+        "similarity": rename.similarity,
+    });
+    let extra = serde_json::json!({ "coderadar": { "kind": RENAME_KIND } });
+    let description = format!("renamed:{new_id}");
+    [format!("renamed:{old_id}"), format!("became:{new_id}")]
+        .into_iter()
+        .map(|id| {
+            let upsert = macrame::ConceptUpsert::new(id, description.clone())
+                .content(content.to_string())
+                .extra(extra.to_string())
+                .valid_from(stamp.to_string())
+                .valid_to(crate::storage::TS_OPEN.to_string())
+                .retired(false);
+            match lineage {
+                Some(branch) => upsert.on_branch(branch.clone()),
+                None => upsert,
+            }
+        })
+        .collect()
 }
 
 /// One ledger row per ingested commit (`kind = 'commit'`): the ingest's
