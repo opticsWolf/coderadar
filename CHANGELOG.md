@@ -6,7 +6,7 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
-- Temporal P5b.3a — horizon and commit index (`f44ea65`, `PENDING`): every lineage gets a horizon
+- Temporal P5b.3a — horizon and commit index (`f44ea65`, `81dc8c3`): every lineage gets a horizon
   (`kv coderadar.horizon.{lineage}`, written once, never moved) and every commit a completion
   instant (`kv coderadar.commit_done.{lineage}.{sha}`, recorded by the loop after its last
   sub-generation and before the next commit's first write, D-7's format flag = 1). The default
