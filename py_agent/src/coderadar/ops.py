@@ -1211,7 +1211,7 @@ def branches(*, graph: Any = None) -> list[dict]:
 
 def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
           branch: str = "main", *, strict: bool = False, at: str | None = None,
-          graph: Any = None) -> dict:
+          valid: bool = False, graph: Any = None) -> dict:
     """Look symbols up as they were at a Macrame-canonical `timestamp`.
 
     Returns ``{"timestamp", "names", "entities": {name: entity | None},
@@ -1234,6 +1234,15 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     git-history arm (``BeforeHorizon``); ``at=<sha>`` addresses a commit
     directly (A-3). A T before the lineage's first commit refuses
     (``BeforeHistory``) rather than answering empty.
+
+    ``valid=True`` (P5b.3, A-2/INV-16) reads the same instant on the
+    **valid** axis instead: the ledger's own intervals answer "what was
+    true then", so no horizon and no commit index are involved and
+    ``basis`` is ``"valid"``. It is trunk-only until Macrame's
+    lineage-resolved valid fold (U-2, 0.23.0): a branch refuses with
+    ``ValidBranchNeedsU2`` rather than folding the trunk for it, and
+    ``at=`` refuses with ``ValidAtNeedsP5b4`` (turning an address into an
+    instant is P5b.4's job — INV-16 forbids guessing which axis it names).
     """
     if not timestamp and at is None:
         raise InvalidRequest(
@@ -1277,7 +1286,8 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     # it is what resolves the arm — so `basis` is always the arm this call
     # actually used, never a guess.
     try:
-        batch = _lookup_at(names, normalized, branch, strict=bool(strict), at=at)
+        batch = _lookup_at(names, normalized, branch, strict=bool(strict), at=at,
+                           valid=bool(valid))
     except ValueError as e:  # refuses the arm, or a bad stamp
         raise InvalidRequest(str(e)) from None
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
@@ -2221,7 +2231,8 @@ def backfill_commit_messages(repo: str | Path,
 
 
 def changes_between(t1: str, t2: str, scope: str | None = None,
-                    branch: str = "main", *, graph: Any = None) -> dict:
+                    branch: str = "main", *, valid: bool = False,
+                    graph: Any = None) -> dict:
     """Added / removed / modified / moved / uncompared entities between two instants (P2, DR-37).
 
     Two folds, no byte reads: `content_hashes_at` at T1 and at T2 over the
@@ -2293,8 +2304,8 @@ def changes_between(t1: str, t2: str, scope: str | None = None,
         groups = {cid: raws for cid, raws in groups.items() if keep(cid)}
     raws = [raw for rs in groups.values() for raw in rs]
     try:
-        first = _hashes_at(raws, start, branch)
-        second = _hashes_at(raws, end, branch)
+        first = _hashes_at(raws, start, branch, valid=bool(valid))
+        second = _hashes_at(raws, end, branch, valid=bool(valid))
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
         raise EngineError(str(e)) from None
 

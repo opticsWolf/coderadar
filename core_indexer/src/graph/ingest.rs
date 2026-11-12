@@ -3233,6 +3233,13 @@ pub enum ReadArmError {
     /// P5b.6 (D-6 c): the name is neither a lineage nor a recorded branch
     /// address. Never guessed, never trunk-fallback.
     UnknownBranch { name: String, tip: Option<String> },
+    /// P5b.3: the valid axis on a branch needs Macrame U-2 (the
+    /// lineage-resolved valid fold). The trunk's fold would be a
+    /// different lineage's history, so the read refuses instead.
+    ValidBranchNeedsU2 { branch: String },
+    /// P5b.3: `at=` on the valid axis resolves an address to an instant,
+    /// which is P5b.4's job (INV-16 — no implicit crossing).
+    ValidAtNeedsP5b4 { address: String },
 }
 
 impl std::fmt::Display for ReadArmError {
@@ -3278,8 +3285,55 @@ impl std::fmt::Display for ReadArmError {
                     "UnknownBranch: {name:?} is not a lineage in this store and records no                      tip (D-6 c) — ingest the branch, or read its commit by sha"
                 ),
             },
+            ReadArmError::ValidBranchNeedsU2 { branch } => write!(
+                f,
+                "ValidBranchNeedsU2: the valid axis on {branch:?} needs Macrame's \n                 lineage-resolved valid fold (U-2, 0.23.0) - folding the trunk would \n                 answer with a different lineage's history, so nothing is answered"
+            ),
+            ReadArmError::ValidAtNeedsP5b4 { address } => write!(
+                f,
+                "ValidAtNeedsP5b4: at={address:?} on the valid axis needs commit \n                 addressing (P5b.4) to turn the address into an instant; pass the \n                 instant as the positional timestamp instead"
+            ),
         }
     }
+}
+
+/// Resolve a read on the **valid** axis (P5b.3, A-2/D-3/INV-16).
+///
+/// The valid fold answers "what was true at this git instant" from the
+/// rows' own intervals, so it needs neither the horizon nor the commit
+/// index: `fold_ts` is the instant itself and `basis` says `valid`.
+/// Two shapes refuse rather than substitute an answer:
+///
+/// * a branch name — Macrame's valid fold is trunk-only until U-2's
+///   lineage-resolved form (0.23.0), and folding the trunk for a branch
+///   would answer with a different lineage's history;
+/// * `at=` — turning a sha or ref into an instant is P5b.4's job, and
+///   guessing which axis an address names is what INV-16 forbids.
+pub fn resolve_valid_read(
+    branch: &str,
+    timestamp: &str,
+    at: Option<&str>,
+) -> Result<ResolvedRead, ReadArmError> {
+    if let Some(address) = at {
+        return Err(ReadArmError::ValidAtNeedsP5b4 {
+            address: address.to_string(),
+        });
+    }
+    if branch != "main" {
+        return Err(ReadArmError::ValidBranchNeedsU2 {
+            branch: branch.to_string(),
+        });
+    }
+    Ok(ResolvedRead {
+        fold_ts: timestamp.to_string(),
+        basis: "valid",
+        sha: None,
+        horizon: None,
+        dirty_at_commit: Vec::new(),
+        address: false,
+        parent_drift: 0,
+        fold_branch: "main".to_string(),
+    })
 }
 
 /// Resolve a temporal read to its fold instant (P5b.3a, §3.1.1–3.1.2).

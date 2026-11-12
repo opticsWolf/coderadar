@@ -539,6 +539,7 @@ class CodeGraph:
         branch: str = "main",
         strict: bool = False,
         at: str | None = None,
+        valid: bool = False,
     ) -> Snapshot:
         """Return a point-in-time snapshot: entity reads fold the ledger at
         recorded-time T (Macrame canonical UTC; anything else is
@@ -558,14 +559,19 @@ class CodeGraph:
         commit refuses (``BeforeHistory``) instead of answering empty.
         The arm resolves at the first read, not here: a snapshot must not
         pay a commit-index scan to exist, and `basis` / `commit` / `horizon`
-        / `find` are the reads that need it."""
+        / `find` are the reads that need it.
+
+        ``valid=True`` (P5b.3, A-2/INV-16) reads the same instant on the
+        valid axis — the ledger's own intervals, ``basis == "valid"`` —
+        which is trunk-only until U-2 and refuses `at=` until P5b.4."""
         from . import ops
         try:
             from coderadar._core import normalize_timestamp as _normalize_ts
             # `at=` is the address when given, so the positional is not
             # normalized against it (a sha is not a timestamp).
             normalized = "" if at is not None else _normalize_ts(timestamp or "")
-            return Snapshot(self, normalized, branch, strict=bool(strict), at=at)
+            return Snapshot(self, normalized, branch, strict=bool(strict), at=at,
+                            valid=bool(valid))
         except ImportError as e:
             raise ops.EngineError(f"native extension unavailable: {e}") from e
         except ValueError as e:
@@ -1492,12 +1498,14 @@ class Snapshot:
         branch: str = "main",
         strict: bool = False,
         at: str | None = None,
+        valid: bool = False,
     ):
         self._graph = graph
         self._timestamp = timestamp
         self._branch = branch
         self._strict = strict
         self._at = at
+        self._valid = valid
         self._predates: bool | None = None
         self._arm: dict[str, Any] | None = None
 
@@ -1516,7 +1524,7 @@ class Snapshot:
                 from coderadar._core import lookup_entities_at as _lookup_at
                 batch = _lookup_at(
                     [], self._timestamp, self._branch,
-                    strict=self._strict, at=self._at)
+                    strict=self._strict, at=self._at, valid=self._valid)
             except ValueError as e:
                 raise ops.InvalidRequest(str(e)) from None
             except RuntimeError as e:
@@ -1609,7 +1617,7 @@ class Snapshot:
             from coderadar._core import lookup_entity_at as _lookup_at
             result = _lookup_at(
                 entity_id, self._timestamp, self._branch,
-                strict=self._strict, at=self._at)
+                strict=self._strict, at=self._at, valid=self._valid)
         except ValueError as e:  # normalized at construction; defensive
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
@@ -1655,7 +1663,7 @@ class Snapshot:
             from coderadar._core import lookup_entities_at as _lookup_at
             batch = _lookup_at(
                 ids, self._timestamp, self._branch,
-                strict=self._strict, at=self._at)
+                strict=self._strict, at=self._at, valid=self._valid)
         except ValueError as e:
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
@@ -1765,7 +1773,7 @@ class Snapshot:
             from coderadar._core import entity_source_ref_at as _ref_at
             ref = _ref_at(
                 entity["id"], self._timestamp, self._branch,
-                strict=self._strict, at=self._at)
+                strict=self._strict, at=self._at, valid=self._valid)
         except ValueError as e:  # normalized at construction; defensive
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:

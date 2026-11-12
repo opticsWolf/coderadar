@@ -1901,6 +1901,7 @@ fn entities_at(
     branch: &str,
     strict: bool,
     at: Option<&str>,
+    valid: bool,
 ) -> PyResult<(
     Vec<Option<PyObject>>,
     bool,
@@ -1930,11 +1931,20 @@ fn entities_at(
     };
     // P5b.3a: the arm resolves the fold instant (recorded past the
     // horizon, the commit's completion before it) and names the basis.
-    let resolved =
+    let resolved = if valid {
+        crate::graph::ingest::resolve_valid_read(branch, &ts, at).map_err(arm_err)?
+    } else {
         crate::graph::ingest::resolve_temporal_read(&store, read_lineage(branch), &ts, strict, at)
-            .map_err(arm_err)?;
+            .map_err(arm_err)?
+    };
     let state = py
-        .allow_threads(|| store.reconstruct_on(&resolved.fold_ts, &resolved.fold_branch))
+        .allow_threads(|| {
+            if valid {
+                store.reconstruct_valid(&resolved.fold_ts)
+            } else {
+                store.reconstruct_on(&resolved.fold_ts, &resolved.fold_branch)
+            }
+        })
         .map_err(temporal_err)?;
     let predates = state.predates_recorded_history;
     let (projection, _stats) = projection_from_state(&state).map_err(|e| {
@@ -1975,7 +1985,7 @@ fn entities_at(
 /// bool}`. A garbage timestamp is a `ValueError`; a missing graph or store
 /// is a `RuntimeError`.
 #[pyfunction]
-#[pyo3(signature = (entity_id, timestamp, branch = "main", strict = false, at = None))]
+#[pyo3(signature = (entity_id, timestamp, branch = "main", strict = false, at = None, valid = false))]
 fn lookup_entity_at(
     py: Python<'_>,
     entity_id: &str,
@@ -1983,10 +1993,11 @@ fn lookup_entity_at(
     branch: &str,
     strict: bool,
     at: Option<String>,
+    valid: bool,
 ) -> PyResult<PyObject> {
     let ids = vec![entity_id.to_string()];
     let (mut entities, predates, resolved) =
-        entities_at(py, &ids, timestamp, branch, strict, at.as_deref())?;
+        entities_at(py, &ids, timestamp, branch, strict, at.as_deref(), valid)?;
     let out = PyDict::new(py);
     out.set_item("entity", entities.pop().flatten())?;
     out.set_item("predates_recorded_history", predates)?;
@@ -2006,7 +2017,7 @@ fn lookup_entity_at(
 /// `ops.as_of` funnels N symbols through here so a 20-symbol call costs
 /// one reconstruct, not twenty.
 #[pyfunction]
-#[pyo3(signature = (entity_ids, timestamp, branch = "main", strict = false, at = None))]
+#[pyo3(signature = (entity_ids, timestamp, branch = "main", strict = false, at = None, valid = false))]
 fn lookup_entities_at(
     py: Python<'_>,
     entity_ids: Vec<String>,
@@ -2014,9 +2025,17 @@ fn lookup_entities_at(
     branch: &str,
     strict: bool,
     at: Option<String>,
+    valid: bool,
 ) -> PyResult<PyObject> {
-    let (entities, predates, resolved) =
-        entities_at(py, &entity_ids, timestamp, branch, strict, at.as_deref())?;
+    let (entities, predates, resolved) = entities_at(
+        py,
+        &entity_ids,
+        timestamp,
+        branch,
+        strict,
+        at.as_deref(),
+        valid,
+    )?;
     let by_id = PyDict::new(py);
     for (id, entity) in entity_ids.iter().zip(entities) {
         by_id.set_item(id, entity)?;
@@ -2149,7 +2168,7 @@ fn source_ref_to_dict(py: Python<'_>, r: &crate::storage::SourceRef) -> PyResult
 /// `RuntimeError`. Takes the id as given: spelling resolution is the
 /// caller's (`Snapshot` resolves via `find` first).
 #[pyfunction]
-#[pyo3(signature = (entity_id, timestamp, branch = "main", strict = false, at = None))]
+#[pyo3(signature = (entity_id, timestamp, branch = "main", strict = false, at = None, valid = false))]
 fn entity_source_ref_at(
     py: Python<'_>,
     entity_id: &str,
@@ -2157,6 +2176,7 @@ fn entity_source_ref_at(
     branch: &str,
     strict: bool,
     at: Option<String>,
+    valid: bool,
 ) -> PyResult<PyObject> {
     let ts = if at.is_none() {
         normalize_timestamp(timestamp)?
@@ -2169,8 +2189,23 @@ fn entity_source_ref_at(
                 "No persistent store — temporal lookup needs a .coderadar store",
             )
         })?;
-        // P5b.3a: the arm resolves the fold instant; the singular keeps
-        // its ref-or-None shape (no basis to surface on one ref).
+        // P5b.3a/P5b.3: the arm resolves the fold instant; the singular
+        // keeps its ref-or-None shape (no basis to surface on one ref).
+        if valid {
+            let resolved = crate::graph::ingest::resolve_valid_read(branch, &ts, at.as_deref())
+                .map_err(arm_err)?;
+            let state = store
+                .reconstruct_valid(&resolved.fold_ts)
+                .map_err(temporal_err)?;
+            let (refs, _predates) = crate::storage::CodeGraphStore::source_refs_from_state(
+                &state,
+                &[entity_id.to_string()],
+                &resolved.fold_ts,
+                "main",
+            )
+            .map_err(temporal_err)?;
+            return Ok(refs.into_iter().next().map(|(_, r)| r));
+        }
         let resolved = crate::graph::ingest::resolve_temporal_read(
             store,
             read_lineage(branch),
@@ -2197,7 +2232,7 @@ fn entity_source_ref_at(
 /// missing graph or store is a `RuntimeError`. No Python surface: P1's
 /// `verify_history` and P2's `changes_between` are the only callers.
 #[pyfunction]
-#[pyo3(signature = (entity_ids, timestamp, branch = "main", strict = false, at = None))]
+#[pyo3(signature = (entity_ids, timestamp, branch = "main", strict = false, at = None, valid = false))]
 fn source_refs_at(
     py: Python<'_>,
     entity_ids: Vec<String>,
@@ -2205,6 +2240,7 @@ fn source_refs_at(
     branch: &str,
     strict: bool,
     at: Option<String>,
+    valid: bool,
 ) -> PyResult<PyObject> {
     let ts = if at.is_none() {
         normalize_timestamp(timestamp)?
@@ -2224,15 +2260,19 @@ fn source_refs_at(
             )
         })?
     };
-    // P5b.3a: the arm resolves the fold instant and names the basis.
-    let resolved = crate::graph::ingest::resolve_temporal_read(
-        &store,
-        read_lineage(branch),
-        &ts,
-        strict,
-        at.as_deref(),
-    )
-    .map_err(arm_err)?;
+    // P5b.3a/P5b.3: the arm resolves the fold instant and names the basis.
+    let resolved = if valid {
+        crate::graph::ingest::resolve_valid_read(branch, &ts, at.as_deref()).map_err(arm_err)?
+    } else {
+        crate::graph::ingest::resolve_temporal_read(
+            &store,
+            read_lineage(branch),
+            &ts,
+            strict,
+            at.as_deref(),
+        )
+        .map_err(arm_err)?
+    };
     let (refs, predates) = py
         .allow_threads(|| {
             store.source_refs_at(&entity_ids, &resolved.fold_ts, &resolved.fold_branch)
@@ -3013,12 +3053,13 @@ fn entity_hash_span(snap: &ProjectedGraph, entity_id: &str) -> Option<HashSpanHi
 /// must not block a writer. A garbage timestamp is a `ValueError`; a
 /// missing graph or store is a `RuntimeError`.
 #[pyfunction]
-#[pyo3(signature = (entity_ids, timestamp, branch = "main"))]
+#[pyo3(signature = (entity_ids, timestamp, branch = "main", valid = false))]
 fn content_hashes_at(
     py: Python<'_>,
     entity_ids: Vec<String>,
     timestamp: &str,
     branch: &str,
+    valid: bool,
 ) -> PyResult<PyObject> {
     use crate::graph::cold_start::projection_from_state;
     let ts = normalize_timestamp(timestamp)?;
@@ -3033,8 +3074,23 @@ fn content_hashes_at(
             )
         })?
     };
+    // P5b.3: the valid axis folds its own state (trunk-only, refused by
+    // name for a branch before the fold).
+    if valid && branch != "main" {
+        return Err(arm_err(
+            crate::graph::ingest::ReadArmError::ValidBranchNeedsU2 {
+                branch: branch.to_string(),
+            },
+        ));
+    }
     let state = py
-        .allow_threads(|| store.reconstruct_on(&ts, branch))
+        .allow_threads(|| {
+            if valid {
+                store.reconstruct_valid(&ts)
+            } else {
+                store.reconstruct_on(&ts, branch)
+            }
+        })
         .map_err(temporal_err)?;
     let predates = state.predates_recorded_history;
     let (projection, _stats) = projection_from_state(&state).map_err(|e| {

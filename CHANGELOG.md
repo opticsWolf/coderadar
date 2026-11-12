@@ -6,6 +6,15 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Temporal P5b.3 — the valid axis on the trunk (A-2/D-3/INV-16): `as_of` and `changes_between` take
+  `valid=True`, `CodeGraph.as_of` / `Snapshot` pass it through, and the `_core` reads carry it as a
+  flag, so MCP/CLI/Python share one lowering — Macrame's `reconstruct_as_of(AsOf::valid_at(..))`.
+  A valid read names the instant itself as its fold instant and reports `basis: "valid"`: no
+  horizon, no commit index, and the rendered answer says so. Branch reads refuse with
+  `ValidBranchNeedsU2` (Macrame's lineage-resolved valid fold, 0.23.0) rather than folding the trunk
+  for a branch, and `at=` refuses with `ValidAtNeedsP5b4` — an axis is never crossed by guessing.
+  `history_of` needs no flag (its spine is the valid axis) and `verify_history` stays a
+  recorded-generation audit. Gates: 592 lib; pytest 1353 passed / 1 skipped / 2 xfailed.
 - Temporal P5b.7 — rename links (A-11, F6 flipped): `plan_ingest` turns on git's rename detection at
   its default 50 %, and the ingest writes one ordinary ledger row per renamed id under
   `renamed:{old_id}` (the new id, the commit, both paths and the score), plus the same payload under

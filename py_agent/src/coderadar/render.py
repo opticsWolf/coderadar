@@ -820,6 +820,15 @@ def as_of(result: dict, *,
             ),
             "",
         ]
+    elif basis == "valid":
+        lines += [
+            (
+                "*From the valid axis:* the ledger's own intervals, so this "
+                "is what was true in the repository at this instant - no "
+                "horizon and no commit index are involved."
+            ),
+            "",
+        ]
     elif basis == "recorded" and result.get("horizon"):
         lines += [
             (

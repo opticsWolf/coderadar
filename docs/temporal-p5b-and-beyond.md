@@ -475,6 +475,24 @@ switches from the commit index to the valid fold only when P5b.5 lifts INV-10. T
 soon as P5b.2 lands. Branch reads wait for U-2 and meanwhile refuse on the valid axis with an error
 that names U-2, rather than answering for the trunk.
 
+*(Trunk landed 2026-11-12. `as_of` and `changes_between` take `valid=`, `CodeGraph.as_of` and
+`Snapshot` pass it through, and the `_core` reads (`lookup_entity_at`, `lookup_entities_at`,
+`entity_source_ref_at`, `source_refs_at`, `content_hashes_at`) take it as a flag, so MCP/CLI/Python
+agree by construction. On the valid axis `resolve_valid_read` names the instant itself as the fold
+instant and `basis: "valid"`: no horizon, no commit index, which is exactly what P5b.5 needs. The
+fold is Macrame's `reconstruct_as_of(AsOf::valid_at(..))`, trunk-only. `tests/test_p5b3_valid.py`
+pins the strongest available statement — the two arms agree at an instant between two commits, one
+resolved through the commit index and one through the rows' own intervals — plus a deletion's
+disappearance, `changes_between` over two valid instants, the branch refusal, the `at=` refusal, the
+snapshot's `basis`, and the rendered read naming the axis.)*
+
+*(Two plan items are deliberately not taken here. `history_of`'s intervals are the valid axis
+already: the spine's `valid_from`/`valid_to` are commit stamps, minted by B-item 11, so a `valid=`
+flag there would restate the only axis the read has. `verify_history` samples *recorded*
+generations by design — its question is "did every indexing act leave reconstructable bytes" — and
+the valid axis has no generation list to sample; a valid variant would be a different audit, filed
+when a consumer asks for one.)*
+
 ### P5b.4 — Commits as addresses (blocked by P5b.3)
 
 `at` accepts a sha or a ref (A-3), resolved through the commit concept to its lineage and committer
@@ -634,7 +652,7 @@ already require.
 | 3 | P5b.6 branch names + generations *(closed 2026-11-12 — D-6 c selection: one lineage per own-commit tip, every other name an address read through the commit index (`parent_drift` reported); D-5 generations: a rebase or rewrite starts `{branch}#n`, the trunk refuses `TrunkRewritten`, a tip moved onto the trunk refuses `BranchNowMerged`. Two defects the tests caught: the address fold ran on the name (Macrame refuses a lineage-less name) and `#` is illegal in kv keys (D-280) — keys hex-encode unsafe names behind a `:` marker, plain names unchanged. Gates: 591 lib, pytest 1338/1/3xf)* | P5b.3a | P5d, P5b.2 |
 | 3 | P5d live tree | P5b.1 | P5b.2 |
 | 3 | P5b.2 adopt 0.22.0 *(closed 2026-11-11 — [patch] retired, the lock rides crates.io `0.22.0`; engine identical to the rev pin (no src/ diff 40719ac to tag); gates 589 lib + pytest 1303/1/4xf, scratch migration disorder 0)* | P5b.1 (U-1 released 2026-11-01) | P5d |
-| 4 | P5b.3 valid reads (trunk) | P5b.2 | — |
+| 4 | P5b.3 valid reads (trunk) *(closed 2026-11-12 — `valid=` on `as_of`, `changes_between`, the `Snapshot` and the five `_core` reads; `resolve_valid_read` names the instant and `basis: "valid"`, lowered to Macrame's `reconstruct_as_of(AsOf::valid_at)`, trunk-only; a branch refuses `ValidBranchNeedsU2`, `at=` refuses `ValidAtNeedsP5b4`. `history_of` needs no flag (the spine is the valid axis) and `verify_history` samples recorded generations by design — both stated in §6. Gates: 592 lib, pytest 1353/1/2xf)* | P5b.2 | — |
 | 5 | P5b.4 sha addressing | P5b.3 | P5b.5 |
 | 5 | P5b.5 out-of-order ingest | P5b.3 | P5b.4 |
 | 6 | P5b.3 branch reads | U-2 | — |
@@ -662,6 +680,7 @@ the gate bundle and the scratch migration, `verify_concept_intervals` clean. **(
 the next build item — P5b.6, a release gate (D-7 d), waits on it; F1 flips here. **(5)** P5b.6
 (branch names, addresses, generations). **(6)** P5b.7 (F6), P6b and P8, in any order beside. *(P5b.7 closed 2026-11-12; P6b and P8 stand.)*
 **(7)** P5b.3's trunk valid reads once (3) lands; the branch leg of that phase waits for U-2.
+*(Closed 2026-11-12 — the trunk leg shipped; the branch leg is P5b.3-branch, still U-2.)*
 **(8)** P5d (F5) once P5b.1 closes. **(9)** The 0.15.0 release, once P5b.1, P5b.3a and P5b.6
 have landed — it needs nothing from Macrame. What stays blocked on the 0.23 cycle: P5b.3's
 branch reads (U-2), P5c's valid-axis cut and reads (U-3), F3's flip, P5b.4/P5b.5's full value.

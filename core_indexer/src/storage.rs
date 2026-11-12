@@ -1929,9 +1929,21 @@ impl CodeGraphStore {
         branch: &str,
     ) -> macrame::Result<(HashMap<String, SourceRef>, bool)> {
         let state = self.reconstruct_on(timestamp, branch)?;
+        Self::source_refs_from_state(&state, entity_ids, timestamp, branch)
+    }
+
+    /// The same batched read over a state the caller already folded — the
+    /// valid axis (P5b.3) folds its own state, so the ref lookup takes it
+    /// as an argument rather than choosing a fold.
+    pub fn source_refs_from_state(
+        state: &MaterializedState,
+        entity_ids: &[String],
+        timestamp: &str,
+        branch: &str,
+    ) -> macrame::Result<(HashMap<String, SourceRef>, bool)> {
         let mut refs = HashMap::with_capacity(entity_ids.len());
         for entity_id in entity_ids {
-            if let Some(r) = Self::source_ref_from_state(&state, entity_id, timestamp, branch)? {
+            if let Some(r) = Self::source_ref_from_state(state, entity_id, timestamp, branch)? {
                 refs.insert(entity_id.clone(), r);
             }
         }
@@ -2888,6 +2900,20 @@ impl CodeGraphStore {
     /// Unknown branches refuse with `DbError::UnknownBranch`.
     pub fn reconstruct_on(&self, ts: &str, branch: &str) -> macrame::Result<MaterializedState> {
         runtime().block_on(self.db.reconstruct_on(ts, branch))
+    }
+
+    /// The **valid-axis** fold at one git instant (P5b.3, D-3/INV-16):
+    /// `reconstruct_as_of` with only the valid axis fixed. The rows'
+    /// own intervals answer the question, so this needs no horizon and
+    /// no commit index — it is the read P5b.5 (out-of-order ingest) will
+    /// lean on. Trunk only: Macrame's valid fold has no lineage-resolved
+    /// form until U-2, and the caller refuses a branch rather than
+    /// folding the trunk for it.
+    pub fn reconstruct_valid(&self, ts: &str) -> macrame::Result<MaterializedState> {
+        runtime().block_on(
+            self.db
+                .reconstruct_as_of(macrame::temporal::AsOf::valid_at(ts)),
+        )
     }
 
     /// The ledger's high-water mark without folding it.
