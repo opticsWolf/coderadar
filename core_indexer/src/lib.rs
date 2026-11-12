@@ -1996,6 +1996,7 @@ fn lookup_entity_at(
     out.set_item("dirty_at_commit", resolved.dirty_at_commit)?;
     out.set_item("address", resolved.address)?;
     out.set_item("parent_drift", resolved.parent_drift)?;
+    out.set_item("lineage", resolved.fold_branch)?;
     Ok(out.into())
 }
 
@@ -2029,6 +2030,7 @@ fn lookup_entities_at(
     out.set_item("dirty_at_commit", resolved.dirty_at_commit)?;
     out.set_item("address", resolved.address)?;
     out.set_item("parent_drift", resolved.parent_drift)?;
+    out.set_item("lineage", resolved.fold_branch)?;
     Ok(out.into())
 }
 
@@ -2249,6 +2251,7 @@ fn source_refs_at(
     out.set_item("dirty_at_commit", resolved.dirty_at_commit)?;
     out.set_item("address", resolved.address)?;
     out.set_item("parent_drift", resolved.parent_drift)?;
+    out.set_item("lineage", resolved.fold_branch)?;
     Ok(out.into())
 }
 
@@ -2489,8 +2492,10 @@ fn ingest_history(
                 }
                 crate::graph::ingest::ingest_history(store_path, repo, branch, from, dry_run)
             } else {
-                crate::graph::ingest::ingest_branch_history(
-                    store_path, repo, branch, &effective, parent_ref, from, dry_run,
+                // P5b.6/D-5: a branch that moved gets a new generation;
+                // an explicit `lineage` keeps the typed refusal instead.
+                crate::graph::ingest::ingest_branch_evolving(
+                    store_path, repo, branch, lineage, parent_ref, from, dry_run,
                 )
             }
         })
@@ -2512,7 +2517,9 @@ fn ingest_history(
                 | IngestError::TrunkBranchMismatch { .. }
                 | IngestError::ForkMismatch { .. }
                 | IngestError::LineageExists { .. }
-                | IngestError::InvalidLineage { .. } => true,
+                | IngestError::InvalidLineage { .. }
+                | IngestError::TrunkRewritten { .. }
+                | IngestError::BranchNowMerged { .. } => true,
                 IngestError::Store(_) => false,
             };
             if user_error {

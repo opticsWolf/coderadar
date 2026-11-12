@@ -50,13 +50,52 @@ pub const MODE_COMMIT_TIME: &str = "commit-time";
 /// makes an interrupted ingest resumable (H-20: a cursor, never a blob
 /// reference, so losing it repeats work instead of losing bytes).
 pub fn ingest_head_key(lineage: &str) -> String {
-    format!("coderadar.ingest.head.{lineage}")
+    format!("coderadar.ingest.head.{}", kv_name(lineage))
+}
+
+/// A name as a `kv` key may spell it (Macrame D-280: `[A-Za-z0-9_:./\-]`,
+/// at most 256 bytes). Lineage and branch names are far freer — `feature#2`
+/// is a legal lineage and an illegal key — so an unsafe name is hex-encoded
+/// behind a `:` prefix. Plain names keep their old spelling byte for byte,
+/// which is what lets a store ingested before this phase keep its cursors,
+/// horizons and completions. A name that itself starts with `:` is refused
+/// at the ingest boundary, so the two spellings cannot collide.
+fn kv_name(name: &str) -> String {
+    let safe = !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b':' | b'.' | b'/' | b'-'));
+    if safe {
+        return name.to_string();
+    }
+    let mut out = String::with_capacity(1 + name.len() * 2);
+    out.push(':');
+    for byte in name.bytes() {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// Inverse of [`kv_name`], for the one place a key is parsed rather than
+/// built (the fork scan that feeds the drift refresh).
+fn kv_name_decode(key: &str) -> Option<String> {
+    let rest = key.strip_prefix(':')?;
+    if rest.len() % 2 != 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(rest.len() / 2);
+    let mut i = 0;
+    while i < rest.len() {
+        bytes.push(u8::from_str_radix(&rest[i..i + 2], 16).ok()?);
+        i += 2;
+    }
+    String::from_utf8(bytes).ok()
 }
 
 /// The final `valid_from` written for the head commit: INV-11's `prev`
 /// across runs, so a resume nudges against the true last stamp.
 pub fn ingest_stamp_key(lineage: &str) -> String {
-    format!("coderadar.ingest.stamp.{lineage}")
+    format!("coderadar.ingest.stamp.{}", kv_name(lineage))
 }
 
 /// The fork commit recorded once per branch lineage (P5a.4, DR-41): the
@@ -66,7 +105,7 @@ pub fn ingest_stamp_key(lineage: &str) -> String {
 /// A cursor, like the head: losing it repeats work instead of losing
 /// bytes (H-20).
 pub fn ingest_fork_key(lineage: &str) -> String {
-    format!("coderadar.ingest.fork.{lineage}")
+    format!("coderadar.ingest.fork.{}", kv_name(lineage))
 }
 
 /// First-import completion per lineage (P5b.3a, §3.1.1): the recorded
@@ -75,7 +114,7 @@ pub fn ingest_fork_key(lineage: &str) -> String {
 /// on pre-phase stores (the backfill writes it) and on analyze-built
 /// stores (no horizon — reads unchanged).
 pub fn horizon_key(lineage: &str) -> String {
-    format!("coderadar.horizon.{lineage}")
+    format!("coderadar.horizon.{}", kv_name(lineage))
 }
 
 /// Per-commit completion instant (P5b.3a, §3.1.2): the recorded instant
@@ -83,7 +122,7 @@ pub fn horizon_key(lineage: &str) -> String {
 /// the next commit's first write. Forward ingest stamps it with the write
 /// clock; the backfill recomputes it from the ledger's recorded stamps.
 pub fn commit_done_key(lineage: &str, sha: &str) -> String {
-    format!("coderadar.commit_done.{lineage}.{sha}")
+    format!("coderadar.commit_done.{}.{sha}", kv_name(lineage))
 }
 
 /// Which lineage holds a commit (P5b.6, D-6 c): the address resolution's
@@ -97,13 +136,26 @@ pub fn commit_lineage_key(sha: &str) -> String {
 /// lineage and for every name that is only an address, so a read can tell
 /// a known name from an unknown one without asking git.
 pub fn branch_tip_key(name: &str) -> String {
-    format!("coderadar.branch.tip.{name}")
+    format!("coderadar.branch.tip.{}", kv_name(name))
 }
 
 /// The parent commits a branch can still see past its fork (P5b.6, D-6):
 /// recomputed at every ingest of either lineage, because the trunk grows.
 pub fn parent_drift_key(lineage: &str) -> String {
-    format!("coderadar.parent_drift.{lineage}")
+    format!("coderadar.parent_drift.{}", kv_name(lineage))
+}
+
+/// How many generations a branch name has burned through (D-5): 1 for a
+/// name that never moved, 2 after its first rebase or rewrite.
+pub fn generation_key(branch: &str) -> String {
+    format!("coderadar.ingest.generation.{}", kv_name(branch))
+}
+
+/// The lineage a branch name currently resolves to (P5b.6/D-5): absent
+/// when the name *is* its own lineage. After a rebase this points at
+/// `feature#2` while `feature`'s own rows stay frozen and readable.
+pub fn branch_lineage_key(branch: &str) -> String {
+    format!("coderadar.branch.lineage.{}", kv_name(branch))
 }
 
 /// Commit-time store format (D-7): `1` marks the settled shape P5b.1/3a
@@ -163,6 +215,14 @@ pub struct IngestReport {
     /// ledger (P5b.3a): the first import's inline backfill, or the heal's
     /// refresh. Zero on a steady-state run (per-commit writes land inline).
     pub commits_reindexed: usize,
+    /// The generation this run belongs to (D-5): 1 until the branch's
+    /// history moved, then 2, 3, and on.
+    pub generation: u32,
+    /// The generation this run replaced, when it created a new one.
+    pub superseded: Option<String>,
+    /// Trunk commits ingested to catch up before this new generation
+    /// forked (D-5's "sync main"); 0 unless a generation was created.
+    pub trunk_synced: usize,
     pub elapsed_secs: f64,
 }
 
@@ -214,6 +274,22 @@ pub enum IngestError {
     /// over-long, control characters, surrounding whitespace).
     InvalidLineage {
         lineage: String,
+    },
+    /// D-5: the trunk's own cursor left its history. A branch takes a new
+    /// generation when that happens; the trunk cannot - no generation
+    /// repairs history the trunk no longer shares, so the store must be
+    /// rebuilt from git.
+    TrunkRewritten {
+        cursor: String,
+        tip: String,
+    },
+    /// D-6 c: the branch's history moved *onto* the trunk — its tip is now
+    /// on the trunk's first-parent chain, so the name has no commits of
+    /// its own. That is an address, not a lineage: a generation for it
+    /// would be empty, and an empty generation answers nothing.
+    BranchNowMerged {
+        branch: String,
+        tip: String,
     },
 }
 
@@ -280,6 +356,17 @@ impl std::fmt::Display for IngestError {
                 "ingest-history [invalid-lineage]: {lineage:?} is not a legal lineage \
                  name (blank, over-long, control characters, or surrounding whitespace)"
             ),
+            IngestError::TrunkRewritten { cursor, tip } => write!(
+                f,
+                "TrunkRewritten: the trunk's cursor {cursor:?} is no longer an ancestor of its tip {tip:?} - history was rewritten. No lineage generation can repair that (D-5); rebuild the store from git (coderadar migrate-to-commit-time into a fresh path)"
+            ),
+            IngestError::BranchNowMerged { branch, tip } => write!(
+                f,
+                "BranchNowMerged: {branch:?} now points at {tip}, which is on the trunk's
+                 first-parent chain - the branch has no commits of its own any more. A name
+                 like that is an address, not a lineage (D-6 c): re-run the migration to
+                 record it, or delete the branch"
+            ),
         }
     }
 }
@@ -338,6 +425,9 @@ pub fn ingest_history(
         stamps_nudged: 0,
         ghost_commits: 0,
         commits_reindexed: 0,
+        generation: 1,
+        superseded: None,
+        trunk_synced: 0,
         elapsed_secs: 0.0,
     };
 
@@ -437,8 +527,25 @@ pub fn ingest_history(
     report.head = head.clone();
 
     // The walk itself. Unknown branch / revision / ancestry surface here
-    // as the walker's typed errors, before anything is written.
-    let plan: Vec<CommitPlan> = plan_ingest(repo, branch, effective_from.as_deref())?;
+    // as the walker's typed errors, before anything is written. On the
+    // trunk, a cursor that left the chain is D-5's `TrunkRewritten`: a
+    // branch takes a new generation, the trunk cannot.
+    let plan: Vec<CommitPlan> = match plan_ingest(repo, branch, effective_from.as_deref()) {
+        Ok(plan) => plan,
+        Err(GitError::NotAncestor(cursor)) => {
+            let tip = match git2::Repository::open(repo) {
+                Ok(git) => git
+                    .revparse_single(branch)
+                    .ok()
+                    .and_then(|obj| obj.peel_to_commit().ok())
+                    .map(|commit| commit.id().to_string())
+                    .unwrap_or_else(|| branch.to_string()),
+                Err(_) => branch.to_string(),
+            };
+            return Err(IngestError::TrunkRewritten { cursor, tip });
+        }
+        Err(e) => return Err(e.into()),
+    };
     if let (Some(ef), Some(first)) = (effective_from.as_ref(), plan.first()) {
         if !first.parents.contains(ef) {
             return Err(IngestError::NotDescendant {
@@ -972,6 +1079,13 @@ pub fn ingest_branch_history(
     dry_run: bool,
 ) -> Result<IngestReport, IngestError> {
     let started = Instant::now();
+    // `:` is the kv-encoding marker (`kv_name`): a lineage spelled that way
+    // would collide with an encoded one, so it is refused here.
+    if lineage.starts_with(':') {
+        return Err(IngestError::InvalidLineage {
+            lineage: lineage.to_string(),
+        });
+    }
     let lineage_id = macrame::BranchId::new(lineage).map_err(|_| IngestError::InvalidLineage {
         lineage: lineage.to_string(),
     })?;
@@ -995,6 +1109,9 @@ pub fn ingest_branch_history(
         stamps_nudged: 0,
         ghost_commits: 0,
         commits_reindexed: 0,
+        generation: 1,
+        superseded: None,
+        trunk_synced: 0,
         elapsed_secs: 0.0,
     };
 
@@ -1725,6 +1842,154 @@ pub fn ingest_branch_history(
     Ok(report)
 }
 
+/// Ingest a branch, starting a new lineage generation when its history
+/// moved (P5b.6/D-5).
+///
+/// A rebase, a force-push, a rewritten commit: the branch's cursor no
+/// longer lies on its first-parent chain (`NotAncestor`), or its merge base
+/// with the trunk moved (`ForkMismatch`). Neither is a corruption — the
+/// old generation's rows are a true record of what that lineage said, and
+/// shas stay readable through the commit index. What changes is the
+/// *name*: it moves to `{branch}#{n+1}`, whose rows start at today's merge
+/// base, and `kv coderadar.branch.lineage.{branch}` is what a read
+/// resolves through. The trunk does not get this treatment: a rewritten
+/// trunk refuses with `TrunkRewritten`, because no generation repairs
+/// history the trunk no longer shares.
+///
+/// An explicit `lineage` is a caller's statement about the row space, not
+/// a branch name, so it never evolves: the typed refusal stands.
+pub fn ingest_branch_evolving(
+    store_path: &str,
+    repo: &str,
+    branch: &str,
+    lineage: Option<&str>,
+    parent_ref: &str,
+    from: Option<&str>,
+    dry_run: bool,
+) -> Result<IngestReport, IngestError> {
+    let current = match lineage {
+        Some(explicit) => explicit.to_string(),
+        None => live_lineage(store_path, branch)?,
+    };
+    let attempted = ingest_branch_history(
+        store_path, repo, branch, &current, parent_ref, from, dry_run,
+    );
+    match attempted {
+        Ok(report) => Ok(report),
+        Err(e @ IngestError::ForkMismatch { .. })
+        | Err(e @ IngestError::Git(GitError::NotAncestor(_))) => {
+            if lineage.is_some() {
+                return Err(e);
+            }
+            start_next_generation(store_path, repo, branch, &current, parent_ref, dry_run)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// The lineage a branch name currently resolves to (D-5): its newest
+/// generation, or the name itself when it never moved. No store yet (a
+/// dry run against a fresh path) means the name is its own lineage.
+fn live_lineage(store_path: &str, branch: &str) -> Result<String, IngestError> {
+    let path = Path::new(store_path);
+    if !path.exists() {
+        return Ok(branch.to_string());
+    }
+    let store = match CodeGraphStore::open(path) {
+        Ok(store) => store,
+        Err(_) => return Ok(branch.to_string()),
+    };
+    Ok(store
+        .kv_get_sync(&branch_lineage_key(branch))
+        .map_err(|e| IngestError::Store(format!("cannot read lineage map: {e:?}")))?
+        .unwrap_or_else(|| branch.to_string()))
+}
+
+/// Fork the next generation and ingest it (D-5): sync the trunk first, so
+/// the new generation forks at today's tip, then write under `{branch}#n`.
+fn start_next_generation(
+    store_path: &str,
+    repo: &str,
+    branch: &str,
+    superseded: &str,
+    parent_ref: &str,
+    dry_run: bool,
+) -> Result<IngestReport, IngestError> {
+    let store = CodeGraphStore::open(Path::new(store_path))
+        .map_err(|e| IngestError::Store(format!("cannot open store: {e:?}")))?;
+    // A branch that moved onto the trunk has no commits of its own left:
+    // that is D-6 c's address, and a generation for it would be empty.
+    if let Some(entry) = crate::fs::git::branch_plan(repo, parent_ref)
+        .ok()
+        .and_then(|plan| plan.into_iter().find(|e| e.name == branch))
+    {
+        if entry.merged {
+            return Err(IngestError::BranchNowMerged {
+                branch: branch.to_string(),
+                tip: entry.tip,
+            });
+        }
+    }
+    // A rewritten trunk is not a branch with a new generation: refuse
+    // with the reason and the two commits, so the operator can see it.
+    if let Some(cursor) = store
+        .kv_get_sync(&ingest_head_key(parent_ref))
+        .map_err(|e| IngestError::Store(format!("cannot read trunk cursor: {e:?}")))?
+    {
+        let git = git2::Repository::open(repo).map_err(GitError::Open)?;
+        let tip = git
+            .revparse_single(parent_ref)
+            .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?
+            .peel_to_commit()
+            .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?
+            .id();
+        let cursor_oid = git
+            .revparse_single(&cursor)
+            .ok()
+            .and_then(|o| o.peel_to_commit().ok())
+            .map(|c| c.id());
+        let intact = match cursor_oid {
+            Some(cursor_oid) => {
+                cursor_oid == tip || git.graph_descendant_of(tip, cursor_oid).unwrap_or(false)
+            }
+            None => false,
+        };
+        if !intact {
+            return Err(IngestError::TrunkRewritten {
+                cursor,
+                tip: tip.to_string(),
+            });
+        }
+    }
+    // Sync the trunk: the new generation's fork is only meaningful if the
+    // store holds the parent history it forks from.
+    let trunk = ingest_history(store_path, repo, parent_ref, None, dry_run)?;
+    let generation = store
+        .kv_get_sync(&generation_key(branch))
+        .map_err(|e| IngestError::Store(format!("cannot read generation: {e:?}")))?
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(1)
+        + 1;
+    let next = format!("{branch}#{generation}");
+    let mut report =
+        ingest_branch_history(store_path, repo, branch, &next, parent_ref, None, dry_run)?;
+    report.generation = generation;
+    report.superseded = Some(superseded.to_string());
+    report.trunk_synced = trunk.commits_ingested;
+    // The name only moves once the new generation's rows are written: a
+    // failed ingest leaves the name on the generation that can still
+    // answer.
+    if !dry_run {
+        store
+            .kv_put_sync(&generation_key(branch), &generation.to_string())
+            .map_err(|e| IngestError::Store(format!("cannot record generation: {e:?}")))?;
+        store
+            .kv_put_sync(&branch_lineage_key(branch), &next)
+            .map_err(|e| IngestError::Store(format!("cannot record lineage map: {e:?}")))?;
+    }
+    Ok(report)
+}
+
 /// K8 (Amendment 2 §10 item 4): re-ingest the trunk's MERGE commits whose
 /// files the original trunk walk skipped hollow — bytes and spine landed,
 /// the entity concepts did not — so the D-315 adoption path mints them
@@ -1833,6 +2098,9 @@ pub fn reingest_merged_commits(
         stamps_nudged: 0,
         ghost_commits: 0,
         commits_reindexed: 0,
+        generation: 1,
+        superseded: None,
+        trunk_synced: 0,
         elapsed_secs: 0.0,
     };
     let store_file = std::path::Path::new(store_path);
@@ -2333,8 +2601,10 @@ fn fork_lineages(store: &CodeGraphStore) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
         while let Some(row) = rows.next().await.ok()? {
             let key: String = row.get(0).ok()?;
-            if let Some(lineage) = key.strip_prefix(prefix) {
-                out.push(lineage.to_string());
+            if let Some(raw) = key.strip_prefix(prefix) {
+                if let Some(lineage) = kv_name_decode(raw) {
+                    out.push(lineage);
+                }
             }
         }
         Some(out)
@@ -2843,8 +3113,15 @@ pub fn resolve_temporal_read(
     strict: bool,
     at: Option<&str>,
 ) -> Result<ResolvedRead, ReadArmError> {
+    // P5b.6/D-5: a name resolves to its newest generation before anything
+    // else — its rows are the ones that answer, and its horizon is the one
+    // that decides the arm. The requested name stays the error's subject.
+    let fold_lineage = store
+        .kv_get_sync(&branch_lineage_key(lineage))
+        .map_err(|e| ReadArmError::Store(format!("cannot read lineage map: {e:?}")))?
+        .unwrap_or_else(|| lineage.to_string());
     let horizon = store
-        .kv_get_sync(&horizon_key(lineage))
+        .kv_get_sync(&horizon_key(&fold_lineage))
         .map_err(|e| ReadArmError::Store(format!("cannot read horizon: {e:?}")))?;
     // `at=` wins: it is the address, the positional is the default the
     // caller passes when `at` is absent.
@@ -2858,7 +3135,7 @@ pub fn resolve_temporal_read(
             // lineage already holds. Resolve it to that tip and fold at
             // its completion: one lookup, exact, no fork and no F3 leak.
             if let Some(tip) = store
-                .kv_get_sync(&branch_tip_key(lineage))
+                .kv_get_sync(&branch_tip_key(&fold_lineage))
                 .map_err(|e| ReadArmError::Store(format!("cannot read branch tip: {e:?}")))?
             {
                 if strict {
@@ -2902,11 +3179,11 @@ pub fn resolve_temporal_read(
                     horizon: Some(h),
                     dirty_at_commit: Vec::new(),
                     address: false,
-                    parent_drift: parent_drift_of(store, lineage),
-                    fold_branch: lineage.to_string(),
+                    parent_drift: parent_drift_of(store, &fold_lineage),
+                    fold_branch: fold_lineage.clone(),
                 });
             }
-            let commits = commit_stamps(store, lineage)
+            let commits = commit_stamps(store, &fold_lineage)
                 .map_err(|e| ReadArmError::Store(format!("cannot list commits: {e}")))?;
             let target = commits
                 .iter()
@@ -2927,7 +3204,7 @@ pub fn resolve_temporal_read(
                             horizon: h,
                         });
                     }
-                    let fold_ts = completion_or_backfill(store, lineage, sha)?;
+                    let fold_ts = completion_or_backfill(store, &fold_lineage, sha)?;
                     Ok(ResolvedRead {
                         fold_ts,
                         basis: "git-history",
@@ -2935,8 +3212,8 @@ pub fn resolve_temporal_read(
                         horizon: Some(h),
                         dirty_at_commit: Vec::new(),
                         address: false,
-                        parent_drift: parent_drift_of(store, lineage),
-                        fold_branch: lineage.to_string(),
+                        parent_drift: parent_drift_of(store, &fold_lineage),
+                        fold_branch: fold_lineage.clone(),
                     })
                 }
             }

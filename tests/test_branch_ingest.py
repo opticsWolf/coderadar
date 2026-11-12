@@ -254,14 +254,18 @@ class TestForkDiscipline:
             ops.ingest_history(str(repo), branch="feature", lineage="main",
                                store_path=str(_store_path(repo)))
 
-    def test_fork_mismatch_refuses(self, tmp_path):
-        # Rewinding the branch below the recorded fork moves history out
-        # from under the lineage: refusing beats writing two histories.
+    def test_a_branch_rewound_onto_the_trunk_becomes_an_address(self, tmp_path):
+        # P5b.6/D-5 replaces the old fork-mismatch refusal for *branch*
+        # history movement: a rebase or a rewrite starts a new generation.
+        # This shape is the one that is not a new generation — the tip moved
+        # onto the trunk's own first-parent chain, so the name has no commits
+        # of its own any more and is an address (D-6 c). An empty generation
+        # would answer nothing, so the ingest refuses and names the fix.
         repo, shas = _forked_repo(tmp_path / "repo")
         _ingest_trunk_to_c4(repo, shas)
         _ingest_feature(repo, shas)
         _git(repo, "update-ref", "refs/heads/feature", shas["c1"])
-        with pytest.raises(Exception, match="fork-mismatch"):
+        with pytest.raises(Exception, match="BranchNowMerged"):
             ops.ingest_history(str(repo), branch="feature",
                                store_path=str(_store_path(repo)))
 

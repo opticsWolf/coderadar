@@ -523,7 +523,23 @@ ingest of either lineage (`fs::git::parent_drift_count`, kv `coderadar.parent_dr
 the trunk grows, so the number a read reports has to be today's. Reads refuse an unknown name with
 `UnknownBranch` on a commit-time store and stay unchanged on an analyze-only one, which records no
 tips and no horizon. Ten Python tests (`tests/test_p5b6_selection.py`) and two git-native Rust
-tests pin it; the branch leg of slice B is next.
+tests pin it.
+
+*Slice B landed 2026-11-12 (generations, D-5).* A branch whose cursor left its history now takes a
+new generation instead of refusing: a rebase (the merge base moved, `ForkMismatch`) and a rewrite
+that keeps the base (the cursor is off the chain, `NotAncestor`) both start `{branch}#{n+1}`, after
+syncing the trunk so the new generation forks at today's tip. `kv
+coderadar.ingest.generation.{branch}` counts them and `coderadar.branch.lineage.{branch}` is what a
+read resolves through, so the name answers from its newest generation while every sha of the older
+one still resolves through the commit index (`at=<sha>`, which reports the owning lineage). Two
+shapes are deliberately *not* generations: a rewritten trunk refuses with `TrunkRewritten` (no
+generation repairs history the trunk no longer shares — rebuild from git), and a branch whose tip
+has moved onto the trunk's own chain refuses with `BranchNowMerged` (D-6 c: that name is an
+address now, and an empty generation would answer nothing). Generation lineage names contain `#`,
+which Macrame's kv charset (D-280) does not allow, so keys spell an unsafe name hex-encoded behind
+a `:` marker; plain names keep their old spelling byte for byte, which is what keeps a store
+ingested before this phase on its cursors. `tests/test_p5b6_generations.py` pins the rebase, the
+rewrite, the old generation's readability and the trunk refusal.
 
 ### P5b.7 — Rename links (no dependency)
 
@@ -591,7 +607,7 @@ already require.
 | 2 | P5b.3a horizon + commit index *(closed 2026-11-12 — horizon + per-commit completion in `kv`, the git-history arm of every temporal read with its `basis`/`sha`/`horizon`, `BeforeHistory`/`BeforeHorizon`, `at=<sha>` with `dirty_at_commit`; F1 flipped. Two defects the tests caught: the first import's tail backfill clobbered the completion the loop had just written (now fill-only), and the derived completion ignored `concept_cuts`, so a branch's sweep landed after the instant the arm folds (the derivation reads cuts now). Gates: 589 lib, pytest 1324/1/3xf)* | — | P5b.1, P6b, P8 |
 | 2 | P6b, P8 | — | each other |
 | 2 | P5b.7 rename links | — | everything in order 2 |
-| 3 | P5b.6 branch names + generations | P5b.3a | P5d, P5b.2 |
+| 3 | P5b.6 branch names + generations *(closed 2026-11-12 — D-6 c selection: one lineage per own-commit tip, every other name an address read through the commit index (`parent_drift` reported); D-5 generations: a rebase or rewrite starts `{branch}#n`, the trunk refuses `TrunkRewritten`, a tip moved onto the trunk refuses `BranchNowMerged`. Two defects the tests caught: the address fold ran on the name (Macrame refuses a lineage-less name) and `#` is illegal in kv keys (D-280) — keys hex-encode unsafe names behind a `:` marker, plain names unchanged. Gates: 591 lib, pytest 1338/1/3xf)* | P5b.3a | P5d, P5b.2 |
 | 3 | P5d live tree | P5b.1 | P5b.2 |
 | 3 | P5b.2 adopt 0.22.0 *(closed 2026-11-11 — [patch] retired, the lock rides crates.io `0.22.0`; engine identical to the rev pin (no src/ diff 40719ac to tag); gates 589 lib + pytest 1303/1/4xf, scratch migration disorder 0)* | P5b.1 (U-1 released 2026-11-01) | P5d |
 | 4 | P5b.3 valid reads (trunk) | P5b.2 | — |

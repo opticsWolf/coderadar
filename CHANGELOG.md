@@ -6,6 +6,16 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Temporal P5b.6 slice B — branch generations (D-5): a branch whose cursor left its history (a
+  rebase, or a rewrite that keeps the base) takes a new lineage generation `{branch}#{n+1}` instead
+  of refusing — the trunk is synced first so the new generation forks at today's tip, the name
+  resolves to the newest generation through `kv coderadar.branch.lineage.{branch}`, and every sha
+  of the older generation still resolves through the commit index. A rewritten trunk refuses with
+  `TrunkRewritten`, and a branch whose tip moved onto the trunk's own chain refuses with
+  `BranchNowMerged` (that name is an address per D-6 c; an empty generation would answer nothing).
+  Generation lineage names carry `#`, outside Macrame's kv charset (D-280), so keys hex-encode an
+  unsafe name behind a `:` marker while plain names keep their old spelling — a pre-phase store
+  keeps its cursors. Gates: 591 lib; pytest 1338 passed / 1 skipped / 3 xfailed.
 - Temporal P5b.6 slice A — branch selection, commit addresses, `parent_drift` (D-6 c): the
   migration's default branch set is now one lineage per distinct tip the trunk does not already
   hold; every other name (a merged branch, a remote-tracking name sharing a tip) is an **address**,
