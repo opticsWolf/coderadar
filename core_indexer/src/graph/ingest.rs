@@ -86,6 +86,26 @@ pub fn commit_done_key(lineage: &str, sha: &str) -> String {
     format!("coderadar.commit_done.{lineage}.{sha}")
 }
 
+/// Which lineage holds a commit (P5b.6, D-6 c): the address resolution's
+/// one lookup. A name whose tip is already held becomes an address, and the
+/// read needs the owning lineage to find the completion instant.
+pub fn commit_lineage_key(sha: &str) -> String {
+    format!("coderadar.commit_lineage.{sha}")
+}
+
+/// A branch name's tip commit (P5b.6, D-6 c). Written for every ingested
+/// lineage and for every name that is only an address, so a read can tell
+/// a known name from an unknown one without asking git.
+pub fn branch_tip_key(name: &str) -> String {
+    format!("coderadar.branch.tip.{name}")
+}
+
+/// The parent commits a branch can still see past its fork (P5b.6, D-6):
+/// recomputed at every ingest of either lineage, because the trunk grows.
+pub fn parent_drift_key(lineage: &str) -> String {
+    format!("coderadar.parent_drift.{lineage}")
+}
+
 /// Commit-time store format (D-7): `1` marks the settled shape P5b.1/3a
 /// write (one open interval per concept, horizon + commit index). A store
 /// without it predates the shape; temporal reads name the rebuild.
@@ -856,6 +876,14 @@ pub fn ingest_history(
         store
             .kv_put_sync(&ingest_stamp_key(lineage), &stamp)
             .map_err(|e| IngestError::Store(format!("cannot advance stamp: {e:?}")))?;
+        // P5b.6 (D-6 c): which lineage holds this sha — the address
+        // resolution's one lookup, and the tip the name points at.
+        store
+            .kv_put_sync(&commit_lineage_key(&sha), lineage)
+            .map_err(|e| IngestError::Store(format!("cannot record commit owner: {e:?}")))?;
+        store
+            .kv_put_sync(&branch_tip_key(branch), &sha)
+            .map_err(|e| IngestError::Store(format!("cannot record branch tip: {e:?}")))?;
         // P5b.3a: the commit's completion instant — recorded after the
         // sweep and cursor, before the next commit's first write. A fold
         // at this instant sees exactly this commit's state (INV-10).
@@ -886,6 +914,12 @@ pub fn ingest_history(
             report.commits_reindexed =
                 backfill_commit_index(store_ref, lineage, false)?.commits_indexed;
         }
+    }
+    // P5b.6 (D-6): every lineage's `parent_drift` is recomputed here —
+    // the trunk may have grown since the branch's own ingest, and the
+    // read reports it rather than making the caller ask twice.
+    if let Some(store_ref) = graph.store.as_ref() {
+        refresh_parent_drift(store_ref, repo, "main", lineage);
     }
     report.elapsed_secs = started.elapsed().as_secs_f64();
     Ok(report)
@@ -1646,6 +1680,13 @@ pub fn ingest_branch_history(
         store
             .kv_put_sync(&ingest_head_key(lineage), &sha)
             .map_err(|e| IngestError::Store(format!("cannot advance cursor: {e:?}")))?;
+        // P5b.6 (D-6 c): the same owner + tip bookkeeping as the trunk.
+        store
+            .kv_put_sync(&commit_lineage_key(&sha), lineage)
+            .map_err(|e| IngestError::Store(format!("cannot record commit owner: {e:?}")))?;
+        store
+            .kv_put_sync(&branch_tip_key(branch), &sha)
+            .map_err(|e| IngestError::Store(format!("cannot record branch tip: {e:?}")))?;
         // P5b.3a: the commit's completion instant (trunk loop carries
         // the same write — one rule for both lineages).
         let completion = crate::storage::now_iso8601();
@@ -1673,6 +1714,12 @@ pub fn ingest_branch_history(
             report.commits_reindexed =
                 backfill_commit_index(store_ref, lineage, false)?.commits_indexed;
         }
+    }
+    // P5b.6 (D-6): every lineage's `parent_drift` is recomputed here —
+    // the trunk may have grown since the branch's own ingest, and the
+    // read reports it rather than making the caller ask twice.
+    if let Some(store_ref) = graph.store.as_ref() {
+        refresh_parent_drift(store_ref, repo, parent_ref, lineage);
     }
     report.elapsed_secs = started.elapsed().as_secs_f64();
     Ok(report)
@@ -2235,8 +2282,67 @@ pub fn reingest_merged_commits(
         let bf = backfill_commit_index(store_ref, lineage, true)?;
         report.commits_reindexed = bf.commits_indexed;
     }
+    // P5b.6 (D-6): every lineage's `parent_drift` is recomputed here —
+    // the trunk may have grown since the branch's own ingest, and the
+    // read reports it rather than making the caller ask twice.
+    if let Some(store_ref) = graph.store.as_ref() {
+        refresh_parent_drift(store_ref, repo, "main", lineage);
+    }
     report.elapsed_secs = started.elapsed().as_secs_f64();
     Ok(report)
+}
+
+/// Recompute every lineage's `parent_drift` (P5b.6, D-6): the parent
+/// commits after its fork point the branch can still see. Cheap — one git
+/// walk per branch lineage, once per ingest — and honest across time: the
+/// trunk grows, so the number a read reports must be the number today.
+fn refresh_parent_drift(store: &CodeGraphStore, repo: &str, parent_ref: &str, self_lineage: &str) {
+    let mut lineages: Vec<String> = fork_lineages(store);
+    if !lineages.iter().any(|l| l == self_lineage) {
+        lineages.push(self_lineage.to_string());
+    }
+    for lineage in lineages {
+        let drift = if lineage == parent_ref {
+            0
+        } else {
+            match crate::fs::git::parent_drift_count(repo, &lineage, parent_ref) {
+                Ok(n) => n,
+                Err(_) => continue,
+            }
+        };
+        let _ = store.kv_put_sync(&parent_drift_key(&lineage), &drift.to_string());
+    }
+}
+
+/// Every lineage with a recorded fork point (the kv scan that keeps the
+/// drift refresh a loop over branch lineages rather than all names).
+fn fork_lineages(store: &CodeGraphStore) -> Vec<String> {
+    let prefix = "coderadar.ingest.fork.";
+    let (_guard, conn) = match store.open_diagnostic_conn() {
+        Ok(pair) => pair,
+        Err(_) => return Vec::new(),
+    };
+    let rows = crate::storage::runtime().block_on(async {
+        let mut rows = conn
+            .query(
+                "SELECT key FROM kv_store WHERE key LIKE 'coderadar.ingest.fork.%'",
+                (),
+            )
+            .await
+            .ok()?;
+        let mut out: Vec<String> = Vec::new();
+        while let Some(row) = rows.next().await.ok()? {
+            let key: String = row.get(0).ok()?;
+            if let Some(lineage) = key.strip_prefix(prefix) {
+                out.push(lineage.to_string());
+            }
+        }
+        Some(out)
+    });
+    let mut out = rows.unwrap_or_default();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Author/committer identities and the commit subject for the commit
@@ -2585,6 +2691,10 @@ pub fn backfill_commit_index(
         store
             .kv_put_sync(&key, completion)
             .map_err(|e| err("kv", format!("{e:?}")))?;
+        // P5b.6: the owner map a branch address resolves through.
+        store
+            .kv_put_sync(&commit_lineage_key(sha), lineage)
+            .map_err(|e| err("kv", format!("{e:?}")))?;
     }
     // Written once, never moved: the heal and the explicit op both
     // route here, and neither completes an import.
@@ -2630,6 +2740,17 @@ pub struct ResolvedRead {
     /// empty — observation rows arrive with P5d; the rule that a
     /// non-empty set refuses under `strict` ships with the field).
     pub dirty_at_commit: Vec<String>,
+    /// The name was a commit address, not a lineage (P5b.6, D-6 c): the
+    /// branch has no commits of its own, so its name resolves to a commit
+    /// another lineage already holds.
+    pub address: bool,
+    /// Parent commits after this lineage's fork point that it can still
+    /// see (P5b.6, D-6): 0 on the trunk's tip and on every address.
+    pub parent_drift: usize,
+    /// The lineage the fold actually runs on: the requested name for a
+    /// lineage, its owner lineage for a commit address (a name with no
+    /// lineage of its own is not a lineage Macrame can fold).
+    pub fold_branch: String,
 }
 
 /// The git-history arm's refusals (P5b.3a, §3.1.1): reasons, never
@@ -2656,6 +2777,9 @@ pub enum ReadArmError {
     UnknownCommit { lineage: String, sha: String },
     /// `at=` names a ref: sha addressing is P5b.3a, refs are P5b.4.
     RefNeedsP5b4 { address: String },
+    /// P5b.6 (D-6 c): the name is neither a lineage nor a recorded branch
+    /// address. Never guessed, never trunk-fallback.
+    UnknownBranch { name: String, tip: Option<String> },
 }
 
 impl std::fmt::Display for ReadArmError {
@@ -2691,6 +2815,16 @@ impl std::fmt::Display for ReadArmError {
                 f,
                 "at={address:?} names a ref: sha addressing is P5b.3a, refs arrive with P5b.4"
             ),
+            ReadArmError::UnknownBranch { name, tip } => match tip {
+                Some(tip) => write!(
+                    f,
+                    "UnknownBranch: {name:?} points at {tip}, which no lineage in this                      store holds — ingest it before reading the name"
+                ),
+                None => write!(
+                    f,
+                    "UnknownBranch: {name:?} is not a lineage in this store and records no                      tip (D-6 c) — ingest the branch, or read its commit by sha"
+                ),
+            },
         }
     }
 }
@@ -2718,13 +2852,47 @@ pub fn resolve_temporal_read(
         return resolve_commit_address(store, lineage, address, horizon, strict);
     }
     match horizon {
-        None => Ok(ResolvedRead {
-            fold_ts: timestamp.to_string(),
-            basis: "recorded",
-            sha: None,
-            horizon: None,
-            dirty_at_commit: Vec::new(),
-        }),
+        None => {
+            // P5b.6 (D-6 c): a name with no lineage may still be an
+            // address — a merged branch, or a second name for a tip a
+            // lineage already holds. Resolve it to that tip and fold at
+            // its completion: one lookup, exact, no fork and no F3 leak.
+            if let Some(tip) = store
+                .kv_get_sync(&branch_tip_key(lineage))
+                .map_err(|e| ReadArmError::Store(format!("cannot read branch tip: {e:?}")))?
+            {
+                if strict {
+                    return Err(ReadArmError::BeforeHorizon {
+                        lineage: lineage.to_string(),
+                        instant: timestamp.to_string(),
+                        horizon: "none (the name is a commit address)".to_string(),
+                    });
+                }
+                return resolve_address_name(store, lineage, &tip);
+            }
+            // An analyze-only store records no tips and has no horizon:
+            // its reads are unchanged, exactly as before this phase.
+            let known_shape = store
+                .kv_get_sync(COMMIT_TIME_FORMAT_KEY)
+                .map_err(|e| ReadArmError::Store(format!("cannot read format: {e:?}")))?
+                .is_some();
+            if known_shape {
+                return Err(ReadArmError::UnknownBranch {
+                    name: lineage.to_string(),
+                    tip: None,
+                });
+            }
+            Ok(ResolvedRead {
+                fold_ts: timestamp.to_string(),
+                basis: "recorded",
+                sha: None,
+                horizon: None,
+                dirty_at_commit: Vec::new(),
+                address: false,
+                parent_drift: 0,
+                fold_branch: lineage.to_string(),
+            })
+        }
         Some(h) => {
             if timestamp >= h.as_str() {
                 return Ok(ResolvedRead {
@@ -2733,6 +2901,9 @@ pub fn resolve_temporal_read(
                     sha: None,
                     horizon: Some(h),
                     dirty_at_commit: Vec::new(),
+                    address: false,
+                    parent_drift: parent_drift_of(store, lineage),
+                    fold_branch: lineage.to_string(),
                 });
             }
             let commits = commit_stamps(store, lineage)
@@ -2763,6 +2934,9 @@ pub fn resolve_temporal_read(
                         sha: Some(sha.clone()),
                         horizon: Some(h),
                         dirty_at_commit: Vec::new(),
+                        address: false,
+                        parent_drift: parent_drift_of(store, lineage),
+                        fold_branch: lineage.to_string(),
                     })
                 }
             }
@@ -2791,15 +2965,24 @@ fn resolve_commit_address(
             address: address.to_string(),
         });
     }
-    let commits = commit_stamps(store, lineage)
-        .map_err(|e| ReadArmError::Store(format!("cannot list commits: {e}")))?;
-    if !commits.iter().any(|(sha, _)| sha == address) {
-        return Err(ReadArmError::UnknownCommit {
-            lineage: lineage.to_string(),
-            sha: address.to_string(),
-        });
-    }
-    let fold_ts = completion_or_backfill(store, lineage, address)?;
+    // A-3: a sha resolves through its commit concept to the lineage that
+    // holds it — asking a branch name for a trunk sha is legitimate, and on
+    // an address name (no lineage of its own) it is the only path.
+    let owner = match commit_stamps(store, lineage)
+        .map_err(|e| ReadArmError::Store(format!("cannot list commits: {e}")))?
+        .into_iter()
+        .any(|(sha, _)| sha == address)
+    {
+        true => lineage.to_string(),
+        false => store
+            .kv_get_sync(&commit_lineage_key(address))
+            .map_err(|e| ReadArmError::Store(format!("cannot read commit owner: {e:?}")))?
+            .ok_or_else(|| ReadArmError::UnknownCommit {
+                lineage: lineage.to_string(),
+                sha: address.to_string(),
+            })?,
+    };
+    let fold_ts = completion_or_backfill(store, &owner, address)?;
     // P5b.3a: no observation rows exist until P5d, so the dirty set is
     // empty and `strict` has nothing to refuse. The check ships with the
     // field so P5d fills the set without changing the rule.
@@ -2817,7 +3000,53 @@ fn resolve_commit_address(
         sha: Some(address.to_string()),
         horizon,
         dirty_at_commit,
+        address: false,
+        parent_drift: 0,
+        fold_branch: owner,
     })
+}
+
+/// Resolve a branch name that is only an address (P5b.6, D-6 c): the tip
+/// a lineage already holds, folded at its completion. The owner comes from
+/// the commit index's one lookup; nothing is guessed from the name.
+fn resolve_address_name(
+    store: &CodeGraphStore,
+    name: &str,
+    tip: &str,
+) -> Result<ResolvedRead, ReadArmError> {
+    let owner = store
+        .kv_get_sync(&commit_lineage_key(tip))
+        .map_err(|e| ReadArmError::Store(format!("cannot read commit owner: {e:?}")))?
+        .ok_or_else(|| ReadArmError::UnknownBranch {
+            name: name.to_string(),
+            tip: Some(tip.to_string()),
+        })?;
+    let fold_ts = completion_or_backfill(store, &owner, tip)?;
+    let horizon = store
+        .kv_get_sync(&horizon_key(&owner))
+        .map_err(|e| ReadArmError::Store(format!("cannot read horizon: {e:?}")))?;
+    Ok(ResolvedRead {
+        fold_ts,
+        basis: "git-history",
+        sha: Some(tip.to_string()),
+        horizon,
+        dirty_at_commit: Vec::new(),
+        address: true,
+        parent_drift: 0,
+        fold_branch: owner.clone(),
+    })
+}
+
+/// A lineage's recorded drift (P5b.6, D-6): the parent commits after its
+/// fork point it can still see. Absent on an analyze-only store and on the
+/// trunk, both of which are 0.
+fn parent_drift_of(store: &CodeGraphStore, lineage: &str) -> usize {
+    store
+        .kv_get_sync(&parent_drift_key(lineage))
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(0)
 }
 
 /// A commit's completion instant, rebuilding the index inline when `kv`

@@ -6,6 +6,17 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Temporal P5b.6 slice A — branch selection, commit addresses, `parent_drift` (D-6 c): the
+  migration's default branch set is now one lineage per distinct tip the trunk does not already
+  hold; every other name (a merged branch, a remote-tracking name sharing a tip) is an **address**,
+  recorded once at migration and resolved through the commit index — no fork, no
+  `cross-lineage-id`. `branch_plan`/`record_branch_addresses` (internal ops) do the git side; each
+  commit records its owning lineage (`kv coderadar.commit_lineage.{sha}`) and each name its tip
+  (`kv coderadar.branch.tip.{name}`). Reads fold on the address's *owner* lineage and report
+  `address`, `parent_drift` (recomputed at every ingest: the parent commits after the fork the
+  branch can still see) beside the P5b.3a labels; unknown names refuse with `UnknownBranch` on a
+  commit-time store and are untouched on an analyze-only one. Gates: 591 lib; pytest 1334 passed /
+  1 skipped / 3 xfailed.
 - Temporal P5b.3a — horizon and commit index (`f44ea65`, `81dc8c3`): every lineage gets a horizon
   (`kv coderadar.horizon.{lineage}`, written once, never moved) and every commit a completion
   instant (`kv coderadar.commit_done.{lineage}.{sha}`, recorded by the loop after its last

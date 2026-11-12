@@ -1571,6 +1571,21 @@ class Snapshot:
         return list(self._resolve().get("dirty_at_commit") or [])
 
     @property
+    def address(self) -> bool:
+        """True when the branch name is a commit address, not a lineage
+        (P5b.6, D-6 c): the name has no commits of its own, so it resolves
+        to a tip another lineage already holds. The fold runs on that
+        lineage; the answer is that commit's state, labelled git-history."""
+        return bool(self._resolve().get("address"))
+
+    @property
+    def parent_drift(self) -> int:
+        """How many parent commits after this lineage's fork point it can
+        still see (P5b.6, D-6). 0 on the trunk's tip and on every address;
+        non-zero is F3's leak, named until P5c closes it."""
+        return int(self._resolve().get("parent_drift") or 0)
+
+    @property
     def predates_recorded_history(self) -> bool:
         """True when T sits before the first recorded write.
 

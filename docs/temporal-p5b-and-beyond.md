@@ -510,6 +510,21 @@ the report names what adoption did not reach.)*
 reads exactly on the new generation, and every sha of the old one still resolves; a stale-branch
 fixture reports the expected `parent_drift`.
 
+*Slice A landed 2026-11-12 (selection, addresses, drift).* `fs::git::branch_plan` names every
+local and remote-tracking branch with the one fact selection needs — is its tip on the trunk's
+first-parent chain — and `migrate_to_commit_time`'s default set now follows D-6 c: one lineage per
+distinct tip that the trunk does not already hold (local spelling wins a tie, so a remote name
+never duplicates a lineage and never trips `cross-lineage-id`), every other name an address. The
+address map is recorded once at migration (`coderadar.branch.tip.{name}`), each commit records the
+lineage that holds it (`coderadar.commit_lineage.{sha}`), so a read resolves a name to its tip's
+completion in one lookup and folds on the *owner* lineage — the name itself has no lineage Macrame
+could fold, which is the one thing the first cut got wrong. `parent_drift` is recomputed at every
+ingest of either lineage (`fs::git::parent_drift_count`, kv `coderadar.parent_drift.{lineage}`):
+the trunk grows, so the number a read reports has to be today's. Reads refuse an unknown name with
+`UnknownBranch` on a commit-time store and stay unchanged on an analyze-only one, which records no
+tips and no horizon. Ten Python tests (`tests/test_p5b6_selection.py`) and two git-native Rust
+tests pin it; the branch leg of slice B is next.
+
 ### P5b.7 — Rename links (no dependency)
 
 A-11 on today's pin. `plan_ingest` turns on git's rename detection (`CommitPlan.renamed:

@@ -1,6 +1,7 @@
 // CodeRadar v3.6 — Git Integration (§12)
 // Branch-switch detection, .gitignore integration, and blame annotation.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use git2::{
@@ -181,6 +182,107 @@ pub fn plan_ingest(
         plans.push(commit_plan_for_commit(&repo, commit, &excludes)?);
     }
     Ok(plans)
+}
+
+/// One branch name and where it points (P5b.6, D-6 c).
+#[derive(Debug, Clone)]
+pub struct BranchPlanEntry {
+    /// The name as git spells it: `feature` for a local branch,
+    /// `origin/feature` for a remote-tracking one.
+    pub name: String,
+    /// The branch's tip commit.
+    pub tip: String,
+    /// True when the tip lies on `parent_ref`'s first-parent chain: the
+    /// name is a commit address, not a lineage (D-6 c).
+    pub merged: bool,
+}
+
+/// Every branch name the repository offers, local and remote-tracking,
+/// with the one fact selection needs (P5b.6, D-6 c): does its tip already
+/// lie on the trunk's first-parent chain? Merged names are addresses;
+/// the rest are candidates for a lineage (the caller dedupes names that
+/// share a tip and applies the deny-list). Sorted by name.
+pub fn branch_plan(repo_path: &str, parent_ref: &str) -> Result<Vec<BranchPlanEntry>, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let parent_tip = repo
+        .revparse_single(parent_ref)
+        .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?
+        .peel_to_commit()
+        .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?
+        .id();
+    // The trunk's first-parent chain, tip first: the addresses D-6 c names.
+    let mut trunk_chain: HashSet<git2::Oid> = HashSet::new();
+    let mut current = repo.find_commit(parent_tip).ok();
+    while let Some(commit) = current {
+        trunk_chain.insert(commit.id());
+        current = commit.parent(0).ok();
+    }
+    let mut out = Vec::new();
+    for kind in [git2::BranchType::Local, git2::BranchType::Remote] {
+        let branches = repo.branches(Some(kind)).map_err(GitError::Branches)?;
+        for branch in branches {
+            let (branch, _) = branch.map_err(GitError::Branches)?;
+            let name = match branch.name().map_err(GitError::Branches)? {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+            let tip = match branch.get().peel_to_commit() {
+                Ok(commit) => commit.id(),
+                // An unborn or broken ref is not a name we can resolve.
+                Err(_) => continue,
+            };
+            out.push(BranchPlanEntry {
+                name,
+                tip: tip.to_string(),
+                merged: trunk_chain.contains(&tip),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// How many commits on `parent_ref`'s first-parent chain sit after this
+/// branch's fork point (P5b.6): the parent history the branch cannot see
+/// through its own rows, and — until U-3 — *can* see through the leak
+/// D-6's `parent_drift` warns about. Zero for the trunk itself, and zero
+/// for a branch sitting on the trunk's chain.
+pub fn parent_drift_count(
+    repo_path: &str,
+    branch: &str,
+    parent_ref: &str,
+) -> Result<usize, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let tip = repo
+        .revparse_single(branch)
+        .map_err(|_| GitError::UnknownBranch(branch.to_string()))?
+        .peel_to_commit()
+        .map_err(|_| GitError::UnknownBranch(branch.to_string()))?;
+    let mut current = Some(
+        repo.revparse_single(parent_ref)
+            .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?
+            .peel_to_commit()
+            .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?,
+    );
+    let mut drift = 0usize;
+    while let Some(commit) = current {
+        // Shared point: this commit and everything older is on the
+        // branch's side of the fork (it is an ancestor of the tip).
+        if commit.id() == tip.id()
+            || repo
+                .graph_descendant_of(tip.id(), commit.id())
+                .unwrap_or(false)
+        {
+            return Ok(drift);
+        }
+        // The trunk's tip is the branch's own tip case is handled above;
+        // anything else on the chain is a post-fork parent commit.
+        drift += 1;
+        current = commit.parent(0).ok();
+    }
+    // No shared point: an unrelated history (`fork_point`'s
+    // NoCommonHistory covers the ingest path; a read just reports it all).
+    Ok(drift)
 }
 
 /// Short names of every local branch, sorted (P5a.5, DR-41): the
@@ -949,6 +1051,52 @@ mod fork_point_tests {
         let m3 = commit_to(&repo, "refs/heads/main", "m3", &[&m2]);
         let _ = (f1, m3);
         (dir, m2.id().to_string(), String::new())
+    }
+
+    #[test]
+    fn branch_plan_separates_merged_names_from_own_commits() {
+        // main m1..m3, feature f1 off m2, plus a merged name at m2:
+        // D-6 c's two classes, from git's side.
+        let (dir, m2, _) = forked_repo();
+        let root = dir.path().to_str().unwrap();
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let oid = git2::Oid::from_str(&m2).unwrap();
+        repo.branch("merged", &repo.find_commit(oid).unwrap(), false)
+            .unwrap();
+        repo.branch("tip", &repo.find_commit(oid).unwrap(), false)
+            .unwrap();
+        let plan = branch_plan(root, "main").unwrap();
+        let by_name = |name: &str| plan.iter().find(|e| e.name == name).unwrap().clone();
+        assert!(
+            by_name("merged").merged,
+            "m2 is on main's first-parent chain"
+        );
+        assert!(!by_name("feature").merged, "f1 has commits of its own");
+        assert!(by_name("main").merged);
+        // Sorted by name, and no remote names in a repo with no remotes.
+        assert_eq!(
+            plan.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec!["feature", "main", "merged", "tip"]
+        );
+    }
+
+    #[test]
+    fn parent_drift_counts_the_parent_commits_past_the_fork() {
+        let (dir, _m2, _) = forked_repo();
+        let root = dir.path().to_str().unwrap();
+        // feature forked at m2; main has m3 after it.
+        assert_eq!(parent_drift_count(root, "feature", "main").unwrap(), 1);
+        // The trunk is its own parent: nothing after its tip.
+        assert_eq!(parent_drift_count(root, "main", "main").unwrap(), 0);
+        // A declared branch sitting on the trunk's tip has no drift either.
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let m3 = repo
+            .revparse_single("main")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        repo.branch("same-as-main", &m3, false).unwrap();
+        assert_eq!(parent_drift_count(root, "same-as-main", "main").unwrap(), 0);
     }
 
     #[test]

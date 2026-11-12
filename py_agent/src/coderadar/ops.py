@@ -1240,6 +1240,8 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
             "horizon": None,
             "commit": None,
             "dirty_at_commit": [],
+            "address": False,
+            "parent_drift": 0,
         }
     # One batched fold serves both the validation gate and the answer, and
     # it is what resolves the arm — so `basis` is always the arm this call
@@ -1261,6 +1263,8 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
         "horizon": batch.get("horizon"),
         "commit": batch.get("sha"),
         "dirty_at_commit": list(batch.get("dirty_at_commit") or []),
+        "address": bool(batch.get("address", False)),
+        "parent_drift": int(batch.get("parent_drift") or 0),
     }
 
 
@@ -1949,13 +1953,21 @@ def migrate_to_commit_time(repo: str | Path, store: str | Path,
     vector index over text nobody searches), and a ``verify_history``
     sweep per branch when asked.
 
-    ``branches`` defaults to every local branch with the trunk first; an
+    ``branches`` defaults to the D-6 c selection (P5b.6): the trunk first,
+    then every local or remote-tracking branch whose tip is *not* already on
+    an ingested lineage's first-parent chain — one lineage per tip, local
+    spelling preferred. Every other name is an **address** (its tip is a
+    commit some lineage holds): it gets no lineage, no fork, and no
+    `cross-lineage-id`, and `report["addresses"]` names its tip so reads can
+    resolve it through the commit index. An explicit list is honored as
     explicit list is honored as given, except the trunk is prepended when
     the repository has one and it is missing — forks compute against the
     parent ref and branch reads fall back to trunk rows, so a migration
     without trunk data is hollow by construction. A repository with no
     trunk refuses (pass an explicit list — but without a parent ref the
-    forks cannot compute, so say what you mean).
+    forks cannot compute, so say what you mean). Explicit names that are
+    addresses are ingested as lineages when asked for: an explicit list is
+    a statement about what the caller wants, not a selection guess.
 
     The op is idempotent per branch: every branch ingest resumes from its
     ``kv`` cursor, so re-running a migration finishes it (completed
@@ -1975,6 +1987,7 @@ def migrate_to_commit_time(repo: str | Path, store: str | Path,
     Returns the report as the contract:: ``{"repo", "store",
     "parent_ref", "branches", "branch_reports": {branch: report},
     "commits_ingested", "commits_skipped", "files_failed",
+    "addresses": {name: tip}, "addresses_recorded",
     "merge_heal": report | None, "embeddings",
     "verify": {branch: coverage} | None,
     "elapsed_secs"}``. As a side effect the migrated store is loaded as
@@ -2005,6 +2018,7 @@ def migrate_to_commit_time(repo: str | Path, store: str | Path,
         except OSError as e:
             raise InvalidRequest(f"cannot create store directory {parent}: {e}") from None
     try:
+        from coderadar._core import branch_plan as _branch_plan
         from coderadar._core import list_branches as _list_branches
         listed = list(_list_branches(repo_s))
     except ImportError as e:
@@ -2013,23 +2027,66 @@ def migrate_to_commit_time(repo: str | Path, store: str | Path,
         raise InvalidRequest(str(e)) from None
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
         raise EngineError(str(e)) from None
+    # The plan needs a resolvable trunk; a repository without one refuses
+    # below with a message that says what to do, not a git error.
+    plan: list[dict] = []
+    if "main" in listed:
+        try:
+            plan = list(_branch_plan(repo_s, parent_ref))
+        except ValueError as e:
+            raise InvalidRequest(str(e)) from None
+        except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+            raise EngineError(str(e)) from None
+    addresses: dict[str, str] = {}
     if branches is None:
         if "main" not in listed:
             raise InvalidRequest(
                 "repository has no 'main' branch: pass branches=[...] explicitly "
                 f"(local branches: {listed or ['(none)']}).")
-        ordered = ["main", *[b for b in listed if b != "main"]]
+        # D-6 c: one lineage per distinct tip that the trunk's chain does
+        # not already hold; every other name is an address. Local spelling
+        # wins a tie (a remote-tracking name is the same branch seen from
+        # elsewhere, and two lineages for one tip would trip
+        # cross-lineage-id).
+        chosen: dict[str, str] = {}
+        for entry in sorted(plan, key=lambda e: (e["name"].count("/"), e["name"])):
+            if entry["name"] == "main":
+                continue
+            if entry["merged"] or entry["tip"] in chosen:
+                addresses[entry["name"]] = entry["tip"]
+                continue
+            chosen[entry["tip"]] = entry["name"]
+        ordered = ["main", *chosen.values()]
     else:
         ordered = list(branches)
         if not ordered:
             raise InvalidRequest("branches=[...] is empty: nothing to migrate.")
         if "main" in listed and "main" not in ordered:
             ordered.insert(0, "main")
+        wanted = set(ordered)
+        for entry in plan:
+            if entry["name"] not in wanted:
+                addresses[entry["name"]] = entry["tip"]
     started = _time.perf_counter()
     branch_reports: dict[str, dict] = {}
     for branch in ordered:
         branch_reports[branch] = ingest_history(
             repo_s, branch, store_path=store_s, parent_ref=parent_ref)
+    # D-6 c's other half: the names that are only addresses get their tip
+    # recorded once, so a read resolves them through the commit index
+    # without asking git. Recorded after the lineages: the tip must be
+    # held by one of them, or the name would resolve nowhere.
+    addresses_recorded = 0
+    if addresses:
+        try:
+            from coderadar._core import record_branch_addresses as _record_addresses
+            addresses_recorded = _record_addresses(store_s, sorted(addresses.items()))
+        except ImportError as e:
+            raise EngineError(f"native extension unavailable: {e}") from None
+        except ValueError as e:
+            raise InvalidRequest(str(e)) from None
+        except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+            raise EngineError(str(e)) from None
     # The merge-commit heal (K8, Amendment 2 §10 item 4), once after all
     # branches: the vintage shape it serves is a pre-0.22 store whose
     # trunk walk met a merge hollow (spine and bytes, no adoption); a
@@ -2064,6 +2121,8 @@ def migrate_to_commit_time(repo: str | Path, store: str | Path,
         "parent_ref": parent_ref,
         "branches": ordered,
         "branch_reports": branch_reports,
+        "addresses": dict(sorted(addresses.items())),
+        "addresses_recorded": addresses_recorded,
         "commits_ingested": commits_ingested,
         "commits_skipped": commits_skipped,
         "files_failed": files_failed,

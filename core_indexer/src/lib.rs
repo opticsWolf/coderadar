@@ -68,6 +68,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(call_sites, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entity, m)?)?;
     m.add_function(wrap_pyfunction!(normalize_timestamp, m)?)?;
+    m.add_function(wrap_pyfunction!(branch_plan, m)?)?;
+    m.add_function(wrap_pyfunction!(record_branch_addresses, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entity_at, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entities_at, m)?)?;
     m.add_function(wrap_pyfunction!(blob_stats, m)?)?;
@@ -1931,7 +1933,7 @@ fn entities_at(
         crate::graph::ingest::resolve_temporal_read(&store, read_lineage(branch), &ts, strict, at)
             .map_err(arm_err)?;
     let state = py
-        .allow_threads(|| store.reconstruct_on(&resolved.fold_ts, branch))
+        .allow_threads(|| store.reconstruct_on(&resolved.fold_ts, &resolved.fold_branch))
         .map_err(temporal_err)?;
     let predates = state.predates_recorded_history;
     let (projection, _stats) = projection_from_state(&state).map_err(|e| {
@@ -1992,6 +1994,8 @@ fn lookup_entity_at(
     out.set_item("sha", resolved.sha)?;
     out.set_item("horizon", resolved.horizon)?;
     out.set_item("dirty_at_commit", resolved.dirty_at_commit)?;
+    out.set_item("address", resolved.address)?;
+    out.set_item("parent_drift", resolved.parent_drift)?;
     Ok(out.into())
 }
 
@@ -2023,6 +2027,8 @@ fn lookup_entities_at(
     out.set_item("sha", resolved.sha)?;
     out.set_item("horizon", resolved.horizon)?;
     out.set_item("dirty_at_commit", resolved.dirty_at_commit)?;
+    out.set_item("address", resolved.address)?;
+    out.set_item("parent_drift", resolved.parent_drift)?;
     Ok(out.into())
 }
 
@@ -2171,7 +2177,7 @@ fn entity_source_ref_at(
         )
         .map_err(arm_err)?;
         store
-            .entity_source_ref_at(entity_id, &resolved.fold_ts, branch)
+            .entity_source_ref_at(entity_id, &resolved.fold_ts, &resolved.fold_branch)
             .map_err(temporal_err)
     })?;
     match found {
@@ -2225,7 +2231,9 @@ fn source_refs_at(
     )
     .map_err(arm_err)?;
     let (refs, predates) = py
-        .allow_threads(|| store.source_refs_at(&entity_ids, &resolved.fold_ts, branch))
+        .allow_threads(|| {
+            store.source_refs_at(&entity_ids, &resolved.fold_ts, &resolved.fold_branch)
+        })
         .map_err(temporal_err)?;
     let by_id = PyDict::new(py);
     for (id, r) in refs {
@@ -2239,6 +2247,8 @@ fn source_refs_at(
     out.set_item("sha", resolved.sha)?;
     out.set_item("horizon", resolved.horizon)?;
     out.set_item("dirty_at_commit", resolved.dirty_at_commit)?;
+    out.set_item("address", resolved.address)?;
+    out.set_item("parent_drift", resolved.parent_drift)?;
     Ok(out.into())
 }
 
@@ -2513,6 +2523,59 @@ fn ingest_history(
         })?;
     serde_json::to_string(&report)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Every branch name the repository offers, with the one fact selection
+/// needs (P5b.6, D-6 c): `{name, tip, merged}`, local and remote-tracking,
+/// sorted. `merged` means the tip already lies on the trunk's first-parent
+/// chain, so the name is an address, not a lineage. Internal: the
+/// migration's selection, and the fixture tests that pin it. A repo that
+/// will not open or a missing trunk ref is a `ValueError`.
+#[pyfunction]
+#[pyo3(signature = (repo, parent_ref = "main"))]
+fn branch_plan(py: Python<'_>, repo: &str, parent_ref: &str) -> PyResult<PyObject> {
+    let entries = crate::fs::git::branch_plan(repo, parent_ref).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("branch plan failed: {e:?}"))
+    })?;
+    let out = PyList::empty(py);
+    for entry in entries {
+        let d = PyDict::new(py);
+        d.set_item("name", entry.name)?;
+        d.set_item("tip", entry.tip)?;
+        d.set_item("merged", entry.merged)?;
+        out.append(d)?;
+    }
+    Ok(out.into())
+}
+
+/// Record branch names that are only addresses (P5b.6, D-6 c): `(name,
+/// tip)` pairs whose tip a lineage already holds. Writes
+/// `coderadar.branch.tip.{name}`, which is what a read resolves through —
+/// one lookup, no git at read time. Returns the number written. A pair
+/// whose tip no lineage holds is skipped: the name would resolve nowhere,
+/// and guessing is worse than a refusal.
+#[pyfunction]
+fn record_branch_addresses(store_path: &str, entries: Vec<(String, String)>) -> PyResult<usize> {
+    let store =
+        crate::storage::CodeGraphStore::open(std::path::Path::new(store_path)).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "cannot open store {store_path:?}: {e:?}"
+            ))
+        })?;
+    let mut written = 0usize;
+    for (name, tip) in entries {
+        match store.kv_get_sync(&crate::graph::ingest::commit_lineage_key(&tip)) {
+            Ok(Some(_)) => {}
+            _ => continue,
+        }
+        store
+            .kv_put_sync(&crate::graph::ingest::branch_tip_key(&name), &tip)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("cannot write {name:?}: {e:?}"))
+            })?;
+        written += 1;
+    }
+    Ok(written)
 }
 
 /// Rebuild one lineage's horizon + commit index from the ledger (P5b.3a,
