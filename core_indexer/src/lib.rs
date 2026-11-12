@@ -1861,6 +1861,30 @@ fn normalize_timestamp(timestamp: &str) -> PyResult<String> {
     })
 }
 
+/// The git-history arm's refusals (P5b.3a, §3.1.1) surface as `ValueError`:
+/// they are reasons (BeforeHistory, BeforeHorizon, unknown commit, ref
+/// needs P5b.4), never blanks. A lost index is infrastructure
+/// (`RuntimeError`).
+fn arm_err(e: crate::graph::ingest::ReadArmError) -> PyErr {
+    match e {
+        crate::graph::ingest::ReadArmError::Store(detail) => {
+            pyo3::exceptions::PyRuntimeError::new_err(detail)
+        }
+        other => pyo3::exceptions::PyValueError::new_err(other.to_string()),
+    }
+}
+
+/// `branch` routes to its lineage for the commit index (P5b.3a): the
+/// trunk reads `main`, anything else its own lineage — the same routing
+/// `ingest_history` writes under.
+fn read_lineage(branch: &str) -> &str {
+    if branch == "main" {
+        "main"
+    } else {
+        branch
+    }
+}
+
 /// Shared fold for the temporal lookups: one `reconstruct(ts)` + one
 /// throwaway projection, then per-id extraction in live-`lookup_entity`
 /// shape (including the dotted-name fallback). Returns the per-id
@@ -1872,11 +1896,22 @@ fn entities_at(
     entity_ids: &[String],
     timestamp: &str,
     branch: &str,
-) -> PyResult<(Vec<Option<PyObject>>, bool)> {
+    strict: bool,
+    at: Option<&str>,
+) -> PyResult<(
+    Vec<Option<PyObject>>,
+    bool,
+    crate::graph::ingest::ResolvedRead,
+)> {
     use crate::graph::cold_start::projection_from_state;
-    // Normalize first so a garbage ts is deterministically a ValueError
-    // (→ `InvalidRequest`), not whatever the fold would report.
-    let ts = normalize_timestamp(timestamp)?;
+    // `at=` is the address when given (sha, timestamp, or — with P5b.4 —
+    // a ref); the positional is the default the caller passes when `at`
+    // is absent, and only then is it normalized here.
+    let ts = if at.is_none() {
+        normalize_timestamp(timestamp)?
+    } else {
+        timestamp.to_string()
+    };
     // Snapshot the store handle under the read lock, then release BEFORE
     // the DB fold — a slow reconstruct must not block a writer.
     let store = {
@@ -1890,12 +1925,20 @@ fn entities_at(
             )
         })?
     };
+    // P5b.3a: the arm resolves the fold instant (recorded past the
+    // horizon, the commit's completion before it) and names the basis.
+    let resolved =
+        crate::graph::ingest::resolve_temporal_read(&store, read_lineage(branch), &ts, strict, at)
+            .map_err(arm_err)?;
     let state = py
-        .allow_threads(|| store.reconstruct_on(&ts, branch))
+        .allow_threads(|| store.reconstruct_on(&resolved.fold_ts, branch))
         .map_err(temporal_err)?;
     let predates = state.predates_recorded_history;
     let (projection, _stats) = projection_from_state(&state).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("projection at {ts:?} failed: {e}"))
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "projection at {:?} failed: {e}",
+            resolved.fold_ts
+        ))
     })?;
     let entities = entity_ids
         .iter()
@@ -1921,7 +1964,7 @@ fn entities_at(
             }
         })
         .collect();
-    Ok((entities, predates))
+    Ok((entities, predates, resolved))
 }
 
 /// Entity lookup as of a past timestamp — the §0.1(a) honest-`Snapshot`
@@ -1929,18 +1972,26 @@ fn entities_at(
 /// bool}`. A garbage timestamp is a `ValueError`; a missing graph or store
 /// is a `RuntimeError`.
 #[pyfunction]
-#[pyo3(signature = (entity_id, timestamp, branch = "main"))]
+#[pyo3(signature = (entity_id, timestamp, branch = "main", strict = false, at = None))]
 fn lookup_entity_at(
     py: Python<'_>,
     entity_id: &str,
     timestamp: &str,
     branch: &str,
+    strict: bool,
+    at: Option<String>,
 ) -> PyResult<PyObject> {
     let ids = vec![entity_id.to_string()];
-    let (mut entities, predates) = entities_at(py, &ids, timestamp, branch)?;
+    let (mut entities, predates, resolved) =
+        entities_at(py, &ids, timestamp, branch, strict, at.as_deref())?;
     let out = PyDict::new(py);
     out.set_item("entity", entities.pop().flatten())?;
     out.set_item("predates_recorded_history", predates)?;
+    out.set_item("fold_ts", resolved.fold_ts)?;
+    out.set_item("basis", resolved.basis)?;
+    out.set_item("sha", resolved.sha)?;
+    out.set_item("horizon", resolved.horizon)?;
+    out.set_item("dirty_at_commit", resolved.dirty_at_commit)?;
     Ok(out.into())
 }
 
@@ -1949,14 +2000,17 @@ fn lookup_entity_at(
 /// `ops.as_of` funnels N symbols through here so a 20-symbol call costs
 /// one reconstruct, not twenty.
 #[pyfunction]
-#[pyo3(signature = (entity_ids, timestamp, branch = "main"))]
+#[pyo3(signature = (entity_ids, timestamp, branch = "main", strict = false, at = None))]
 fn lookup_entities_at(
     py: Python<'_>,
     entity_ids: Vec<String>,
     timestamp: &str,
     branch: &str,
+    strict: bool,
+    at: Option<String>,
 ) -> PyResult<PyObject> {
-    let (entities, predates) = entities_at(py, &entity_ids, timestamp, branch)?;
+    let (entities, predates, resolved) =
+        entities_at(py, &entity_ids, timestamp, branch, strict, at.as_deref())?;
     let by_id = PyDict::new(py);
     for (id, entity) in entity_ids.iter().zip(entities) {
         by_id.set_item(id, entity)?;
@@ -1964,6 +2018,11 @@ fn lookup_entities_at(
     let out = PyDict::new(py);
     out.set_item("entities", by_id)?;
     out.set_item("predates_recorded_history", predates)?;
+    out.set_item("fold_ts", resolved.fold_ts)?;
+    out.set_item("basis", resolved.basis)?;
+    out.set_item("sha", resolved.sha)?;
+    out.set_item("horizon", resolved.horizon)?;
+    out.set_item("dirty_at_commit", resolved.dirty_at_commit)?;
     Ok(out.into())
 }
 
@@ -2081,22 +2140,38 @@ fn source_ref_to_dict(py: Python<'_>, r: &crate::storage::SourceRef) -> PyResult
 /// `RuntimeError`. Takes the id as given: spelling resolution is the
 /// caller's (`Snapshot` resolves via `find` first).
 #[pyfunction]
-#[pyo3(signature = (entity_id, timestamp, branch = "main"))]
+#[pyo3(signature = (entity_id, timestamp, branch = "main", strict = false, at = None))]
 fn entity_source_ref_at(
     py: Python<'_>,
     entity_id: &str,
     timestamp: &str,
     branch: &str,
+    strict: bool,
+    at: Option<String>,
 ) -> PyResult<PyObject> {
-    let ts = normalize_timestamp(timestamp)?;
+    let ts = if at.is_none() {
+        normalize_timestamp(timestamp)?
+    } else {
+        timestamp.to_string()
+    };
     let found = with_graph(|graph, _snap| {
         let store = graph.store.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err(
                 "No persistent store — temporal lookup needs a .coderadar store",
             )
         })?;
+        // P5b.3a: the arm resolves the fold instant; the singular keeps
+        // its ref-or-None shape (no basis to surface on one ref).
+        let resolved = crate::graph::ingest::resolve_temporal_read(
+            store,
+            read_lineage(branch),
+            &ts,
+            strict,
+            at.as_deref(),
+        )
+        .map_err(arm_err)?;
         store
-            .entity_source_ref_at(entity_id, &ts, branch)
+            .entity_source_ref_at(entity_id, &resolved.fold_ts, branch)
             .map_err(temporal_err)
     })?;
     match found {
@@ -2113,14 +2188,20 @@ fn entity_source_ref_at(
 /// missing graph or store is a `RuntimeError`. No Python surface: P1's
 /// `verify_history` and P2's `changes_between` are the only callers.
 #[pyfunction]
-#[pyo3(signature = (entity_ids, timestamp, branch = "main"))]
+#[pyo3(signature = (entity_ids, timestamp, branch = "main", strict = false, at = None))]
 fn source_refs_at(
     py: Python<'_>,
     entity_ids: Vec<String>,
     timestamp: &str,
     branch: &str,
+    strict: bool,
+    at: Option<String>,
 ) -> PyResult<PyObject> {
-    let ts = normalize_timestamp(timestamp)?;
+    let ts = if at.is_none() {
+        normalize_timestamp(timestamp)?
+    } else {
+        timestamp.to_string()
+    };
     // Same snapshot-then-release discipline as `entities_at`: a slow
     // reconstruct must not hold the graph lock or block a writer.
     let store = {
@@ -2134,8 +2215,17 @@ fn source_refs_at(
             )
         })?
     };
+    // P5b.3a: the arm resolves the fold instant and names the basis.
+    let resolved = crate::graph::ingest::resolve_temporal_read(
+        &store,
+        read_lineage(branch),
+        &ts,
+        strict,
+        at.as_deref(),
+    )
+    .map_err(arm_err)?;
     let (refs, predates) = py
-        .allow_threads(|| store.source_refs_at(&entity_ids, &ts, branch))
+        .allow_threads(|| store.source_refs_at(&entity_ids, &resolved.fold_ts, branch))
         .map_err(temporal_err)?;
     let by_id = PyDict::new(py);
     for (id, r) in refs {
@@ -2144,6 +2234,11 @@ fn source_refs_at(
     let out = PyDict::new(py);
     out.set_item("refs", by_id)?;
     out.set_item("predates_recorded_history", predates)?;
+    out.set_item("fold_ts", resolved.fold_ts)?;
+    out.set_item("basis", resolved.basis)?;
+    out.set_item("sha", resolved.sha)?;
+    out.set_item("horizon", resolved.horizon)?;
+    out.set_item("dirty_at_commit", resolved.dirty_at_commit)?;
     Ok(out.into())
 }
 
@@ -2436,9 +2531,13 @@ fn backfill_commit_index(store_path: &str, branch: &str) -> PyResult<String> {
         ))
     })?;
     let lineage = if branch == "main" { "main" } else { branch };
-    let report = crate::graph::ingest::backfill_commit_index(&store, lineage).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("backfill_commit_index failed: {e}"))
-    })?;
+    // Explicit migration op: rebuild, do not just fill — a pre-phase store
+    // has no keys, and a store whose completions were derived wants the
+    // ledger's newest answer.
+    let report =
+        crate::graph::ingest::backfill_commit_index(&store, lineage, true).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("backfill_commit_index failed: {e}"))
+        })?;
     serde_json::to_string(&report)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
 }

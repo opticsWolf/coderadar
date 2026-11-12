@@ -806,6 +806,29 @@ def as_of(result: dict, *,
             ),
         ])
     lines = [f"## Snapshot at `{timestamp}`", ""]
+    # P5b.3a (§3.1.1): a caller must be able to tell an observation from a
+    # reconstruction, so the CLI names the arm the read took.
+    basis = result.get("basis")
+    if basis == "git-history":
+        commit = (result.get("commit") or "")[:12]
+        lines += [
+            (
+                f"*From git history:* commit `{commit}`, the last one at or "
+                f"before this instant — it predates the store's horizon "
+                f"`{result.get('horizon')}`, which is where recorded "
+                f"observation begins."
+            ),
+            "",
+        ]
+    elif basis == "recorded" and result.get("horizon"):
+        lines += [
+            (
+                f"*From the recorded ledger:* this instant is at or after the "
+                f"store's horizon `{result.get('horizon')}`, so the fold "
+                f"answers what was recorded by then."
+            ),
+            "",
+        ]
     for name in result["names"]:
         entity = result["entities"].get(name)
         if entity:

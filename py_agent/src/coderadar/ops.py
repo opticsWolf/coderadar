@@ -1180,7 +1180,8 @@ def branches(*, graph: Any = None) -> list[dict]:
 
 
 def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
-          branch: str = "main", *, graph: Any = None) -> dict:
+          branch: str = "main", *, strict: bool = False, at: str | None = None,
+          graph: Any = None) -> dict:
     """Look symbols up as they were at a Macrame-canonical `timestamp`.
 
     Returns ``{"timestamp", "names", "entities": {name: entity | None},
@@ -1194,8 +1195,17 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     `Snapshot.read_bytes` / `read_source` for entity bytes at T.
     `branch` (P4, DR-40) folds `reconstruct_on(T, branch)`: an unknown
     lineage refuses with `InvalidRequest`, never trunk data.
+
+    Every answer names its origin (P5b.3a, §3.1.1): ``basis`` is
+    ``"recorded"`` when the fold ran on the recorded axis, ``"git-history"``
+    when T predates the lineage's horizon and the answer is the state of
+    the last commit at or before T (``horizon`` carries *H(L)*, ``commit``
+    its sha, `None` on the recorded arm). ``strict=True`` refuses the
+    git-history arm (``BeforeHorizon``); ``at=<sha>`` addresses a commit
+    directly (A-3). A T before the lineage's first commit refuses
+    (``BeforeHistory``) rather than answering empty.
     """
-    if not timestamp:
+    if not timestamp and at is None:
         raise InvalidRequest(
             "Please provide an ISO 8601 timestamp (e.g. '2025-01-15T10:00:00Z').")
     _require_index()
@@ -1205,42 +1215,52 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     try:
         from coderadar._core import lookup_entities_at as _lookup_at
         from coderadar._core import normalize_timestamp as _normalize_ts
-        normalized = _normalize_ts(timestamp)
+        # `at=` is the address when given; a sha is not a timestamp, so the
+        # positional stays empty and is never normalized against it.
+        normalized = "" if at is not None else _normalize_ts(timestamp)
     except ImportError as e:
         raise EngineError(f"native extension unavailable: {e}") from e
     except ValueError as e:
         raise InvalidRequest(str(e)) from None
     # Validation parity gate: the same timestamp must pass `CodeGraph.as_of`
     # (MCP/CLI/Python agree by construction — same normalizer, same fold).
-    try:
-        (graph or _graph()).as_of(normalized, branch=branch)
-    except InvalidRequest:
-        raise
-    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
-        raise EngineError(str(e)) from None
     names = parse_names(query, symbols)
     if not names:
         # Guidance path (render.as_of's empty-names branch): no symbols to
-        # place in history, so no fold — and no store required. `predates`
-        # is vacuously False: nothing was looked up.
+        # place in history, so no fold — and no store required, which is
+        # what lets the guidance message name a next step on a project that
+        # has no ledger yet. Nothing was read, so nothing names an arm.
         return {
             "timestamp": normalized,
+            "fold_ts": None,
             "names": [],
             "entities": {},
             "predates_recorded_history": False,
+            "basis": None,
+            "horizon": None,
+            "commit": None,
+            "dirty_at_commit": [],
         }
+    # One batched fold serves both the validation gate and the answer, and
+    # it is what resolves the arm — so `basis` is always the arm this call
+    # actually used, never a guess.
     try:
-        batch = _lookup_at(names, normalized, branch)
-    except ValueError as e:  # already normalized; defensive
+        batch = _lookup_at(names, normalized, branch, strict=bool(strict), at=at)
+    except ValueError as e:  # refuses the arm, or a bad stamp
         raise InvalidRequest(str(e)) from None
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
         raise EngineError(str(e)) from None
     found = batch.get("entities", {})
     return {
         "timestamp": normalized,
+        "fold_ts": batch.get("fold_ts") or normalized,
         "names": names,
         "entities": {name: found.get(name) for name in names},
         "predates_recorded_history": bool(batch.get("predates_recorded_history", False)),
+        "basis": batch.get("basis", "recorded"),
+        "horizon": batch.get("horizon"),
+        "commit": batch.get("sha"),
+        "dirty_at_commit": list(batch.get("dirty_at_commit") or []),
     }
 
 

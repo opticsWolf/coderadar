@@ -179,11 +179,16 @@ class TestBranchReadsOwnContent:
 
         from coderadar._core import recorded_generations
         branch_gens = recorded_generations(None, None, "feature")
-        # f1's generations precede f2's: b.py absent early, present late.
-        early = [g for g in branch_gens]
-        first_refs = _refs(["b.py::module"], early[0], "feature")
+        # P5b.3a: a branch's recorded generations all precede its horizon
+        # (the first import completes after them), so those instants answer
+        # from git history, and until P5c the branch arm sees the parent as
+        # it was at the fork. The tombstone is addressed by commit time, the
+        # question this arm answers: f1 deleted b.py, f2 re-added it.
+        first_refs = _refs(["b.py::module"], "2026-01-04T12:00:00.000000Z",
+                           "feature")
         assert first_refs.get("b.py::module") is None
-        last_refs = _refs(["b.py::module"], early[-1], "feature")
+        last_refs = _refs(["b.py::module"], "2026-01-05T12:00:00.000000Z",
+                          "feature")
         assert last_refs["b.py::module"]["digest"] == _digest("y = 2\n")
 
         trunk_tip = graph.verify_history(all_generations=True)["generations"][-1]["timestamp"]
@@ -439,8 +444,11 @@ class TestBranchSweepRetires:
         assert report["commits_ingested"] == 1
         assert report["head"] == sha_e1
         graph = _load(repo)
-        gens = self._last_generation("feature")
-        refs = _refs(["a.py::f", "a.py::h"], gens, "feature")
+        # P5b.3a: the branch's recorded generations precede its horizon, so
+        # the read addresses the commit by its committer time (e1, whose
+        # sweep cut f).
+        refs = _refs(["a.py::f", "a.py::h"], "2026-01-05T12:00:00.000000Z",
+                     "feature")
         assert refs.get("a.py::f") is None, refs
         assert refs.get("a.py::h") is not None
         assert self._cuts(repo, "a.py::f", "feature") == 1

@@ -192,3 +192,131 @@ def test_commit_time_format_flag(tmp_path):
     repo = _three_commits(tmp_path)
     _ingest(repo)
     assert _kv(_store_path(repo), "coderadar.commit_time.format") == "1"
+
+
+# --- Regressions found while landing the arm (P5b.3a slice B) -------------
+#
+# Both were red against the first cut of this slice and are the reason the
+# backfill learned to fill (not overwrite) and to read `concept_cuts`:
+# a forward ingest knows the real completion (after the sweep, before the
+# next commit's first write); a derived one is only the newest instant the
+# commit's own rows landed, and the branch sweep's cut is one of them.
+
+def _cut_stamps(store_path):
+    """stamp -> recorded_at list over `concept_cuts` (the branch sweep)."""
+    con = sqlite3.connect(str(store_path))
+    try:
+        rows = con.execute(
+            "SELECT cut_at, recorded_at FROM concept_cuts").fetchall()
+    finally:
+        con.close()
+    by_stamp = {}
+    for cut_at, recorded_at in rows:
+        by_stamp.setdefault(cut_at, []).append(recorded_at)
+    return by_stamp
+
+
+def test_forward_ingest_keeps_the_completion_it_recorded(tmp_path):
+    # The first import's tail backfill runs after the loop wrote every
+    # completion; it must not replace them with its derived (earlier)
+    # instant, or a fold at the "completion" misses the sweep.
+    repo = _three_commits(tmp_path)
+    _ingest(repo)
+    stamps = _commit_stamps(_store_path(repo))
+    concepts = _concepts_by_start(_store_path(repo))
+    for sha, stamp in stamps.items():
+        done = _kv(_store_path(repo), f"coderadar.commit_done.main.{sha}")
+        assert done is not None, sha
+        assert done >= max(concepts[stamp]), (sha, done, concepts[stamp])
+    horizon = _kv(_store_path(repo), "coderadar.horizon.main")
+    assert horizon is not None
+    for sha in stamps:
+        assert _kv(_store_path(repo),
+                   f"coderadar.commit_done.main.{sha}") < horizon
+
+
+def test_branch_sweep_cut_bounds_the_completion(tmp_path):
+    # A branch commit that drops an inherited function writes its cut in the
+    # sweep, AFTER the concept flush. The completion must cover it: a fold
+    # at the completion sees the departed entity gone (that is what the
+    # git-history arm folds for a pre-horizon read).
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q", "-b", "main", ".")
+    _git(repo, "config", "user.name", "T")
+    _git(repo, "config", "user.email", "t@t.t")
+    _git(repo, "config", "core.autocrlf", "false")
+    (repo / "a.py").write_text("def f():\n    return 1\ndef h():\n    return 2\n",
+                               encoding="utf-8", newline="\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "c1", env=_stamp_env("2026-01-01T10:00:00+00:00"))
+    _git(repo, "checkout", "-qb", "feature")
+    ops.ingest_history(str(repo), store_path=str(_store_path(repo)))
+    (repo / "a.py").write_text("def h():\n    return 2\n",
+                               encoding="utf-8", newline="\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "e1", env=_stamp_env("2026-01-05T10:00:00+00:00"))
+    sha = subprocess.run(["git", "rev-parse", "feature"], cwd=str(repo),
+                         check=True, capture_output=True, text=True).stdout.strip()
+    report = ops.ingest_history(str(repo), branch="feature",
+                                store_path=str(_store_path(repo)))
+    assert report["head"] == sha
+    done = _kv(_store_path(repo), f"coderadar.commit_done.feature.{sha}")
+    assert done is not None
+    cuts = _cut_stamps(_store_path(repo))
+    commit_stamp = _commit_stamps(_store_path(repo))[sha]
+    assert cuts.get(commit_stamp), "the sweep wrote a cut at the commit's stamp"
+    assert done >= max(cuts[commit_stamp]), (done, cuts[commit_stamp])
+    horizon = _kv(_store_path(repo), "coderadar.horizon.feature")
+    assert done < horizon
+
+
+def test_derived_completion_covers_the_cut_on_a_rebuilt_index(tmp_path):
+    # A pre-phase store has no completion keys: the migration derives them
+    # from the ledger, and the derivation must read `concept_cuts` too —
+    # otherwise the derived instant precedes the sweep and the arm folds a
+    # departed entity back to life.
+    repo = tmp_path / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    _git(repo, "init", "-q", "-b", "main", ".")
+    _git(repo, "config", "user.name", "T")
+    _git(repo, "config", "user.email", "t@t.t")
+    _git(repo, "config", "core.autocrlf", "false")
+    (repo / "a.py").write_text("def f():\n    return 1\ndef h():\n    return 2\n",
+                               encoding="utf-8", newline="\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "c1", env=_stamp_env("2026-01-01T10:00:00+00:00"))
+    _git(repo, "checkout", "-qb", "feature")
+    ops.ingest_history(str(repo), store_path=str(_store_path(repo)))
+    (repo / "a.py").write_text("def h():\n    return 2\n",
+                               encoding="utf-8", newline="\n")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "e1", env=_stamp_env("2026-01-05T10:00:00+00:00"))
+    sha = subprocess.run(["git", "rev-parse", "feature"], cwd=str(repo),
+                         check=True, capture_output=True, text=True).stdout.strip()
+    ops.ingest_history(str(repo), branch="feature",
+                       store_path=str(_store_path(repo)))
+
+    # Simulate the pre-phase store: completions absent.
+    con = sqlite3.connect(str(_store_path(repo)))
+    try:
+        con.execute("DELETE FROM kv_store WHERE key LIKE 'coderadar.commit_done.%'")
+        con.commit()
+    finally:
+        con.close()
+    report = ops.backfill_commit_index(
+        "feature", store_path=str(_store_path(repo)))
+    assert report["commits_indexed"] == 1
+    done = _kv(_store_path(repo), f"coderadar.commit_done.feature.{sha}")
+    assert done is not None
+    cuts = _cut_stamps(_store_path(repo))
+    commit_stamp = _commit_stamps(_store_path(repo))[sha]
+    assert done >= max(cuts[commit_stamp]), (done, cuts[commit_stamp])
+
+    # And the arm, folding at that derived instant, sees the cut.
+    from coderadar import CodeGraph, coldstart
+    coldstart.build_graph(str(repo))
+    CodeGraph(str(_store_path(repo)))
+    from coderadar import _core as _C
+    out = _C.source_refs_at(["a.py::f"], done, "feature")
+    assert out["refs"].get("a.py::f") is None, out["refs"]

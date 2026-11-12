@@ -115,10 +115,9 @@ def _three_commits(root):
 
 
 class TestF1CommitTimesAreQueryable:
-    @pytest.mark.xfail(strict=True, reason=(
-        "F1: reads fold on recorded_at, and every row of a git-filled store "
-        "was recorded on the ingest day, so a read at a commit's own date "
-        "folds an empty prefix. Flips in P5b.3a (horizon + commit index)."))
+    # Flipped in P5b.3a (horizon + commit index): a read before the
+    # horizon resolves through the commit index to the last commit at or
+    # before the instant and folds at that commit's completion.
     def test_a_read_between_two_commits_returns_the_earlier_one(self, tmp_path):
         repo = _three_commits(tmp_path)
         _ingest(repo)

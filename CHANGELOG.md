@@ -6,6 +6,20 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Temporal P5b.3a — horizon and commit index (`f44ea65`, `PENDING`): every lineage gets a horizon
+  (`kv coderadar.horizon.{lineage}`, written once, never moved) and every commit a completion
+  instant (`kv coderadar.commit_done.{lineage}.{sha}`, recorded by the loop after its last
+  sub-generation and before the next commit's first write, D-7's format flag = 1). The default
+  temporal read grows a git-history arm: a read before the horizon resolves to the last commit at
+  or before the instant and folds at its completion, and every result names `basis`
+  (`recorded`/`git-history`), the commit sha, the horizon and `dirty_at_commit`; `BeforeHistory`
+  and `BeforeHorizon` are reasons, not blanks, and `at=<sha>` addresses a commit directly (A-3).
+  F1 flipped. A pre-phase store rebuilds its index from the `commit:{sha}` rows once
+  (`ops.backfill_commit_index`, auditable, collisions reported). Two bugs the tests caught, both
+  about what a completion instant must cover: the first import's tail backfill replaced the
+  completion the loop had just written with its derived (earlier) one — it fills only now — and
+  the derivation ignored `concept_cuts`, so a branch's sweep landed after the instant the arm
+  folds. Gates: 589 lib; pytest 1324 passed / 1 skipped / 3 xfailed.
 - Temporal M6-g — macrame-db `0.22.0` uptake (P5b.1's mechanism delivered: `622bde4`,
   `af64b61`, review `a879070`): the stashed close-then-open draft (written against 0.19.1)
   is replaced by D-312's one-write supersession — the close of the prior open belief and

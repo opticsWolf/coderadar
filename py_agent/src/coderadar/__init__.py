@@ -533,7 +533,13 @@ class CodeGraph:
         from . import ops
         return ops.traverse(entity_id or "", direction, edge_kinds, max_depth)["results"]
 
-    def as_of(self, timestamp: str, branch: str = "main") -> Snapshot:
+    def as_of(
+        self,
+        timestamp: str,
+        branch: str = "main",
+        strict: bool = False,
+        at: str | None = None,
+    ) -> Snapshot:
         """Return a point-in-time snapshot: entity reads fold the ledger at
         recorded-time T (Macrame canonical UTC; anything else is
         `ops.InvalidRequest`). Signature decision (plan §0.1a): `as_of` stays
@@ -541,12 +547,25 @@ class CodeGraph:
         rules out another rename round. Bytes-at-T rides source blobs (§3.0:
         `Snapshot.read_bytes` / `read_source`). P4 (DR-40): `branch`
         selects the lineage (trunk by default) — every snapshot read folds
-        `reconstruct_on(T, branch); unknown branches refuse at first fold."""
+        `reconstruct_on(T, branch); unknown branches refuse at first fold.
+
+        P5b.3a (§3.1.1–3.1.2): a read before the lineage's horizon answers
+        from git history — the last commit at or before T, folded at that
+        commit's completion instant — and every snapshot names its
+        :attr:`Snapshot.basis`. `strict=True` refuses the git-history arm
+        (`BeforeHorizon`); `at=<sha>` addresses a commit directly (A-3) and
+        reports :attr:`Snapshot.dirty_at_commit`. A time before the first
+        commit refuses (``BeforeHistory``) instead of answering empty.
+        The arm resolves at the first read, not here: a snapshot must not
+        pay a commit-index scan to exist, and `basis` / `commit` / `horizon`
+        / `find` are the reads that need it."""
         from . import ops
         try:
             from coderadar._core import normalize_timestamp as _normalize_ts
-            normalized = _normalize_ts(timestamp or "")
-            return Snapshot(self, normalized, branch)
+            # `at=` is the address when given, so the positional is not
+            # normalized against it (a sha is not a timestamp).
+            normalized = "" if at is not None else _normalize_ts(timestamp or "")
+            return Snapshot(self, normalized, branch, strict=bool(strict), at=at)
         except ImportError as e:
             raise ops.EngineError(f"native extension unavailable: {e}") from e
         except ValueError as e:
@@ -1466,11 +1485,45 @@ class Snapshot:
         entity = snapshot.find("src/models.py::User.save")  # None if absent at T
     """
 
-    def __init__(self, graph: CodeGraph, timestamp: str, branch: str = "main"):
+    def __init__(
+        self,
+        graph: CodeGraph,
+        timestamp: str,
+        branch: str = "main",
+        strict: bool = False,
+        at: str | None = None,
+    ):
         self._graph = graph
         self._timestamp = timestamp
         self._branch = branch
+        self._strict = strict
+        self._at = at
         self._predates: bool | None = None
+        self._arm: dict[str, Any] | None = None
+
+    def _resolve(self) -> dict[str, Any]:
+        """Resolve the read to its fold instant, once (P5b.3a, §3.1.1).
+
+        Cached: the arm cannot change under a snapshot (the horizon is
+        written once, the commit index only grows behind it), and every
+        lookup on this snapshot folds the same instant. Refusals are
+        `ops.InvalidRequest` — a reason (BeforeHistory, BeforeHorizon,
+        unknown commit), never a blank answer.
+        """
+        if self._arm is None:
+            from . import ops
+            try:
+                from coderadar._core import lookup_entities_at as _lookup_at
+                batch = _lookup_at(
+                    [], self._timestamp, self._branch,
+                    strict=self._strict, at=self._at)
+            except ValueError as e:
+                raise ops.InvalidRequest(str(e)) from None
+            except RuntimeError as e:
+                raise ops.EngineError(str(e)) from None
+            self._arm = batch
+            self._predates = bool(batch.get("predates_recorded_history", False))
+        return self._arm
 
     @property
     def branch(self) -> str:
@@ -1486,6 +1539,38 @@ class Snapshot:
         return self._timestamp
 
     @property
+    def basis(self) -> str:
+        """How this snapshot's answer was computed (P5b.3a, §3.1.1).
+
+        ``"recorded"`` — folded on the recorded axis at T, the way CodeRadar
+        observed the code. ``"git-history"`` — T predates the lineage's
+        horizon, so the answer is the state of the last commit at or before
+        T, reconstructed from git. A caller can always tell an observation
+        from a reconstruction.
+        """
+        return self._resolve()["basis"]
+
+    @property
+    def horizon(self) -> str | None:
+        """The lineage's horizon *H(L)*: the recorded instant its first
+        import completed (`None` on an index-now store). Fixed for the life
+        of the store — written once, never moved."""
+        return self._resolve().get("horizon")
+
+    @property
+    def commit(self) -> str | None:
+        """The commit this snapshot addresses (P5b.3a, A-3), `None` on the
+        recorded arm. Set by `at=<sha>` or resolved from T."""
+        return self._resolve().get("sha")
+
+    @property
+    def dirty_at_commit(self) -> list[str]:
+        """Files observed dirty at :attr:`commit` (P5b.3a). Always empty
+        until P5d records observations; the field ships now so a caller can
+        code against it."""
+        return list(self._resolve().get("dirty_at_commit") or [])
+
+    @property
     def predates_recorded_history(self) -> bool:
         """True when T sits before the first recorded write.
 
@@ -1494,16 +1579,8 @@ class Snapshot:
         answer — not an error, not present-tense data.
         """
         if self._predates is None:
-            from . import ops
-            try:
-                from coderadar._core import lookup_entities_at as _lookup_at
-                batch = _lookup_at([], self._timestamp, self._branch)
-            except ValueError as e:  # normalized at construction; defensive
-                raise ops.InvalidRequest(str(e)) from None
-            except RuntimeError as e:
-                raise ops.EngineError(str(e)) from None
-            self._predates = bool(batch.get("predates_recorded_history", False))
-        return self._predates
+            self._resolve()
+        return bool(self._predates)
 
     def find(self, entity_id: str) -> dict[str, Any] | None:
         """One entity as it was at T (live-`lookup_entity` dict shape).
@@ -1515,12 +1592,15 @@ class Snapshot:
         from . import ops
         try:
             from coderadar._core import lookup_entity_at as _lookup_at
-            result = _lookup_at(entity_id, self._timestamp, self._branch)
+            result = _lookup_at(
+                entity_id, self._timestamp, self._branch,
+                strict=self._strict, at=self._at)
         except ValueError as e:  # normalized at construction; defensive
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
             raise ops.EngineError(str(e)) from None
         self._predates = bool(result.get("predates_recorded_history", False))
+        self._arm = result
         return result.get("entity")
 
     def query(self, query_str: str) -> Iterator[dict[str, Any]]:
@@ -1558,7 +1638,9 @@ class Snapshot:
         from . import ops
         try:
             from coderadar._core import lookup_entities_at as _lookup_at
-            batch = _lookup_at(ids, self._timestamp, self._branch)
+            batch = _lookup_at(
+                ids, self._timestamp, self._branch,
+                strict=self._strict, at=self._at)
         except ValueError as e:
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
@@ -1666,7 +1748,9 @@ class Snapshot:
         try:
             from coderadar._core import blob_get as _blob_get
             from coderadar._core import entity_source_ref_at as _ref_at
-            ref = _ref_at(entity["id"], self._timestamp, self._branch)
+            ref = _ref_at(
+                entity["id"], self._timestamp, self._branch,
+                strict=self._strict, at=self._at)
         except ValueError as e:  # normalized at construction; defensive
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:

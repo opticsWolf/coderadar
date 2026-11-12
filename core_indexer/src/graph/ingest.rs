@@ -884,7 +884,7 @@ pub fn ingest_history(
             .map_err(|e| IngestError::Store(format!("cannot read horizon: {e:?}")))?;
         if known.is_none() {
             report.commits_reindexed =
-                backfill_commit_index(store_ref, lineage)?.commits_indexed;
+                backfill_commit_index(store_ref, lineage, false)?.commits_indexed;
         }
     }
     report.elapsed_secs = started.elapsed().as_secs_f64();
@@ -1671,7 +1671,7 @@ pub fn ingest_branch_history(
             .map_err(|e| IngestError::Store(format!("cannot read horizon: {e:?}")))?;
         if known.is_none() {
             report.commits_reindexed =
-                backfill_commit_index(store_ref, lineage)?.commits_indexed;
+                backfill_commit_index(store_ref, lineage, false)?.commits_indexed;
         }
     }
     report.elapsed_secs = started.elapsed().as_secs_f64();
@@ -2232,7 +2232,7 @@ pub fn reingest_merged_commits(
             .store
             .as_ref()
             .expect("heal graph always holds a store");
-        let bf = backfill_commit_index(store_ref, lineage)?;
+        let bf = backfill_commit_index(store_ref, lineage, true)?;
         report.commits_reindexed = bf.commits_indexed;
     }
     report.elapsed_secs = started.elapsed().as_secs_f64();
@@ -2359,19 +2359,20 @@ fn wait_past_instant(completion: &str) {
 /// scoped edge flush wrote. Under INV-10 a commit's rows are all
 /// recorded before the next commit's first row, so the max bounds the
 /// commit from above and a fold at the instant sees exactly its state.
-fn commit_completion_map(
+/// (sha, committer stamp) per commit concept on a lineage, oldest first
+/// (P5b.3a, §3.1.2): the resolution order the git-history arm walks. The
+/// stamp is the EARLIEST version's valid_from (the original mint): commit
+/// rows superseded later (P6c's body heal, valid_from = now) must not
+/// read as new commits.
+pub(crate) fn commit_stamps(
     store: &CodeGraphStore,
     lineage: &str,
-) -> Result<(Vec<(String, String)>, Vec<String>), IngestError> {
-    let err = |what: &str, e: String| IngestError::Store(format!("backfill {what}: {e}"));
+) -> Result<Vec<(String, String)>, IngestError> {
+    let err = |what: &str, e: String| IngestError::Store(format!("commit stamps {what}: {e}"));
     let (_guard, conn) = store
         .open_diagnostic_conn()
         .map_err(|e| err("open", format!("{e:?}")))?;
     let branch = libsql::Value::Text(lineage.to_string());
-    // (sha, stamp) per commit concept on the lineage, oldest first. The
-    // stamp is the EARLIEST version's valid_from (the original mint):
-    // commit rows superseded later (P6c's body heal, valid_from = now)
-    // must not read as new commits.
     let mut first: HashMap<String, String> = HashMap::new();
     crate::storage::runtime()
         .block_on(async {
@@ -2409,9 +2410,29 @@ fn commit_completion_map(
             }
             Ok::<_, String>(())
         })
-        .map_err(|e| err("commit rows", e))?;
+        .map_err(|e| err("rows", e))?;
     let mut commits: Vec<(String, String)> = first.into_iter().collect();
     commits.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+    Ok(commits)
+}
+
+/// `(completions, collisions)` — `completions` is `(sha, completion)`
+/// oldest first; `collisions` names stamps whose rows were written in the
+/// same tick (only reachable on a pre-horizon backfill).
+type CommitCompletionMap = (Vec<(String, String)>, Vec<String>);
+
+fn commit_completion_map(
+    store: &CodeGraphStore,
+    lineage: &str,
+) -> Result<CommitCompletionMap, IngestError> {
+    let err = |what: &str, e: String| IngestError::Store(format!("backfill {what}: {e}"));
+    // Commits first: `open_diagnostic_conn` takes an exclusive guard, so
+    // nesting it around another diagnostic conn would deadlock.
+    let commits = commit_stamps(store, lineage)?;
+    let (_guard, conn) = store
+        .open_diagnostic_conn()
+        .map_err(|e| err("open", format!("{e:?}")))?;
+    let branch = libsql::Value::Text(lineage.to_string());
     // Newest AND oldest recorded stamp per valid-axis stamp, over concept
     // rows (opens AND closes) and link rows.
     let mut newest: HashMap<String, String> = HashMap::new();
@@ -2458,9 +2479,7 @@ fn commit_completion_map(
                 // is an OLDER commit's stamp and must never join its group.
                 let valid_to = v.get("valid_to").and_then(|s| s.as_str());
                 let is_open = match valid_to {
-                    Some(s) => {
-                        s == crate::storage::TS_OPEN || s == crate::storage::TS_OPEN_LEGACY
-                    }
+                    Some(s) => s == crate::storage::TS_OPEN || s == crate::storage::TS_OPEN_LEGACY,
                     None => true,
                 };
                 if is_open {
@@ -2470,6 +2489,25 @@ fn commit_completion_map(
                 } else if let Some(s) = valid_to {
                     note(s, &recorded_at);
                 }
+            }
+            // P5b.3a: the branch sweep's `concept_cuts` row is a
+            // sub-generation of the commit (it lands after the concept
+            // flush), keyed by `cut_at` — the commit's own stamp. Ignoring
+            // it derives a completion that precedes the cut, and the arm
+            // then folds the pre-sweep state (a departed entity still
+            // present). Same key rule as concepts: the cut's `cut_at` IS
+            // its stamp.
+            let mut rows = conn
+                .query(
+                    "SELECT cut_at, recorded_at FROM concept_cuts WHERE branch_id = ?1",
+                    vec![branch.clone()],
+                )
+                .await
+                .map_err(|e| format!("{e:?}"))?;
+            while let Some(row) = rows.next().await.map_err(|e| format!("{e:?}"))? {
+                let cut_at: String = row.get(0).map_err(|e| format!("{e:?}"))?;
+                let recorded_at: String = row.get(1).map_err(|e| format!("{e:?}"))?;
+                note(&cut_at, &recorded_at);
             }
             let mut rows = conn
                 .query(
@@ -2519,22 +2557,41 @@ fn commit_completion_map(
 /// pre-phase store's own repair, and the first import's inline finish:
 /// ingest calls this when the horizon is absent. Auditable — the report
 /// names the lineage, the horizon, and the commit count.
+///
+/// `overwrite` separates the two jobs. A *derived* completion is the
+/// newest instant on which the commit's own rows landed: correct, but a
+/// lower bound — the loop knows the real instant, after the sweep and
+/// before the next commit's first write. So the first import's finish
+/// fills only what the ingest did not write (`overwrite = false`), while a
+/// rebuild — the pre-phase store's migration, or K8's body heal, whose
+/// rows land at old stamps now — must replace what is there.
 pub fn backfill_commit_index(
     store: &CodeGraphStore,
     lineage: &str,
+    overwrite: bool,
 ) -> Result<CommitIndexReport, IngestError> {
     let err = |what: &str, e: String| IngestError::Store(format!("backfill {what}: {e}"));
     let (completions, collisions) = commit_completion_map(store, lineage)?;
     for (sha, completion) in &completions {
+        let key = commit_done_key(lineage, sha);
+        if !overwrite
+            && store
+                .kv_get_sync(&key)
+                .map_err(|e| err("kv", format!("{e:?}")))?
+                .is_some()
+        {
+            continue;
+        }
         store
-            .kv_put_sync(&commit_done_key(lineage, sha), completion)
+            .kv_put_sync(&key, completion)
             .map_err(|e| err("kv", format!("{e:?}")))?;
     }
     // Written once, never moved: the heal and the explicit op both
     // route here, and neither completes an import.
     let horizon = match store
         .kv_get_sync(&horizon_key(lineage))
-        .map_err(|e| err("kv", format!("{e:?}")))? {
+        .map_err(|e| err("kv", format!("{e:?}")))?
+    {
         Some(known) => known,
         None => {
             let fresh = crate::storage::now_iso8601();
@@ -2553,6 +2610,241 @@ pub fn backfill_commit_index(
         commits_indexed: completions.len(),
         collisions,
     })
+}
+
+/// Where a temporal read folds, and what it calls the answer (P5b.3a,
+/// §3.1.1–3.1.2): the recorded arm past the horizon (or with no
+/// horizon), the git-history arm before it — the last commit at or
+/// before the read instant, folded at its completion instant.
+#[derive(Debug, Clone)]
+pub struct ResolvedRead {
+    /// The recorded-axis instant the fold runs at.
+    pub fold_ts: String,
+    /// `"recorded"` or `"git-history"` — every result names its basis.
+    pub basis: &'static str,
+    /// The addressed commit on the git-history arm, `None` on recorded.
+    pub sha: Option<String>,
+    /// The lineage horizon, `None` when the store has none.
+    pub horizon: Option<String>,
+    /// Files observed dirty at the addressed commit (P5b.3a: always
+    /// empty — observation rows arrive with P5d; the rule that a
+    /// non-empty set refuses under `strict` ships with the field).
+    pub dirty_at_commit: Vec<String>,
+}
+
+/// The git-history arm's refusals (P5b.3a, §3.1.1): reasons, never
+/// blanks. Surfaced as `ValueError` at the `_core` boundary.
+#[derive(Debug, Clone)]
+pub enum ReadArmError {
+    /// Nothing on the lineage is at or before the read instant.
+    BeforeHistory {
+        lineage: String,
+        instant: String,
+        first_commit: Option<String>,
+        horizon: String,
+    },
+    /// `strict` asked the recorded question, and the read instant is
+    /// before the horizon.
+    BeforeHorizon {
+        lineage: String,
+        instant: String,
+        horizon: String,
+    },
+    /// The index itself is unreadable (infrastructure, not history).
+    Store(String),
+    /// `at=` names no commit on the lineage.
+    UnknownCommit { lineage: String, sha: String },
+    /// `at=` names a ref: sha addressing is P5b.3a, refs are P5b.4.
+    RefNeedsP5b4 { address: String },
+}
+
+impl std::fmt::Display for ReadArmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReadArmError::BeforeHistory {
+                lineage,
+                instant,
+                first_commit,
+                horizon,
+            } => write!(
+                f,
+                "BeforeHistory: lineage {lineage:?} has no commit at or before {instant} \
+                 (first commit {}; horizon {horizon}) — the store's history starts later",
+                first_commit.as_deref().unwrap_or("unknown")
+            ),
+            ReadArmError::BeforeHorizon {
+                lineage,
+                instant,
+                horizon,
+            } => write!(
+                f,
+                "BeforeHorizon: {instant} predates the horizon {horizon} on lineage \
+                 {lineage:?}, and strict asked the recorded question, which has no \
+                 answer yet"
+            ),
+            ReadArmError::Store(detail) => write!(f, "commit index unreadable: {detail}"),
+            ReadArmError::UnknownCommit { lineage, sha } => write!(
+                f,
+                "unknown commit {sha:?} on lineage {lineage:?} — it names no commit concept"
+            ),
+            ReadArmError::RefNeedsP5b4 { address } => write!(
+                f,
+                "at={address:?} names a ref: sha addressing is P5b.3a, refs arrive with P5b.4"
+            ),
+        }
+    }
+}
+
+/// Resolve a temporal read to its fold instant (P5b.3a, §3.1.1–3.1.2).
+///
+/// `timestamp` is the positional read instant (already normalized),
+/// `strict` refuses the git-history arm, `at` addresses a commit
+/// directly (sha) or restates the instant (timestamp) — never both with
+/// the positional. A lost index rebuilds inline (H-20): the ledger
+/// holds every completion, `kv` is only the fast path.
+pub fn resolve_temporal_read(
+    store: &CodeGraphStore,
+    lineage: &str,
+    timestamp: &str,
+    strict: bool,
+    at: Option<&str>,
+) -> Result<ResolvedRead, ReadArmError> {
+    let horizon = store
+        .kv_get_sync(&horizon_key(lineage))
+        .map_err(|e| ReadArmError::Store(format!("cannot read horizon: {e:?}")))?;
+    // `at=` wins: it is the address, the positional is the default the
+    // caller passes when `at` is absent.
+    if let Some(address) = at {
+        return resolve_commit_address(store, lineage, address, horizon, strict);
+    }
+    match horizon {
+        None => Ok(ResolvedRead {
+            fold_ts: timestamp.to_string(),
+            basis: "recorded",
+            sha: None,
+            horizon: None,
+            dirty_at_commit: Vec::new(),
+        }),
+        Some(h) => {
+            if timestamp >= h.as_str() {
+                return Ok(ResolvedRead {
+                    fold_ts: timestamp.to_string(),
+                    basis: "recorded",
+                    sha: None,
+                    horizon: Some(h),
+                    dirty_at_commit: Vec::new(),
+                });
+            }
+            let commits = commit_stamps(store, lineage)
+                .map_err(|e| ReadArmError::Store(format!("cannot list commits: {e}")))?;
+            let target = commits
+                .iter()
+                .rev()
+                .find(|(_, stamp)| stamp.as_str() <= timestamp);
+            match target {
+                None => Err(ReadArmError::BeforeHistory {
+                    lineage: lineage.to_string(),
+                    instant: timestamp.to_string(),
+                    first_commit: commits.first().map(|(sha, _)| sha.clone()),
+                    horizon: h,
+                }),
+                Some((sha, _)) => {
+                    if strict {
+                        return Err(ReadArmError::BeforeHorizon {
+                            lineage: lineage.to_string(),
+                            instant: timestamp.to_string(),
+                            horizon: h,
+                        });
+                    }
+                    let fold_ts = completion_or_backfill(store, lineage, sha)?;
+                    Ok(ResolvedRead {
+                        fold_ts,
+                        basis: "git-history",
+                        sha: Some(sha.clone()),
+                        horizon: Some(h),
+                        dirty_at_commit: Vec::new(),
+                    })
+                }
+            }
+        }
+    }
+}
+
+/// `at=` resolution (P5b.3a, A-3): a sha addresses its commit's
+/// completion instant; a timestamp restates the read instant; anything
+/// else is a ref and refuses until P5b.4.
+fn resolve_commit_address(
+    store: &CodeGraphStore,
+    lineage: &str,
+    address: &str,
+    horizon: Option<String>,
+    strict: bool,
+) -> Result<ResolvedRead, ReadArmError> {
+    // Timestamp-shaped addresses restate the instant (A-3: `at` takes a
+    // timestamp, a sha, or — with P5b.4 — a ref).
+    if macrame::util::timestamp::normalize(address).is_ok() {
+        return resolve_temporal_read(store, lineage, address, strict, None);
+    }
+    let is_sha = address.len() == 40 && address.bytes().all(|b| b.is_ascii_hexdigit());
+    if !is_sha {
+        return Err(ReadArmError::RefNeedsP5b4 {
+            address: address.to_string(),
+        });
+    }
+    let commits = commit_stamps(store, lineage)
+        .map_err(|e| ReadArmError::Store(format!("cannot list commits: {e}")))?;
+    if !commits.iter().any(|(sha, _)| sha == address) {
+        return Err(ReadArmError::UnknownCommit {
+            lineage: lineage.to_string(),
+            sha: address.to_string(),
+        });
+    }
+    let fold_ts = completion_or_backfill(store, lineage, address)?;
+    // P5b.3a: no observation rows exist until P5d, so the dirty set is
+    // empty and `strict` has nothing to refuse. The check ships with the
+    // field so P5d fills the set without changing the rule.
+    let dirty_at_commit: Vec<String> = Vec::new();
+    if strict && !dirty_at_commit.is_empty() {
+        return Err(ReadArmError::BeforeHorizon {
+            lineage: lineage.to_string(),
+            instant: address.to_string(),
+            horizon: horizon.unwrap_or_else(|| "none".to_string()),
+        });
+    }
+    Ok(ResolvedRead {
+        fold_ts,
+        basis: "git-history",
+        sha: Some(address.to_string()),
+        horizon,
+        dirty_at_commit,
+    })
+}
+
+/// A commit's completion instant, rebuilding the index inline when `kv`
+/// lost it (H-20: the ledger is the slow path that never loses).
+fn completion_or_backfill(
+    store: &CodeGraphStore,
+    lineage: &str,
+    sha: &str,
+) -> Result<String, ReadArmError> {
+    let store_err = |e: String| ReadArmError::Store(e);
+    match store
+        .kv_get_sync(&commit_done_key(lineage, sha))
+        .map_err(|e| store_err(format!("cannot read completion: {e:?}")))?
+    {
+        Some(done) => Ok(done),
+        None => {
+            backfill_commit_index(store, lineage, false)
+                .map_err(|e| store_err(format!("inline backfill failed: {e}")))?;
+            let (completions, _) = commit_completion_map(store, lineage)
+                .map_err(|e| store_err(format!("cannot map completions: {e}")))?;
+            completions
+                .into_iter()
+                .find(|(s, _)| s == sha)
+                .map(|(_, done)| done)
+                .ok_or_else(|| store_err(format!("rebuilt index lacks commit {sha} on {lineage}")))
+        }
+    }
 }
 
 /// Message bodies for commit rows minted before the body field existed

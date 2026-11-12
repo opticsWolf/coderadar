@@ -449,6 +449,23 @@ the git-history arm of the default read with its `basis` label, `BeforeHistory`,
 existing stores' backfill of the index: a store ingested before this phase rebuilds its commit
 index from the `commit:{sha}` rows once, auditable.
 
+*Done 2026-11-12:* the horizon and the per-commit completion are written by both ingest loops
+(trunk and branch), the four temporal point reads (`lookup_entity_at`, `lookup_entities_at`,
+`entity_source_ref_at`, `source_refs_at`) resolve their arm before folding and surface
+`basis`/`sha`/`horizon`/`fold_ts`/`dirty_at_commit`, `Snapshot` carries the same labels
+(`basis`, `commit`, `horizon`, `dirty_at_commit`) and `as_of(..., strict=, at=)` passes them
+through, and `ops.backfill_commit_index` rebuilds a pre-phase store's index with a collision
+audit. F1 flipped; `tests/test_p5b3a_arm.py` and `tests/test_p5b3a_horizon.py` pin the arm.
+
+Two defects the tests found, both about what a completion instant must cover. (1) The loop knows
+the real instant — after its last sub-generation, before the next commit's first write — and the
+first import's tail backfill was replacing it with the derived (earlier) instant; the backfill
+fills missing keys only, and only the migration op and K8's body heal rebuild. (2) The derivation
+ignored `concept_cuts`, so a branch's sweep landed *after* the derived instant and the arm folded
+a departed entity back to life; the map reads cuts now, which is also what makes a migrated
+store's arm correct. A snapshot stays lazy: the arm resolves at the first read, not at
+`as_of` construction, so no commit-index scan is paid to create one.
+
 ### P5b.3 — Valid-axis reads (blocked by P5b.2; branch reads by U-2)
 
 Every temporal op (`as_of`, `entities_at`, `source_refs_at`, `changes_between`, `verify_history`,
@@ -556,7 +573,7 @@ already require.
 |---|---|---|---|
 | 1 | P5b.0 truth tests *(done 2026-11-01; F2 and F4 flipped with the 0.22.0 uptake and the adoption heal, F1/F3/F5/F6 still `xfail`)* | — | everything |
 | 2 | P5b.1 close-then-open *(closed 2026-11-11 — mechanism via D-312's one-write supersession (M6-g slice 1); INV-15 proved on the migration fixture (17 concepts / 21 versions) and a scratch self-host run (354 commits, 16,701 concepts / 33,641 versions), disorder 0 both; F2's sentinel fixed to both spellings after the proof caught its vacuous pass)* | — | P5b.3a, P6b, P8 |
-| 2 | P5b.3a horizon + commit index | — | P5b.1, P6b, P8 |
+| 2 | P5b.3a horizon + commit index *(closed 2026-11-12 — horizon + per-commit completion in `kv`, the git-history arm of every temporal read with its `basis`/`sha`/`horizon`, `BeforeHistory`/`BeforeHorizon`, `at=<sha>` with `dirty_at_commit`; F1 flipped. Two defects the tests caught: the first import's tail backfill clobbered the completion the loop had just written (now fill-only), and the derived completion ignored `concept_cuts`, so a branch's sweep landed after the instant the arm folds (the derivation reads cuts now). Gates: 589 lib, pytest 1324/1/3xf)* | — | P5b.1, P6b, P8 |
 | 2 | P6b, P8 | — | each other |
 | 2 | P5b.7 rename links | — | everything in order 2 |
 | 3 | P5b.6 branch names + generations | P5b.3a | P5d, P5b.2 |
@@ -597,6 +614,12 @@ Everything else runs beside the Macrame cycle — the sequencing law's own shape
 never idles on upstream.)*
 *(2026-11-11 (3): item (2) closed — P5b.1's INV-15 proof ran green on both legs, disorder 0 both, F2's sentinel fixed; the table row and §6 P5b.1 carry the record.)*
 *(2026-11-11 (4): item (3) closed — P5b.2's registry switch ran green across the bundle; the row carries the figures.)*
+*(2026-11-12 (5): item (4) closed — P5b.3a landed and F1 flipped. The arm folds the last commit at or before the
+read instant at that commit's completion, and every result now names its basis. Two ledger facts the tests forced
+into the open: a backward reach (`now`) is the only instant that is strictly after a commit's last sub-generation
+*and* before the next commit's first write, so the loop's own completion must survive the tail backfill (fill-only);
+and a derived completion is wrong unless it reads `concept_cuts`, because a branch's sweep lands after its concept
+flush. Next: item (5) P5b.6, then P5b.7/P6b/P8 beside, then the 0.15.0 release.)*
 
 **Suggested releases.** 0.15.0: P6a, P6c, P5b.0, P5b.1, P5b.3a, P5b.6, and with them P5a's two
 commands at store format 1 (D-7 d) — the first release in which a git-filled store answers every
