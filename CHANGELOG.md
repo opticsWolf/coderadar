@@ -4,7 +4,16 @@ Patch releases accumulate toward the next minor (+0.0.1 per implemented feature,
 bump commit named in the feature's DR row). The v0.12 plan history lives
 in `docs/` (v1 frozen, consolidated trio authoritative).
 
-## Unreleased
+## 0.15.0 (2026-11-13)
+
+Temporal P5: history as it was lived. A store can now be filled from git
+one commit at a time — every fact stamped with the commit that produced it —
+and then read at a time, on a branch, or on the belief axis, with each
+answer naming the basis it came from and each refusal naming its reason.
+Annotations, comments and the users' task lists live on the same ledger and
+leave it as a document (`coderadar.annotations.v1`), so the store's own data
+survives a rebuild. Nineteen entries below, P5a through P8; the last one is
+the store contract all of them stand on — one engine per path, per process.
 
 - The store is opened once per path, per process. A second open of a store this process already
   holds now joins the live handle instead of constructing a second engine. Two measured reasons:

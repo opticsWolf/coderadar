@@ -1086,6 +1086,36 @@ though not *in* git, since `.gitignore` excludes `*.db`, so a clone gets the doc
 Both halves of the "gaps" paragraph are resolved: H-11/H-12/H-13 and the coverage numbers are in the
 graph, beside the decisions they qualify.
 
+### 2026-11-13 — v0.15.0 cut (P5a–P5d, P6, P8 released)
+
+Version bumped `0.14.0` → `0.15.0` per DR-26 (`pyproject.toml` + workspace `Cargo.toml` together,
+lockfiles synced, `_FALLBACK_VERSION` brought along — it had been stale at `0.11.0` since the 0.11
+cut), the Unreleased block became the `0.15.0` section (19 entries), and the baseline claims in
+`README.md`, `QUICKREF.md` and `ARCHITECTURE.md` were brought to `0.15.0` / `macrame-db 0.22.0` /
+store schema v29. `ARCHITECTURE.md` also gained the behavior it was missing: §14.2 for commit-time
+history, branch addressing, the valid axis, observations, rename links, notes and the export/rebuild
+boundary, and §7 the store's one-engine-per-path contract.
+
+Gate bundle at the cut: **Rust 600 lib + 5 integration passed, 1 ignored**; `cargo fmt --check` and
+`cargo clippy --all-targets -D warnings` clean; **Python 1390 passed, 1 skipped, 1 xfailed**
+(`tests/`, `cr_edit_tests` excluded as always, 1392 collected) on a rebuilt `0.15.0` wheel; the
+round-2 dogfood battery 121/121. Surface: **34 MCP tools** (33 + `coderadar_open_items`).
+
+**CI is green on the release tree** — all six jobs, ubuntu and windows runners, first green run
+since 2026-10-29. Getting there was the release's real work: the suite had been assuming a store
+could be opened again (twice in one process, or from a child beside a parent that held it), which
+libSQL refuses on POSIX and Windows only appears to allow. `CodeGraphStore` now hands out one shared
+engine per path per process (`bd353ac`, `613bd68`), two horizon tests cross a process boundary
+instead of re-entering a live engine (`2f50e38`), and the battery's MCP case was pinned at a stale
+33 tools. The contract — including that a close is a process-final act and an external writer is
+invisible to a live engine — is recorded in `docs/store-and-retention.md`.
+
+Documented limits shipped with the release: F3 (`test_p5b_truth`) stays `xfail` until a branch can
+see its merge base (Macrame U-3/D-318); a branch valid read refuses by name until U-2/D-317; P5b.5
+ships its write shape with the ingest window as the next slice; P6b's note-embeddings half is
+deferred with its reason (concepts are not projection entities); `ops.rebuild` is one-shot per
+process; `analyze` refuses a branch checkout, leaving the reload to the caller.
+
 ### 2026-10-28 — v0.14.0 cut (P0–P4 released)
 
 Version bumped `0.13.0` → `0.14.0` per DR-26 (`pyproject.toml` + workspace `Cargo.toml` together,
