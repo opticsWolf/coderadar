@@ -530,10 +530,21 @@ impl CodeGraphStore {
 
     /// How many handles this process holds on the same file.
     ///
-    /// Exposed for the test that pins the sharing contract; nothing in the
-    /// read/write paths branches on it.
+    /// The registry's own references do not count: it may hold more than one
+    /// spelling of one file (see [`store_key`]), and that is bookkeeping, not
+    /// a handle. Exposed for the tests that pin the sharing contract;
+    /// nothing in the read/write paths branches on it.
     pub fn handles(&self) -> usize {
-        std::sync::Arc::strong_count(&self.inner)
+        let mine = std::sync::Arc::as_ptr(&self.inner);
+        let registered = OPEN_STORES
+            .lock()
+            .map(|map| {
+                map.values()
+                    .filter(|held| std::sync::Arc::as_ptr(held) == mine)
+                    .count()
+            })
+            .unwrap_or(0);
+        std::sync::Arc::strong_count(&self.inner).saturating_sub(registered)
     }
 }
 
@@ -559,11 +570,7 @@ static OPEN_STORES: std::sync::LazyLock<
 /// that still points at the old inode. `ops.rebuild` calls it before it
 /// moves the store aside; nothing else should.
 pub fn forget_store(path: impl AsRef<Path>) {
-    let path = path.as_ref();
-    // Both spellings: the store was registered under whichever one described
-    // the file when it was opened, and a caller may be naming it after the
-    // move that made it stop existing.
-    let keys = [store_key(path), lexical_key(path)];
+    let keys = store_spellings(path.as_ref());
     if let Ok(mut map) = OPEN_STORES.lock() {
         for key in keys {
             map.remove(&key);
@@ -573,32 +580,44 @@ pub fn forget_store(path: impl AsRef<Path>) {
 
 /// Whether this process holds an engine for `path`.
 pub fn holds_store(path: impl AsRef<Path>) -> bool {
-    let path = path.as_ref();
-    let keys = [store_key(path), lexical_key(path)];
+    let keys = store_spellings(path.as_ref());
     OPEN_STORES
         .lock()
         .map(|map| keys.iter().any(|key| map.contains_key(key)))
         .unwrap_or(false)
 }
 
-/// One path's identity for the registry.
+/// Every spelling one file can be registered under, most authoritative first.
 ///
-/// **An existing file answers with its on-disk identity.** `canonicalize`
-/// folds letter case and resolves symlinks the way the filesystem itself
-/// does, which is the only authority on whether two spellings name one file:
-/// Windows and default macOS are case-insensitive, Linux is not, and the
-/// same code has to be right on all three. Folding case by hand would be
-/// wrong on a case-sensitive volume — two distinct stores would share one
-/// engine — so the filesystem decides.
+/// Two spellings exist because a store's existence changes what the
+/// filesystem can say about it, and the registry must not care:
 ///
-/// A path that does not exist yet (the first open creates it) has nothing to
-/// canonicalize, so it falls back to [`lexical_key`], the best predictor
-/// available. [`forget_store`] and [`holds_store`] therefore try both.
-fn store_key(path: &std::path::Path) -> std::path::PathBuf {
-    match std::fs::canonicalize(path) {
-        Ok(real) => strip_verbatim(real),
-        Err(_) => lexical_key(path),
+/// - **Canonical** (`fs::canonicalize`), when the file exists. It folds
+///   letter case and resolves symlinks the way the filesystem itself does,
+///   which is the only authority on whether two spellings name one file:
+///   Windows and default macOS are case-insensitive, Linux is not, and the
+///   same code has to be right on all three. Folding case by hand would be
+///   wrong on a case-sensitive volume — two distinct stores would share one
+///   engine. It also folds what the paths alone cannot: `/var` → `/private/var`
+///   on macOS, an 8.3 directory name on Windows.
+/// - **Lexical** ([`lexical_key`]), always. On the first open the file does
+///   not exist yet, so the canonical spelling is unavailable; the lexical one
+///   is what that open has to register under.
+///
+/// Lookups and inserts both walk the list and take every spelling, so an
+/// open that found nothing canonical still joins a later open that did.
+fn store_spellings(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let lexical = lexical_key(path);
+    let mut keys = Vec::with_capacity(2);
+    if let Ok(real) = std::fs::canonicalize(path) {
+        let canonical = strip_verbatim(real);
+        if canonical == lexical {
+            return vec![canonical];
+        }
+        keys.push(canonical);
     }
+    keys.push(lexical);
+    keys
 }
 
 /// The path's spelling without asking the filesystem: absolute, with `.` and
@@ -732,7 +751,6 @@ impl CodeGraphStore {
         cadence: Option<SnapshotCadence>,
     ) -> macrame::Result<Self> {
         let path = path.as_ref();
-        let key = store_key(path);
         // A second open of a file this process already holds joins the open
         // handle. Opening again is not merely wasteful: it is refused by
         // libSQL on POSIX (§`StoreInner`), and closing either of the two
@@ -740,10 +758,12 @@ impl CodeGraphStore {
         let mut map = OPEN_STORES
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(existing) = map.get(&key) {
-            return Ok(Self {
-                inner: std::sync::Arc::clone(existing),
-            });
+        for key in store_spellings(path) {
+            if let Some(existing) = map.get(&key) {
+                return Ok(Self {
+                    inner: std::sync::Arc::clone(existing),
+                });
+            }
         }
         let db = {
             let _open_guard = DIAGNOSTIC_OPEN_LOCK
@@ -757,9 +777,14 @@ impl CodeGraphStore {
         runtime().block_on(db.register_extra_index(CODERADAR_EXTRA_FILE_PATH))?;
         let inner = std::sync::Arc::new(StoreInner { db });
         // No `entry(...).or_insert_with` dance: this thread holds the lock
-        // from the lookup above, so nothing can have registered `key` in
-        // between and the engine it inserts is the engine every caller gets.
-        map.insert(key, std::sync::Arc::clone(&inner));
+        // from the lookup above, so nothing can have registered the path in
+        // between and the engine inserted here is the engine every caller
+        // gets. Both spellings go in — the file did not exist when the caller
+        // named it, so the lookup and the insert would otherwise disagree
+        // about which spelling is the key.
+        for key in store_spellings(path) {
+            map.insert(key, std::sync::Arc::clone(&inner));
+        }
         Ok(Self { inner })
     }
 
@@ -5848,8 +5873,8 @@ mod tests {
         }
         assert_eq!(
             finished[0].1.handles(),
-            threads + 1,
-            "the registry's own reference plus one per handle"
+            threads,
+            "one handle per thread; the registry's references do not count"
         );
     }
 
@@ -5871,6 +5896,33 @@ mod tests {
             std::sync::Arc::as_ptr(&opened.inner),
             std::sync::Arc::as_ptr(&joined.inner),
             "one file, one engine, however it is spelled"
+        );
+    }
+
+    /// Two spellings that the paths alone cannot reconcile are one store.
+    ///
+    /// A symlinked directory is the portable stand-in for what a CI runner
+    /// actually hit: `tempfile` hands back a spelling the filesystem does not
+    /// consider canonical (an 8.3 directory name on Windows, `/var` vs
+    /// `/private/var` on macOS). The first open has to register both — the
+    /// lexical spelling it was given and the canonical one the file grew into
+    /// — or the second open looks up a key that was never inserted and opens
+    /// a second engine beside the first.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_spelling_joins_the_same_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let via_real = CodeGraphStore::open(real.join("store.db")).unwrap();
+        let via_link = CodeGraphStore::open(link.join("store.db")).unwrap();
+        assert_eq!(
+            std::sync::Arc::as_ptr(&via_real.inner),
+            std::sync::Arc::as_ptr(&via_link.inner),
+            "a symlinked spelling of one file is one engine"
         );
     }
 
@@ -5900,16 +5952,20 @@ mod tests {
         let path = dir.path().join("shared.db");
         let a = CodeGraphStore::open(&path).unwrap();
         let b = CodeGraphStore::open(&path).unwrap();
-        // Two handles plus the registry's own reference: the registry holds
-        // the engine for the process's life, which is what makes the third
-        // open below join instead of minting a second `Database`.
-        assert_eq!(a.handles(), 3, "the second open joins the first");
+        assert_eq!(
+            std::sync::Arc::as_ptr(&a.inner),
+            std::sync::Arc::as_ptr(&b.inner),
+            "the second open joins the first"
+        );
+        assert_eq!(a.handles(), 2, "one handle each");
         drop(b);
-        assert_eq!(a.handles(), 2, "and the survivor keeps the engine");
+        assert_eq!(a.handles(), 1, "and the survivor keeps the engine");
         assert!(a.git_marks().is_ok(), "reads still answer after the drop");
+        // The registry holds the engine for the process's life, which is what
+        // makes the next open join instead of minting a second `Database`.
         drop(a);
         let c = CodeGraphStore::open(&path).unwrap();
-        assert_eq!(c.handles(), 2, "the registry kept it alive for this open");
+        assert_eq!(c.handles(), 1, "the registry kept it alive for this open");
         assert!(c.git_marks().is_ok());
     }
 

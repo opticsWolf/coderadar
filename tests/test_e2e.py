@@ -548,6 +548,14 @@ class TestWatcherPipeline:
         start_watcher([str(tmp_path)])
 
         try:
+            # Backends disagree about what "pending" means at startup. inotify
+            # reports only what happens after the watch begins; FSEvents
+            # coalesces by directory and can deliver the creation of the files
+            # above, which happened microseconds earlier. Drain whatever the
+            # backend already had, then assert the steady-state answer.
+            for _ in range(10):
+                if next_watcher_batch_timeout(100) is None:
+                    break
             # No file changes — timeout should return None
             batch = next_watcher_batch_timeout(500)
             assert batch is None, \
