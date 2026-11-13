@@ -52,6 +52,20 @@ pub const MODE_COMMIT_TIME: &str = "commit-time";
 /// the store. Plain name: it is written and read by this crate only.
 pub const OBSERVED_KEY: &str = "coderadar.observed.main";
 
+/// The observation mark is per lineage (P5d slice B): a branch checkout's
+/// edits must seed the nudge chain of the branch they were made on, or a
+/// commit fetched later opens a start behind the branch's own observed
+/// belief. `kv_name` keeps an unsafe branch name legal (D-280).
+pub fn observed_key(lineage: &str) -> String {
+    format!("coderadar.observed.{}", kv_name(lineage))
+}
+
+/// The branch the working tree is checked out on (P5d slice B), recorded by
+/// `sync_git`. Absent means the trunk: a store that never watched a checkout
+/// has only one lineage, and guessing a branch name for it would write rows
+/// nothing asked for.
+pub const CHECKOUT_KEY: &str = "coderadar.git.checkout";
+
 /// The later of two RFC3339 stamps, for seeding INV-11's nudge chain. An
 /// unparseable side loses to a parseable one; two unparseable sides keep the
 /// first, which the later nudge treats as "no seed".
@@ -554,7 +568,7 @@ pub fn ingest_history(
     // valid axis instead of appending to the recorded one.
     if let Some(ref store) = store {
         let observed = store
-            .observation_instant()
+            .observation_instant(lineage)
             .map_err(|e| IngestError::Store(format!("cannot read observation mark: {e:?}")))?;
         stamp_prev = later_instant(stamp_prev, observed);
     }
@@ -901,14 +915,21 @@ pub fn ingest_history(
         // one commit back — diffs touch disjoint id sets.
         let mut projection = (*graph.snapshot()).clone();
         for (canonical_path, lang, units) in &parsed_units {
-            let (_, _, _, retirement_error) =
-                graph.apply_diff_update(&mut projection, units, canonical_path, lang, &stamp, true);
+            let (_, _, _, retirement_error) = graph.apply_diff_update(
+                &mut projection,
+                units,
+                canonical_path,
+                lang,
+                &stamp,
+                true,
+                None,
+            );
             if let Some(error) = retirement_error {
                 eprintln!("[ingest] retire-after-diff failed for {canonical_path}: {error}");
             }
         }
         for canonical_path in &deleted {
-            graph.remove_file_entities(&mut projection, canonical_path, &stamp);
+            graph.remove_file_entities(&mut projection, canonical_path, &stamp, None);
             projection
                 .file_to_modules
                 .remove(&PathBuf::from(canonical_path));
@@ -1312,11 +1333,20 @@ pub fn ingest_branch_history(
     // P5d (H-26): the trunk's observation mark seeds a branch's nudge chain
     // too -- the branch inherits the trunk's rows, so a write of its own
     // must not open a start behind a belief the trunk already recorded.
+    // The branch's own mark comes beside it (P5d slice B): an edit observed
+    // on the branch is a belief *its* next commit may not precede either.
     if let Some(ref store) = store {
-        let observed = store
-            .observation_instant()
+        let own = store
+            .observation_instant(lineage)
             .map_err(|e| IngestError::Store(format!("cannot read observation mark: {e:?}")))?;
-        stamp_prev = later_instant(stamp_prev, observed);
+        let trunk = if lineage == "main" {
+            None
+        } else {
+            store
+                .observation_instant("main")
+                .map_err(|e| IngestError::Store(format!("cannot read observation mark: {e:?}")))?
+        };
+        stamp_prev = later_instant(later_instant(stamp_prev, own), trunk);
     }
     if let Some(ref h) = head {
         let git = git2::Repository::open(repo).map_err(GitError::Open)?;
@@ -1698,6 +1728,7 @@ pub fn ingest_branch_history(
                 lang,
                 &stamp,
                 false,
+                None,
             );
             removed_ids.extend(removed);
             if let Some(error) = retirement_error {
@@ -1707,7 +1738,7 @@ pub fn ingest_branch_history(
         for canonical_path in &deleted {
             let module_id = format!("{canonical_path}::module");
             if own.contains(&module_id) {
-                graph.remove_file_entities(&mut projection, canonical_path, &stamp);
+                graph.remove_file_entities(&mut projection, canonical_path, &stamp, None);
                 projection
                     .file_to_modules
                     .remove(&PathBuf::from(canonical_path));
@@ -2585,8 +2616,15 @@ pub fn reingest_merged_commits(
             // main's own (adopted) version at this stamp and leaves the
             // minting lineage alone; an id main no longer holds (a re-run,
             // or a full walk's own tombstone) is a no-op.
-            let (_, _, _, retire_err) =
-                graph.apply_diff_update(&mut projection, units, canonical_path, lang, &stamp, true);
+            let (_, _, _, retire_err) = graph.apply_diff_update(
+                &mut projection,
+                units,
+                canonical_path,
+                lang,
+                &stamp,
+                true,
+                None,
+            );
             if let Some(e) = retire_err {
                 commit_failed_files.push(FailedFile {
                     sha: sha.clone(),

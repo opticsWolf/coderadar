@@ -643,6 +643,18 @@ commit-driven half: the ref watcher / post-commit hook, checkout switching the o
 lineage after writing the left lineage's dirty files back to its head (D-4 a1), and startup
 catching up on what changed while CodeRadar was off.)*
 
+*(2026-11-13, slice B first half: an observation names its lineage. `ObservationSource`
+carries `lineage`; a bare `update_file`/`remove_file` resolves it from
+`coderadar.git.checkout` (the checkout record), else `main`. A branch observation moves its
+whole flush onto the branch's row space — its own mint as W1, an inherited id as an overlay
+version (W2) — retires through the branch's own act, persists no edges (P5a.4's rule), and
+seeds only `coderadar.observed.{lineage}`, which the branch ingest arm reads beside the
+trunk's. The report names the lineage. Two boundaries are choices, not omissions: an
+index-now store ignores the record (one lineage by construction), and `analyze` refuses a
+branch checkout by name — its flush, sweep and edge pass are trunk-shaped, so reindexing a
+branch tree through it is exactly the assertion A-6 exists to prevent; the checkout sweep
+will decide whether the act takes a lineage or stays a trunk act.)*
+
 ### P6b — Aggregation and vectors (no dependency)
 
 As proposed: `open_items` over annotations, annotations and comments as embed targets (current
@@ -675,7 +687,7 @@ already require.
 | 2 | P6b, P8 | — | each other |
 | 2 | P5b.7 rename links *(closed 2026-11-12 — git detection at the default 50 %, `CommitPlan.renamed`, one row per id under `renamed:{old_id}` plus the reverse `became:{new_id}` key, `rename` in the INV-13 exclusions; reads follow the chain and mark `via_rename` (annotations/comments both directions, `history_of` across the chain, `find_entity` via `_core.rename_chain`). The score is `100` only for a byte-identical pair and `null` otherwise — git2 exposes no score. F6 flipped. Gates: 592 lib, pytest 1346/1/2xf)* | — | everything in order 2 |
 | 3 | P5b.6 branch names + generations *(closed 2026-11-12 — D-6 c selection: one lineage per own-commit tip, every other name an address read through the commit index (`parent_drift` reported); D-5 generations: a rebase or rewrite starts `{branch}#n`, the trunk refuses `TrunkRewritten`, a tip moved onto the trunk refuses `BranchNowMerged`. Two defects the tests caught: the address fold ran on the name (Macrame refuses a lineage-less name) and `#` is illegal in kv keys (D-280) — keys hex-encode unsafe names behind a `:` marker, plain names unchanged. Gates: 591 lib, pytest 1338/1/3xf)* | P5b.3a | P5d, P5b.2 |
-| 3 | P5d live tree *(observation writes closed 2026-11-13 — INV-12 narrowed, source-tagged rows, one instant per write, `observations` in the sync summary, F5 flipped; H-26's nudge seed in both ingest arms. Gates: 595 lib, pytest 1359/1/1xf. The commit-driven half — watcher/hook, checkout's lineage switch with D-4 a1, startup catch-up — stands.)* | P5b.1 | P5b.2 |
+| 3 | P5d live tree *(observation writes closed 2026-11-13 — INV-12 narrowed, source-tagged rows, one instant per write, `observations` in the sync summary, F5 flipped; H-26's nudge seed in both ingest arms. Lineage routing landed 2026-11-13 — a bare write lands on the recorded checkout (`coderadar.git.checkout`), a branch observation moves onto the branch's row space (W1 mint / W2 overlay), retires through the branch's act, persists no edges and seeds only its own mark; `analyze` refuses a branch checkout by name. Gates: 595 lib, pytest 1365/1/1xf. What remains of the commit-driven half — `sync_git` and its ref watcher/hook, the D-4 a1 checkout sweep (left lineage's dirty files back to its head, carried edits on the new one), and startup catch-up.)* | P5b.1 | P5b.2 |
 | 3 | P5b.2 adopt 0.22.0 *(closed 2026-11-11 — [patch] retired, the lock rides crates.io `0.22.0`; engine identical to the rev pin (no src/ diff 40719ac to tag); gates 589 lib + pytest 1303/1/4xf, scratch migration disorder 0)* | P5b.1 (U-1 released 2026-11-01) | P5d |
 | 4 | P5b.3 valid reads (trunk) *(closed 2026-11-12 — `valid=` on `as_of`, `changes_between`, the `Snapshot` and the five `_core` reads; `resolve_valid_read` names the instant and `basis: "valid"`, lowered to Macrame's `reconstruct_as_of(AsOf::valid_at)`, trunk-only; a branch refuses `ValidBranchNeedsU2`, `at=` refuses `ValidAtNeedsP5b4`. `history_of` needs no flag (the spine is the valid axis) and `verify_history` samples recorded generations by design — both stated in §6. Gates: 592 lib, pytest 1353/1/2xf)* | P5b.2 | — |
 | 5 | P5b.4 sha addressing | P5b.3 | P5b.5 |

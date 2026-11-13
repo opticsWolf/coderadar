@@ -176,6 +176,10 @@ class UpdateReport:
     #: ``"watcher"``, ``"analyze"``, or ``"update"`` for a bare single-file
     #: write. Commit rows carry no source: the commit concept is theirs.
     source: str = ""
+    #: P5d slice B: the lineage the observation was written to. ``"main"``
+    #: unless a commit-time store recorded a branch checkout, or the caller
+    #: named one.
+    lineage: str = ""
     #: §1.9 (DR-30 notice): this update's blob outcome. Watcher batches
     #: fold per-file reports by summation.
     blobs_stored: int = 0
@@ -916,7 +920,8 @@ class CodeGraph:
     def update_file(self, file_path: str, content: str | None = None,
                     force: bool = False, *, source: str | None = None,
                     tool: str | None = None, plan_id: str | None = None,
-                    attempt_id: str | None = None) -> UpdateReport:
+                    attempt_id: str | None = None,
+                    lineage: str | None = None) -> UpdateReport:
         """Update the graph after a file change.
 
         Phase 1: Rust parses, diffs, and stages changes.
@@ -926,11 +931,15 @@ class CodeGraph:
         A file that no longer exists on disk (and no `content` given) is
         dropped from the graph instead: the report says ``removed`` and
         how many entities went.
+
+        ``lineage`` names the branch this observation belongs to (P5d
+        slice B); absent reads the store's recorded checkout, else the
+        trunk.
         """
         dropped: dict | None = None
         route_warning: str | None = None
         if content is None and not _resolve_entity_path(file_path).exists():
-            dropped = self._remove_file_full(file_path)
+            dropped = self._remove_file_full(file_path, lineage=lineage)
             # §1.3 (DR-10): the file is gone — its routes retire via the
             # file-scoped diff (missing file extracts nothing).
             route_warning = self._refresh_framework_routes(file_path, None)
@@ -951,7 +960,7 @@ class CodeGraph:
             result = _update_file_rust(
                 file_path, content, force,
                 source=source, tool=tool, plan_id=plan_id,
-                attempt_id=attempt_id,
+                attempt_id=attempt_id, lineage=lineage,
             )
             # §1.3 (DR-10): re-extract this file's routes (scope = file;
             # ghosts retire via the diff). Best-effort: extraction must
@@ -989,6 +998,7 @@ class CodeGraph:
                     blobs_bytes=int(result.get("blobs_bytes", 0)),
                     observed_at=str(result.get("observed_at", "") or ""),
                     source=str(result.get("source", "") or ""),
+                    lineage=str(result.get("lineage", "") or ""),
                 )
             return UpdateReport(
                 affected_files=[file_path], changed_symbols=[],
@@ -1044,7 +1054,8 @@ class CodeGraph:
         except Exception as exc:  # noqa: BLE001 - best-effort refresh reports, never raises
             return f"framework-route refresh failed for {file_path}: {exc}"
 
-    def _remove_file_full(self, file_path: str) -> dict:
+    def _remove_file_full(self, file_path: str,
+                          lineage: str | None = None) -> dict:
         """Drop a deleted file; full report (epochs included).
 
         `remove_file` keeps the historic int return; this is the seam
@@ -1057,7 +1068,7 @@ class CodeGraph:
                 "The coderadar._core extension is not built; "
                 "nothing can be removed from the graph."
             ) from exc
-        result = _remove_file_rust(file_path)
+        result = _remove_file_rust(file_path, lineage=lineage)
         return {
             "entities_removed": int(result.get("entities_removed", 0)),
             "epoch_before": int(result.get("epoch_before", 0)),
@@ -1065,19 +1076,38 @@ class CodeGraph:
         }
 
     @_bound_to_loaded_project
-    def remove_file(self, file_path: str) -> int:
+    def remove_file(self, file_path: str, *,
+                    lineage: str | None = None) -> int:
         """Drop a deleted file's entities from the graph.
 
         `update_file` does this too when it finds the file gone from disk.
         Returns the number of entities removed.
         """
-        removed = self._remove_file_full(file_path)["entities_removed"]
+        removed = self._remove_file_full(file_path, lineage=lineage)["entities_removed"]
         # §1.3 (DR-10): the file's routes retire with it.
         try:
             self._refresh_framework_routes(file_path, None)
         except Exception:  # noqa: BLE001, S110 - removal stands regardless
             pass
         return removed
+
+    def record_checkout(self, branch: str | None) -> None:
+        """Record which branch the working tree is checked out on (P5d).
+
+        A commit-time store's bare observation writes then land on that
+        branch's lineage. ``None`` clears it back to the trunk.
+        """
+        try:
+            from coderadar._core import record_checkout_loaded as _record
+        except ImportError as exc:
+            raise CodeRadarError(
+                "The coderadar._core extension is not built; the checkout "
+                "cannot be recorded."
+            ) from exc
+        try:
+            _record(branch)
+        except RuntimeError as e:
+            raise CodeRadarError(str(e)) from None
 
     def watch(self, paths: list[str] | None = None,
               debounce_ms: int | None = None,

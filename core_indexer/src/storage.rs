@@ -710,9 +710,9 @@ impl CodeGraphStore {
     /// flagged (`stamps_nudged`), never written backwards. Monotonic on
     /// purpose — an out-of-order caller cannot rewind it, because the mark's
     /// job is to name how far ahead the recorded axis already sits.
-    pub fn record_observation_instant(&self, instant: &str) -> macrame::Result<()> {
-        let key = crate::graph::ingest::OBSERVED_KEY;
-        if let Some(current) = self.kv_get_sync(key)? {
+    pub fn record_observation_instant(&self, lineage: &str, instant: &str) -> macrame::Result<()> {
+        let key = crate::graph::ingest::observed_key(lineage);
+        if let Some(current) = self.kv_get_sync(&key)? {
             if let (Some(prev), Some(next)) = (
                 parse_rfc3339_epoch_micros(&current),
                 parse_rfc3339_epoch_micros(instant),
@@ -722,12 +722,43 @@ impl CodeGraphStore {
                 }
             }
         }
-        self.kv_put_sync(key, instant)
+        self.kv_put_sync(&key, instant)
     }
 
-    /// The latest observation instant this store recorded, if any (P5d).
-    pub fn observation_instant(&self) -> macrame::Result<Option<String>> {
-        self.kv_get_sync(crate::graph::ingest::OBSERVED_KEY)
+    /// The latest observation instant this store recorded on `lineage`, if
+    /// any (P5d). Per lineage: a branch's edits and the trunk's are different
+    /// chain positions, and a commit on the branch must not be nudged past
+    /// the trunk's mark (or the reverse).
+    pub fn observation_instant(&self, lineage: &str) -> macrame::Result<Option<String>> {
+        self.kv_get_sync(&crate::graph::ingest::observed_key(lineage))
+    }
+
+    /// The lineage an observation write belongs to (P5d slice B): the
+    /// caller's explicit name, else the checked-out branch a commit-time
+    /// store recorded, else `main`.
+    ///
+    /// Only a commit-time store carries a checkout: an index-now store has
+    /// one lineage by construction, and letting a branch name its writes
+    /// would turn an ordinary `update_file` into a cross-lineage act the
+    /// caller never asked for. A kv read failure falls back to the trunk
+    /// rather than failing a write whose rows are otherwise sound.
+    pub fn observation_lineage(&self, asked: Option<&str>) -> String {
+        if let Some(name) = asked {
+            return name.to_string();
+        }
+        let commit_time = self
+            .kv_get_sync(crate::graph::ingest::COMMIT_TIME_FORMAT_KEY)
+            .ok()
+            .flatten()
+            .is_some();
+        if !commit_time {
+            return "main".to_string();
+        }
+        self.kv_get_sync(crate::graph::ingest::CHECKOUT_KEY)
+            .ok()
+            .flatten()
+            .filter(|branch| !branch.is_empty())
+            .unwrap_or_else(|| "main".to_string())
     }
 
     pub fn upsert_concepts_bulk(&self, concepts: &[ConceptUpsert]) -> macrame::Result<usize> {
@@ -2044,6 +2075,22 @@ impl CodeGraphStore {
         valid_from: &str,
     ) -> macrame::Result<(usize, usize)> {
         self.retire_entities_as_trunk(entity_ids, valid_from, false)
+    }
+
+    /// Retire on the lineage the act belongs to (P5d slice B): the trunk's
+    /// retire for `main`, else the branch's own act — a branch delete speaks
+    /// about the branch's belief, never the minting trunk's row.
+    pub fn retire_entities_for_lineage_at(
+        &self,
+        entity_ids: &[String],
+        lineage: &str,
+        valid_from: &str,
+    ) -> macrame::Result<(usize, usize)> {
+        if lineage.is_empty() || lineage == "main" {
+            self.retire_entities_at(entity_ids, valid_from)
+        } else {
+            self.retire_entities_on_branch_at(entity_ids, lineage, valid_from)
+        }
     }
 
     /// The trunk's retire. A trunk-minted row retires through its own W1
@@ -3750,6 +3797,13 @@ pub struct ObservationSource<'a> {
     pub tool: Option<&'a str>,
     pub plan_id: Option<&'a str>,
     pub attempt_id: Option<&'a str>,
+    /// The lineage the observation is written to (P5d slice B). `None`
+    /// resolves through the store's recorded checkout
+    /// ([`CodeGraphStore::observation_lineage`]), which is `main` unless a
+    /// commit-time store watched a checkout. An explicit name wins: the
+    /// checkout sweep writes both lineages and cannot let a racing HEAD
+    /// decide which one it is talking to.
+    pub lineage: Option<&'a str>,
 }
 
 impl<'a> ObservationSource<'a> {
@@ -3763,7 +3817,15 @@ impl<'a> ObservationSource<'a> {
             tool: None,
             plan_id: None,
             attempt_id: None,
+            lineage: None,
         }
+    }
+
+    /// Name the lineage this observation belongs to, overriding the store's
+    /// recorded checkout.
+    pub fn on_lineage(mut self, lineage: &'a str) -> Self {
+        self.lineage = Some(lineage);
+        self
     }
 }
 
@@ -7514,6 +7576,7 @@ mod stamped_write_tests {
                 tool: Some("replace_entity_body"),
                 plan_id: Some("01PLAN"),
                 attempt_id: Some("01ATTEMPT"),
+                lineage: None,
             },
         );
         let extra: serde_json::Value =
@@ -7551,20 +7614,20 @@ mod stamped_write_tests {
         let dir = tempfile::tempdir().unwrap();
         let store = CodeGraphStore::open(dir.path().join("obs.db")).unwrap();
         store
-            .record_observation_instant("2026-03-01T10:00:00.000000Z")
+            .record_observation_instant("main", "2026-03-01T10:00:00.000000Z")
             .unwrap();
         store
-            .record_observation_instant("2026-03-01T09:00:00.000000Z")
+            .record_observation_instant("main", "2026-03-01T09:00:00.000000Z")
             .unwrap();
         assert_eq!(
-            store.observation_instant().unwrap().as_deref(),
+            store.observation_instant("main").unwrap().as_deref(),
             Some("2026-03-01T10:00:00.000000Z")
         );
         store
-            .record_observation_instant("2026-03-02T10:00:00.000000Z")
+            .record_observation_instant("main", "2026-03-02T10:00:00.000000Z")
             .unwrap();
         assert_eq!(
-            store.observation_instant().unwrap().as_deref(),
+            store.observation_instant("main").unwrap().as_deref(),
             Some("2026-03-02T10:00:00.000000Z")
         );
     }

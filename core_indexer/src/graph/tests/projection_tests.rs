@@ -396,8 +396,12 @@ fn test_remove_file_entities_retires_the_whole_file() {
     index_source(&graph, "def c(): pass\n", "kept.py");
 
     let mut projection = (*graph.snapshot()).clone();
-    let removed =
-        graph.remove_file_entities(&mut projection, "gone.py", &crate::storage::now_iso8601());
+    let removed = graph.remove_file_entities(
+        &mut projection,
+        "gone.py",
+        &crate::storage::now_iso8601(),
+        None,
+    );
     graph.commit_projection(projection);
 
     assert!(!removed.is_empty());
@@ -489,8 +493,12 @@ fn remove_file_fallback_clears_every_kind_map() {
     assert!(projection.functions.keys().any(|id| id.ends_with("::f")));
     // Simulate key-form drift: the module lookup misses.
     projection.file_to_modules.clear();
-    let removed =
-        graph.remove_file_entities(&mut projection, "gone.py", &crate::storage::now_iso8601());
+    let removed = graph.remove_file_entities(
+        &mut projection,
+        "gone.py",
+        &crate::storage::now_iso8601(),
+        None,
+    );
     assert!(
         !removed.is_empty(),
         "fallback must collect by canonical prefix"

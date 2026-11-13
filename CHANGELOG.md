@@ -6,6 +6,16 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Temporal P5d, second slice — an observation names its lineage (A-8/D-4/INV-17): a bare
+  `update_file` or `remove_file` now lands on the branch the working tree is checked out on,
+  recorded in `coderadar.git.checkout`, instead of assuming the trunk. A branch-owned file
+  updates its own mint row; an inherited id writes the branch's overlay version (Macrame W2) and
+  the trunk's row stands untouched; removals retire through the branch's own act; a branch
+  observation persists no edges (P5a.4's rule) and seeds only its own nudge mark
+  (`coderadar.observed.{lineage}`). The update report names the lineage. An index-now store keeps
+  its one lineage and ignores the record, and `analyze` refuses a branch checkout by name rather
+  than asserting branch content on the trunk — its sweep and edge pass are trunk-shaped until the
+  checkout sweep lands. Gates: 595 lib; pytest 1365 passed / 1 skipped / 1 xfailed.
 - Temporal P5d, first slice — observation writes (§3.1.3/A-7/INV-17): an index-now write on a
   git-filled store is no longer refused. `update_file`, `remove_file` and `analyze` record what
   they saw, stamped at the instant they saw it on both axes, with the previous interval closing

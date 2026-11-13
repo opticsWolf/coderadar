@@ -1218,6 +1218,9 @@ pub struct UpdateOutcome {
     /// `"update"` for a bare single-file write. Commit rows carry no source —
     /// their provenance is the commit concept itself.
     pub source: String,
+    /// The lineage the observation was written to (P5d slice B): `main`
+    /// unless a commit-time store recorded a branch checkout.
+    pub lineage: String,
     /// `CodeGraph::epoch()` immediately before and after the commit.
     pub epoch_before: u64,
     pub epoch_after: u64,

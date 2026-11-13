@@ -49,6 +49,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_graph, m)?)?;
     m.add_function(wrap_pyfunction!(update_file, m)?)?;
     m.add_function(wrap_pyfunction!(remove_file, m)?)?;
+    m.add_function(wrap_pyfunction!(record_checkout, m)?)?;
+    m.add_function(wrap_pyfunction!(record_checkout_loaded, m)?)?;
     {
         use crate::ffi_git::{git_blame, git_changed_files, git_worktree_clean};
         m.add_function(wrap_pyfunction!(git_worktree_clean, m)?)?;
@@ -771,6 +773,20 @@ fn analyze_inner(
                 eprintln!("Warning: Macrame store not attached: {:?}", e);
             }
         }
+        // P5d slice B: `analyze` reindexes the whole tree as the TRUNK's
+        // observation (its flush, sweep and edge pass are trunk-shaped). On
+        // a branch checkout that tree is the branch's, so writing the
+        // trunk's rows would assert branch content on `main` — the exact
+        // wrong answer A-6 exists to prevent. The checkout sweep is not
+        // built yet, so the act refuses rather than guessing.
+        if let Some(store) = graph.store.as_ref() {
+            let checkout = store.observation_lineage(None);
+            if checkout != "main" {
+                return Err(format!(
+                    "the working tree is checked out on {checkout:?}, and analyze reindexes the whole tree on the trunk; check out the trunk, or ingest that lineage with ingest_history (P5d's checkout sweep is not built yet)"
+                ));
+            }
+        }
     }
     let root_path = std::path::Path::new(root);
     let mut total_entities = 0usize;
@@ -1113,7 +1129,7 @@ fn analyze_inner(
             if let Err(e) = store.upsert_concepts_bulk(&v2) {
                 concept_flush_succeeded = false;
                 eprintln!("[diag] v2 concept flush failed: {e:?}");
-            } else if let Err(e) = store.record_observation_instant(&analyzed_at) {
+            } else if let Err(e) = store.record_observation_instant("main", &analyzed_at) {
                 eprintln!("[diag] observation mark failed: {e:?}");
             }
         }
@@ -1287,7 +1303,7 @@ fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {
 /// list `{entity_id, target}` call targets that appeared or went away.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (file_path, content=None, force=None, source=None, tool=None, plan_id=None, attempt_id=None))]
+#[pyo3(signature = (file_path, content=None, force=None, source=None, tool=None, plan_id=None, attempt_id=None, lineage=None))]
 fn update_file(
     py: Python<'_>,
     file_path: &str,
@@ -1297,6 +1313,7 @@ fn update_file(
     tool: Option<&str>,
     plan_id: Option<&str>,
     attempt_id: Option<&str>,
+    lineage: Option<&str>,
 ) -> PyResult<PyObject> {
     // Re-parse, re-resolve and persist without the GIL, like `analyze`. The
     // lock on the global graph is taken inside, so it is held for the work
@@ -1316,6 +1333,7 @@ fn update_file(
                         tool,
                         plan_id,
                         attempt_id,
+                        lineage,
                     };
                     graph.update_file_observed(file_path, content, force, &observation)
                 }
@@ -1377,6 +1395,7 @@ fn update_file(
     // axes and the writer it is attributed to.
     dict.set_item("observed_at", &outcome.observed_at)?;
     dict.set_item("source", &outcome.source)?;
+    dict.set_item("lineage", &outcome.lineage)?;
     // §1.9 notice: per-file blob outcome rides the update report (DR-30).
     dict.set_item("blobs_stored", outcome.blobs_stored)?;
     dict.set_item("blobs_skipped_oversize", outcome.blobs_skipped_oversize)?;
@@ -1386,8 +1405,12 @@ fn update_file(
 }
 
 /// Drop a deleted file's entities from the graph and retire them (plan §1.3).
+///
+/// P5d slice B: `lineage` names the branch the deletion was observed on;
+/// absent reads the store's recorded checkout, else `main`.
 #[pyfunction]
-fn remove_file(file_path: &str) -> PyResult<PyObject> {
+#[pyo3(signature = (file_path, lineage=None))]
+fn remove_file(file_path: &str, lineage: Option<&str>) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|graph, _snap| {
         // P5d: a deletion observed on a git-filled store is an observation
@@ -1400,7 +1423,16 @@ fn remove_file(file_path: &str) -> PyResult<PyObject> {
         let canonical = crate::graph::module_resolution::canonical_file_form(file_path);
         // Step-4 surface: delete-drop reports real epochs (was 0/0).
         let epoch_before = graph.epoch();
-        let mut removed = graph.remove_file(&canonical);
+        // P5d slice B: a bare deletion is an observation on the store's
+        // recorded checkout, exactly like a bare update.
+        let on = lineage.map(str::to_string).unwrap_or_else(|| {
+            graph
+                .store
+                .as_ref()
+                .map(|store| store.observation_lineage(None))
+                .unwrap_or_else(|| "main".to_string())
+        });
+        let mut removed = graph.remove_file_on(&canonical, Some(&on));
         // The in-memory projection may have lost track of concepts written by
         // an interrupted or older indexer. Use the indexed `extra.file_path`
         // metadata to retire any such current rows as part of file deletion.
@@ -1414,7 +1446,11 @@ fn remove_file(file_path: &str) -> PyResult<PyObject> {
                         .filter(|id| !known.contains(id.as_str()))
                         .collect();
                     if !stale.is_empty() {
-                        match store.retire_entities(&stale) {
+                        match store.retire_entities_for_lineage_at(
+                            &stale,
+                            &on,
+                            &crate::storage::now_iso8601(),
+                        ) {
                             Ok(_) => removed.extend(stale),
                             Err(e) => eprintln!(
                                 "[diag] failed to retire stale concepts for {canonical}: {e:?}"
@@ -1432,6 +1468,52 @@ fn remove_file(file_path: &str) -> PyResult<PyObject> {
         dict.set_item("epoch_before", epoch_before)?;
         dict.set_item("epoch_after", graph.epoch())?;
         Ok(dict.into())
+    })
+}
+
+/// Record the branch the working tree is checked out on (P5d slice B), which
+/// is what tells a bare observation write which lineage it belongs to. `None`
+/// or an empty name clears it back to the trunk. Written by `sync_git`, and
+/// by the tests that pin the routing without a checkout.
+#[pyfunction]
+#[pyo3(signature = (store_path, branch=None))]
+fn record_checkout(store_path: &str, branch: Option<&str>) -> PyResult<()> {
+    let store =
+        crate::storage::CodeGraphStore::open(std::path::Path::new(store_path)).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "record_checkout cannot open {store_path:?}: {e:?}"
+            ))
+        })?;
+    store
+        .kv_put_sync(
+            crate::graph::ingest::CHECKOUT_KEY,
+            branch.unwrap_or("").trim(),
+        )
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("cannot record checkout: {e:?}"))
+        })
+}
+
+/// Record the checkout on the **loaded** graph's store (P5d slice B). A
+/// loaded graph already holds the store's single writer connection, so a
+/// second `open` on the same file refuses; this is the surface a caller with
+/// a graph in hand uses (the tests, and the daemon's sync).
+#[pyfunction]
+#[pyo3(signature = (branch=None))]
+fn record_checkout_loaded(branch: Option<&str>) -> PyResult<()> {
+    with_graph(|graph, _snap| {
+        let store = graph.store.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("no store behind the loaded graph")
+        })?;
+        store
+            .kv_put_sync(
+                crate::graph::ingest::CHECKOUT_KEY,
+                branch.unwrap_or("").trim(),
+            )
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("cannot record checkout: {e:?}"))
+            })?;
+        Ok(())
     })
 }
 
