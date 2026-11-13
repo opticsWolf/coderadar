@@ -71,12 +71,21 @@ coderadar annotations-on TARGET   # every annotation version on a concept, newes
 coderadar comments-on TARGET      # every comment version on a concept, newest first
 coderadar annotation-history ID   # every version of one annotation row
 coderadar comment-history ID      # every version of one comment row
+coderadar export-annotations [--out FILE] [--store PATH]  # the store's own rows as one JSON document (P8, A-9)
+coderadar import-annotations FILE [--on-conflict error|skip] [--store PATH]  # chains replayed and read back, all-or-nothing validation
+coderadar rebuild-store [--repo PATH] [--store PATH] [--branches a,b] [--export FILE] [--embed]  # fresh store from git + the export; the old one moves to .pre-rebuild-<stamp> (P8, INV-18)
 coderadar module-children MODULE_ID          # e.g. 'pkg/app.py::module'
 coderadar diagnose [--unresolved] [--low-confidence]
 ```
 
 `traverse` caps `--max-depth` at 10; `--edge-kinds` is comma-separated and
 accepts `inherits` for `extends`.
+
+`export-annotations` without `--out` prints the document and nothing else, so
+`coderadar export-annotations > a.json` is the plain form. `rebuild-store` is
+one-shot per process (it moves the store it reads, so the CLI's fresh
+invocation is the supported shape) and refuses when a graph is loaded; the old
+store is never deleted.
 
 ### Quality and search
 

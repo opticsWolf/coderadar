@@ -684,6 +684,25 @@ version chains. A `rebuild` op that re-ingests from git into a fresh store and r
 INV-18). This turns Q-9's remedy into a command, and it makes every future store change (a schema
 step, a parser overhaul, a scrubbed history) a rebuild rather than a migration.
 
+*(2026-11-13, closed. `export_annotations` writes one document — `coderadar.annotations.v1` —
+with every row's id, kind, about, n, mint lineage and its whole chain (body, start, close,
+retire, oldest first); `import_annotations` validates every row before its first write, replays
+each chain oldest-version-first through the write path's own `ConceptUpsert`, then reads every row
+back and compares it to the file before reporting success. Bodies are taken verbatim: re-linting
+an import would let a newer linter rewrite stored history, which the boundary must never do. An id
+that already exists refuses (naming it) unless `on_conflict="skip"`, which reports what it left
+alone — a merge is explicit, never silent. `ops.rebuild` is the command: move the store aside
+(`coderadar.db.pre-rebuild-<stamp>`, never deleted), export from the backup, re-ingest with the
+migration's own D-6 c selection (the two ops now share `_lineage_plan`), import, verify. The op
+needs a process that has not opened the store — the engine holds a store file for the life of the
+process that opened it, so the move would refuse — hence a loaded graph refuses up front and the
+CLI spelling is `rebuild-store`, a fresh invocation. `rebuild` itself is not the command name
+because 0.13 removed a pre-0.13 alias of `reindex --full` by that name and the drift test forbids
+teaching it: same concept, different act. INV-18 is `tests/test_p8_boundary.py`: a store with a
+revised chain, a retired row and a comment is rebuilt in a subprocess, and the annotation chains,
+the entity set and the file's history read identically afterwards. Gates: 596 lib, pytest
+1377/1/1xf.)*
+
 ### P9 — Surfaces (follows each phase it exposes)
 
 MCP read tools gain `at`/`recorded` with P5b.3 and sha addressing with P5b.4. Q-10's answer:
@@ -700,7 +719,8 @@ already require.
 | 1 | P5b.0 truth tests *(done 2026-11-01; F2 and F4 flipped with the 0.22.0 uptake and the adoption heal, F1/F3/F5/F6 still `xfail`)* | — | everything |
 | 2 | P5b.1 close-then-open *(closed 2026-11-11 — mechanism via D-312's one-write supersession (M6-g slice 1); INV-15 proved on the migration fixture (17 concepts / 21 versions) and a scratch self-host run (354 commits, 16,701 concepts / 33,641 versions), disorder 0 both; F2's sentinel fixed to both spellings after the proof caught its vacuous pass)* | — | P5b.3a, P6b, P8 |
 | 2 | P5b.3a horizon + commit index *(closed 2026-11-12 — horizon + per-commit completion in `kv`, the git-history arm of every temporal read with its `basis`/`sha`/`horizon`, `BeforeHistory`/`BeforeHorizon`, `at=<sha>` with `dirty_at_commit`; F1 flipped. Two defects the tests caught: the first import's tail backfill clobbered the completion the loop had just written (now fill-only), and the derived completion ignored `concept_cuts`, so a branch's sweep landed after the instant the arm folds (the derivation reads cuts now). Gates: 589 lib, pytest 1324/1/3xf)* | — | P5b.1, P6b, P8 |
-| 2 | P6b, P8 | — | each other |
+| 2 | P6b | — | everything in order 2 |
+| 2 | P8 data boundary *(closed 2026-11-13 — `export_annotations`/`import_annotations` (`coderadar.annotations.v1`: whole chains, verbatim bodies, validate-before-write, read-back verification, explicit conflict policy), `ops.rebuild` + `coderadar rebuild-store` (move aside → export from the backup → re-ingest → import → verify; one-shot per process by the engine's file lock), `_lineage_plan` shared with the migration. INV-18 test: 4 rows / 5 versions rebuild identically in a subprocess. Gates: 596 lib, pytest 1377/1/1xf)* | — | P6b |
 | 2 | P5b.7 rename links *(closed 2026-11-12 — git detection at the default 50 %, `CommitPlan.renamed`, one row per id under `renamed:{old_id}` plus the reverse `became:{new_id}` key, `rename` in the INV-13 exclusions; reads follow the chain and mark `via_rename` (annotations/comments both directions, `history_of` across the chain, `find_entity` via `_core.rename_chain`). The score is `100` only for a byte-identical pair and `null` otherwise — git2 exposes no score. F6 flipped. Gates: 592 lib, pytest 1346/1/2xf)* | — | everything in order 2 |
 | 3 | P5b.6 branch names + generations *(closed 2026-11-12 — D-6 c selection: one lineage per own-commit tip, every other name an address read through the commit index (`parent_drift` reported); D-5 generations: a rebase or rewrite starts `{branch}#n`, the trunk refuses `TrunkRewritten`, a tip moved onto the trunk refuses `BranchNowMerged`. Two defects the tests caught: the address fold ran on the name (Macrame refuses a lineage-less name) and `#` is illegal in kv keys (D-280) — keys hex-encode unsafe names behind a `:` marker, plain names unchanged. Gates: 591 lib, pytest 1338/1/3xf)* | P5b.3a | P5d, P5b.2 |
 | 3 | P5d live tree *(observation writes closed 2026-11-13 — INV-12 narrowed, source-tagged rows, one instant per write, `observations` in the sync summary, F5 flipped; H-26's nudge seed in both ingest arms. Lineage routing landed 2026-11-13 — a bare write lands on the recorded checkout (`coderadar.git.checkout`), a branch observation moves onto the branch's row space (W1 mint / W2 overlay), retires through the branch's act, persists no edges and seeds only its own mark; `analyze` refuses a branch checkout by name. Gates: 595 lib, pytest 1365/1/1xf. Commit-driven half closed 2026-11-13 — `ops.sync_git` ingests the trunk and every branch with own commits, records addresses, sweeps a checkout (left lineage back to its head, carried edits on the new one) and startup (`source: "startup"`), marks `checkout`/`head`/`dirty`; `GitWatcher` polls HEAD (`watch --git`). Gates: 596 lib, pytest 1370/1/1xf. Not wired: the mutation path's sync-first (H-26's nudge covers it) and the caller-owned graph reload after a checkout.)* | P5b.1 | P5b.2 |
@@ -731,7 +751,7 @@ migration fixture and a scratch self-host run, then the row's status marker. **(
 formal close: switch the pin from the git rev to the published `macrame-db = "0.22.0"`, rerun
 the gate bundle and the scratch migration, `verify_concept_intervals` clean. **(4)** P5b.3a,
 the next build item — P5b.6, a release gate (D-7 d), waits on it; F1 flips here. **(5)** P5b.6
-(branch names, addresses, generations). **(6)** P5b.7 (F6), P6b and P8, in any order beside. *(P5b.7 closed 2026-11-12; P6b and P8 stand.)*
+(branch names, addresses, generations). **(6)** P5b.7 (F6), P6b and P8, in any order beside. *(P5b.7 closed 2026-11-12; P8 closed 2026-11-13; P6b stands.)*
 **(7)** P5b.3's trunk valid reads once (3) lands; the branch leg of that phase waits for U-2.
 *(Closed 2026-11-12 — the trunk leg shipped; the branch leg is P5b.3-branch, still U-2.)*
 **(8)** P5d (F5) once P5b.1 closes. **(9)** The 0.15.0 release, once P5b.1, P5b.3a and P5b.6

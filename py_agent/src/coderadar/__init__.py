@@ -832,6 +832,27 @@ class CodeGraph:
         from . import ops
         return ops.comment_history(id, graph=self)
 
+    def export_annotations(self, path: str | None = None) -> dict[str, Any]:
+        """Export every annotation and comment chain as one JSON document
+        (P8, A-9/INV-18).
+
+        The store's only non-derivable data; a rebuild needs this plus the
+        repository. ``path=None`` returns the payload in the report.
+        """
+        from . import ops
+        return ops.export_annotations(path, graph=self)
+
+    def import_annotations(self, source: Any,
+                           on_conflict: str = "error") -> dict[str, Any]:
+        """Import a document ``export_annotations`` wrote (P8).
+
+        Each chain is replayed and read back before the import reports
+        success; ``on_conflict`` is ``"error"`` or ``"skip"``.
+        """
+        from . import ops
+        return ops.import_annotations(source, on_conflict=on_conflict,
+                                      graph=self)
+
     def compute_embeddings(self, model_name: str | None = None,
                            batch_size: int = 32,
                            recompute: bool = False) -> dict[str, int]:
@@ -2131,7 +2152,10 @@ def load(db_path: str, root: str | None = None) -> CodeGraph:
         except ImportError:
             pass
 
-    return CodeGraph()
+    # Carry the store this handle was loaded from: an op that writes marks or
+    # observations (``sync_git``) resolves its default from the handle, and a
+    # bare ``CodeGraph()`` would name the default path instead.
+    return CodeGraph(db_path)
 
 
 def watch(root: str) -> Watcher:

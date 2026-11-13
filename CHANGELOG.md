@@ -6,6 +6,21 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- P8, the data boundary — the store's own rows leave and come back (A-9/INV-18):
+  `export_annotations` writes every annotation/comment chain as one `coderadar.annotations.v1`
+  document (id, kind, about, n, mint lineage, and each version's body, start, close and retire);
+  `import_annotations` validates every row before its first write, replays each chain
+  oldest-first through the write path's own upsert, and reads every row back and compares it to
+  the file before reporting success. Bodies import verbatim — a newer linter must never rewrite
+  stored history — and an existing id refuses unless `on_conflict="skip"` reports it. New ops
+  `ops.rebuild` and CLI `rebuild-store` turn Q-9's remedy into a command: the old store moves to
+  `coderadar.db.pre-rebuild-<stamp>` (never deleted), the export comes off the backup, the history
+  re-ingests with the migration's D-6 c selection (both ops now share `_lineage_plan`), and the
+  chains come back verified. A rebuild is one-shot per process — the engine locks a store file
+  for the life of the process that opened it — so it refuses a loaded graph and runs as a fresh
+  CLI invocation. New: `coderadar export-annotations`, `import-annotations`, `rebuild-store`;
+  `CodeGraph.export_annotations`/`import_annotations`. INV-18 is tested end to end.
+  Gates: 596 lib; pytest 1377 passed / 1 skipped / 1 xfailed.
 - Temporal P5d, commit-driven half — git drives the sync (A-8/D-4 a1): `ops.sync_git` brings a
   commit-time store up to date in four acts. It ingests the trunk and every branch whose tip has
   commits of its own (D-6 c), records merged names as commit addresses, sweeps observations, and

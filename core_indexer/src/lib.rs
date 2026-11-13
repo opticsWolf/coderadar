@@ -110,6 +110,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(comments_on, m)?)?;
     m.add_function(wrap_pyfunction!(annotation_history, m)?)?;
     m.add_function(wrap_pyfunction!(comment_history, m)?)?;
+    m.add_function(wrap_pyfunction!(export_annotations, m)?)?;
+    m.add_function(wrap_pyfunction!(import_annotations, m)?)?;
+    m.add_function(wrap_pyfunction!(graph_is_loaded, m)?)?;
     m.add_function(wrap_pyfunction!(archive, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -3060,10 +3063,71 @@ fn comment_history(py: Python<'_>, id: &str) -> PyResult<String> {
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
 }
 
+/// Whether a graph is loaded in this process. P8's rebuild precondition:
+/// it moves the store file, and a loaded graph would keep reading the
+/// moved copy (on Windows the move is refused outright; on POSIX it
+/// would succeed and silently diverge).
+#[pyfunction]
+fn graph_is_loaded() -> bool {
+    GLOBAL_GRAPH.read().is_some()
+}
+
+/// Every annotation and comment row, with its whole version chain, as one
+/// JSON document (P8, A-9/INV-18).
+///
+/// `store_path=None` exports from the loaded graph's store; a path opens
+/// that store instead (the rebuild path, which runs with no graph loaded).
+/// The document is the store's own data — everything else is derived from
+/// git, so this plus the repository is the whole rebuild input.
+#[pyfunction]
+#[pyo3(signature = (store_path=None))]
+fn export_annotations(py: Python<'_>, store_path: Option<&str>) -> PyResult<String> {
+    let store = annotation_store(store_path)?;
+    let file = py
+        .allow_threads(|| crate::annotations::export_all(&store))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string_pretty(&file)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Import a document `export_annotations` wrote (P8, A-9/INV-18).
+///
+/// `on_conflict` is `"error"` (an id that already exists refuses) or
+/// `"skip"` (existing ids are reported and left alone). Returns
+/// `{rows, versions, imported, skipped, verified}`.
+#[pyfunction]
+#[pyo3(signature = (payload, store_path=None, on_conflict="error"))]
+fn import_annotations(
+    py: Python<'_>,
+    payload: &str,
+    store_path: Option<&str>,
+    on_conflict: &str,
+) -> PyResult<String> {
+    let store = annotation_store(store_path)?;
+    let report = py
+        .allow_threads(|| crate::annotations::import_all(&store, payload, on_conflict))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&report)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// The store an annotation op reads: the loaded graph's, or the file at
+/// `store_path` (P8's import writes with no graph loaded).
+fn annotation_store(
+    store_path: Option<&str>,
+) -> PyResult<std::sync::Arc<crate::storage::CodeGraphStore>> {
+    match store_path {
+        None => snapshot_store(),
+        Some(path) => crate::storage::CodeGraphStore::open(path)
+            .map(std::sync::Arc::new)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("open {path:?}: {e}"))),
+    }
+}
+
 /// Map an annotation write/read failure onto the Python error the
 /// surface expects: user errors (bad id, bad target, lint refusal,
-/// wrong kind, retired) refuse as `ValueError`; ledger failures
-/// surface as `RuntimeError`.
+/// wrong kind, retired, a refused export) refuse as `ValueError`; ledger
+/// failures surface as `RuntimeError`.
 fn annotation_ffi_error(e: crate::annotations::AnnError) -> pyo3::PyErr {
     use crate::annotations::AnnError;
     let msg = e.to_string();

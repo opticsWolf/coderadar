@@ -876,6 +876,10 @@ pub enum AnnError {
     AlreadyRetired(String),
     /// A lint fault (Gate 1 empty / Gate 2 grammar).
     Lint(LintFault),
+    /// P8: an export document that cannot be imported as written — a
+    /// foreign format, an id that disagrees with its payload, or a chain
+    /// whose starts do not ascend. The message carries the detail.
+    Import(String),
     /// The ledger refused (I/O, schema, trigger).
     Store(String),
 }
@@ -904,6 +908,7 @@ impl std::fmt::Display for AnnError {
                 "{id:?} is retired: annotate anew rather than revising a closed row"
             ),
             AnnError::Lint(fault) => write!(f, "{fault}"),
+            AnnError::Import(e) => write!(f, "annotation export refused: {e}"),
             AnnError::Store(e) => write!(f, "store error: {e}"),
         }
     }
@@ -1525,6 +1530,388 @@ pub fn history(
             }),
         },
     }
+}
+
+// ── The data boundary (P8, A-9/INV-18) ─────────────────────────────────
+//
+// Everything in the store but annotations and comments is derived from
+// git. Those two kinds are the store's own data, so they carry the one
+// export that makes a rebuild lossless: ids, bodies, starts, closes and
+// retires, in one JSON document.
+//
+// Import replays each chain oldest-version-first through the same
+// `ConceptUpsert` the write path uses, so the engine logs the same
+// close/mint pairs and every read derives the same chain. Bodies are
+// taken verbatim: re-linting an imported body would let a newer linter
+// rewrite stored history, which is the one thing an import must never do
+// (the export is the record; the linter governs new writes).
+
+/// The export document's name. An import refuses a name it does not know
+/// — a future format bump is a new constant, never a guess about what an
+/// old file meant.
+pub const EXPORT_FORMAT: &str = "coderadar.annotations.v1";
+
+/// One stored version, in chain order.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExportedVersion {
+    pub body: String,
+    pub valid_from: String,
+    pub valid_to: String,
+    #[serde(default)]
+    pub retired: bool,
+}
+
+/// One row's whole identity: the id that keys every read (A-11 keeps it
+/// stable across renames), the parsed halves, the mint lineage when one
+/// names the row, and every version.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExportedRow {
+    pub id: String,
+    pub kind: String,
+    pub about: String,
+    pub n: u64,
+    #[serde(default)]
+    pub branch: String,
+    pub versions: Vec<ExportedVersion>,
+}
+
+/// The document `export_all` writes and `import_all` reads.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ExportFile {
+    pub format: String,
+    #[serde(default)]
+    pub exported_at: String,
+    pub rows: Vec<ExportedRow>,
+}
+
+/// What `import_all` did.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ImportReport {
+    /// Rows named by the document.
+    pub rows: usize,
+    /// Versions named by the document.
+    pub versions: usize,
+    /// Rows written (rows minus skipped conflicts).
+    pub imported: usize,
+    /// Ids that already existed, skipped under `on_conflict="skip"`.
+    pub skipped: Vec<String>,
+    /// Rows whose chain the store was asked to read back and matched.
+    pub verified: usize,
+}
+
+/// Every annotation and comment row with its whole version chain.
+pub fn export_all(store: &crate::storage::CodeGraphStore) -> Result<ExportFile, AnnError> {
+    // The enumeration stream must close before `versions_of` opens its
+    // own connection: the diagnostic guard is exclusive (one conn at a
+    // time), so the block's scope is load-bearing.
+    let rows: Vec<(String, String, String)> = {
+        let (_guard, conn) = store
+            .open_diagnostic_conn()
+            .map_err(|e| AnnError::Store(format!("{e:?}")))?;
+        crate::storage::runtime()
+            .block_on(async {
+                let mut out = Vec::new();
+                let mut stream = conn
+                    .query(
+                        "SELECT id, COALESCE(branch_id, ''), content FROM concepts \
+                         WHERE id LIKE 'annotation:%' OR id LIKE 'comment:%' \
+                         ORDER BY id",
+                        (),
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                while let Some(row) = stream.next().await.map_err(macrame::DbError::Engine)? {
+                    out.push((
+                        row.get::<String>(0).unwrap_or_default(),
+                        row.get::<String>(1).unwrap_or_default(),
+                        row.get::<String>(2).unwrap_or_default(),
+                    ));
+                }
+                Ok::<_, macrame::DbError>(out)
+            })
+            .map_err(|e| AnnError::Store(format!("{e:?}")))?
+    };
+    let mut exported = Vec::with_capacity(rows.len());
+    for (id, branch, content) in rows {
+        // Own the parsed halves before `id` moves into the row.
+        let (kind, about, n) = {
+            let (kind, about, n) = split_id(&id).ok_or_else(|| {
+                AnnError::Store(format!(
+                    "concept {id:?} is shaped like an annotation id but does not parse"
+                ))
+            })?;
+            (kind.to_string(), about.to_string(), n)
+        };
+        match row_kind(&content).as_deref() {
+            Some(k) if k == kind => {}
+            other => {
+                return Err(AnnError::Store(format!(
+                    "{id:?} is a {kind} id whose payload says {:?}: refusing to export a row \
+                     no read can describe",
+                    other.unwrap_or("unparseable")
+                )))
+            }
+        }
+        // versions_of answers newest-first (the read contract); a file is
+        // written oldest-first so a human can read the chain forward.
+        let mut versions = versions_of(store, std::slice::from_ref(&id))?;
+        versions.reverse();
+        exported.push(ExportedRow {
+            id,
+            kind,
+            about,
+            n,
+            branch,
+            versions: versions
+                .into_iter()
+                .map(|v| ExportedVersion {
+                    body: v.body,
+                    valid_from: v.valid_from,
+                    valid_to: v.valid_to,
+                    retired: v.retired,
+                })
+                .collect(),
+        });
+    }
+    Ok(ExportFile {
+        format: EXPORT_FORMAT.to_string(),
+        exported_at: crate::storage::now_iso8601(),
+        rows: exported,
+    })
+}
+
+fn validate_export_row(row: &ExportedRow) -> Result<(), AnnError> {
+    let (kind, about, n) = split_id(&row.id).ok_or_else(|| {
+        AnnError::Import(format!(
+            "row id {:?} is not an annotation or comment id",
+            row.id
+        ))
+    })?;
+    if kind != row.kind || about != row.about || n != row.n {
+        return Err(AnnError::Import(format!(
+            "row {:?} disagrees with its own id: kind {:?} / about {:?} / n {}",
+            row.id, row.kind, row.about, row.n
+        )));
+    }
+    validate_about(&row.about)?;
+    if row.versions.is_empty() {
+        return Err(AnnError::Import(format!(
+            "row {:?} carries no versions",
+            row.id
+        )));
+    }
+    let mut previous: Option<&str> = None;
+    for (i, v) in row.versions.iter().enumerate() {
+        let last = i + 1 == row.versions.len();
+        if v.body.trim().is_empty() {
+            return Err(AnnError::Import(format!(
+                "row {:?} version {} has an empty body",
+                row.id,
+                i + 1
+            )));
+        }
+        if v.valid_from.trim().is_empty() || v.valid_to.trim().is_empty() {
+            return Err(AnnError::Import(format!(
+                "row {:?} version {} has an empty start or close",
+                row.id,
+                i + 1
+            )));
+        }
+        if let Some(prev) = previous {
+            if v.valid_from.as_str() <= prev {
+                return Err(AnnError::Import(format!(
+                    "row {:?} version {} starts at {:?}, not after {:?}",
+                    row.id,
+                    i + 1,
+                    v.valid_from,
+                    prev
+                )));
+            }
+        }
+        if !crate::storage::is_open_end(&v.valid_to) && v.valid_to < v.valid_from {
+            return Err(AnnError::Import(format!(
+                "row {:?} version {} closes at {:?}, before its start {:?}",
+                row.id,
+                i + 1,
+                v.valid_to,
+                v.valid_from
+            )));
+        }
+        if v.retired && !last {
+            return Err(AnnError::Import(format!(
+                "row {:?} version {} is retired but not the last: a chain has one close",
+                row.id,
+                i + 1
+            )));
+        }
+        previous = Some(v.valid_from.as_str());
+    }
+    if !row.branch.is_empty() {
+        macrame::prelude::BranchId::new(&row.branch).map_err(|e| {
+            AnnError::Import(format!(
+                "row {:?} names branch {:?}: {e:?}",
+                row.id, row.branch
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+/// Replay one row's chain oldest-first. Every version but the last is
+/// written open (the original write's own shape — supersession closed it);
+/// the last carries the file's close and retire flag.
+fn write_export_row(
+    store: &crate::storage::CodeGraphStore,
+    row: &ExportedRow,
+) -> Result<(), AnnError> {
+    let total = row.versions.len();
+    for (i, v) in row.versions.iter().enumerate() {
+        let last = i + 1 == total;
+        let mut upsert = macrame::ConceptUpsert::new(row.id.clone(), row.id.clone())
+            .content(content_json(
+                &row.kind,
+                &row.about,
+                row.n,
+                &v.body,
+                body_open(&v.body),
+            ))
+            .extra(extra_json(&row.kind, &row.about))
+            .valid_from(v.valid_from.clone())
+            .valid_to(if last {
+                v.valid_to.clone()
+            } else {
+                crate::storage::TS_OPEN.to_string()
+            })
+            .retired(last && v.retired);
+        if !row.branch.is_empty() {
+            let bid = macrame::prelude::BranchId::new(&row.branch)
+                .map_err(|e| AnnError::Import(format!("{e:?}")))?;
+            upsert = upsert.on_branch(bid);
+        }
+        let written = store
+            .upsert_concepts_bulk(std::slice::from_ref(&upsert))
+            .map_err(|e| AnnError::Store(format!("{e:?}")))?;
+        if written != 1 {
+            return Err(AnnError::Store(format!(
+                "import wrote {written} rows for {:?}, expected 1",
+                row.id
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Read the row back and compare it to the file. A rebuild is only worth
+/// trusting if the store can prove it holds what the export said.
+fn verify_export_row(
+    store: &crate::storage::CodeGraphStore,
+    row: &ExportedRow,
+) -> Result<(), AnnError> {
+    let mut got = versions_of(store, std::slice::from_ref(&row.id))?;
+    got.reverse();
+    if got.len() != row.versions.len() {
+        return Err(AnnError::Import(format!(
+            "row {:?} reads back {} version(s), the export holds {}",
+            row.id,
+            got.len(),
+            row.versions.len()
+        )));
+    }
+    for (i, (g, want)) in got.iter().zip(row.versions.iter()).enumerate() {
+        if g.body != want.body || g.valid_from != want.valid_from || g.retired != want.retired {
+            return Err(AnnError::Import(format!(
+                "row {:?} version {} does not read back as exported",
+                row.id,
+                i + 1
+            )));
+        }
+        if i + 1 == got.len() && g.valid_to != want.valid_to {
+            return Err(AnnError::Import(format!(
+                "row {:?} closes at {:?}, the export said {:?}",
+                row.id, g.valid_to, want.valid_to
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Import a document `export_all` wrote.
+///
+/// All-or-nothing on validation: every row is checked before the first
+/// write, so a malformed file changes nothing. `on_conflict` is
+/// `"error"` (default: an id that already exists refuses, naming it) or
+/// `"skip"` (existing ids are reported and left alone — the policy for
+/// merging an export into a store that already has some of the rows).
+pub fn import_all(
+    store: &crate::storage::CodeGraphStore,
+    payload: &str,
+    on_conflict: &str,
+) -> Result<ImportReport, AnnError> {
+    if on_conflict != "error" && on_conflict != "skip" {
+        return Err(AnnError::Import(format!(
+            "unknown on_conflict {on_conflict:?}: expected \"error\" or \"skip\""
+        )));
+    }
+    let file: ExportFile = serde_json::from_str(payload)
+        .map_err(|e| AnnError::Import(format!("the payload is not an annotation export ({e})")))?;
+    if file.format != EXPORT_FORMAT {
+        return Err(AnnError::Import(format!(
+            "export format {:?} is not {EXPORT_FORMAT:?}: refusing a document whose shape \
+             this reader was not written for",
+            file.format
+        )));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for row in &file.rows {
+        validate_export_row(row)?;
+        if !seen.insert(row.id.as_str()) {
+            return Err(AnnError::Import(format!(
+                "row {:?} appears twice in the export",
+                row.id
+            )));
+        }
+    }
+    let versions: usize = file.rows.iter().map(|r| r.versions.len()).sum();
+    let mut conflicts = Vec::new();
+    for row in &file.rows {
+        if current_row(store, &row.id)?.is_some() {
+            conflicts.push(row.id.clone());
+        }
+    }
+    if !conflicts.is_empty() && on_conflict == "error" {
+        let named: Vec<String> = conflicts.iter().take(5).cloned().collect();
+        return Err(AnnError::Import(format!(
+            "{} id(s) already exist in the store ({}); a rebuild imports into a fresh store, \
+             and a merge passes on_conflict=\"skip\"",
+            conflicts.len(),
+            named.join(", ")
+        )));
+    }
+    let mut imported = 0usize;
+    let mut skipped = Vec::new();
+    for row in &file.rows {
+        if conflicts.iter().any(|id| id == &row.id) {
+            skipped.push(row.id.clone());
+            continue;
+        }
+        write_export_row(store, row)?;
+        imported += 1;
+    }
+    let mut verified = 0usize;
+    for row in &file.rows {
+        if skipped.iter().any(|id| id == &row.id) {
+            continue;
+        }
+        verify_export_row(store, row)?;
+        verified += 1;
+    }
+    Ok(ImportReport {
+        rows: file.rows.len(),
+        versions,
+        imported,
+        skipped,
+        verified,
+    })
 }
 
 #[cfg(test)]

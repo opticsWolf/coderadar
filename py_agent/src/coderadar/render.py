@@ -932,6 +932,77 @@ def history_of(result: dict) -> str:
     return "\n".join(out)
 
 
+def export_annotations(result: dict) -> str:
+    """Annotation export report as legible text (P8, A-9).
+
+    The document itself is the JSON (or the file); text shows what it
+    carried and where it went.
+    """
+    out = [
+        f"format           {result['format']}",
+        f"rows             {result['rows']}",
+        f"versions         {result['versions']}",
+        f"path             {result.get('path') or '(stdout)'}",
+    ]
+    kinds = result.get("kinds") or {}
+    if kinds:
+        out.append(
+            "kinds            " + "  ".join(f"{k}={v}" for k, v in kinds.items()))
+    return "\n".join(out)
+
+
+def import_annotations(result: dict) -> str:
+    """Annotation import report as legible text (P8, A-9)."""
+    out = [
+        f"rows             {result['rows']}",
+        f"versions         {result['versions']}",
+        f"imported         {result['imported']}",
+        f"verified         {result['verified']}",
+    ]
+    if result.get("store"):
+        out.append(f"store            {result['store']}")
+    skipped = result.get("skipped") or []
+    out.append(f"skipped          {len(skipped)}")
+    for id in skipped:
+        out.append(f"  {id}")
+    return "\n".join(out)
+
+
+def rebuild(result: dict) -> str:
+    """Store rebuild report as legible text (P8, A-9/INV-18).
+
+    The three facts a rebuild must state: where the old store went, what
+    the export carried, and whether every row verified on the way back in.
+    """
+    out = [
+        f"rebuilt          {result['repo']}",
+        f"store            {result['store']}",
+        f"backup           {result.get('backup') or '(no store to keep)'}",
+        (
+            f"commits          ingested={result['commits_ingested']}  "
+            f"skipped={result['commits_skipped']}  "
+            f"failed_files={result['files_failed']}  "
+            f"elapsed={result['elapsed_secs']}s"
+        ),
+        f"branches         {', '.join(result['branches'])}",
+    ]
+    export = result.get("export")
+    if export:
+        out.append(
+            f"export           {export['rows']} row(s) / "
+            f"{export['versions']} version(s) -> {export['path']}")
+    imported = result.get("imported")
+    if imported:
+        out.append(
+            f"imported         {imported['imported']} row(s), "
+            f"verified {imported['verified']}, "
+            f"skipped {len(imported.get('skipped') or [])}")
+    embeddings = result.get("embeddings") or {}
+    if not embeddings.get("embedded"):
+        out.append("embeddings       skipped (run compute-embeddings to restore vectors)")
+    return "\n".join(out)
+
+
 def annotation_versions(result: dict) -> str:
     """Annotation/comment versions as legible text (P6a, DR-44).
 

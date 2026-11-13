@@ -789,6 +789,110 @@ def comment_history_cmd(id: str, fmt: str):
         lambda result: render.annotation_versions(result))
 
 
+def _store_arg(store_path: str | None) -> str | None:
+    """An explicit --store wins; otherwise the project's standard store when
+    it exists (a fresh CLI process has no loaded graph to fall back on)."""
+    from pathlib import Path as _Path
+
+    if store_path:
+        return str(_Path(store_path).resolve())
+    candidate = _Path.cwd() / ".coderadar" / "store" / "coderadar.db"
+    return str(candidate) if candidate.exists() else None
+
+
+@main.command(name="export-annotations")
+@click.option("--out", default=None,
+              help="File to write (default: print the JSON document and nothing else).")
+@click.option("--store", "store_path", default=None,
+              help="Store file to read (default: the loaded project's store).")
+@_format_option
+def export_annotations(out: str | None, store_path: str | None, fmt: str):
+    """Export every annotation and comment chain as one JSON document (P8, A-9)."""
+    from pathlib import Path as _Path
+
+    from . import ops, render
+    target = _store_arg(store_path)
+    _enter_project()
+    try:
+        result = ops.export_annotations(out, store_path=target)
+    except ops.OpError as e:
+        _fail(e)
+    if out is None:
+        # A pipe-shaped command: the document, nothing else.
+        click.echo(result.pop("payload"))
+        return
+    _emit(fmt, result, render.export_annotations)
+
+
+@main.command(name="import-annotations")
+@click.argument("source", type=click.Path(exists=True))
+@click.option("--on-conflict", "on_conflict", type=click.Choice(["error", "skip"]),
+              default="error", show_default=True,
+              help="An id that already exists refuses, or is skipped and reported.")
+@click.option("--store", "store_path", default=None,
+              help="Store file to write (default: the loaded project's store).")
+@_format_option
+def import_annotations(source: str, on_conflict: str,
+                       store_path: str | None, fmt: str):
+    """Import a document `export-annotations` wrote (P8, A-9)."""
+    from pathlib import Path as _Path
+
+    from . import ops, render
+    source = str(_Path(source).resolve())
+    _enter_project()
+    target = _store_arg(store_path)
+    try:
+        result = ops.import_annotations(source, store_path=target,
+                                        on_conflict=on_conflict)
+    except ops.OpError as e:
+        _fail(e)
+    _emit(fmt, result, render.import_annotations)
+
+
+@main.command(name="rebuild-store")
+@click.option("--repo", default=".", show_default=True,
+              help="Git repository the history is read from.")
+@click.option("--store", "store_path", default=None,
+              help="Store file to rebuild (default: <repo>/.coderadar/store/coderadar.db).")
+@click.option("--branches", default=None,
+              help="Comma-separated branches (default: the D-6 c selection, trunk first).")
+@click.option("--parent-ref", default="main", show_default=True,
+              help="Trunk ref fork points are computed against.")
+@click.option("--export", "export_path", default=None,
+              help="Where the annotation export lands (default: beside the store).")
+@click.option("--on-conflict", "on_conflict", type=click.Choice(["error", "skip"]),
+              default="error", show_default=True,
+              help="An id that already exists refuses, or is skipped and reported.")
+@click.option("--embed", is_flag=True,
+              help="Recompute vectors after the rebuild (a final-state pass).")
+@_format_option
+def rebuild_store(repo: str, store_path: str | None, branches: str | None,
+                  parent_ref: str, export_path: str | None,
+                  on_conflict: str, embed: bool, fmt: str):
+    """Rebuild a store from git plus its exported annotations (P8, A-9/INV-18)."""
+    from pathlib import Path as _Path
+
+    from . import ops, render
+    # Absolute before _enter_project chdirs: --repo/--store name the
+    # caller's directory, not the marker project.
+    repo = str(_Path(repo).resolve())
+    store_path = str(_Path(store_path).resolve()) if store_path else None
+    export_path = str(_Path(export_path).resolve()) if export_path else None
+    branch_list = [b.strip() for b in branches.split(",")] if branches else None
+    if branch_list is not None and not all(branch_list):
+        raise click.BadParameter("--branches holds an empty name.")
+    _enter_project()
+    # No _op here: it loads the graph, and the rebuild needs a process
+    # that has not opened the store (the op's own precondition).
+    try:
+        result = ops.rebuild(repo, store_path=store_path, branches=branch_list,
+                             parent_ref=parent_ref, export_path=export_path,
+                             on_conflict=on_conflict, embed=embed)
+    except ops.OpError as e:
+        _fail(e)
+    _emit(fmt, result, render.rebuild)
+
+
 @main.command(name="ingest-history")
 @click.option("--repo", required=True,
               help="Git repository to ingest (any path; history is read from git).")

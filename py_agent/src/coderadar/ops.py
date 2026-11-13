@@ -1765,6 +1765,135 @@ def comment_history(id: str, *, graph: Any = None) -> dict:
     return {"id": str(id), "versions": versions, "count": len(versions)}
 
 
+def _store_for(store_path: str | Path | None, graph: Any = None) -> str | None:
+    """The store path an op should hand `_core` (P8).
+
+    A path wins; a graph handle carries its own; neither means the loaded
+    graph's store (the `_core` default).
+    """
+    if store_path is not None:
+        return str(store_path)
+    if graph is not None:
+        return getattr(graph, "_db_path", None)
+    return None
+
+
+def export_annotations(path: str | Path | None = None, *,
+                       store_path: str | Path | None = None,
+                       graph: Any = None) -> dict:
+    """Export every annotation and comment row with its whole version chain
+    (P8, A-9/INV-18).
+
+    The store's only non-derivable data is these two kinds: everything else
+    is rebuilt from git. The document therefore carries exactly what a
+    rebuild needs — ids (which A-11 keeps stable across renames), bodies,
+    starts, closes, retires and the mint lineage — as one JSON file.
+
+    ``path`` writes the document (atomically: a temporary file replaces the
+    target); without it the payload comes back in the report under
+    ``payload`` so a caller can print it. ``store_path`` reads a store file
+    directly; without it the loaded graph's store is exported.
+
+    Returns ``{"format", "exported_at", "rows", "versions", "path" |
+    "payload"}``.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    target = _store_for(store_path, graph)
+    if store_path is None:
+        _require_index()
+    try:
+        from coderadar._core import export_annotations as _export
+        raw = _export(target)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        document = _json.loads(raw)
+    except Exception as e:  # noqa: BLE001 - a corrupt document is an engine bug
+        raise EngineError(f"export_annotations returned unparseable JSON: {e}") from None
+    rows = document.get("rows") or []
+    report = {
+        "format": document.get("format", ""),
+        "exported_at": document.get("exported_at", ""),
+        "rows": len(rows),
+        "versions": sum(len(r.get("versions") or []) for r in rows),
+        "kinds": {
+            kind: sum(1 for r in rows if r.get("kind") == kind)
+            for kind in sorted({r.get("kind", "") for r in rows})
+        },
+    }
+    if path is None:
+        report["payload"] = raw
+        return report
+    out = _Path(path)
+    if out.parent and not out.parent.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".tmp")
+    tmp.write_text(raw, encoding="utf-8", newline="")
+    tmp.replace(out)
+    report["path"] = str(out)
+    return report
+
+
+def import_annotations(source: str | Path | dict, *,
+                       store_path: str | Path | None = None,
+                       on_conflict: str = "error",
+                       graph: Any = None) -> dict:
+    """Import a document `export_annotations` wrote (P8, A-9/INV-18).
+
+    ``source`` is a path, a JSON string, or the parsed document. Every row
+    is validated before the first write, so a malformed document changes
+    nothing; each chain is then replayed oldest-version-first, and every
+    row is read back and compared to the file before the import reports
+    success (``verified``).
+
+    ``on_conflict``: ``"error"`` (default) refuses an id that already
+    exists, naming it; ``"skip"`` leaves existing ids alone and reports
+    them under ``skipped``.
+
+    Returns ``{"rows", "versions", "imported", "skipped", "verified"}``.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    if on_conflict not in ("error", "skip"):
+        raise InvalidRequest(
+            f"on_conflict={on_conflict!r}: expected 'error' or 'skip'")
+    if isinstance(source, dict):
+        payload = _json.dumps(source)
+    else:
+        text = str(source)
+        candidate = _Path(text)
+        if len(text) < 4096 and candidate.is_file():
+            payload = candidate.read_text(encoding="utf-8")
+        else:
+            payload = text
+    target = _store_for(store_path, graph)
+    if store_path is None:
+        _require_index()
+    try:
+        from coderadar._core import import_annotations as _import
+        raw = _import(payload, target, on_conflict)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        report = dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"import_annotations returned unparseable JSON: {e}") from None
+    if target is not None:
+        report["store"] = target
+    return report
+
+
 def ingest_history(repo: str | Path, branch: str = "main",
                    from_sha: str | None = None, dry_run: bool = False,
                    lineage: str | None = None, parent_ref: str = "main",
@@ -2256,6 +2385,70 @@ def backfill_commit_index(branch: str = "main",
         raise EngineError(f"backfill_commit_index returned unparseable JSON: {e}") from None
 
 
+def _lineage_plan(repo_s: str, branches: list[str] | None,
+                  parent_ref: str) -> tuple[list[str], dict[str, str]]:
+    """The lineages a full history build ingests, and the names that are
+    only addresses (D-6 c, P5b.6).
+
+    One lineage per distinct tip the trunk's first-parent chain does not
+    already hold; every other name is an address whose tip some lineage
+    holds. An explicit list is honored as given, except the trunk is
+    prepended when present and missing. Shared by the migration and the
+    rebuild so the selection law lives in one place.
+    """
+    try:
+        from coderadar._core import branch_plan as _branch_plan
+        from coderadar._core import list_branches as _list_branches
+        listed = list(_list_branches(repo_s))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    # The plan needs a resolvable trunk; a repository without one refuses
+    # below with a message that says what to do, not a git error.
+    plan: list[dict] = []
+    if "main" in listed:
+        try:
+            plan = list(_branch_plan(repo_s, parent_ref))
+        except ValueError as e:
+            raise InvalidRequest(str(e)) from None
+        except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+            raise EngineError(str(e)) from None
+    addresses: dict[str, str] = {}
+    if branches is None:
+        if "main" not in listed:
+            raise InvalidRequest(
+                "repository has no 'main' branch: pass branches=[...] explicitly "
+                f"(local branches: {listed or ['(none)']}).")
+        # D-6 c: one lineage per distinct tip that the trunk's chain does
+        # not already hold; every other name is an address. Local spelling
+        # wins a tie (a remote-tracking name is the same branch seen from
+        # elsewhere, and two lineages for one tip would trip
+        # cross-lineage-id).
+        chosen: dict[str, str] = {}
+        for entry in sorted(plan, key=lambda e: (e["name"].count("/"), e["name"])):
+            if entry["name"] == "main":
+                continue
+            if entry["merged"] or entry["tip"] in chosen:
+                addresses[entry["name"]] = entry["tip"]
+                continue
+            chosen[entry["tip"]] = entry["name"]
+        ordered = ["main", *chosen.values()]
+    else:
+        ordered = list(branches)
+        if not ordered:
+            raise InvalidRequest("branches=[...] is empty: nothing to build.")
+        if "main" in listed and "main" not in ordered:
+            ordered.insert(0, "main")
+        wanted = set(ordered)
+        for entry in plan:
+            if entry["name"] not in wanted:
+                addresses[entry["name"]] = entry["tip"]
+    return ordered, addresses
+
+
 def migrate_to_commit_time(repo: str | Path, store: str | Path,
                             branches: list[str] | None = None,
                             parent_ref: str = "main",
@@ -2335,56 +2528,7 @@ def migrate_to_commit_time(repo: str | Path, store: str | Path,
             parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
             raise InvalidRequest(f"cannot create store directory {parent}: {e}") from None
-    try:
-        from coderadar._core import branch_plan as _branch_plan
-        from coderadar._core import list_branches as _list_branches
-        listed = list(_list_branches(repo_s))
-    except ImportError as e:
-        raise EngineError(f"native extension unavailable: {e}") from None
-    except ValueError as e:
-        raise InvalidRequest(str(e)) from None
-    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
-        raise EngineError(str(e)) from None
-    # The plan needs a resolvable trunk; a repository without one refuses
-    # below with a message that says what to do, not a git error.
-    plan: list[dict] = []
-    if "main" in listed:
-        try:
-            plan = list(_branch_plan(repo_s, parent_ref))
-        except ValueError as e:
-            raise InvalidRequest(str(e)) from None
-        except Exception as e:  # noqa: BLE001 - surfaced as EngineError
-            raise EngineError(str(e)) from None
-    addresses: dict[str, str] = {}
-    if branches is None:
-        if "main" not in listed:
-            raise InvalidRequest(
-                "repository has no 'main' branch: pass branches=[...] explicitly "
-                f"(local branches: {listed or ['(none)']}).")
-        # D-6 c: one lineage per distinct tip that the trunk's chain does
-        # not already hold; every other name is an address. Local spelling
-        # wins a tie (a remote-tracking name is the same branch seen from
-        # elsewhere, and two lineages for one tip would trip
-        # cross-lineage-id).
-        chosen: dict[str, str] = {}
-        for entry in sorted(plan, key=lambda e: (e["name"].count("/"), e["name"])):
-            if entry["name"] == "main":
-                continue
-            if entry["merged"] or entry["tip"] in chosen:
-                addresses[entry["name"]] = entry["tip"]
-                continue
-            chosen[entry["tip"]] = entry["name"]
-        ordered = ["main", *chosen.values()]
-    else:
-        ordered = list(branches)
-        if not ordered:
-            raise InvalidRequest("branches=[...] is empty: nothing to migrate.")
-        if "main" in listed and "main" not in ordered:
-            ordered.insert(0, "main")
-        wanted = set(ordered)
-        for entry in plan:
-            if entry["name"] not in wanted:
-                addresses[entry["name"]] = entry["tip"]
+    ordered, addresses = _lineage_plan(repo_s, branches, parent_ref)
     started = _time.perf_counter()
     branch_reports: dict[str, dict] = {}
     for branch in ordered:
@@ -2447,6 +2591,181 @@ def migrate_to_commit_time(repo: str | Path, store: str | Path,
         "merge_heal": merge_heal,
         "embeddings": embeddings,
         "verify": coverage,
+        "elapsed_secs": round(_time.perf_counter() - started, 3),
+    }
+
+
+def rebuild(repo: str | Path, *, store_path: str | Path | None = None,
+            branches: list[str] | None = None, parent_ref: str = "main",
+            export_path: str | Path | None = None,
+            on_conflict: str = "error", embed: bool = False) -> dict:
+    """Rebuild a store from git plus the annotations it exported (P8,
+    A-9/INV-18).
+
+    A-9 splits the store in two: everything but annotations and comments
+    is derived from git; those two kinds are the store's own data. A
+    rebuild is therefore mechanical — export the user data, move the old
+    store aside, re-ingest the history, import the export — and it is the
+    answer to a rewritten history (H-16's scrubbed secret) as well as to
+    any future store change, which becomes a rebuild rather than a
+    migration.
+
+    The old store is **moved, never deleted**: it lands beside the new one
+    as ``coderadar.db.pre-rebuild-<stamp>`` and the report names it. The
+    export lands at ``coderadar.db.annotations.json`` unless ``export_path``
+    names another file; it is the human-readable copy of the same rows, and
+    it is written *after* the move (from the backup — same bytes).
+
+    One rebuild per process: the engine keeps a store file locked once
+    anything has opened it, so this op needs a process that has not touched
+    the store yet. A loaded graph refuses up front; any other holder makes
+    the move itself refuse, naming what to stop. That is also why the CLI
+    command runs the op in its own invocation, and why nothing is loaded
+    here afterwards.
+
+    ``branches`` defaults to the D-6 c selection (see
+    ``migrate_to_commit_time``); ``on_conflict`` is passed to the import
+    (``"error"`` or ``"skip"``). ``embed=False`` leaves the vector index
+    empty — recompute it after a rebuild with ``compute_embeddings`` when
+    search needs it (H-19: vectors are a final-state pass, not history).
+
+    A failure after the move leaves the canonical path empty but the
+    backup and the export on disk, and the message names both.
+
+    Returns ``{"repo", "store", "backup", "export", "parent_ref",
+    "branches", "branch_reports", "addresses", "addresses_recorded",
+    "commits_ingested", "commits_skipped", "files_failed", "merge_heal",
+    "imported", "verified", "embeddings", "elapsed_secs"}``.
+    """
+    import os as _os
+    import time as _time
+    from pathlib import Path as _Path
+
+    if not repo or not str(repo).strip():
+        raise InvalidRequest("Please provide a git repository path.")
+    # A loaded graph holds the very file this op moves. Refusing beats the
+    # two failures it would otherwise have: an OS error on Windows, or (on
+    # POSIX) a moved store the loaded graph keeps reading while the new one
+    # takes its place.
+    try:
+        from coderadar._core import graph_is_loaded as _loaded
+        if _loaded():
+            raise InvalidRequest(
+                "a graph is loaded in this process, and it holds the store this "
+                "rebuild moves; run the rebuild in a fresh process (the CLI "
+                "command does), or drop the graph first")
+    except ImportError:  # pragma: no cover - extension always built in CI
+        pass
+    repo_s = str(repo)
+    store = (_Path(store_path) if store_path is not None
+             else _Path(repo_s) / ".coderadar" / "store" / "coderadar.db")
+    store_s = str(store)
+    if not store.parent.exists():
+        try:
+            store.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise InvalidRequest(f"cannot create {store.parent}: {e}") from None
+    started = _time.perf_counter()
+
+    # 1. The old store moves aside, first: the engine keeps a store file
+    # locked for the life of the process once anything has opened it, so
+    # the move must precede this process's own first open. Nothing is
+    # deleted — the backup is the migration's "old store untouched" law.
+    backup: str | None = None
+    if store.exists():
+        stamp = _time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime())
+        candidate = store.with_name(f"{store.name}.pre-rebuild-{stamp}")
+        n = 1
+        while candidate.exists():
+            n += 1
+            candidate = store.with_name(f"{store.name}.pre-rebuild-{stamp}-{n}")
+        try:
+            _os.replace(store, candidate)
+            for suffix in ("-wal", "-shm"):
+                side = store.with_name(store.name + suffix)
+                if side.exists():
+                    _os.replace(side, candidate.with_name(candidate.name + suffix))
+        except OSError as e:
+            raise InvalidRequest(
+                f"cannot move {store_s} aside ({e}): a process holds it open. "
+                "A rebuild is one-shot per process and needs a process that has "
+                "not opened the store yet — the daemon, or any earlier ingest or "
+                "load here. Run it in a fresh process (the CLI does).") from None
+        backup = str(candidate)
+
+    # 2. The user data, out of the backup (the same bytes, now unlocked).
+    export: dict | None = None
+    if backup is not None:
+        out = (_Path(export_path) if export_path is not None
+               else store.with_name(store.name + ".annotations.json"))
+        export = export_annotations(out, store_path=backup)
+
+    # 3. Git again, with the same selection law as the migration. A
+    #    failure here leaves the canonical path empty but the backup and
+    #    the export on disk — the message says where they are.
+    try:
+        ordered, addresses = _lineage_plan(repo_s, branches, parent_ref)
+        branch_reports: dict[str, dict] = {}
+        for branch in ordered:
+            branch_reports[branch] = ingest_history(
+                repo_s, branch, store_path=store_s, parent_ref=parent_ref)
+    except (InvalidRequest, EngineError) as e:
+        raise type(e)(
+            f"{e} — the old store is at {backup!r}"
+            + (f" and the export at {export.get('path')!r}" if export else "")) from None
+    addresses_recorded = 0
+    if addresses:
+        try:
+            from coderadar._core import record_branch_addresses as _record_addresses
+            addresses_recorded = int(_record_addresses(store_s, sorted(addresses.items())))
+        except ImportError as e:
+            raise EngineError(f"native extension unavailable: {e}") from None
+        except ValueError as e:
+            raise InvalidRequest(str(e)) from None
+        except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+            raise EngineError(str(e)) from None
+    merge_heal = reingest_merged_commits(repo_s, store_path=store_s)
+
+    # 4. The user data back in — the chains replay oldest-first and every
+    #    row is read back and compared before this op reports success.
+    imported: dict | None = None
+    if export is not None and export.get("path"):
+        imported = import_annotations(
+            export["path"], store_path=store_s, on_conflict=on_conflict)
+    verified = bool(imported) and imported["verified"] == imported["imported"]
+    if imported is not None and not verified:
+        raise EngineError(
+            "the import did not verify its own rows "
+            f"(verified {imported['verified']} of {imported['imported']}): "
+            "the rebuilt store is incomplete; the old store is at "
+            f"{backup!r} and the export at {export.get('path')!r}")
+
+    # 5. Vectors are a final-state pass, off by default (H-19).
+    embeddings: dict = {"embedded": False}
+    commits_ingested = sum(r["commits_ingested"] for r in branch_reports.values())
+    commits_skipped = sum(len(r["commits_skipped"]) for r in branch_reports.values())
+    files_failed = sum(len(r["files_failed"]) for r in branch_reports.values())
+    if embed:
+        from coderadar import load as _cold_load
+        _cold_load(store_s, root=repo_s)
+        embeddings = {"embedded": True, **compute_embeddings()}
+    return {
+        "repo": repo_s,
+        "store": store_s,
+        "backup": backup,
+        "export": export,
+        "parent_ref": parent_ref,
+        "branches": ordered,
+        "branch_reports": branch_reports,
+        "addresses": dict(sorted(addresses.items())),
+        "addresses_recorded": addresses_recorded,
+        "commits_ingested": commits_ingested,
+        "commits_skipped": commits_skipped,
+        "files_failed": files_failed,
+        "merge_heal": merge_heal,
+        "imported": imported,
+        "verified": verified,
+        "embeddings": embeddings,
         "elapsed_secs": round(_time.perf_counter() - started, 3),
     }
 
