@@ -51,6 +51,11 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(remove_file, m)?)?;
     m.add_function(wrap_pyfunction!(record_checkout, m)?)?;
     m.add_function(wrap_pyfunction!(record_checkout_loaded, m)?)?;
+    m.add_function(wrap_pyfunction!(git_head, m)?)?;
+    m.add_function(wrap_pyfunction!(git_workdir_changes, m)?)?;
+    m.add_function(wrap_pyfunction!(git_blob_text, m)?)?;
+    m.add_function(wrap_pyfunction!(git_marks, m)?)?;
+    m.add_function(wrap_pyfunction!(record_git_marks, m)?)?;
     {
         use crate::ffi_git::{git_blame, git_changed_files, git_worktree_clean};
         m.add_function(wrap_pyfunction!(git_worktree_clean, m)?)?;
@@ -2671,6 +2676,96 @@ fn branch_plan(py: Python<'_>, repo: &str, parent_ref: &str) -> PyResult<PyObjec
         out.append(d)?;
     }
     Ok(out.into())
+}
+
+/// HEAD's branch and commit (P5d slice B): `{branch, sha, detached}`.
+/// `branch` is `None` on a detached HEAD or an unborn repository; `sha` is
+/// `None` only when nothing is committed. Read-only; no checkout.
+#[pyfunction]
+fn git_head(py: Python<'_>, repo: &str) -> PyResult<PyObject> {
+    let head = crate::fs::git::head_info(repo)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("git head failed: {e:?}")))?;
+    let detached = head.branch.is_none() && head.sha.is_some();
+    let d = PyDict::new(py);
+    d.set_item("branch", head.branch)?;
+    d.set_item("sha", head.sha)?;
+    d.set_item("detached", detached)?;
+    Ok(d.into())
+}
+
+/// The indexable paths where the working tree differs from `sha`'s tree
+/// (P5d slice B): `[{path, in_tree, in_workdir}]`. The checkout sweep calls
+/// it twice — against the new head (what the tree carries) and the old one
+/// (what was dirty when the old lineage was left).
+#[pyfunction]
+fn git_workdir_changes(py: Python<'_>, repo: &str, sha: &str) -> PyResult<PyObject> {
+    let changes = crate::fs::git::workdir_changes(repo, sha).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("git workdir changes failed: {e:?}"))
+    })?;
+    let out = PyList::empty(py);
+    for change in changes {
+        let d = PyDict::new(py);
+        d.set_item("path", change.path)?;
+        d.set_item("in_tree", change.in_tree)?;
+        d.set_item("in_workdir", change.in_workdir)?;
+        out.append(d)?;
+    }
+    Ok(out.into())
+}
+
+/// `path`'s text as committed in `sha` (P5d slice B): the committed side of
+/// a checkout reset. Non-UTF-8 bytes are a `ValueError` — every path the
+/// sweep asks about is indexable source, so a binary answer means the caller
+/// asked about something else.
+#[pyfunction]
+fn git_blob_text(repo: &str, sha: &str, path: &str) -> PyResult<String> {
+    let bytes = crate::fs::git::blob_bytes(repo, sha, std::path::Path::new(path))
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("git blob failed: {e:?}")))?;
+    String::from_utf8(bytes).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(format!("{path} at {sha} is not UTF-8"))
+    })
+}
+
+/// The sync marks a store carries (P5d slice B): `{checkout, head, dirty}`.
+/// `dirty` is the JSON object recorded by the last sync (`{path: sha256}`),
+/// which is how the sweep knows which files the left lineage was holding.
+#[pyfunction]
+fn git_marks(py: Python<'_>, store_path: &str) -> PyResult<PyObject> {
+    let store =
+        crate::storage::CodeGraphStore::open(std::path::Path::new(store_path)).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "git_marks cannot open {store_path:?}: {e:?} — ingest_history builds stores"
+            ))
+        })?;
+    let marks = store.git_marks().map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("cannot read sync marks: {e:?}"))
+    })?;
+    let d = PyDict::new(py);
+    d.set_item("checkout", marks.0)?;
+    d.set_item("head", marks.1)?;
+    d.set_item("dirty", marks.2)?;
+    Ok(d.into())
+}
+
+/// Write the sync marks (P5d slice B): the checked-out branch (`None`
+/// clears), the head commit, and the dirty set as JSON.
+#[pyfunction]
+#[pyo3(signature = (store_path, checkout, head, dirty))]
+fn record_git_marks(
+    store_path: &str,
+    checkout: Option<&str>,
+    head: Option<&str>,
+    dirty: &str,
+) -> PyResult<()> {
+    let store =
+        crate::storage::CodeGraphStore::open(std::path::Path::new(store_path)).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "record_git_marks cannot open {store_path:?}: {e:?}"
+            ))
+        })?;
+    store.record_git_marks(checkout, head, dirty).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("cannot write sync marks: {e:?}"))
+    })
 }
 
 /// Record branch names that are only addresses (P5b.6, D-6 c): `(name,

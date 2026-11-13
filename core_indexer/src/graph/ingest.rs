@@ -66,6 +66,17 @@ pub fn observed_key(lineage: &str) -> String {
 /// nothing asked for.
 pub const CHECKOUT_KEY: &str = "coderadar.git.checkout";
 
+/// The last head the sync saw (P5d slice B): a different sha is a moved
+/// HEAD, and a different branch beside it is a checkout.
+pub const GIT_HEAD_KEY: &str = "coderadar.git.head";
+
+/// The dirty set the last sync recorded, as a JSON object `{path: sha256}`
+/// (P5d slice B). This is the sweep's left-hand set: the files the checked
+/// out lineage was holding when it was last looked at. A path that is no
+/// longer dirty on the same lineage was reverted; a path still dirty after
+/// a checkout is an edit carried to the new lineage.
+pub const GIT_DIRTY_KEY: &str = "coderadar.git.dirty";
+
 /// The later of two RFC3339 stamps, for seeding INV-11's nudge chain. An
 /// unparseable side loses to a parseable one; two unparseable sides keep the
 /// first, which the later nudge treats as "no seed".

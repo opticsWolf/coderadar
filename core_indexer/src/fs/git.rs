@@ -376,6 +376,117 @@ pub fn fork_point(repo_path: &str, branch: &str, parent_ref: &str) -> Result<Str
     })
 }
 
+/// Where HEAD points (P5d slice B). `branch` is `None` on a detached HEAD
+/// (and on an unborn repository), `sha` is `None` only when nothing is
+/// committed yet — the two are answered independently because a caller
+/// needs both facts: a detached HEAD has a tree but no lineage to write
+/// observations to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadInfo {
+    pub branch: Option<String>,
+    pub sha: Option<String>,
+}
+
+/// Read HEAD's branch and commit without checking anything out.
+pub fn head_info(repo_path: &str) -> Result<HeadInfo, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let head = match repo.head() {
+        Ok(head) => head,
+        // Unborn HEAD (no commit yet) and a corrupt HEAD are both "no
+        // tree to sync": the sync reports them, it does not invent one.
+        Err(_) => {
+            return Ok(HeadInfo {
+                branch: None,
+                sha: None,
+            })
+        }
+    };
+    let detached = repo.head_detached().unwrap_or(false);
+    let branch: Option<String> = if detached {
+        None
+    } else {
+        head.shorthand().ok().map(str::to_string)
+    };
+    let sha = head.target().map(|oid| oid.to_string());
+    Ok(HeadInfo { branch, sha })
+}
+
+/// One path the working tree differs on, against a commit (P5d slice B):
+/// `in_tree` / `in_workdir` say which sides hold the path, so the caller
+/// knows whether to read committed content, working content, or write a
+/// retirement. Renames arrive as a deletion plus an addition — the sweep
+/// has no re-keying to do, and the rename link is the ingest's business
+/// (P5b.7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkdirChange {
+    pub path: String,
+    pub in_tree: bool,
+    pub in_workdir: bool,
+}
+
+/// The indexable paths where the working tree (index included) differs
+/// from `sha`'s tree. `sha` is a commit, so the same function answers both
+/// questions the checkout sweep asks: against the new head (what the tree
+/// carries now) and against the old one (what was dirty when the old
+/// lineage was left).
+pub fn workdir_changes(repo_path: &str, sha: &str) -> Result<Vec<WorkdirChange>, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let tree = repo
+        .revparse_single(sha)
+        .map_err(|_| GitError::UnknownRevision(sha.to_string()))?
+        .peel_to_tree()
+        .map_err(|_| GitError::UnknownRevision(sha.to_string()))?;
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false)
+        .recurse_ignored_dirs(false);
+    let diff = repo
+        .diff_tree_to_workdir_with_index(Some(&tree), Some(&mut opts))
+        .map_err(GitError::Diff)?;
+    let mut changes: Vec<WorkdirChange> = Vec::new();
+    let mut push = |path: Option<&Path>, in_tree: bool, in_workdir: bool| {
+        let Some(path) = path else { return };
+        if !is_indexable_path(path) {
+            return;
+        }
+        let path = path.to_string_lossy().to_string();
+        match changes.iter_mut().find(|c| c.path == path) {
+            Some(existing) => {
+                existing.in_tree |= in_tree;
+                existing.in_workdir |= in_workdir;
+            }
+            None => changes.push(WorkdirChange {
+                path,
+                in_tree,
+                in_workdir,
+            }),
+        }
+    };
+    diff.foreach(
+        &mut |delta, _| {
+            let new_path = delta.new_file().path();
+            let old_path = delta.old_file().path();
+            match delta.status() {
+                git2::Delta::Added | git2::Delta::Untracked => push(new_path, false, true),
+                git2::Delta::Deleted => push(old_path, true, false),
+                git2::Delta::Renamed | git2::Delta::Copied => {
+                    push(old_path, true, false);
+                    push(new_path, false, true);
+                }
+                _ => push(new_path, true, true),
+            }
+            true
+        },
+        None,
+        None,
+        None,
+    )
+    .map_err(GitError::Diff)?;
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(changes)
+}
+
 /// Raw bytes of `path` as committed in `sha` (P5a.1): the walker feeds git
 /// blob bytes, so no commit is ever checked out. `sha` must resolve to a
 /// commit and `path` must name a blob in that commit's tree.
@@ -689,6 +800,63 @@ mod tests {
         assert!(
             !is_worktree_clean(root).unwrap(),
             "untracked non-ignored files must dirty the tree"
+        );
+    }
+
+    #[test]
+    fn head_info_and_workdir_changes_are_the_sweeps_inputs() {
+        // P5d slice B: the sync needs HEAD's branch and the indexable
+        // working-tree diff, and neither may see ignored artifacts.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.py"), "x = 1\n").unwrap();
+        std::fs::write(dir.path().join(".gitignore"), ".coderadar/\n").unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("a.py")).unwrap();
+        index.add_path(std::path::Path::new(".gitignore")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@t.t").unwrap();
+        let sha = repo
+            .commit(Some("HEAD"), &sig, &sig, "c1", &tree, &[])
+            .unwrap()
+            .to_string();
+        let root = dir.path().to_str().unwrap();
+
+        let head = head_info(root).unwrap();
+        assert_eq!(head.sha.as_deref(), Some(sha.as_str()));
+        assert!(head.branch.is_some(), "an attached HEAD names its branch");
+        assert!(workdir_changes(root, &sha).unwrap().is_empty());
+
+        std::fs::write(dir.path().join("a.py"), "x = 2\n").unwrap();
+        std::fs::write(dir.path().join("b.py"), "y = 1\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".coderadar/store")).unwrap();
+        std::fs::write(dir.path().join(".coderadar/store/x.db"), "junk\n").unwrap();
+        let changes = workdir_changes(root, &sha).unwrap();
+        assert_eq!(
+            changes,
+            vec![
+                WorkdirChange {
+                    path: "a.py".into(),
+                    in_tree: true,
+                    in_workdir: true,
+                },
+                WorkdirChange {
+                    path: "b.py".into(),
+                    in_tree: false,
+                    in_workdir: true,
+                },
+            ],
+            "ignored artifacts stay out of the sweep"
+        );
+
+        std::fs::remove_file(dir.path().join("a.py")).unwrap();
+        let changes = workdir_changes(root, &sha).unwrap();
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.path == "a.py" && c.in_tree && !c.in_workdir),
+            "a deletion is in the tree and not in the workdir: {changes:?}"
         );
     }
 }

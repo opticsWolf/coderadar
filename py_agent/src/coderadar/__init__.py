@@ -1109,6 +1109,24 @@ class CodeGraph:
         except RuntimeError as e:
             raise CodeRadarError(str(e)) from None
 
+    def sync_git(self, repo: str | None = None, **kwargs) -> dict:
+        """Bring this graph's store up to date with git (P5d slice B).
+
+        Commit sync, merged-name addresses, the observation sweep and the
+        sync marks — see `coderadar.ops.sync_git`. The caller owns reloading
+        the in-memory graph after a checkout; this method writes the store.
+        """
+        from . import ops as _ops
+        return _ops.sync_git(repo or self._root or ".", graph=self, **kwargs)
+
+    def watch_git(self, repo: str | None = None, *,
+                  poll_ms: int = 1000) -> GitWatcher:
+        """Run `sync_git` whenever HEAD moves (P5d slice B, A-8)."""
+        watcher = GitWatcher(repo or self._root or ".", graph=self,
+                             poll_ms=poll_ms)
+        watcher.start()
+        return watcher
+
     def watch(self, paths: list[str] | None = None,
               debounce_ms: int | None = None,
               max_file_size_bytes: int | None = None) -> Watcher:
@@ -2133,6 +2151,97 @@ def watch(root: str) -> Watcher:
     return graph.watch([root])
 
 
+def watch_git(repo: str = ".", *, poll_ms: int = 1000,
+              store_path: str | None = None) -> GitWatcher:
+    """Load (or cold-start) `repo`, then run `sync_git` whenever HEAD moves.
+
+    Usage:
+        with coderadar.watch_git(".") as w:
+            ...
+    """
+    graph = load(store_path) if store_path else load(
+        str(Path(repo) / ".coderadar" / "store" / "coderadar.db"))
+    watcher = GitWatcher(repo, graph=graph, poll_ms=poll_ms)
+    watcher.start()
+    return watcher
+
+
+class GitWatcher:
+    """Run `sync_git` when the repository's HEAD moves (P5d slice B, A-8).
+
+    Polling rather than fsnotify: a commit rewrites HEAD, one ref file and
+    the index, and which of those a platform reports differs; a HEAD read
+    is one git2 open, and a one-second cadence costs less than the ingest
+    it triggers. `poll_once()` is public so a caller with its own loop can
+    drive it without this thread.
+
+    The watcher is deliberately small: it owns the *trigger*, not the
+    policy. Refusals and per-branch errors are in the returned report, and
+    an exception is kept in `last_error` for the caller to surface — the
+    loop itself never dies.
+    """
+
+    def __init__(self, repo: str = ".", *, graph=None,
+                 store_path: str | None = None, poll_ms: int = 1000,
+                 catch_up: bool = True):
+        self._repo = repo
+        self._graph = graph
+        self._store_path = store_path
+        self._poll_ms = max(50, int(poll_ms))
+        self._catch_up = catch_up
+        self._state: tuple[str | None, str | None] | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.reports: list[dict] = []
+        self.last_error: str | None = None
+
+    def poll_once(self) -> dict | None:
+        """Sync if HEAD's (branch, sha) changed since the last poll."""
+        from coderadar._core import git_head
+        head = dict(git_head(self._repo))
+        state = (head.get("branch"), head.get("sha"))
+        if state == self._state:
+            return None
+        # A direct import, not `self._ops.sync_git`: same call, and the
+        # call graph can see it (the dead-code ratchet counts an
+        # unresolved attribute call as no call at all).
+        from coderadar.ops import sync_git
+        report = sync_git(
+            self._repo, store_path=self._store_path, graph=self._graph,
+            catch_up=self._catch_up)
+        self._state = state
+        self.reports.append(report)
+        return report
+
+    def start(self) -> GitWatcher:
+        if self._thread is not None:
+            return self
+        self._thread = threading.Thread(
+            target=self._run, name="coderadar-git-watcher", daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.poll_once()
+            except Exception as e:  # noqa: BLE001 - the loop must not die
+                self.last_error = f"{type(e).__name__}: {e}"
+            self._stop.wait(self._poll_ms / 1000.0)
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+            self._thread = None
+
+    def __enter__(self) -> GitWatcher:
+        return self.start()
+
+    def __exit__(self, *args) -> None:
+        self.stop()
+
+
 def blob_stats() -> dict:
     """Cumulative blob activity backing the loaded generation (§1.9).
 
@@ -2186,6 +2295,7 @@ __all__ = [
     "StaleHandle",
     "SymbolChange",
     "UpdateReport",
+    "GitWatcher",
     "Watcher",
     "analyze",
     "blob_stats",
@@ -2193,6 +2303,7 @@ __all__ = [
     "load",
     "ops",
     "watch",
+    "watch_git",
 ]
 
 

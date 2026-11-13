@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -1738,13 +1739,35 @@ def serve(project_path: str | None):
     mcp_serve(coderadar.CodeGraph())
 
 
+def _print_sync_report(report: dict) -> None:
+    """One line per sync that did something (P5d slice B)."""
+    head = report.get("head") or {}
+    checkout = report.get("checkout") or "(detached)"
+    parts = [f"{checkout}@{str(head.get('sha') or '')[:8]}"]
+    ingested = sum(i.get("commits_ingested", 0) for i in report.get("ingested", []))
+    if ingested:
+        parts.append(f"{ingested} commit(s) ingested")
+    if report.get("checkout_changed"):
+        parts.append("checkout swept")
+    observations = report.get("observations", [])
+    if observations:
+        parts.append(f"{len(observations)} observation(s)")
+    for refusal in report.get("refusals", []):
+        parts.append(f"refused {refusal['branch']}: {refusal['reason']}")
+    console.print("[cyan]sync[/cyan] " + " · ".join(parts))
+
+
 @main.command()
 @click.argument("paths", nargs=-1, type=click.Path(exists=True))
 @click.option("--debounce", default=100, help="Debounce window in ms")
-def watch(paths, debounce):
+@click.option("--git", "watch_refs", is_flag=True,
+              help="Follow git refs instead of files: ingest commits and "
+                   "sweep checkouts (P5d).")
+def watch(paths, debounce, watch_refs):
     """Watch files for changes and auto-update the code graph.
 
-    PATHS: directories to watch (default: src/ tests/).
+    PATHS: directories to watch (default: src/ tests/). With --git, a ref
+    watcher runs the commit-driven sync instead (`ops.sync_git`).
     """
     paths = tuple(_enter_project(*paths))
     watch_paths = list(paths) if paths else ["src/", "tests/"]
@@ -1753,6 +1776,26 @@ def watch(paths, debounce):
     # took the config activation with it. A watcher updating an empty index
     # reports changes against nothing.
     graph = _ensure_graph()
+    if watch_refs:
+        watcher = graph.watch_git(poll_ms=max(200, debounce * 5))
+        console.print(
+            "[bold green]Watching git refs[/bold green] "
+            "(commits, checkouts, merges)")
+        console.print("[dim]Press Ctrl+C to stop[/dim]")
+        seen = 0
+        try:
+            while True:
+                time.sleep(0.5)
+                for report in watcher.reports[seen:]:
+                    _print_sync_report(report)
+                seen = len(watcher.reports)
+                if watcher.last_error:
+                    console.print(
+                        f"[red]sync failed:[/red] {watcher.last_error}")
+                    watcher.last_error = None
+        except KeyboardInterrupt:
+            watcher.stop()
+        return
     watcher = graph.watch(watch_paths, debounce_ms=debounce)
     console.print(f"[bold green]Watching:[/bold green] {', '.join(watch_paths)}")
     console.print("[dim]Press Ctrl+C to stop[/dim]")

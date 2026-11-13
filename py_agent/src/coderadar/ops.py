@@ -1863,6 +1863,273 @@ def ingest_history(repo: str | Path, branch: str = "main",
         raise EngineError(f"ingest_history returned unparseable JSON: {e}") from None
 
 
+def sync_git(repo: str | Path, *, store_path: str | Path | None = None,
+             graph: Any = None, parent_ref: str = "main",
+             catch_up: bool = True, source: str = "watch") -> dict:
+    """Bring a commit-time store up to date with the repository's git state
+    (P5d slice B: A-8, D-4 a1).
+
+    Four acts, in this order:
+
+    1. **Commit sync.** The trunk ingests first, then every branch whose tip
+       has commits of its own (D-6 c's selection: tips already on the trunk's
+       chain are addresses, not lineages). A refusal is reported per branch
+       (``refusals``) and never aborts the rest.
+    2. **Addresses.** Merged branch names are recorded as commit addresses
+       (``coderadar.branch.tip.{name}``), so a read of one resolves without
+       git.
+    3. **The observation sweep**, when the loaded graph can write:
+       a checkout returns the left lineage's dirty files to *its* head
+       (``source: "checkout"``) and records the carried edits on the new
+       lineage; a same-lineage sync records edits made while CodeRadar was
+       off (``source: "startup"``) and reverts, and writes nothing for a
+       file whose bytes the last sync already recorded. A detached HEAD has
+       no lineage, so its sweep is skipped with that reason, not guessed.
+    4. **Marks.** The checkout, head and dirty set (``{path: sha256}``) are
+       recorded for the next call; the dirty set is what the sweep treats as
+       the left lineage's edits next time.
+
+    The sweep writes the *store*; it does not reload the in-memory graph. A
+    checkout changes which tree the graph describes, so the caller owns the
+    reload (the daemon's ``BackgroundIndex`` is that caller).
+
+    Returns ``{"head", "checkout", "previous", "head_moved",
+    "checkout_changed", "ingested": [{"branch", "lineage",
+    "commits_ingested", "generation"}], "refusals": [{"branch", "reason"}],
+    "addresses_recorded", "observations": [{"file", "lineage", "source",
+    "observed_at" | "removed"}], "skipped": [{"file", "reason"}],
+    "dirty": [paths]}``.
+    """
+    if not repo or not str(repo).strip():
+        raise InvalidRequest("Please provide a repository path.")
+    if store_path is None and graph is not None:
+        store_path = getattr(graph, "_db_path", None)
+    if store_path is None:
+        raise InvalidRequest(
+            "sync_git needs a store_path (or a graph carrying one): the "
+            "commit-time store is where the marks and the observations go.")
+    import hashlib
+    import json as _json
+    from pathlib import Path as _Path
+
+    repo_s = str(repo)
+    try:
+        from coderadar._core import (
+            branch_plan as _branch_plan,
+            git_blob_text as _blob_text,
+            git_head as _head,
+            git_marks as _marks,
+            git_workdir_changes as _changes,
+            indexed_root_py as _indexed_root,
+            record_branch_addresses as _addresses,
+            record_git_marks as _write_marks,
+            remove_file as _remove,
+            update_file as _update,
+        )
+    except ImportError as e:  # pragma: no cover - extension always built in CI
+        raise EngineError(f"native extension unavailable: {e}") from None
+
+    try:
+        head = dict(_head(repo_s))
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    try:
+        branches = [dict(b) for b in _branch_plan(repo_s, str(parent_ref))]
+        marks = dict(_marks(str(store_path)))
+    except ValueError as e:
+        raise EngineError(str(e)) from None
+    except RuntimeError as e:
+        raise EngineError(str(e)) from None
+
+    report: dict = {
+        "repo": repo_s,
+        "store": str(store_path),
+        "head": head,
+        "checkout": head.get("branch"),
+        "previous": {"checkout": marks.get("checkout") or None,
+                     "head": marks.get("head") or None},
+        "head_moved": False,
+        "checkout_changed": False,
+        "ingested": [],
+        "refusals": [],
+        "addresses_recorded": 0,
+        "observations": [],
+        "skipped": [],
+        "dirty": [],
+        "empty": not head.get("sha"),
+    }
+    if not head.get("sha"):
+        # Nothing is committed: no lineage, no tree to sweep. The marks
+        # still move so the first commit is seen as a head move.
+        _write_marks(str(store_path), None, None, "{}")
+        return report
+
+    # 1. Commit sync. Trunk first: every branch's fork point is computed
+    # against it, and a branch's own ingest reads the trunk's rows.
+    trunk_tip = next(
+        (b["tip"] for b in branches if b["name"] == parent_ref), head["sha"])
+
+    def _ingest(name: str) -> dict | None:
+        try:
+            done = ingest_history(repo_s, name, parent_ref=str(parent_ref),
+                                  store_path=store_path)
+        except (InvalidRequest, EngineError) as e:
+            report["refusals"].append({"branch": name, "reason": str(e)})
+            return None
+        if done.get("commits_ingested"):
+            report["ingested"].append({
+                "branch": name,
+                "lineage": done.get("lineage"),
+                "commits_ingested": done["commits_ingested"],
+                "generation": done.get("generation"),
+            })
+        return done
+
+    _ingest(str(parent_ref))
+    # D-6 c: a branch with commits of its own is a lineage; local names win
+    # over a remote-tracking spelling of the same tip.
+    picked: dict[str, str] = {}
+    for branch in branches:
+        name, tip = branch["name"], branch["tip"]
+        if branch["merged"] or tip == trunk_tip or name.endswith("/HEAD"):
+            continue
+        current = picked.get(tip)
+        if current is None or ("/" in current and "/" not in name):
+            picked[tip] = name
+    for tip in sorted(picked):
+        _ingest(picked[tip])
+
+    # 2. Merged names are addresses.
+    merged = [(b["name"], b["tip"]) for b in branches if b["merged"]]
+    try:
+        report["addresses_recorded"] = int(_addresses(str(store_path), merged))
+    except Exception as e:  # noqa: BLE001 - a name that resolves nowhere is not fatal
+        report["skipped"].append({"file": "", "reason": f"addresses: {e}"})
+
+    # 3. The sweep.
+    prev_checkout = report["previous"]["checkout"]
+    prev_head = report["previous"]["head"]
+    new_checkout = head.get("branch")
+    same_lineage = (prev_checkout or "main") == (new_checkout or "main")
+    report["head_moved"] = bool(prev_head) and prev_head != head["sha"]
+    report["checkout_changed"] = bool(prev_head) and not same_lineage
+
+    try:
+        changes = [dict(c) for c in _changes(repo_s, head["sha"])]
+    except ValueError as e:
+        raise EngineError(str(e)) from None
+    from coderadar.excludes import is_excluded
+    changes = [
+        c for c in changes
+        if not is_excluded(_Path(repo_s) / c["path"], repo_s)
+    ]
+    recorded: dict[str, str | None] = {}
+    try:
+        recorded = dict(_json.loads(marks.get("dirty") or "{}"))
+    except ValueError:
+        recorded = {}
+
+    def _digest(path: str) -> str | None:
+        try:
+            return hashlib.sha256((_Path(repo_s) / path).read_bytes()).hexdigest()
+        except OSError:
+            return None
+
+    current: dict[str, str | None] = {}
+    for change in changes:
+        current[change["path"]] = (
+            _digest(change["path"]) if change["in_workdir"] else None)
+    report["dirty"] = sorted(current)
+
+    try:
+        sweep_ready = bool(_indexed_root())
+    except Exception:  # noqa: BLE001 - no loaded project, no observation writes
+        sweep_ready = False
+
+    def _observe(path: str, content: str | None, lineage: str, src: str) -> None:
+        try:
+            if content is None:
+                _remove(path, lineage=lineage)
+                report["observations"].append(
+                    {"file": path, "lineage": lineage, "source": src, "removed": True})
+            else:
+                raw = _update(path, content, source=src, lineage=lineage)
+                report["observations"].append({
+                    "file": path, "lineage": lineage, "source": src,
+                    "observed_at": raw.get("observed_at", ""),
+                    "removed": False,
+                })
+        except Exception as e:  # noqa: BLE001 - one file must not stop the sweep
+            report["skipped"].append(
+                {"file": path, "reason": f"{type(e).__name__}: {e}"})
+
+    def _committed(path: str, sha: str) -> str | None:
+        try:
+            return _blob_text(repo_s, sha, path)
+        except ValueError:
+            return None
+
+    def _working(path: str) -> str | None:
+        try:
+            return (_Path(repo_s) / path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    def _sweep(left: str, right: str, src: str, *, reset_all: bool) -> None:
+        if prev_head:
+            # The left lineage's recorded dirty set. On a checkout every
+            # path in it belonged to the lineage being left, so all return
+            # to the old head. Without a checkout, only the paths the tree
+            # no longer differs on were reverted while CodeRadar was off —
+            # a path still dirty is handled below, and one the commit just
+            # recorded is a no-op the write filter drops.
+            for path in sorted(recorded):
+                if not reset_all and path in current:
+                    continue
+                try:
+                    _observe(path, _committed(path, prev_head), left, src)
+                except Exception as e:  # noqa: BLE001
+                    report["skipped"].append({"file": path, "reason": str(e)})
+        for change in changes:
+            path = change["path"]
+            if change["in_workdir"]:
+                if not reset_all and path in recorded                         and recorded[path] == current.get(path):
+                    # The last sync already recorded these bytes; re-asserting
+                    # them would close and reopen an interval for nothing.
+                    continue
+                text = _working(path)
+                if text is None:
+                    report["skipped"].append(
+                        {"file": path, "reason": "not readable as UTF-8"})
+                    continue
+                _observe(path, text, right, src)
+            else:
+                _observe(path, None, right, src)
+
+    if not sweep_ready:
+        report["skipped"].append({
+            "file": "",
+            "reason": "no project loaded: the sweep writes through "
+                      "update_file/remove_file, which need the loaded graph"})
+    elif new_checkout is None:
+        report["skipped"].append({
+            "file": "",
+            "reason": "detached HEAD: there is no lineage to record the "
+                      "working tree's edits on"})
+    elif report["checkout_changed"]:
+        _sweep(prev_checkout or "main", new_checkout, "checkout",
+               reset_all=True)
+    elif catch_up or report["head_moved"]:
+        _sweep(new_checkout, new_checkout, source, reset_all=False)
+
+    # 4. Marks. A detached HEAD records no checkout: a later observation
+    # must not land on the branch the tree left.
+    _write_marks(str(store_path), new_checkout, head["sha"],
+                 _json.dumps({p: d for p, d in current.items() if d},
+                             sort_keys=True))
+    return report
+
+
 def reingest_merged_commits(repo: str | Path, branch: str = "main",
                             dry_run: bool = False,
                             *, store_path: str | Path | None = None,

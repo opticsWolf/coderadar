@@ -6,6 +6,18 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Temporal P5d, commit-driven half — git drives the sync (A-8/D-4 a1): `ops.sync_git` brings a
+  commit-time store up to date in four acts. It ingests the trunk and every branch whose tip has
+  commits of its own (D-6 c), records merged names as commit addresses, sweeps observations, and
+  writes the marks the next call reads (`coderadar.git.checkout`, `.head`, `.dirty` as
+  `{path: sha256}`). The sweep is the plan's D-4 a1: a checkout returns the left lineage's
+  recorded dirty files to *its* head (`source: "checkout"`) and records the carried edits on the
+  new lineage; a same-lineage sync records edits made while CodeRadar was off
+  (`source: "startup"`) and reverts, and re-recording unchanged bytes does nothing. A detached
+  HEAD's sweep is skipped with that reason, per-branch refusals ride the report, and `GitWatcher`
+  polls HEAD and calls the op (`coderadar watch --git` starts one; `poll_once()` is public so a
+  daemon can drive it). The sweep writes the store; reloading the in-memory graph after a
+  checkout is the caller's step. Gates: 596 lib; pytest 1370 passed / 1 skipped / 1 xfailed.
 - Temporal P5d, second slice — an observation names its lineage (A-8/D-4/INV-17): a bare
   `update_file` or `remove_file` now lands on the branch the working tree is checked out on,
   recorded in `coderadar.git.checkout`, instead of assuming the trunk. A branch-owned file

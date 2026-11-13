@@ -725,6 +725,37 @@ impl CodeGraphStore {
         self.kv_put_sync(&key, instant)
     }
 
+    /// The sync marks (P5d slice B): the recorded checkout, the head the
+    /// last sync saw, and the dirty set as JSON. `(None, None, None)` for a
+    /// store that has never been synced.
+    pub fn git_marks(&self) -> macrame::Result<(Option<String>, Option<String>, Option<String>)> {
+        Ok((
+            self.kv_get_sync(crate::graph::ingest::CHECKOUT_KEY)?,
+            self.kv_get_sync(crate::graph::ingest::GIT_HEAD_KEY)?,
+            self.kv_get_sync(crate::graph::ingest::GIT_DIRTY_KEY)?,
+        ))
+    }
+
+    /// Write the sync marks (P5d slice B). `None`/empty clears a mark: a
+    /// detached HEAD has no checkout lineage to name, and writing the last
+    /// branch would let a later observation land on a lineage the tree left.
+    pub fn record_git_marks(
+        &self,
+        checkout: Option<&str>,
+        head: Option<&str>,
+        dirty: &str,
+    ) -> macrame::Result<()> {
+        let write = |key: &str, value: Option<&str>| -> macrame::Result<()> {
+            match value {
+                Some(text) if !text.trim().is_empty() => self.kv_put_sync(key, text.trim()),
+                _ => self.kv_put_sync(key, ""),
+            }
+        };
+        write(crate::graph::ingest::CHECKOUT_KEY, checkout)?;
+        write(crate::graph::ingest::GIT_HEAD_KEY, head)?;
+        self.kv_put_sync(crate::graph::ingest::GIT_DIRTY_KEY, dirty)
+    }
+
     /// The latest observation instant this store recorded on `lineage`, if
     /// any (P5d). Per lineage: a branch's edits and the trunk's are different
     /// chain positions, and a commit on the branch must not be nudged past
