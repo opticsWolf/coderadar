@@ -542,6 +542,44 @@ ingest, with the recorded axis differing exactly where the chunk order differed 
 pair with prefix windows, the shape the plan's "backfill a branch that predates the store" case
 actually needs.)*
 
+*(2026-11-13, slice 2 designed against the code — the writer's shape, before it is written.
+Five decisions the walk forced:)*
+
+*1. `--from` stays **exclusive**, and a window that must reach the root says so.* Today `from` is
+the last ingested commit (resume); a window `(from, cursor)` therefore cannot name the root commit
+itself. Rather than give one flag two meanings (resume = exclusive, backfill = inclusive), the window
+keeps the exclusive spelling and the root case is `--from-root` / `from = <root>^` — a spelling the
+walker already resolves. The report always names the window it walked (`window: {from, to, commits}`),
+so a caller never has to infer it.
+
+*2. The close is computed per **file**, not per id.* Every row a commit's snapshot writes closes at
+that file's next change — the next commit in the window that changes or deletes it, else the
+incumbent's own start (the trunk row the cursor wrote), else the start of the deletion that ended it.
+That is exact because a file's rows are minted together per snapshot: when the file changes, all of
+its entities are re-asserted at the new stamp, and the ones that disappeared are closed there too.
+Per-id lookahead would compute the same instant for every row of one file, at N times the cost.
+
+*3. A window writes **closed** rows only.* The last window version ends where the incumbent begins
+(`valid_to == live.valid_from`, the abutting chain slice 1 taught the guard to accept), so nothing
+the window writes is ever open and the live belief keeps its own interval untouched. This is also
+what makes the write audit-able: every row it lands carries both ends.
+
+*4. What a window deliberately does not write,* each for a reason: **no sweep** (a window's "file
+absent" is a fact about an interval, expressed by closes, not a retirement act — the sweep's act
+would retire the trunk's present); **no edges** (edge persistence is forward-only today, and inventing
+a closed edge interval here would be a new shape this phase does not need — the report says
+`edges_skipped`); **no cursor, stamp or branch-tip movement** (all three name the newest belief, and a
+window is older than it); **no horizon rewrite** (same reason). It does write the commit concept and
+the window commit's `commit_done` mark **at the instant the ledger learned it** — which is precisely
+the recorded-axis difference Doctrine VIII expects to see.
+
+*5. The proof is two stores over one fixture.* Store A ingests a linear history in order. Store B
+starts at the fixture's fork point (a store that predates its own history, the case the plan names),
+then window-backfills `(root, fork)` in contiguous chunks newest-first. Every commit's valid-axis
+answers must agree between A and B; the recorded axis must differ exactly where the chunk order did.
+The interval assertions are the real test: `verify_concept_intervals` clean, and each file's valid
+interval ends where the next change begins (no gaps, no overlaps).)*
+
 ### P5b.6 — Branch names: selection, addresses, generations (needs P5b.3a)
 
 **Selection (D-6 c).** The ingest set is the trunk plus every branch, local or remote-tracking,
