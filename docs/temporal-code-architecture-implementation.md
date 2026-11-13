@@ -1130,6 +1130,20 @@ one), and
 `release.yml` gains a `verify-version` job (`scripts/check_tag_version.py`) because publishing is
 one-way and the workflow trusted whatever `pyproject.toml` said.
 
+**Tagged and published 2026-11-13.** `main` at `21d814a` (a `--no-ff` merge of `dev`, tree identical to
+the tested one), CI green there across all seven jobs, `v0.15.0` annotated tag pushed, and `release.yml`
+green end to end: the new tag-vs-version gate, three platform wheels, the sdist, and the PyPI trusted
+publish — the registry answering `latest: 0.15.0` with all four artifacts.
+
+One correction belongs in the record, because it cost a red run and a force-push. The first merge took
+the *local* `dev` — still at `e968cc5`, twenty commits behind, because every push in this cycle went
+`HEAD:dev` without ever checking the branch out — and put the pre-release tree on `main`. The failures
+then looked like a platform or toolchain regression: the same tree hash as the green run, with
+`database is locked` and an `unused variable` already fixed weeks earlier. They were neither; `main` was
+simply the old code. `main` was reset to its previous tip, `dev` re-pointed at `origin/dev`, and the
+merge redone from the remote ref. The rule that follows: a release merge names `origin/<branch>`, never
+a local branch this cycle has been pushing to without checking out.
+
 Documented limits shipped with the release: F3 (`test_p5b_truth`) stays `xfail` until a branch can
 see its merge base (Macrame U-3/D-318); a branch valid read refuses by name until U-2/D-317; P5b.5
 ships its write shape with the ingest window as the next slice; P6b's note-embeddings half is
