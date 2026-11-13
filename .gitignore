@@ -48,6 +48,11 @@ dist/
 # Run logs
 *.log
 
+# Scratch files: hand-off notes (.tmp-okf-thought-p6a.txt was committed by
+# accident) and an extension renamed aside while a server holds it loaded.
+.tmp-*
+*.pyd.old-*
+
 # OS junk
 .DS_Store
 Thumbs.db

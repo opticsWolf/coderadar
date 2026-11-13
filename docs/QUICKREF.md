@@ -1,6 +1,6 @@
 # CodeRadar Quick Reference
 
-> v0.14.0 · Full design: `ARCHITECTURE.md` · Agent skills:
+> v0.15.0 · Full design: `ARCHITECTURE.md` · Agent skills:
 > `coderadar/skills/coderadar-{mcp,cli}/SKILL.md` (bundled; install with
 > `coderadar skills install`) · Query language:
 > `coderadar docs query-language` (generated — read it, don't guess fields).
@@ -36,6 +36,14 @@ Never run two servers on one store — the second gets `DB_LOCKED`.
 | Trust that history | `coderadar verify-history` | `coderadar_verify_history` | `ops.verify_history()` |
 | What changed T1→T2 | `coderadar changes-between T1 T2` | `coderadar_changes_between` | `ops.changes_between(t1, t2)` |
 | Versions of a file | `coderadar history FILE` | — | `g.history_of("…")` |
+| Heal commit bodies | — (ops-only) | — | `ops.backfill_commit_messages(repo, store)` |
+| Annotate / comment | `coderadar annotate ABOUT BODY` / `comment ABOUT BODY` | — | `g.annotate(…)` / `g.comment(…)` |
+| Annotation versions | `coderadar annotations-on T` / `comments-on T` | `coderadar_annotations_on` / `…_comments_on` | `g.annotations_on(…)` / `g.comments_on(…)` |
+| Open task items | `coderadar open-items [--scope P]` | `coderadar_open_items` | `g.open_items(scope)` |
+| Notes on a hit | — (rides search results as `notes`) | — (rides search results) | `ops.search(…)` hits carry `notes` |
+| Export user data | `coderadar export-annotations [--out F]` | — | `g.export_annotations(path)` / `ops.export_annotations(store_path=…)` |
+| Import user data | `coderadar import-annotations F` | — | `g.import_annotations(src, on_conflict=…)` |
+| Rebuild store | `coderadar rebuild-store` | — | `ops.rebuild(repo, store_path=…)` (fresh process) |
 | List branches | — (API-only) | — | `ops.branches()` |
 | Edit code | `coderadar replace-body … [--apply]` | `coderadar_replace_body` | plan → apply |
 | Archive old blobs | — (API-only) | — | `g.archive() # cutoff or archive_after_days` |
@@ -90,8 +98,8 @@ default_dry_run = true
 ## Version notes
 
 +0.0.1 per feature (`pyproject` + workspace `Cargo.toml`, one bump commit).
-Specs, tests, dep patches: no bump. Current: **0.14.0**, `macrame-db` 0.19.1,
-store schema v22. `../CHANGELOG.md` is the per-version record.
+Specs, tests, dep patches: no bump. Current: **0.15.0**, `macrame-db` 0.22.0,
+store schema v29. `../CHANGELOG.md` is the per-version record.
 
 `verify-history` reports coverage for the generations a store actually wrote
 bytes for. On a store indexed before 0.14 that number is low and correct —

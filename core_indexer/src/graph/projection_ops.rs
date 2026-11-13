@@ -6,22 +6,48 @@ use super::module_resolution::{find_module_by_dotted_name, normalize_path_str};
 use super::CodeGraph;
 use crate::types::*;
 
+/// Where a file diff's retirements land (P5d, B1).
+///
+/// Three states, and they are a sum rather than a bool plus an optional
+/// name: the branch ingest collects removed ids and retires them on its
+/// own lineage, the trunk retires its own, and a projection-only pass
+/// (the branch sweep's staging) retires nothing. Spelling the third state
+/// "false" and the second "true, None" left the combination (false,
+/// Some(_)) constructible and meaningless.
+#[derive(Clone, Copy)]
+pub enum RetireScope<'a> {
+    /// Projection-only: the caller retires later, on its own act.
+    Skip,
+    /// The trunk's own row space.
+    Trunk,
+    /// A branch's row space (P5d B1's lineage routing).
+    Branch(&'a str),
+}
+
 impl CodeGraph {
     /// Close removed entities in the persistent ledger and report failures.
     ///
     /// Best-effort by design: the projection is the source of truth for
     /// queries, and a ledger write that fails must not fail the update. It is
-    /// reported, not swallowed.
-    pub(crate) fn try_retire_in_store<'a>(
+    /// reported, not swallowed. `valid_from` is the retirement stamp — the
+    /// clock on the live path, commit time on the P5 ingest path (DR-41).
+    /// [`Self::retire_in_store_on`] without the warning: close removed
+    /// entities in the ledger and report failures (P5d slice B adds the
+    /// lineage — a branch observation's removed entities retire on that
+    /// branch, through the branch's own act; `None` keeps the trunk's).
+    pub(crate) fn try_retire_in_store_on<'a>(
         &self,
         ids: impl IntoIterator<Item = &'a EntityId>,
+        valid_from: &str,
+        lineage: Option<&str>,
     ) -> Option<String> {
         let store = self.store.as_ref()?;
         let ids: Vec<String> = ids.into_iter().cloned().collect();
         if ids.is_empty() {
             return None;
         }
-        if let Err(e) = store.retire_entities(&ids) {
+        let lineage = lineage.unwrap_or("main");
+        if let Err(e) = store.retire_entities_for_lineage_at(&ids, lineage, valid_from) {
             return Some(format!(
                 "could not retire {} removed entities: {:?}",
                 ids.len(),
@@ -31,8 +57,13 @@ impl CodeGraph {
         None
     }
 
-    pub(crate) fn retire_in_store<'a>(&self, ids: impl IntoIterator<Item = &'a EntityId>) {
-        if let Some(message) = self.try_retire_in_store(ids) {
+    pub(crate) fn retire_in_store_on<'a>(
+        &self,
+        ids: impl IntoIterator<Item = &'a EntityId>,
+        valid_from: &str,
+        lineage: Option<&str>,
+    ) {
+        if let Some(message) = self.try_retire_in_store_on(ids, valid_from, lineage) {
             eprintln!("Warning: {message}");
         }
     }
@@ -43,6 +74,8 @@ impl CodeGraph {
         &self,
         projection: &mut ProjectedGraph,
         file_path: &str,
+        valid_from: &str,
+        lineage: Option<&str>,
     ) -> BTreeSet<EntityId> {
         let mut removed = BTreeSet::new();
 
@@ -140,7 +173,7 @@ impl CodeGraph {
             projection
                 .synthetic_edges
                 .retain(|(s, t)| !removed.contains(s) && !removed.contains(t));
-            self.retire_in_store(removed.iter());
+            self.retire_in_store_on(removed.iter(), valid_from, lineage);
             return removed;
         }
 
@@ -251,7 +284,7 @@ impl CodeGraph {
             .synthetic_edges
             .retain(|(s, t)| !removed.contains(s) && !removed.contains(t));
 
-        self.retire_in_store(removed.iter());
+        self.retire_in_store_on(removed.iter(), valid_from, lineage);
         removed
     }
 
@@ -265,9 +298,20 @@ impl CodeGraph {
     ///
     /// Returns the ids that went away.
     pub fn remove_file(&self, file_path: &str) -> Vec<EntityId> {
+        self.remove_file_on(file_path, None)
+    }
+
+    /// A deletion observation on a named lineage (P5d slice B): the same
+    /// removal, retiring on the lineage the deletion was seen on.
+    pub fn remove_file_on(&self, file_path: &str, lineage: Option<&str>) -> Vec<EntityId> {
         let normalized = normalize_path_str(file_path);
         let mut projection = (*self.snapshot()).clone();
-        let removed = self.remove_file_entities(&mut projection, &normalized);
+        let removed = self.remove_file_entities(
+            &mut projection,
+            &normalized,
+            &crate::storage::now_iso8601(),
+            lineage,
+        );
         // The file→module mapping outlives the module otherwise, and a
         // recreated file would resolve to an id that is no longer there.
         projection
@@ -285,14 +329,19 @@ impl CodeGraph {
     /// entities and only insert/remove entities that actually changed. Unchanged
     /// entities (same ID + same content hashes) are left in place, avoiding
     /// unnecessary hashmap churn and edge recalculation.
-    /// Returns (inserted_count, removed_count, retirement_error).
+    /// Returns (inserted_count, removed_count, removed_ids,
+    /// retirement_error). The retire lands where `retire` says: the
+    /// caller decides, because a branch collect retires on its own
+    /// lineage later and the trunk retires its own here.
     pub fn apply_diff_update(
         &self,
         projection: &mut ProjectedGraph,
         units: &[ExtractedUnit],
         file_path: &str,
         language: &Language,
-    ) -> (usize, usize, Option<String>) {
+        valid_from: &str,
+        retire: RetireScope<'_>,
+    ) -> (usize, usize, Vec<EntityId>, Option<String>) {
         // 1. Collect old entity hashes from projection.
         //    Normalize entity IDs for cross-platform prefix matching.
         let normalized_file_path = normalize_path_str(file_path);
@@ -754,9 +803,19 @@ impl CodeGraph {
                 .retain(|(s, t)| !gone.contains(s) && !gone.contains(t));
         }
 
-        let retirement_error = self.try_retire_in_store(removed_ids.iter());
+        // The M6-g review: the diff's own retire stays the CALLER's choice
+        // - the branch ingest collects `removed_ids` and retires them on
+        // its own lineage through the branch sweep; retiring here would
+        // close an inherited id's trunk row for a branch-local delete.
+        let retirement_error = match retire {
+            RetireScope::Skip => None,
+            RetireScope::Trunk => self.try_retire_in_store_on(removed_ids.iter(), valid_from, None),
+            RetireScope::Branch(lineage) => {
+                self.try_retire_in_store_on(removed_ids.iter(), valid_from, Some(lineage))
+            }
+        };
 
-        (inserted, removed, retirement_error)
+        (inserted, removed, removed_ids.clone(), retirement_error)
     }
 
     /// Update a single file in-place: re-index and diff against the current graph.
@@ -765,13 +824,52 @@ impl CodeGraph {
     /// "clean"`, `parse_errors: 0`, `elapsed_ms: 0.0` regardless of what
     /// happened — which made the Python and MCP failure branches keyed off
     /// `parse_quality` dead code. It is measured here now.
+    /// Single-file update with no surface behind it: a bare observation
+    /// write (`source: "update"`). The wrapper keeps the spelling the graph
+    /// tests and pre-P5d callers use.
     pub fn update_file(
         &self,
         file_path: &str,
         content: Option<&str>,
+        force: Option<bool>,
+    ) -> Result<UpdateOutcome, String> {
+        self.update_file_observed(
+            file_path,
+            content,
+            force,
+            &crate::storage::ObservationSource::new(crate::storage::ObservationSource::BARE),
+        )
+    }
+
+    /// Update one file as an **observation write** (P5d, §3.1.3; A-7/INV-17):
+    /// the caller names where the rows came from, and every row of the flush
+    /// carries that source.
+    ///
+    /// One instant stamps the whole write on both axes — the moment the
+    /// writer saw this tree. Opening an interval at `observed_at` closes the
+    /// live one (P5b.1's law, now Macrame's one-write supersession) and turns
+    /// the previous commit's content into history; nothing is retracted.
+    ///
+    /// **Which lineage** (P5d slice B): the source's explicit name, else the
+    /// store's recorded checkout, else `main`. A branch observation writes
+    /// the branch's belief — its own mint (W1) or an overlay row over the
+    /// inherited one (W2) — and never the trunk's row.
+    pub fn update_file_observed(
+        &self,
+        file_path: &str,
+        content: Option<&str>,
         _force: Option<bool>,
+        observation: &crate::storage::ObservationSource<'_>,
     ) -> Result<UpdateOutcome, String> {
         let started = std::time::Instant::now();
+        // One clock read per write: two would split one observed event into
+        // two generations and let the diff's close and the flush's open
+        // disagree about the instant.
+        let observed_at = crate::storage::now_iso8601();
+        let lineage = match self.store.as_ref() {
+            Some(store) => store.observation_lineage(observation.lineage),
+            None => "main".to_string(),
+        };
         // F14: mint the SAME form `analyze` writes (project-relative dot
         // prefix, native separators) — not `normalize_path_str`'s
         // forward-slash form, which forked every updated entity's id.
@@ -872,8 +970,14 @@ impl CodeGraph {
         let before = self.snapshot();
         let epoch_before = self.epoch();
         let mut projection = (*before).clone();
-        let (new_count, removed_count, retirement_error) =
-            self.apply_diff_update(&mut projection, &units, file_path, &lang);
+        let (new_count, removed_count, _removed_ids, retirement_error) = self.apply_diff_update(
+            &mut projection,
+            &units,
+            file_path,
+            &lang,
+            &observed_at,
+            RetireScope::Branch(lineage.as_str()),
+        );
         // Keep the dotted-name fast path in sync (cheap; module set is
         // unchanged today, but a stale index would silently degrade the
         // cascade below to full scans).
@@ -901,33 +1005,67 @@ impl CodeGraph {
         // cold start parses back. Replaces the old pre-cascade v1
         // `persist_entities` flush.
         if let Some(ref store) = self.store {
-            let mut v2 =
-                crate::storage::build_v2_concepts_for_file(&projection, file_path, &digests);
+            // P5d: the whole flush takes the observation's one instant —
+            // the unstamped builder reads the clock again, which would open
+            // the entity rows milliseconds after the spine and split one
+            // observed event into two generations.
+            let mut v2 = crate::storage::build_v2_concepts_for_file_at(
+                &projection,
+                file_path,
+                &digests,
+                &observed_at,
+            );
             // P3 (DR-38): content-version spine for this file, appended
             // to the SAME bulk — one flush, one commit, one generation
             // (P1 `recorded_generations` counts DISTINCT `recorded_at`
             // per commit). Concepts first is FK order; a spine-compute
             // failure is loud but must not fail the entity flush.
             if let Some(digest) = digests.get(file_path) {
-                let now = crate::storage::now_iso8601();
-                match store
-                    .spine_upserts_for(&[(format!("{file_path}::module"), digest.clone())], &now)
-                {
+                match store.spine_upserts_for(
+                    &[(format!("{file_path}::module"), digest.clone())],
+                    &observed_at,
+                ) {
                     Ok(extra) => v2.extend(extra),
                     Err(e) => persistence_errors
                         .push(format!("spine computation failed for {file_path}: {e:?}")),
                 }
             }
+            // P5d (INV-17): every content row of an observation write says
+            // where it came from, then the store records how far ahead the
+            // recorded axis now sits (H-26's seed). A branch observation
+            // moves onto the branch's own row space (its mints as W1, the
+            // inherited ids as overlay versions) — Macrame's route reads the
+            // branch name, so the whole flush is retagged before the bulk.
+            crate::storage::tag_observation_rows(&mut v2, observation);
+            if lineage != "main" {
+                match macrame::BranchId::new(&lineage) {
+                    Ok(branch) => {
+                        v2 = v2
+                            .into_iter()
+                            .map(|row| row.on_branch(branch.clone()))
+                            .collect();
+                    }
+                    Err(e) => persistence_errors.push(format!(
+                        "observation lineage {lineage:?} is not a branch id: {e:?}"
+                    )),
+                }
+            }
             if let Err(e) = store.upsert_concepts_bulk(&v2) {
                 persistence_errors.push(format!("concept flush failed for {file_path}: {e:?}"));
+            } else if let Err(e) = store.record_observation_instant(&lineage, &observed_at) {
+                persistence_errors.push(format!("observation mark failed for {file_path}: {e:?}"));
             }
         }
         // Scoped: an edit to one file must not re-assert the project's whole
-        // edge set (plan §1.2).
-        if let Err(e) = self.persist_edges_scoped(&projection, Some(file_path)) {
-            persistence_errors.push(format!(
-                "scoped edge persistence failed for {file_path}: {e:?}"
-            ));
+        // edge set (plan §1.2). Branches persist no edges (P5a.4, the same
+        // rule the commit ingest keeps): a branch-local relation is not the
+        // trunk's, and the ownership question is deferred, not smuggled.
+        if lineage == "main" {
+            if let Err(e) = self.persist_edges_scoped(&projection, Some(file_path)) {
+                persistence_errors.push(format!(
+                    "scoped edge persistence failed for {file_path}: {e:?}"
+                ));
+            }
         }
         self.commit_projection(projection);
 
@@ -977,6 +1115,9 @@ impl CodeGraph {
             blobs_skipped_oversize: blob_oversize,
             blobs_skipped_excluded: blob_excluded,
             blobs_bytes: blob_bytes,
+            observed_at: observed_at.clone(),
+            source: observation.source.to_string(),
+            lineage,
         })
     }
 

@@ -52,7 +52,7 @@
 [PASS] cli/shell-help-status-exit
 [PASS] cli/shell-query
 [PASS] cli/watch-reacts
-[PASS] cli/mcp-tools-list-27
+[PASS] cli/mcp-tools-list-34
 [PASS] cli/mcp-tools-call
 [PASS] cli/load-snapshot
 [PASS] cli/load-snapshot-wrong-root

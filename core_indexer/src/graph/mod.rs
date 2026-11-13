@@ -51,6 +51,8 @@ pub mod embeddings;
 
 pub mod indexing;
 
+pub mod ingest;
+
 pub mod projection_ops;
 
 pub mod update_diff;

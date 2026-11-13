@@ -1,7 +1,16 @@
 // CodeRadar v3.6 — Git Integration (§12)
 // Branch-switch detection, .gitignore integration, and blame annotation.
 
-use git2::{BlameOptions, DiffOptions, Repository, StatusOptions};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use git2::{
+    BlameOptions, Delta, DiffOptions, ObjectType, Repository, StatusOptions, TreeWalkMode,
+    TreeWalkResult,
+};
+
+use crate::graph::CodeGraph;
+use crate::types::Language;
 
 #[derive(Clone, Debug)]
 pub struct BlameLine {
@@ -109,6 +118,605 @@ pub fn is_worktree_clean(repo_path: &str) -> Result<bool, GitError> {
     Ok(statuses.is_empty())
 }
 
+/// One commit's ingest input (P5a.1, DR-41): the walker output an ingest
+/// consumes, with no ledger writes. `changed` holds added/modified paths
+/// that are both indexable and blob-eligible; `deleted` holds indexable
+/// paths the commit removed (blob exclusion does not spare a deletion — a
+/// retired module must retire whether or not its bytes were stored);
+/// `tree` is the commit's full indexable tree, the sweep universe (§0).
+/// Times are RFC3339 strings; ties are passed through un-nudged (INV-11's
+/// nudge is the writer's job, P5a.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitPlan {
+    pub sha: String,
+    pub committer_ts: String,
+    pub author_ts: String,
+    pub parents: Vec<String>,
+    pub changed: Vec<PathBuf>,
+    pub deleted: Vec<PathBuf>,
+    pub tree: Vec<PathBuf>,
+    /// Renames git's similarity detection found in this commit (P5b.7,
+    /// A-11). The old path is closed as a delete and the new one ingested
+    /// as a change, exactly as before; this list is what the ingest turns
+    /// into link rows.
+    pub renamed: Vec<RenameEntry>,
+}
+
+/// One rename as git reported it: the two paths and what can honestly be
+/// said about the similarity. Q-16 records a score on every link so a
+/// wrong pair is visible and a later row can correct it — and lot of the
+/// score git actually used is 100 only when the blobs are byte-identical,
+/// because git2 does not expose the computed score (its own
+/// `DiffDelta::similarity` is commented out upstream with "TODO: expose
+/// when diffs are more exposed"). A pair that needed content changes to
+/// match is reported as `None` rather than as a number nobody measured.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RenameEntry {
+    pub old: PathBuf,
+    pub new: PathBuf,
+    pub similarity: Option<u16>,
+}
+
+/// Walk first-parent history, oldest-first, from `from` (exclusive) to the
+/// tip of `branch` (P5a.1). `from` is the ingest high-water mark: a commit
+/// already ingested on this lineage. Unknown branches refuse; a `from`
+/// that is not on the first-parent chain refuses rather than silently
+/// re-ingesting or skipping history.
+pub fn plan_ingest(
+    repo_path: &str,
+    branch: &str,
+    from: Option<&str>,
+) -> Result<Vec<CommitPlan>, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let tip = repo
+        .revparse_single(branch)
+        .map_err(|_| GitError::UnknownBranch(branch.to_string()))?
+        .peel_to_commit()
+        .map_err(|_| GitError::UnknownBranch(branch.to_string()))?;
+    let mut chain = Vec::new();
+    let mut current = Some(tip);
+    while let Some(commit) = current {
+        let parent = commit.parent(0).ok();
+        chain.push(commit);
+        current = parent;
+    }
+    chain.reverse();
+    let start = match from {
+        None => 0,
+        Some(rev) => {
+            let oid = repo
+                .revparse_single(rev)
+                .map_err(|_| GitError::UnknownRevision(rev.to_string()))?
+                .peel_to_commit()
+                .map_err(|_| GitError::UnknownRevision(rev.to_string()))?
+                .id();
+            match chain.iter().position(|commit| commit.id() == oid) {
+                Some(index) => index + 1,
+                None => return Err(GitError::NotAncestor(rev.to_string())),
+            }
+        }
+    };
+    let excludes = blob_exclusion_matcher();
+    let mut plans = Vec::with_capacity(chain.len().saturating_sub(start));
+    for commit in chain.iter().skip(start) {
+        plans.push(commit_plan_for_commit(&repo, commit, &excludes)?);
+    }
+    Ok(plans)
+}
+
+/// One branch name and where it points (P5b.6, D-6 c).
+#[derive(Debug, Clone)]
+pub struct BranchPlanEntry {
+    /// The name as git spells it: `feature` for a local branch,
+    /// `origin/feature` for a remote-tracking one.
+    pub name: String,
+    /// The branch's tip commit.
+    pub tip: String,
+    /// True when the tip lies on `parent_ref`'s first-parent chain: the
+    /// name is a commit address, not a lineage (D-6 c).
+    pub merged: bool,
+}
+
+/// Every branch name the repository offers, local and remote-tracking,
+/// with the one fact selection needs (P5b.6, D-6 c): does its tip already
+/// lie on the trunk's first-parent chain? Merged names are addresses;
+/// the rest are candidates for a lineage (the caller dedupes names that
+/// share a tip and applies the deny-list). Sorted by name.
+pub fn branch_plan(repo_path: &str, parent_ref: &str) -> Result<Vec<BranchPlanEntry>, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let parent_tip = repo
+        .revparse_single(parent_ref)
+        .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?
+        .peel_to_commit()
+        .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?
+        .id();
+    // The trunk's first-parent chain, tip first: the addresses D-6 c names.
+    let mut trunk_chain: HashSet<git2::Oid> = HashSet::new();
+    let mut current = repo.find_commit(parent_tip).ok();
+    while let Some(commit) = current {
+        trunk_chain.insert(commit.id());
+        current = commit.parent(0).ok();
+    }
+    let mut out = Vec::new();
+    for kind in [git2::BranchType::Local, git2::BranchType::Remote] {
+        let branches = repo.branches(Some(kind)).map_err(GitError::Branches)?;
+        for branch in branches {
+            let (branch, _) = branch.map_err(GitError::Branches)?;
+            let name = match branch.name().map_err(GitError::Branches)? {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+            let tip = match branch.get().peel_to_commit() {
+                Ok(commit) => commit.id(),
+                // An unborn or broken ref is not a name we can resolve.
+                Err(_) => continue,
+            };
+            out.push(BranchPlanEntry {
+                name,
+                tip: tip.to_string(),
+                merged: trunk_chain.contains(&tip),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// How many commits on `parent_ref`'s first-parent chain sit after this
+/// branch's fork point (P5b.6): the parent history the branch cannot see
+/// through its own rows, and — until U-3 — *can* see through the leak
+/// D-6's `parent_drift` warns about. Zero for the trunk itself, and zero
+/// for a branch sitting on the trunk's chain.
+pub fn parent_drift_count(
+    repo_path: &str,
+    branch: &str,
+    parent_ref: &str,
+) -> Result<usize, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let tip = repo
+        .revparse_single(branch)
+        .map_err(|_| GitError::UnknownBranch(branch.to_string()))?
+        .peel_to_commit()
+        .map_err(|_| GitError::UnknownBranch(branch.to_string()))?;
+    let mut current = Some(
+        repo.revparse_single(parent_ref)
+            .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?
+            .peel_to_commit()
+            .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?,
+    );
+    let mut drift = 0usize;
+    while let Some(commit) = current {
+        // Shared point: this commit and everything older is on the
+        // branch's side of the fork (it is an ancestor of the tip).
+        if commit.id() == tip.id()
+            || repo
+                .graph_descendant_of(tip.id(), commit.id())
+                .unwrap_or(false)
+        {
+            return Ok(drift);
+        }
+        // The trunk's tip is the branch's own tip case is handled above;
+        // anything else on the chain is a post-fork parent commit.
+        drift += 1;
+        current = commit.parent(0).ok();
+    }
+    // No shared point: an unrelated history (`fork_point`'s
+    // NoCommonHistory covers the ingest path; a read just reports it all).
+    Ok(drift)
+}
+
+/// Short names of every local branch, sorted (P5a.5, DR-41): the
+/// migration's default branch set — the caller puts the trunk first.
+/// A detached HEAD contributes nothing (it is not a branch entry); a
+/// repository with no branches reads as empty rather than refusing (the
+/// caller decides what that means). Iteration failures surface as
+/// `Branches`; only names that are not valid UTF-8 are skipped (git
+/// allows arbitrary bytes, the lineage cannot).
+pub fn list_branches(repo_path: &str) -> Result<Vec<String>, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let mut out = Vec::new();
+    let branches = repo
+        .branches(Some(git2::BranchType::Local))
+        .map_err(GitError::Branches)?;
+    for branch in branches {
+        let (branch, _) = branch.map_err(GitError::Branches)?;
+        match branch.name().map_err(GitError::Branches)? {
+            Some(name) => out.push(name.to_string()),
+            None => continue,
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Newest commit on `branch`'s first-parent chain that the parent ref's tip
+/// still reaches (P5a.4): the ingest's first-run window start, and the fork
+/// commit recorded in `kv`.
+///
+/// The scan walks newest-first and takes the first hit, so it is robust to
+/// the two shapes where a merge-base is not the answer: a branch that merged
+/// the trunk into itself (the merge commit is not parent-reachable, the fork
+/// stays where the branch left the trunk) and criss-cross merges (newest
+/// shared point wins — it is the INV-10 boundary, not a semantic merge-base).
+/// An orphan branch with nothing in common refuses (`NoCommonHistory`);
+/// unknown names surface as the walker's existing typed errors.
+pub fn fork_point(repo_path: &str, branch: &str, parent_ref: &str) -> Result<String, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let tip = repo
+        .revparse_single(branch)
+        .map_err(|_| GitError::UnknownBranch(branch.to_string()))?
+        .peel_to_commit()
+        .map_err(|_| GitError::UnknownBranch(branch.to_string()))?;
+    let parent_tip = repo
+        .revparse_single(parent_ref)
+        .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?
+        .peel_to_commit()
+        .map_err(|_| GitError::UnknownRevision(parent_ref.to_string()))?
+        .id();
+    let mut current = Some(tip);
+    while let Some(commit) = current {
+        // `graph_descendant_of` is strict: a commit is not its own
+        // descendant, so the parent tip itself (the common case — the
+        // branch forked straight off the trunk) needs the equality arm.
+        // Without it the scan slides past the true fork to an older
+        // commit, and the ingest re-writes the fork commit onto the
+        // branch until D-225 refuses it mid-bulk.
+        if commit.id() == parent_tip
+            || repo
+                .graph_descendant_of(parent_tip, commit.id())
+                .unwrap_or(false)
+        {
+            return Ok(commit.id().to_string());
+        }
+        current = commit.parent(0).ok();
+    }
+    Err(GitError::NoCommonHistory {
+        branch: branch.to_string(),
+        parent: parent_ref.to_string(),
+    })
+}
+
+/// Where HEAD points (P5d slice B). `branch` is `None` on a detached HEAD
+/// (and on an unborn repository), `sha` is `None` only when nothing is
+/// committed yet — the two are answered independently because a caller
+/// needs both facts: a detached HEAD has a tree but no lineage to write
+/// observations to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeadInfo {
+    pub branch: Option<String>,
+    pub sha: Option<String>,
+}
+
+/// Read HEAD's branch and commit without checking anything out.
+pub fn head_info(repo_path: &str) -> Result<HeadInfo, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let head = match repo.head() {
+        Ok(head) => head,
+        // Unborn HEAD (no commit yet) and a corrupt HEAD are both "no
+        // tree to sync": the sync reports them, it does not invent one.
+        Err(_) => {
+            return Ok(HeadInfo {
+                branch: None,
+                sha: None,
+            })
+        }
+    };
+    let detached = repo.head_detached().unwrap_or(false);
+    let branch: Option<String> = if detached {
+        None
+    } else {
+        head.shorthand().ok().map(str::to_string)
+    };
+    let sha = head.target().map(|oid| oid.to_string());
+    Ok(HeadInfo { branch, sha })
+}
+
+/// One path the working tree differs on, against a commit (P5d slice B):
+/// `in_tree` / `in_workdir` say which sides hold the path, so the caller
+/// knows whether to read committed content, working content, or write a
+/// retirement. Renames arrive as a deletion plus an addition — the sweep
+/// has no re-keying to do, and the rename link is the ingest's business
+/// (P5b.7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkdirChange {
+    pub path: String,
+    pub in_tree: bool,
+    pub in_workdir: bool,
+}
+
+/// The indexable paths where the working tree (index included) differs
+/// from `sha`'s tree. `sha` is a commit, so the same function answers both
+/// questions the checkout sweep asks: against the new head (what the tree
+/// carries now) and against the old one (what was dirty when the old
+/// lineage was left).
+pub fn workdir_changes(repo_path: &str, sha: &str) -> Result<Vec<WorkdirChange>, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let tree = repo
+        .revparse_single(sha)
+        .map_err(|_| GitError::UnknownRevision(sha.to_string()))?
+        .peel_to_tree()
+        .map_err(|_| GitError::UnknownRevision(sha.to_string()))?;
+    let mut opts = DiffOptions::new();
+    opts.include_untracked(true)
+        .recurse_untracked_dirs(true)
+        .include_ignored(false)
+        .recurse_ignored_dirs(false);
+    let diff = repo
+        .diff_tree_to_workdir_with_index(Some(&tree), Some(&mut opts))
+        .map_err(GitError::Diff)?;
+    let mut changes: Vec<WorkdirChange> = Vec::new();
+    let mut push = |path: Option<&Path>, in_tree: bool, in_workdir: bool| {
+        let Some(path) = path else { return };
+        if !is_indexable_path(path) {
+            return;
+        }
+        let path = path.to_string_lossy().to_string();
+        match changes.iter_mut().find(|c| c.path == path) {
+            Some(existing) => {
+                existing.in_tree |= in_tree;
+                existing.in_workdir |= in_workdir;
+            }
+            None => changes.push(WorkdirChange {
+                path,
+                in_tree,
+                in_workdir,
+            }),
+        }
+    };
+    diff.foreach(
+        &mut |delta, _| {
+            let new_path = delta.new_file().path();
+            let old_path = delta.old_file().path();
+            match delta.status() {
+                git2::Delta::Added | git2::Delta::Untracked => push(new_path, false, true),
+                git2::Delta::Deleted => push(old_path, true, false),
+                git2::Delta::Renamed | git2::Delta::Copied => {
+                    push(old_path, true, false);
+                    push(new_path, false, true);
+                }
+                _ => push(new_path, true, true),
+            }
+            true
+        },
+        None,
+        None,
+        None,
+    )
+    .map_err(GitError::Diff)?;
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(changes)
+}
+
+/// Raw bytes of `path` as committed in `sha` (P5a.1): the walker feeds git
+/// blob bytes, so no commit is ever checked out. `sha` must resolve to a
+/// commit and `path` must name a blob in that commit's tree.
+pub fn blob_bytes(repo_path: &str, sha: &str, path: &Path) -> Result<Vec<u8>, GitError> {
+    let repo = Repository::open(repo_path).map_err(GitError::Open)?;
+    let commit = repo
+        .revparse_single(sha)
+        .map_err(|_| GitError::UnknownRevision(sha.to_string()))?
+        .peel_to_commit()
+        .map_err(|_| GitError::UnknownRevision(sha.to_string()))?;
+    let tree = commit.tree().map_err(GitError::Commit)?;
+    let entry = tree.get_path(path).map_err(|_| GitError::PathNotFound {
+        sha: sha.to_string(),
+        path: path.to_string_lossy().to_string(),
+    })?;
+    let blob = entry
+        .to_object(&repo)
+        .map_err(GitError::Commit)?
+        .peel_to_blob()
+        .map_err(|_| GitError::PathNotFound {
+            sha: sha.to_string(),
+            path: path.to_string_lossy().to_string(),
+        })?;
+    Ok(blob.content().to_vec())
+}
+
+fn commit_plan_for_commit(
+    repo: &Repository,
+    commit: &git2::Commit,
+    excludes: &Option<ignore::gitignore::Gitignore>,
+) -> Result<CommitPlan, GitError> {
+    let tree = commit.tree().map_err(GitError::Commit)?;
+    let mut changed = Vec::new();
+    let mut deleted = Vec::new();
+    let mut renamed = Vec::new();
+    if commit.parent_count() == 0 {
+        for path in indexable_tree_paths(&tree)? {
+            if is_blob_eligible(&path, excludes) {
+                changed.push(path);
+            }
+        }
+    } else {
+        let parent = commit.parent(0).map_err(GitError::Commit)?;
+        let parent_tree = parent.tree().map_err(GitError::Commit)?;
+        let mut diff_opts = DiffOptions::new();
+        let mut diff = repo
+            .diff_tree_to_tree(Some(&parent_tree), Some(&tree), Some(&mut diff_opts))
+            .map_err(GitError::Diff)?;
+        // git's default similarity (Q-16): 50 %. Lower finds more pairs and
+        // links more wrong ones; the score rides every row, so a wrong one
+        // is visible and correctable.
+        let mut find_opts = git2::DiffFindOptions::new();
+        find_opts.rename_threshold(50);
+        diff.find_similar(Some(&mut find_opts))
+            .map_err(GitError::Diff)?;
+        diff.foreach(
+            &mut |delta, _| {
+                match delta.status() {
+                    Delta::Added | Delta::Modified | Delta::Copied => {
+                        if let Some(path) = delta.new_file().path() {
+                            let path = PathBuf::from(path);
+                            if is_blob_eligible(&path, excludes) {
+                                changed.push(path);
+                            }
+                        }
+                    }
+                    Delta::Deleted => {
+                        if let Some(path) = delta.old_file().path() {
+                            let path = PathBuf::from(path);
+                            if is_indexable_path(&path) {
+                                deleted.push(path);
+                            }
+                        }
+                    }
+                    Delta::Renamed => {
+                        let old_path = delta.old_file().path().map(PathBuf::from);
+                        let new_path = delta.new_file().path().map(PathBuf::from);
+                        if let Some(path) = new_path.as_ref() {
+                            if is_blob_eligible(path, excludes) {
+                                changed.push(path.clone());
+                            }
+                        }
+                        if let Some(path) = old_path.as_ref() {
+                            if is_indexable_path(path) {
+                                deleted.push(path.clone());
+                            }
+                        }
+                        if let (Some(old), Some(new)) = (old_path, new_path) {
+                            if is_indexable_path(&old) && is_blob_eligible(&new, excludes) {
+                                let same_blob = delta.old_file().id() == delta.new_file().id();
+                                renamed.push(RenameEntry {
+                                    old,
+                                    new,
+                                    similarity: same_blob.then_some(100),
+                                });
+                            }
+                        }
+                    }
+                    Delta::Typechange => {
+                        if let Some(path) = delta.new_file().path() {
+                            let path = PathBuf::from(path);
+                            if is_blob_eligible(&path, excludes) {
+                                changed.push(path);
+                            } else if let Some(old) = delta.old_file().path() {
+                                let old = PathBuf::from(old);
+                                if is_indexable_path(&old) {
+                                    deleted.push(old);
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                true
+            },
+            None,
+            None,
+            None,
+        )
+        .map_err(GitError::Diff)?;
+    }
+    let mut tree_paths = indexable_tree_paths(&tree)?;
+    changed.sort();
+    changed.dedup();
+    deleted.sort();
+    deleted.dedup();
+    tree_paths.sort();
+    tree_paths.dedup();
+    Ok(CommitPlan {
+        sha: commit.id().to_string(),
+        committer_ts: rfc3339_from_git_time(&commit.committer().when()),
+        author_ts: rfc3339_from_git_time(&commit.author().when()),
+        parents: commit.parent_ids().map(|oid| oid.to_string()).collect(),
+        changed,
+        deleted,
+        tree: tree_paths,
+        renamed,
+    })
+}
+
+fn indexable_tree_paths(tree: &git2::Tree) -> Result<Vec<PathBuf>, GitError> {
+    let mut paths = Vec::new();
+    tree.walk(TreeWalkMode::PreOrder, |root, entry| {
+        if entry.kind() == Some(ObjectType::Blob) {
+            if let Ok(name) = entry.name() {
+                let mut full = PathBuf::from(root);
+                full.push(name);
+                if is_indexable_path(&full) {
+                    paths.push(full);
+                }
+            }
+        }
+        TreeWalkResult::Ok
+    })
+    .map_err(GitError::Diff)?;
+    Ok(paths)
+}
+
+fn is_indexable_path(path: &Path) -> bool {
+    let name = path.to_string_lossy();
+    let mut language = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(Language::from_extension)
+        .unwrap_or(Language::OtherTen);
+    if language == Language::OtherTen {
+        language = Language::from_filename(&name);
+    }
+    if language == Language::OtherTen {
+        return false;
+    }
+    CodeGraph::ts_language(&language).is_some()
+}
+
+fn is_blob_eligible(path: &Path, excludes: &Option<ignore::gitignore::Gitignore>) -> bool {
+    if !is_indexable_path(path) {
+        return false;
+    }
+    match excludes {
+        None => true,
+        Some(matcher) => !crate::path_excluded(matcher, path, false),
+    }
+}
+
+fn blob_exclusion_matcher() -> Option<ignore::gitignore::Gitignore> {
+    let patterns = crate::active_config().database.blob_exclude.clone();
+    let mut builder = ignore::gitignore::GitignoreBuilder::new("");
+    for pattern in &patterns {
+        let _ = builder.add_line(None, pattern);
+    }
+    builder.build().ok()
+}
+
+fn rfc3339_from_git_time(when: &git2::Time) -> String {
+    let offset = when.offset_minutes();
+    let local = when.seconds() + i64::from(offset) * 60;
+    let days = local.div_euclid(86_400);
+    let secs = local.rem_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
+    let sign = if offset < 0 { '-' } else { '+' };
+    let magnitude = offset.abs();
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}{sign}{:02}:{:02}",
+        secs / 3_600,
+        (secs % 3_600) / 60,
+        secs % 60,
+        magnitude / 60,
+        magnitude % 60
+    )
+}
+
+fn civil_from_days(days: i64) -> (i32, u8, u8) {
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_prime + 2) / 5 + 1) as u8;
+    let month = if month_prime < 10 {
+        (month_prime + 3) as u8
+    } else {
+        (month_prime - 9) as u8
+    };
+    let year = if month <= 2 { year + 1 } else { year } as i32;
+    (year, month, day)
+}
+
 #[derive(Debug)]
 pub enum GitError {
     Open(git2::Error),
@@ -121,6 +729,27 @@ pub enum GitError {
     /// R2-6: a revision string that resolves to nothing (bad hex, unknown
     /// object, unpeelable type). Surfaced instead of diffing empty.
     UnknownRevision(String),
+    /// P5a.1: the branch argument resolves to nothing committish.
+    UnknownBranch(String),
+    /// P5a.1: `from` resolved, but is not on the branch's first-parent
+    /// chain — refusing beats silently re-ingesting or skipping history.
+    NotAncestor(String),
+    /// P5a.1: `path` names no blob in `sha`'s tree (or names a tree).
+    PathNotFound {
+        sha: String,
+        path: String,
+    },
+    /// P5a.5: branch enumeration failed mid-iteration (a corrupt ref).
+    /// Opening the repository is still `Open`; this is the walk itself.
+    Branches(git2::Error),
+    /// P5a.4: `branch` shares no commit with `parent_ref` — an orphan or
+    /// unrelated history. A lineage forked from the trunk with nothing in
+    /// common is almost certainly a wrong ref, so refusing beats
+    /// ingesting an unrelated tree as branch history.
+    NoCommonHistory {
+        branch: String,
+        parent: String,
+    },
 }
 
 #[cfg(test)]
@@ -171,6 +800,63 @@ mod tests {
         assert!(
             !is_worktree_clean(root).unwrap(),
             "untracked non-ignored files must dirty the tree"
+        );
+    }
+
+    #[test]
+    fn head_info_and_workdir_changes_are_the_sweeps_inputs() {
+        // P5d slice B: the sync needs HEAD's branch and the indexable
+        // working-tree diff, and neither may see ignored artifacts.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.py"), "x = 1\n").unwrap();
+        std::fs::write(dir.path().join(".gitignore"), ".coderadar/\n").unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("a.py")).unwrap();
+        index.add_path(std::path::Path::new(".gitignore")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let sig = git2::Signature::now("t", "t@t.t").unwrap();
+        let sha = repo
+            .commit(Some("HEAD"), &sig, &sig, "c1", &tree, &[])
+            .unwrap()
+            .to_string();
+        let root = dir.path().to_str().unwrap();
+
+        let head = head_info(root).unwrap();
+        assert_eq!(head.sha.as_deref(), Some(sha.as_str()));
+        assert!(head.branch.is_some(), "an attached HEAD names its branch");
+        assert!(workdir_changes(root, &sha).unwrap().is_empty());
+
+        std::fs::write(dir.path().join("a.py"), "x = 2\n").unwrap();
+        std::fs::write(dir.path().join("b.py"), "y = 1\n").unwrap();
+        std::fs::create_dir_all(dir.path().join(".coderadar/store")).unwrap();
+        std::fs::write(dir.path().join(".coderadar/store/x.db"), "junk\n").unwrap();
+        let changes = workdir_changes(root, &sha).unwrap();
+        assert_eq!(
+            changes,
+            vec![
+                WorkdirChange {
+                    path: "a.py".into(),
+                    in_tree: true,
+                    in_workdir: true,
+                },
+                WorkdirChange {
+                    path: "b.py".into(),
+                    in_tree: false,
+                    in_workdir: true,
+                },
+            ],
+            "ignored artifacts stay out of the sweep"
+        );
+
+        std::fs::remove_file(dir.path().join("a.py")).unwrap();
+        let changes = workdir_changes(root, &sha).unwrap();
+        assert!(
+            changes
+                .iter()
+                .any(|c| c.path == "a.py" && c.in_tree && !c.in_workdir),
+            "a deletion is in the tree and not in the workdir: {changes:?}"
         );
     }
 }
@@ -227,5 +913,548 @@ mod revision_tests {
             files.iter().any(|f| f == "b.txt"),
             "HEAD~1..HEAD must list b.txt, got {files:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod ingest_plan_tests {
+    use super::*;
+
+    fn write_files(dir: &Path, files: &[(&str, &str)]) {
+        for (name, contents) in files {
+            let path = dir.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, contents).unwrap();
+        }
+    }
+
+    fn stage_paths(repo: &git2::Repository, paths: &[&str]) {
+        let mut index = repo.index().unwrap();
+        for path in paths {
+            index.add_path(Path::new(path)).unwrap();
+        }
+        index.write().unwrap();
+    }
+
+    fn remove_paths(repo: &git2::Repository, paths: &[&str]) {
+        let mut index = repo.index().unwrap();
+        for path in paths {
+            index.remove_path(Path::new(path)).unwrap();
+        }
+        index.write().unwrap();
+    }
+
+    fn commit_index_to_ref<'a>(
+        repo: &'a git2::Repository,
+        reference: &str,
+        message: &str,
+        sig: &git2::Signature<'_>,
+        parents: &[&git2::Commit<'_>],
+    ) -> git2::Commit<'a> {
+        let mut index = repo.index().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let oid = repo
+            .commit(Some(reference), sig, sig, message, &tree, parents)
+            .unwrap();
+        repo.find_commit(oid).unwrap()
+    }
+
+    fn commit_index<'a>(
+        repo: &'a git2::Repository,
+        message: &str,
+        sig: &git2::Signature<'_>,
+        parents: &[&git2::Commit<'_>],
+    ) -> git2::Commit<'a> {
+        commit_index_to_ref(repo, "HEAD", message, sig, parents)
+    }
+
+    fn now_sig() -> git2::Signature<'static> {
+        git2::Signature::now("t", "t@t.t").unwrap()
+    }
+
+    fn fixed_sig(secs: i64) -> git2::Signature<'static> {
+        git2::Signature::new("t", "t@t.t", &git2::Time::new(secs, 0)).unwrap()
+    }
+
+    fn linear_repo() -> (tempfile::TempDir, Vec<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        write_files(dir.path(), &[("a.py", "x = 1\n")]);
+        stage_paths(&repo, &["a.py"]);
+        let c1 = commit_index(&repo, "c1", &now_sig(), &[]);
+        write_files(dir.path(), &[("a.py", "x = 2\n"), ("b.py", "y = 3\n")]);
+        stage_paths(&repo, &["a.py", "b.py"]);
+        let c2 = commit_index(&repo, "c2", &now_sig(), &[&c1]);
+        std::fs::remove_file(dir.path().join("b.py")).unwrap();
+        remove_paths(&repo, &["b.py"]);
+        let c3 = commit_index(&repo, "c3", &now_sig(), &[&c2]);
+        let shas = vec![
+            c1.id().to_string(),
+            c2.id().to_string(),
+            c3.id().to_string(),
+        ];
+        (dir, shas)
+    }
+
+    fn assert_rfc3339_shape(ts: &str) {
+        assert_eq!(
+            ts.len(),
+            25,
+            "RFC3339 second precision with offset, got {ts}"
+        );
+        assert_eq!(ts.as_bytes()[10], b'T');
+        assert!(ts.ends_with(":00"), "offset must carry minutes, got {ts}");
+    }
+
+    #[test]
+    fn linear_history_plans_oldest_first_with_delta_and_tree() {
+        let (dir, shas) = linear_repo();
+        let root = dir.path().to_str().unwrap();
+        let plans = plan_ingest(root, "HEAD", None).unwrap();
+        assert_eq!(plans.len(), 3);
+        for (plan, sha) in plans.iter().zip(shas.iter()) {
+            assert_eq!(&plan.sha, sha);
+            assert_rfc3339_shape(&plan.committer_ts);
+            assert_rfc3339_shape(&plan.author_ts);
+        }
+        assert!(plans[0].parents.is_empty());
+        assert_eq!(plans[1].parents, vec![plans[0].sha.clone()]);
+        assert_eq!(plans[2].parents, vec![plans[1].sha.clone()]);
+        assert_eq!(plans[0].changed, vec![PathBuf::from("a.py")]);
+        assert!(plans[0].deleted.is_empty());
+        assert_eq!(plans[0].tree, vec![PathBuf::from("a.py")]);
+        assert_eq!(
+            plans[1].changed,
+            vec![PathBuf::from("a.py"), PathBuf::from("b.py")]
+        );
+        assert_eq!(
+            plans[1].tree,
+            vec![PathBuf::from("a.py"), PathBuf::from("b.py")]
+        );
+        assert!(plans[2].changed.is_empty());
+        assert_eq!(plans[2].deleted, vec![PathBuf::from("b.py")]);
+        assert_eq!(plans[2].tree, vec![PathBuf::from("a.py")]);
+    }
+
+    #[test]
+    fn from_is_exclusive_and_must_be_an_ancestor() {
+        let (dir, shas) = linear_repo();
+        let root = dir.path().to_str().unwrap();
+        let after_first = plan_ingest(root, "HEAD", Some(&shas[0])).unwrap();
+        assert_eq!(after_first.len(), 2);
+        assert_eq!(after_first[0].sha, shas[1]);
+        let after_tip = plan_ingest(root, "HEAD", Some(&shas[2])).unwrap();
+        assert!(after_tip.is_empty());
+        assert!(matches!(
+            plan_ingest(root, "nope", None),
+            Err(GitError::UnknownBranch(_))
+        ));
+        assert!(matches!(
+            plan_ingest(root, "HEAD", Some("deadbeef")),
+            Err(GitError::UnknownRevision(_))
+        ));
+    }
+
+    #[test]
+    fn blob_bytes_round_trips_each_commit() {
+        let (dir, shas) = linear_repo();
+        let root = dir.path().to_str().unwrap();
+        let first = blob_bytes(root, &shas[0], Path::new("a.py")).unwrap();
+        assert_eq!(first, b"x = 1\n");
+        let second = blob_bytes(root, &shas[1], Path::new("a.py")).unwrap();
+        assert_eq!(second, b"x = 2\n");
+        assert!(matches!(
+            blob_bytes(root, &shas[0], Path::new("missing.py")),
+            Err(GitError::PathNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn rename_lists_new_path_changed_and_old_path_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        write_files(dir.path(), &[("old.py", "x = 1\n")]);
+        stage_paths(&repo, &["old.py"]);
+        let c1 = commit_index(&repo, "c1", &now_sig(), &[]);
+        write_files(dir.path(), &[("new.py", "x = 1\n")]);
+        std::fs::remove_file(dir.path().join("old.py")).unwrap();
+        stage_paths(&repo, &["new.py"]);
+        remove_paths(&repo, &["old.py"]);
+        let c2 = commit_index(&repo, "rename", &now_sig(), &[&c1]);
+        let root = dir.path().to_str().unwrap();
+        let plans = plan_ingest(root, "HEAD", None).unwrap();
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[1].sha, c2.id().to_string());
+        assert_eq!(plans[1].changed, vec![PathBuf::from("new.py")]);
+        assert_eq!(plans[1].deleted, vec![PathBuf::from("old.py")]);
+        assert_eq!(plans[1].tree, vec![PathBuf::from("new.py")]);
+        // P5b.7: the same diff, with detection on, states the pair and the
+        // only score this side can honestly claim (identical blobs).
+        assert_eq!(
+            plans[1].renamed,
+            vec![RenameEntry {
+                old: PathBuf::from("old.py"),
+                new: PathBuf::from("new.py"),
+                similarity: Some(100),
+            }]
+        );
+        // The first commit is a root: nothing was renamed into it.
+        assert!(plans[0].renamed.is_empty());
+    }
+
+    #[test]
+    fn a_content_changing_rename_records_no_score_it_cannot_measure() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        write_files(
+            dir.path(),
+            &[(
+                "old.py",
+                "x = 1
+y = 2
+z = 3
+w = 4
+",
+            )],
+        );
+        stage_paths(&repo, &["old.py"]);
+        let c1 = commit_index(&repo, "c1", &now_sig(), &[]);
+        // One line changes out of four: well inside git's 50 % default, so
+        // the pair is still a rename — and the score stays unclaimed.
+        write_files(
+            dir.path(),
+            &[(
+                "new.py",
+                "x = 1
+y = 2
+z = 3
+w = 5
+",
+            )],
+        );
+        std::fs::remove_file(dir.path().join("old.py")).unwrap();
+        stage_paths(&repo, &["new.py"]);
+        remove_paths(&repo, &["old.py"]);
+        let c2 = commit_index(&repo, "rename", &now_sig(), &[&c1]);
+        let root = dir.path().to_str().unwrap();
+        let plans = plan_ingest(root, "HEAD", None).unwrap();
+        assert_eq!(plans[1].sha, c2.id().to_string());
+        assert_eq!(plans[1].renamed.len(), 1, "{:?}", plans[1].renamed);
+        assert_eq!(plans[1].renamed[0].old, PathBuf::from("old.py"));
+        assert_eq!(plans[1].renamed[0].new, PathBuf::from("new.py"));
+        assert_eq!(plans[1].renamed[0].similarity, None);
+    }
+
+    #[test]
+    fn merge_without_first_parent_change_plans_empty_while_resolution_plans() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        write_files(dir.path(), &[("a.py", "x = 1\n")]);
+        stage_paths(&repo, &["a.py"]);
+        let base = commit_index(&repo, "base", &now_sig(), &[]);
+        write_files(dir.path(), &[("a.py", "x = 2\n")]);
+        stage_paths(&repo, &["a.py"]);
+        let main = commit_index(&repo, "main", &now_sig(), &[&base]);
+        // Side history off the first-parent chain: reset the index to base,
+        // add an unrelated file, and commit it directly to its own ref.
+        repo.index()
+            .unwrap()
+            .read_tree(&base.tree().unwrap())
+            .unwrap();
+        write_files(dir.path(), &[("side.py", "s = 1\n")]);
+        stage_paths(&repo, &["side.py"]);
+        let side = commit_index_to_ref(&repo, "refs/heads/side", "side", &now_sig(), &[&base]);
+        // Merge whose tree equals the first parent's tree: no delta to plan.
+        repo.index()
+            .unwrap()
+            .read_tree(&main.tree().unwrap())
+            .unwrap();
+        let merged = commit_index(&repo, "merge", &now_sig(), &[&main, &side]);
+        // Conflict-resolving merge: the tree differs from the first parent.
+        write_files(dir.path(), &[("resolved.py", "r = 1\n")]);
+        stage_paths(&repo, &["resolved.py"]);
+        let resolved = commit_index(&repo, "resolve", &now_sig(), &[&merged, &side]);
+        let root = dir.path().to_str().unwrap();
+        let plans = plan_ingest(root, "HEAD", None).unwrap();
+        let shas: Vec<String> = plans.iter().map(|plan| plan.sha.clone()).collect();
+        assert_eq!(
+            shas,
+            vec![
+                base.id().to_string(),
+                main.id().to_string(),
+                merged.id().to_string(),
+                resolved.id().to_string(),
+            ]
+        );
+        let empty_merge = plans
+            .iter()
+            .find(|plan| plan.sha == merged.id().to_string())
+            .unwrap();
+        assert!(empty_merge.changed.is_empty());
+        assert!(empty_merge.deleted.is_empty());
+        assert_eq!(empty_merge.tree, vec![PathBuf::from("a.py")]);
+        let resolution = plans
+            .iter()
+            .find(|plan| plan.sha == resolved.id().to_string())
+            .unwrap();
+        assert_eq!(resolution.changed, vec![PathBuf::from("resolved.py")]);
+        assert_eq!(
+            resolution.tree,
+            vec![PathBuf::from("a.py"), PathBuf::from("resolved.py")]
+        );
+        assert!(matches!(
+            plan_ingest(root, "HEAD", Some(&side.id().to_string())),
+            Err(GitError::NotAncestor(_))
+        ));
+    }
+
+    #[test]
+    fn tied_stamps_reach_the_caller_unnudged() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = fixed_sig(1_700_000_000);
+        write_files(dir.path(), &[("a.py", "x = 1\n")]);
+        stage_paths(&repo, &["a.py"]);
+        let c1 = commit_index(&repo, "c1", &sig, &[]);
+        write_files(dir.path(), &[("a.py", "x = 2\n")]);
+        stage_paths(&repo, &["a.py"]);
+        let _c2 = commit_index(&repo, "c2", &sig, &[&c1]);
+        let root = dir.path().to_str().unwrap();
+        let plans = plan_ingest(root, "HEAD", None).unwrap();
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0].committer_ts, plans[1].committer_ts);
+        assert_eq!(plans[0].committer_ts, "2023-11-14T22:13:20+00:00");
+    }
+
+    #[test]
+    fn secret_shaped_paths_stay_in_tree_but_leave_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        write_files(
+            dir.path(),
+            &[("a.py", "x = 1\n"), ("my_secret_helper.py", "token = 1\n")],
+        );
+        stage_paths(&repo, &["a.py", "my_secret_helper.py"]);
+        commit_index(&repo, "c1", &now_sig(), &[]);
+        let root = dir.path().to_str().unwrap();
+        let plans = plan_ingest(root, "HEAD", None).unwrap();
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].changed, vec![PathBuf::from("a.py")]);
+        assert_eq!(
+            plans[0].tree,
+            vec![PathBuf::from("a.py"), PathBuf::from("my_secret_helper.py")]
+        );
+    }
+}
+
+#[cfg(test)]
+mod fork_point_tests {
+    use super::*;
+
+    fn write_files_local(dir: &Path, files: &[(&str, &str)]) {
+        for (name, contents) in files {
+            let path = dir.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(path, contents).unwrap();
+        }
+    }
+
+    fn stage_paths_local(repo: &git2::Repository, paths: &[&str]) {
+        let mut index = repo.index().unwrap();
+        for path in paths {
+            index.add_path(Path::new(path)).unwrap();
+        }
+        index.write().unwrap();
+    }
+
+    // NOTE: the ingest_plan_tests helpers are private to that module; this
+    // module re-declares the two it needs rather than widening visibility.
+    fn now_sig_local() -> git2::Signature<'static> {
+        git2::Signature::now("t", "t@t.t").unwrap()
+    }
+
+    fn commit_to<'a>(
+        repo: &'a git2::Repository,
+        reference: &str,
+        message: &str,
+        parents: &[&git2::Commit<'_>],
+    ) -> git2::Commit<'a> {
+        let mut index = repo.index().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = now_sig_local();
+        let oid = repo
+            .commit(Some(reference), &sig, &sig, message, &tree, parents)
+            .unwrap();
+        repo.find_commit(oid).unwrap()
+    }
+
+    /// main: m1 - m2 (- m3); feature branched at m2, one commit f1.
+    fn forked_repo() -> (tempfile::TempDir, String, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let root = dir.path();
+        write_files_local(root, &[("a.py", "x = 1\n")]);
+        stage_paths_local(&repo, &["a.py"]);
+        let m1 = commit_to(&repo, "refs/heads/main", "m1", &[]);
+        write_files_local(root, &[("a.py", "x = 2\n")]);
+        stage_paths_local(&repo, &["a.py"]);
+        let m2 = commit_to(&repo, "refs/heads/main", "m2", &[&m1]);
+        write_files_local(root, &[("b.py", "y = 1\n")]);
+        stage_paths_local(&repo, &["b.py"]);
+        let f1 = commit_to(&repo, "refs/heads/feature", "f1", &[&m2]);
+        write_files_local(root, &[("a.py", "x = 3\n")]);
+        stage_paths_local(&repo, &["a.py"]);
+        let m3 = commit_to(&repo, "refs/heads/main", "m3", &[&m2]);
+        let _ = (f1, m3);
+        (dir, m2.id().to_string(), String::new())
+    }
+
+    #[test]
+    fn branch_plan_separates_merged_names_from_own_commits() {
+        // main m1..m3, feature f1 off m2, plus a merged name at m2:
+        // D-6 c's two classes, from git's side.
+        let (dir, m2, _) = forked_repo();
+        let root = dir.path().to_str().unwrap();
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let oid = git2::Oid::from_str(&m2).unwrap();
+        repo.branch("merged", &repo.find_commit(oid).unwrap(), false)
+            .unwrap();
+        repo.branch("tip", &repo.find_commit(oid).unwrap(), false)
+            .unwrap();
+        let plan = branch_plan(root, "main").unwrap();
+        let by_name = |name: &str| plan.iter().find(|e| e.name == name).unwrap().clone();
+        assert!(
+            by_name("merged").merged,
+            "m2 is on main's first-parent chain"
+        );
+        assert!(!by_name("feature").merged, "f1 has commits of its own");
+        assert!(by_name("main").merged);
+        // Sorted by name, and no remote names in a repo with no remotes.
+        assert_eq!(
+            plan.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec!["feature", "main", "merged", "tip"]
+        );
+    }
+
+    #[test]
+    fn parent_drift_counts_the_parent_commits_past_the_fork() {
+        let (dir, _m2, _) = forked_repo();
+        let root = dir.path().to_str().unwrap();
+        // feature forked at m2; main has m3 after it.
+        assert_eq!(parent_drift_count(root, "feature", "main").unwrap(), 1);
+        // The trunk is its own parent: nothing after its tip.
+        assert_eq!(parent_drift_count(root, "main", "main").unwrap(), 0);
+        // A declared branch sitting on the trunk's tip has no drift either.
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let m3 = repo
+            .revparse_single("main")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        repo.branch("same-as-main", &m3, false).unwrap();
+        assert_eq!(parent_drift_count(root, "same-as-main", "main").unwrap(), 0);
+    }
+
+    #[test]
+    fn fork_point_is_the_branch_point_despite_later_main() {
+        let (dir, m2, _) = forked_repo();
+        let root = dir.path().to_str().unwrap();
+        // main has advanced past the fork (m3); the fork stays at m2.
+        assert_eq!(fork_point(root, "feature", "main").unwrap(), m2);
+    }
+
+    #[test]
+    fn fork_point_survives_a_trunk_merge_into_the_branch() {
+        let (dir, m2, _) = forked_repo();
+        let root = dir.path().to_str().unwrap();
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        // feature merges main (second parent): the merge commit is not
+        // main-reachable, so the fork stays at m2 and the resolution
+        // commit itself is ingested (P5-D7).
+        let f1 = repo
+            .revparse_single("feature")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        let m3 = repo
+            .revparse_single("main")
+            .unwrap()
+            .peel_to_commit()
+            .unwrap();
+        repo.index().unwrap().write_tree().unwrap();
+        commit_to(&repo, "refs/heads/feature", "merge main", &[&f1, &m3]);
+        assert_eq!(fork_point(root, "feature", "main").unwrap(), m2);
+        let plan = plan_ingest(root, "feature", Some(&m2)).unwrap();
+        assert_eq!(plan.len(), 2, "merge resolution + branch tip: {plan:?}");
+    }
+
+    #[test]
+    fn fork_point_unknown_names_and_orphans_refuse() {
+        let (dir, _, _) = forked_repo();
+        let root = dir.path().to_str().unwrap();
+        assert!(matches!(
+            fork_point(root, "nope", "main"),
+            Err(GitError::UnknownBranch(_))
+        ));
+        assert!(matches!(
+            fork_point(root, "feature", "nope"),
+            Err(GitError::UnknownRevision(_))
+        ));
+        // An orphan root shares nothing with main: almost certainly a
+        // wrong ref, so refusing beats ingesting an unrelated tree.
+        let repo = git2::Repository::open(dir.path()).unwrap();
+        let sig = now_sig_local();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("refs/heads/orphan"), &sig, &sig, "o1", &tree, &[])
+            .unwrap();
+        assert!(matches!(
+            fork_point(root, "orphan", "main"),
+            Err(GitError::NoCommonHistory { .. })
+        ));
+    }
+}
+
+#[cfg(test)]
+mod list_branches_tests {
+    use super::*;
+
+    #[test]
+    fn list_branches_names_every_local_branch_sorted() {
+        // main + two branches: the migration's default set, sorted, with
+        // no ref prefixes — including the checked-out branch (HEAD is not
+        // a branch entry, so there is nothing to exclude).
+        let dir = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let sig = git2::Signature::now("t", "t@t.t").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let m1 = repo
+            .commit(Some("refs/heads/main"), &sig, &sig, "m1", &tree, &[])
+            .unwrap();
+        let m1 = repo.find_commit(m1).unwrap();
+        repo.commit(Some("refs/heads/zebra"), &sig, &sig, "z1", &tree, &[&m1])
+            .unwrap();
+        repo.commit(Some("refs/heads/apple"), &sig, &sig, "a1", &tree, &[&m1])
+            .unwrap();
+        let root = dir.path().to_str().unwrap();
+        assert_eq!(
+            list_branches(root).unwrap(),
+            vec!["apple".to_string(), "main".to_string(), "zebra".to_string()]
+        );
+    }
+
+    #[test]
+    fn list_branches_unknown_repository_refuses() {
+        assert!(matches!(
+            list_branches("/nonexistent/path/that/is/not/a/repo"),
+            Err(GitError::Open(_))
+        ));
     }
 }

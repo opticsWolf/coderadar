@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -646,6 +647,43 @@ def changes_between(t1: str, t2: str, scope: str | None, branch: str, fmt: str):
         lambda result: render.changes_between(result))
 
 
+@main.command(name="migrate-to-commit-time")
+@click.option("--repo", required=True,
+              help="Git repository to migrate (history is read from git; "
+              "the working tree is never touched).")
+@click.option("--store", "store_path", required=True,
+              help="Destination store file (a new commit-time store; "
+              "the old store is never touched). Re-runs resume per branch.")
+@click.option("--branches", default=None,
+              help="Comma-separated branches to migrate (default: every "
+              "local branch, trunk first). The trunk is prepended when "
+              "missing and present — branch reads fall back to trunk rows.")
+@click.option("--parent-ref", default="main", show_default=True,
+              help="Trunk ref branch fork points are computed against.")
+@click.option("--no-embed", "no_embed", is_flag=True,
+              help="Skip the single compute_embeddings pass over the final state.")
+@click.option("--no-verify", "no_verify", is_flag=True,
+              help="Skip the per-branch verify_history coverage sweep.")
+@_format_option
+def migrate_to_commit_time(repo: str, store_path: str, branches: str | None,
+                           parent_ref: str, no_embed: bool,
+                           no_verify: bool, fmt: str):
+    """Build a commit-time store from a repository's git history (P5a.5, DR-41)."""
+    from pathlib import Path as _Path
+
+    from . import ops, render
+    repo = str(_Path(repo).resolve())
+    store_path = str(_Path(store_path).resolve())
+    branch_list = [b.strip() for b in branches.split(",")] if branches else None
+    if branch_list is not None and not all(branch_list):
+        raise click.BadParameter("--branches holds an empty name.")
+    _enter_project()
+    _op(fmt, lambda: ops.migrate_to_commit_time(
+        repo, store_path, branches=branch_list, parent_ref=parent_ref,
+        embed=not no_embed, verify=not no_verify),
+        lambda result: render.migrate_to_commit_time(result))
+
+
 @main.command(name="history")
 @click.argument("file")
 @_format_option
@@ -655,6 +693,252 @@ def history(file: str, fmt: str):
     _enter_project()
     _op(fmt, lambda: ops.history_of(file),
         lambda result: render.history_of(result))
+
+
+@main.command(name="annotate")
+@click.argument("about")
+@click.argument("body")
+@_format_option
+def annotate_cmd(about: str, body: str, fmt: str):
+    """Mint an annotation on ABOUT; BODY '-' reads stdin (P6a kinds)."""
+    from . import ops, render
+    _enter_project()
+    text = _text_arg(body)
+    _op(fmt, lambda: ops.annotate(about, text),
+        lambda result: render.annotation_stored(result))
+
+
+@main.command(name="comment")
+@click.argument("about")
+@click.argument("body")
+@_format_option
+def comment_cmd(about: str, body: str, fmt: str):
+    """Mint a comment on ABOUT; BODY '-' reads stdin (P6a kinds)."""
+    from . import ops, render
+    _enter_project()
+    text = _text_arg(body)
+    _op(fmt, lambda: ops.comment(about, text),
+        lambda result: render.annotation_stored(result))
+
+
+@main.command(name="revise-annotation")
+@click.argument("id")
+@click.argument("body")
+@_format_option
+def revise_annotation_cmd(id: str, body: str, fmt: str):
+    """Supersede annotation/comment ID; BODY '-' reads stdin (P6a)."""
+    from . import ops, render
+    _enter_project()
+    text = _text_arg(body)
+    _op(fmt, lambda: ops.revise_annotation(id, text),
+        lambda result: render.annotation_stored(result))
+
+
+@main.command(name="retire-annotation")
+@click.argument("id")
+@_format_option
+def retire_annotation_cmd(id: str, fmt: str):
+    """Soft-retire annotation/comment ID, audit trail kept (P6a)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.retire_annotation(id),
+        lambda result: render.annotation_stored(result))
+
+
+@main.command(name="annotations-on")
+@click.argument("target")
+@_format_option
+def annotations_on_cmd(target: str, fmt: str):
+    """Every annotation version on TARGET, newest first (P6a)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.annotations_on(target),
+        lambda result: render.annotation_versions(result))
+
+
+@main.command(name="comments-on")
+@click.argument("target")
+@_format_option
+def comments_on_cmd(target: str, fmt: str):
+    """Every comment version on TARGET, newest first (P6a)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.comments_on(target),
+        lambda result: render.annotation_versions(result))
+
+
+@main.command(name="annotation-history")
+@click.argument("id")
+@_format_option
+def annotation_history_cmd(id: str, fmt: str):
+    """Every version of annotation ID, newest first (P6a)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.annotation_history(id),
+        lambda result: render.annotation_versions(result))
+
+
+@main.command(name="comment-history")
+@click.argument("id")
+@_format_option
+def comment_history_cmd(id: str, fmt: str):
+    """Every version of comment ID, newest first (P6a)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.comment_history(id),
+        lambda result: render.annotation_versions(result))
+
+
+@main.command(name="open-items")
+@click.option("--scope", default=None,
+              help="Prefix on the annotated id (`a.py` covers `a.py::f`); default: the whole store.")
+@_format_option
+def open_items(scope: str | None, fmt: str):
+    """Every unchecked task item under SCOPE, annotations only (P6b)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.open_items(scope), render.open_items)
+
+
+def _store_arg(store_path: str | None) -> str | None:
+    """An explicit --store wins; otherwise the project's standard store when
+    it exists (a fresh CLI process has no loaded graph to fall back on)."""
+    from pathlib import Path as _Path
+
+    if store_path:
+        return str(_Path(store_path).resolve())
+    candidate = _Path.cwd() / ".coderadar" / "store" / "coderadar.db"
+    return str(candidate) if candidate.exists() else None
+
+
+@main.command(name="export-annotations")
+@click.option("--out", default=None,
+              help="File to write (default: print the JSON document and nothing else).")
+@click.option("--store", "store_path", default=None,
+              help="Store file to read (default: the loaded project's store).")
+@_format_option
+def export_annotations(out: str | None, store_path: str | None, fmt: str):
+    """Export every annotation and comment chain as one JSON document (P8, A-9)."""
+
+    from . import ops, render
+    target = _store_arg(store_path)
+    _enter_project()
+    try:
+        result = ops.export_annotations(out, store_path=target)
+    except ops.OpError as e:
+        _fail(e)
+    if out is None:
+        # A pipe-shaped command: the document, nothing else.
+        click.echo(result.pop("payload"))
+        return
+    _emit(fmt, result, render.export_annotations)
+
+
+@main.command(name="import-annotations")
+@click.argument("source", type=click.Path(exists=True))
+@click.option("--on-conflict", "on_conflict", type=click.Choice(["error", "skip"]),
+              default="error", show_default=True,
+              help="An id that already exists refuses, or is skipped and reported.")
+@click.option("--store", "store_path", default=None,
+              help="Store file to write (default: the loaded project's store).")
+@_format_option
+def import_annotations(source: str, on_conflict: str,
+                       store_path: str | None, fmt: str):
+    """Import a document `export-annotations` wrote (P8, A-9)."""
+    from pathlib import Path as _Path
+
+    from . import ops, render
+    source = str(_Path(source).resolve())
+    _enter_project()
+    target = _store_arg(store_path)
+    try:
+        result = ops.import_annotations(source, store_path=target,
+                                        on_conflict=on_conflict)
+    except ops.OpError as e:
+        _fail(e)
+    _emit(fmt, result, render.import_annotations)
+
+
+@main.command(name="rebuild-store")
+@click.option("--repo", default=".", show_default=True,
+              help="Git repository the history is read from.")
+@click.option("--store", "store_path", default=None,
+              help="Store file to rebuild (default: <repo>/.coderadar/store/coderadar.db).")
+@click.option("--branches", default=None,
+              help="Comma-separated branches (default: the D-6 c selection, trunk first).")
+@click.option("--parent-ref", default="main", show_default=True,
+              help="Trunk ref fork points are computed against.")
+@click.option("--export", "export_path", default=None,
+              help="Where the annotation export lands (default: beside the store).")
+@click.option("--on-conflict", "on_conflict", type=click.Choice(["error", "skip"]),
+              default="error", show_default=True,
+              help="An id that already exists refuses, or is skipped and reported.")
+@click.option("--embed", is_flag=True,
+              help="Recompute vectors after the rebuild (a final-state pass).")
+@_format_option
+def rebuild_store(repo: str, store_path: str | None, branches: str | None,
+                  parent_ref: str, export_path: str | None,
+                  on_conflict: str, embed: bool, fmt: str):
+    """Rebuild a store from git plus its exported annotations (P8, A-9/INV-18)."""
+    from pathlib import Path as _Path
+
+    from . import ops, render
+    # Absolute before _enter_project chdirs: --repo/--store name the
+    # caller's directory, not the marker project.
+    repo = str(_Path(repo).resolve())
+    store_path = str(_Path(store_path).resolve()) if store_path else None
+    export_path = str(_Path(export_path).resolve()) if export_path else None
+    branch_list = [b.strip() for b in branches.split(",")] if branches else None
+    if branch_list is not None and not all(branch_list):
+        raise click.BadParameter("--branches holds an empty name.")
+    _enter_project()
+    # No _op here: it loads the graph, and the rebuild needs a process
+    # that has not opened the store (the op's own precondition).
+    try:
+        result = ops.rebuild(repo, store_path=store_path, branches=branch_list,
+                             parent_ref=parent_ref, export_path=export_path,
+                             on_conflict=on_conflict, embed=embed)
+    except ops.OpError as e:
+        _fail(e)
+    _emit(fmt, result, render.rebuild)
+
+
+@main.command(name="ingest-history")
+@click.option("--repo", required=True,
+              help="Git repository to ingest (any path; history is read from git).")
+@click.option("--branch", default="main", show_default=True,
+              help="Git branch whose first-parent history to ingest.")
+@click.option("--lineage", default=None,
+              help="Lineage to write (default: the branch name; 'main' is the trunk). "
+              "An explicit 'main' lineage with a non-main branch is refused.")
+@click.option("--parent-ref", default="main", show_default=True,
+              help="Trunk ref the branch fork point is computed against.")
+@click.option("--from", "from_sha", default=None,
+              help="Exclusive window start (a sha). Omit to resume from the cursor "
+              "(or start at the root / fork). "
+              "A sha that is not the cursor is refused (INV-10).")
+@click.option("--dry-run", is_flag=True,
+              help="Plan without writing anything (no store creation, no fork, no cursor).")
+@click.option("--store", "store_path", required=True,
+              help="Store file to write (created as a commit-time store when missing). "
+              "A legacy index-now store is refused (INV-12).")
+@_format_option
+def ingest_history(repo: str, branch: str, lineage: str | None,
+                   parent_ref: str, from_sha: str | None,
+                   dry_run: bool, store_path: str, fmt: str):
+    """Ingest a git branch's history onto the trunk or a branch lineage (P5a.3/P5a.4, DR-41)."""
+    from pathlib import Path as _Path
+
+    from . import ops, render
+    # Absolute before _enter_project chdirs: relative --repo/--store name
+    # the caller's directory, not the marker project.
+    repo = str(_Path(repo).resolve())
+    store_path = str(_Path(store_path).resolve())
+    _enter_project()
+    _op(fmt, lambda: ops.ingest_history(repo, branch, from_sha, dry_run,
+                                        lineage=lineage, parent_ref=parent_ref,
+                                        store_path=store_path),
+        lambda result: render.ingest_history(result))
 
 
 @main.command()
@@ -1569,13 +1853,35 @@ def serve(project_path: str | None):
     mcp_serve(coderadar.CodeGraph())
 
 
+def _print_sync_report(report: dict) -> None:
+    """One line per sync that did something (P5d slice B)."""
+    head = report.get("head") or {}
+    checkout = report.get("checkout") or "(detached)"
+    parts = [f"{checkout}@{str(head.get('sha') or '')[:8]}"]
+    ingested = sum(i.get("commits_ingested", 0) for i in report.get("ingested", []))
+    if ingested:
+        parts.append(f"{ingested} commit(s) ingested")
+    if report.get("checkout_changed"):
+        parts.append("checkout swept")
+    observations = report.get("observations", [])
+    if observations:
+        parts.append(f"{len(observations)} observation(s)")
+    for refusal in report.get("refusals", []):
+        parts.append(f"refused {refusal['branch']}: {refusal['reason']}")
+    console.print("[cyan]sync[/cyan] " + " · ".join(parts))
+
+
 @main.command()
 @click.argument("paths", nargs=-1, type=click.Path(exists=True))
 @click.option("--debounce", default=100, help="Debounce window in ms")
-def watch(paths, debounce):
+@click.option("--git", "watch_refs", is_flag=True,
+              help="Follow git refs instead of files: ingest commits and "
+                   "sweep checkouts (P5d).")
+def watch(paths, debounce, watch_refs):
     """Watch files for changes and auto-update the code graph.
 
-    PATHS: directories to watch (default: src/ tests/).
+    PATHS: directories to watch (default: src/ tests/). With --git, a ref
+    watcher runs the commit-driven sync instead (`ops.sync_git`).
     """
     paths = tuple(_enter_project(*paths))
     watch_paths = list(paths) if paths else ["src/", "tests/"]
@@ -1584,6 +1890,26 @@ def watch(paths, debounce):
     # took the config activation with it. A watcher updating an empty index
     # reports changes against nothing.
     graph = _ensure_graph()
+    if watch_refs:
+        watcher = graph.watch_git(poll_ms=max(200, debounce * 5))
+        console.print(
+            "[bold green]Watching git refs[/bold green] "
+            "(commits, checkouts, merges)")
+        console.print("[dim]Press Ctrl+C to stop[/dim]")
+        seen = 0
+        try:
+            while True:
+                time.sleep(0.5)
+                for report in watcher.reports[seen:]:
+                    _print_sync_report(report)
+                seen = len(watcher.reports)
+                if watcher.last_error:
+                    console.print(
+                        f"[red]sync failed:[/red] {watcher.last_error}")
+                    watcher.last_error = None
+        except KeyboardInterrupt:
+            watcher.stop()
+        return
     watcher = graph.watch(watch_paths, debounce_ms=debounce)
     console.print(f"[bold green]Watching:[/bold green] {', '.join(watch_paths)}")
     console.print("[dim]Press Ctrl+C to stop[/dim]")

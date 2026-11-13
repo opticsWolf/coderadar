@@ -3,10 +3,13 @@ members = ["core_indexer"]
 resolver = "2"
 
 [workspace.package]
-version = "0.14.0"
+version = "0.15.0"
 edition = "2021"
 license = "MIT"
 authors = ["CodeRadar Team"]
 homepage = "https://opticswolf.github.io/coderadar/"
 repository = "https://github.com/opticsWolf/coderadar"
 documentation = "https://opticswolf.github.io/coderadar/"
+
+# macrame-db rides the crates.io registry (0.22.0 uptake closed P5b.2;
+# the M6-g-era git [patch] is retired).

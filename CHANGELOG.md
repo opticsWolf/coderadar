@@ -4,6 +4,221 @@ Patch releases accumulate toward the next minor (+0.0.1 per implemented feature,
 bump commit named in the feature's DR row). The v0.12 plan history lives
 in `docs/` (v1 frozen, consolidated trio authoritative).
 
+## 0.15.0 (2026-11-13)
+
+Temporal P5: history as it was lived. A store can now be filled from git
+one commit at a time — every fact stamped with the commit that produced it —
+and then read at a time, on a branch, or on the belief axis, with each
+answer naming the basis it came from and each refusal naming its reason.
+Annotations, comments and the users' task lists live on the same ledger and
+leave it as a document (`coderadar.annotations.v1`), so the store's own data
+survives a rebuild. Nineteen entries below, P5a through P8, newest first;
+the top one is the store contract all of them stand on — one engine per path, per process.
+
+- The store is opened once per path, per process. A second open of a store this process already
+  holds now joins the live handle instead of constructing a second engine. Two measured reasons:
+  libSQL refuses a second `Database` on a live path on POSIX (`SqliteFailure(5, "database is
+  locked")` — the ubuntu runner failed every op that opened a store beside a loaded graph, a
+  second `ingest_history`, or a backfill; Windows tolerated it, so the bug was invisible off CI),
+  and closing either of two engines is not safe — the survivor keeps answering current reads but
+  loses the rows the close folded into its snapshot. Engines therefore live until the process
+  does, which is what the design already assumed; the sharing is new, and `ops.rebuild`'s
+  move-before-open order (P8) is unchanged and still required.
+  The registration is one critical section — lookup, open and insert under one lock —
+  because releasing it in between let two threads open twice and each keep its own engine
+  (silent on Windows, `database is locked` on POSIX); and the registry key is the path the
+  filesystem reports for an existing file, so letter case and symlinks fold where the
+  platform folds them and nowhere else. `forget_store` accepts both spellings, which is
+  what `ops.rebuild` needs after it moves the file.
+- P5b.5, slice 1 — the backfill write shape. The store's bulk concept write accepts a closed,
+  non-retirement version starting before the live open one, provided its `valid_to` is at or
+  before the live belief's start: the past gains an abutting interval, the open belief keeps its
+  end, and nothing is superseded. The engine already had the machinery (the projection's write
+  declines the update, the row is logged and marked for the next read's correction); the refusal
+  was ours, a forward-only fallback in `upsert_concepts_bulk`. Open-in-the-past, a span inside the
+  live belief, and a backfilled retirement still refuse before anything is written, and a chained
+  backfill now reads correctly on the valid axis with invariants clean. The ingest window that
+  uses this is the next slice.
+- P6b, aggregation and the "why" join — the checklists get a reader and every search hit
+  can say why. New op `open_items` (CLI `open-items`, MCP `coderadar_open_items`) lists the
+  unchecked task items of every live annotation under a scope: the scope names an id or an
+  ancestor of one (`a.py` is the file, `a.py::C` reaches `a.py::C.m`, `pkg/` the directory),
+  only current versions count (a superseded body's items are gone), a retired row
+  contributes nothing, and comments never appear — only lists can be aggregated. `search`,
+  `search_similar` and `search_hybrid` now attach `notes` to a hit: the live annotations
+  and comments anchored to the entity, to an enclosing id or to its file, newest first and
+  named by kind, so a result answers "why next to what". A hit with no notes carries no key,
+  so existing shapes are unchanged. The note-as-embed-target half of P6b is deliberately
+  deferred with its reason recorded (concepts are not projection entities; the vector table
+  would score notes and then drop them, and a notes map would cross INV-13's count line).
+  Gates: 598 lib; pytest 1390 passed / 1 skipped / 1 xfailed.
+- P8, the data boundary — the store's own rows leave and come back (A-9/INV-18):
+  `export_annotations` writes every annotation/comment chain as one `coderadar.annotations.v1`
+  document (id, kind, about, n, mint lineage, and each version's body, start, close and retire);
+  `import_annotations` validates every row before its first write, replays each chain
+  oldest-first through the write path's own upsert, and reads every row back and compares it to
+  the file before reporting success. Bodies import verbatim — a newer linter must never rewrite
+  stored history — and an existing id refuses unless `on_conflict="skip"` reports it. New ops
+  `ops.rebuild` and CLI `rebuild-store` turn Q-9's remedy into a command: the old store moves to
+  `coderadar.db.pre-rebuild-<stamp>` (never deleted), the export comes off the backup, the history
+  re-ingests with the migration's D-6 c selection (both ops now share `_lineage_plan`), and the
+  chains come back verified. A rebuild is one-shot per process — the engine locks a store file
+  for the life of the process that opened it — so it refuses a loaded graph and runs as a fresh
+  CLI invocation. New: `coderadar export-annotations`, `import-annotations`, `rebuild-store`;
+  `CodeGraph.export_annotations`/`import_annotations`. INV-18 is tested end to end.
+  Gates: 596 lib; pytest 1377 passed / 1 skipped / 1 xfailed.
+- Temporal P5d, commit-driven half — git drives the sync (A-8/D-4 a1): `ops.sync_git` brings a
+  commit-time store up to date in four acts. It ingests the trunk and every branch whose tip has
+  commits of its own (D-6 c), records merged names as commit addresses, sweeps observations, and
+  writes the marks the next call reads (`coderadar.git.checkout`, `.head`, `.dirty` as
+  `{path: sha256}`). The sweep is the plan's D-4 a1: a checkout returns the left lineage's
+  recorded dirty files to *its* head (`source: "checkout"`) and records the carried edits on the
+  new lineage; a same-lineage sync records edits made while CodeRadar was off
+  (`source: "startup"`) and reverts, and re-recording unchanged bytes does nothing. A detached
+  HEAD's sweep is skipped with that reason, per-branch refusals ride the report, and `GitWatcher`
+  polls HEAD and calls the op (`coderadar watch --git` starts one; `poll_once()` is public so a
+  daemon can drive it). The sweep writes the store; reloading the in-memory graph after a
+  checkout is the caller's step. Gates: 596 lib; pytest 1370 passed / 1 skipped / 1 xfailed.
+- Temporal P5d, second slice — an observation names its lineage (A-8/D-4/INV-17): a bare
+  `update_file` or `remove_file` now lands on the branch the working tree is checked out on,
+  recorded in `coderadar.git.checkout`, instead of assuming the trunk. A branch-owned file
+  updates its own mint row; an inherited id writes the branch's overlay version (Macrame W2) and
+  the trunk's row stands untouched; removals retire through the branch's own act; a branch
+  observation persists no edges (P5a.4's rule) and seeds only its own nudge mark
+  (`coderadar.observed.{lineage}`). The update report names the lineage. An index-now store keeps
+  its one lineage and ignores the record, and `analyze` refuses a branch checkout by name rather
+  than asserting branch content on the trunk — its sweep and edge pass are trunk-shaped until the
+  checkout sweep lands. Gates: 595 lib; pytest 1365 passed / 1 skipped / 1 xfailed.
+- Temporal P5d, first slice — observation writes (§3.1.3/A-7/INV-17): an index-now write on a
+  git-filled store is no longer refused. `update_file`, `remove_file` and `analyze` record what
+  they saw, stamped at the instant they saw it on both axes, with the previous interval closing
+  where the new one opens — and every row says where it came from (`extra.coderadar.source`,
+  plus `tool`/`plan_id`/`attempt_id` for a mutation). A synchronized mutation is `Applied` again
+  and its sync summary reports `observations: [{file, observed_at, source}]`; INV-12 narrows to
+  "every row's axes mean what its source says", and provenance is blind to the unchanged-filter,
+  so a no-op reindex asserts nothing instead of churning `valid_from`. H-26 lands with it: the
+  store marks the latest observation (`coderadar.observed.main`) and both ingest arms seed the
+  nudge chain with it, so a commit discovered afterwards that would open a start behind a
+  recorded belief is nudged past it and counted in `stamps_nudged`. F5 flips. Gates: 595 lib;
+  pytest 1359 passed / 1 skipped / 1 xfailed.
+- Temporal P5b.3 — the valid axis on the trunk (A-2/D-3/INV-16): `as_of` and `changes_between` take
+  `valid=True`, `CodeGraph.as_of` / `Snapshot` pass it through, and the `_core` reads carry it as a
+  flag, so MCP/CLI/Python share one lowering — Macrame's `reconstruct_as_of(AsOf::valid_at(..))`.
+  A valid read names the instant itself as its fold instant and reports `basis: "valid"`: no
+  horizon, no commit index, and the rendered answer says so. Branch reads refuse with
+  `ValidBranchNeedsU2` (Macrame's lineage-resolved valid fold, 0.23.0) rather than folding the trunk
+  for a branch, and `at=` refuses with `ValidAtNeedsP5b4` — an axis is never crossed by guessing.
+  `history_of` needs no flag (its spine is the valid axis) and `verify_history` stays a
+  recorded-generation audit. Gates: 592 lib; pytest 1353 passed / 1 skipped / 2 xfailed.
+- Temporal P5b.7 — rename links (A-11, F6 flipped): `plan_ingest` turns on git's rename detection at
+  its default 50 %, and the ingest writes one ordinary ledger row per renamed id under
+  `renamed:{old_id}` (the new id, the commit, both paths and the score), plus the same payload under
+  `became:{new_id}` so reads can walk backwards by id lookup. Kind `rename` joins the INV-13
+  exclusions. `annotations_on` and `comments_on` follow the chain in both directions and mark rows
+  reached through a link with `via_rename`; `history_of` continues across a chain of renames
+  (newest-first, older files' versions tagged with `file` + `via_rename`); `find_entity` resolves a
+  retired id forward. An annotation is never moved. The similarity is `100` only for a byte-identical
+  pair and `null` otherwise — git2 exposes no score, so nothing is guessed. Gates: 592 lib; pytest
+  1346 passed / 1 skipped / 2 xfailed.
+- Temporal P5b.6 slice B — branch generations (D-5): a branch whose cursor left its history (a
+  rebase, or a rewrite that keeps the base) takes a new lineage generation `{branch}#{n+1}` instead
+  of refusing — the trunk is synced first so the new generation forks at today's tip, the name
+  resolves to the newest generation through `kv coderadar.branch.lineage.{branch}`, and every sha
+  of the older generation still resolves through the commit index. A rewritten trunk refuses with
+  `TrunkRewritten`, and a branch whose tip moved onto the trunk's own chain refuses with
+  `BranchNowMerged` (that name is an address per D-6 c; an empty generation would answer nothing).
+  Generation lineage names carry `#`, outside Macrame's kv charset (D-280), so keys hex-encode an
+  unsafe name behind a `:` marker while plain names keep their old spelling — a pre-phase store
+  keeps its cursors. Gates: 591 lib; pytest 1338 passed / 1 skipped / 3 xfailed.
+- Temporal P5b.6 slice A — branch selection, commit addresses, `parent_drift` (D-6 c): the
+  migration's default branch set is now one lineage per distinct tip the trunk does not already
+  hold; every other name (a merged branch, a remote-tracking name sharing a tip) is an **address**,
+  recorded once at migration and resolved through the commit index — no fork, no
+  `cross-lineage-id`. `branch_plan`/`record_branch_addresses` (internal ops) do the git side; each
+  commit records its owning lineage (`kv coderadar.commit_lineage.{sha}`) and each name its tip
+  (`kv coderadar.branch.tip.{name}`). Reads fold on the address's *owner* lineage and report
+  `address`, `parent_drift` (recomputed at every ingest: the parent commits after the fork the
+  branch can still see) beside the P5b.3a labels; unknown names refuse with `UnknownBranch` on a
+  commit-time store and are untouched on an analyze-only one. Gates: 591 lib; pytest 1334 passed /
+  1 skipped / 3 xfailed.
+- Temporal P5b.3a — horizon and commit index (`f44ea65`, `81dc8c3`): every lineage gets a horizon
+  (`kv coderadar.horizon.{lineage}`, written once, never moved) and every commit a completion
+  instant (`kv coderadar.commit_done.{lineage}.{sha}`, recorded by the loop after its last
+  sub-generation and before the next commit's first write, D-7's format flag = 1). The default
+  temporal read grows a git-history arm: a read before the horizon resolves to the last commit at
+  or before the instant and folds at its completion, and every result names `basis`
+  (`recorded`/`git-history`), the commit sha, the horizon and `dirty_at_commit`; `BeforeHistory`
+  and `BeforeHorizon` are reasons, not blanks, and `at=<sha>` addresses a commit directly (A-3).
+  F1 flipped. A pre-phase store rebuilds its index from the `commit:{sha}` rows once
+  (`ops.backfill_commit_index`, auditable, collisions reported). Two bugs the tests caught, both
+  about what a completion instant must cover: the first import's tail backfill replaced the
+  completion the loop had just written with its derived (earlier) one — it fills only now — and
+  the derivation ignored `concept_cuts`, so a branch's sweep landed after the instant the arm
+  folds. Gates: 589 lib; pytest 1324 passed / 1 skipped / 3 xfailed.
+- Temporal M6-g — macrame-db `0.22.0` uptake (P5b.1's mechanism delivered: `622bde4`,
+  `af64b61`, review `a879070`): the stashed close-then-open draft (written against 0.19.1)
+  is replaced by D-312's one-write supersession — the close of the prior open belief and
+  the new row land in one call, one transaction, one stamp; a branch writer's takeover
+  writes the cut and its own version on its own lineage. Slice 2 resolves each branch
+  write through Macrame's own walk at the write's own stamp and compares every act
+  against that same read (trunk rows against the trunk projection, branch rows against
+  their resolved overlay/ancestor state); the sweep reclaims its own deletes. Review:
+  retire is a forward tombstone on every path (trunk and the branch concepts arm);
+  annotations keep the D-2a chain. Pin rides crates.io `0.22.0` (registry switch closed P5b.2 2026-11-11; engine identical to the rev pin).
+  P5b.1 closed 2026-11-11: INV-15 proved on the migration fixture and a scratch self-host run (disorder 0 both); F2's sentinel fixed to both spellings (§7 order item 2 done).
+- Temporal D-316 uptake (`29118b2`, amended pin `c84d9cd`, docs `4c9be77`): the trunk walk
+  pastes the log's past below a cut or supersede through the walk, capped at the ancestry
+  cutoff — the same past instant reads the same whatever the branch spelling; the
+  annotations carve-out is written down. Amended D-316 caps the paste at the ancestor's
+  fork cutoff, so a branch read of an inherited id no longer surfaces the ancestor's
+  post-fork backfill. Gates at the pin: 582 lib green; pytest 1298 passed / 1 skipped /
+  4 xfailed.
+- Temporal K8 — post-merge heal for hollow stores (spec `7b66fb8`, built `51d8300`,
+  review `b831d7e`, trunk-retire `f4663e5`): `reingest_merged_commits` (Rust op beside
+  `ingest_history`, py `ops.reingest_merged_commits`, no MCP tool) re-walks the trunk's
+  first-parent chain by named commit — never a cursor rewind — and heals only files still
+  present in HEAD's tree whose module ids are hollow on the main lineage (foreign mint →
+  adoption at the commit's own nudged stamp; trunk-claimed → named already-adopted;
+  nothing minted → `no-mint`; absent → `gone-by-head`). `migrate_to_commit_time` runs it
+  once after the branch ingests and reports it as `merge_heal`, counts kept out of the
+  migration totals. Review: the whole chain walks (a healed id's later edit re-asserts at
+  its own commit), the trunk arm reads Macrame's per-branch resolution for `main` (with
+  the upstream slot-swap fix pinned), dry run and real run share verdicts, counters move
+  only on a settled flush; a trunk retire speaks only for main (adopted ids retire as a
+  trunk act, the mint lineage untouched). 8 Rust heal tests; py 4 (adopt, idempotent
+  re-run, dry run, refusals). Gates at the review: 588 lib green; pytest 1302 / 1 / 4 xfailed.
+- Temporal P5b.0: truth tests (`tests/test_p5b_truth.py`), one per finding F1–F6 of
+  `docs/temporal-p5b-and-beyond.md`, each `xfail(strict=True)` with the phase that flips it.
+  **Fix (P6a):** the cold loader classed annotation and comment rows as v1 leftovers, so a
+  store holding one refused to load; on an index-now store the `build_graph` fallback then ran
+  `analyze`, whose v1 sweep retired every annotation, and a commit-time store stopped loading.
+  They now classify as `V2ConceptClass::Note` and are skipped.
+- Temporal P5a (DR-41, **accepted — Q-6 yes (`bf618e0`); released in 0.15.0 with P5b.1,
+  P5b.3a and P5b.6, at store format 1 — D-7 d in `docs/temporal-p5b-and-beyond.md`;
+  Q-7, Q-8 answered, Q-9, Q-10 open; migrating a pre-0.15 store is the store owner's
+  `migrate-to-commit-time` run, not a release step**):
+  commit-driven ingestion writes history at commit time. `plan_ingest` walker (P5a.1),
+  stamped valid_from threading with the INV-11 nudge and Zulu boundary (P5a.2),
+  `ingest_history` op + CLI `ingest-history` with per-commit stamped flushes, commit
+  concepts and `kv` cursors (P5a.3), branch ingestion with fork discipline, pointers,
+  tombstones and lineage-scoped sweeps (P5a.4), and `migrate-to-commit-time` op + CLI
+  (P5a.5): a new store, trunk first then each branch, one `compute_embeddings` pass
+  over the final state, per-branch coverage in the report. Fixed along the way:
+  a strict-descendant fork-scan bug, flush-failure now halts (both lineages),
+  sweep/retire/embedding-hash writers carry the mint lineage, `list_branches` FFI.
+  No MCP tools (H-13). The pre-migration store stays the only record of prior belief.
+- Temporal P6c slice, ahead of P6a (DR-45 filed as implemented): commit
+  message bodies. `CommitMeta.body` rides `commit_concept`'s payload for new
+  ingests; `backfill_commit_messages` ops-only healer (no CLI/MCP/SKILL surface) heals pre-body rows from
+  `git log` on each row's own mint lineage, idempotently; unknown shas and
+  body-less commits skip auditable. Proven on the scratch migration (259
+  healed, re-run zero). No MCP tool.
+- Temporal P6a (DR-44 filed as implemented): annotation + comment
+  concepts. Parser-based lint at the write boundary (repair-or-refuse,
+  list grammar for annotations); present-tense trunk stamps; newest-first
+  reads (ops + CLI + 4 MCP read tools, 33 total); retire-first deletion;
+  INV-13 exclusion pins. 25 Rust + 19 Python tests.
+
 ## 0.14.0 (2026-10-28)
 
 Temporal code reconstruction, phases P0–P4: the store can now be read at a

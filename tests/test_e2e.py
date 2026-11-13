@@ -548,6 +548,20 @@ class TestWatcherPipeline:
         start_watcher([str(tmp_path)])
 
         try:
+            # Backends disagree about what "pending" means at startup. inotify
+            # reports only what happens after the watch begins; FSEvents
+            # coalesces by directory (a ~1s latency window by default) and
+            # delivers the creation of the files above, which happened
+            # microseconds before the watch began. Drain until the backend has
+            # been quiet for a full second, then assert the steady-state
+            # answer this test was always about.
+            import time
+
+            quiet_until = time.monotonic() + 1.0
+            give_up_at = time.monotonic() + 6.0
+            while time.monotonic() < min(quiet_until, give_up_at):
+                if next_watcher_batch_timeout(100) is not None:
+                    quiet_until = time.monotonic() + 1.0
             # No file changes — timeout should return None
             batch = next_watcher_batch_timeout(500)
             assert batch is None, \

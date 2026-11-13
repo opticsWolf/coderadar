@@ -1102,7 +1102,8 @@ impl MutationEngine {
         if let Some(new_name) = signature_name(new_signature) {
             if new_name != fn_entity.name {
                 warnings.push(format!(
-                    "New signature names `{}` but this entity is `{}` — the \n                     name was left alone. Use rename to change it.",
+                    "New signature names `{}` but this entity is `{}` — the \
+                     name was left alone. Use rename to change it.",
                     new_name, fn_entity.name
                 ));
             }
@@ -1722,7 +1723,8 @@ impl MutationEngine {
                             line: import.line as u32,
                             snippet: old_name.to_string(),
                             reason: format!(
-                                "Reference no longer holds \"{old_name}\" — file changed since                                  indexing; reindex and retry"
+                                "Reference no longer holds \"{old_name}\" — file changed since \
+                                 indexing; reindex and retry"
                             ),
                         });
                         continue;
@@ -1952,7 +1954,8 @@ impl MutationEngine {
         // left alone — deliberately, and out loud.
         if let Some(base_id) = projection.overrides_base.get(entity_id) {
             warnings.push(format!(
-                "`{}` overrides `{}`; the base method and its other overrides are NOT renamed —                  rename the base method to move the whole family",
+                "`{}` overrides `{}`; the base method and its other overrides are NOT renamed — \
+                 rename the base method to move the whole family",
                 fn_entity.name,
                 short_entity_name(base_id)
             ));
@@ -3342,10 +3345,7 @@ fn params_span_valid(source: &str, name: &str, span: ByteSpan) -> bool {
     // unrelated code (the F4 mangler) fails here.
     let line_start = source[..span.start].rfind('\n').map(|i| i + 1).unwrap_or(0);
     let prefix = &source[line_start..span.start];
-    if !prefix_ends_with_name_call(prefix, name) {
-        return false;
-    }
-    true
+    prefix_ends_with_name_call(prefix, name)
 }
 
 /// Whether `prefix` (line text up to, but excluding, the paren) ends with

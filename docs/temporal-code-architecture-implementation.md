@@ -535,12 +535,25 @@ archive goes cold in ONE session). Consequences:
 
 ### P5 — Commit-driven ingestion  (DR-41)
 
+> **Planned in full: `temporal-p5-commit-ingestion.md`** (drafted 2026-10-28). That document is the
+> "own plan before code" this section asked for, and it **corrects the shape below**: the second
+> sentence of *Shape* describes two phases, not one. Read it before implementing any of this.
+
 **Goal.** Close gap 3. Make valid time mean the code's own history.
 
 **Shape.** One Macrame branch per git branch, forked at the merge-base. Per commit: `valid_from =`
 commit time, `recorded_at =` ingest time, blobs per file-at-commit. Then `as_of_valid` and
 `as_of_recorded`/`reconstruct` (D-174) stop being the same question asked twice, and backfilling an
 old branch becomes a legitimate retroactive correction rather than a lie told in valid time.
+
+**Correction (2026-10-28).** Those last two clauses cannot both ship at once. Every temporal read
+CodeRadar has folds on `recorded_at` (`storage.rs:1853-1856`), and Macrame exposes its valid-time
+axis for edges and attribute hydration but has no valid-axis *state fold*
+(`src/temporal/as_of.rs:18-48`) — which CodeRadar may not write itself (F-6, INV-6). So commit-time
+`valid_from` changes nothing about what today's reads answer, and an out-of-order ingest makes them
+answer the wrong question with no error raised. The plan splits this: **P5a** writes commit time and
+enforces append-only ingest per lineage (new INV-10), which makes every shipped read correct by
+construction; **P5b** is retroactive backfill and is blocked on an upstream valid-axis fold.
 
 **Why it is the only route to the measured gap.** The 6,441 byte-less generations on this store
 describe content that exists in no blob, no payload and no working tree. A full re-analyze fixes
@@ -1073,6 +1086,56 @@ though not *in* git, since `.gitignore` excludes `*.db`, so a clone gets the doc
 Both halves of the "gaps" paragraph are resolved: H-11/H-12/H-13 and the coverage numbers are in the
 graph, beside the decisions they qualify.
 
+### 2026-11-13 — v0.15.0 cut (P5a–P5d, P6, P8 released)
+
+Version bumped `0.14.0` → `0.15.0` per DR-26 (`pyproject.toml` + workspace `Cargo.toml` together,
+lockfiles synced, `_FALLBACK_VERSION` brought along — it had been stale at `0.11.0` since the 0.11
+cut), the Unreleased block became the `0.15.0` section (19 entries), and the baseline claims in
+`README.md`, `QUICKREF.md` and `ARCHITECTURE.md` were brought to `0.15.0` / `macrame-db 0.22.0` /
+store schema v29. `ARCHITECTURE.md` also gained the behavior it was missing: §14.2 for commit-time
+history, branch addressing, the valid axis, observations, rename links, notes and the export/rebuild
+boundary, and §7 the store's one-engine-per-path contract.
+
+Gate bundle at the cut: **Rust 603 lib + 5 integration passed, 1 ignored**; `cargo fmt --check` and
+`cargo clippy --all-targets -D warnings` clean; **Python 1390 passed, 1 skipped, 1 xfailed**
+(`tests/`, `cr_edit_tests` excluded as always, 1392 collected) on a rebuilt `0.15.0` wheel; the
+round-2 dogfood battery 121/121. Surface: **34 MCP tools** (33 + `coderadar_open_items`).
+
+**CI is green on the release tree** — all seven jobs across ubuntu, windows and (for the Python
+suite) macOS, first green run since 2026-10-29, at `3d27232`. Getting there was the release's real work: the suite had been assuming a store
+could be opened again (twice in one process, or from a child beside a parent that held it), which
+libSQL refuses on POSIX and Windows only appears to allow. `CodeGraphStore` now hands out one shared
+engine per path per process (`bd353ac`, `613bd68`), two horizon tests cross a process boundary
+instead of re-entering a live engine (`2f50e38`), and the battery's MCP case was pinned at a stale
+33 tools. The contract — including that a close is a process-final act and an external writer is
+invisible to a live engine — is recorded in `docs/store-and-retention.md`.
+
+Review of the release tree caught two gaps in that registry before the tag. The registration was
+not one critical section: `open_with_cadence` released the lock between the lookup and the insert,
+so two threads could each open and each keep its own engine — silent on Windows, `database is
+locked` on POSIX, and reachable from the MCP daemon because it drops the interpreter lock around
+ops; it now holds one lock across lookup, open and insert, and
+`concurrent_opens_of_one_path_share_one_engine` fails on the old shape (verified by reverting it).
+The key was also lexical-only, so `D:\x.db` and `d:\x.db` were two stores; it now asks the
+filesystem (`canonicalize`, folding case and symlinks exactly where the platform folds them) and
+falls back to the lexical spelling only for a file that does not exist yet — therefore
+`forget_store`/`holds_store` try both. The runners sharpened that: the key had also to be *stable
+across the file's creation* (the first open can only compute the lexical spelling, the second
+canonicalizes — an 8.3 directory on Windows, `/var` → `/private/var` on macOS, and the mismatch
+minted the second engine the aliasing was meant to prevent), so the insert records both spellings.
+Two release-process gaps closed with it: `ci.yml` runs the Python suite on `macos-latest` (a
+shipped wheel on the otherwise-untested POSIX platform; the Rust leg cannot follow — `cargo test`
+there will not link pyo3's `extension-module` — so the leg that builds a real wheel is the right
+one), and
+`release.yml` gains a `verify-version` job (`scripts/check_tag_version.py`) because publishing is
+one-way and the workflow trusted whatever `pyproject.toml` said.
+
+Documented limits shipped with the release: F3 (`test_p5b_truth`) stays `xfail` until a branch can
+see its merge base (Macrame U-3/D-318); a branch valid read refuses by name until U-2/D-317; P5b.5
+ships its write shape with the ingest window as the next slice; P6b's note-embeddings half is
+deferred with its reason (concepts are not projection entities); `ops.rebuild` is one-shot per
+process; `analyze` refuses a branch checkout, leaving the reload to the caller.
+
 ### 2026-10-28 — v0.14.0 cut (P0–P4 released)
 
 Version bumped `0.13.0` → `0.14.0` per DR-26 (`pyproject.toml` + workspace `Cargo.toml` together,
@@ -1093,3 +1156,348 @@ numbers are in: 99.6% for a freshly written generation, **3.19% store-wide**, be
 fixes the present and never the past. That spread is the argument for P5 and the measure of what it
 would recover. DR-41 stays `deferred` until P5 has a plan of its own; it is no longer waiting on
 evidence.
+
+### 2026-10-28 — P5 planned (`temporal-p5-commit-ingestion.md`)
+
+The plan P5 was deferred for. Read against the code rather than against §5, which turned up the one
+thing the sketch had wrong: §5's *Shape* promises commit-time `valid_from` **and** legitimate
+retroactive backfill in the same phase, and they cannot ship together. Every temporal read folds on
+`recorded_at`, and Macrame has no valid-axis state fold to switch to — only `AsOf` over edges and
+attribute hydration — which F-6/INV-6 forbid CodeRadar from writing itself. Commit-time stamps
+therefore change nothing about what today's reads answer, and an out-of-order ingest makes those
+reads answer the wrong question silently. Split accordingly: **P5a** (commit time, append-only,
+INV-10 refuses history older than the lineage's high-water mark — correct on today's engine, no
+read-path change) and **P5b** (retroactive correction, blocked on an upstream valid-axis fold,
+proposed as DR-43).
+
+Four things the code settled that the sketch had left open. `ConceptUpsert.valid_from` is
+caller-supplied, so the axis is a parameter and needs no Macrame change. Extraction takes a `&str`
+(`extract/single_pass.rs:787`), so the walker feeds git blob bytes and no commit is ever checked out.
+`kv_put`/`kv_get` give the per-store mode flag and the resumable high-water mark a home outside the
+ledger — where no blob reference may ever go (INV-3). And the stale sweep takes the whole current id
+set (`lib.rs:1135`), so a per-commit ingest parses the delta but must sweep against the commit's full
+tree.
+
+Two hazards the measurements produced, both new: git committer time is second-resolution and **ties
+four times on this repo's `main`**, against a spine chain order that P3 and P4 both built on
+strictly increasing stamps (H-15, answered by INV-11's recorded nudge); and a commit-driven ingest
+stores every committed byte of every indexable file permanently, including secrets a later commit
+scrubbed, with path-pattern exclusion that cannot see a key hardcoded in an ordinary source file
+(H-16 — the question in the plan that measurement cannot answer).
+
+Cost, measured rather than estimated: 556 commits on `main`, ~2,130 `(commit, file)` parses, 2,134
+distinct indexable blob contents, largest 236 KB. The parses are affordable; **556 flushes** are the
+cost centre, and the plan says to measure before chunking commits, because chunking trades the
+per-commit stamp INV-11 rests on.
+
+### 2026-10-29 — P5a started (P5a.1 walker research)
+
+Maintainer confirmed P4 closed and directed P5a to start. DR-41 remains formally deferred pending
+§10 adoption answers; this begins P5a.1 only (commit walker, no ledger writes, no stamping or
+migration changes). Research so far: P5a.1 extends `fs/git.rs` beside `changed_files_between`, with
+language/blob-exclusion filtering in `plan_ingest` and byte access through `blob_bytes`; no commits
+or store mutations yet.
+
+### 2026-10-29 — P5a.1 landed (commit walker, no writes)
+
+`fs/git.rs` gained `CommitPlan`, `plan_ingest` (first-parent, oldest-first, `from`-exclusive,
+`NotAncestor` on off-chain high-water marks), and `blob_bytes` (commit bytes without checkout).
+Filtering matches the analyze pipeline: indexable language with a tree-sitter grammar, minus
+blob-excluded paths from `changed` (secrets stay in `tree`, the sweep universe). Seven fixture
+tests pin linear deltas, `from` semantics, round-trips, renames, empty vs resolving merges,
+second-resolution ties (un-nudged), and secret-path handling. Self-host correction: `main`'s
+first-parent plan is 354 commits / 1,696 pairs (the plan's 556 / ~2,130 counts all reachable
+commits; side history arrives via branch plans per P5-D7) — `temporal-p5-commit-ingestion.md`
+P5a.1 done-when updated. Gates: Rust lib 520 passed + 1 ignored, fmt/clippy clean.
+
+### 2026-10-29 — P5a.2 landed (stamped writes: `valid_from` threading + INV-11 nudge)
+
+P5a.2 is in: every flush site gained a stamped `_at` twin taking an explicit `valid_from`
+(commit time on the P5 path), with the existing function as the now-stamping wrapper — additive,
+zero caller churn, default behavior byte-identical (the whole Python suite passes unchanged, which
+is the plan's default-behavior test). Sites: `persist_entities`, `persist_edges_scoped`,
+`register_synthetic_edge(s)_bulk`, `register_synthetic_routes`, `upsert_entities`,
+`build_v2_concepts_all`, `build_v2_concepts_for_file`, `write_branch_content`; the spine helpers
+already took a stamp. Two deviations from the plan's four-site list, both read off the code: the
+concept builders must take the stamp too (a changed concept rewritten without it would carry
+ingest time, not commit time), and Macrame's `normalize_timestamp` accepts ONLY Zulu microsecond
+stamps — so `zulu_valid_from` folds committer offsets into the instant at the write boundary (the
+offset rides in the commit extra per P5-D2, not in the stamp).
+
+INV-11 lives in `nudge_valid_from(prev, candidate) -> (stamp, nudged)`: instant comparison (never
+lexicographic — offsets would misrank), ties/regressions advance to `prev + 1µs` with the flag set
+for `stamp_nudged`, greater stamps pass through. Ten new tests: five nudge pins, the zulu
+normalizer, stamped concept build, three commit-stamped spine generations reading back in commit
+order, a stamped branch write landing on both rows — plus an H-14 pin proving the refusal's
+necessity: out-of-order stamps reorder the `history_of` chain silently, with no error anywhere.
+Gates: Rust lib 530 passed + 1 ignored, fmt/clippy/ruff clean, `_core` rebuilt after killing the
+stale `mcp serve` holder (os error 32 precedent).
+
+### 2026-10-29 — P5a.3 landed (the ingest op: `ingest_history` + CLI `ingest-history`)
+
+P5a.3 is in: one op takes a repository and a git branch and writes the trunk lineage, per
+commit in first-parent order — blob puts, one stamped flush (entity concepts + spine + the
+commit concept), scoped edge persistence, a tree-scoped sweep — then the `kv` cursor advance.
+`ops.ingest_history(repo, branch, from_sha, dry_run, store_path=...)`, CLI
+`ingest-history --repo --store [--branch] [--from] [--dry-run]`, FFI returning the report as
+JSON. No MCP tool (29 tools pinned; H-13 shape of mistake).
+
+Enforcement sits where the plan put it: INV-10 as a `from`-vs-cursor equality check plus a
+structural first-parent check (a diverged branch fails closed with `NotAncestor`/`OutOfOrder`);
+INV-11 through the P5a.2 nudge per commit with `stamps_nudged` counted; INV-12 through the
+`kv` stamping-mode flag — fresh paths are claimed commit-time, legacy/index-now stores refuse,
+and the index-now write paths (`analyze`, `update_file`, `remove_file`) now refuse commit-time
+stores the same way, which closes the stamp-mixing hole in the other direction.
+
+Three as-built deviations, all recorded in the plan's P5a.3 section: (1) commit concepts
+(`commit:{sha}`, kind `commit`) are minted per commit as P5-D2's metadata home — author time
+plus the author/committer identities and the nudge flag in `extra`, no file-path annotation
+(sweep-immune), no edges (P3's lesson), excluded from both entity listings and the cold-start
+classifier exactly like the spine and the pointers. (2) Any git branch may be walked — the
+lineage written is always the trunk, and INV-10 confines what the trunk accepts; non-trunk
+lineages (fork, branch-minted concepts, branch deletion) stay P5a.4's. (3) Standard excludes
+apply on top of the walker's blob-exclusion/language filtering, with the same matcher analyze
+walks with.
+
+The read-model finding the plan's §2 needed: commit stamps are DATA, recorded stamps are the
+read index. `as_of(commit_ts)` on an ingested store is empty (nothing was recorded then) —
+reads take recorded generations, and the Nth generation in order is the Nth commit's completed
+state. Each commit's writes mint sub-generations (concept bulk, edge persists, sweep retires —
+the same shape as analyze), so per-commit recorded boundaries come from incremental runs, and
+the tests fuse the done-when with the resume test that way. Self-host measurement answers the
+plan's write-amplification question: 354 commits / 1,696 files ingest in 72 s (~0.2 s/commit,
+4,107 generations ≈ 12 writes per commit), no optimisation for a one-time migration.
+
+Gates: Rust lib 534 passed + 1 ignored (4 new: stamped retire twins land stamps, commit-kind
+classifier, `kv` flag round-trip), Python 1,226 passed + 1 skipped, fmt/clippy/ruff clean.
+22 new Python tests (`test_ingest_history.py` 18: report contract, final-state-at-tip,
+100 % coverage, commit concepts + listing immunity, resume, idempotent noop, five refusals,
+dry-run, CLI; `test_commit_stamps.py` 4: committer-vs-author, offset folding, tie nudge,
+regression nudge). DR-41 stays deferred — the shape is built as recommended, the adopt-P5a
+decision is still the maintainer's (Q-6..Q-9).
+
+### 2026-10-29 — P5a.4 landed (branch ingestion: `ingest_branch_history` + `lineage`/`parent-ref`)
+
+P5a.4 is in: per git branch, a fork recorded once (ledger parentage + `kv` fork commit), then
+P5a.3's per-commit shape against that lineage — blob puts, one stamped flush, a lineage-scoped
+sweep, the `kv` cursor advance. `ops.ingest_history(..., lineage=None, parent_ref="main")`:
+the lineage defaults to the git branch name (`main` is the trunk); CLI gains `--lineage` and
+`--parent-ref`. No MCP tool (29 tools stay pinned; H-13). All three things P4 left to P5 land
+here: deletion semantics on a branch, per-branch sweep scoping, branch-minted new-file
+module concepts.
+
+What each changed file becomes depends on who minted its module id: trunk-inherited files
+diverge through pointers (bytes only — the entities stay the ancestor's rows, which branch
+reads reach through fallback); files the lineage itself minted re-mint entity concepts on the
+lineage like the trunk does; files no lineage holds are minted new, unless a sibling holds
+the id (then bytes land and the concepts are skipped as `cross-lineage-id` — D-225 refuses
+the write, D-214 names the overlay that would allow it). Deletions of inherited files mint
+tombstones — the same stable pointer id with a `deleted` marker and no blob, which the read
+side omits instead of falling back to trunk content; deletions of branch-minted files retire
+through the sweep; re-adding turns a tombstone back to content by same-id turnover. Branch
+runs persist no edges and run no cascade: relations on branches need cross-lineage edge
+semantics the ledger does not have (deferred, not smuggled).
+
+Enforcement: INV-10 per lineage (cursor + structural first-parent check, unchanged shape);
+INV-11 through the same nudge; INV-12 through the same mode flag. The fork is recorded once:
+a recorded fork that disagrees with the computed one refuses (`ForkMismatch`), a lineage the
+ledger knows but ingest never forked refuses (`LineageExists`), an orphan branch with no
+common history refuses (`NoCommonHistory`). The window always starts at the fork or the
+cursor past it — first runs accept only the fork, never mid-branch — so a lineage's history
+is complete, never partial, and recorded order stays commit order with no read-path change.
+The fork scan takes the newest branch-chain commit the parent ref still reaches (robust to
+trunk-merges and criss-crosses); a strict-descendant bug in the first version (`graph_
+descendant_of` is false for self-equality, sliding the fork a commit too old) was caught by
+the e2e and fixed with an equality arm. An explicit `lineage="main"` with a non-main git
+branch refuses (`TrunkBranchMismatch`) — branch history is not trunk history; P5a.3's "any
+branch into the trunk" permissiveness is tightened now that lineages exist.
+
+Two as-built hardenings beyond the plan: (1) pointer and tombstone upserts join the commit's
+single bulk (one flush, one generation per commit — `filter_unchanged` is the no-op gate for
+free), instead of writing immediately like P4's instruments do; (2) a failed concept flush
+halts the run on BOTH lineages (P5a.3 continued and counted the commit — a chunked bulk
+abort is a partial write, and counting it bakes the gap in; halting leaves the cursor behind
+it for a retry). Branch cursors advance stamp-before-head (a crash re-ingests one commit
+instead of skipping one). The trunk merge trap is defused, not solved: a merge bringing
+branch-born files skips their concepts with `cross-lineage-id` (bytes and spine land,
+entities stay on the branch) — the trunk can never mint those ids again while the branch
+row exists, which is the D-214 overlay gap stated plainly. `history_of` stays lineage-blind
+by design (branch content appears in the file's chain); `verify_history --branch` needed no
+changes (visible unions + branch generations already scope it).
+
+Two latent trunk hazards fixed along the way, both in the sweep/retire choke point: sweep
+candidates are now mint-lineage rows (`live_concept_contents_on`) — a trunk sweep would
+otherwise have retired every branch-minted module the moment P5a.4 created one — and the
+retire upsert round-trips the row's mint lineage, without which retiring a branch row trips
+`trg_concepts_cross_lineage` on its own id. Both are covered by Rust pins (including a
+`CrossLineage` refusal pin for the restate the whole design routes around).
+
+Gates: Rust lib 542 passed + 1 ignored (9 new: 3 fork-point, tombstone read, restate
+refusal, retire lineage, sweep scoping, mint lineage), Python 1,237 passed + 1 skipped,
+fmt/clippy/ruff clean. 11 new Python tests (`tests/test_branch_ingest.py`: diverge + trunk
+immunity, tombstone hide/re-add, per-lineage 100 % coverage, one-blob sharing, dry-run
+forks nothing, resume/noop, trunk refusal, fork mismatch, manual-fork refusal, merge trap,
+CLI). DR-41 stays deferred — Q-6..Q-9 still open; P5a.5 (migration + embeddings-once) is
+next, then P5b only on upstream DR-43.
+
+### 2026-10-29 — P5a.5 landed (migration: `migrate_to_commit_time` + `list_branches`)
+
+P5a.5 is in: `ops.migrate_to_commit_time(repo, store, branches=None, parent_ref="main",
+embed=True, verify=True)` + CLI `migrate-to-commit-time` builds the new store P5-D4 names —
+the trunk first, then each branch onto its own lineage, one `compute_embeddings` pass over
+the final state, a per-branch `verify_history` sweep in the report. No MCP tool (H-13:
+long, writing, migration-grade — Q-10's report-not-write reasoning applies unchanged).
+The op is orchestration over shipped surfaces: the one new Rust is `list_branches` (sorted
+short names + FFI + pins); everything else is `ingest_history`, `coderadar.load`,
+`compute_embeddings`, `verify_history` called in order. Migration completes P5a: the full
+chain walker → stamps → trunk op → branch op → migration now exists on `dev`.
+
+Three findings, all read off the code. First, `is_head` filtering in `list_branches`
+dropped the checked-out branch (HEAD is not a branch entry — there was nothing to
+exclude); caught by the first e2e, fixed by deleting the filter. Second, the loaded
+projection is the *union*: branch-minted entities are in the final state, their vectors
+persist fine, but the embedding-hash flush restated those rows on the trunk lineage until
+D-225 refused them — fail-open `[diag]`, hashes never landed. Third choke-point fix after
+the P5a.4 sweep and retire (`fetch_mint_lineages`, bulk and chunked, + pin
+`embedding_hash_flush_carries_the_mint_lineage`); the file now carries a standing note
+that the next restate-without-lineage writer should be found by audit, not by e2e.
+Third, the old-store test first hashed the db file — WAL mode moves bytes on checkpoint,
+so it caught lifecycle, not writes. The guarantee is logical (same generations, same
+concepts, old store still opens and answers), stated in the test.
+
+Deliberate deviations from the plan: defaults prepend the trunk (auditable in
+`branches`) instead of merely defaulting it, because a migration without trunk data is
+hollow (forks compute against the parent ref, branch reads fall back to trunk rows); and
+idempotent re-runs instead of fresh-only enforcement, because the per-branch guards
+already make re-entry safe and idempotency is what makes a failed embeddings pass
+recoverable (fix the backend, re-run — completed branches no-op). The embeddings pass
+is `embed=False`-skippable but never per-commit (H-19); a failed pass fails the migration
+after the history is safely ingested.
+
+Gates: Rust lib 545 passed + 1 ignored (3 new: 2 list_branches, 1 hash-flush lineage),
+Python 1,247 passed, fmt/clippy/ruff clean. 9 new Python tests
+(`tests/test_migrate_commit_time.py`: trunk+branch migration with per-lineage 100 %,
+lineage-blind chain order, trunk prepend, no-trunk refusal, list_branches, one-pass
+embeddings with durability across a fresh load, rerun no-op, old-store untouched, CLI).
+CHANGELOG gains an Unreleased P5a block (DR-41 still deferred). Next: maintainer decision
+on Q-6..Q-9 — the shape is built as recommended; P5b only on upstream DR-43.
+
+### 2026-10-29 — Q-6 answered yes; self-host migration measured (scratch)
+
+The maintainer adopted P5a. First the audit the plan's standing note asked for
+(every `ConceptUpsert::new` site, production code only): pointers/tombstones
+carry lineage, the spine is lineage-consistent by construction (always minted
+and restated as trunk-default), commit concepts ride trunk-default/branch-mapped,
+the trunk's foreign-file skip runs pre-build so `build_v2_concepts_for_file_at`
+never sees a branch-held id, `update_file`/`analyze` cannot touch commit-time
+stores (INV-12), route rows are never branch-minted (branch ingests register
+none; route ids cannot collide with extractor output), `fork_branch` writes
+branch rows not concepts, and `kv` lives outside the ledger. No fourth
+choke-point writer found — the audit, not an e2e, is now the record.
+
+Then the adoption measurement, to scratch
+(`%TEMP%/coderadar-migrate-scratch`, branches `main` + `dev` — the two live
+lineages; the other 18 local branches are stale experiments and stay out of
+the production set until decided): **362 commits ingested, 0 skipped,
+0 failed; 7,232 vectors generated, 0 errors, all persisted; verify 100.0% on
+both lineages (4,331 trunk generations, 128 dev); 1,741 s wall.** Spot check:
+`history_of(storage.rs)` returns 30 versions, head digest equals `git show
+dev:...` bytes. Two costs made concrete: the store is ~900 MB (WAL included,
+uncheckpointed) against the ~100 MB byte-less old store — H-16 with a number,
+every committed byte kept permanently — and the run is slow enough (embeddings
+over 7,232 entities + two full-generation sweeps) that production migration
+is a planned operation, not a background task. No repo files changed; the
+store of record still points at the old store until the production run.
+
+### 2026-10-30 — P6a landed (annotation + comment kinds, DR-44)
+
+The maintainer said "implement messages and annotation" after re-reading
+the proposal. Messages (P6c: bodies + ops-only backfill) were already built
+and proven, so the work was P6a: `annotation` + `comment` concepts with the
+linter at the one write boundary (INV-14).
+
+What shipped, in `core_indexer/src/annotations.rs` (new, ~1,100 lines with
+tests): a two-gate linter over pulldown-cmark (tasklists + tables extensions
+— empty options would have parsed checkboxes as plain text, caught before
+it mattered). Gate 1 repairs deterministically (trailing whitespace, tabs
+outside fences, unclosed fences, marker spacing/canonicalization, blank-line
+insertion) and stores the repaired canonical form; Gate 2 refuses non-list
+blocks and nested lists for annotations with line + snippet cited. The
+canonical renderer is a fixpoint (lint-of-lint is byte-identical, pinned
+over a nasty-HTML/table/hard-break battery). Store ops: `create` / `revise`
+/ `retire` / `versions_for` / `history` on trunk-global present-tense stamps
+(`{kind}:{about}:{n}`, per-target sequences that scan current rows AND the
+log so retired ids never reuse). Reads derive intervals from chain order
+(the `history_of` pattern) and re-derive `open` from stored bytes. User
+writes refuse code rows (`WrongKind`), retired rows refuse revise, unknown
+ids read `[]`. `live_concept_ids` + `all_concept_ids` exclude both kinds
+(INV-13 — the diff would otherwise read annotations as perpetual
+`uncompared` groups, since they have no content hash).
+
+Deviations and incidents, all recorded because the next reader will trip
+over the same stones:
+
+- **DIAGNOSTIC_OPEN_LOCK is non-reentrant and the failure mode is a silent
+  hang.** `versions_for` held its diagnostic guard across the `versions_of`
+  call, which re-locks the same process mutex — the thread deadlocked
+  against itself, and every parallel test then appeared "hung" as the
+  binary never exited. Fix: scope the guard so it drops before the nested
+  open (commented at the site). Any future ledger-direct reader that
+  composes two guarded helpers must do the same.
+- **One live stream per connection.** A second query behind an unconsumed
+  stream waits forever (found while scoping the head lookup in
+  `versions_of`). Exhaust-or-drop before opening the next stream —
+  commented at both sites.
+- **The bash tool collapses `\\` to `\`.** Half a day of "ESCAPE
+  expression must be a single character" and phantom hangs traced to probe
+  code authored through heredocs: every doubled backslash arrived single,
+  so LIKE...ESCAPE probes failed while the (edit-tool-authored, byte-verified)
+  module was correct all along. Probes now go through files written by the
+  edit tool, or avoid backslashes entirely (`ESCAPE char(92)`).
+- **CLI bodies starting with `-` need `--`.** Click reads `- [ ] x` as an
+  option flag; the tests pin the `--` separator and the `-`-means-stdin
+  convention (`_text_arg`).
+- **Writes mint generations.** INV-13 pins the *verdict* (same pct, same
+  per-generation outcomes, same offenders), not the generation list —
+  every ledger write, annotations included, is a generation.
+- **Q-B decided** per the recommendation (versions stored, current reads
+  first); **Q-C stays P6b** (embed targets); **Q-D closed** by DR-44/DR-45.
+  `about` naming an annotation/comment refuses (v1 is flat); dangling
+  `about` stays legal (annotations outlive their target by design); no
+  write-time existence gate (existence is branch-relative, rows are
+  trunk-global).
+
+Surface: 8 ops + 8 CLI commands + 4 MCP read tools (33 total, pins
+updated in `test_project_path`, `battery_round2`, ARCHITECTURE) +
+CodeGraph methods for all eight + SKILL/server-instruction lines (both
+drift tests require taught-everything). Writes are ops + CLI only (H-13).
+Tests: 25 Rust (16 linter incl. fixpoint battery, 9 store) + 19 Python
+(round-trip, repairs, refusals, toggle history, retire-first, no-reuse,
+code-row guards, CLI/MCP existence, INV-13 verify/diff/universe pins).
+Full gates at landing: Rust 576 passed + 1 ignored; Python 1268 passed +
+1 skipped (`fmt --check` / `clippy --all-targets -D warnings` / `ruff`
+clean; the precision dead-code failure is pre-existing — verified failing
+on the stashed tree).
+
+### 2026-10-31 — Records synced to what is decided (no code)
+
+Three records had fallen behind the work. DR-41 still read `deferred`
+in the P5 plan, ARCHITECTURE §16 and the CHANGELOG after Q-6 was answered
+yes (`bf618e0`); it now reads **accepted**, with the two things that are
+still true beside it — the production migration has not run (the store
+of record is the index-now one), and P5b has not started. The P5 plan's
+§10 records Q-6's answer under the question instead of only in a commit
+message, and marks Q-7..Q-10 open: Q-7 and Q-10 are open *but built*
+(committer time; CLI-only), Q-8 and Q-9 are due at the production run,
+which is the write that makes Q-9 irreversible for this store.
+
+DR-43 moved without CodeRadar doing anything. Macrame 0.20.0 (`v0.20.0`)
+ships `reconstruct_as_of` (D-292, D-293), its Python surface (D-294), and
+the concept interval guard the upstream request found missing (D-291), so
+the row reads *implemented upstream, not adopted*: the pin is still
+`macrame-db = "0.19.1"`. It is not a pin to move yet. 0.20.0's README
+lists a backfill that overwrites the live `concepts` projection, and a
+backfill is exactly P5b's write; Macrame's 0.21.0 plan (D-303, draft)
+fixes it, so 0.21.0 is P5b's floor. P5a is unaffected — INV-10 means it
+never writes a past interval. ARCHITECTURE §16 also gains the DR-43..DR-45
+rows it never had.

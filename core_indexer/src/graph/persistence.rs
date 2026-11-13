@@ -19,6 +19,18 @@ impl CodeGraph {
         file_path: &str,
         language: &str,
     ) -> Result<usize, macrame::DbError> {
+        self.persist_entities_at(units, file_path, language, &crate::storage::now_iso8601())
+    }
+
+    /// Stamped twin (P5a.2, DR-41): the same pre-cascade flush at an
+    /// explicit `valid_from` — commit time on the P5 path.
+    pub fn persist_entities_at(
+        &self,
+        units: &[crate::types::ExtractedUnit],
+        file_path: &str,
+        language: &str,
+        valid_from: &str,
+    ) -> Result<usize, macrame::DbError> {
         if let Some(ref store) = self.store {
             // Insert-if-absent: the post-cascade v2 flush owns every id it
             // knows, so pre-cascade v1 rows exist only so a crashed run
@@ -39,7 +51,7 @@ impl CodeGraph {
                     .collect()
             };
             if !fresh.is_empty() {
-                store.upsert_entities(&fresh, file_path, language)?;
+                store.upsert_entities_at(&fresh, file_path, language, valid_from)?;
             }
             Ok(units.len())
         } else {
@@ -83,6 +95,21 @@ impl CodeGraph {
         projection: &ProjectedGraph,
         scope_file: Option<&str>,
     ) -> Result<usize, macrame::DbError> {
+        let ts_now = crate::storage::now_iso8601();
+        self.persist_edges_scoped_at(projection, scope_file, &ts_now)
+    }
+
+    /// Stamped twin (P5a.2, DR-41): the same scoped edge flush at an
+    /// explicit `valid_from` — commit time on the P5 path. `ts_now` below
+    /// is the flush stamp, not the clock: wall-clock by default, commit
+    /// time when told.
+    pub fn persist_edges_scoped_at(
+        &self,
+        projection: &ProjectedGraph,
+        scope_file: Option<&str>,
+        valid_from: &str,
+    ) -> Result<usize, macrame::DbError> {
+        let ts_now = valid_from.to_string();
         use super::module_resolution::normalize_path_str;
 
         let store = match self.store.as_ref() {
@@ -104,7 +131,6 @@ impl CodeGraph {
 
         let mut edge_count = 0usize;
         let mut batch: Vec<macrame::graph::EdgeAssertion> = Vec::new();
-        let ts_now = crate::storage::now_iso8601();
 
         // FK safety: the ledger enforces REFERENCES(concepts(id) ON DELETE
         // CASCADE) on both endpoints, and the concept flush (which runs
@@ -447,11 +473,26 @@ impl CodeGraph {
         target_id: &str,
         kind: &str,
     ) -> Result<(), String> {
-        self.register_synthetic_edges_bulk(vec![(
-            source_id.to_string(),
-            target_id.to_string(),
-            kind.to_string(),
-        )])
+        self.register_synthetic_edge_at(source_id, target_id, kind, &crate::storage::now_iso8601())
+    }
+
+    /// Stamped twin (P5a.2, DR-41): the same single-edge registration at
+    /// an explicit `valid_from` — commit time on the P5 path.
+    pub fn register_synthetic_edge_at(
+        &self,
+        source_id: &str,
+        target_id: &str,
+        kind: &str,
+        valid_from: &str,
+    ) -> Result<(), String> {
+        self.register_synthetic_edges_bulk_at(
+            vec![(
+                source_id.to_string(),
+                target_id.to_string(),
+                kind.to_string(),
+            )],
+            valid_from,
+        )
         .map(|_| ())
     }
 
@@ -464,6 +505,18 @@ impl CodeGraph {
         &self,
         edges: Vec<(String, String, String)>,
     ) -> Result<usize, String> {
+        self.register_synthetic_edges_bulk_at(edges, &crate::storage::now_iso8601())
+    }
+
+    /// Stamped twin (P5a.2, DR-41): the same bulk registration at an
+    /// explicit `valid_from` — commit time on the P5 path. `ts_now` below
+    /// is the flush stamp, not the clock.
+    pub fn register_synthetic_edges_bulk_at(
+        &self,
+        edges: Vec<(String, String, String)>,
+        valid_from: &str,
+    ) -> Result<usize, String> {
+        let ts_now = valid_from.to_string();
         if edges.is_empty() {
             return Ok(0);
         }
@@ -496,7 +549,6 @@ impl CodeGraph {
         // endpoints are not persisted concepts (e.g. `django:route:...` route
         // nodes) cannot be asserted; the batch drops those best-effort.
         if let Some(store) = self.store.as_ref() {
-            let ts_now = crate::storage::now_iso8601();
             // Unreadable ledger → assert everything (the pre-existing
             // best-effort behaviour); the assert error is dropped below.
             let open: std::collections::HashSet<String> = store
@@ -554,6 +606,20 @@ impl CodeGraph {
         scope: &str,
     ) -> Result<(usize, usize, usize), String> {
         let ts_now = now_iso8601();
+        self.register_synthetic_routes_at(nodes, edges, scope, &ts_now)
+    }
+
+    /// Stamped twin (P5a.2, DR-41): the same route registration at an
+    /// explicit `valid_from` — commit time on the P5 path. `ts_now` below
+    /// is the flush stamp, not the clock.
+    pub fn register_synthetic_routes_at(
+        &self,
+        nodes: Vec<(String, String, String, String, Vec<String>, String)>,
+        edges: Vec<(String, String, String)>,
+        scope: &str,
+        valid_from: &str,
+    ) -> Result<(usize, usize, usize), String> {
+        let ts_now = valid_from.to_string();
         let new_ids: std::collections::HashSet<&str> = nodes.iter().map(|n| n.0.as_str()).collect();
         let new_pairs: std::collections::HashSet<(&str, &str, &str)> = edges
             .iter()

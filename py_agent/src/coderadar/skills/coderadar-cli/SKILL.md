@@ -61,12 +61,38 @@ coderadar as-of TIMESTAMP [SYMBOL]... [-q TEXT]   # names at T, not bytes at T
 coderadar verify-history [--from TS --to TS] [--generations 25 | --all]  # can the past be reconstructed
 coderadar changes-between --t1 TS --t2 TS [--scope FILE|PREFIX]  # what changed, hash-based
 coderadar history FILE                   # every content FILE ever had, newest first
+coderadar ingest-history --repo PATH --store PATH [--branch main] [--lineage NAME] [--parent-ref main] [--from SHA] [--dry-run]  # commit-driven history ingest (P5a.3/P5a.4)
+coderadar migrate-to-commit-time --repo PATH --store NEW [--branches a,b] [--parent-ref main] [--no-embed] [--no-verify]  # new commit-time store: trunk, branches, one embedding pass, coverage (P5a.5)
+coderadar annotate ABOUT BODY  # mint an enforced-list annotation on a concept (BODY '-' reads stdin; P6a)
+coderadar comment ABOUT BODY   # mint a freeform comment on a concept (P6a)
+coderadar revise-annotation ID BODY  # supersede a row (toggle = one item flipped; BODY '-' reads stdin)
+coderadar retire-annotation ID  # soft-retire a row, audit trail kept
+coderadar annotations-on TARGET   # every annotation version on a concept, newest first
+coderadar comments-on TARGET      # every comment version on a concept, newest first
+coderadar annotation-history ID   # every version of one annotation row
+coderadar comment-history ID      # every version of one comment row
+coderadar open-items [--scope PREFIX]   # every unchecked task item; PREFIX covers `a.py::f` and `a.py::C.m` (P6b)
+coderadar export-annotations [--out FILE] [--store PATH]  # the store's own rows as one JSON document (P8, A-9)
+coderadar import-annotations FILE [--on-conflict error|skip] [--store PATH]  # chains replayed and read back, all-or-nothing validation
+coderadar rebuild-store [--repo PATH] [--store PATH] [--branches a,b] [--export FILE] [--embed]  # fresh store from git + the export; the old one moves to .pre-rebuild-<stamp> (P8, INV-18)
 coderadar module-children MODULE_ID          # e.g. 'pkg/app.py::module'
 coderadar diagnose [--unresolved] [--low-confidence]
 ```
 
 `traverse` caps `--max-depth` at 10; `--edge-kinds` is comma-separated and
 accepts `inherits` for `extends`.
+
+`search`, `search-similar` and `search-hybrid` hits may carry `notes` — the
+annotations and comments anchored to the entity, to an enclosing id
+(`a.py::C` for a method) or to its file — so a result says why the code is
+the way it is, not just that it exists. `open-items` is the same data
+aggregated: every item still unchecked, annotations only.
+
+`export-annotations` without `--out` prints the document and nothing else, so
+`coderadar export-annotations > a.json` is the plain form. `rebuild-store` is
+one-shot per process (it moves the store it reads, so the CLI's fresh
+invocation is the supported shape) and refuses when a graph is loaded; the old
+store is never deleted.
 
 ### Quality and search
 

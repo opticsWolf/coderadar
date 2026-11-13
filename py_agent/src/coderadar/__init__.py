@@ -24,7 +24,7 @@ import threading
 #: installed wheel/sdist reports its own version) and falls back to the
 #: release constant below, which MUST be kept in sync with pyproject.toml
 #: and Cargo.toml [workspace.package] on every bump.
-_FALLBACK_VERSION = "0.11.0"
+_FALLBACK_VERSION = "0.15.0"
 
 
 def _resolve_version() -> str:
@@ -167,6 +167,19 @@ class UpdateReport:
     #: The file was gone from disk, so its entities were dropped instead.
     removed: bool = False
     entities_removed: int = 0
+    #: P5d: the instant this update recorded. On a git-filled store the write
+    #: is an *observation* — every row it flushed carries this stamp on both
+    #: axes, closing the commit-era interval it replaces. Empty when the write
+    #: did not reach the store (a dropped file, a refused plan).
+    observed_at: str = ""
+    #: P5d (INV-17): where those rows came from — ``"mutation"``,
+    #: ``"watcher"``, ``"analyze"``, or ``"update"`` for a bare single-file
+    #: write. Commit rows carry no source: the commit concept is theirs.
+    source: str = ""
+    #: P5d slice B: the lineage the observation was written to. ``"main"``
+    #: unless a commit-time store recorded a branch checkout, or the caller
+    #: named one.
+    lineage: str = ""
     #: §1.9 (DR-30 notice): this update's blob outcome. Watcher batches
     #: fold per-file reports by summation.
     blobs_stored: int = 0
@@ -253,6 +266,10 @@ class MutationSyncSummary:
     updated_files: list[str] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[dict[str, Any]] = field(default_factory=list)
+    #: P5d: one `{file, observed_at, source}` per file whose edit became an
+    #: observation row. A synchronized mutation on a git-filled store used to
+    #: report nothing here and leave the edit invisible (F5).
+    observations: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -533,7 +550,14 @@ class CodeGraph:
         from . import ops
         return ops.traverse(entity_id or "", direction, edge_kinds, max_depth)["results"]
 
-    def as_of(self, timestamp: str, branch: str = "main") -> Snapshot:
+    def as_of(
+        self,
+        timestamp: str,
+        branch: str = "main",
+        strict: bool = False,
+        at: str | None = None,
+        valid: bool = False,
+    ) -> Snapshot:
         """Return a point-in-time snapshot: entity reads fold the ledger at
         recorded-time T (Macrame canonical UTC; anything else is
         `ops.InvalidRequest`). Signature decision (plan §0.1a): `as_of` stays
@@ -541,12 +565,30 @@ class CodeGraph:
         rules out another rename round. Bytes-at-T rides source blobs (§3.0:
         `Snapshot.read_bytes` / `read_source`). P4 (DR-40): `branch`
         selects the lineage (trunk by default) — every snapshot read folds
-        `reconstruct_on(T, branch); unknown branches refuse at first fold."""
+        `reconstruct_on(T, branch); unknown branches refuse at first fold.
+
+        P5b.3a (§3.1.1–3.1.2): a read before the lineage's horizon answers
+        from git history — the last commit at or before T, folded at that
+        commit's completion instant — and every snapshot names its
+        :attr:`Snapshot.basis`. `strict=True` refuses the git-history arm
+        (`BeforeHorizon`); `at=<sha>` addresses a commit directly (A-3) and
+        reports :attr:`Snapshot.dirty_at_commit`. A time before the first
+        commit refuses (``BeforeHistory``) instead of answering empty.
+        The arm resolves at the first read, not here: a snapshot must not
+        pay a commit-index scan to exist, and `basis` / `commit` / `horizon`
+        / `find` are the reads that need it.
+
+        ``valid=True`` (P5b.3, A-2/INV-16) reads the same instant on the
+        valid axis — the ledger's own intervals, ``basis == "valid"`` —
+        which is trunk-only until U-2 and refuses `at=` until P5b.4."""
         from . import ops
         try:
             from coderadar._core import normalize_timestamp as _normalize_ts
-            normalized = _normalize_ts(timestamp or "")
-            return Snapshot(self, normalized, branch)
+            # `at=` is the address when given, so the positional is not
+            # normalized against it (a sha is not a timestamp).
+            normalized = "" if at is not None else _normalize_ts(timestamp or "")
+            return Snapshot(self, normalized, branch, strict=bool(strict), at=at,
+                            valid=bool(valid))
         except ImportError as e:
             raise ops.EngineError(f"native extension unavailable: {e}") from e
         except ValueError as e:
@@ -731,6 +773,96 @@ class CodeGraph:
         from . import ops
         return ops.history_of(file, graph=self)
 
+    def annotate(self, about: str, body: str) -> dict[str, Any]:
+        """Mint an annotation row on a concept (P6a, no MCP surface).
+
+        Enforced-list markdown about `about`; returns the stored report
+        (`id`, canonical `body`, unchecked `open`, `repaired`).
+        """
+        from . import ops
+        return ops.annotate(about, body, graph=self)
+
+    def comment(self, about: str, body: str) -> dict[str, Any]:
+        """Mint a comment row on a concept (P6a, no MCP surface).
+
+        Freeform markdown about `about`; same report shape as `annotate`.
+        """
+        from . import ops
+        return ops.comment(about, body, graph=self)
+
+    def revise_annotation(self, id: str, body: str) -> dict[str, Any]:
+        """Supersede an annotation/comment row (P6a, no MCP surface)."""
+        from . import ops
+        return ops.revise_annotation(id, body, graph=self)
+
+    def retire_annotation(self, id: str) -> dict[str, Any]:
+        """Soft-retire an annotation/comment row (P6a, no MCP surface)."""
+        from . import ops
+        return ops.retire_annotation(id, graph=self)
+
+    def annotations_on(self, target: str) -> dict[str, Any]:
+        """Every annotation version on a concept, newest first (P6a).
+
+        MCP ``coderadar_annotations_on``.
+        """
+        from . import ops
+        return ops.annotations_on(target, graph=self)
+
+    def comments_on(self, target: str) -> dict[str, Any]:
+        """Every comment version on a concept, newest first (P6a).
+
+        MCP ``coderadar_comments_on``.
+        """
+        from . import ops
+        return ops.comments_on(target, graph=self)
+
+    def annotation_history(self, id: str) -> dict[str, Any]:
+        """Every version of one annotation row, newest first (P6a).
+
+        MCP ``coderadar_annotation_history``.
+        """
+        from . import ops
+        return ops.annotation_history(id, graph=self)
+
+    def comment_history(self, id: str) -> dict[str, Any]:
+        """Every version of one comment row, newest first (P6a).
+
+        MCP ``coderadar_comment_history``.
+        """
+        from . import ops
+        return ops.comment_history(id, graph=self)
+
+    def open_items(self, scope: str | None = None) -> dict[str, Any]:
+        """Every unchecked task item under a scope, annotations only (P6b).
+
+        `scope` is a prefix on each row's `about` id (`a.py` covers
+        `a.py::f`); `None` reads the whole store. MCP
+        ``coderadar_open_items``.
+        """
+        from . import ops
+        return ops.open_items(scope, graph=self)
+
+    def export_annotations(self, path: str | None = None) -> dict[str, Any]:
+        """Export every annotation and comment chain as one JSON document
+        (P8, A-9/INV-18).
+
+        The store's only non-derivable data; a rebuild needs this plus the
+        repository. ``path=None`` returns the payload in the report.
+        """
+        from . import ops
+        return ops.export_annotations(path, graph=self)
+
+    def import_annotations(self, source: Any,
+                           on_conflict: str = "error") -> dict[str, Any]:
+        """Import a document ``export_annotations`` wrote (P8).
+
+        Each chain is replayed and read back before the import reports
+        success; ``on_conflict`` is ``"error"`` or ``"skip"``.
+        """
+        from . import ops
+        return ops.import_annotations(source, on_conflict=on_conflict,
+                                      graph=self)
+
     def compute_embeddings(self, model_name: str | None = None,
                            batch_size: int = 32,
                            recompute: bool = False) -> dict[str, int]:
@@ -817,7 +949,10 @@ class CodeGraph:
 
     @_bound_to_loaded_project
     def update_file(self, file_path: str, content: str | None = None,
-                    force: bool = False) -> UpdateReport:
+                    force: bool = False, *, source: str | None = None,
+                    tool: str | None = None, plan_id: str | None = None,
+                    attempt_id: str | None = None,
+                    lineage: str | None = None) -> UpdateReport:
         """Update the graph after a file change.
 
         Phase 1: Rust parses, diffs, and stages changes.
@@ -827,11 +962,15 @@ class CodeGraph:
         A file that no longer exists on disk (and no `content` given) is
         dropped from the graph instead: the report says ``removed`` and
         how many entities went.
+
+        ``lineage`` names the branch this observation belongs to (P5d
+        slice B); absent reads the store's recorded checkout, else the
+        trunk.
         """
         dropped: dict | None = None
         route_warning: str | None = None
         if content is None and not _resolve_entity_path(file_path).exists():
-            dropped = self._remove_file_full(file_path)
+            dropped = self._remove_file_full(file_path, lineage=lineage)
             # §1.3 (DR-10): the file is gone — its routes retire via the
             # file-scoped diff (missing file extracts nothing).
             route_warning = self._refresh_framework_routes(file_path, None)
@@ -849,7 +988,11 @@ class CodeGraph:
             )
         try:
             from coderadar._core import update_file as _update_file_rust
-            result = _update_file_rust(file_path, content, force)
+            result = _update_file_rust(
+                file_path, content, force,
+                source=source, tool=tool, plan_id=plan_id,
+                attempt_id=attempt_id, lineage=lineage,
+            )
             # §1.3 (DR-10): re-extract this file's routes (scope = file;
             # ghosts retire via the diff). Best-effort: extraction must
             # never fail the update, but its warning belongs in the report.
@@ -884,6 +1027,9 @@ class CodeGraph:
                     blobs_skipped_oversize=int(result.get("blobs_skipped_oversize", 0)),
                     blobs_skipped_excluded=int(result.get("blobs_skipped_excluded", 0)),
                     blobs_bytes=int(result.get("blobs_bytes", 0)),
+                    observed_at=str(result.get("observed_at", "") or ""),
+                    source=str(result.get("source", "") or ""),
+                    lineage=str(result.get("lineage", "") or ""),
                 )
             return UpdateReport(
                 affected_files=[file_path], changed_symbols=[],
@@ -939,7 +1085,8 @@ class CodeGraph:
         except Exception as exc:  # noqa: BLE001 - best-effort refresh reports, never raises
             return f"framework-route refresh failed for {file_path}: {exc}"
 
-    def _remove_file_full(self, file_path: str) -> dict:
+    def _remove_file_full(self, file_path: str,
+                          lineage: str | None = None) -> dict:
         """Drop a deleted file; full report (epochs included).
 
         `remove_file` keeps the historic int return; this is the seam
@@ -952,7 +1099,7 @@ class CodeGraph:
                 "The coderadar._core extension is not built; "
                 "nothing can be removed from the graph."
             ) from exc
-        result = _remove_file_rust(file_path)
+        result = _remove_file_rust(file_path, lineage=lineage)
         return {
             "entities_removed": int(result.get("entities_removed", 0)),
             "epoch_before": int(result.get("epoch_before", 0)),
@@ -960,19 +1107,56 @@ class CodeGraph:
         }
 
     @_bound_to_loaded_project
-    def remove_file(self, file_path: str) -> int:
+    def remove_file(self, file_path: str, *,
+                    lineage: str | None = None) -> int:
         """Drop a deleted file's entities from the graph.
 
         `update_file` does this too when it finds the file gone from disk.
         Returns the number of entities removed.
         """
-        removed = self._remove_file_full(file_path)["entities_removed"]
+        removed = self._remove_file_full(file_path, lineage=lineage)["entities_removed"]
         # §1.3 (DR-10): the file's routes retire with it.
         try:
             self._refresh_framework_routes(file_path, None)
         except Exception:  # noqa: BLE001, S110 - removal stands regardless
             pass
         return removed
+
+    def record_checkout(self, branch: str | None) -> None:
+        """Record which branch the working tree is checked out on (P5d).
+
+        A commit-time store's bare observation writes then land on that
+        branch's lineage. ``None`` clears it back to the trunk.
+        """
+        try:
+            from coderadar._core import record_checkout_loaded as _record
+        except ImportError as exc:
+            raise CodeRadarError(
+                "The coderadar._core extension is not built; the checkout "
+                "cannot be recorded."
+            ) from exc
+        try:
+            _record(branch)
+        except RuntimeError as e:
+            raise CodeRadarError(str(e)) from None
+
+    def sync_git(self, repo: str | None = None, **kwargs) -> dict:
+        """Bring this graph's store up to date with git (P5d slice B).
+
+        Commit sync, merged-name addresses, the observation sweep and the
+        sync marks — see `coderadar.ops.sync_git`. The caller owns reloading
+        the in-memory graph after a checkout; this method writes the store.
+        """
+        from . import ops as _ops
+        return _ops.sync_git(repo or self._root or ".", graph=self, **kwargs)
+
+    def watch_git(self, repo: str | None = None, *,
+                  poll_ms: int = 1000) -> GitWatcher:
+        """Run `sync_git` whenever HEAD moves (P5d slice B, A-8)."""
+        watcher = GitWatcher(repo or self._root or ".", graph=self,
+                             poll_ms=poll_ms)
+        watcher.start()
+        return watcher
 
     def watch(self, paths: list[str] | None = None,
               debounce_ms: int | None = None,
@@ -1153,7 +1337,13 @@ class CodeGraph:
                                if entry.expected_hash}
             if disk_status in ("Installed", "Restored"):
                 sync = self._synchronize_mutation_files(
-                    plan.affected_files, expected_hashes, clear_embeddings_for_file)
+                    plan.affected_files, expected_hashes, clear_embeddings_for_file,
+                    provenance={
+                        "source": "mutation",
+                        "tool": plan.tool,
+                        "plan_id": plan.id,
+                        "attempt_id": attempt_id,
+                    })
             else:
                 # NotInstalled performed no install; DiskIncomplete has no
                 # proven final bytes. Neither gets blind "success" sync.
@@ -1220,6 +1410,7 @@ class CodeGraph:
         affected_files: list[str],
         expected_hashes: dict[str, str],
         clear_embeddings_for_file: Any,
+        provenance: dict[str, Any] | None = None,
     ) -> MutationSyncSummary:
         """Synchronize every touched file and prove its bytes.
 
@@ -1228,6 +1419,10 @@ class CodeGraph:
         carries the exact hash the facade must observe. Multi-file plans
         keep the existing R2-17 second pass so cross-file resolution
         converges.
+
+        `provenance` (P5d) is how the edit is recorded, not just shown: on a
+        git-filled store each update is an observation write, and every row it
+        flushes says which mutation produced it.
         """
         attempted_files = sorted(set(affected_files) | set(expected_hashes))
         if not attempted_files:
@@ -1237,6 +1432,7 @@ class CodeGraph:
                 updated_files=[],
                 errors=[],
                 warnings=[],
+                observations=[],
             )
         errors: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = []
@@ -1245,7 +1441,7 @@ class CodeGraph:
         def synchronize_once(label: str) -> None:
             for target in attempted_files:
                 try:
-                    report = self.update_file(target)
+                    report = self.update_file(target, **(provenance or {}))
                 except Exception as exc:  # noqa: BLE001 - sync must report, not raise
                     errors.append({
                         "stage": "graph_sync",
@@ -1363,12 +1559,24 @@ class CodeGraph:
             state = "Partial"
         else:
             state = "Synchronized"
+        # P5d: the observations this sync recorded, one per synchronized file.
+        # A file whose update failed made no row, so it names no instant.
+        observations = [
+            {
+                "file": target,
+                "observed_at": reports[target].observed_at,
+                "source": reports[target].source,
+            }
+            for target in updated_files
+            if reports[target].observed_at
+        ]
         return MutationSyncSummary(
             state=state,  # type: ignore[arg-type]
             attempted_files=attempted_files,
             updated_files=updated_files,
             errors=errors,
             warnings=warnings,
+            observations=observations,
         )
 
     # ── Stats / Debug ──────────────────────────────────────────────────
@@ -1407,11 +1615,47 @@ class Snapshot:
         entity = snapshot.find("src/models.py::User.save")  # None if absent at T
     """
 
-    def __init__(self, graph: CodeGraph, timestamp: str, branch: str = "main"):
+    def __init__(
+        self,
+        graph: CodeGraph,
+        timestamp: str,
+        branch: str = "main",
+        strict: bool = False,
+        at: str | None = None,
+        valid: bool = False,
+    ):
         self._graph = graph
         self._timestamp = timestamp
         self._branch = branch
+        self._strict = strict
+        self._at = at
+        self._valid = valid
         self._predates: bool | None = None
+        self._arm: dict[str, Any] | None = None
+
+    def _resolve(self) -> dict[str, Any]:
+        """Resolve the read to its fold instant, once (P5b.3a, §3.1.1).
+
+        Cached: the arm cannot change under a snapshot (the horizon is
+        written once, the commit index only grows behind it), and every
+        lookup on this snapshot folds the same instant. Refusals are
+        `ops.InvalidRequest` — a reason (BeforeHistory, BeforeHorizon,
+        unknown commit), never a blank answer.
+        """
+        if self._arm is None:
+            from . import ops
+            try:
+                from coderadar._core import lookup_entities_at as _lookup_at
+                batch = _lookup_at(
+                    [], self._timestamp, self._branch,
+                    strict=self._strict, at=self._at, valid=self._valid)
+            except ValueError as e:
+                raise ops.InvalidRequest(str(e)) from None
+            except RuntimeError as e:
+                raise ops.EngineError(str(e)) from None
+            self._arm = batch
+            self._predates = bool(batch.get("predates_recorded_history", False))
+        return self._arm
 
     @property
     def branch(self) -> str:
@@ -1427,6 +1671,53 @@ class Snapshot:
         return self._timestamp
 
     @property
+    def basis(self) -> str:
+        """How this snapshot's answer was computed (P5b.3a, §3.1.1).
+
+        ``"recorded"`` — folded on the recorded axis at T, the way CodeRadar
+        observed the code. ``"git-history"`` — T predates the lineage's
+        horizon, so the answer is the state of the last commit at or before
+        T, reconstructed from git. A caller can always tell an observation
+        from a reconstruction.
+        """
+        return self._resolve()["basis"]
+
+    @property
+    def horizon(self) -> str | None:
+        """The lineage's horizon *H(L)*: the recorded instant its first
+        import completed (`None` on an index-now store). Fixed for the life
+        of the store — written once, never moved."""
+        return self._resolve().get("horizon")
+
+    @property
+    def commit(self) -> str | None:
+        """The commit this snapshot addresses (P5b.3a, A-3), `None` on the
+        recorded arm. Set by `at=<sha>` or resolved from T."""
+        return self._resolve().get("sha")
+
+    @property
+    def dirty_at_commit(self) -> list[str]:
+        """Files observed dirty at :attr:`commit` (P5b.3a). Always empty
+        until P5d records observations; the field ships now so a caller can
+        code against it."""
+        return list(self._resolve().get("dirty_at_commit") or [])
+
+    @property
+    def address(self) -> bool:
+        """True when the branch name is a commit address, not a lineage
+        (P5b.6, D-6 c): the name has no commits of its own, so it resolves
+        to a tip another lineage already holds. The fold runs on that
+        lineage; the answer is that commit's state, labelled git-history."""
+        return bool(self._resolve().get("address"))
+
+    @property
+    def parent_drift(self) -> int:
+        """How many parent commits after this lineage's fork point it can
+        still see (P5b.6, D-6). 0 on the trunk's tip and on every address;
+        non-zero is F3's leak, named until P5c closes it."""
+        return int(self._resolve().get("parent_drift") or 0)
+
+    @property
     def predates_recorded_history(self) -> bool:
         """True when T sits before the first recorded write.
 
@@ -1435,16 +1726,8 @@ class Snapshot:
         answer — not an error, not present-tense data.
         """
         if self._predates is None:
-            from . import ops
-            try:
-                from coderadar._core import lookup_entities_at as _lookup_at
-                batch = _lookup_at([], self._timestamp, self._branch)
-            except ValueError as e:  # normalized at construction; defensive
-                raise ops.InvalidRequest(str(e)) from None
-            except RuntimeError as e:
-                raise ops.EngineError(str(e)) from None
-            self._predates = bool(batch.get("predates_recorded_history", False))
-        return self._predates
+            self._resolve()
+        return bool(self._predates)
 
     def find(self, entity_id: str) -> dict[str, Any] | None:
         """One entity as it was at T (live-`lookup_entity` dict shape).
@@ -1456,12 +1739,15 @@ class Snapshot:
         from . import ops
         try:
             from coderadar._core import lookup_entity_at as _lookup_at
-            result = _lookup_at(entity_id, self._timestamp, self._branch)
+            result = _lookup_at(
+                entity_id, self._timestamp, self._branch,
+                strict=self._strict, at=self._at, valid=self._valid)
         except ValueError as e:  # normalized at construction; defensive
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
             raise ops.EngineError(str(e)) from None
         self._predates = bool(result.get("predates_recorded_history", False))
+        self._arm = result
         return result.get("entity")
 
     def query(self, query_str: str) -> Iterator[dict[str, Any]]:
@@ -1499,7 +1785,9 @@ class Snapshot:
         from . import ops
         try:
             from coderadar._core import lookup_entities_at as _lookup_at
-            batch = _lookup_at(ids, self._timestamp, self._branch)
+            batch = _lookup_at(
+                ids, self._timestamp, self._branch,
+                strict=self._strict, at=self._at, valid=self._valid)
         except ValueError as e:
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
@@ -1607,7 +1895,9 @@ class Snapshot:
         try:
             from coderadar._core import blob_get as _blob_get
             from coderadar._core import entity_source_ref_at as _ref_at
-            ref = _ref_at(entity["id"], self._timestamp, self._branch)
+            ref = _ref_at(
+                entity["id"], self._timestamp, self._branch,
+                strict=self._strict, at=self._at, valid=self._valid)
         except ValueError as e:  # normalized at construction; defensive
             raise ops.InvalidRequest(str(e)) from None
         except RuntimeError as e:
@@ -1872,7 +2162,10 @@ def load(db_path: str, root: str | None = None) -> CodeGraph:
         except ImportError:
             pass
 
-    return CodeGraph()
+    # Carry the store this handle was loaded from: an op that writes marks or
+    # observations (``sync_git``) resolves its default from the handle, and a
+    # bare ``CodeGraph()`` would name the default path instead.
+    return CodeGraph(db_path)
 
 
 def watch(root: str) -> Watcher:
@@ -1890,6 +2183,97 @@ def watch(root: str) -> Watcher:
     """
     graph = analyze(root)
     return graph.watch([root])
+
+
+def watch_git(repo: str = ".", *, poll_ms: int = 1000,
+              store_path: str | None = None) -> GitWatcher:
+    """Load (or cold-start) `repo`, then run `sync_git` whenever HEAD moves.
+
+    Usage:
+        with coderadar.watch_git(".") as w:
+            ...
+    """
+    graph = load(store_path) if store_path else load(
+        str(Path(repo) / ".coderadar" / "store" / "coderadar.db"))
+    watcher = GitWatcher(repo, graph=graph, poll_ms=poll_ms)
+    watcher.start()
+    return watcher
+
+
+class GitWatcher:
+    """Run `sync_git` when the repository's HEAD moves (P5d slice B, A-8).
+
+    Polling rather than fsnotify: a commit rewrites HEAD, one ref file and
+    the index, and which of those a platform reports differs; a HEAD read
+    is one git2 open, and a one-second cadence costs less than the ingest
+    it triggers. `poll_once()` is public so a caller with its own loop can
+    drive it without this thread.
+
+    The watcher is deliberately small: it owns the *trigger*, not the
+    policy. Refusals and per-branch errors are in the returned report, and
+    an exception is kept in `last_error` for the caller to surface — the
+    loop itself never dies.
+    """
+
+    def __init__(self, repo: str = ".", *, graph=None,
+                 store_path: str | None = None, poll_ms: int = 1000,
+                 catch_up: bool = True):
+        self._repo = repo
+        self._graph = graph
+        self._store_path = store_path
+        self._poll_ms = max(50, int(poll_ms))
+        self._catch_up = catch_up
+        self._state: tuple[str | None, str | None] | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.reports: list[dict] = []
+        self.last_error: str | None = None
+
+    def poll_once(self) -> dict | None:
+        """Sync if HEAD's (branch, sha) changed since the last poll."""
+        from coderadar._core import git_head
+        head = dict(git_head(self._repo))
+        state = (head.get("branch"), head.get("sha"))
+        if state == self._state:
+            return None
+        # A direct import, not `self._ops.sync_git`: same call, and the
+        # call graph can see it (the dead-code ratchet counts an
+        # unresolved attribute call as no call at all).
+        from coderadar.ops import sync_git
+        report = sync_git(
+            self._repo, store_path=self._store_path, graph=self._graph,
+            catch_up=self._catch_up)
+        self._state = state
+        self.reports.append(report)
+        return report
+
+    def start(self) -> GitWatcher:
+        if self._thread is not None:
+            return self
+        self._thread = threading.Thread(
+            target=self._run, name="coderadar-git-watcher", daemon=True)
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.poll_once()
+            except Exception as e:  # noqa: BLE001 - the loop must not die
+                self.last_error = f"{type(e).__name__}: {e}"
+            self._stop.wait(self._poll_ms / 1000.0)
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+            self._thread = None
+
+    def __enter__(self) -> GitWatcher:  # noqa: PYI034 - typing.Self needs 3.11+
+        return self.start()
+
+    def __exit__(self, *args) -> None:
+        self.stop()
 
 
 def blob_stats() -> dict:
@@ -1930,6 +2314,7 @@ __all__ = [
     "BatchContext",
     "CodeGraph",
     "CodeRadarError",
+    "GitWatcher",
     "MutationEdit",
     "MutationError",
     "MutationFailure",
@@ -1952,6 +2337,7 @@ __all__ = [
     "load",
     "ops",
     "watch",
+    "watch_git",
 ]
 
 

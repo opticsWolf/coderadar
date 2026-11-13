@@ -40,7 +40,10 @@ __all__ = [
     "affected",
     "archive",
     "as_of",
+    "backfill_commit_index",
+    "backfill_commit_messages",
     "blob_get",
+    "branches",
     "callees",
     "callers",
     "canonical_entity_id",
@@ -61,6 +64,7 @@ __all__ = [
     "module_children",
     "node",
     "normalize_query_spelling",
+    "open_items",
     "parse_names",
     "query",
     "read_source",
@@ -72,6 +76,7 @@ __all__ = [
     "resolve_names",
     "search",
     "search_similar",
+    "search_symbols",
     "stale_files",
     "status",
     "suggest_entities",
@@ -91,6 +96,8 @@ OPERATIONS = (
     "search_similar", "search_hybrid", "compute_embeddings", "module_children", "as_of",
     "verify_history",
     "changes_between",
+    "annotations_on", "comments_on", "annotation_history", "comment_history",
+    "open_items",
     "traverse", "get_smells", "dead_code", "find_clones", "find_scaffolding",
     "replace_body", "update_signature", "rename", "create_entity",
     "reindex", "update_file", "status", "set_project",
@@ -264,12 +271,43 @@ def display_file(d: dict) -> str:
 
 
 def find_entity(entity_id: str) -> dict | None:
-    """The entity for any accepted id spelling, or None."""
+    """The entity for any accepted id spelling, or None.
+
+    An id that was renamed resolves forward (P5b.7, A-11): the returned
+    entity is the one the id became, carrying ``via_rename`` — the hop
+    ``{from, to, commit, similarity}`` that led there. A direct hit never
+    carries the marker, so a pre-phase response is unchanged.
+    """
+    canonical = canonical_entity_id(entity_id)
     try:
         from coderadar._core import lookup_entity
-        return lookup_entity(canonical_entity_id(entity_id))
-    except (ImportError, RuntimeError):
+    except ImportError:
         return None
+    try:
+        found = lookup_entity(canonical)
+    except RuntimeError:
+        return None
+    if found is not None:
+        return found
+    try:
+        import json as _json
+
+        from coderadar._core import rename_chain
+        chain = _json.loads(rename_chain(canonical))
+    except (ImportError, RuntimeError, ValueError):
+        return None
+    hops = chain.get("hops") or []
+    if not hops:
+        return None
+    try:
+        found = lookup_entity(chain.get("id") or canonical)
+    except RuntimeError:
+        return None
+    if found is None:
+        return None
+    found = dict(found)
+    found["via_rename"] = hops[0]
+    return found
 
 
 def _text_search(query: str, top_k: int, kind: str | None = None) -> list[dict]:
@@ -353,7 +391,9 @@ def search(query: str, kind: str | None = None, top_k: int = 10) -> list[dict]:
     """Keyword search over entity names, signatures and docstrings.
 
     Tokens match independently (OR). `kind` narrows to one of
-    :data:`SEARCH_KINDS`; at most 20 results.
+    :data:`SEARCH_KINDS`; at most 20 results. Each hit may carry
+    ``notes`` — the annotations and comments anchored to it or to an
+    enclosing id (P6b: "why" next to "what").
     """
     _require_index()
     if not query.strip():
@@ -366,7 +406,7 @@ def search(query: str, kind: str | None = None, top_k: int = 10) -> list[dict]:
     results = _text_search(query, min(top_k, 20))
     if kind:
         results = [r for r in results if r.get("kind") == kind or r.get("entity_type") == kind]
-    return results[:top_k]
+    return _attach_notes(results[:top_k])
 
 
 def search_symbols(query: str, top_k: int = 10, raw: bool = False) -> list[dict]:
@@ -1048,7 +1088,7 @@ def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
     if isinstance(query, str) and not query.strip():
         raise InvalidRequest("Please provide a natural-language query for semantic search.")
     if not isinstance(query, str):
-        return _ss(list(query), top_k)
+        return _attach_notes(_ss(list(query), top_k))
 
     _require_index()
     try:
@@ -1059,7 +1099,7 @@ def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
         raise EngineError(f"Embedding failed: {e}") from None
 
     try:
-        return _ss(embedding, min(top_k, 20))
+        return _attach_notes(_ss(embedding, min(top_k, 20)))
     except RuntimeError as e:
         if "embedding dimension" in str(e):
             # A dimension conflict cannot be computed away (same model in,
@@ -1068,7 +1108,7 @@ def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
         # No embeddings in the index yet — compute them once and retry.
         try:
             compute_embeddings()
-            return _ss(embedding, min(top_k, 20))
+            return _attach_notes(_ss(embedding, min(top_k, 20)))
         except EngineError:
             # Explicit dimension/model errors stay explicit, never
             # downgraded to "computing failed".
@@ -1124,7 +1164,7 @@ def search_hybrid(query: str | Sequence[float], top_k: int = 10,
                 r["name"] = ent.get("name", r["id"])
                 r["kind"] = ent.get("kind", "?")
                 r["file_path"] = ent.get("file_path", "?")
-        return rows
+        return _attach_notes(rows)
 
     try:
         return run()
@@ -1175,7 +1215,8 @@ def branches(*, graph: Any = None) -> list[dict]:
 
 
 def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
-          branch: str = "main", *, graph: Any = None) -> dict:
+          branch: str = "main", *, strict: bool = False, at: str | None = None,
+          valid: bool = False, graph: Any = None) -> dict:
     """Look symbols up as they were at a Macrame-canonical `timestamp`.
 
     Returns ``{"timestamp", "names", "entities": {name: entity | None},
@@ -1189,8 +1230,26 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     `Snapshot.read_bytes` / `read_source` for entity bytes at T.
     `branch` (P4, DR-40) folds `reconstruct_on(T, branch)`: an unknown
     lineage refuses with `InvalidRequest`, never trunk data.
+
+    Every answer names its origin (P5b.3a, §3.1.1): ``basis`` is
+    ``"recorded"`` when the fold ran on the recorded axis, ``"git-history"``
+    when T predates the lineage's horizon and the answer is the state of
+    the last commit at or before T (``horizon`` carries *H(L)*, ``commit``
+    its sha, `None` on the recorded arm). ``strict=True`` refuses the
+    git-history arm (``BeforeHorizon``); ``at=<sha>`` addresses a commit
+    directly (A-3). A T before the lineage's first commit refuses
+    (``BeforeHistory``) rather than answering empty.
+
+    ``valid=True`` (P5b.3, A-2/INV-16) reads the same instant on the
+    **valid** axis instead: the ledger's own intervals answer "what was
+    true then", so no horizon and no commit index are involved and
+    ``basis`` is ``"valid"``. It is trunk-only until Macrame's
+    lineage-resolved valid fold (U-2, 0.23.0): a branch refuses with
+    ``ValidBranchNeedsU2`` rather than folding the trunk for it, and
+    ``at=`` refuses with ``ValidAtNeedsP5b4`` (turning an address into an
+    instant is P5b.4's job — INV-16 forbids guessing which axis it names).
     """
-    if not timestamp:
+    if not timestamp and at is None:
         raise InvalidRequest(
             "Please provide an ISO 8601 timestamp (e.g. '2025-01-15T10:00:00Z').")
     _require_index()
@@ -1200,42 +1259,57 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     try:
         from coderadar._core import lookup_entities_at as _lookup_at
         from coderadar._core import normalize_timestamp as _normalize_ts
-        normalized = _normalize_ts(timestamp)
+        # `at=` is the address when given; a sha is not a timestamp, so the
+        # positional stays empty and is never normalized against it.
+        normalized = "" if at is not None else _normalize_ts(timestamp)
     except ImportError as e:
         raise EngineError(f"native extension unavailable: {e}") from e
     except ValueError as e:
         raise InvalidRequest(str(e)) from None
     # Validation parity gate: the same timestamp must pass `CodeGraph.as_of`
     # (MCP/CLI/Python agree by construction — same normalizer, same fold).
-    try:
-        (graph or _graph()).as_of(normalized, branch=branch)
-    except InvalidRequest:
-        raise
-    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
-        raise EngineError(str(e)) from None
     names = parse_names(query, symbols)
     if not names:
         # Guidance path (render.as_of's empty-names branch): no symbols to
-        # place in history, so no fold — and no store required. `predates`
-        # is vacuously False: nothing was looked up.
+        # place in history, so no fold — and no store required, which is
+        # what lets the guidance message name a next step on a project that
+        # has no ledger yet. Nothing was read, so nothing names an arm.
         return {
             "timestamp": normalized,
+            "fold_ts": None,
             "names": [],
             "entities": {},
             "predates_recorded_history": False,
+            "basis": None,
+            "horizon": None,
+            "commit": None,
+            "dirty_at_commit": [],
+            "address": False,
+            "parent_drift": 0,
         }
+    # One batched fold serves both the validation gate and the answer, and
+    # it is what resolves the arm — so `basis` is always the arm this call
+    # actually used, never a guess.
     try:
-        batch = _lookup_at(names, normalized, branch)
-    except ValueError as e:  # already normalized; defensive
+        batch = _lookup_at(names, normalized, branch, strict=bool(strict), at=at,
+                           valid=bool(valid))
+    except ValueError as e:  # refuses the arm, or a bad stamp
         raise InvalidRequest(str(e)) from None
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
         raise EngineError(str(e)) from None
     found = batch.get("entities", {})
     return {
         "timestamp": normalized,
+        "fold_ts": batch.get("fold_ts") or normalized,
         "names": names,
         "entities": {name: found.get(name) for name in names},
         "predates_recorded_history": bool(batch.get("predates_recorded_history", False)),
+        "basis": batch.get("basis", "recorded"),
+        "horizon": batch.get("horizon"),
+        "commit": batch.get("sha"),
+        "dirty_at_commit": list(batch.get("dirty_at_commit") or []),
+        "address": bool(batch.get("address", False)),
+        "parent_drift": int(batch.get("parent_drift") or 0),
     }
 
 
@@ -1442,8 +1516,1457 @@ def history_of(file: str, *, graph: Any = None) -> dict:
     return {"file": str(file), "versions": versions, "count": len(versions)}
 
 
+def annotate(about: str, body: str, *, graph: Any = None) -> dict:
+    """Mint an annotation row on a concept (P6a, DR-44).
+
+    An annotation is enforced-list markdown (bullets, numbered, and/or
+    checkable task lists, flat in v1) about a concept id — the rationale,
+    checklist, or review note that lives with the code without living in
+    it. The id mints as ``annotation:{about}:{n}`` (per-target sequence,
+    never reused — a retire-then-re-annotate advances, by the log scan).
+    The body lints at the write boundary (INV-14): deterministic repairs
+    are applied and reported (``repaired``), prose/non-list blocks refuse
+    with the offending line cited, empty refuses. Stamps are
+    present-tense on the trunk, mode-independent: annotations describe
+    the present, never rewrite history. No existence gate on ``about`` —
+    annotations outlive their target (retire-first) and existence is
+    branch-relative while rows are trunk-global; dangling is legal.
+
+    Returns ``{"id", "about", "n", "body", "open", "repaired"}``
+    where ``body`` is the stored canonical form and ``open`` the
+    unchecked-item count. Lint/kind/id failures are ``InvalidRequest``;
+    infrastructure failures are ``EngineError``.
+
+    No MCP tool: a user/agent write, like every other write surface
+    (the H-13 shape) — agents read annotations through the four list
+    tools, they do not mint them.
+    """
+    _require_index()
+    if not about or not str(about).strip():
+        raise InvalidRequest("Please provide a target concept id to annotate.")
+    if not isinstance(body, str):
+        raise InvalidRequest("The annotation body must be markdown text.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import annotate as _annotate
+        raw = _annotate(str(about), body)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"annotate returned unparseable JSON: {e}") from None
+
+
+def comment(about: str, body: str, *, graph: Any = None) -> dict:
+    """Mint a comment row on a concept (P6a, DR-44).
+
+    A comment is freeform markdown about a concept id — rationale,
+    context, archaeology — linted (Gate 1: repair-or-refuse) but never
+    grammar-checked. Same identity, stamping, and no-existence-gate
+    rules as `annotate`. Returns ``{"id", "about", "n", "body",
+    "open", "repaired"}`` with ``open`` always 0. No MCP tool (the
+    H-13 shape — agents read, they do not mint).
+    """
+    _require_index()
+    if not about or not str(about).strip():
+        raise InvalidRequest("Please provide a target concept id to comment on.")
+    if not isinstance(body, str):
+        raise InvalidRequest("The comment body must be markdown text.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import comment as _comment
+        raw = _comment(str(about), body)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"comment returned unparseable JSON: {e}") from None
+
+
+def revise_annotation(id: str, body: str, *, graph: Any = None) -> dict:
+    """Supersede an annotation/comment row with a re-linted body (P6a).
+
+    The row's own kind picks the gates (an annotation stays a list, a
+    comment stays freeform). Toggle is a revise with one item flipped —
+    the checklist's history answers "who checked what when".
+    Byte-identical bodies are a no-op (``revised: false``, no version
+    minted). Revising a retired row refuses (annotate anew instead);
+    rows of other kinds refuse loudly — user writes never touch code.
+    Returns ``{"id", "revised", "repaired", "open"}``. No MCP
+    tool (the H-13 shape).
+    """
+    _require_index()
+    if not id or not str(id).strip():
+        raise InvalidRequest("Please provide an annotation or comment id.")
+    if not isinstance(body, str):
+        raise InvalidRequest("The revised body must be markdown text.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import revise_annotation as _revise
+        raw = _revise(str(id), body)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"revise_annotation returned unparseable JSON: {e}") from None
+
+
+def retire_annotation(id: str, *, graph: Any = None) -> dict:
+    """Soft-retire an annotation/comment row (P6a, retire-first).
+
+    The row stays as an audit trail and every read keeps serving its
+    versions; a second retire is a no-op report, not an error.
+    Returns ``{"id", "retired"}``. No MCP tool (the H-13 shape).
+    """
+    _require_index()
+    if not id or not str(id).strip():
+        raise InvalidRequest("Please provide an annotation or comment id.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import retire_annotation as _retire
+        raw = _retire(str(id))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"retire_annotation returned unparseable JSON: {e}") from None
+
+
+def annotations_on(target: str, *, graph: Any = None) -> dict:
+    """Every version of every annotation on a concept, newest-first (P6a).
+
+    Returns ``{"target", "versions", "count"}`` where each version
+    is ``{"id", "n", "body", "open", "valid_from", "valid_to",
+    "retired", "current"}``. Current-by-default, versions stored
+    (Q-B decided): the first version is the live row. Retired rows stay
+    listed (retire-first audit trail); dangling targets read their rows
+    anyway. MCP tool ``coderadar_annotations_on`` (reads yes, writes
+    no — Q-4/H-13).
+    """
+    _require_index()
+    if not target or not str(target).strip():
+        raise InvalidRequest("Please provide a target concept id.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import annotations_on as _on
+        raw = _on(str(target))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        versions = list(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"annotations_on returned unparseable JSON: {e}") from None
+    return {"target": str(target), "versions": versions, "count": len(versions)}
+
+
+def comments_on(target: str, *, graph: Any = None) -> dict:
+    """Every version of every comment on a concept, newest-first (P6a).
+
+    Same shape as `annotations_on`. MCP tool ``coderadar_comments_on``
+    (reads yes, writes no).
+    """
+    _require_index()
+    if not target or not str(target).strip():
+        raise InvalidRequest("Please provide a target concept id.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import comments_on as _on
+        raw = _on(str(target))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        versions = list(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"comments_on returned unparseable JSON: {e}") from None
+    return {"target": str(target), "versions": versions, "count": len(versions)}
+
+
+def annotation_history(id: str, *, graph: Any = None) -> dict:
+    """Every version of one annotation row, newest-first (P6a, DR-44).
+
+    Returns ``{"id", "versions", "count"}``. Unknown ids read
+    ``[]`` — the `history_of` honesty, not an error. MCP tool
+    ``coderadar_annotation_history`` (reads yes, writes no).
+    """
+    _require_index()
+    if not id or not str(id).strip():
+        raise InvalidRequest("Please provide an annotation id.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import annotation_history as _hist
+        raw = _hist(str(id))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        versions = list(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"annotation_history returned unparseable JSON: {e}") from None
+    return {"id": str(id), "versions": versions, "count": len(versions)}
+
+
+def comment_history(id: str, *, graph: Any = None) -> dict:
+    """Every version of one comment row, newest-first (P6a, DR-44).
+
+    Same shape as `annotation_history`. MCP tool
+    ``coderadar_comment_history`` (reads yes, writes no).
+    """
+    _require_index()
+    if not id or not str(id).strip():
+        raise InvalidRequest("Please provide a comment id.")
+    _ = graph or _graph()
+    try:
+        from coderadar._core import comment_history as _hist
+        raw = _hist(str(id))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        versions = list(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"comment_history returned unparseable JSON: {e}") from None
+    return {"id": str(id), "versions": versions, "count": len(versions)}
+
+
+def open_items(scope: str | None = None, *, store_path: str | Path | None = None,
+               graph: Any = None) -> dict:
+    """Every unchecked task item under a scope (P6b, DR-44's list grammar).
+
+    `scope` is a prefix on each row's `about` id — `a.py` covers `a.py::f`
+    and `a.py::C.m`, `pkg/` covers everything under it; `None` reads the
+    whole store. Annotations only, by construction: comments are freeform
+    and have no items to list, so they never appear here.
+
+    Returns ``{"scope", "items", "count"}``, each item
+    ``{"id", "about", "n", "line", "text"}``. Only the current version of
+    a row counts — a superseded version's items are gone and a checked
+    item disappears the moment it is revised — and a retired row
+    contributes nothing. Read-only; no MCP writes (Q-4/H-13).
+    """
+    _require_index()
+    _ = graph or _graph()
+    # A store path is the fresh-process case (a CLI `--store`); otherwise
+    # the loaded graph's store answers, exactly as every other note read
+    # does. Never the handle's default path: opening a second store on a
+    # file this process already holds is the Windows-lock hazard.
+    target = str(store_path) if store_path is not None else None
+    try:
+        from coderadar._core import open_items as _open
+        raw = _open(scope, target) if target else _open(scope)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        items = list(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"open_items returned unparseable JSON: {e}") from None
+    return {"scope": scope, "items": items, "count": len(items)}
+
+
+def _note_scopes(hit: dict) -> list[str]:
+    """The abouts an annotation could name for one search hit (P6b).
+
+    A note may be anchored to the entity, to any enclosing id (`a.py::C`
+    for `a.py::C.m`, `a.py` for both) or to the file itself. Entity ids
+    are `file::Class.member` and nested classes are dot-joined, so the
+    ancestors are the id's `::` prefixes and, within the innermost
+    segment, its `.` prefixes — a rule, not a guess about naming.
+    """
+    scopes: list[str] = []
+    entity_id = hit.get("id")
+    if entity_id:
+        parts = str(entity_id).split("::")
+        tail = parts[-1].split(".")
+        head = parts[:-1]
+        for k in range(len(tail), 0, -1):
+            scopes.append("::".join(head + [".".join(tail[:k])]))
+        for i in range(len(head), 0, -1):
+            scopes.append("::".join(head[:i]))
+    file_path = hit.get("file_path")
+    if file_path and file_path != "?" and file_path not in scopes:
+        scopes.append(str(file_path))
+    return scopes
+
+
+def _attach_notes(rows: list[dict]) -> list[dict]:
+    """Attach the live notes each hit is asking about — 'why' next to
+    'what' (P6b).
+
+    One ledger read for the whole result set, then the notes are grouped
+    onto their hit. A hit with no notes carries no key, so a store without
+    annotations returns exactly the pre-P6b shape; a storeless graph
+    answers no notes. Newest first within a hit; both kinds ride together,
+    named by `kind` (annotations are the checklist, comments the prose).
+    """
+    if not rows:
+        return rows
+    try:
+        from coderadar._core import notes_for as _notes
+    except ImportError:
+        return rows
+    abouts: list[str] = []
+    for row in rows:
+        for about in _note_scopes(row):
+            if about not in abouts:
+                abouts.append(about)
+    if not abouts:
+        return rows
+    try:
+        import json as _json
+        notes = list(_json.loads(_notes(abouts)))
+    except Exception:  # noqa: BLE001 - the join is additive, never fatal
+        return rows
+    if not notes:
+        return rows
+    grouped: dict[str, list[dict]] = {}
+    for note in notes:
+        grouped.setdefault(note.get("about", ""), []).append(note)
+    for row in rows:
+        found: list[dict] = []
+        seen: set[str] = set()
+        for about in _note_scopes(row):
+            for note in grouped.get(about, ()):
+                if note["id"] in seen:
+                    continue
+                seen.add(note["id"])
+                found.append(note)
+        if found:
+            row["notes"] = found
+    return rows
+
+
+def _store_for(store_path: str | Path | None, graph: Any = None) -> str | None:
+    """The store path an op should hand `_core` (P8).
+
+    A path wins; a graph handle carries its own; neither means the loaded
+    graph's store (the `_core` default).
+    """
+    if store_path is not None:
+        return str(store_path)
+    if graph is not None:
+        return getattr(graph, "_db_path", None)
+    return None
+
+
+def export_annotations(path: str | Path | None = None, *,
+                       store_path: str | Path | None = None,
+                       graph: Any = None) -> dict:
+    """Export every annotation and comment row with its whole version chain
+    (P8, A-9/INV-18).
+
+    The store's only non-derivable data is these two kinds: everything else
+    is rebuilt from git. The document therefore carries exactly what a
+    rebuild needs — ids (which A-11 keeps stable across renames), bodies,
+    starts, closes, retires and the mint lineage — as one JSON file.
+
+    ``path`` writes the document (atomically: a temporary file replaces the
+    target); without it the payload comes back in the report under
+    ``payload`` so a caller can print it. ``store_path`` reads a store file
+    directly; without it the loaded graph's store is exported.
+
+    Returns ``{"format", "exported_at", "rows", "versions", "path" |
+    "payload"}``.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    target = _store_for(store_path, graph)
+    if store_path is None:
+        _require_index()
+    try:
+        from coderadar._core import export_annotations as _export
+        raw = _export(target)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        document = _json.loads(raw)
+    except Exception as e:  # noqa: BLE001 - a corrupt document is an engine bug
+        raise EngineError(f"export_annotations returned unparseable JSON: {e}") from None
+    rows = document.get("rows") or []
+    report = {
+        "format": document.get("format", ""),
+        "exported_at": document.get("exported_at", ""),
+        "rows": len(rows),
+        "versions": sum(len(r.get("versions") or []) for r in rows),
+        "kinds": {
+            kind: sum(1 for r in rows if r.get("kind") == kind)
+            for kind in sorted({r.get("kind", "") for r in rows})
+        },
+    }
+    if path is None:
+        report["payload"] = raw
+        return report
+    out = _Path(path)
+    if out.parent and not out.parent.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.name + ".tmp")
+    tmp.write_text(raw, encoding="utf-8", newline="")
+    tmp.replace(out)
+    report["path"] = str(out)
+    return report
+
+
+def import_annotations(source: str | Path | dict, *,
+                       store_path: str | Path | None = None,
+                       on_conflict: str = "error",
+                       graph: Any = None) -> dict:
+    """Import a document `export_annotations` wrote (P8, A-9/INV-18).
+
+    ``source`` is a path, a JSON string, or the parsed document. Every row
+    is validated before the first write, so a malformed document changes
+    nothing; each chain is then replayed oldest-version-first, and every
+    row is read back and compared to the file before the import reports
+    success (``verified``).
+
+    ``on_conflict``: ``"error"`` (default) refuses an id that already
+    exists, naming it; ``"skip"`` leaves existing ids alone and reports
+    them under ``skipped``.
+
+    Returns ``{"rows", "versions", "imported", "skipped", "verified"}``.
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    if on_conflict not in ("error", "skip"):
+        raise InvalidRequest(
+            f"on_conflict={on_conflict!r}: expected 'error' or 'skip'")
+    if isinstance(source, dict):
+        payload = _json.dumps(source)
+    else:
+        text = str(source)
+        candidate = _Path(text)
+        if len(text) < 4096 and candidate.is_file():
+            payload = candidate.read_text(encoding="utf-8")
+        else:
+            payload = text
+    target = _store_for(store_path, graph)
+    if store_path is None:
+        _require_index()
+    try:
+        from coderadar._core import import_annotations as _import
+        raw = _import(payload, target, on_conflict)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        report = dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"import_annotations returned unparseable JSON: {e}") from None
+    if target is not None:
+        report["store"] = target
+    return report
+
+
+def ingest_history(repo: str | Path, branch: str = "main",
+                   from_sha: str | None = None, dry_run: bool = False,
+                   lineage: str | None = None, parent_ref: str = "main",
+                   *, store_path: str | Path | None = None,
+                   graph: Any = None) -> dict:
+    """Commit-driven history ingest into the trunk or a branch lineage
+    (P5a.3/P5a.4, DR-41).
+
+    Per commit, in topological order: blob puts for the changed files,
+    one stamped flush (entity concepts + entity cuts + spine + the commit
+    concept), scoped edge persistence on the trunk (branches persist no
+    edges - cross-lineage relations are deferred, not smuggled), and a
+    lineage-scoped sweep, then the ``kv`` cursor advance that makes an
+    interrupted ingest resumable. Returns the report as the contract::
+    ``{"branch", "lineage", "fork_point", "from", "head",
+    "dry_run", "commits_ingested", "commits_skipped":
+    [{"sha", "reason"}], "files_parsed",
+    "files_failed": [{"sha", "path", "reason"}], "files_excluded",
+    "blobs_stored", "blobs_deduped", "stamps_nudged",
+    "adoptions": [{"sha", "path", "reason"}],
+    "commits_adopted_concepts", "inherited_cuts",
+    "ghost_commits", "generation", "superseded", "trunk_synced",
+    "elapsed_secs"}``. ``fork_point`` is the branch lineage's fork commit
+    (``None`` on the trunk).
+
+    Two shapes of moved history (P5b.6): a branch whose cursor left its
+    history — a rebase, a force-push, a rewritten commit — takes a new
+    lineage generation (``{branch}#{n}``), reported as ``generation`` +
+    ``superseded`` and resolved by name from then on; the old generation
+    stays readable, its shas included. A rewritten *trunk* refuses with
+    ``TrunkRewritten`` (no generation repairs it — rebuild the store from
+    git), and a branch whose tip has moved onto the trunk's own chain
+    refuses with ``BranchNowMerged`` (D-6 c: that name is an address now,
+    and an empty generation would answer nothing).
+
+    ``lineage`` defaults to the git branch name: ``branch="main"``
+    ingests the trunk, any other branch forks (or resumes) its own
+    lineage. Only an explicit ``lineage="main"`` with a non-main git
+    branch is refused — branch content is not trunk history.
+    ``parent_ref`` (default ``"main"``) is the trunk ref the fork point
+    is computed against.
+
+    The store is ``store_path``, else the given graph's database.
+    There is deliberately no cwd default: the op creates a commit-time
+    store when the path is missing, and creating one by accident is the
+    mistake this signature refuses to make. A store file that already
+    exists without the commit-time flag is refused (INV-12, legacy
+    index-now) — ingest into a fresh path instead. ``from_sha`` is an
+    exclusive window start (``None`` resumes from the cursor; a
+    ``from_sha`` that is not the cursor is refused (INV-10); a first
+    branch run starts at the fork, never mid-branch). ``dry_run``
+    plans without writing anything, including no store creation and no
+    fork.
+
+    ``adoptions`` (macrame-db 0.22.0, D-315): a merge file whose
+    module id was minted on the merging lineage is an ADOPTED first
+    version - the trunk mints its own from the merge's bytes,
+    auditable here instead of a failure; ``commits_adopted_concepts``
+    counts the ids so minted, and ``inherited_cuts`` counts the
+    branch's own module cuts of inherited files it deleted
+    (entities retire in the sweep; only the module cut rides the
+    commit's bulk).
+
+    No MCP tool in the first release: a long, writing, migration-grade
+    op an agent must not call without knowing that.
+    """
+    if not repo or not str(repo).strip():
+        raise InvalidRequest("Please provide a repository path.")
+    if not branch or not str(branch).strip():
+        raise InvalidRequest("Please provide a git branch (e.g. 'main').")
+    if not parent_ref or not str(parent_ref).strip():
+        raise InvalidRequest("Please provide a parent ref (default 'main').")
+    if store_path is None and graph is not None:
+        store_path = getattr(graph, "_db_path", None)
+    if store_path is None:
+        raise InvalidRequest(
+            "ingest_history needs a store_path (or a graph carrying one): "
+            "it creates a commit-time store when the path is missing.")
+    try:
+        from coderadar._core import ingest_history as _ingest
+        raw = _ingest(str(store_path), str(repo), str(branch),
+                      str(from_sha) if from_sha is not None else None,
+                      bool(dry_run),
+                      str(lineage) if lineage is not None else None,
+                      str(parent_ref))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"ingest_history returned unparseable JSON: {e}") from None
+
+
+def sync_git(repo: str | Path, *, store_path: str | Path | None = None,
+             graph: Any = None, parent_ref: str = "main",
+             catch_up: bool = True, source: str = "watch") -> dict:
+    """Bring a commit-time store up to date with the repository's git state
+    (P5d slice B: A-8, D-4 a1).
+
+    Four acts, in this order:
+
+    1. **Commit sync.** The trunk ingests first, then every branch whose tip
+       has commits of its own (D-6 c's selection: tips already on the trunk's
+       chain are addresses, not lineages). A refusal is reported per branch
+       (``refusals``) and never aborts the rest.
+    2. **Addresses.** Merged branch names are recorded as commit addresses
+       (``coderadar.branch.tip.{name}``), so a read of one resolves without
+       git.
+    3. **The observation sweep**, when the loaded graph can write:
+       a checkout returns the left lineage's dirty files to *its* head
+       (``source: "checkout"``) and records the carried edits on the new
+       lineage; a same-lineage sync records edits made while CodeRadar was
+       off (``source: "startup"``) and reverts, and writes nothing for a
+       file whose bytes the last sync already recorded. A detached HEAD has
+       no lineage, so its sweep is skipped with that reason, not guessed.
+    4. **Marks.** The checkout, head and dirty set (``{path: sha256}``) are
+       recorded for the next call; the dirty set is what the sweep treats as
+       the left lineage's edits next time.
+
+    The sweep writes the *store*; it does not reload the in-memory graph. A
+    checkout changes which tree the graph describes, so the caller owns the
+    reload (the daemon's ``BackgroundIndex`` is that caller).
+
+    Returns ``{"head", "checkout", "previous", "head_moved",
+    "checkout_changed", "ingested": [{"branch", "lineage",
+    "commits_ingested", "generation"}], "refusals": [{"branch", "reason"}],
+    "addresses_recorded", "observations": [{"file", "lineage", "source",
+    "observed_at" | "removed"}], "skipped": [{"file", "reason"}],
+    "dirty": [paths]}``.
+    """
+    if not repo or not str(repo).strip():
+        raise InvalidRequest("Please provide a repository path.")
+    if store_path is None and graph is not None:
+        store_path = getattr(graph, "_db_path", None)
+    if store_path is None:
+        raise InvalidRequest(
+            "sync_git needs a store_path (or a graph carrying one): the "
+            "commit-time store is where the marks and the observations go.")
+    import hashlib
+    import json as _json
+    from pathlib import Path as _Path
+
+    repo_s = str(repo)
+    try:
+        from coderadar._core import (
+            branch_plan as _branch_plan,
+        )
+        from coderadar._core import (
+            git_blob_text as _blob_text,
+        )
+        from coderadar._core import (
+            git_head as _head,
+        )
+        from coderadar._core import (
+            git_marks as _marks,
+        )
+        from coderadar._core import (
+            git_workdir_changes as _changes,
+        )
+        from coderadar._core import (
+            indexed_root_py as _indexed_root,
+        )
+        from coderadar._core import (
+            record_branch_addresses as _addresses,
+        )
+        from coderadar._core import (
+            record_git_marks as _write_marks,
+        )
+        from coderadar._core import (
+            remove_file as _remove,
+        )
+        from coderadar._core import (
+            update_file as _update,
+        )
+    except ImportError as e:  # pragma: no cover - extension always built in CI
+        raise EngineError(f"native extension unavailable: {e}") from None
+
+    try:
+        head = dict(_head(repo_s))
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    try:
+        branches = [dict(b) for b in _branch_plan(repo_s, str(parent_ref))]
+        marks = dict(_marks(str(store_path)))
+    except ValueError as e:
+        raise EngineError(str(e)) from None
+    except RuntimeError as e:
+        raise EngineError(str(e)) from None
+
+    report: dict = {
+        "repo": repo_s,
+        "store": str(store_path),
+        "head": head,
+        "checkout": head.get("branch"),
+        "previous": {"checkout": marks.get("checkout") or None,
+                     "head": marks.get("head") or None},
+        "head_moved": False,
+        "checkout_changed": False,
+        "ingested": [],
+        "refusals": [],
+        "addresses_recorded": 0,
+        "observations": [],
+        "skipped": [],
+        "dirty": [],
+        "empty": not head.get("sha"),
+    }
+    if not head.get("sha"):
+        # Nothing is committed: no lineage, no tree to sweep. The marks
+        # still move so the first commit is seen as a head move.
+        _write_marks(str(store_path), None, None, "{}")
+        return report
+
+    # 1. Commit sync. Trunk first: every branch's fork point is computed
+    # against it, and a branch's own ingest reads the trunk's rows.
+    trunk_tip = next(
+        (b["tip"] for b in branches if b["name"] == parent_ref), head["sha"])
+
+    def _ingest(name: str) -> dict | None:
+        try:
+            done = ingest_history(repo_s, name, parent_ref=str(parent_ref),
+                                  store_path=store_path)
+        except (InvalidRequest, EngineError) as e:
+            report["refusals"].append({"branch": name, "reason": str(e)})
+            return None
+        if done.get("commits_ingested"):
+            report["ingested"].append({
+                "branch": name,
+                "lineage": done.get("lineage"),
+                "commits_ingested": done["commits_ingested"],
+                "generation": done.get("generation"),
+            })
+        return done
+
+    _ingest(str(parent_ref))
+    # D-6 c: a branch with commits of its own is a lineage; local names win
+    # over a remote-tracking spelling of the same tip.
+    picked: dict[str, str] = {}
+    for branch in branches:
+        name, tip = branch["name"], branch["tip"]
+        if branch["merged"] or tip == trunk_tip or name.endswith("/HEAD"):
+            continue
+        current = picked.get(tip)
+        if current is None or ("/" in current and "/" not in name):
+            picked[tip] = name
+    for tip in sorted(picked):
+        _ingest(picked[tip])
+
+    # 2. Merged names are addresses.
+    merged = [(b["name"], b["tip"]) for b in branches if b["merged"]]
+    try:
+        report["addresses_recorded"] = int(_addresses(str(store_path), merged))
+    except Exception as e:  # noqa: BLE001 - a name that resolves nowhere is not fatal
+        report["skipped"].append({"file": "", "reason": f"addresses: {e}"})
+
+    # 3. The sweep.
+    prev_checkout = report["previous"]["checkout"]
+    prev_head = report["previous"]["head"]
+    new_checkout = head.get("branch")
+    same_lineage = (prev_checkout or "main") == (new_checkout or "main")
+    report["head_moved"] = bool(prev_head) and prev_head != head["sha"]
+    report["checkout_changed"] = bool(prev_head) and not same_lineage
+
+    try:
+        changes = [dict(c) for c in _changes(repo_s, head["sha"])]
+    except ValueError as e:
+        raise EngineError(str(e)) from None
+    from coderadar.excludes import is_excluded
+    changes = [
+        c for c in changes
+        if not is_excluded(_Path(repo_s) / c["path"], repo_s)
+    ]
+    recorded: dict[str, str | None] = {}
+    try:
+        recorded = dict(_json.loads(marks.get("dirty") or "{}"))
+    except ValueError:
+        recorded = {}
+
+    def _digest(path: str) -> str | None:
+        try:
+            return hashlib.sha256((_Path(repo_s) / path).read_bytes()).hexdigest()
+        except OSError:
+            return None
+
+    current: dict[str, str | None] = {}
+    for change in changes:
+        current[change["path"]] = (
+            _digest(change["path"]) if change["in_workdir"] else None)
+    report["dirty"] = sorted(current)
+
+    try:
+        sweep_ready = bool(_indexed_root())
+    except Exception:  # noqa: BLE001 - no loaded project, no observation writes
+        sweep_ready = False
+
+    def _observe(path: str, content: str | None, lineage: str, src: str) -> None:
+        try:
+            if content is None:
+                _remove(path, lineage=lineage)
+                report["observations"].append(
+                    {"file": path, "lineage": lineage, "source": src, "removed": True})
+            else:
+                raw = _update(path, content, source=src, lineage=lineage)
+                report["observations"].append({
+                    "file": path, "lineage": lineage, "source": src,
+                    "observed_at": raw.get("observed_at", ""),
+                    "removed": False,
+                })
+        except Exception as e:  # noqa: BLE001 - one file must not stop the sweep
+            report["skipped"].append(
+                {"file": path, "reason": f"{type(e).__name__}: {e}"})
+
+    def _committed(path: str, sha: str) -> str | None:
+        try:
+            return _blob_text(repo_s, sha, path)
+        except ValueError:
+            return None
+
+    def _working(path: str) -> str | None:
+        try:
+            return (_Path(repo_s) / path).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    def _sweep(left: str, right: str, src: str, *, reset_all: bool) -> None:
+        if prev_head:
+            # The left lineage's recorded dirty set. On a checkout every
+            # path in it belonged to the lineage being left, so all return
+            # to the old head. Without a checkout, only the paths the tree
+            # no longer differs on were reverted while CodeRadar was off —
+            # a path still dirty is handled below, and one the commit just
+            # recorded is a no-op the write filter drops.
+            for path in sorted(recorded):
+                if not reset_all and path in current:
+                    continue
+                try:
+                    _observe(path, _committed(path, prev_head), left, src)
+                except Exception as e:  # noqa: BLE001
+                    report["skipped"].append({"file": path, "reason": str(e)})
+        for change in changes:
+            path = change["path"]
+            if change["in_workdir"]:
+                if not reset_all and path in recorded                         and recorded[path] == current.get(path):
+                    # The last sync already recorded these bytes; re-asserting
+                    # them would close and reopen an interval for nothing.
+                    continue
+                text = _working(path)
+                if text is None:
+                    report["skipped"].append(
+                        {"file": path, "reason": "not readable as UTF-8"})
+                    continue
+                _observe(path, text, right, src)
+            else:
+                _observe(path, None, right, src)
+
+    if not sweep_ready:
+        report["skipped"].append({
+            "file": "",
+            "reason": "no project loaded: the sweep writes through "
+                      "update_file/remove_file, which need the loaded graph"})
+    elif new_checkout is None:
+        report["skipped"].append({
+            "file": "",
+            "reason": "detached HEAD: there is no lineage to record the "
+                      "working tree's edits on"})
+    elif report["checkout_changed"]:
+        _sweep(prev_checkout or "main", new_checkout, "checkout",
+               reset_all=True)
+    elif catch_up or report["head_moved"]:
+        _sweep(new_checkout, new_checkout, source, reset_all=False)
+
+    # 4. Marks. A detached HEAD records no checkout: a later observation
+    # must not land on the branch the tree left.
+    _write_marks(str(store_path), new_checkout, head["sha"],
+                 _json.dumps({p: d for p, d in current.items() if d},
+                             sort_keys=True))
+    return report
+
+
+def reingest_merged_commits(repo: str | Path, branch: str = "main",
+                            dry_run: bool = False,
+                            *, store_path: str | Path | None = None,
+                            graph: Any = None) -> dict:
+    """Re-ingest the trunk's merge commits the original walk skipped
+    hollow (Amendment 2 §10 item 4, K8).
+
+    A pre-0.22 trunk walk met a merge whose files the merging lineage
+    had not ingested yet: spine and bytes landed, the old shape refused
+    its own minting, and that refusal was NOT yet the D-315 adoption —
+    the module id exists on the merging branch, but the trunk spine
+    never learned it. The heal re-walks the whole first-parent chain
+    at each commit's own stamp and gives the foreign-minted ids their
+    trunk-side first version through the same adoption path a full pass
+    uses; a later trunk edit of a hollow file is its own re-assert, so
+    the healed set carries the trunk's content, not just merge-day's.
+
+    Trunk only and store required: the heal serves the temporal walk's
+    own skipped set, never a branch (branch history belongs to its
+    lineage ingest), and it opens an existing commit-time store rather
+    than creating one (INV-12).
+
+    What it does not touch: the cursor and stamp kv keys (the heal
+    never advances or rewinds any ingest cursor — its stamps come from
+    replaying the INV-11 nudge chain over the full first-parent plan,
+    so they equal a full pass's), the commit concepts and spine rows
+    the original walk wrote, and the minting branch's own rows. An id a
+    healed file drops at a commit is retired on the trunk at that
+    commit's stamp (main's own version closes); nothing already
+    readable is re-minted or re-retired, so a second run is a no-op
+    beyond accounting (``already-adopted``).
+
+    The whole first-parent chain walks (the hollow shape is per FILE,
+    not per merge). Classed from the ledger before any write: foreign
+    mint → an adoption ("adopted-first-version") when the trunk spine
+    holds nothing yet, a silent re-assert when it does; no mint
+    anywhere → "no-mint", named but never half-minted; deleted by
+    HEAD's tree → "gone-by-head", named. A failed concept flush is
+    audited and the run continues — the counts only grow with a settled
+    flush — so there is no cursor behind which a fine-grained resume is
+    possible.
+
+    ``dry_run`` names its would-heal set ("dry-run" /
+    "dry-run:no-mint" / "dry-run:already-adopted" /
+    "dry-run:gone-by-head") and writes nothing; the names mirror the
+    real run's so a dry run never promises what the real run would not
+    do.
+
+    Edges beyond the heal set are not written: the heal's own-files
+    projection cannot see the other side of a healed file's link to an
+    unchanged trunk file, so that join arrives the next time the
+    unchanged file's own ingest re-asserts it. Nothing in the report
+    JSON announces the join's absence — this doc is its stated shape.
+
+    There is deliberately no cwd default for the store, and no MCP tool
+    in the first release: a writing, migration-grade op an agent must
+    not call without knowing that.
+
+    Signature note: the store path is the FIRST native argument (the
+    heal opens a store; the ingest creates one), so pass ``store_path``
+    or a ``graph`` carrying one — never expect creation.
+    """
+    if not repo or not str(repo).strip():
+        raise InvalidRequest("Please provide a repository path.")
+    if store_path is None and graph is not None:
+        store_path = getattr(graph, "_db_path", None)
+    if store_path is None:
+        raise InvalidRequest(
+            "reingest_merged_commits needs a store_path (or a graph carrying one): "
+            "the heal opens an existing commit-time store, it never creates one.")
+    try:
+        from coderadar._core import reingest_merged_commits as _heal
+        raw = _heal(str(store_path), str(repo), str(branch), bool(dry_run))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"reingest_merged_commits returned unparseable JSON: {e}") from None
+
+
+def backfill_commit_index(branch: str = "main",
+                            *, store_path: str | Path | None = None,
+                            graph: Any = None) -> dict:
+    """Rebuild one lineage's horizon + commit index from the ledger (P5b.3a).
+
+    The pre-phase store's repair, and the first import's inline finish:
+    every commit's completion instant (``coderadar.commit_done.{lineage}.{sha}``),
+    the horizon (``coderadar.horizon.{lineage}``), and the D-7 format flag —
+    all recomputed from the ``commit:{sha}`` rows and the ledger's recorded
+    stamps. Returns the auditable ``{"lineage", "horizon",
+    "commits_indexed"}``. ``branch`` routes like ``ingest_history``
+    (anything but ``"main"`` is its own lineage). The store is
+    ``store_path``, else the given graph's database.
+
+    No MCP tool in the first release: a writing, migration-grade op an
+    agent must not call without knowing that.
+    """
+    if not branch or not str(branch).strip():
+        raise InvalidRequest("Please provide a lineage branch (e.g. 'main').")
+    if store_path is None and graph is not None:
+        store_path = getattr(graph, "_db_path", None)
+    if store_path is None:
+        raise InvalidRequest(
+            "backfill_commit_index needs a store_path (or a graph carrying one).")
+    try:
+        from coderadar._core import backfill_commit_index as _backfill
+        raw = _backfill(str(store_path), str(branch))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"backfill_commit_index returned unparseable JSON: {e}") from None
+
+
+def _lineage_plan(repo_s: str, branches: list[str] | None,
+                  parent_ref: str) -> tuple[list[str], dict[str, str]]:
+    """The lineages a full history build ingests, and the names that are
+    only addresses (D-6 c, P5b.6).
+
+    One lineage per distinct tip the trunk's first-parent chain does not
+    already hold; every other name is an address whose tip some lineage
+    holds. An explicit list is honored as given, except the trunk is
+    prepended when present and missing. Shared by the migration and the
+    rebuild so the selection law lives in one place.
+    """
+    try:
+        from coderadar._core import branch_plan as _branch_plan
+        from coderadar._core import list_branches as _list_branches
+        listed = list(_list_branches(repo_s))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    # The plan needs a resolvable trunk; a repository without one refuses
+    # below with a message that says what to do, not a git error.
+    plan: list[dict] = []
+    if "main" in listed:
+        try:
+            plan = list(_branch_plan(repo_s, parent_ref))
+        except ValueError as e:
+            raise InvalidRequest(str(e)) from None
+        except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+            raise EngineError(str(e)) from None
+    addresses: dict[str, str] = {}
+    if branches is None:
+        if "main" not in listed:
+            raise InvalidRequest(
+                "repository has no 'main' branch: pass branches=[...] explicitly "
+                f"(local branches: {listed or ['(none)']}).")
+        # D-6 c: one lineage per distinct tip that the trunk's chain does
+        # not already hold; every other name is an address. Local spelling
+        # wins a tie (a remote-tracking name is the same branch seen from
+        # elsewhere, and two lineages for one tip would trip
+        # cross-lineage-id).
+        chosen: dict[str, str] = {}
+        for entry in sorted(plan, key=lambda e: (e["name"].count("/"), e["name"])):
+            if entry["name"] == "main":
+                continue
+            if entry["merged"] or entry["tip"] in chosen:
+                addresses[entry["name"]] = entry["tip"]
+                continue
+            chosen[entry["tip"]] = entry["name"]
+        ordered = ["main", *chosen.values()]
+    else:
+        ordered = list(branches)
+        if not ordered:
+            raise InvalidRequest("branches=[...] is empty: nothing to build.")
+        if "main" in listed and "main" not in ordered:
+            ordered.insert(0, "main")
+        wanted = set(ordered)
+        for entry in plan:
+            if entry["name"] not in wanted:
+                addresses[entry["name"]] = entry["tip"]
+    return ordered, addresses
+
+
+def migrate_to_commit_time(repo: str | Path, store: str | Path,
+                            branches: list[str] | None = None,
+                            parent_ref: str = "main",
+                            embed: bool = True, verify: bool = True) -> dict:
+    """Build a commit-time store from a repository's git history (P5a.5, DR-41).
+
+    A *new* store (P5-D4): the pre-migration store is left untouched and
+    stays the only record of what CodeRadar believed before the migration.
+    Per branch, oldest first: the trunk (``main``) through
+    ``ingest_history``, then each branch onto its own lineage — then one
+    ``compute_embeddings`` pass over the final state (H-19: embedding
+    every historical generation would dominate the project and buy a
+    vector index over text nobody searches), and a ``verify_history``
+    sweep per branch when asked.
+
+    ``branches`` defaults to the D-6 c selection (P5b.6): the trunk first,
+    then every local or remote-tracking branch whose tip is *not* already on
+    an ingested lineage's first-parent chain — one lineage per tip, local
+    spelling preferred. Every other name is an **address** (its tip is a
+    commit some lineage holds): it gets no lineage, no fork, and no
+    `cross-lineage-id`, and `report["addresses"]` names its tip so reads can
+    resolve it through the commit index. An explicit list is honored as
+    explicit list is honored as given, except the trunk is prepended when
+    the repository has one and it is missing — forks compute against the
+    parent ref and branch reads fall back to trunk rows, so a migration
+    without trunk data is hollow by construction. A repository with no
+    trunk refuses (pass an explicit list — but without a parent ref the
+    forks cannot compute, so say what you mean). Explicit names that are
+    addresses are ingested as lineages when asked for: an explicit list is
+    a statement about what the caller wants, not a selection guess.
+
+    The op is idempotent per branch: every branch ingest resumes from its
+    ``kv`` cursor, so re-running a migration finishes it (completed
+    branches no-op, the embeddings pass and the verification run again).
+    A failed embeddings pass therefore fails the migration *after* the
+    history is safely ingested — fix the backend and re-run. Pass
+    ``embed=False`` to skip the vector pass (branch-unique content then
+    stays unembedded: the one pass covers the trunk-tip final state) and
+    ``verify=False`` to skip the coverage sweep.
+
+    After the branches, the merge-commit heal runs once over the trunk
+    (K8) and its report comes back under ``merge_heal`` — every merge
+    commit the in-store walk can name, adopted for ids the trunk spine
+    never claimed. It is a re-walk, not new history: its numbers are
+    not folded into the migration totals.
+
+    Returns the report as the contract:: ``{"repo", "store",
+    "parent_ref", "branches", "branch_reports": {branch: report},
+    "commits_ingested", "commits_skipped", "files_failed",
+    "addresses": {name: tip}, "addresses_recorded",
+    "merge_heal": report | None, "embeddings",
+    "verify": {branch: coverage} | None,
+    "elapsed_secs"}``. As a side effect the migrated store is loaded as
+    the process-global graph (the embeddings pass and the verification
+    need it) — a library caller holding another graph should reload
+    afterwards.
+
+    No MCP tool: like ``ingest_history``, a long, writing, migration-grade
+    op an agent must not call without knowing that (the H-13 shape).
+    Refusals (bad repository, unknown branch, legacy store, out-of-order
+    history) are ``InvalidRequest``; infrastructure failures are
+    ``EngineError``.
+    """
+    import time as _time
+
+    if not repo or not str(repo).strip():
+        raise InvalidRequest("Please provide a git repository path.")
+    if not store or not str(store).strip():
+        raise InvalidRequest("Please provide a destination store path "
+                             "(a new file; the old store is never touched).")
+    if not parent_ref or not str(parent_ref).strip():
+        raise InvalidRequest("Please provide a parent ref (default 'main').")
+    repo_s, store_s = str(repo), str(store)
+    parent = Path(store_s).parent
+    if str(parent) and not parent.exists():
+        try:
+            parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise InvalidRequest(f"cannot create store directory {parent}: {e}") from None
+    ordered, addresses = _lineage_plan(repo_s, branches, parent_ref)
+    started = _time.perf_counter()
+    branch_reports: dict[str, dict] = {}
+    for branch in ordered:
+        branch_reports[branch] = ingest_history(
+            repo_s, branch, store_path=store_s, parent_ref=parent_ref)
+    # D-6 c's other half: the names that are only addresses get their tip
+    # recorded once, so a read resolves them through the commit index
+    # without asking git. Recorded after the lineages: the tip must be
+    # held by one of them, or the name would resolve nowhere.
+    addresses_recorded = 0
+    if addresses:
+        try:
+            from coderadar._core import record_branch_addresses as _record_addresses
+            addresses_recorded = _record_addresses(store_s, sorted(addresses.items()))
+        except ImportError as e:
+            raise EngineError(f"native extension unavailable: {e}") from None
+        except ValueError as e:
+            raise InvalidRequest(str(e)) from None
+        except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+            raise EngineError(str(e)) from None
+    # The merge-commit heal (K8, Amendment 2 §10 item 4), once after all
+    # branches: the vintage shape it serves is a pre-0.22 store whose
+    # trunk walk met a merge hollow (spine and bytes, no adoption); a
+    # fresh migration of this shape adopts inline, so the pass usually
+    # names nothing — run anyway, as the one path a rebuilt-from-vintage
+    # ledger has for its merge-day gaps. Its counts stay separate: the
+    # heal RE-walks commits the trunk ingest already counted.
+    merge_heal = reingest_merged_commits(repo_s, store_path=store_s)
+    commits_ingested = sum(r["commits_ingested"] for r in branch_reports.values())
+    commits_skipped = sum(len(r["commits_skipped"]) for r in branch_reports.values())
+    files_failed = sum(len(r["files_failed"]) for r in branch_reports.values())
+    # The final state, loaded globally: the embeddings pass and the
+    # verification sweep both read the loaded projection.
+    from coderadar import load as _cold_load
+    graph = _cold_load(store_s, root=repo_s)
+    embeddings: dict = {"embedded": False}
+    if embed:
+        embeddings = {"embedded": True, **compute_embeddings()}
+    coverage: dict | None = None
+    if verify:
+        coverage = {}
+        for branch in ordered:
+            verdict = graph.verify_history(all_generations=True, branch=branch)
+            coverage[branch] = {
+                "byte_coverage_pct": verdict["byte_coverage_pct"],
+                "totals": verdict["totals"],
+                "total_generations": verdict["total_generations"],
+            }
+    return {
+        "repo": repo_s,
+        "store": store_s,
+        "parent_ref": parent_ref,
+        "branches": ordered,
+        "branch_reports": branch_reports,
+        "addresses": dict(sorted(addresses.items())),
+        "addresses_recorded": addresses_recorded,
+        "commits_ingested": commits_ingested,
+        "commits_skipped": commits_skipped,
+        "files_failed": files_failed,
+        "merge_heal": merge_heal,
+        "embeddings": embeddings,
+        "verify": coverage,
+        "elapsed_secs": round(_time.perf_counter() - started, 3),
+    }
+
+
+def rebuild(repo: str | Path, *, store_path: str | Path | None = None,
+            branches: list[str] | None = None, parent_ref: str = "main",
+            export_path: str | Path | None = None,
+            on_conflict: str = "error", embed: bool = False) -> dict:
+    """Rebuild a store from git plus the annotations it exported (P8,
+    A-9/INV-18).
+
+    A-9 splits the store in two: everything but annotations and comments
+    is derived from git; those two kinds are the store's own data. A
+    rebuild is therefore mechanical — export the user data, move the old
+    store aside, re-ingest the history, import the export — and it is the
+    answer to a rewritten history (H-16's scrubbed secret) as well as to
+    any future store change, which becomes a rebuild rather than a
+    migration.
+
+    The old store is **moved, never deleted**: it lands beside the new one
+    as ``coderadar.db.pre-rebuild-<stamp>`` and the report names it. The
+    export lands at ``coderadar.db.annotations.json`` unless ``export_path``
+    names another file; it is the human-readable copy of the same rows, and
+    it is written *after* the move (from the backup — same bytes).
+
+    One rebuild per process: the engine keeps a store file locked once
+    anything has opened it, so this op needs a process that has not touched
+    the store yet. A loaded graph refuses up front; any other holder makes
+    the move itself refuse, naming what to stop. That is also why the CLI
+    command runs the op in its own invocation, and why nothing is loaded
+    here afterwards.
+
+    ``branches`` defaults to the D-6 c selection (see
+    ``migrate_to_commit_time``); ``on_conflict`` is passed to the import
+    (``"error"`` or ``"skip"``). ``embed=False`` leaves the vector index
+    empty — recompute it after a rebuild with ``compute_embeddings`` when
+    search needs it (H-19: vectors are a final-state pass, not history).
+
+    A failure after the move leaves the canonical path empty but the
+    backup and the export on disk, and the message names both.
+
+    Returns ``{"repo", "store", "backup", "export", "parent_ref",
+    "branches", "branch_reports", "addresses", "addresses_recorded",
+    "commits_ingested", "commits_skipped", "files_failed", "merge_heal",
+    "imported", "verified", "embeddings", "elapsed_secs"}``.
+    """
+    import os as _os
+    import time as _time
+    from pathlib import Path as _Path
+
+    if not repo or not str(repo).strip():
+        raise InvalidRequest("Please provide a git repository path.")
+    # A loaded graph holds the very file this op moves. Refusing beats the
+    # two failures it would otherwise have: an OS error on Windows, or (on
+    # POSIX) a moved store the loaded graph keeps reading while the new one
+    # takes its place.
+    try:
+        from coderadar._core import graph_is_loaded as _loaded
+        if _loaded():
+            raise InvalidRequest(
+                "a graph is loaded in this process, and it holds the store this "
+                "rebuild moves; run the rebuild in a fresh process (the CLI "
+                "command does), or drop the graph first")
+    except ImportError:  # pragma: no cover - extension always built in CI
+        pass
+    repo_s = str(repo)
+    store = (_Path(store_path) if store_path is not None
+             else _Path(repo_s) / ".coderadar" / "store" / "coderadar.db")
+    store_s = str(store)
+    if not store.parent.exists():
+        try:
+            store.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise InvalidRequest(f"cannot create {store.parent}: {e}") from None
+    started = _time.perf_counter()
+
+    # The registry would otherwise hand the *ingest* below the engine that
+    # already points at the file this call is about to move: on Windows the
+    # move succeeds only because nothing holds it, and on POSIX it succeeds
+    # outright — and then the ingest would keep writing through a descriptor
+    # aimed at the backup. Forgetting the path first makes the opens after
+    # the move mint an engine for the new file. (The old engine's handle is
+    # not released; the engine cannot be shut down mid-process, which is why
+    # this op refuses a loaded graph instead of closing one.)
+    try:
+        from coderadar._core import forget_store as _forget
+        _forget(store_s)
+    except ImportError:  # pragma: no cover - extension always built in CI
+        pass
+
+    # 1. The old store moves aside, first: the engine keeps a store file
+    # locked for the life of the process once anything has opened it, so
+    # the move must precede this process's own first open. Nothing is
+    # deleted — the backup is the migration's "old store untouched" law.
+    backup: str | None = None
+    if store.exists():
+        stamp = _time.strftime("%Y%m%dT%H%M%SZ", _time.gmtime())
+        candidate = store.with_name(f"{store.name}.pre-rebuild-{stamp}")
+        n = 1
+        while candidate.exists():
+            n += 1
+            candidate = store.with_name(f"{store.name}.pre-rebuild-{stamp}-{n}")
+        try:
+            _os.replace(store, candidate)
+            for suffix in ("-wal", "-shm"):
+                side = store.with_name(store.name + suffix)
+                if side.exists():
+                    _os.replace(side, candidate.with_name(candidate.name + suffix))
+        except OSError as e:
+            raise InvalidRequest(
+                f"cannot move {store_s} aside ({e}): a process holds it open. "
+                "A rebuild is one-shot per process and needs a process that has "
+                "not opened the store yet — the daemon, or any earlier ingest or "
+                "load here. Run it in a fresh process (the CLI does).") from None
+        backup = str(candidate)
+
+    # 2. The user data, out of the backup (the same bytes, now unlocked).
+    export: dict | None = None
+    if backup is not None:
+        out = (_Path(export_path) if export_path is not None
+               else store.with_name(store.name + ".annotations.json"))
+        export = export_annotations(out, store_path=backup)
+
+    # 3. Git again, with the same selection law as the migration. A
+    #    failure here leaves the canonical path empty but the backup and
+    #    the export on disk — the message says where they are.
+    try:
+        ordered, addresses = _lineage_plan(repo_s, branches, parent_ref)
+        branch_reports: dict[str, dict] = {}
+        for branch in ordered:
+            branch_reports[branch] = ingest_history(
+                repo_s, branch, store_path=store_s, parent_ref=parent_ref)
+    except (InvalidRequest, EngineError) as e:
+        raise type(e)(
+            f"{e} — the old store is at {backup!r}"
+            + (f" and the export at {export.get('path')!r}" if export else "")) from None
+    addresses_recorded = 0
+    if addresses:
+        try:
+            from coderadar._core import record_branch_addresses as _record_addresses
+            addresses_recorded = int(_record_addresses(store_s, sorted(addresses.items())))
+        except ImportError as e:
+            raise EngineError(f"native extension unavailable: {e}") from None
+        except ValueError as e:
+            raise InvalidRequest(str(e)) from None
+        except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+            raise EngineError(str(e)) from None
+    merge_heal = reingest_merged_commits(repo_s, store_path=store_s)
+
+    # 4. The user data back in — the chains replay oldest-first and every
+    #    row is read back and compared before this op reports success.
+    imported: dict | None = None
+    if export is not None and export.get("path"):
+        imported = import_annotations(
+            export["path"], store_path=store_s, on_conflict=on_conflict)
+    verified = bool(imported) and imported["verified"] == imported["imported"]
+    if imported is not None and not verified:
+        raise EngineError(
+            "the import did not verify its own rows "
+            f"(verified {imported['verified']} of {imported['imported']}): "
+            "the rebuilt store is incomplete; the old store is at "
+            f"{backup!r} and the export at {export.get('path')!r}")
+
+    # 5. Vectors are a final-state pass, off by default (H-19).
+    embeddings: dict = {"embedded": False}
+    commits_ingested = sum(r["commits_ingested"] for r in branch_reports.values())
+    commits_skipped = sum(len(r["commits_skipped"]) for r in branch_reports.values())
+    files_failed = sum(len(r["files_failed"]) for r in branch_reports.values())
+    if embed:
+        from coderadar import load as _cold_load
+        _cold_load(store_s, root=repo_s)
+        embeddings = {"embedded": True, **compute_embeddings()}
+    return {
+        "repo": repo_s,
+        "store": store_s,
+        "backup": backup,
+        "export": export,
+        "parent_ref": parent_ref,
+        "branches": ordered,
+        "branch_reports": branch_reports,
+        "addresses": dict(sorted(addresses.items())),
+        "addresses_recorded": addresses_recorded,
+        "commits_ingested": commits_ingested,
+        "commits_skipped": commits_skipped,
+        "files_failed": files_failed,
+        "merge_heal": merge_heal,
+        "imported": imported,
+        "verified": verified,
+        "embeddings": embeddings,
+        "elapsed_secs": round(_time.perf_counter() - started, 3),
+    }
+
+
+def backfill_commit_messages(repo: str | Path,
+                              store_path: str | Path | None = None,
+                              *, graph: Any = None) -> dict:
+    """Message bodies for commit rows minted before the body field existed
+    (P6c slice, DR-45).
+
+    New ingests carry `body` in `commit_concept` already; this heals the
+    subject-only rows (e.g. every P5a-era ingest, including the scratch
+    migration) from `git log` — restated on each row's own mint lineage,
+    idempotent (healed rows never re-qualify, so re-runs heal zero).
+    Unknown shas (shallow clones, gc'd objects) and body-less commits skip
+    auditable, never error. Explicit-op only: never automatic, never lazy
+    on read — the repo must be present, and mixed-version resumes are why
+    it exists as an op rather than a migrate step.
+
+    Returns the report as the contract:: ``{"store", "repo",
+    "commits_healed", "commits_skipped": [{"sha", "reason"}],
+    "elapsed_secs"}``. Refusals (bad repo, index-now store) are
+    ``InvalidRequest``; infrastructure failures are ``EngineError``.
+
+    No MCP tool: a writing, migration-grade op an agent must not call
+    without knowing that (the H-13 shape).
+    """
+    if not repo or not str(repo).strip():
+        raise InvalidRequest("Please provide a git repository path.")
+    if store_path is None and graph is not None:
+        store_path = getattr(graph, "_db_path", None)
+    if store_path is None:
+        raise InvalidRequest(
+            "backfill_commit_messages needs a store_path (or a graph carrying one).")
+    try:
+        from coderadar._core import backfill_commit_messages as _backfill
+        raw = _backfill(str(store_path), str(repo))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"backfill_commit_messages returned unparseable JSON: {e}") from None
+
+
 def changes_between(t1: str, t2: str, scope: str | None = None,
-                    branch: str = "main", *, graph: Any = None) -> dict:
+                    branch: str = "main", *, valid: bool = False,
+                    graph: Any = None) -> dict:
     """Added / removed / modified / moved / uncompared entities between two instants (P2, DR-37).
 
     Two folds, no byte reads: `content_hashes_at` at T1 and at T2 over the
@@ -1515,8 +3038,8 @@ def changes_between(t1: str, t2: str, scope: str | None = None,
         groups = {cid: raws for cid, raws in groups.items() if keep(cid)}
     raws = [raw for rs in groups.values() for raw in rs]
     try:
-        first = _hashes_at(raws, start, branch)
-        second = _hashes_at(raws, end, branch)
+        first = _hashes_at(raws, start, branch, valid=bool(valid))
+        second = _hashes_at(raws, end, branch, valid=bool(valid))
     except Exception as e:  # noqa: BLE001 - surfaced as EngineError
         raise EngineError(str(e)) from None
 

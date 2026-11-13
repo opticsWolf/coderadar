@@ -1,6 +1,7 @@
 // CodeRadar v3.6 — Rust Core Library
 // PyO3 bindings for the Python layer (MCP server, CLI, resolvers).
 
+pub mod annotations;
 pub mod clones;
 pub mod extract;
 mod ffi_config;
@@ -48,6 +49,13 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(query_graph, m)?)?;
     m.add_function(wrap_pyfunction!(update_file, m)?)?;
     m.add_function(wrap_pyfunction!(remove_file, m)?)?;
+    m.add_function(wrap_pyfunction!(record_checkout, m)?)?;
+    m.add_function(wrap_pyfunction!(record_checkout_loaded, m)?)?;
+    m.add_function(wrap_pyfunction!(git_head, m)?)?;
+    m.add_function(wrap_pyfunction!(git_workdir_changes, m)?)?;
+    m.add_function(wrap_pyfunction!(git_blob_text, m)?)?;
+    m.add_function(wrap_pyfunction!(git_marks, m)?)?;
+    m.add_function(wrap_pyfunction!(record_git_marks, m)?)?;
     {
         use crate::ffi_git::{git_blame, git_changed_files, git_worktree_clean};
         m.add_function(wrap_pyfunction!(git_worktree_clean, m)?)?;
@@ -67,6 +75,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(call_sites, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entity, m)?)?;
     m.add_function(wrap_pyfunction!(normalize_timestamp, m)?)?;
+    m.add_function(wrap_pyfunction!(branch_plan, m)?)?;
+    m.add_function(wrap_pyfunction!(record_branch_addresses, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entity_at, m)?)?;
     m.add_function(wrap_pyfunction!(lookup_entities_at, m)?)?;
     m.add_function(wrap_pyfunction!(blob_stats, m)?)?;
@@ -83,9 +93,30 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(visible_module_concept_ids, m)?)?;
     m.add_function(wrap_pyfunction!(visible_all_concept_ids, m)?)?;
     m.add_function(wrap_pyfunction!(branches, m)?)?;
+    m.add_function(wrap_pyfunction!(list_branches, m)?)?;
     m.add_function(wrap_pyfunction!(fork_branch, m)?)?;
     m.add_function(wrap_pyfunction!(write_branch_content, m)?)?;
     m.add_function(wrap_pyfunction!(history_of, m)?)?;
+    m.add_function(wrap_pyfunction!(rename_chain, m)?)?;
+    m.add_function(wrap_pyfunction!(ingest_history, m)?)?;
+    m.add_function(wrap_pyfunction!(reingest_merged_commits, m)?)?;
+    m.add_function(wrap_pyfunction!(backfill_commit_index, m)?)?;
+    m.add_function(wrap_pyfunction!(backfill_commit_messages, m)?)?;
+    m.add_function(wrap_pyfunction!(annotate, m)?)?;
+    m.add_function(wrap_pyfunction!(comment, m)?)?;
+    m.add_function(wrap_pyfunction!(revise_annotation, m)?)?;
+    m.add_function(wrap_pyfunction!(retire_annotation, m)?)?;
+    m.add_function(wrap_pyfunction!(annotations_on, m)?)?;
+    m.add_function(wrap_pyfunction!(comments_on, m)?)?;
+    m.add_function(wrap_pyfunction!(annotation_history, m)?)?;
+    m.add_function(wrap_pyfunction!(comment_history, m)?)?;
+    m.add_function(wrap_pyfunction!(open_items, m)?)?;
+    m.add_function(wrap_pyfunction!(notes_for, m)?)?;
+    m.add_function(wrap_pyfunction!(export_annotations, m)?)?;
+    m.add_function(wrap_pyfunction!(import_annotations, m)?)?;
+    m.add_function(wrap_pyfunction!(graph_is_loaded, m)?)?;
+    m.add_function(wrap_pyfunction!(forget_store, m)?)?;
+    m.add_function(wrap_pyfunction!(holds_store, m)?)?;
     m.add_function(wrap_pyfunction!(archive, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -267,6 +298,18 @@ fn temporal_err(e: macrame::DbError) -> PyErr {
         other => pyo3::exceptions::PyRuntimeError::new_err(format!("{other:?}")),
     }
 }
+
+// INV-12 narrowed (P5d): the mode flag records how the store was *filled*
+// — `index-now` by `analyze`, `commit-time` by `ingest-history` — and no
+// longer decides what it may accept. The law is now per row: every row's
+// axes mean what its `source` says (INV-17). A `commit-time` store accepts
+// an observation write, and the rows it writes say so in
+// `extra.coderadar.source`, stamped at the instant the writer saw the tree.
+
+/// Map an ingest failure to the error the Python layer contracts on:
+/// caller-caused refusals (bad branch, bad revision, ancestry, cursor,
+/// mode) are `ValueError` → `InvalidRequest`; store and git-infrastructure
+/// failures are `RuntimeError` → `EngineError`.
 
 // ── PyO3-exposed Graph wrapper ─────────────────────────────────────────────
 
@@ -668,7 +711,9 @@ fn analyze(
     // `exclude` is the one-shot layer (CLI `--exclude`, library
     // `analyze(exclude=[…])`): merged with config + defaults for the run.
     let extra = exclude.unwrap_or_default();
-    let outcome = py.allow_threads(|| analyze_inner(root, create_store, &extra));
+    let outcome = py
+        .allow_threads(|| analyze_inner(root, create_store, &extra))
+        .map_err(pyo3::exceptions::PyValueError::new_err)?;
 
     let dict = PyDict::new(py);
     dict.set_item("files_indexed", outcome.files_indexed)?;
@@ -684,7 +729,11 @@ fn analyze(
     Ok(dict.into())
 }
 
-fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> AnalyzeOutcome {
+fn analyze_inner(
+    root: &str,
+    create_store: bool,
+    extra_excludes: &[String],
+) -> Result<AnalyzeOutcome, String> {
     use crate::types::{Language, ParseQuality};
     use std::fs;
 
@@ -736,8 +785,21 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                 eprintln!("Warning: Macrame store not attached: {:?}", e);
             }
         }
+        // P5d slice B: `analyze` reindexes the whole tree as the TRUNK's
+        // observation (its flush, sweep and edge pass are trunk-shaped). On
+        // a branch checkout that tree is the branch's, so writing the
+        // trunk's rows would assert branch content on `main` — the exact
+        // wrong answer A-6 exists to prevent. The checkout sweep is not
+        // built yet, so the act refuses rather than guessing.
+        if let Some(store) = graph.store.as_ref() {
+            let checkout = store.observation_lineage(None);
+            if checkout != "main" {
+                return Err(format!(
+                    "the working tree is checked out on {checkout:?}, and analyze reindexes the whole tree on the trunk; check out the trunk, or ingest that lineage with ingest_history (P5d's checkout sweep is not built yet)"
+                ));
+            }
+        }
     }
-
     let root_path = std::path::Path::new(root);
     let mut total_entities = 0usize;
     let mut files_indexed = 0usize;
@@ -1062,16 +1124,25 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
                     })
                 })
                 .collect();
+            let analyzed_at = crate::storage::now_iso8601();
             if !spine_inputs.is_empty() {
-                let now = crate::storage::now_iso8601();
-                match store.spine_upserts_for(&spine_inputs, &now) {
+                match store.spine_upserts_for(&spine_inputs, &analyzed_at) {
                     Ok(extra) => v2.extend(extra),
                     Err(e) => eprintln!("[diag] spine computation failed: {e:?}"),
                 }
             }
+            // P5d (INV-17): an analyze over a git-filled store is a
+            // whole-tree observation. Its rows say so, and the store records
+            // how far ahead the recorded axis now sits.
+            crate::storage::tag_observation_rows(
+                &mut v2,
+                &crate::storage::ObservationSource::new("analyze"),
+            );
             if let Err(e) = store.upsert_concepts_bulk(&v2) {
                 concept_flush_succeeded = false;
                 eprintln!("[diag] v2 concept flush failed: {e:?}");
+            } else if let Err(e) = store.record_observation_instant("main", &analyzed_at) {
+                eprintln!("[diag] observation mark failed: {e:?}");
             }
         }
         // Persist resolved edges to Macrame store
@@ -1187,7 +1258,7 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
     *guard = Some(graph);
 
     let blob_totals = crate::storage::blob_stats_snapshot();
-    AnalyzeOutcome {
+    Ok(AnalyzeOutcome {
         files_indexed,
         total_entities,
         failures,
@@ -1196,7 +1267,7 @@ fn analyze_inner(root: &str, create_store: bool, extra_excludes: &[String]) -> A
         blobs_skipped_oversize: blob_totals.skipped_oversize,
         blobs_skipped_excluded: blob_totals.skipped_excluded,
         blobs_bytes: blob_totals.bytes,
-    }
+    })
 }
 
 // ── query_graph() ──────────────────────────────────────────────────────────
@@ -1243,11 +1314,18 @@ fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {
 /// (`signature_changed` / `body_changed`); `new_unresolved` / `newly_resolved`
 /// list `{entity_id, target}` call targets that appeared or went away.
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (file_path, content=None, force=None, source=None, tool=None, plan_id=None, attempt_id=None, lineage=None))]
 fn update_file(
     py: Python<'_>,
     file_path: &str,
     content: Option<&str>,
     force: Option<bool>,
+    source: Option<&str>,
+    tool: Option<&str>,
+    plan_id: Option<&str>,
+    attempt_id: Option<&str>,
+    lineage: Option<&str>,
 ) -> PyResult<PyObject> {
     // Re-parse, re-resolve and persist without the GIL, like `analyze`. The
     // lock on the global graph is taken inside, so it is held for the work
@@ -1256,7 +1334,21 @@ fn update_file(
         .allow_threads(|| {
             let guard = GLOBAL_GRAPH.read();
             match guard.as_ref() {
-                Some(graph) => graph.update_file(file_path, content, force),
+                Some(graph) => {
+                    // P5d (INV-12 narrowed): a live update on a git-filled
+                    // store is an *observation write* — it opens a start at
+                    // the instant this writer saw the tree and says so in its
+                    // rows. Refusing it would leave a successful edit
+                    // invisible on the recorded axis (F5).
+                    let observation = crate::storage::ObservationSource {
+                        source: source.unwrap_or(crate::storage::ObservationSource::BARE),
+                        tool,
+                        plan_id,
+                        attempt_id,
+                        lineage,
+                    };
+                    graph.update_file_observed(file_path, content, force, &observation)
+                }
                 None => Err("No graph loaded — run coderadar init first".to_string()),
             }
         })
@@ -1311,6 +1403,11 @@ fn update_file(
     dict.set_item("newly_resolved", refs(&outcome.newly_resolved))?;
     dict.set_item("epoch_before", outcome.epoch_before)?;
     dict.set_item("epoch_after", outcome.epoch_after)?;
+    // P5d (INV-17): the observation this write made — its instant on both
+    // axes and the writer it is attributed to.
+    dict.set_item("observed_at", &outcome.observed_at)?;
+    dict.set_item("source", &outcome.source)?;
+    dict.set_item("lineage", &outcome.lineage)?;
     // §1.9 notice: per-file blob outcome rides the update report (DR-30).
     dict.set_item("blobs_stored", outcome.blobs_stored)?;
     dict.set_item("blobs_skipped_oversize", outcome.blobs_skipped_oversize)?;
@@ -1320,17 +1417,34 @@ fn update_file(
 }
 
 /// Drop a deleted file's entities from the graph and retire them (plan §1.3).
+///
+/// P5d slice B: `lineage` names the branch the deletion was observed on;
+/// absent reads the store's recorded checkout, else `main`.
 #[pyfunction]
-fn remove_file(file_path: &str) -> PyResult<PyObject> {
+#[pyo3(signature = (file_path, lineage=None))]
+fn remove_file(file_path: &str, lineage: Option<&str>) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|graph, _snap| {
+        // P5d: a deletion observed on a git-filled store is an observation
+        // too (the tombstone retires at this writer's instant). Retire rows
+        // carry no `source`: an absence has no content provenance, and
+        // `retired: true` plus the stamp already say what it is.
         let started = std::time::Instant::now();
         // F14: remove by the canonical form or the walk-form entry is
         // never found (forward-slash input vs `\` -joined stored ids).
         let canonical = crate::graph::module_resolution::canonical_file_form(file_path);
         // Step-4 surface: delete-drop reports real epochs (was 0/0).
         let epoch_before = graph.epoch();
-        let mut removed = graph.remove_file(&canonical);
+        // P5d slice B: a bare deletion is an observation on the store's
+        // recorded checkout, exactly like a bare update.
+        let on = lineage.map(str::to_string).unwrap_or_else(|| {
+            graph
+                .store
+                .as_ref()
+                .map(|store| store.observation_lineage(None))
+                .unwrap_or_else(|| "main".to_string())
+        });
+        let mut removed = graph.remove_file_on(&canonical, Some(&on));
         // The in-memory projection may have lost track of concepts written by
         // an interrupted or older indexer. Use the indexed `extra.file_path`
         // metadata to retire any such current rows as part of file deletion.
@@ -1344,7 +1458,11 @@ fn remove_file(file_path: &str) -> PyResult<PyObject> {
                         .filter(|id| !known.contains(id.as_str()))
                         .collect();
                     if !stale.is_empty() {
-                        match store.retire_entities(&stale) {
+                        match store.retire_entities_for_lineage_at(
+                            &stale,
+                            &on,
+                            &crate::storage::now_iso8601(),
+                        ) {
                             Ok(_) => removed.extend(stale),
                             Err(e) => eprintln!(
                                 "[diag] failed to retire stale concepts for {canonical}: {e:?}"
@@ -1362,6 +1480,52 @@ fn remove_file(file_path: &str) -> PyResult<PyObject> {
         dict.set_item("epoch_before", epoch_before)?;
         dict.set_item("epoch_after", graph.epoch())?;
         Ok(dict.into())
+    })
+}
+
+/// Record the branch the working tree is checked out on (P5d slice B), which
+/// is what tells a bare observation write which lineage it belongs to. `None`
+/// or an empty name clears it back to the trunk. Written by `sync_git`, and
+/// by the tests that pin the routing without a checkout.
+#[pyfunction]
+#[pyo3(signature = (store_path, branch=None))]
+fn record_checkout(store_path: &str, branch: Option<&str>) -> PyResult<()> {
+    let store =
+        crate::storage::CodeGraphStore::open(std::path::Path::new(store_path)).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "record_checkout cannot open {store_path:?}: {e:?}"
+            ))
+        })?;
+    store
+        .kv_put_sync(
+            crate::graph::ingest::CHECKOUT_KEY,
+            branch.unwrap_or("").trim(),
+        )
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("cannot record checkout: {e:?}"))
+        })
+}
+
+/// Record the checkout on the **loaded** graph's store (P5d slice B). A
+/// loaded graph already holds the store's single writer connection, so a
+/// second `open` on the same file refuses; this is the surface a caller with
+/// a graph in hand uses (the tests, and the daemon's sync).
+#[pyfunction]
+#[pyo3(signature = (branch=None))]
+fn record_checkout_loaded(branch: Option<&str>) -> PyResult<()> {
+    with_graph(|graph, _snap| {
+        let store = graph.store.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("no store behind the loaded graph")
+        })?;
+        store
+            .kv_put_sync(
+                crate::graph::ingest::CHECKOUT_KEY,
+                branch.unwrap_or("").trim(),
+            )
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("cannot record checkout: {e:?}"))
+            })?;
+        Ok(())
     })
 }
 
@@ -1789,6 +1953,30 @@ fn normalize_timestamp(timestamp: &str) -> PyResult<String> {
     })
 }
 
+/// The git-history arm's refusals (P5b.3a, §3.1.1) surface as `ValueError`:
+/// they are reasons (BeforeHistory, BeforeHorizon, unknown commit, ref
+/// needs P5b.4), never blanks. A lost index is infrastructure
+/// (`RuntimeError`).
+fn arm_err(e: crate::graph::ingest::ReadArmError) -> PyErr {
+    match e {
+        crate::graph::ingest::ReadArmError::Store(detail) => {
+            pyo3::exceptions::PyRuntimeError::new_err(detail)
+        }
+        other => pyo3::exceptions::PyValueError::new_err(other.to_string()),
+    }
+}
+
+/// `branch` routes to its lineage for the commit index (P5b.3a): the
+/// trunk reads `main`, anything else its own lineage — the same routing
+/// `ingest_history` writes under.
+fn read_lineage(branch: &str) -> &str {
+    if branch == "main" {
+        "main"
+    } else {
+        branch
+    }
+}
+
 /// Shared fold for the temporal lookups: one `reconstruct(ts)` + one
 /// throwaway projection, then per-id extraction in live-`lookup_entity`
 /// shape (including the dotted-name fallback). Returns the per-id
@@ -1800,11 +1988,23 @@ fn entities_at(
     entity_ids: &[String],
     timestamp: &str,
     branch: &str,
-) -> PyResult<(Vec<Option<PyObject>>, bool)> {
+    strict: bool,
+    at: Option<&str>,
+    valid: bool,
+) -> PyResult<(
+    Vec<Option<PyObject>>,
+    bool,
+    crate::graph::ingest::ResolvedRead,
+)> {
     use crate::graph::cold_start::projection_from_state;
-    // Normalize first so a garbage ts is deterministically a ValueError
-    // (→ `InvalidRequest`), not whatever the fold would report.
-    let ts = normalize_timestamp(timestamp)?;
+    // `at=` is the address when given (sha, timestamp, or — with P5b.4 —
+    // a ref); the positional is the default the caller passes when `at`
+    // is absent, and only then is it normalized here.
+    let ts = if at.is_none() {
+        normalize_timestamp(timestamp)?
+    } else {
+        timestamp.to_string()
+    };
     // Snapshot the store handle under the read lock, then release BEFORE
     // the DB fold — a slow reconstruct must not block a writer.
     let store = {
@@ -1818,12 +2018,29 @@ fn entities_at(
             )
         })?
     };
+    // P5b.3a: the arm resolves the fold instant (recorded past the
+    // horizon, the commit's completion before it) and names the basis.
+    let resolved = if valid {
+        crate::graph::ingest::resolve_valid_read(branch, &ts, at).map_err(arm_err)?
+    } else {
+        crate::graph::ingest::resolve_temporal_read(&store, read_lineage(branch), &ts, strict, at)
+            .map_err(arm_err)?
+    };
     let state = py
-        .allow_threads(|| store.reconstruct_on(&ts, branch))
+        .allow_threads(|| {
+            if valid {
+                store.reconstruct_valid(&resolved.fold_ts)
+            } else {
+                store.reconstruct_on(&resolved.fold_ts, &resolved.fold_branch)
+            }
+        })
         .map_err(temporal_err)?;
     let predates = state.predates_recorded_history;
     let (projection, _stats) = projection_from_state(&state).map_err(|e| {
-        pyo3::exceptions::PyRuntimeError::new_err(format!("projection at {ts:?} failed: {e}"))
+        pyo3::exceptions::PyRuntimeError::new_err(format!(
+            "projection at {:?} failed: {e}",
+            resolved.fold_ts
+        ))
     })?;
     let entities = entity_ids
         .iter()
@@ -1849,7 +2066,7 @@ fn entities_at(
             }
         })
         .collect();
-    Ok((entities, predates))
+    Ok((entities, predates, resolved))
 }
 
 /// Entity lookup as of a past timestamp — the §0.1(a) honest-`Snapshot`
@@ -1857,18 +2074,30 @@ fn entities_at(
 /// bool}`. A garbage timestamp is a `ValueError`; a missing graph or store
 /// is a `RuntimeError`.
 #[pyfunction]
-#[pyo3(signature = (entity_id, timestamp, branch = "main"))]
+#[pyo3(signature = (entity_id, timestamp, branch = "main", strict = false, at = None, valid = false))]
 fn lookup_entity_at(
     py: Python<'_>,
     entity_id: &str,
     timestamp: &str,
     branch: &str,
+    strict: bool,
+    at: Option<String>,
+    valid: bool,
 ) -> PyResult<PyObject> {
     let ids = vec![entity_id.to_string()];
-    let (mut entities, predates) = entities_at(py, &ids, timestamp, branch)?;
+    let (mut entities, predates, resolved) =
+        entities_at(py, &ids, timestamp, branch, strict, at.as_deref(), valid)?;
     let out = PyDict::new(py);
     out.set_item("entity", entities.pop().flatten())?;
     out.set_item("predates_recorded_history", predates)?;
+    out.set_item("fold_ts", resolved.fold_ts)?;
+    out.set_item("basis", resolved.basis)?;
+    out.set_item("sha", resolved.sha)?;
+    out.set_item("horizon", resolved.horizon)?;
+    out.set_item("dirty_at_commit", resolved.dirty_at_commit)?;
+    out.set_item("address", resolved.address)?;
+    out.set_item("parent_drift", resolved.parent_drift)?;
+    out.set_item("lineage", resolved.fold_branch)?;
     Ok(out.into())
 }
 
@@ -1877,14 +2106,25 @@ fn lookup_entity_at(
 /// `ops.as_of` funnels N symbols through here so a 20-symbol call costs
 /// one reconstruct, not twenty.
 #[pyfunction]
-#[pyo3(signature = (entity_ids, timestamp, branch = "main"))]
+#[pyo3(signature = (entity_ids, timestamp, branch = "main", strict = false, at = None, valid = false))]
 fn lookup_entities_at(
     py: Python<'_>,
     entity_ids: Vec<String>,
     timestamp: &str,
     branch: &str,
+    strict: bool,
+    at: Option<String>,
+    valid: bool,
 ) -> PyResult<PyObject> {
-    let (entities, predates) = entities_at(py, &entity_ids, timestamp, branch)?;
+    let (entities, predates, resolved) = entities_at(
+        py,
+        &entity_ids,
+        timestamp,
+        branch,
+        strict,
+        at.as_deref(),
+        valid,
+    )?;
     let by_id = PyDict::new(py);
     for (id, entity) in entity_ids.iter().zip(entities) {
         by_id.set_item(id, entity)?;
@@ -1892,6 +2132,14 @@ fn lookup_entities_at(
     let out = PyDict::new(py);
     out.set_item("entities", by_id)?;
     out.set_item("predates_recorded_history", predates)?;
+    out.set_item("fold_ts", resolved.fold_ts)?;
+    out.set_item("basis", resolved.basis)?;
+    out.set_item("sha", resolved.sha)?;
+    out.set_item("horizon", resolved.horizon)?;
+    out.set_item("dirty_at_commit", resolved.dirty_at_commit)?;
+    out.set_item("address", resolved.address)?;
+    out.set_item("parent_drift", resolved.parent_drift)?;
+    out.set_item("lineage", resolved.fold_branch)?;
     Ok(out.into())
 }
 
@@ -2009,22 +2257,54 @@ fn source_ref_to_dict(py: Python<'_>, r: &crate::storage::SourceRef) -> PyResult
 /// `RuntimeError`. Takes the id as given: spelling resolution is the
 /// caller's (`Snapshot` resolves via `find` first).
 #[pyfunction]
-#[pyo3(signature = (entity_id, timestamp, branch = "main"))]
+#[pyo3(signature = (entity_id, timestamp, branch = "main", strict = false, at = None, valid = false))]
 fn entity_source_ref_at(
     py: Python<'_>,
     entity_id: &str,
     timestamp: &str,
     branch: &str,
+    strict: bool,
+    at: Option<String>,
+    valid: bool,
 ) -> PyResult<PyObject> {
-    let ts = normalize_timestamp(timestamp)?;
+    let ts = if at.is_none() {
+        normalize_timestamp(timestamp)?
+    } else {
+        timestamp.to_string()
+    };
     let found = with_graph(|graph, _snap| {
         let store = graph.store.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err(
                 "No persistent store — temporal lookup needs a .coderadar store",
             )
         })?;
+        // P5b.3a/P5b.3: the arm resolves the fold instant; the singular
+        // keeps its ref-or-None shape (no basis to surface on one ref).
+        if valid {
+            let resolved = crate::graph::ingest::resolve_valid_read(branch, &ts, at.as_deref())
+                .map_err(arm_err)?;
+            let state = store
+                .reconstruct_valid(&resolved.fold_ts)
+                .map_err(temporal_err)?;
+            let (refs, _predates) = crate::storage::CodeGraphStore::source_refs_from_state(
+                &state,
+                &[entity_id.to_string()],
+                &resolved.fold_ts,
+                "main",
+            )
+            .map_err(temporal_err)?;
+            return Ok(refs.into_iter().next().map(|(_, r)| r));
+        }
+        let resolved = crate::graph::ingest::resolve_temporal_read(
+            store,
+            read_lineage(branch),
+            &ts,
+            strict,
+            at.as_deref(),
+        )
+        .map_err(arm_err)?;
         store
-            .entity_source_ref_at(entity_id, &ts, branch)
+            .entity_source_ref_at(entity_id, &resolved.fold_ts, &resolved.fold_branch)
             .map_err(temporal_err)
     })?;
     match found {
@@ -2041,14 +2321,21 @@ fn entity_source_ref_at(
 /// missing graph or store is a `RuntimeError`. No Python surface: P1's
 /// `verify_history` and P2's `changes_between` are the only callers.
 #[pyfunction]
-#[pyo3(signature = (entity_ids, timestamp, branch = "main"))]
+#[pyo3(signature = (entity_ids, timestamp, branch = "main", strict = false, at = None, valid = false))]
 fn source_refs_at(
     py: Python<'_>,
     entity_ids: Vec<String>,
     timestamp: &str,
     branch: &str,
+    strict: bool,
+    at: Option<String>,
+    valid: bool,
 ) -> PyResult<PyObject> {
-    let ts = normalize_timestamp(timestamp)?;
+    let ts = if at.is_none() {
+        normalize_timestamp(timestamp)?
+    } else {
+        timestamp.to_string()
+    };
     // Same snapshot-then-release discipline as `entities_at`: a slow
     // reconstruct must not hold the graph lock or block a writer.
     let store = {
@@ -2062,8 +2349,23 @@ fn source_refs_at(
             )
         })?
     };
+    // P5b.3a/P5b.3: the arm resolves the fold instant and names the basis.
+    let resolved = if valid {
+        crate::graph::ingest::resolve_valid_read(branch, &ts, at.as_deref()).map_err(arm_err)?
+    } else {
+        crate::graph::ingest::resolve_temporal_read(
+            &store,
+            read_lineage(branch),
+            &ts,
+            strict,
+            at.as_deref(),
+        )
+        .map_err(arm_err)?
+    };
     let (refs, predates) = py
-        .allow_threads(|| store.source_refs_at(&entity_ids, &ts, branch))
+        .allow_threads(|| {
+            store.source_refs_at(&entity_ids, &resolved.fold_ts, &resolved.fold_branch)
+        })
         .map_err(temporal_err)?;
     let by_id = PyDict::new(py);
     for (id, r) in refs {
@@ -2072,6 +2374,14 @@ fn source_refs_at(
     let out = PyDict::new(py);
     out.set_item("refs", by_id)?;
     out.set_item("predates_recorded_history", predates)?;
+    out.set_item("fold_ts", resolved.fold_ts)?;
+    out.set_item("basis", resolved.basis)?;
+    out.set_item("sha", resolved.sha)?;
+    out.set_item("horizon", resolved.horizon)?;
+    out.set_item("dirty_at_commit", resolved.dirty_at_commit)?;
+    out.set_item("address", resolved.address)?;
+    out.set_item("parent_drift", resolved.parent_drift)?;
+    out.set_item("lineage", resolved.fold_branch)?;
     Ok(out.into())
 }
 
@@ -2148,6 +2458,24 @@ fn all_concept_ids(py: Python<'_>, branch: &str) -> PyResult<Vec<String>> {
                 "all_concept_ids({branch:?}) failed: {e:?}"
             ))
         })
+    })
+}
+
+/// Short names of every local branch in a repository, sorted (P5a.5, DR-41):
+/// the migration's default branch set. A read, not a write — no store is
+/// touched, so there is no mode to refuse on. Unknown repositories refuse
+/// as `ValueError`; a corrupt ref mid-walk is a `RuntimeError`.
+#[pyfunction]
+#[pyo3(signature = (repo,))]
+fn list_branches(repo: &str) -> PyResult<Vec<String>> {
+    crate::fs::git::list_branches(repo).map_err(|e| {
+        use crate::fs::git::GitError;
+        match &e {
+            GitError::Open(_) => {
+                pyo3::exceptions::PyValueError::new_err(format!("list_branches: {e:?}"))
+            }
+            _ => pyo3::exceptions::PyRuntimeError::new_err(format!("list_branches: {e:?}")),
+        }
     })
 }
 
@@ -2249,6 +2577,628 @@ fn canonical_id(entity_id: &str) -> String {
     canonical_lookup_id(entity_id)
 }
 
+/// Ingest one git branch's first-parent history (P5a.3/P5a.4, DR-41): the
+/// trunk lineage for `branch = "main"` (no lineage), a forked branch
+/// lineage otherwise — per commit, blob puts, one stamped flush, and a
+/// lineage-scoped sweep, then the `kv` cursor advance. `from` is an
+/// exclusive window start (a sha; `None` resumes from the cursor, starts
+/// at the root on the trunk, or starts at the fork on a branch); `dry_run`
+/// plans without writing anything. `parent_ref` (default `"main"`) is
+/// the trunk ref the fork point is computed against. Returns the report
+/// as JSON.
+///
+/// No MCP tool in the first release: a long, writing, migration-grade op
+/// an agent must not call without knowing that (the H-13 shape).
+/// Refusals (bad branch/revision, out-of-order, legacy store) are
+/// `ValueError`; infrastructure failures are `RuntimeError`.
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (store_path, repo, branch = "main", from = None, dry_run = false, lineage = None, parent_ref = "main"))]
+fn ingest_history(
+    py: Python<'_>,
+    store_path: &str,
+    repo: &str,
+    branch: &str,
+    from: Option<&str>,
+    dry_run: bool,
+    lineage: Option<&str>,
+    parent_ref: &str,
+) -> PyResult<String> {
+    use crate::graph::ingest::IngestError;
+    // P5a.4 (DR-41): the lineage routes. No lineage (or the trunk's
+    // name) on the main branch is the trunk ingest; anything else forks
+    // or resumes a branch lineage (`lineage` defaults to the git branch
+    // name, so a bare non-main branch ingests onto its own lineage).
+    let effective = lineage
+        .map(str::to_string)
+        .unwrap_or_else(|| branch.to_string());
+    let report = py
+        .allow_threads(|| {
+            if effective == "main" {
+                if branch != "main" {
+                    return Err(IngestError::TrunkBranchMismatch {
+                        branch: branch.to_string(),
+                    });
+                }
+                crate::graph::ingest::ingest_history(store_path, repo, branch, from, dry_run)
+            } else {
+                // P5b.6/D-5: a branch that moved gets a new generation;
+                // an explicit `lineage` keeps the typed refusal instead.
+                crate::graph::ingest::ingest_branch_evolving(
+                    store_path, repo, branch, lineage, parent_ref, from, dry_run,
+                )
+            }
+        })
+        .map_err(|e| {
+            let msg = e.to_string();
+            let user_error = match &e {
+                IngestError::Git(ge) => matches!(
+                    ge,
+                    crate::fs::git::GitError::UnknownBranch(_)
+                        | crate::fs::git::GitError::UnknownRevision(_)
+                        | crate::fs::git::GitError::NotAncestor(_)
+                        | crate::fs::git::GitError::NoCommonHistory { .. }
+                        | crate::fs::git::GitError::PathNotFound { .. }
+                ),
+                IngestError::UnknownHighWater { .. }
+                | IngestError::OutOfOrder { .. }
+                | IngestError::NotDescendant { .. }
+                | IngestError::IndexNowRefused { .. }
+                | IngestError::TrunkBranchMismatch { .. }
+                | IngestError::ForkMismatch { .. }
+                | IngestError::LineageExists { .. }
+                | IngestError::InvalidLineage { .. }
+                | IngestError::TrunkRewritten { .. }
+                | IngestError::BranchNowMerged { .. } => true,
+                IngestError::Store(_) => false,
+            };
+            if user_error {
+                pyo3::exceptions::PyValueError::new_err(msg)
+            } else {
+                pyo3::exceptions::PyRuntimeError::new_err(msg)
+            }
+        })?;
+    serde_json::to_string(&report)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Every branch name the repository offers, with the one fact selection
+/// needs (P5b.6, D-6 c): `{name, tip, merged}`, local and remote-tracking,
+/// sorted. `merged` means the tip already lies on the trunk's first-parent
+/// chain, so the name is an address, not a lineage. Internal: the
+/// migration's selection, and the fixture tests that pin it. A repo that
+/// will not open or a missing trunk ref is a `ValueError`.
+#[pyfunction]
+#[pyo3(signature = (repo, parent_ref = "main"))]
+fn branch_plan(py: Python<'_>, repo: &str, parent_ref: &str) -> PyResult<PyObject> {
+    let entries = crate::fs::git::branch_plan(repo, parent_ref).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("branch plan failed: {e:?}"))
+    })?;
+    let out = PyList::empty(py);
+    for entry in entries {
+        let d = PyDict::new(py);
+        d.set_item("name", entry.name)?;
+        d.set_item("tip", entry.tip)?;
+        d.set_item("merged", entry.merged)?;
+        out.append(d)?;
+    }
+    Ok(out.into())
+}
+
+/// HEAD's branch and commit (P5d slice B): `{branch, sha, detached}`.
+/// `branch` is `None` on a detached HEAD or an unborn repository; `sha` is
+/// `None` only when nothing is committed. Read-only; no checkout.
+#[pyfunction]
+fn git_head(py: Python<'_>, repo: &str) -> PyResult<PyObject> {
+    let head = crate::fs::git::head_info(repo)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("git head failed: {e:?}")))?;
+    let detached = head.branch.is_none() && head.sha.is_some();
+    let d = PyDict::new(py);
+    d.set_item("branch", head.branch)?;
+    d.set_item("sha", head.sha)?;
+    d.set_item("detached", detached)?;
+    Ok(d.into())
+}
+
+/// The indexable paths where the working tree differs from `sha`'s tree
+/// (P5d slice B): `[{path, in_tree, in_workdir}]`. The checkout sweep calls
+/// it twice — against the new head (what the tree carries) and the old one
+/// (what was dirty when the old lineage was left).
+#[pyfunction]
+fn git_workdir_changes(py: Python<'_>, repo: &str, sha: &str) -> PyResult<PyObject> {
+    let changes = crate::fs::git::workdir_changes(repo, sha).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!("git workdir changes failed: {e:?}"))
+    })?;
+    let out = PyList::empty(py);
+    for change in changes {
+        let d = PyDict::new(py);
+        d.set_item("path", change.path)?;
+        d.set_item("in_tree", change.in_tree)?;
+        d.set_item("in_workdir", change.in_workdir)?;
+        out.append(d)?;
+    }
+    Ok(out.into())
+}
+
+/// `path`'s text as committed in `sha` (P5d slice B): the committed side of
+/// a checkout reset. Non-UTF-8 bytes are a `ValueError` — every path the
+/// sweep asks about is indexable source, so a binary answer means the caller
+/// asked about something else.
+#[pyfunction]
+fn git_blob_text(repo: &str, sha: &str, path: &str) -> PyResult<String> {
+    let bytes = crate::fs::git::blob_bytes(repo, sha, std::path::Path::new(path))
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("git blob failed: {e:?}")))?;
+    String::from_utf8(bytes).map_err(|_| {
+        pyo3::exceptions::PyValueError::new_err(format!("{path} at {sha} is not UTF-8"))
+    })
+}
+
+/// The sync marks a store carries (P5d slice B): `{checkout, head, dirty}`.
+/// `dirty` is the JSON object recorded by the last sync (`{path: sha256}`),
+/// which is how the sweep knows which files the left lineage was holding.
+#[pyfunction]
+fn git_marks(py: Python<'_>, store_path: &str) -> PyResult<PyObject> {
+    let store =
+        crate::storage::CodeGraphStore::open(std::path::Path::new(store_path)).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "git_marks cannot open {store_path:?}: {e:?} — ingest_history builds stores"
+            ))
+        })?;
+    let marks = store.git_marks().map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("cannot read sync marks: {e:?}"))
+    })?;
+    let d = PyDict::new(py);
+    d.set_item("checkout", marks.0)?;
+    d.set_item("head", marks.1)?;
+    d.set_item("dirty", marks.2)?;
+    Ok(d.into())
+}
+
+/// Write the sync marks (P5d slice B): the checked-out branch (`None`
+/// clears), the head commit, and the dirty set as JSON.
+#[pyfunction]
+#[pyo3(signature = (store_path, checkout, head, dirty))]
+fn record_git_marks(
+    store_path: &str,
+    checkout: Option<&str>,
+    head: Option<&str>,
+    dirty: &str,
+) -> PyResult<()> {
+    let store =
+        crate::storage::CodeGraphStore::open(std::path::Path::new(store_path)).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "record_git_marks cannot open {store_path:?}: {e:?}"
+            ))
+        })?;
+    store.record_git_marks(checkout, head, dirty).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("cannot write sync marks: {e:?}"))
+    })
+}
+
+/// Record branch names that are only addresses (P5b.6, D-6 c): `(name,
+/// tip)` pairs whose tip a lineage already holds. Writes
+/// `coderadar.branch.tip.{name}`, which is what a read resolves through —
+/// one lookup, no git at read time. Returns the number written. A pair
+/// whose tip no lineage holds is skipped: the name would resolve nowhere,
+/// and guessing is worse than a refusal.
+#[pyfunction]
+fn record_branch_addresses(store_path: &str, entries: Vec<(String, String)>) -> PyResult<usize> {
+    let store =
+        crate::storage::CodeGraphStore::open(std::path::Path::new(store_path)).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "cannot open store {store_path:?}: {e:?}"
+            ))
+        })?;
+    let mut written = 0usize;
+    for (name, tip) in entries {
+        match store.kv_get_sync(&crate::graph::ingest::commit_lineage_key(&tip)) {
+            Ok(Some(_)) => {}
+            _ => continue,
+        }
+        store
+            .kv_put_sync(&crate::graph::ingest::branch_tip_key(&name), &tip)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!("cannot write {name:?}: {e:?}"))
+            })?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+/// Rebuild one lineage's horizon + commit index from the ledger (P5b.3a,
+/// §3.1.1–3.1.2): the pre-phase store's repair, also the first import's
+/// inline finish. `branch` routes like `ingest_history` (anything but
+/// `main` is its own lineage). No MCP tool: a writing, migration-grade
+/// op an agent must not call without knowing that. Refusals (store
+/// missing) are `ValueError`; the report is the auditable
+/// `CommitIndexReport` JSON (`lineage`, `horizon`, `commits_indexed`).
+#[pyfunction]
+#[pyo3(signature = (store_path, branch = "main"))]
+fn backfill_commit_index(store_path: &str, branch: &str) -> PyResult<String> {
+    let store = crate::storage::CodeGraphStore::open(store_path).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "backfill_commit_index cannot open {store_path:?}: {e:?} — ingest_history builds stores"
+        ))
+    })?;
+    let lineage = if branch == "main" { "main" } else { branch };
+    // Explicit migration op: rebuild, do not just fill — a pre-phase store
+    // has no keys, and a store whose completions were derived wants the
+    // ledger's newest answer.
+    let report =
+        crate::graph::ingest::backfill_commit_index(&store, lineage, true).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("backfill_commit_index failed: {e}"))
+        })?;
+    serde_json::to_string(&report)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// The K8 heal (Amendment 2 §10 item 4): re-ingest the trunk's merge
+/// commits whose files the original trunk walk skipped hollow, adopting
+/// the entity concepts at the merge commits' own stamps. No MCP tool: a
+/// long, writing, migration-grade op an agent must not call without
+/// knowing that (the H-13 shape — the wrapper docstring carries the same
+/// warning). Refusals (store missing, wrong store mode, non-trunk
+/// branch) are `ValueError`; infrastructure failures are
+/// `RuntimeError`; the report is the same `IngestReport` JSON the walk
+/// returns (adoptions = healed files; `files_failed` carries the
+/// `gone-by-head`, `no-mint` and flush-error audits). The healed set's
+/// shape is scoped: every chain commit walks and a healed file's own
+/// re-asserts land at their commits, but edges between a healed entity
+/// and entities of files outside the heal set are not written (the
+/// own-files projection cannot see the other side) — a healed file's
+/// link to an unchanged trunk file arrives the next time that file's own
+/// ingest re-asserts it.
+#[pyfunction]
+#[pyo3(signature = (store_path, repo, branch = "main", dry_run = false))]
+fn reingest_merged_commits(
+    py: Python<'_>,
+    store_path: &str,
+    repo: &str,
+    branch: &str,
+    dry_run: bool,
+) -> PyResult<String> {
+    use crate::graph::ingest::IngestError;
+    let report = py
+        .allow_threads(|| {
+            crate::graph::ingest::reingest_merged_commits(store_path, repo, branch, dry_run)
+        })
+        .map_err(|e| {
+            let msg = e.to_string();
+            let user_error = match &e {
+                IngestError::Git(ge) => {
+                    matches!(
+                        ge,
+                        crate::fs::git::GitError::UnknownBranch(_)
+                            | crate::fs::git::GitError::UnknownRevision(_)
+                            | crate::fs::git::GitError::NotAncestor(_)
+                            | crate::fs::git::GitError::NoCommonHistory { .. }
+                            | crate::fs::git::GitError::PathNotFound { .. }
+                    )
+                }
+                IngestError::IndexNowRefused { .. } | IngestError::TrunkBranchMismatch { .. } => {
+                    true
+                }
+                IngestError::Store(_) => false,
+                _ => false,
+            };
+            if user_error {
+                pyo3::exceptions::PyValueError::new_err(msg)
+            } else {
+                pyo3::exceptions::PyRuntimeError::new_err(msg)
+            }
+        })?;
+    serde_json::to_string(&report)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Message bodies for commit rows minted before the body field existed
+/// (P6c slice, DR-45): subject-only rows get healed from `git log`, on
+/// each row's own mint lineage, idempotently. Explicit-op only — never
+/// automatic, never lazy on read. Refusals (bad repo, index-now store)
+/// are `ValueError`; infrastructure failures are `RuntimeError`.
+#[pyfunction]
+#[pyo3(signature = (store_path, repo))]
+fn backfill_commit_messages(py: Python<'_>, store_path: &str, repo: &str) -> PyResult<String> {
+    use crate::graph::ingest::BackfillError;
+    let report = py
+        .allow_threads(|| crate::graph::ingest::backfill_commit_messages(store_path, repo))
+        .map_err(|e| {
+            let msg = e.to_string();
+            match &e {
+                BackfillError::Repo(_) | BackfillError::Refused(_) => {
+                    pyo3::exceptions::PyValueError::new_err(msg)
+                }
+                BackfillError::Store(_) => pyo3::exceptions::PyRuntimeError::new_err(msg),
+            }
+        })?;
+    serde_json::to_string(&report)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Mint `annotation:{about}:{n}` with a linted body (P6a, DR-44).
+///
+/// Writes go through the loaded graph's store (`snapshot_store`, the
+/// mutation precedent) and always stamp the clock on the trunk —
+/// present-tense, mode-independent (INV-14's clock rule). Returns the
+/// report as JSON: `{id, about, n, body, open, repaired}`.
+#[pyfunction]
+#[pyo3(signature = (about, body))]
+fn annotate(py: Python<'_>, about: &str, body: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let created = py
+        .allow_threads(|| {
+            crate::annotations::create(&store, crate::annotations::ANNOTATION_KIND, about, body)
+        })
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&created)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Mint `comment:{about}:{n}` with a linted body (P6a, DR-44). Same
+/// write path and report shape as [`annotate`].
+#[pyfunction]
+#[pyo3(signature = (about, body))]
+fn comment(py: Python<'_>, about: &str, body: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let created = py
+        .allow_threads(|| {
+            crate::annotations::create(&store, crate::annotations::COMMENT_KIND, about, body)
+        })
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&created)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Supersede an annotation/comment row with a re-linted body (P6a).
+/// The row's kind picks the gates. Returns `{id, revised, repaired,
+/// open}` — `revised: false` when the body is byte-identical (the
+/// ledger absorbs the no-op, no version minted).
+#[pyfunction]
+#[pyo3(signature = (id, body))]
+fn revise_annotation(py: Python<'_>, id: &str, body: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let revised = py
+        .allow_threads(|| crate::annotations::revise(&store, id, body))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&revised)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Soft-retire an annotation/comment row (P6a, retire-first). Returns
+/// `{id, retired}` — `retired: false` when the row was already retired
+/// (idempotent no-op, not an error).
+#[pyfunction]
+#[pyo3(signature = (id,))]
+fn retire_annotation(py: Python<'_>, id: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let retired = py
+        .allow_threads(|| crate::annotations::retire(&store, id))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&serde_json::json!({ "id": id, "retired": retired }))
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Where an id points after its renames (P5b.7, A-11): `{"id": "...",
+/// "hops": [{"from", "to", "commit", "similarity"}]}`. An id that was
+/// never renamed reads back itself with no hops — a missing link is not
+/// an error, it is the ordinary case.
+#[pyfunction]
+#[pyo3(signature = (id,))]
+fn rename_chain(py: Python<'_>, id: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let (resolved, hops) = py.allow_threads(|| store.rename_chain(id)).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("rename_chain({id:?}) failed: {e:?}"))
+    })?;
+    let hops: Vec<serde_json::Value> = hops
+        .iter()
+        .map(|link| {
+            serde_json::json!({
+                "from": link.old_id,
+                "to": link.new_id,
+                "commit": link.commit,
+                "similarity": link.similarity,
+            })
+        })
+        .collect();
+    serde_json::to_string(&serde_json::json!({ "id": resolved, "hops": hops }))
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Every version of every annotation on `about`, newest-first (P6a).
+/// Dangling targets (retired or never-indexed) read their rows anyway —
+/// annotations outlive their target by design. Returns the version list
+/// as JSON: `[{id, n, body, open, valid_from, valid_to, retired,
+/// current}]`.
+#[pyfunction]
+#[pyo3(signature = (target,))]
+fn annotations_on(py: Python<'_>, target: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let versions = py
+        .allow_threads(|| {
+            crate::annotations::versions_for_chain(
+                &store,
+                crate::annotations::ANNOTATION_KIND,
+                target,
+            )
+        })
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&versions)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Every version of every comment on `about`, newest-first (P6a). Same
+/// shape as [`annotations_on`].
+#[pyfunction]
+#[pyo3(signature = (target,))]
+fn comments_on(py: Python<'_>, target: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let versions = py
+        .allow_threads(|| {
+            crate::annotations::versions_for_chain(&store, crate::annotations::COMMENT_KIND, target)
+        })
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&versions)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Every version of one annotation row, newest-first (P6a). Unknown ids
+/// read `[]` — the `history_of` honesty, not an error.
+#[pyfunction]
+#[pyo3(signature = (id,))]
+fn annotation_history(py: Python<'_>, id: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let versions = py
+        .allow_threads(|| crate::annotations::history(&store, id))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&versions)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Every version of one comment row, newest-first (P6a). Same shape as
+/// [`annotation_history`].
+#[pyfunction]
+#[pyo3(signature = (id,))]
+fn comment_history(py: Python<'_>, id: &str) -> PyResult<String> {
+    let store = snapshot_store()?;
+    let versions = py
+        .allow_threads(|| crate::annotations::history(&store, id))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&versions)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Every unchecked task item under `scope` (P6b): a prefix on each row's
+/// `about` id, or `None`/`""` for the whole store. Annotations only — the
+/// list grammar is what makes an aggregate possible.
+#[pyfunction]
+#[pyo3(signature = (scope=None, store_path=None))]
+fn open_items(py: Python<'_>, scope: Option<&str>, store_path: Option<&str>) -> PyResult<String> {
+    let store = annotation_store(store_path)?;
+    let items = py
+        .allow_threads(|| crate::annotations::open_items(&store, scope))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&items)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// The live notes anchored to any of `abouts` (P6b's "why" join).
+///
+/// A storeless graph answers `[]` honestly: there is no ledger to hold
+/// notes, and the search it accompanies already worked memory-only.
+#[pyfunction]
+fn notes_for(py: Python<'_>, abouts: Vec<String>) -> PyResult<String> {
+    let store = match snapshot_store() {
+        Ok(store) => store,
+        Err(_) => return Ok("[]".to_string()),
+    };
+    let notes = py
+        .allow_threads(|| crate::annotations::notes_for(&store, &abouts))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&notes)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Whether a graph is loaded in this process. P8's rebuild precondition:
+/// it moves the store file, and a loaded graph would keep reading the
+/// moved copy (on Windows the move is refused outright; on POSIX it
+/// would succeed and silently diverge).
+#[pyfunction]
+fn graph_is_loaded() -> bool {
+    GLOBAL_GRAPH.read().is_some()
+}
+
+/// Drop this process's engine for a store path (P8's rebuild, before the
+/// move).
+///
+/// The engine cannot be shut down mid-process — a close leaves later reads
+/// in the process losing the rows the close folded into its snapshot (see
+/// `storage::StoreInner`). What this does is narrower and sufficient for a
+/// rebuild: the path's registry entry goes, so the opens that follow the
+/// move mint an engine for the *new* file instead of joining the one whose
+/// descriptor still points at the moved backup.
+///
+/// `store_path=None` means the loaded graph's store, which a rebuild cannot
+/// have (it refuses a loaded graph first) — a `None` here is a no-op.
+#[pyfunction]
+#[pyo3(signature = (store_path=None))]
+fn forget_store(store_path: Option<&str>) {
+    if let Some(path) = store_path {
+        crate::storage::forget_store(path);
+    }
+}
+
+/// Whether this process holds an engine for `store_path` (rebuild's
+/// diagnostic; the op's own guard is `graph_is_loaded`).
+#[pyfunction]
+fn holds_store(store_path: &str) -> bool {
+    crate::storage::holds_store(store_path)
+}
+
+/// Every annotation and comment row, with its whole version chain, as one
+/// JSON document (P8, A-9/INV-18).
+///
+/// `store_path=None` exports from the loaded graph's store; a path opens
+/// that store instead (the rebuild path, which runs with no graph loaded).
+/// The document is the store's own data — everything else is derived from
+/// git, so this plus the repository is the whole rebuild input.
+#[pyfunction]
+#[pyo3(signature = (store_path=None))]
+fn export_annotations(py: Python<'_>, store_path: Option<&str>) -> PyResult<String> {
+    let store = annotation_store(store_path)?;
+    let file = py
+        .allow_threads(|| crate::annotations::export_all(&store))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string_pretty(&file)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Import a document `export_annotations` wrote (P8, A-9/INV-18).
+///
+/// `on_conflict` is `"error"` (an id that already exists refuses) or
+/// `"skip"` (existing ids are reported and left alone). Returns
+/// `{rows, versions, imported, skipped, verified}`.
+#[pyfunction]
+#[pyo3(signature = (payload, store_path=None, on_conflict="error"))]
+fn import_annotations(
+    py: Python<'_>,
+    payload: &str,
+    store_path: Option<&str>,
+    on_conflict: &str,
+) -> PyResult<String> {
+    let store = annotation_store(store_path)?;
+    let report = py
+        .allow_threads(|| crate::annotations::import_all(&store, payload, on_conflict))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&report)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// The store an annotation op reads: the loaded graph's, or the file at
+/// `store_path` (P8's import writes with no graph loaded).
+fn annotation_store(
+    store_path: Option<&str>,
+) -> PyResult<std::sync::Arc<crate::storage::CodeGraphStore>> {
+    match store_path {
+        None => snapshot_store(),
+        Some(path) => crate::storage::CodeGraphStore::open(path)
+            .map(std::sync::Arc::new)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("open {path:?}: {e}"))),
+    }
+}
+
+/// Map an annotation write/read failure onto the Python error the
+/// surface expects: user errors (bad id, bad target, lint refusal,
+/// wrong kind, retired, a refused export) refuse as `ValueError`; ledger
+/// failures surface as `RuntimeError`.
+fn annotation_ffi_error(e: crate::annotations::AnnError) -> pyo3::PyErr {
+    use crate::annotations::AnnError;
+    let msg = e.to_string();
+    match e {
+        AnnError::Store(_) => pyo3::exceptions::PyRuntimeError::new_err(msg),
+        _ => pyo3::exceptions::PyValueError::new_err(msg),
+    }
+}
+
 /// Every content a file ever had, newest first (P3, DR-38).
 ///
 /// Ledger-direct through `snapshot_store` (no fold, no projection): the
@@ -2270,9 +3220,45 @@ fn history_of(py: Python<'_>, file_path: &str) -> PyResult<PyObject> {
             "history_of({file_path:?}) failed: {e:?}"
         ))
     })?;
+    // P5b.7 (A-11): history continues across a rename. Walk the links
+    // backwards to the oldest name the file had, and append each older
+    // file's chain below the newer one — newest-first overall — marking
+    // the versions reached through a link with the hop that led to them
+    // and the path they belong to. A file that was never renamed keeps
+    // exactly the shape it had.
+    let predecessors = py
+        .allow_threads(|| store.rename_predecessors(&module_id))
+        .map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "history_of({file_path:?}) rename chain failed: {e:?}"
+            ))
+        })?;
+    let mut older: Vec<(
+        crate::storage::RenameLink,
+        Vec<crate::storage::SpineVersion>,
+    )> = Vec::new();
+    for link in predecessors.iter().rev() {
+        let old_path = link
+            .old_id
+            .strip_suffix("::module")
+            .unwrap_or(&link.old_path)
+            .to_string();
+        let chain = py
+            .allow_threads(|| store.history_of(&old_path))
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "history_of({old_path:?}) failed: {e:?}"
+                ))
+            })?;
+        older.push((link.clone(), chain));
+    }
     let out = PyList::empty(py);
-    for v in &chain {
-        let d = PyDict::new(py);
+    let push_version = |py: Python<'_>,
+                        d: &pyo3::Bound<'_, PyDict>,
+                        v: &crate::storage::SpineVersion,
+                        file: &str,
+                        via: Option<&crate::storage::RenameLink>|
+     -> PyResult<()> {
         d.set_item("digest", &v.digest)?;
         d.set_item("valid_from", &v.valid_from)?;
         d.set_item("valid_to", &v.valid_to)?;
@@ -2280,7 +3266,33 @@ fn history_of(py: Python<'_>, file_path: &str) -> PyResult<PyObject> {
         d.set_item("parent_digest", &v.parent_digest)?;
         d.set_item("size_bytes", v.size_bytes)?;
         d.set_item("line_count", v.line_count)?;
+        if let Some(link) = via {
+            d.set_item("file", file)?;
+            let hop = PyDict::new(py);
+            hop.set_item("from", &link.old_id)?;
+            hop.set_item("to", &link.new_id)?;
+            hop.set_item("commit", &link.commit)?;
+            hop.set_item("similarity", link.similarity)?;
+            d.set_item("via_rename", hop)?;
+        }
+        Ok(())
+    };
+    for v in &chain {
+        let d = PyDict::new(py);
+        push_version(py, &d, v, &path, None)?;
         out.append(d)?;
+    }
+    for (link, old_chain) in &older {
+        let old_path = link
+            .old_id
+            .strip_suffix("::module")
+            .unwrap_or(&link.old_path)
+            .to_string();
+        for v in old_chain {
+            let d = PyDict::new(py);
+            push_version(py, &d, v, &old_path, Some(link))?;
+            out.append(d)?;
+        }
     }
     Ok(out.into())
 }
@@ -2339,12 +3351,13 @@ fn entity_hash_span(snap: &ProjectedGraph, entity_id: &str) -> Option<HashSpanHi
 /// must not block a writer. A garbage timestamp is a `ValueError`; a
 /// missing graph or store is a `RuntimeError`.
 #[pyfunction]
-#[pyo3(signature = (entity_ids, timestamp, branch = "main"))]
+#[pyo3(signature = (entity_ids, timestamp, branch = "main", valid = false))]
 fn content_hashes_at(
     py: Python<'_>,
     entity_ids: Vec<String>,
     timestamp: &str,
     branch: &str,
+    valid: bool,
 ) -> PyResult<PyObject> {
     use crate::graph::cold_start::projection_from_state;
     let ts = normalize_timestamp(timestamp)?;
@@ -2359,8 +3372,23 @@ fn content_hashes_at(
             )
         })?
     };
+    // P5b.3: the valid axis folds its own state (trunk-only, refused by
+    // name for a branch before the fold).
+    if valid && branch != "main" {
+        return Err(arm_err(
+            crate::graph::ingest::ReadArmError::ValidBranchNeedsU2 {
+                branch: branch.to_string(),
+            },
+        ));
+    }
     let state = py
-        .allow_threads(|| store.reconstruct_on(&ts, branch))
+        .allow_threads(|| {
+            if valid {
+                store.reconstruct_valid(&ts)
+            } else {
+                store.reconstruct_on(&ts, branch)
+            }
+        })
         .map_err(temporal_err)?;
     let predates = state.predates_recorded_history;
     let (projection, _stats) = projection_from_state(&state).map_err(|e| {
@@ -4102,7 +5130,10 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             })?;
             if !legacy.is_empty() {
                 return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "store {db} predates the 0.10 canonical id format: {} live id(s)                      are spelled with a dot prefix or native separators (e.g. {:?}).                      Re-analyze to migrate it — `coderadar analyze` (cold start does                      this automatically), or `coderadar store-repair` to inspect it.",
+                    "store {db} predates the 0.10 canonical id format: {} live id(s) \
+                     are spelled with a dot prefix or native separators (e.g. {:?}). \
+                     Re-analyze to migrate it — `coderadar analyze` (cold start does \
+                     this automatically), or `coderadar store-repair` to inspect it.",
                     legacy.len(),
                     legacy.first().cloned().unwrap_or_default(),
                 )));
@@ -4130,11 +5161,8 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             // pyproject takes effect on the next cold start without a
             // re-analyze. `root` absent ⇒ empty maps (old behaviour).
             if let Some(r) = root {
-                projection.path_maps = crate::graph::path_maps::PathMaps::discover(
-                    r,
-                    &config.project,
-                    &[],
-                );
+                projection.path_maps =
+                    crate::graph::path_maps::PathMaps::discover(r, &config.project, &[]);
             }
             graph.resolve_imports(&mut projection);
             graph.populate_class_methods(&mut projection);

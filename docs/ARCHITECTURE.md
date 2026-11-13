@@ -1,7 +1,7 @@
 # CodeRadar Architecture
 
-> **Living document.** Baseline: v0.14.0 (`dev`), `macrame-db` 0.19.1,
-> store schema v22. Update with feature commits the way `CHANGELOG.md` is
+> **Living document.** Baseline: v0.15.0 (`dev`), `macrame-db` 0.22.0,
+> store schema v29. Update with feature commits the way `CHANGELOG.md` is
 > updated — a section that describes behavior the code no longer has is a bug.
 > Design *history* (why things are the way they are) lives in the
 > [decision register](#16-decision-index) and the OKFgraph knowledge base
@@ -101,7 +101,7 @@ CodeRadar/
     __init__.py                 # CodeGraph facade, Snapshot, errors
     ops.py                      # OPERATIONS: validated shared op layer
     cli.py                      # click CLI (graph ops + local-only cmds)
-    mcp/server.py               # 29 tools, thin over ops
+    mcp/server.py               # 34 tools, thin over ops
     coldstart.py                # ledger load + changed-files refresh
     config.py                   # .coderadar.toml (pydantic, §12)
     resolvers/ framework.py     # L2–L4 cascade + framework routes (DR-10)
@@ -184,7 +184,7 @@ side never touches ledger handles.
   cwd-rooted serving state.
 - **`agent/graphrag.py`, `lsp/pool.py`** — kept as named seams with wiring
   triggers in their headers (DR-16); neither is on any hot path.
-- **`mcp/server.py`** — 29 tools, thin over `ops`, plus server instructions
+- **`mcp/server.py`** — 34 tools, thin over `ops`, plus server instructions
   (language count, staleness guidance — README-tested).
 - **`cli.py`** — graph ops plus local-only commands (`init`, `visualize`,
   `shell`, `git`, `exclude`, `watch`, `load-snapshot`, `store-repair`,
@@ -268,6 +268,17 @@ One store directory, four artifacts:
   indexed_config.json     # honored excludes (DR-31 staleness tripwire)
 ```
 
+- **One engine per store path, per process.** Every `CodeGraphStore::open`
+  of a path already open in this process joins the live handle instead of
+  opening a second `Database`. Two reasons, both measured: libSQL refuses a
+  second open on a live path on POSIX (`SqliteFailure(5, "database is
+  locked")`, silent on Windows), and an engine shutdown is a process-final
+  act — closing one of two engines leaves the other answering current reads
+  but losing the rows the close folded into its snapshot (and the same for a
+  later-open store, even on another path). So the registry hands out shared
+  handles and nothing closes a store mid-process; the engine's write actor
+  keeps the file open until the process ends, which is why `ops.rebuild`
+  moves the file before opening anything and refuses a loaded graph.
 - **The ledger is bitemporal.** `valid_from/valid_to` = world time,
   `recorded_at` = learned time. Code history means **recorded time**:
   `reconstruct(T)` folds facts with `recorded_at <= T` (`bfs_over_state`).
@@ -297,9 +308,12 @@ One store directory, four artifacts:
   (DR-34).
 - **Vectors (Phase 1 → persisted dev_0.13).** Keyed dedup, dim gates, exact-count enumeration,
   zero storage over the FTS table. Per-model tables + rehydrate + hybrid landed (DR-11).
-- **Macrame 0.19.1.** `hydrate_historical` + `AttributeMode::{Current,
-  AtTime, Omit}` repaired the historical loader (upstream #3); production
-  stays on the state fold by decision. `load_subgraph_with(traversal, ts,
+- **Macrame 0.22.0 (baseline since v0.15.0; 0.19.1's repairs included).**
+  `hydrate_historical` + `AttributeMode::{Current, AtTime, Omit}` repaired
+  the historical loader (upstream #3); production stays on the state fold by
+  decision. The 0.22.0 uptakes: the `concept_versions` overlay plus
+  post-merge adoption (D-315), one-start supersession (D-303), and
+  retire-is-an-act (D-312), all recorded in the M6-g and D-316 entries. `load_subgraph_with(traversal, ts,
   byte_budget)` unchanged; unstated `attribute_mode` with instants is a
   hard error. `libsql` co-pinned at 0.9.30, one copy in `cargo tree`.
 
@@ -422,9 +436,15 @@ with documented pending consumers.
 - **Version policy (DR-26, process-open):** `pyproject.toml` + workspace
   `Cargo.toml` together, +0.0.1 per implemented feature, one bump commit
   named in the feature's DR row. Spec/test/verification-only and dep
-  patches: no bump. Minor cut accumulates (0.14.0).
+  patches: no bump. Minor cut accumulates (0.15.0).
 - **Register currency is a release-gate input:** DR rows update the same
   session as the code.
+- **Platforms:** the Python suite runs on ubuntu, windows and macOS (macOS
+  ships a wheel, and the store contract is about POSIX locking); the Rust
+  suite runs on ubuntu and windows only, because `cargo test` on macOS
+  cannot link pyo3's `extension-module`. `release.yml` gates on
+  `scripts/check_tag_version.py` before it builds anything: the tag must
+  match `pyproject.toml`, since a PyPI publish cannot be taken back.
 
 ---
 
@@ -466,9 +486,63 @@ ledger — no new schema, no stored diffs, no second fold implementation:
 on. A store indexed before this release has concepts for its history and no
 content behind them: the self-host store measured 0.01% coverage, and 3.19%
 after a full re-analyze, because a re-analyze fixes the present and never
-the past. Filling it needs commit-driven ingestion from git (P5, DR-41,
-deferred by Q-1), which is a semantic change to valid time and not a point
-release.
+the past. Filling it needs commit-driven ingestion from git (P5, DR-41) —
+a semantic change to valid time, adopted on dev (Q-6 yes; the store of
+record is not migrated yet) (P5a: walker, stamped
+writes, `ingest_history`, branch ingestion, `migrate-to-commit-time`;
+P6c slice: message bodies on `commit:{sha}` rows plus the ops-only
+`backfill_commit_messages` healer for pre-body rows, documented in
+QUICKREF, deliberately not a CLI/MCP surface).
+
+P6a (DR-44) puts user metadata on the same ledger: `annotation` +
+`comment` concepts (`{kind}:{about}:{n}`, per-target sequences that never
+reuse retired ids), a parser-based linter at the one write boundary
+(INV-14: repair-or-refuse, list grammar for annotations, commit
+messages pass through neither gate), present-tense trunk-global stamps,
+reads newest-first (`annotations_on` / `comments_on` + per-row
+histories, Q-B decided: versions stored, current reads first), and
+INV-13 exclusion pins (verify verdict, diff universe, and embedding
+counts identical with both kinds present). Writes are ops + CLI;
+reads add four MCP tools.
+
+### 14.2 Commit-time history and branch reads (v0.15, P5a–P5b, P5d)
+
+A store has a **stamping mode**. A commit-time store writes a commit's own
+committer time as `valid_from` (`nudge_valid_from` keeps a same-second tie
+strictly increasing) and refuses index-now writes by name; an index-now
+trunk store refuses the history walk. `ingest_history` walks a lineage and
+writes per commit; `sync_git` does the same from a watcher (ingest → branch
+tips → addresses → sweep → marks), and `watch --git` runs it.
+
+- **Horizon.** Each lineage records the newest completed commit
+  (`coderadar.horizon.{lineage}`) plus per-commit completion instants
+  (`coderadar.commit_done.{lineage}.{sha}`), so a recorded fold at an
+  instant sees exactly that commit's state. `backfill_commit_index`
+  rebuilds both from the ledger for stores written before this phase.
+- **Branches.** `as_of`/`lookup` take an address (`at=`) that names a
+  branch, a `{branch}#{n}` generation (a rewrite bumps the generation;
+  merges and trunk rewrites do not), or a commit. Every answer names the
+  basis it came from — `recorded`, `git-history` (a pre-horizon commit read
+  from git), or `valid` — and a refusal is a reason, never a blank.
+- **Valid axis.** On the trunk, `valid=True` reads the belief axis
+  (`reconstruct_valid`); a branch's valid read is refused until the
+  engine can cut a fork's belief axis (Macrame U-2/D-317) — the read names
+  that, and the recorded axis keeps working.
+- **Observations (P5d).** Rows carry `observed_at`/`source`
+  (`ingest`, `sync`, `watch`); an observation lands on the lineage whose
+  tree it saw, and `test_retention`-style sweeps retire per lineage.
+- **Renames are links (A-11).** `renamed:{old}` / `became:{new}` plus
+  `via_rename` on diffs; nothing is re-keyed, so an old id keeps its own
+  history and its annotations.
+- **Notes (P6b).** `open_items(scope)` aggregates the live task lists of
+  every annotation under a scope (`a.py`, `a.py::C`, `pkg/`), and search
+  hits carry `notes` (annotations + comments, newest first, retired rows
+  withdrawn). Comments never contribute items — only lists aggregate.
+- **Export and rebuild (P8).** `coderadar.annotations.v1` is the store's
+  own data leaving and coming back (`export_annotations` /
+  `import_annotations`, verbatim bodies, validate-before-write, read-back
+  verification); `rebuild-store` is history-from-git plus that import, with
+  the old store kept as `coderadar.db.pre-rebuild-<stamp>`.
 
 ---
 
@@ -504,7 +578,8 @@ release.
 ## 16. Decision index
 
 Full rationale per row lives in the register (`coderadar-decision-register`
-in `okfgraph.db` at the repo root). Statuses at v0.14.0:
+in `okfgraph.db` at the repo root). Statuses at v0.15.0 (2026-11-13), which
+shipped DR-41 and DR-43..DR-45:
 
 | ID | Decision | Status |
 |---|---|---|
@@ -548,8 +623,11 @@ in `okfgraph.db` at the repo root). Statuses at v0.14.0:
 | DR-38 | `content_version` spine: concepts-only, digest-free payloads (P3) | closed (v0.14.0; `f3625c6`) |
 | DR-39 | Duplicate `content.source` beside the blob | withdrawn (2026-10-28) |
 | DR-40 | Branch-aware reads: `reconstruct_on` + pointer concepts (P4) | closed (v0.14.0; `a4ac405`) |
-| DR-41 | Commit-driven ingestion (P5) | deferred (Q-1; revisit now that P0–P4 ship) |
+| DR-41 | Commit-driven ingestion (P5) | closed (0.15.0; P5a–P5d, `8cf8cbc`..`ac03dcb`); a pre-0.15 store migrates with `migrate-to-commit-time`, the owner's run |
 | DR-42 | `open_synthetic_triples` is an inclusion list (H-3) | closed (v0.14.0; `600d689`) |
+| DR-43 | Valid-axis state fold lives upstream in Macrame (F-6/INV-6) | adopted (0.15.0; pin 0.22.0): Macrame 0.20.0 built the fold (D-291..D-294), 0.21.0 the backfill fix (D-303); P5b.2 took both after P5b.1 (`temporal-p5b-and-beyond.md`) |
+| DR-44 | `annotation` + `comment` concepts with write-boundary lint (P6a) | implemented (0.15.0; `b4eeb2c`, edge annotation rejected `21e6082`) |
+| DR-45 | Commit message bodies + ops-only `backfill_commit_messages` (P6c slice) | implemented (0.15.0; `fa4104e`) |
 
 ---
 

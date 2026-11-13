@@ -17,6 +17,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # Ubuntu + Windows only: `cargo test` on macOS cannot link pyo3's
+      # `extension-module` (`_PyDict_GetItemWithError` undefined), and the
+      # coverage that matters there is the Python leg, which builds a real
+      # wheel. See the comment on `test-python`.
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
@@ -44,8 +48,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      # macOS is here because `release.yml` ships a macOS wheel and the
+      # store's one-engine-per-path contract exists for a POSIX-only
+      # behaviour (`database is locked`): the untested POSIX platform is the
+      # one that could break a shipped wheel the way ubuntu did. This leg
+      # builds the extension and runs the suite through it, which is more than
+      # the Rust leg could do there.
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 

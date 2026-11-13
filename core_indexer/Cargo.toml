@@ -27,10 +27,11 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 git2 = { version = "0.21" }
 zstd = "0.13"
 # slotmap and arc-swap removed in v3.5 — replaced by HashMap<String, Arc<T>> + RwLock
-macrame-db = "0.19.1"
+macrame-db = "0.22.0"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 pest = "2.7"
 pest_derive = "2.7"
+pulldown-cmark = "0.13"
 parking_lot = "0.12"
 # arc-swap removed in v3.5 — replaced by RwLock<Arc<ProjectedGraph>>
 streaming-iterator = "0.1"
@@ -46,7 +47,7 @@ regex = "1"
 # Must track macrame-db's own libsql: `diagnostic_conn()` hands back one of
 # *its* Connections, and two semver-incompatible libsql versions in the tree
 # make that value untouchable from here.
-libsql = "0.9"
+libsql = "0.10.0"
 smol_str = "0.2"
 ulid = "1.1"
 postcard = "1.0"

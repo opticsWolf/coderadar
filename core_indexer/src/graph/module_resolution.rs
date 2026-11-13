@@ -142,8 +142,9 @@ pub(crate) fn canonical_file_form(path: &str) -> String {
 }
 
 /// Inner funnel with the root injectable (unit tests must not touch the
-/// process-global `INDEXED_ROOT`; parallel tests share it).
-fn canonical_file_form_with_root(path: &str, root: &std::path::Path) -> String {
+/// process-global `INDEXED_ROOT`; parallel tests share it — and the P5
+/// ingest path must not clobber the live server's root either).
+pub(crate) fn canonical_file_form_with_root(path: &str, root: &std::path::Path) -> String {
     // Cross-platform (§5.1): `\` is a separator on every OS, not just
     // Windows. The old `Path`-based cleaner treated `a\b` as one filename
     // on Linux, so Windows spellings never converged there.

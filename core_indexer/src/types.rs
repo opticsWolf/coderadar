@@ -1211,6 +1211,16 @@ pub struct UpdateOutcome {
     /// Targets that were unresolved/external before the update and no longer
     /// are (their function may also have been removed).
     pub newly_resolved: Vec<(EntityId, String)>,
+    /// The instant this update recorded (P5d's observation write): every row
+    /// of the flush carries it as `valid_from` on both axes.
+    pub observed_at: String,
+    /// Where the rows came from: `"mutation"`, `"watcher"`, `"analyze"`, or
+    /// `"update"` for a bare single-file write. Commit rows carry no source —
+    /// their provenance is the commit concept itself.
+    pub source: String,
+    /// The lineage the observation was written to (P5d slice B): `main`
+    /// unless a commit-time store recorded a branch checkout.
+    pub lineage: String,
     /// `CodeGraph::epoch()` immediately before and after the commit.
     pub epoch_before: u64,
     pub epoch_after: u64,

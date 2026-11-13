@@ -27,7 +27,7 @@
     "coderadar/query/cache.py::QueryCache.prune_expired"
   ],
   "budget": {
-    "high_medium_findings": 2,
-    "findings": 121
+    "high_medium_findings": 0,
+    "findings": 18
   }
 }

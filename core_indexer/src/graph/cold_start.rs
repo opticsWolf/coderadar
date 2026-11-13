@@ -128,6 +128,7 @@ pub fn projection_from_state(
         match classify_v2_concept(&attrs.content) {
             V2ConceptClass::StandaloneField => stats.skipped_field_concepts += 1,
             V2ConceptClass::Spine => stats.skipped_spine_concepts += 1,
+            V2ConceptClass::Note => {}
             V2ConceptClass::V1Leftover => v1_leftovers += 1,
             V2ConceptClass::Unreadable => unreadable += 1,
             V2ConceptClass::Canonical(_) => match parse_v2_concept(id, &attrs.content)? {

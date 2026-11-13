@@ -82,8 +82,33 @@ def search(query: str, kind: str | None, results: list[dict], *,
         sig = entity.get("signature")
         if sig:
             lines.append(f"- **Signature:** `{sig}`")
+        notes = entity.get("notes") or []
+        if notes:
+            lines.extend(_why_lines(notes))
         lines.append("")
     return "\n".join(lines)
+
+
+def _why_lines(notes: list[dict], indent: str = "") -> list[str]:
+    """One line per note: id, kind, open count and the body's first line.
+
+    The body's head is the legible part; the full text is in the JSON.
+    Annotations say how many items are still open — the fact that makes a
+    note actionable — and an all-checked list shows `0 open`, never
+    nothing.
+    """
+    out = []
+    for note in notes:
+        body = (note.get("body") or "").strip().splitlines()
+        head = body[0] if body else "(empty)"
+        if len(head) > 140:
+            head = head[:140] + "..."
+        mark = ""
+        if note.get("kind") == "annotation":
+            mark = f" ({note.get('open', 0)} open)"
+        out.append(
+            f"{indent}- **Why:** `{note.get('id', '?')}`{mark} — {head}")
+    return out
 
 
 def _caller_rows(results: list[dict]) -> list[str]:
@@ -728,6 +753,9 @@ def search_similar(query: str, results: list[dict]) -> str:
         doc = r.get("docstring")
         if doc:
             lines.append(f"   {doc[:120]}{'...' if len(doc) > 120 else ''}")
+        notes = r.get("notes") or []
+        if notes:
+            lines.extend(_why_lines(notes, indent="   "))
         lines.append("")
     return "\n".join(lines)
 
@@ -745,6 +773,9 @@ def search_hybrid(query: str, results: list[dict]) -> str:
         lines.append(f"{i}. `{r.get('name', r.get('id', '?'))}` ({r.get('kind', '?')}) — "
                      f"RRF {r.get('score', 0.0):.4f} ({', '.join(arms) or 'no arm'})")
         lines.append(f"   File: `{r.get('file_path', '?')}`")
+        notes = r.get("notes") or []
+        if notes:
+            lines.extend(_why_lines(notes, indent="   "))
         lines.append("")
     return "\n".join(lines)
 
@@ -806,6 +837,38 @@ def as_of(result: dict, *,
             ),
         ])
     lines = [f"## Snapshot at `{timestamp}`", ""]
+    # P5b.3a (§3.1.1): a caller must be able to tell an observation from a
+    # reconstruction, so the CLI names the arm the read took.
+    basis = result.get("basis")
+    if basis == "git-history":
+        commit = (result.get("commit") or "")[:12]
+        lines += [
+            (
+                f"*From git history:* commit `{commit}`, the last one at or "
+                f"before this instant — it predates the store's horizon "
+                f"`{result.get('horizon')}`, which is where recorded "
+                f"observation begins."
+            ),
+            "",
+        ]
+    elif basis == "valid":
+        lines += [
+            (
+                "*From the valid axis:* the ledger's own intervals, so this "
+                "is what was true in the repository at this instant - no "
+                "horizon and no commit index are involved."
+            ),
+            "",
+        ]
+    elif basis == "recorded" and result.get("horizon"):
+        lines += [
+            (
+                f"*From the recorded ledger:* this instant is at or after the "
+                f"store's horizon `{result.get('horizon')}`, so the fold "
+                f"answers what was recorded by then."
+            ),
+            "",
+        ]
     for name in result["names"]:
         entity = result["entities"].get(name)
         if entity:
@@ -898,6 +961,246 @@ def history_of(result: dict) -> str:
             f"{v['valid_to'][:28]:28} {parent:10} {v['size_bytes']:>8}{mark}"
         )
     return "\n".join(out)
+
+
+def export_annotations(result: dict) -> str:
+    """Annotation export report as legible text (P8, A-9).
+
+    The document itself is the JSON (or the file); text shows what it
+    carried and where it went.
+    """
+    out = [
+        f"format           {result['format']}",
+        f"rows             {result['rows']}",
+        f"versions         {result['versions']}",
+        f"path             {result.get('path') or '(stdout)'}",
+    ]
+    kinds = result.get("kinds") or {}
+    if kinds:
+        out.append(
+            "kinds            " + "  ".join(f"{k}={v}" for k, v in kinds.items()))
+    return "\n".join(out)
+
+
+def import_annotations(result: dict) -> str:
+    """Annotation import report as legible text (P8, A-9)."""
+    out = [
+        f"rows             {result['rows']}",
+        f"versions         {result['versions']}",
+        f"imported         {result['imported']}",
+        f"verified         {result['verified']}",
+    ]
+    if result.get("store"):
+        out.append(f"store            {result['store']}")
+    skipped = result.get("skipped") or []
+    out.append(f"skipped          {len(skipped)}")
+    for id in skipped:
+        out.append(f"  {id}")
+    return "\n".join(out)
+
+
+def rebuild(result: dict) -> str:
+    """Store rebuild report as legible text (P8, A-9/INV-18).
+
+    The three facts a rebuild must state: where the old store went, what
+    the export carried, and whether every row verified on the way back in.
+    """
+    out = [
+        f"rebuilt          {result['repo']}",
+        f"store            {result['store']}",
+        f"backup           {result.get('backup') or '(no store to keep)'}",
+        (
+            f"commits          ingested={result['commits_ingested']}  "
+            f"skipped={result['commits_skipped']}  "
+            f"failed_files={result['files_failed']}  "
+            f"elapsed={result['elapsed_secs']}s"
+        ),
+        f"branches         {', '.join(result['branches'])}",
+    ]
+    export = result.get("export")
+    if export:
+        out.append(
+            f"export           {export['rows']} row(s) / "
+            f"{export['versions']} version(s) -> {export['path']}")
+    imported = result.get("imported")
+    if imported:
+        out.append(
+            f"imported         {imported['imported']} row(s), "
+            f"verified {imported['verified']}, "
+            f"skipped {len(imported.get('skipped') or [])}")
+    embeddings = result.get("embeddings") or {}
+    if not embeddings.get("embedded"):
+        out.append("embeddings       skipped (run compute-embeddings to restore vectors)")
+    return "\n".join(out)
+
+
+def open_items(result: dict) -> str:
+    """Open task items as a legible list (P6b).
+
+    One row per item: where it sits (`about:line`), what it asks, and the
+    id a revise names. Grouped by `about` so a file's items read together;
+    the count is stated once, up top.
+    """
+    items = result["items"]
+    scope = result.get("scope") or "(whole store)"
+    if not items:
+        return f"No open items under {scope}."
+    lines = [f"## Open items: {scope}", f"{len(items)} item(s)", ""]
+    current = None
+    for item in items:
+        if item["about"] != current:
+            current = item["about"]
+            lines.append(f"### `{current}`")
+        lines.append(
+            f"- line {item['line']}: {item['text']}  "
+            f"(`{item['id']}`)")
+    return "\n".join(lines)
+
+
+def annotation_versions(result: dict) -> str:
+    """Annotation/comment versions as legible text (P6a, DR-44).
+
+    One row per version, newest first: id, open count, interval, and
+    whether the version is the live head or retired. Shared by the four
+    read surfaces (the body itself is in the JSON — text shows the
+    chain, not the prose).
+    """
+    versions = result["versions"]
+    subject = result.get("target", result.get("id", "?"))
+    out = [
+        f"subject          {subject}",
+        f"versions         {result['count']}",
+        "",
+        f"{'id':34} {'open':>4} {'valid_from':28} {'valid_to':28} {'state'}",
+    ]
+    for v in versions:
+        if v["current"]:
+            state = "current"
+        elif v["retired"]:
+            state = "retired"
+        else:
+            state = "superseded"
+        out.append(
+            f"{v['id']:34} {v['open']:>4} {v['valid_from'][:28]:28} "
+            f"{v['valid_to'][:28]:28} {state}"
+        )
+    return "\n".join(out)
+
+
+def annotation_stored(result: dict) -> str:
+    """An annotation/comment write as legible text (P6a, DR-44).
+
+    Shared by annotate/comment (minted) and revise (superseded) / retire
+    (closed): the id, what happened, and whether the linter repaired
+    the input on the way in.
+    """
+    if "repaired" in result and "about" in result:
+        action = "minted"
+    elif result.get("revised"):
+        action = "revised"
+    elif "revised" in result:
+        action = "unchanged"
+    else:
+        action = "retired" if result.get("retired") else "already retired"
+    lines = [f"{action:16} {result['id']}"]
+    if "open" in result:
+        lines.append(f"open             {result['open']}")
+    if result.get("repaired"):
+        lines.append("repaired         input repaired by the linter (stored canonically)")
+    return "\n".join(lines)
+
+
+def ingest_history(result: dict) -> str:
+    """Commit-driven ingest report as legible text (P5a.3, DR-41).
+
+    Counts first, then the two auditable lists: skipped commits with
+    reasons, failed files with reasons. The JSON report is complete;
+    this render shows every skip and failure uncapped (they are the
+    signal, not the noise).
+    """
+    head = [
+        f"branch           {result['branch']}  (lineage {result['lineage']})",
+        f"from             {result['from'] or '(root)'}",
+        f"fork             {result.get('fork_point') or '(trunk)'}",
+        f"head             {result['head'] or '(unchanged)'}",
+        (
+            f"commits          ingested={result['commits_ingested']}  "
+            f"skipped={len(result['commits_skipped'])}  "
+            f"ghosts={result['ghost_commits']}"
+            f"{'  DRY RUN' if result['dry_run'] else ''}"
+        ),
+        (
+            f"files            parsed={result['files_parsed']}  "
+            f"failed={len(result['files_failed'])}  "
+            f"excluded={result['files_excluded']}"
+        ),
+        (
+            f"blobs            stored={result['blobs_stored']}  "
+            f"deduped={result['blobs_deduped']}  "
+            f"stamps_nudged={result['stamps_nudged']}"
+        ),
+        f"elapsed          {result['elapsed_secs']:.1f}s",
+    ]
+    out = head
+    if result["commits_skipped"]:
+        out.append("\nskipped commits:")
+        out += [f"  {s['sha'][:12]}  {s['reason']}" for s in result["commits_skipped"]]
+    if result["files_failed"]:
+        out.append("\nfailed files:")
+        out += [
+            f"  {f['sha'][:12]}  {f['path']}  {f['reason']}"
+            for f in result["files_failed"]
+        ]
+    return "\n".join(out)
+
+
+def migrate_to_commit_time(result: dict) -> str:
+    """Commit-time migration report as legible text (P5a.5, DR-41).
+    One line per branch (ingested/skipped), then the embeddings pass and
+    the per-branch coverage sweep. The per-branch ingest reports stay in
+    the JSON; this render carries their totals.
+    """
+    out = [
+        f"migrated         {result['repo']}",
+        f"store            {result['store']}",
+        f"parent           {result['parent_ref']}",
+        (
+            f"commits          ingested={result['commits_ingested']}  "
+            f"skipped={result['commits_skipped']}  "
+            f"failed_files={result['files_failed']}  "
+            f"elapsed={result['elapsed_secs']}s"
+        ),
+    ]
+    for branch in result["branches"]:
+        report = result["branch_reports"][branch]
+        out.append(
+            f"  {branch}  ingested={report['commits_ingested']}  "
+            f"skipped={len(report['commits_skipped'])}  "
+            f"head={(report['head'] or '(unchanged)')[:12]}"
+        )
+    embeddings = result["embeddings"]
+    if embeddings.get("embedded"):
+        out.append(
+            f"embeddings       generated={embeddings['generated']}  "
+            f"cached={embeddings['cached']}  "
+            f"total={embeddings['total']}  "
+            f"persisted={embeddings['persisted']}"
+        )
+    else:
+        out.append("embeddings       skipped")
+    coverage = result.get("verify")
+    if coverage is None:
+        out.append("verify           skipped")
+    else:
+        for branch, verdict in coverage.items():
+            out.append(
+                f"verify[{branch}]    "
+                f"{verdict['byte_coverage_pct']}% over "
+                f"{verdict['total_generations']} generations"
+            )
+    return "\n".join(out)
+
+
 
 
 def changes_between(result: dict, *, per_class: int = 25) -> str:

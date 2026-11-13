@@ -80,7 +80,7 @@ class TestOneCommandPerName:
         command ran without ever reading `.coderadar.toml`.
         """
         watch = main.commands["watch"]
-        assert {p.name for p in watch.params} == {"paths", "debounce"}
+        assert {p.name for p in watch.params} == {"paths", "debounce", "watch_refs"}
 
     def test_the_removed_commands_are_gone(self):
         # `mutations` reported an "audit trail from MutationLog" for a

@@ -66,18 +66,23 @@ pub mod edge_type {
     /// row carries no `file_path`, and the kind is excluded from the
     /// entity listings beside `content_version`.
     ///
-    /// Why a concept and not an edge: Macrame concepts are
-    /// lineage-frozen — a branch inherits its parent's concepts and
-    /// cannot restate one (D-225; the overlay is deferred as D-214) — so
-    /// divergent bytes cannot live in the module concept. A branch
-    /// therefore mints its OWN pointer concept per path, id
-    /// `branch:{branch}:content:{path}` (stable per lineage+path, so
-    /// every re-point is same-id turnover and the archive reclaims
-    /// superseded bytes exactly like superseded module content). An
-    /// earlier edge-shaped pointer died on retention evidence: link log
-    /// rows are terminal (a closed row is latest-for-its-entity
-    /// forever), so every superseded branch version would pin its blob
-    /// hot forever; concept turnover has no such trap.
+    /// Why a concept and not an edge: when this was built, Macrame
+    /// concepts were lineage-frozen — a branch inherited its parent's
+    /// concepts and could not restate one (D-225; the overlay was
+    /// deferred as D-214) — so divergent bytes could not live in the
+    /// module concept. Since schema v26 the overlay carries a branch's
+    /// own version beside the immutable mint and D-315's adoption arms
+    /// have a lineage assert its own first version — but the pointer
+    /// concept stays, built on the shape the old law forced and kept by
+    /// its own retention evidence: a branch mints its OWN pointer
+    /// concept per path, id `branch:{branch}:content:{path}` (stable per
+    /// lineage+path, so every re-point is same-id turnover and the
+    /// archive reclaims superseded bytes exactly like superseded module
+    /// content). An earlier edge-shaped pointer died on retention
+    /// evidence: link log rows are terminal (a closed row is
+    /// latest-for-its-entity forever), so every superseded branch
+    /// version would pin its blob hot forever; concept turnover has no
+    /// such trap.
     ///
     /// The read side is a direct map lookup (no scan): the branch's
     /// pointer wins when present, else the module concept (trunk-frozen
@@ -85,6 +90,10 @@ pub mod edge_type {
     /// mints one. The row names its blob in content AND extra (the live
     /// pin, same as module `extra`); superseded rows release on turnover.
     pub const BRANCH_CONTENT_KIND: &str = "branch_content";
+    /// P5 commit concept (`kind = 'commit'`): one row per ingested commit,
+    /// carrying author/committer metadata in `extra`. Ledger infrastructure
+    /// like the spine — never an entity, never swept, never listed.
+    pub const COMMIT_KIND: &str = "commit";
 }
 
 /// One row of `branches()`: the lineage's name, its parent (`None` for
@@ -127,6 +136,26 @@ pub struct SpineVersion {
     pub line_count: u64,
 }
 
+/// The live row of one concept id as the write decision reads it
+/// (macrame-db 0.22.0 uptake): the title/content/extra a restatement
+/// carries, the interval the row holds (`valid_from` keys D-291's
+/// re-assert; `valid_to` tells an open interval from a settled one —
+/// a settled row's derived state is never rewritten), the retired flag
+/// (D-2a rows whose death belongs to `retire_entities_at`), and the mint
+/// lineage (`branch_id`, empty on trunk rows — provenance, not the write
+/// path: under D-314 the write law routes by the writer's own lineage, so
+/// this ride is information, not a choke point).
+#[derive(Debug, Clone)]
+pub(crate) struct CurrentRow {
+    pub title: String,
+    pub content: String,
+    pub extra: String,
+    pub valid_from: String,
+    pub valid_to: String,
+    pub retired: bool,
+    pub branch_id: String,
+}
+
 /// Build the timeless `{path}@{digest}` spine concept upsert. The id is
 /// content-addressed, so re-indexing unchanged content re-upserts an
 /// identical row the [`CodeGraphStore::filter_unchanged`] gate absorbs;
@@ -157,7 +186,50 @@ fn branch_pointer_id(path: &str, branch: &str) -> String {
 /// The blob address rides content AND extra (the read boundary is
 /// `source_blob_of_extra`, mirrored from modules); `file_path` appears
 /// nowhere (H-1: a sweep matching it would retire live branch views).
-fn branch_pointer_upsert(
+/// One branch-content pointer concept (P4, DR-40): the lineage's view of
+/// one path's bytes. Same-id turnover by construction (the id is stable
+/// per lineage+path), so re-pointing supersedes same-entity and the
+/// archive reclaims exactly like superseded module content.
+///
+/// The deletion twin (P5a.4, DR-41): the same stable id with a `deleted`
+/// marker and NO blob address anywhere — not in content, not in extra
+/// (P3's payload discipline: a bool is not an address, and there is no
+/// blob to pin). The read side (`source_ref_from_state`) checks the
+/// marker before the digest, so a tombstone reads as absent — never as
+/// trunk fallback, never as empty bytes. Un-deleting is the same id
+/// turned over to content again; the archive reclaims the tombstone row
+/// exactly like any other superseded version.
+pub(crate) fn branch_tombstone_upsert(
+    path: &str,
+    branch: &str,
+    now: &str,
+) -> macrame::Result<ConceptUpsert> {
+    let branch_id = macrame::BranchId::new(branch)?;
+    let content = serde_json::json!({
+        "meta_version": V2_META_VERSION,
+        "kind": edge_type::BRANCH_CONTENT_KIND,
+        "branch": branch,
+        "deleted": true,
+    });
+    let extra = serde_json::json!({
+        "coderadar": {
+            "format": 1,
+            "kind": edge_type::BRANCH_CONTENT_KIND,
+            "deleted": true,
+        },
+    });
+    Ok(
+        ConceptUpsert::new(branch_pointer_id(path, branch), path.to_string())
+            .content(content.to_string())
+            .extra(extra.to_string())
+            .valid_from(now.to_string())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(branch_id),
+    )
+}
+
+pub(crate) fn branch_pointer_upsert(
     path: &str,
     sha: &str,
     branch: &str,
@@ -225,7 +297,24 @@ fn spine_concept_upsert(
 static DIAGNOSTIC_OPEN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Key lifespan timestamp — the Macrame open sentinel for "still true".
-pub const TS_OPEN: &str = "9999-12-31T00:00:00.000000Z";
+/// The open-end sentinel. macrame-db 0.22.0's own write law (D-312's
+/// `supersede` close, the single-open trigger, the D-291 scans) keys its
+/// open-row checks on `timestamp::OPEN_SENTINEL`, so the open rows the
+/// store writes carry macrame's spelling. Legacy stores written by
+/// pre-0.22 CodeRadar hold the old midday spelling on open rows;
+/// [`is_open_end`] reads both, and the D-2a retire and the sweep close
+/// such a row to a real stamp on first touch.
+pub const TS_OPEN: &str = macrame::util::timestamp::OPEN_SENTINEL;
+
+/// The pre-0.22 spelling of the open end: an ordinary far-future instant
+/// that macrame's write law does not read as "open". Kept for the read
+/// paths that must admit legacy rows.
+pub const TS_OPEN_LEGACY: &str = "9999-12-31T00:00:00.000000Z";
+
+/// An interval end that leaves the interval open — either spelling.
+pub(crate) fn is_open_end(valid_to: &str) -> bool {
+    valid_to == TS_OPEN || valid_to == TS_OPEN_LEGACY
+}
 
 /// Edge-kind namespace owned by the framework hook's scoped pair-retire
 /// (§1.3, DR-42). Minted only by `framework.py::_ledger_synthetic_edge_kind`;
@@ -272,10 +361,309 @@ pub fn now_iso8601() -> String {
     )
 }
 
+/// Nudge a candidate stamp past a lineage's high-water mark (P5a.2, INV-11).
+///
+/// Returns `(stamp, nudged)`: the candidate unchanged when it is strictly
+/// after `prev`, else `prev` advanced by one microsecond with `nudged =
+/// true`, so the caller can record `stamp_nudged` in the commit concept's
+/// extra (P5a.3). Comparison is on instants, not strings — committer
+/// stamps carry arbitrary offsets, and lexicographic order would misrank
+/// them. An unparseable candidate is returned as-is (Macrame refuses it
+/// at the write); an unparseable `prev` counts as no bound.
+pub fn nudge_valid_from(prev: Option<&str>, candidate: &str) -> (String, bool) {
+    let prev_us = prev.and_then(parse_rfc3339_epoch_micros);
+    let candidate_us = parse_rfc3339_epoch_micros(candidate);
+    match (prev_us, candidate_us) {
+        (Some(prev_us), Some(candidate_us)) if candidate_us <= prev_us => {
+            (format_epoch_micros_zulu(prev_us + 1), true)
+        }
+        _ => (candidate.to_string(), false),
+    }
+}
+
+/// Normalize any parseable stamp to the Zulu microsecond shape Macrame's
+/// `normalize_timestamp` accepts (`...SS.ffffffZ`). Committer stamps carry
+/// arbitrary offsets; the write boundary speaks only Zulu, so the offset is
+/// folded into the instant before the write. The offset itself rides in the
+/// commit concept's extra per P5-D2, not in the stamp. `None` when the
+/// shape is not a timestamp at all.
+pub fn zulu_valid_from(ts: &str) -> Option<String> {
+    parse_rfc3339_epoch_micros(ts).map(format_epoch_micros_zulu)
+}
+
+/// Epoch microseconds of an RFC3339 stamp (`Z` or `±HH:MM`, optional
+/// fractional seconds). `None` when the shape is not a timestamp at all.
+pub(crate) fn parse_rfc3339_epoch_micros(stamp: &str) -> Option<i128> {
+    let (date, time) = stamp.split_once('T')?;
+    let mut date_parts = date.split('-');
+    let year: i64 = date_parts.next()?.parse().ok()?;
+    let month: i64 = date_parts.next()?.parse().ok()?;
+    let day: i64 = date_parts.next()?.parse().ok()?;
+    if date_parts.next().is_some() {
+        return None;
+    }
+    let (clock, offset_minutes) = if let Some(bare) = time.strip_suffix(['Z', 'z']) {
+        (bare, 0i64)
+    } else {
+        let at = time.rfind(['+', '-'])?;
+        let (bare, zone) = time.split_at(at);
+        let (sign, digits) = zone.split_at(1);
+        let mut zone_parts = digits.split(':');
+        let hours: i64 = zone_parts.next()?.parse().ok()?;
+        let minutes: i64 = zone_parts.next()?.parse().ok()?;
+        if zone_parts.next().is_some() {
+            return None;
+        }
+        let magnitude = hours * 60 + minutes;
+        (bare, if sign == "-" { -magnitude } else { magnitude })
+    };
+    let mut clock_parts = clock.split(':');
+    let hours: i128 = clock_parts.next()?.parse().ok()?;
+    let minutes: i128 = clock_parts.next()?.parse().ok()?;
+    let seconds = clock_parts.next()?;
+    if clock_parts.next().is_some() {
+        return None;
+    }
+    let (whole, micros) = match seconds.split_once('.') {
+        Some((whole, frac)) => {
+            let mut padded = frac.to_string();
+            padded.truncate(6);
+            while padded.len() < 6 {
+                padded.push('0');
+            }
+            (whole.parse::<i128>().ok()?, padded.parse::<i128>().ok()?)
+        }
+        None => (seconds.parse::<i128>().ok()?, 0),
+    };
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hours > 23 || minutes > 59 || whole > 60 {
+        return None;
+    }
+    let days = days_since_epoch(year, month, day)?;
+    Some(
+        (days as i128 * 86_400 + hours * 3_600 + minutes * 60 + whole) * 1_000_000 + micros
+            - offset_minutes as i128 * 60 * 1_000_000,
+    )
+}
+
+/// Days from 1970-01-01 to a civil date (the inverse of
+/// [`civil_from_days`]).
+fn days_since_epoch(year: i64, month: i64, day: i64) -> Option<i64> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let adjusted_year = if month <= 2 { year - 1 } else { year };
+    let era = adjusted_year.div_euclid(400);
+    let year_of_era = adjusted_year - era * 400;
+    let month_prime = (month + 9) % 12;
+    let day_of_year = (153 * month_prime + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(era * 146_097 + day_of_era - 719_468)
+}
+
+/// Render epoch microseconds as Zulu microsecond RFC3339 (the
+/// [`now_iso8601`] shape), so a nudged stamp stays comparable with every
+/// stamp the write path ever minted.
+fn format_epoch_micros_zulu(micros: i128) -> String {
+    let secs = micros.div_euclid(1_000_000);
+    let subsec = micros.rem_euclid(1_000_000);
+    let days = secs.div_euclid(86_400);
+    let rest = secs.rem_euclid(86_400);
+    // Epoch values from real stamps fit i64 comfortably; saturate rather
+    // than wrap on absurd input.
+    let (year, month, day) = civil_from_days(days.clamp(i64::MIN as i128, i64::MAX as i128) as i64);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{subsec:06}Z",
+        rest / 3_600,
+        (rest % 3_600) / 60,
+        rest % 60
+    )
+}
+
 // ── CodeGraphStore — owns the Macrame Database + Runtime ────────────────────
 
+/// One open store file, shared by every handle in this process.
+///
+/// Two facts force this shape, both measured rather than assumed:
+///
+/// 1. **A second `Database` on a path already open in this process fails on
+///    POSIX.** Not "sometimes": libSQL's open on the same file returns
+///    `SqliteFailure(5, "database is locked")`, while Windows tolerates it.
+///    Every op that opens a store by path while another handle is live — a
+///    second `ingest_history`, a backfill beside a loaded graph — failed this
+///    way on the ubuntu runner and nowhere else.
+/// 2. **A close is not safe to perform while the process keeps working.**
+///    Probed both ways: closing one of two handles on *one* path leaves the
+///    survivor answering current reads but losing rows the close folded into
+///    its snapshot, and closing a handle for one path does the same to a
+///    handle opened afterwards for *another* path. So the engine's shutdown
+///    is a process-final act, not a per-handle one.
+///
+/// Hence: one [`StoreInner`] per path, handed out as `Arc`s, never closed.
+/// The `Database`'s write actor keeps the file open for the life of the
+/// process, as it always did — that is the engine's contract, and the
+/// release-side cost is confined to operations that move a store file
+/// (`ops.rebuild` already moves before opening, and refuses a loaded graph).
+struct StoreInner {
+    db: Database,
+}
+
 pub struct CodeGraphStore {
-    pub db: Database,
+    inner: std::sync::Arc<StoreInner>,
+}
+
+impl Clone for CodeGraphStore {
+    fn clone(&self) -> Self {
+        Self {
+            inner: std::sync::Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl CodeGraphStore {
+    /// The engine handle.
+    pub fn db(&self) -> &Database {
+        &self.inner.db
+    }
+
+    /// How many handles this process holds on the same file.
+    ///
+    /// The registry's own references do not count: it may hold more than one
+    /// spelling of one file (see [`store_key`]), and that is bookkeeping, not
+    /// a handle. Exposed for the tests that pin the sharing contract;
+    /// nothing in the read/write paths branches on it.
+    pub fn handles(&self) -> usize {
+        let mine = std::sync::Arc::as_ptr(&self.inner);
+        let registered = OPEN_STORES
+            .lock()
+            .map(|map| {
+                map.values()
+                    .filter(|held| std::sync::Arc::as_ptr(held) == mine)
+                    .count()
+            })
+            .unwrap_or(0);
+        std::sync::Arc::strong_count(&self.inner).saturating_sub(registered)
+    }
+}
+
+/// Handles handed out for one path, so a second open joins the first.
+///
+/// `Arc`, not `Weak`, for the reason the sharing exists: the engine keeps
+/// the file open for the life of the process, so a "dead" entry would still
+/// be a locked file — minting a fresh `Database` there is exactly the
+/// `database is locked` failure this map removes. An entry therefore lives
+/// as long as the process, which is the same lifetime the engine gives the
+/// file. [`forget_store`] is the one way out, for an operation that is about
+/// to replace the file itself (`ops.rebuild`).
+static OPEN_STORES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Arc<StoreInner>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Drop the registry's handle for a path.
+///
+/// **Only for an operation that is about to remove or replace the file.**
+/// The engine's own handle is not released (it cannot be — a shutdown breaks
+/// the process's later reads), so what this buys is the *next* open minting
+/// a fresh engine for the file at that path instead of joining an engine
+/// that still points at the old inode. `ops.rebuild` calls it before it
+/// moves the store aside; nothing else should.
+pub fn forget_store(path: impl AsRef<Path>) {
+    let keys = store_spellings(path.as_ref());
+    if let Ok(mut map) = OPEN_STORES.lock() {
+        for key in keys {
+            map.remove(&key);
+        }
+    }
+}
+
+/// Whether this process holds an engine for `path`.
+pub fn holds_store(path: impl AsRef<Path>) -> bool {
+    let keys = store_spellings(path.as_ref());
+    OPEN_STORES
+        .lock()
+        .map(|map| keys.iter().any(|key| map.contains_key(key)))
+        .unwrap_or(false)
+}
+
+/// Every spelling one file can be registered under, most authoritative first.
+///
+/// Two spellings exist because a store's existence changes what the
+/// filesystem can say about it, and the registry must not care:
+///
+/// - **Canonical** (`fs::canonicalize`), when the file exists. It folds
+///   letter case and resolves symlinks the way the filesystem itself does,
+///   which is the only authority on whether two spellings name one file:
+///   Windows and default macOS are case-insensitive, Linux is not, and the
+///   same code has to be right on all three. Folding case by hand would be
+///   wrong on a case-sensitive volume — two distinct stores would share one
+///   engine. It also folds what the paths alone cannot: `/var` → `/private/var`
+///   on macOS, an 8.3 directory name on Windows.
+/// - **Lexical** ([`lexical_key`]), always. On the first open the file does
+///   not exist yet, so the canonical spelling is unavailable; the lexical one
+///   is what that open has to register under.
+///
+/// Lookups and inserts both walk the list and take every spelling, so an
+/// open that found nothing canonical still joins a later open that did.
+fn store_spellings(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let lexical = lexical_key(path);
+    let mut keys = Vec::with_capacity(2);
+    if let Ok(real) = std::fs::canonicalize(path) {
+        let canonical = strip_verbatim(real);
+        if canonical == lexical {
+            return vec![canonical];
+        }
+        keys.push(canonical);
+    }
+    keys.push(lexical);
+    keys
+}
+
+/// The path's spelling without asking the filesystem: absolute, with `.` and
+/// `..` resolved lexically.
+fn lexical_key(path: &std::path::Path) -> std::path::PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let mut out = std::path::PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Drop Windows' verbatim prefix from a canonical path.
+///
+/// `fs::canonicalize` answers with the verbatim spelling on Windows; the
+/// prefix is an I/O detail, not part of the file's identity, and keeping it
+/// would make the canonical and lexical spellings of one file incomparable —
+/// the case `forget_store` has to anticipate when a store has just been moved
+/// away.
+fn strip_verbatim(path: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(text) = path.to_str() {
+            if let Some(rest) = text.strip_prefix(r"\\?\") {
+                // A UNC path has no un-prefixed spelling of the same meaning;
+                // only drive-letter paths are unwrapped.
+                if !rest.starts_with("UNC\\") {
+                    return std::path::PathBuf::from(rest);
+                }
+            }
+        }
+    }
+    path
 }
 
 /// One tokio runtime for every store in the process.
@@ -286,7 +674,7 @@ pub struct CodeGraphStore {
 /// enough stores existed in one process (5 bad runs in 15; 0 in 30 with a
 /// shared runtime). Production only ever opens one store, so this costs it
 /// nothing and gives the tests the same shape production has.
-fn runtime() -> &'static Runtime {
+pub(crate) fn runtime() -> &'static Runtime {
     static RUNTIME: std::sync::LazyLock<Runtime> =
         std::sync::LazyLock::new(|| Runtime::new().expect("tokio runtime for Macrame"));
     &RUNTIME
@@ -346,10 +734,37 @@ impl CodeGraphStore {
     /// Serialised with every other libSQL open in this process — see
     /// [`DIAGNOSTIC_OPEN_LOCK`]. Opening is the racing operation, and it does
     /// not care whether the opener is a diagnostic read or a whole database.
+    ///
+    /// The registry lock is held across the lookup, the open and the insert,
+    /// which is the whole point: releasing it in between let two threads each
+    /// see an empty map, each open, and each keep the engine it opened — two
+    /// engines on one file on Windows, one failure on POSIX. The open below
+    /// takes no lock this one leads to, so holding it costs the serialisation
+    /// that [`DIAGNOSTIC_OPEN_LOCK`] already imposes.
+    ///
+    /// **The cadence belongs to the engine, not the caller.** A store this
+    /// process already has returns the existing engine with its cadence
+    /// untouched, so the first opener's argument wins and a later caller's is
+    /// ignored (production is the only caller that passes one).
     pub fn open_with_cadence(
         path: impl AsRef<Path>,
         cadence: Option<SnapshotCadence>,
     ) -> macrame::Result<Self> {
+        let path = path.as_ref();
+        // A second open of a file this process already holds joins the open
+        // handle. Opening again is not merely wasteful: it is refused by
+        // libSQL on POSIX (§`StoreInner`), and closing either of the two
+        // would empty the other's temporal reads.
+        let mut map = OPEN_STORES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for key in store_spellings(path) {
+            if let Some(existing) = map.get(&key) {
+                return Ok(Self {
+                    inner: std::sync::Arc::clone(existing),
+                });
+            }
+        }
         let db = {
             let _open_guard = DIAGNOSTIC_OPEN_LOCK
                 .lock()
@@ -360,7 +775,17 @@ impl CodeGraphStore {
         // from the in-memory projection. Re-assert on every open so restored
         // database backups regain the derived index automatically.
         runtime().block_on(db.register_extra_index(CODERADAR_EXTRA_FILE_PATH))?;
-        Ok(Self { db })
+        let inner = std::sync::Arc::new(StoreInner { db });
+        // No `entry(...).or_insert_with` dance: this thread holds the lock
+        // from the lookup above, so nothing can have registered the path in
+        // between and the engine inserted here is the engine every caller
+        // gets. Both spellings go in — the file did not exist when the caller
+        // named it, so the lookup and the insert would otherwise disagree
+        // about which spelling is the key.
+        for key in store_spellings(path) {
+            map.insert(key, std::sync::Arc::clone(&inner));
+        }
+        Ok(Self { inner })
     }
 
     /// §1.9 write-through: content-addressed put of one file's bytes.
@@ -399,7 +824,7 @@ impl CodeGraphStore {
             record_blob_outcome(&outcome);
             return Ok(outcome);
         }
-        match runtime().block_on(self.db.blob_put(bytes)) {
+        match runtime().block_on(self.db().blob_put(bytes)) {
             Ok(digest) => {
                 validate_digest(&digest).map_err(|e| {
                     macrame::DbError::InvalidDigest(format!(
@@ -437,7 +862,7 @@ impl CodeGraphStore {
         {
             return Ok(());
         }
-        runtime().block_on(self.db.upsert_concept(concept))
+        runtime().block_on(self.db().upsert_concept(concept))
     }
 
     /// Synchronous wrapper — bulk upsert entities from one file.
@@ -451,19 +876,26 @@ impl CodeGraphStore {
         file_path: &str,
         language: &str,
     ) -> macrame::Result<()> {
+        self.upsert_entities_at(units, file_path, language, &now_iso8601())
+    }
+
+    /// Stamped twin (P5a.2, DR-41): the same bulk upsert at an explicit
+    /// `valid_from` — commit time on the P5 path.
+    pub fn upsert_entities_at(
+        &self,
+        units: &[ExtractedUnit],
+        file_path: &str,
+        language: &str,
+        valid_from: &str,
+    ) -> macrame::Result<()> {
         if units.is_empty() {
             return Ok(());
         }
         let concepts: Vec<ConceptUpsert> = units
             .iter()
-            .map(|unit| build_concept(unit, file_path, language))
+            .map(|unit| build_concept_at(unit, file_path, language, valid_from))
             .collect();
-        let changed = self.filter_unchanged(&concepts);
-        if changed.is_empty() {
-            return Ok(());
-        }
-        runtime().block_on(self.db.write_concepts(changed))?;
-        Ok(())
+        self.upsert_concepts_bulk(&concepts).map(|_| ())
     }
 
     /// Bulk-persist pre-built concepts via Macrame's `write_concepts`.
@@ -471,20 +903,399 @@ impl CodeGraphStore {
     /// For batch index: 2,191 concepts ≈ 32 chunks ≈ 75ms.
     ///
     /// Only changed concepts reach the ledger ([`Self::filter_unchanged`]);
-    /// the count returned is concepts actually written.
+    /// the count returned is concepts actually written (the projection
+    /// rows planted; a supersession's log-row close is write mechanics).
+    ///
+    /// macrame-db 0.22.0 (U-5, Amendment 2 §10 item 3): a forward
+    /// supersession is Macrame's own `supersede(true)` write — the close of
+    /// the prior open belief and the new row in ONE call, one transaction,
+    /// one stamp (D-312). CodeRadar writes no close of its own: the
+    /// hand-written close-then-open pair an earlier draft reached for was
+    /// the F2 two-flush window (between the calls the id has no open
+    /// belief) riding the mint lineage (a branch write would have closed
+    /// the trunk's row first). The decision table in
+    /// [`Self::decide_acts`] sorts every changed row into the act Macrame's
+    /// law demands, and the out-of-order refusal happens BEFORE anything is
+    /// written.
+    /// Record that an observation write happened at `instant` (P5d, H-26).
+    ///
+    /// The mark is the only thing ingest needs to know about observations:
+    /// it seeds INV-11's nudge chain, so a commit discovered afterwards that
+    /// would open a start behind a recorded belief is nudged past it and
+    /// flagged (`stamps_nudged`), never written backwards. Monotonic on
+    /// purpose — an out-of-order caller cannot rewind it, because the mark's
+    /// job is to name how far ahead the recorded axis already sits.
+    pub fn record_observation_instant(&self, lineage: &str, instant: &str) -> macrame::Result<()> {
+        let key = crate::graph::ingest::observed_key(lineage);
+        if let Some(current) = self.kv_get_sync(&key)? {
+            if let (Some(prev), Some(next)) = (
+                parse_rfc3339_epoch_micros(&current),
+                parse_rfc3339_epoch_micros(instant),
+            ) {
+                if next <= prev {
+                    return Ok(());
+                }
+            }
+        }
+        self.kv_put_sync(&key, instant)
+    }
+
+    /// The sync marks (P5d slice B): the recorded checkout, the head the
+    /// last sync saw, and the dirty set as JSON. `(None, None, None)` for a
+    /// store that has never been synced.
+    pub fn git_marks(&self) -> macrame::Result<(Option<String>, Option<String>, Option<String>)> {
+        Ok((
+            self.kv_get_sync(crate::graph::ingest::CHECKOUT_KEY)?,
+            self.kv_get_sync(crate::graph::ingest::GIT_HEAD_KEY)?,
+            self.kv_get_sync(crate::graph::ingest::GIT_DIRTY_KEY)?,
+        ))
+    }
+
+    /// Write the sync marks (P5d slice B). `None`/empty clears a mark: a
+    /// detached HEAD has no checkout lineage to name, and writing the last
+    /// branch would let a later observation land on a lineage the tree left.
+    pub fn record_git_marks(
+        &self,
+        checkout: Option<&str>,
+        head: Option<&str>,
+        dirty: &str,
+    ) -> macrame::Result<()> {
+        let write = |key: &str, value: Option<&str>| -> macrame::Result<()> {
+            match value {
+                Some(text) if !text.trim().is_empty() => self.kv_put_sync(key, text.trim()),
+                _ => self.kv_put_sync(key, ""),
+            }
+        };
+        write(crate::graph::ingest::CHECKOUT_KEY, checkout)?;
+        write(crate::graph::ingest::GIT_HEAD_KEY, head)?;
+        self.kv_put_sync(crate::graph::ingest::GIT_DIRTY_KEY, dirty)
+    }
+
+    /// The latest observation instant this store recorded on `lineage`, if
+    /// any (P5d). Per lineage: a branch's edits and the trunk's are different
+    /// chain positions, and a commit on the branch must not be nudged past
+    /// the trunk's mark (or the reverse).
+    pub fn observation_instant(&self, lineage: &str) -> macrame::Result<Option<String>> {
+        self.kv_get_sync(&crate::graph::ingest::observed_key(lineage))
+    }
+
+    /// The lineage an observation write belongs to (P5d slice B): the
+    /// caller's explicit name, else the checked-out branch a commit-time
+    /// store recorded, else `main`.
+    ///
+    /// Only a commit-time store carries a checkout: an index-now store has
+    /// one lineage by construction, and letting a branch name its writes
+    /// would turn an ordinary `update_file` into a cross-lineage act the
+    /// caller never asked for. A kv read failure falls back to the trunk
+    /// rather than failing a write whose rows are otherwise sound.
+    pub fn observation_lineage(&self, asked: Option<&str>) -> String {
+        if let Some(name) = asked {
+            return name.to_string();
+        }
+        let commit_time = self
+            .kv_get_sync(crate::graph::ingest::COMMIT_TIME_FORMAT_KEY)
+            .ok()
+            .flatten()
+            .is_some();
+        if !commit_time {
+            return "main".to_string();
+        }
+        self.kv_get_sync(crate::graph::ingest::CHECKOUT_KEY)
+            .ok()
+            .flatten()
+            .filter(|branch| !branch.is_empty())
+            .unwrap_or_else(|| "main".to_string())
+    }
+
     pub fn upsert_concepts_bulk(&self, concepts: &[ConceptUpsert]) -> macrame::Result<usize> {
         if concepts.is_empty() {
             return Ok(0);
         }
-        let changed = self.filter_unchanged(concepts);
-        if changed.is_empty() {
+        // Decide first (the reads one decision makes serve the filter
+        // too), then drop the acts the ledger already holds byte-identically.
+        let (mut acts, projection) = self.decide_acts(concepts)?;
+        acts.retain(|a| act_is_new(a, &projection));
+        if acts.is_empty() {
             return Ok(0);
         }
         // macrame 0.14+: bulk writes report interruption distinctly. `?`
         // converts via From (the committed prefix stays committed; upserts
         // are idempotent so the next run heals it). CodeRadar never passes
         // a cancel token, so interruption here is a real chunk failure.
-        Ok(runtime().block_on(self.db.write_concepts(changed))?)
+        Ok(runtime().block_on(self.db().write_concepts(acts))?)
+    }
+
+    /// The write decision, per changed row, from the projection the
+    /// WRITER reads (0.22.0 uptake; "replace close then open with the one
+    /// write" reviewed at: refuse-or-filter front-loaded, close mechanics
+    /// upstream, and the branch writes read the branch's own projection —
+    /// reading the concepts table there would miss the branch's own
+    /// versions, which since schema v26 live on the overlay).
+    ///
+    /// The trunk projection is the chunked concepts read (one row per id
+    /// whatever lineage minted it). A branch writer's projection is
+    /// Macrame's per-lineage read — `concepts_by_id` with
+    /// `ReadPlan::on(branch)`, at each write's own stamp, grouped by stamp
+    /// so one read covers a commit's batch — the walk the write law
+    /// itself runs: its own version rows first, the visible ancestors
+    /// after, a covering cut answering absent, the passed stamp EXCLUDING
+    /// ancestor rows recorded after the fork (a branch writing an
+    /// inherited id while the trunk advanced past the fork times out of
+    /// the truth correctly, because the trunk's later write was never
+    /// seen).
+    ///
+    /// No live resolved row → the write as built (a first mint — or a
+    /// re-add after a D-2a retirement: the retired row's death is the gap
+    /// the re-add follows; a covering CUT is not a belief and falls
+    /// through to a plain write). A resolved row whose interval **ends**
+    /// before... i.e. is closed → the plain route: the takeover needs an
+    /// open row, a covered closed row is the ancestor's history the
+    /// branch stands behind. A resolved row whose start **equals** the
+    /// write's → the write as built, no superside: replaying a commit's
+    /// stamps is D-291's re-assert of one start. A resolved row starting
+    /// strictly **before** → `supersede(true)`: Macrame closes and opens
+    /// in one transaction at one stamp (a takeover on an inherited id;
+    /// the row the walk resolved is the target Macrame itself cuts or
+    /// closes). An out-of-order resolution cannot arise from a
+    /// covering-row read — a row covering the write's instant starts at
+    /// or before it — and CodeRadar's commit stamps are nudged forward
+    /// per lineage, so the law's own refuse-backward guard inside the
+    /// write transaction is the final referee on the pathological edge.
+    /// The returned projection map is the unchanged-filter's side: what
+    /// each row was compared against ([`Self::act_is_new`]).
+    fn decide_acts(
+        &self,
+        changed: &[ConceptUpsert],
+    ) -> macrame::Result<(Vec<ConceptUpsert>, HashMap<String, ProjectionRow>)> {
+        if changed.is_empty() {
+            return Ok((Vec::new(), HashMap::new()));
+        }
+        let mut acts = Vec::with_capacity(changed.len());
+        // What every row was decided against, keyed writer + stamp + id
+        // (NUL-separated): the bulk's unchanged filter compares each act
+        // against the SAME read this decision made - one read per bulk,
+        // and a branch row's comparison is its resolved overlay/ancestor
+        // state, never the trunk's mint row (which answers a different
+        // lineage's belief about the id).
+        let mut projection: HashMap<String, ProjectionRow> = HashMap::new();
+        // Split by the writer: rows carrying no branch write through the
+        // trunk projection; rows carrying a branch read that branch's
+        // resolved state at its own stamps.
+        let mut groups: std::collections::HashMap<String, Vec<&ConceptUpsert>> =
+            std::collections::HashMap::new();
+        for c in changed {
+            let writer = c
+                .branch
+                .as_ref()
+                .map(|b| b.as_str().to_string())
+                .unwrap_or_default();
+            groups.entry(writer).or_default().push(c);
+        }
+        for (writer, rows) in &groups {
+            if writer.is_empty() {
+                // The trunk's state, read the way the ROUTE reads it:
+                // macrame's per-branch resolution for `main` at the write
+                // instant — the same grouped read the branch arm runs. An
+                // adopted id's trunk versions live in `concept_versions`
+                // (the mint row never moves off the lineage that minted
+                // it), so the chunked `concepts` read answered nothing for
+                // exactly the ids an adoption wrote there, and the plain
+                // write it then authorized was refused by the single-open
+                // law — finding 1 of the M6-g post-merge round. The
+                // resolution answers trunk-minted ids too (their W1 rows
+                // are main's own), so the `concepts` fallback below only
+                // speaks when the walk answered absent at the instant —
+                // and the Misuse refusal on a settled W1 row is reachable
+                // only there; a write inside a settled window the walk
+                // DID answer rides to Macrame, whose interval guard
+                // refuses it by name (`OverlappingConcept`).
+                let ids: Vec<String> = rows.iter().map(|c| c.id.clone()).collect();
+                let w1_rows = self.fetch_trunk_states(&ids)?;
+                let bid = macrame::BranchId::new("main")?;
+                let mut by_stamp: std::collections::HashMap<&str, Vec<&&ConceptUpsert>> =
+                    std::collections::HashMap::new();
+                for c in rows {
+                    by_stamp.entry(c.valid_from.as_str()).or_default().push(c);
+                }
+                let mut overlay_all: HashMap<(String, String), CurrentRow> = HashMap::new();
+                for (stamp, group) in &by_stamp {
+                    let gids: Vec<String> = group.iter().map(|c| c.id.clone()).collect();
+                    let plan = macrame::ReadPlan::new()
+                        .on(bid.clone())
+                        .valid_at((*stamp).to_string());
+                    let resolved: Vec<macrame::temporal::ConceptVersion> =
+                        runtime().block_on(self.db().concepts_by_id(&gids, plan))?;
+                    for v in resolved {
+                        overlay_all.insert(((*stamp).to_string(), v.id.clone()), version_row(&v));
+                    }
+                }
+                for c in rows {
+                    // The resolution at the write's own instant wins; the
+                    // `concepts` row answers only the ids the walk left
+                    // absent at that instant. The source matters below: a
+                    // resolved row's settled span is the chain's own
+                    // state (the branch arm's law), a fallback state
+                    // row's settled span is the ledger bent.
+                    let overlay_hit =
+                        overlay_all.contains_key(&(c.valid_from.clone(), c.id.clone()));
+                    let current = overlay_all
+                        .get(&(c.valid_from.clone(), c.id.clone()))
+                        .or_else(|| w1_rows.get(c.id.as_str()))
+                        .cloned();
+                    projection.insert(projection_key("", &c.valid_from, &c.id), current.clone());
+                    match current.as_ref() {
+                        None => acts.push((*c).clone()),
+                        Some(row) => {
+                            if row.retired {
+                                acts.push((*c).clone());
+                            } else if c.retired {
+                                // A retire asks one fact of the trunk's own
+                                // W1 row. D-312's close rides the caller's
+                                // superside marker; a same-start ask is the
+                                // replay, and a covered CLOSED row is the
+                                // retired row's own history - nothing to
+                                // close, the ask rides.
+                                if is_open_end(&row.valid_to) && row.valid_from < c.valid_from {
+                                    acts.push((*c).clone().supersede(true));
+                                } else {
+                                    acts.push((*c).clone());
+                                }
+                            } else if !is_open_end(&row.valid_to) {
+                                if overlay_hit {
+                                    // An overlay row's covered closed span is
+                                    // the chain's own ancestor state - the
+                                    // branch arm's law ("a covered closed
+                                    // row is history the write stands
+                                    // behind"): the plain route; the
+                                    // unchanged filter drops the
+                                    // byte-identical replay and Macrame
+                                    // refuses a real clash with its own
+                                    // name.
+                                    acts.push((*c).clone());
+                                } else {
+                                    return Err(macrame::DbError::Engine(libsql::Error::Misuse(
+                                        format!(
+                                            "upsert_concepts_bulk: {id} holds a \
+                                             settled non-retired row [{start}, {end}) - \
+                                             the ledger's own record is inconsistent \
+                                             with a forward write; refusing before \
+                                             anything lands",
+                                            id = c.id.as_str(),
+                                            start = row.valid_from,
+                                            end = row.valid_to,
+                                        ),
+                                    )));
+                                }
+                            } else if row.valid_from == c.valid_from {
+                                acts.push((*c).clone());
+                            } else if row.valid_from < c.valid_from {
+                                acts.push((*c).clone().supersede(true));
+                            } else if !is_open_end(&c.valid_to)
+                                && !c.retired
+                                && c.valid_to.as_str() <= row.valid_from.as_str()
+                            {
+                                // P5b.5's backfill shape (A-8, INV-10′): a
+                                // closed version written *before* the live
+                                // open one. The live belief keeps its open
+                                // end; the past gains an interval that ends
+                                // where the next belief begins, so the chain
+                                // abuts and nothing is superseded. The
+                                // projection's own `WHERE excluded.valid_from
+                                // >= concepts.valid_from` declines the update,
+                                // Macrame logs the row and marks the pair for
+                                // the next read's correction (D-303), which is
+                                // exactly the ledger's out-of-order contract.
+                                acts.push((*c).clone());
+                            } else {
+                                return Err(macrame::DbError::Engine(libsql::Error::Misuse(
+                                    format!(
+                                        "upsert_concepts_bulk: {id}'s incoming version \
+                                         starts {start}, before the live row's {live} — \
+                                         only a closed version that ends at or before \
+                                         {live} may backfill (P5b.5); refusing before \
+                                         anything is written",
+                                        id = c.id.as_str(),
+                                        start = c.valid_from,
+                                        live = row.valid_from,
+                                    ),
+                                )));
+                            }
+                        }
+                    }
+                }
+            } else {
+                let bid = macrame::BranchId::new(writer)?;
+                // Group by the write's own stamp: the resolution of each
+                // row is its instance at the WRITE instant (the walk the
+                // route itself runs), so the reads group on `valid_from`.
+                let mut by_stamp: std::collections::HashMap<&str, Vec<&&ConceptUpsert>> =
+                    std::collections::HashMap::new();
+                for c in rows {
+                    by_stamp.entry(c.valid_from.as_str()).or_default().push(c);
+                }
+                // Keyed by (valid_from, id): each id is written at one
+                // stamp per bulk, so the per-stamp reads never collide.
+                let mut resolved_all: HashMap<(String, String), macrame::temporal::ConceptVersion> =
+                    HashMap::new();
+                for (stamp, group) in &by_stamp {
+                    let gids: Vec<String> = group.iter().map(|c| c.id.clone()).collect();
+                    let plan = macrame::ReadPlan::new()
+                        .on(bid.clone())
+                        .valid_at((*stamp).to_string());
+                    let resolved = runtime().block_on(self.db().concepts_by_id(&gids, plan))?;
+                    for v in resolved {
+                        resolved_all.insert(((*stamp).to_string(), v.id.clone()), v);
+                    }
+                }
+                for c in rows {
+                    let resolved = resolved_all
+                        .get(&(c.valid_from.clone(), c.id.clone()))
+                        .map(version_row);
+                    projection.insert(projection_key(writer, &c.valid_from, &c.id), resolved);
+                    let Some(v) = resolved_all.get(&(c.valid_from.clone(), c.id.clone())) else {
+                        // No live resolved row: the write as built (a first
+                        // mint, or a re-add after a retirement - a covering
+                        // CUT is not a belief and falls through).
+                        acts.push((*c).clone());
+                        continue;
+                    };
+                    let (vf, vt) = match (&v.valid_from, &v.valid_to) {
+                        (Some(a), Some(b)) => (a.clone(), b.clone()),
+                        // A v1 log row predates validity; the write
+                        // stands plainly.
+                        _ => {
+                            acts.push((*c).clone());
+                            continue;
+                        }
+                    };
+                    if !is_open_end(&vt) {
+                        // A covered closed row is history the branch stands
+                        // behind: the plain route. A retire asking over it
+                        // rides as built in the same code path - the walk
+                        // finds nothing of the lineage's open and cuts or
+                        // refuses itself; no marker needed (0.22.0's two
+                        // route classes).
+                        acts.push((*c).clone());
+                    } else if vf == c.valid_from {
+                        // The same start: D-291's replay - and, for a
+                        // retire, the W1 close shape (D-2a): the row's own
+                        // start carries the close. Plainly, no superside:
+                        // a superside start >= an open start is refused
+                        // outright (ConceptSingleOpen). The trunk arm is
+                        // the same law (row.valid_from < c.valid_from).
+                        acts.push((*c).clone());
+                    } else {
+                        // The covering open row starts strictly before the
+                        // write: the takeover - Macrame closes and opens in
+                        // one transaction at one stamp. Retires ride
+                        // D-312's close marker (the W1 route needs it; the
+                        // walking route takes the verb itself).
+                        acts.push((*c).clone().supersede(true));
+                    }
+                }
+            }
+        }
+        Ok((acts, projection))
     }
 
     /// Ids with no row in the store's current-state projection.
@@ -525,32 +1336,73 @@ impl CodeGraphStore {
         if concepts.is_empty() {
             return Vec::new();
         }
-        let ids: Vec<String> = concepts.iter().map(|c| c.id.clone()).collect();
-        let current = match self.fetch_current_states(&ids) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("[diag] filter_unchanged failed, writing all: {e:?}");
-                return concepts.to_vec();
+        // Per writer: a trunk row compares within the TRUNK's own
+        // projection (an adoption must write - the trunk holds no row of
+        // its own, whatever a foreign mint's row says). Branch rows are
+        // the bulk path's business (their comparison must be their own
+        // resolved state, not these tables); this fn only ever sees
+        // lineageless maintenance writes.
+        let mut by_writer: std::collections::HashMap<&str, Vec<&ConceptUpsert>> =
+            std::collections::HashMap::new();
+        for c in concepts {
+            let writer = c.branch.as_ref().map(|b| b.as_str()).unwrap_or("main");
+            by_writer.entry(writer).or_default().push(c);
+        }
+        let mut out = Vec::with_capacity(concepts.len());
+        for (writer, rows) in &by_writer {
+            let ids: Vec<String> = rows.iter().map(|c| c.id.clone()).collect();
+            let read = match *writer {
+                "main" => self.fetch_trunk_states(&ids),
+                _ => self.fetch_current_states(&ids),
+            };
+            let current = match read {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("[diag] filter_unchanged failed, writing all: {e:?}");
+                    for c in rows {
+                        out.push((*c).clone());
+                    }
+                    continue;
+                }
+            };
+            for c in rows {
+                if concept_changed(c, current.get(&c.id)) {
+                    out.push((*c).clone());
+                }
             }
-        };
-        concepts
-            .iter()
-            .filter(|c| concept_changed(c, current.get(&c.id)))
-            .cloned()
-            .collect()
+        }
+        out
     }
 
-    /// Current `(title, content, extra, retired)` per id, one chunked PK lookup.
-    fn fetch_current_states(
+    /// The trunk's OWN projection: only the rows whose mint lineage is
+    /// the trunk. `concepts` holds one row per id whatever lineage minted
+    /// it, so the all-mints read overstates the trunk's beliefs about a
+    /// foreign-minted id - the exact shape that swallowed an adoption
+    /// (macrame-db 0.22.0 / D-315 / M6-g: the trunk must MINT, and the
+    /// pre-uptake filter compared it against another lineage's row and
+    /// declared the id already held). Trunk-minted rows write their
+    /// lineage as `main` (older rows: empty).
+    fn fetch_trunk_states(&self, ids: &[String]) -> macrame::Result<HashMap<String, CurrentRow>> {
+        self.fetch_states_where(ids, "IN ('', 'main')")
+    }
+
+    /// Ids' rows with no lineage restriction (the legacy all-mints view).
+    fn fetch_current_states(&self, ids: &[String]) -> macrame::Result<HashMap<String, CurrentRow>> {
+        self.fetch_states_where(ids, "IS NOT NULL")
+    }
+
+    fn fetch_states_where(
         &self,
         ids: &[String],
-    ) -> macrame::Result<HashMap<String, (String, String, String, bool)>> {
+        lineages: &str,
+    ) -> macrame::Result<HashMap<String, CurrentRow>> {
         let (_guard, conn) = self.open_diagnostic_conn()?;
         let mut out = HashMap::with_capacity(ids.len());
         for chunk in ids.chunks(500) {
             let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
             let sql = format!(
-                "SELECT id, title, content, extra, retired FROM concepts WHERE id IN ({placeholders})"
+                "SELECT id, title, content, extra, retired, valid_from, valid_to, branch_id \
+                 FROM concepts WHERE id IN ({placeholders}) AND (branch_id {lineages})"
             );
             let params: Vec<libsql::Value> = chunk
                 .iter()
@@ -565,12 +1417,15 @@ impl CodeGraphStore {
             {
                 out.insert(
                     row.get::<String>(0).unwrap_or_default(),
-                    (
-                        row.get::<String>(1).unwrap_or_default(),
-                        row.get::<String>(2).unwrap_or_default(),
-                        row.get::<String>(3).unwrap_or_else(|_| "{}".to_string()),
-                        row.get::<i64>(4).unwrap_or(0) != 0,
-                    ),
+                    CurrentRow {
+                        title: row.get::<String>(1).unwrap_or_default(),
+                        content: row.get::<String>(2).unwrap_or_default(),
+                        extra: row.get::<String>(3).unwrap_or_else(|_| "{}".to_string()),
+                        retired: row.get::<i64>(4).unwrap_or(0) != 0,
+                        valid_from: row.get::<String>(5).unwrap_or_default(),
+                        valid_to: row.get::<String>(6).unwrap_or_default(),
+                        branch_id: row.get::<String>(7).unwrap_or_default(),
+                    },
                 );
             }
         }
@@ -583,7 +1438,7 @@ impl CodeGraphStore {
     /// capture queries without discriminating. Bounded internally
     /// (`PRAGMA analysis_limit`), ~19ms at 40k edges upstream.
     pub fn analyze(&self) -> macrame::Result<()> {
-        runtime().block_on(self.db.analyze())
+        runtime().block_on(self.db().analyze())
     }
 
     /// Open a read-only diagnostic connection, one at a time process-wide.
@@ -604,7 +1459,7 @@ impl CodeGraphStore {
     /// hitting — sharing one tokio runtime across stores was (see
     /// [`runtime`]). It stays because the risk it bounds is real and
     /// documented upstream, and because it costs a diagnostic path nothing.
-    fn open_diagnostic_conn(
+    pub(crate) fn open_diagnostic_conn(
         &self,
     ) -> macrame::Result<(std::sync::MutexGuard<'static, ()>, libsql::Connection)> {
         // Poisoning carries no meaning here: the guard protects nothing but
@@ -613,7 +1468,7 @@ impl CodeGraphStore {
         let guard = DIAGNOSTIC_OPEN_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let conn = runtime().block_on(self.db.diagnostic_conn())?;
+        let conn = runtime().block_on(self.db().diagnostic_conn())?;
         Ok((guard, conn))
     }
 
@@ -756,13 +1611,13 @@ impl CodeGraphStore {
             if dim == 0 {
                 return Ok(0);
             }
-            runtime().block_on(self.db.register_model(&model, dim))?;
+            runtime().block_on(self.db().register_model(&model, dim))?;
             let plain: Vec<(String, Vec<f32>)> = vs
                 .iter()
                 .map(|(id, v, _)| (id.clone(), v.clone()))
                 .collect();
             runtime()
-                .block_on(self.db.upsert_embeddings(&model, plain))
+                .block_on(self.db().upsert_embeddings(&model, plain))
                 .map_err(|e| {
                     // BulkInterrupted carries the written count; the cause is
                     // what the caller answers. A foreign-key failure means
@@ -978,6 +1833,15 @@ impl CodeGraphStore {
                     .strip_prefix("embeddings_")
                     .unwrap_or(&table)
                     .to_string();
+                // macrame-db 0.22.0 (M6-c): each registered model also owns a
+                // per-model version-pool table (`embeddings_<model>_versions`,
+                // the D-310/D-314 companion of `embeddings_<model>`). The pool
+                // is not a model — the suffix is reserved in ModelName::new —
+                // so skip it rather than parse it, and the answer stays one
+                // table per registered model.
+                if inner.ends_with("_versions") {
+                    continue;
+                }
                 let model = macrame_model_name(&inner)?;
                 if macrame::vector::declared_dimension(&conn, &model).await? == dim {
                     hits.push(inner);
@@ -1006,13 +1870,30 @@ impl CodeGraphStore {
             .iter()
             .map(|(id, h)| (id.as_str(), h.as_str()))
             .collect();
-        let now = now_iso8601();
         let mut concepts = Vec::new();
-        for (id, (title, content, extra, retired)) in &current {
+        for (id, row) in &current {
             let Some(hash) = hashes.get(id.as_str()) else {
                 continue;
             };
-            let mut v: serde_json::Value = match serde_json::from_str(content) {
+            // macrame-db 0.22.0 (M6-g): the flush rewrites derived state, so
+            // it keys the row's OWN interval — same start, same end. A
+            // settled row (retired, or an interval whose end is a real
+            // instant) is history: its hash was derived with the content
+            // that died with it, and re-asserting it over a wider interval
+            // would resurrect a dead belief from a write that must mint
+            // nothing. Skip settled rows with a line for the diagnostic log.
+            if row.retired {
+                eprintln!("[diag] embedding hash flush skips {id}: the row is retired (D-2a)");
+                continue;
+            }
+            if !is_open_end(&row.valid_to) {
+                eprintln!(
+                    "[diag] embedding hash flush skips {id}: the row is settled [{} - {})",
+                    row.valid_from, row.valid_to
+                );
+                continue;
+            }
+            let mut v: serde_json::Value = match serde_json::from_str(row.content.as_str()) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("[diag] embedding hash flush skips {id}: content is not JSON ({e})");
@@ -1025,23 +1906,117 @@ impl CodeGraphStore {
             v["embedding_hash"] = serde_json::json!(hash);
             let is_module = v.get("kind").and_then(|k| k.as_str()) == Some("module");
             let new_extra = if is_module {
-                extra.clone()
+                row.extra.clone()
             } else {
                 coderadar_extra(&v, None).to_string()
             };
-            concepts.push(
-                macrame::ConceptUpsert::new(id.clone(), title.clone())
-                    .content(v.to_string())
-                    .extra(new_extra)
-                    .valid_from(now.clone())
-                    .valid_to(TS_OPEN.to_string())
-                    .retired(*retired),
-            );
+            let mut upsert = macrame::ConceptUpsert::new(id.clone(), row.title.clone())
+                .content(v.to_string())
+                .extra(new_extra)
+                .valid_from(row.valid_from.clone())
+                .valid_to(row.valid_to.clone())
+                .retired(row.retired);
+            if !row.branch_id.is_empty() {
+                if let Ok(bid) = macrame::BranchId::new(&row.branch_id) {
+                    upsert = upsert.on_branch(bid);
+                }
+            }
+            concepts.push(upsert);
         }
         if concepts.is_empty() {
             return Ok(0);
         }
-        Ok(runtime().block_on(self.db.write_concepts(concepts))?)
+        Ok(runtime().block_on(self.db().write_concepts(concepts))?)
+    }
+
+    /// Message bodies for commit rows minted before the body field existed
+    /// (P6c slice, DR-45: subject-only rows from P5a.3-era ingests).
+    /// `message_for(sha)` is the git boundary (owned by the caller — this
+    /// file never touches git2): `Ok(Some(body))` heals, `Ok(None)` skips
+    /// as `no-body`, `Err(reason)` skips auditable (unknown shas from
+    /// shallow clones and gc'd objects land here, never as errors).
+    /// Each restate rides the row's OWN mint lineage (trunk or branch —
+    /// the §P5a.5 choke-point rule covers every restate, including this
+    /// one). Selection is `body IS NULL`-at-read, so a healed row never
+    /// qualifies again: re-runs heal zero without relying on content
+    /// filtering. Returns `(healed, [(sha, reason)])`.
+    pub(crate) fn backfill_commit_bodies(
+        &self,
+        message_for: &dyn Fn(&str) -> std::result::Result<Option<String>, String>,
+    ) -> macrame::Result<(usize, Vec<(String, String)>)> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        let mut pending: Vec<(String, String, String, String, bool, String)> = Vec::new();
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT id, title, content, extra, retired, branch_id FROM concepts \
+                     WHERE id LIKE 'commit:%' AND retired = 0 \
+                     AND (json_extract(content, '$.body') IS NULL \
+                          OR json_extract(content, '$.body') = '')",
+                    Vec::<libsql::Value>::new(),
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                pending.push((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                    row.get::<String>(3).unwrap_or_else(|_| "{}".to_string()),
+                    row.get::<i64>(4).unwrap_or(0) != 0,
+                    row.get::<String>(5).unwrap_or_default(),
+                ));
+            }
+            Ok::<_, macrame::DbError>(())
+        })?;
+        drop(_guard);
+        let now = now_iso8601();
+        let mut concepts = Vec::new();
+        let mut skipped = Vec::new();
+        for (id, title, content, extra, retired, branch_id) in &pending {
+            let sha = id.strip_prefix("commit:").unwrap_or(id.as_str());
+            match message_for(sha) {
+                Err(reason) => skipped.push((sha.to_string(), reason)),
+                Ok(None) => skipped.push((sha.to_string(), "no-body".to_string())),
+                Ok(Some(body)) => {
+                    let mut v: serde_json::Value = match serde_json::from_str(content) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            skipped.push((sha.to_string(), format!("unparseable-content:{e}")));
+                            continue;
+                        }
+                    };
+                    v["body"] = serde_json::json!(body);
+                    // macrame-db 0.22.0 (U-5): the heal is Macrame's own
+                    // `supersede(true)` write on the row's mint lineage — the
+                    // subject-only belief closes where the healed one begins,
+                    // both rows in one call, one transaction, one stamp
+                    // (D-312). The newer row alone was the F2-reach around
+                    // 0.19.1's no-guard write: the subject row's interval had
+                    // to die and a plain second row could not admit it. Now
+                    // the interrupted heal reads the subject row it was
+                    // healing, and heals zero-or-one on the next pass.
+                    let mut upsert = macrame::ConceptUpsert::new(id.clone(), title.clone())
+                        .content(v.to_string())
+                        .extra(extra.clone())
+                        .valid_from(now.clone())
+                        .valid_to(TS_OPEN.to_string())
+                        .retired(*retired)
+                        .supersede(true);
+                    if !branch_id.is_empty() {
+                        if let Ok(bid) = macrame::BranchId::new(branch_id) {
+                            upsert = upsert.on_branch(bid);
+                        }
+                    }
+                    concepts.push(upsert);
+                }
+            }
+        }
+        let healed = concepts.len();
+        if !concepts.is_empty() {
+            runtime().block_on(self.db().write_concepts(concepts))?;
+        }
+        Ok((healed, skipped))
     }
 
     /// Hybrid keyword+vector search (DR-11 slice 4 / §2.10): RRF fusion
@@ -1118,7 +2093,7 @@ impl CodeGraphStore {
     /// hot→cold fallback, so archive never breaks a read.
     pub fn blob_get(&self, digest: &str) -> macrame::Result<Option<Vec<u8>>> {
         macrame::blob::validate_digest(digest)?;
-        runtime().block_on(self.db.blob_get(digest))
+        runtime().block_on(self.db().blob_get(digest))
     }
 
     /// Ref for one entity out of an already-folded state: the single
@@ -1174,6 +2149,13 @@ impl CodeGraphStore {
         // P4 (DR-40): the branch's view first. A pointer names the blob
         // outright (`properties.source_blob`); the module concept is the
         // trunk-frozen fallback (a branch inherits it as of the fork).
+        // P5a.4 (DR-41): a tombstone pointer (deleted marker, no blob)
+        // reads as absent — the file is gone on this lineage even though
+        // the trunk still holds it. The marker is checked before the
+        // digest so a deletion never falls through to trunk content.
+        if Self::branch_pointer_deleted(state, file_path, branch) {
+            return Ok(None);
+        }
         if let Some(sha) = Self::branch_pointer_digest(state, file_path, branch) {
             return Ok(Some(SourceRef {
                 id: entity_id.to_string(),
@@ -1224,7 +2206,9 @@ impl CodeGraphStore {
     /// fold narrows to the ancestry, so a hit IS the lineage's view and
     /// a miss falls through to the module concept. Never another
     /// lineage's bytes: a sibling's pointer id names the sibling, and
-    /// the trunk never mints one.
+    /// the trunk never mints one. A tombstone (P5a.4: deleted marker,
+    /// no blob) names nothing — the deleted check above runs first, so
+    /// this returning `None` still means "no pointer", never "deleted".
     fn branch_pointer_digest(
         state: &MaterializedState,
         path: &str,
@@ -1232,6 +2216,21 @@ impl CodeGraphStore {
     ) -> Option<String> {
         let pointer = state.concepts.get(&branch_pointer_id(path, branch))?;
         source_blob_of_extra(&pointer.extra)
+    }
+
+    /// Whether the lineage's pointer for `path` is a deletion tombstone
+    /// (P5a.4, DR-41): the marker lives in `extra` — the same read
+    /// boundary `branch_pointer_digest` uses — so a corrupt or legacy
+    /// pointer (unparseable extra, no marker) keeps the old fail-open
+    /// behavior and falls through to the module concept.
+    fn branch_pointer_deleted(state: &MaterializedState, path: &str, branch: &str) -> bool {
+        let Some(pointer) = state.concepts.get(&branch_pointer_id(path, branch)) else {
+            return false;
+        };
+        serde_json::from_str::<serde_json::Value>(&pointer.extra)
+            .ok()
+            .and_then(|v| v.get("coderadar")?.get("deleted")?.as_bool())
+            .unwrap_or(false)
     }
 
     /// Batched refs for N entities at one timestamp (P0, DR-36): one
@@ -1252,9 +2251,21 @@ impl CodeGraphStore {
         branch: &str,
     ) -> macrame::Result<(HashMap<String, SourceRef>, bool)> {
         let state = self.reconstruct_on(timestamp, branch)?;
+        Self::source_refs_from_state(&state, entity_ids, timestamp, branch)
+    }
+
+    /// The same batched read over a state the caller already folded — the
+    /// valid axis (P5b.3) folds its own state, so the ref lookup takes it
+    /// as an argument rather than choosing a fold.
+    pub fn source_refs_from_state(
+        state: &MaterializedState,
+        entity_ids: &[String],
+        timestamp: &str,
+        branch: &str,
+    ) -> macrame::Result<(HashMap<String, SourceRef>, bool)> {
         let mut refs = HashMap::with_capacity(entity_ids.len());
         for entity_id in entity_ids {
-            if let Some(r) = Self::source_ref_from_state(&state, entity_id, timestamp, branch)? {
+            if let Some(r) = Self::source_ref_from_state(state, entity_id, timestamp, branch)? {
                 refs.insert(entity_id.clone(), r);
             }
         }
@@ -1286,7 +2297,7 @@ impl CodeGraphStore {
     /// `<store-stem>_archive.db` sibling — backup means the hot+cold pair,
     /// a hot-only copy is pointers (recorded digests, no bytes).
     pub fn archive(&self, cutoff: &str) -> macrame::Result<macrame::temporal::ArchiveReport> {
-        runtime().block_on(self.db.archive(cutoff))
+        runtime().block_on(self.db().archive(cutoff))
     }
 
     /// The honest error for a store without the FTS index: names the table
@@ -1305,41 +2316,150 @@ impl CodeGraphStore {
     /// ledger forever, so `as_of` for any past instant returned a superset
     /// that only ever grew. Retirement is what makes the temporal claim true.
     ///
-    /// Bitemporally this is an assertion, not an erasure: the current row is
-    /// replaced by one carrying `valid_to = now` and `retired = 1`, while the
-    /// original row survives in the log, so `reconstruct` at an earlier
-    /// instant still sees the entity alive.
+    /// Bitemporally this is an assertion, not an erasure (macrame-db 0.22.0,
+    /// M6-g's two-read protocol): the act is the FORWARD tombstone — it speaks
+    /// `valid_from = ` the retirement instant (`"not believed from this row's
+    /// start on"` is Macrame's own `retired` reading, so a tombstone must
+    /// start where belief ends) and `supersede(true)`, whose one-write law
+    /// lets Macrame close the prior open belief at that instant and write
+    /// the tombstone in one transaction. The close's log row carries the
+    /// row's own text at `[start, tombstone_start)`, so a read below the cut
+    /// still finds the live window; nothing in the ledger is erased.
+    /// (A tombstone at the ROW'S OWN start would hide that entire window —
+    /// the shape the protocol red first.)
     ///
     /// Returns `(concepts_retired, edges_retired)`.
-    pub fn retire_entities(&self, entity_ids: &[String]) -> macrame::Result<(usize, usize)> {
+    /// Stamped twin (P5a.3, DR-41): the same retirement at an explicit
+    /// `valid_from` — commit time on the P5 path. The un-stamped form
+    /// below keeps the live paths on the clock.
+    pub fn retire_entities_at(
+        &self,
+        entity_ids: &[String],
+        valid_from: &str,
+    ) -> macrame::Result<(usize, usize)> {
+        self.retire_entities_as_trunk(entity_ids, valid_from, false)
+    }
+
+    /// Retire on the lineage the act belongs to (P5d slice B): the trunk's
+    /// retire for `main`, else the branch's own act — a branch delete speaks
+    /// about the branch's belief, never the minting trunk's row.
+    pub fn retire_entities_for_lineage_at(
+        &self,
+        entity_ids: &[String],
+        lineage: &str,
+        valid_from: &str,
+    ) -> macrame::Result<(usize, usize)> {
+        if lineage.is_empty() || lineage == "main" {
+            self.retire_entities_at(entity_ids, valid_from)
+        } else {
+            self.retire_entities_on_branch_at(entity_ids, lineage, valid_from)
+        }
+    }
+
+    /// The trunk's retire. A trunk-minted row retires through its own W1
+    /// row as before. Any other id is retired as the TRUNK's belief
+    /// (0.22.0 post-merge review): when the trunk's resolution holds it
+    /// at the instant — an adoption (D-315) lives on the overlay under
+    /// `main` — the tombstone is a trunk act through the bulk's decision,
+    /// and the minting lineage's row is never touched (the trunk deleting
+    /// a merged function says nothing about the branch that wrote it).
+    /// An id the trunk does not hold is left alone, unless
+    /// `mint_fallback` asks for the pre-overlay mint-lineage retire
+    /// (P5a.4) — the v1-leftover repair, whose garbage rows may sit on any
+    /// lineage.
+    fn retire_entities_as_trunk(
+        &self,
+        entity_ids: &[String],
+        valid_from: &str,
+        mint_fallback: bool,
+    ) -> macrame::Result<(usize, usize)> {
         if entity_ids.is_empty() {
             return Ok((0, 0));
         }
-        let ts = now_iso8601();
-        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
-        runtime().block_on(async {
-            // Title, content and extra are carried over: the upsert overwrites
-            // these columns, so the retired row remains a record of the entity
-            // rather than a blank tombstone.
+        let ts = valid_from.to_string();
+        let main = macrame::BranchId::new("main")?;
+        let (diag_guard, conn) = self.open_diagnostic_conn()?;
+        // Trunk acts on ids another lineage minted: written through the
+        // bulk after the guard drops (the bulk takes the same lock).
+        let mut trunk_acts: Vec<ConceptUpsert> = Vec::new();
+        let result = runtime().block_on(async {
+            // Title, content and extra are carried over: the tombstone still
+            // records the entity rather than blanking it.
             let mut concepts: Vec<ConceptUpsert> = Vec::new();
             for id in entity_ids {
+                // P5a.4 (DR-41): a trunk-minted row round-trips to the
+                // trunk default. Concepts are globally unique by id but
+                // lineage-provenanced (D-225: `branch_id` is provenance, not
+                // identity), so a branch-minted row never retires through
+                // a plain trunk upsert (`trg_concepts_cross_lineage`).
                 let mut rows = conn
                     .query(
-                        "SELECT title, content, extra, valid_from FROM concepts \
+                        "SELECT title, content, extra, valid_from, branch_id FROM concepts \
                          WHERE id = ?1 AND retired = 0",
                         libsql::params![id.as_str()],
                     )
                     .await
                     .map_err(macrame::DbError::Engine)?;
-                if let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
-                    concepts.push(
+                let row = rows.next().await.map_err(macrame::DbError::Engine)?;
+                let mint: Option<String> = row
+                    .as_ref()
+                    .and_then(|r| r.get::<Option<String>>(4).ok().flatten())
+                    .filter(|b| !b.is_empty() && b != "main");
+                if row.is_none() || mint.is_some() {
+                    // Another lineage's mint (or no live W1 row at all):
+                    // the trunk's own resolution decides.
+                    let plan = macrame::ReadPlan::new()
+                        .on(main.clone())
+                        .valid_at(ts.clone());
+                    let resolved = self
+                        .db()
+                        .concepts_by_id(std::slice::from_ref(id), plan)
+                        .await?;
+                    if let Some(v) = resolved.into_iter().next() {
+                        // Zero-width forward tombstone, as below; the
+                        // bulk's trunk arm adds the supersede marker when
+                        // an earlier open trunk version stands.
+                        trunk_acts.push(
+                            ConceptUpsert::new(id.clone(), v.title.clone())
+                                .content(v.content.clone())
+                                .extra(v.extra.clone())
+                                .valid_from(ts.clone())
+                                .valid_to(ts.clone())
+                                .retired(true),
+                        );
+                        continue;
+                    }
+                    if !mint_fallback {
+                        continue;
+                    }
+                }
+                if let Some(row) = row {
+                    // The forward tombstone: it starts at the retirement
+                    // instant and rides `supersede(true)` so Macrame's
+                    // one-write law closes the prior open belief at that
+                    // instant and lands the tombstone in one transaction.
+                    // The row's own start (the old act's `valid_from`) is
+                    // exactly what a retirement must NOT reuse: `retired`
+                    // reads "not believed from this row's start on", so a
+                    // tombstone at the row's own start would hide the live
+                    // window under it (M6-g's two-read protocol, red
+                    // first at `retire_keeps_the_trunk_s_live_window...`).
+                    let mut upsert =
                         ConceptUpsert::new(id.clone(), row.get::<String>(0).unwrap_or_default())
                             .content(row.get::<String>(1).unwrap_or_default())
                             .extra(row.get::<String>(2).unwrap_or_else(|_| "{}".to_string()))
-                            .valid_from(row.get::<String>(3).unwrap_or_else(|_| ts.clone()))
+                            // Zero-width: a tombstone's interval holds no
+                            // instant, so D-291's partition never reads it
+                            // as an open interval a later re-add would
+                            // overlap, and `retired` still hides it.
+                            .valid_from(ts.clone())
                             .valid_to(ts.clone())
-                            .retired(true),
-                    );
+                            .retired(true)
+                            .supersede(true);
+                    if let Some(lineage) = mint {
+                        upsert = upsert.on_branch(macrame::BranchId::new(&lineage)?);
+                    }
+                    concepts.push(upsert);
                 }
             }
 
@@ -1377,7 +2497,7 @@ impl CodeGraphStore {
                 // NotFound means something else closed it first; that is the
                 // desired end state either way.
                 if self
-                    .db
+                    .db()
                     .retire_edge(
                         source.as_str(),
                         target.as_str(),
@@ -1394,10 +2514,22 @@ impl CodeGraphStore {
 
             let concepts_retired = concepts.len();
             if concepts_retired > 0 {
-                self.db.write_concepts(concepts).await?;
+                self.db().write_concepts(concepts).await?;
             }
-            Ok((concepts_retired, edges_retired))
-        })
+            Ok::<_, macrame::DbError>((concepts_retired, edges_retired))
+        });
+        drop(conn);
+        drop(diag_guard);
+        let (concepts_retired, edges_retired) = result?;
+        if !trunk_acts.is_empty() {
+            self.upsert_concepts_bulk(&trunk_acts)?;
+        }
+        Ok((concepts_retired + trunk_acts.len(), edges_retired))
+    }
+
+    /// Un-stamped wrapper (live paths): retire at the clock.
+    pub fn retire_entities(&self, entity_ids: &[String]) -> macrame::Result<(usize, usize)> {
+        self.retire_entities_at(entity_ids, &now_iso8601())
     }
 
     /// `(id, content)` of every concept the ledger still holds to be true.
@@ -1443,7 +2575,8 @@ impl CodeGraphStore {
             })
             .map(|(id, _)| id)
             .collect();
-        self.retire_entities(&v1_ids)
+        // Leftovers may sit on any lineage: the mint-lineage fallback.
+        self.retire_entities_as_trunk(&v1_ids, &now_iso8601(), true)
     }
 
     /// Retire canonical file concepts absent from a complete fresh projection.
@@ -1453,9 +2586,26 @@ impl CodeGraphStore {
     /// concepts avoids touching unrelated ledger rows; `keep_ids` is the exact
     /// set written from the new projection. This also removes stale v2 imports
     /// whose line-based ids disappeared between indexing passes.
-    pub fn retire_stale_file_concepts(&self, keep_ids: &HashSet<String>) -> macrame::Result<usize> {
+    /// Stamped twin (P5a.3, DR-41): the same file-concept sweep at an
+    /// explicit `valid_from`. The wrapper below keeps analyze on the clock.
+    /// Retire file concepts the run no longer believes, scoped to the run's
+    /// lineage (P5a.4, DR-41).
+    ///
+    /// The candidate set is lineage-minted rows only: a trunk sweep must
+    /// never retire a branch-minted module (it is not in the trunk's tree
+    /// and never will be), and a branch sweep must never touch trunk rows
+    /// (global ids — retiring by id is lineage-blind, so the candidate set
+    /// is where the scoping lives). Commit concepts carry no file-path
+    /// annotation and pointers deliberately neither (H-1), so both pass
+    /// over without needing keep-set entries.
+    pub fn retire_stale_file_concepts_at(
+        &self,
+        keep_ids: &HashSet<String>,
+        valid_from: &str,
+        lineage: &str,
+    ) -> macrame::Result<usize> {
         let stale_ids: Vec<String> = self
-            .live_concept_contents()?
+            .live_concept_contents_on(lineage)?
             .into_iter()
             .filter(|(id, content)| {
                 if keep_ids.contains(id) {
@@ -1482,7 +2632,194 @@ impl CodeGraphStore {
             })
             .map(|(id, _)| id)
             .collect();
-        Ok(self.retire_entities(&stale_ids)?.0)
+        // A branch's own stale rows retire as that branch's act; the trunk
+        // retire would leave another lineage's mint alone.
+        if lineage.is_empty() || lineage == "main" {
+            Ok(self.retire_entities_at(&stale_ids, valid_from)?.0)
+        } else {
+            Ok(self
+                .retire_entities_on_branch_at(&stale_ids, lineage, valid_from)?
+                .0)
+        }
+    }
+
+    /// The branch-side sweep retire (macrame-db 0.22.0, M6-g item 2): the
+    /// ids absent from `lineage`'s tree leave the caller with the
+    /// lineage's one retirement act on them, AS BUILT - `retired`
+    /// carries no superside, so Macrame's own resolution walk picks the
+    /// verb: a lineage whose own open overlay row holds the belief gets
+    /// the close, a lineage whose belief came from the mount gets the
+    /// bare cut, and a W1 row of the lineage's own mints is retired
+    /// through the W1 shape D-303 records. The trunk's rows enter this
+    /// act only as the ancestor's belief the lineage speaks against -
+    /// nothing here closes them; the trunk's own sweep closes those on
+    /// its own ingest.
+    pub fn retire_entities_on_branch_at(
+        &self,
+        entity_ids: &[String],
+        branch: &str,
+        valid_from: &str,
+    ) -> macrame::Result<(usize, usize)> {
+        if entity_ids.is_empty() {
+            return Ok((0, 0));
+        }
+        let ts = valid_from.to_string();
+        let bid = macrame::BranchId::new(branch)?;
+        // The branch's own W1 rows (its mints, D-303's row space) carry
+        // title/content/extra and their start into the retire, exactly as
+        // the trunk's retire round-trips the mint's row - but only an
+        // OPEN own row retires; a closed one is history, and the
+        // resolution below decides the id's rest. Anything the concepts
+        // table does not hold for the lineage is the overlay or the
+        // ancestor's belief: the upsert is the bare retirement ASK at its
+        // own instant, and whichever verb Macrame's walk resolves is the
+        // act.
+        //
+        // Structure per the M6-g review: the acts collect under the
+        // diagnostic guard, the guard drops before any WRITE - the bulk
+        // takes this same lock again in its own reads, and a same-thread
+        // second take deadlocks. Returns (asked, written) - the bulk's
+        // row count, not the ask count.
+        let acts: Vec<ConceptUpsert> = {
+            let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+            runtime().block_on(async {
+                let mut acts: Vec<ConceptUpsert> = Vec::new();
+                for id in entity_ids {
+                    // The concepts arm: W1 rows of the lineage's own mints.
+                    // (retired = 0 keeps a re-run from re-opening a row
+                    // that is already retired; the projection's updater
+                    // covers the rest.) The row's own interval decides:
+                    // open -> the forward tombstone at the retirement
+                    // instant with supersede(true) (the trunk arm's law -
+                    // the row's own start would hide its live window from
+                    // this row's start on); closed -> SKIPPED (it is
+                    // history; skipping, the id rides past it - it does
+                    // NOT fall through to the resolved read).
+                    let mut rows = conn
+                        .query(
+                            "SELECT title, content, extra, valid_from, valid_to FROM concepts \
+                             WHERE id = ?1 AND branch_id = ?2 AND retired = 0 LIMIT 1",
+                            libsql::params![id.as_str(), branch],
+                        )
+                        .await
+                        .map_err(macrame::DbError::Engine)?;
+                    if let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                        // Only an OPEN row retires; a closed one is history,
+                        // skipped (the rewind below decides the id at large).
+                        // The OPEN act is the forward tombstone (the trunk
+                        // arm's law): it starts at the retirement instant,
+                        // zero-width, and rides `supersede(true)` so Macrame
+                        // closes the open belief at that instant and lands
+                        // the tombstone in one write — the row's own start
+                        // would hide its live window from this row's start
+                        // on, which is how `retired` reads (M6-g's two-read
+                        // protocol, red first).
+                        if is_open_end(&row.get::<String>(4).unwrap_or_default()) {
+                            acts.push(
+                                ConceptUpsert::new(
+                                    id.clone(),
+                                    row.get::<String>(0).unwrap_or_default(),
+                                )
+                                .content(row.get::<String>(1).unwrap_or_default())
+                                .extra(row.get::<String>(2).unwrap_or_else(|_| "{}".to_string()))
+                                .valid_from(ts.clone())
+                                .valid_to(ts.clone())
+                                .retired(true)
+                                .supersede(true)
+                                .on_branch(bid.clone()),
+                            );
+                        }
+                        continue;
+                    }
+                    // Overlay or ancestor-side belief. The resolved read
+                    // says whether the branch holds the id at the instant
+                    // at all; an id it already answers absent needs no
+                    // second cut (a cut from this same commit's bulk may
+                    // already stand).
+                    let plan = macrame::ReadPlan::new()
+                        .on(bid.clone())
+                        .valid_at(ts.clone());
+                    let resolved = self
+                        .db()
+                        .concepts_by_id(std::slice::from_ref(id), plan)
+                        .await?;
+                    if resolved.is_empty() {
+                        continue;
+                    }
+                    let mut upsert = ConceptUpsert::new(id.clone(), "")
+                        .valid_from(ts.clone())
+                        .retired(true)
+                        .on_branch(bid.clone());
+                    upsert.content = String::new();
+                    acts.push(upsert);
+                }
+                Ok::<_, macrame::DbError>(acts)
+            })?
+        };
+        let written = self.upsert_concepts_bulk(&acts)?;
+        Ok((acts.len(), written))
+    }
+
+    /// Open ids under one file path whose mint lineage rides `lineages`
+    /// (encoded as a SQL fragment like ``IN ('', 'main')``), for the
+    /// branch sweep's touched-path candidates (M6-g review): the
+    /// ever-universe holds only the ids a lineage itself wrote, and the
+    /// trunk-held ones and the lineage's own live rows under a TOUCHED
+    /// path are both candidate classes the run's keep-set disposes of -
+    /// compared and filled by the sweep's own resolved reads.
+    pub fn ids_under_path_live(&self, path: &str, lineages: &str) -> macrame::Result<Vec<String>> {
+        let pattern = format!("{}::%", crate::annotations::escape_like(path));
+        let (_diag_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut out = Vec::new();
+            let sql = format!(
+                "SELECT DISTINCT id FROM concepts \
+                     WHERE id LIKE ?1 ESCAPE char(92) \
+                       AND branch_id {lineages} AND retired = 0"
+            );
+            let mut rows = conn
+                .query(sql.as_str(), libsql::params![pattern])
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push(row.get::<String>(0).unwrap_or_default());
+            }
+            Ok::<_, macrame::DbError>(out)
+        })
+    }
+
+    /// Un-stamped wrapper (live paths: the analyze sweep runs on the trunk).
+    pub fn retire_stale_file_concepts(&self, keep_ids: &HashSet<String>) -> macrame::Result<usize> {
+        self.retire_stale_file_concepts_at(keep_ids, &now_iso8601(), "main")
+    }
+
+    /// `(id, content)` of every concept the ledger still holds to be true
+    /// on one lineage (P5a.4, DR-41): the sweep-scoped counterpart to
+    /// [`Self::live_concept_contents`]. Sweeps scope candidates by mint
+    /// lineage through this; the unscoped listing stays for health checks
+    /// that must classify rows wherever they were minted (v1 repair).
+    pub fn live_concept_contents_on(
+        &self,
+        lineage: &str,
+    ) -> macrame::Result<Vec<(String, String)>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT id, content FROM concepts WHERE retired = 0 AND branch_id = ?1",
+                    libsql::params![lineage],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                ));
+            }
+            Ok(out)
+        })
     }
 
     /// Live ids of framework route concepts (§1.3), optionally scoped to
@@ -1593,7 +2930,7 @@ impl CodeGraphStore {
             let mut n = 0usize;
             for (source, target, etype, valid_from) in stale {
                 if self
-                    .db
+                    .db()
                     .retire_edge(
                         source.as_str(),
                         target.as_str(),
@@ -1653,13 +2990,16 @@ impl CodeGraphStore {
     /// Ids of every live ENTITY concept the ledger still holds to be true.
     ///
     /// Entities only: the P3 content-version spine (`kind =
-    /// 'content_version'`) and the P4 branch-content pointers (`kind =
-    /// 'branch_content'`) are ledger infrastructure, not entities —
-    /// timeless, digest-addressed, owned by `maintain_content_spine` /
-    /// `write_branch_content`. Every file-lifecycle sweep built on this
+    /// 'content_version'`), the P4 branch-content pointers (`kind =
+    /// 'branch_content'`), commit markers (`kind = 'commit'`), and the P6a
+    /// annotation/comment rows (`kind = 'annotation'` / `'comment'`) are
+    /// ledger infrastructure or user metadata, not entities — timeless or
+    /// present-tense rows owned by their own writers, never by the
+    /// file-lifecycle sweeps. Every file-lifecycle sweep built on this
     /// listing (F14 non-canonical retirement, exclusion retirement) must
     /// never see them, so the exclusion lives here rather than in each
-    /// caller. Read the spine through `history_of`.
+    /// caller. Read the spine through `history_of`, annotations through
+    /// `annotations_on` / `comments_on`.
     ///
     /// The counterpart to [`Self::retire_entities`]: retirement is only
     /// meaningful if something can tell the difference, and until now nothing
@@ -1672,7 +3012,8 @@ impl CodeGraphStore {
                     "SELECT id FROM concepts WHERE retired = 0 \
                      AND (json_extract(content, '$.kind') IS NULL \
                           OR json_extract(content, '$.kind') NOT IN \
-                             ('content_version', 'branch_content')) \
+                             ('content_version', 'branch_content', 'commit', \
+                              'annotation', 'comment', 'rename')) \
                      ORDER BY id",
                     (),
                 )
@@ -1738,9 +3079,14 @@ impl CodeGraphStore {
     /// for the five structural kinds, with CALLS pairs minus
     /// `synthetic_edges` (built by `stale_edge_keep_set` in lib.rs).
     /// Returns the number of edges retired.
-    pub fn retire_stale_edges(
+    /// Stamped twin (P5a.3, DR-41): the same structural-edge sweep at an
+    /// explicit `valid_from` — a call deleted in a commit closes at the
+    /// commit's stamp, not at ingest time. The wrapper keeps analyze on
+    /// the clock.
+    pub fn retire_stale_edges_at(
         &self,
         keep: &std::collections::HashSet<(String, String, String)>,
+        valid_from: &str,
     ) -> macrame::Result<usize> {
         const STRUCTURAL: [&str; 8] = [
             "CALLS",
@@ -1752,7 +3098,7 @@ impl CodeGraphStore {
             "REFERENCES",
             "OVERRIDES",
         ];
-        let ts = now_iso8601();
+        let ts = valid_from.to_string();
         let (_diag_guard, conn) = self.open_diagnostic_conn()?;
         let stale: Vec<(String, String, String, String)> = runtime().block_on(async {
             let mut rows = conn
@@ -1791,7 +3137,7 @@ impl CodeGraphStore {
             let mut n = 0usize;
             for (source, target, etype, valid_from) in &stale {
                 if self
-                    .db
+                    .db()
                     .retire_edge(
                         source.as_str(),
                         target.as_str(),
@@ -1810,6 +3156,14 @@ impl CodeGraphStore {
         Ok(retired)
     }
 
+    /// Un-stamped wrapper (live paths): sweep at the clock.
+    pub fn retire_stale_edges(
+        &self,
+        keep: &std::collections::HashSet<(String, String, String)>,
+    ) -> macrame::Result<usize> {
+        self.retire_stale_edges_at(keep, &now_iso8601())
+    }
+
     /// Assert a single edge.
     pub fn assert_edge(
         &self,
@@ -1824,12 +3178,12 @@ impl CodeGraphStore {
             .valid_from(valid_from)
             .weight(weight)
             .properties(properties_json);
-        runtime().block_on(self.db.assert_edge(edge))
+        runtime().block_on(self.db().assert_edge(edge))
     }
 
     /// Bulk assert edges (atomic — one transaction stamp per D-014).
     pub fn assert_edges_bulk(&self, edges: Vec<EdgeAssertion>) -> macrame::Result<usize> {
-        runtime().block_on(self.db.write_bulk_atomic(edges))
+        runtime().block_on(self.db().write_bulk_atomic(edges))
     }
 
     /// Traverse the graph from a source entity (current state).
@@ -1865,12 +3219,12 @@ impl CodeGraphStore {
         if !edge_types.is_empty() {
             traversal = traversal.edge_types(edge_types.to_vec());
         }
-        runtime().block_on(self.db.load_subgraph_with(&traversal, ts, 10_000_000))
+        runtime().block_on(self.db().load_subgraph_with(&traversal, ts, 10_000_000))
     }
 
     /// Reconstruct state as of a timestamp.
     pub fn reconstruct(&self, ts: &str) -> macrame::Result<MaterializedState> {
-        runtime().block_on(self.db.reconstruct(ts))
+        runtime().block_on(self.db().reconstruct(ts))
     }
 
     /// State at `ts` as `branch` saw it (P4, DR-40): the ancestry
@@ -1883,7 +3237,21 @@ impl CodeGraphStore {
     /// `reconstruct` unchanged (Macrame's `Trunk` shape pays nothing).
     /// Unknown branches refuse with `DbError::UnknownBranch`.
     pub fn reconstruct_on(&self, ts: &str, branch: &str) -> macrame::Result<MaterializedState> {
-        runtime().block_on(self.db.reconstruct_on(ts, branch))
+        runtime().block_on(self.db().reconstruct_on(ts, branch))
+    }
+
+    /// The **valid-axis** fold at one git instant (P5b.3, D-3/INV-16):
+    /// `reconstruct_as_of` with only the valid axis fixed. The rows'
+    /// own intervals answer the question, so this needs no horizon and
+    /// no commit index — it is the read P5b.5 (out-of-order ingest) will
+    /// lean on. Trunk only: Macrame's valid fold has no lineage-resolved
+    /// form until U-2, and the caller refuses a branch rather than
+    /// folding the trunk for it.
+    pub fn reconstruct_valid(&self, ts: &str) -> macrame::Result<MaterializedState> {
+        runtime().block_on(
+            self.db()
+                .reconstruct_as_of(macrame::temporal::AsOf::valid_at(ts)),
+        )
     }
 
     /// The ledger's high-water mark without folding it.
@@ -1962,7 +3330,7 @@ impl CodeGraphStore {
     /// table), not a fold — the same reason `recorded_generations` is a
     /// listing. A database that never forked answers exactly the trunk.
     pub fn branches(&self) -> macrame::Result<Vec<BranchInfo>> {
-        let out = runtime().block_on(self.db.branches())?;
+        let out = runtime().block_on(self.db().branches())?;
         Ok(out
             .into_iter()
             .map(|b| BranchInfo {
@@ -1982,13 +3350,27 @@ impl CodeGraphStore {
     pub fn fork_branch(&self, name: &str, from: &str) -> macrame::Result<BranchInfo> {
         let name = BranchId::new(name)?;
         let from = BranchId::new(from)?;
-        let b = runtime().block_on(self.db.fork(name, from))?;
+        let b = runtime().block_on(self.db().fork(name, from))?;
         Ok(BranchInfo {
             name: b.id.as_str().to_string(),
             parent: b.parent.as_ref().map(|p| p.as_str().to_string()),
             forked_at: b.forked_at.clone(),
             created_at: b.created_at.clone(),
         })
+    }
+
+    /// Sync `kv_store` read for callers without a runtime handle (P5a.3,
+    /// DR-41): the ingest cursor and stamping-mode flag live in Macrame's
+    /// branch-global `kv`, outside the ledger by design (H-20 — never a
+    /// blob reference, only mode strings and commit shas).
+    pub(crate) fn kv_get_sync(&self, key: &str) -> macrame::Result<Option<String>> {
+        runtime().block_on(self.db().kv_get(key))
+    }
+
+    /// Sync `kv_store` write (P5a.3, DR-41). One or two keys per commit
+    /// (head + stamp); the write actor serializes them.
+    pub(crate) fn kv_put_sync(&self, key: &str, value: &str) -> macrame::Result<()> {
+        runtime().block_on(self.db().kv_put(key, value))
     }
 
     /// Record divergent content for `path` on `branch` (P4, DR-40): the
@@ -2021,6 +3403,20 @@ impl CodeGraphStore {
         bytes: &[u8],
         branch: &str,
     ) -> macrame::Result<String> {
+        self.write_branch_content_at(path, bytes, branch, &now_iso8601())
+    }
+
+    /// Stamped twin (P5a.2, DR-41): the same branch write at an explicit
+    /// `valid_from` — commit time on the P5 path (P5a.4's first non-`now`
+    /// caller). The blob put stays engine-stamped: only the concept rows
+    /// carry the commit axis.
+    pub fn write_branch_content_at(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        branch: &str,
+        valid_from: &str,
+    ) -> macrame::Result<String> {
         BranchId::new(branch)?;
         let sha = match self.put_source_blob(path, bytes)? {
             BlobOutcome::Stored { digest, .. } => digest,
@@ -2030,7 +3426,7 @@ impl CodeGraphStore {
                 ))));
             }
         };
-        let now = now_iso8601();
+        let now = valid_from.to_string();
         let size = bytes.len() as u64;
         let lines = if bytes.is_empty() {
             0
@@ -2045,6 +3441,86 @@ impl CodeGraphStore {
         let pointer = branch_pointer_upsert(path, &sha, branch, &now)?;
         self.upsert_concepts_bulk(&[spine, pointer])?;
         Ok(spine_id)
+    }
+
+    /// Record a deletion on `branch` (P5a.4, DR-41): the tombstone twin of
+    /// [`Self::write_branch_content_at`]. Same stable pointer id, a
+    /// `deleted` marker, no blob — the read side omits the path instead
+    /// of falling back to trunk content. One stamped row, same-id
+    /// turnover: re-adding the file re-points to content, and the archive
+    /// reclaims the tombstone row like any other superseded version.
+    /// Unknown branches refuse exactly like the content write.
+    pub fn write_branch_tombstone_at(
+        &self,
+        path: &str,
+        branch: &str,
+        valid_from: &str,
+    ) -> macrame::Result<()> {
+        BranchId::new(branch)?;
+        let tombstone = branch_tombstone_upsert(path, branch, valid_from)?;
+        self.upsert_concepts_bulk(&[tombstone])?;
+        Ok(())
+    }
+
+    /// Which lineage minted `id`, if any row — current or retired — still
+    /// names it (P5a.4, DR-41): the D-225 backstop query. A branch ingest
+    /// mints entity concepts only for ids no other lineage holds; the
+    /// trunk ingest skips ids a branch minted. `None` is unminted (or
+    /// trunk-default, which the callers treat as unminted — the check is
+    /// "foreign to my lineage", never "present").
+    pub fn mint_lineage(&self, id: &str) -> macrame::Result<Option<String>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT branch_id FROM concepts WHERE id = ?1",
+                    libsql::params![id],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            Ok(rows
+                .next()
+                .await
+                .map_err(macrame::DbError::Engine)?
+                .map(|row| row.get::<String>(0).unwrap_or_default())
+                .filter(|b| !b.is_empty()))
+        })
+    }
+
+    /// Does the trunk spine hold a row for `id` under either trunk
+    /// spelling (P-9: `''` vintage rows / `'main'` since the naming
+    /// rung)? `concepts` (the mint row of trunk-owned ids),
+    /// `concept_versions` (overlay rows — the D-315 adoption writes
+    /// there; the mint lineage's row is never retouched), and
+    /// `transaction_log` (branch-dispatched log rows). The K8 heal's
+    /// already-taken pulse: a foreign-minted id that the spine already
+    /// claims is ingested or healed, never re-adopted.
+    pub fn trunk_version_live(&self, id: &str) -> macrame::Result<bool> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT EXISTS( \
+                        SELECT 1 FROM concepts \
+                          WHERE branch_id IN ('', 'main') AND id = ?1 \
+                        UNION ALL \
+                        SELECT 1 FROM concept_versions \
+                          WHERE branch_id IN ('', 'main') AND id = ?1 \
+                        UNION ALL \
+                        SELECT 1 FROM transaction_log \
+                          WHERE table_name = 'concepts' \
+                            AND branch_id IN ('', 'main') AND entity_id = ?1)",
+                    libsql::params![id],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            Ok(rows
+                .next()
+                .await
+                .map_err(macrame::DbError::Engine)?
+                .map(|row| row.get::<i64>(0).unwrap_or(0) != 0)
+                .unwrap_or(false))
+        })
     }
 
     /// Ids of every module concept the ledger ever described on a branch
@@ -2092,7 +3568,7 @@ impl CodeGraphStore {
     /// refuse via the ancestry lookup (never trunk-fallback).
     pub fn visible_module_concept_ids(&self, branch: &str) -> macrame::Result<Vec<String>> {
         let mut out = self.module_concept_ids(branch)?;
-        for ancestor in runtime().block_on(self.db.ancestry(branch))? {
+        for ancestor in runtime().block_on(self.db().ancestry(branch))? {
             if ancestor.branch_id != branch {
                 out.extend(self.module_concept_ids(&ancestor.branch_id)?);
             }
@@ -2106,15 +3582,23 @@ impl CodeGraphStore {
     /// DR-37): the input universe for the entity diff. Same ever-not-live
     /// contract as [`Self::module_concept_ids`] without the kind filter —
     /// functions, classes, imports and the rest are in the diff's join,
-    /// not just files. Excludes both infrastructure kinds (`content_version`
-    /// spine, P4 `branch_content` pointers) the way `live_concept_ids`
-    /// does — the diff joins entities, not ledger machinery. Both id spellings are included (H-11); each
+    /// not just files. Excludes the non-entity kinds (`content_version`
+    /// spine, P4 `branch_content` pointers, commit markers, P6a
+    /// annotation/comment rows) the way `live_concept_ids`
+    /// does — the diff joins entities, not ledger machinery or user
+    /// metadata (an annotation has no content hash, so without the
+    /// exclusion it would read as a perpetual `uncompared` group).
+    /// Both id spellings are included (H-11); each
     /// generation's batch returns only the spelling live at that T, and
     /// `ops.changes_between` groups raw ids by canonical form, so no
     /// generation double-counts and a respelling never reads as churn.
     /// Retired ids stay in (a deletion is a T1-only group); branch scope
-    /// matches `transaction_log.branch_id` (`"main"` unless told
-    /// otherwise). `ordering` is_id order — deterministic, not meaningful.
+    /// is the lineage's own ledger: `concepts` rows minted on the branch,
+    /// 0.22.0's overlay `concept_versions`/`concept_cuts` rows (the
+    /// D-315 adoption mint is an overlay row — the branch-owned version
+    /// of a foreign-minted id lives there, and `concepts` keeps the mint
+    /// lineage's row). `ordering` is id order — deterministic, not
+    /// meaningful.
     ///
     /// Infrastructure kinds (`content_version` spine, P4
     /// `branch_content` pointers) are excluded by kind (P2's diff joins
@@ -2130,11 +3614,17 @@ impl CodeGraphStore {
         runtime().block_on(async {
             let mut rows = conn
                 .query(
-                    "SELECT DISTINCT entity_id FROM transaction_log \
-                     WHERE table_name = 'concepts' AND branch_id = ?1 \
-                     AND entity_id NOT IN (SELECT id FROM concepts \
+                    "SELECT DISTINCT entity_id FROM ( \
+                        SELECT entity_id FROM transaction_log \
+                        WHERE table_name = 'concepts' AND branch_id = ?1 \
+                        UNION SELECT id FROM concepts WHERE branch_id = ?1 \
+                        UNION SELECT id FROM concept_versions WHERE branch_id = ?1 \
+                        UNION SELECT id FROM concept_cuts WHERE branch_id = ?1 \
+                     ) \
+                     WHERE entity_id NOT IN (SELECT id FROM concepts \
                          WHERE json_extract(content, '$.kind') IN \
-                            ('content_version', 'branch_content')) \
+                            ('content_version', 'branch_content', 'commit', \
+                             'annotation', 'comment', 'rename')) \
                      ORDER BY entity_id",
                     libsql::params![branch],
                 )
@@ -2153,7 +3643,7 @@ impl CodeGraphStore {
     /// what P2's diff sweeps when it runs on a lineage.
     pub fn visible_all_concept_ids(&self, branch: &str) -> macrame::Result<Vec<String>> {
         let mut out = self.all_concept_ids(branch)?;
-        for ancestor in runtime().block_on(self.db.ancestry(branch))? {
+        for ancestor in runtime().block_on(self.db().ancestry(branch))? {
             if ancestor.branch_id != branch {
                 out.extend(self.all_concept_ids(&ancestor.branch_id)?);
             }
@@ -2554,9 +4044,112 @@ fn coderadar_extra(content: &serde_json::Value, source_blob: Option<&str>) -> se
     )
 }
 
+/// Where an observation write's rows came from (P5d, §3.1.3; INV-17 as
+/// narrowed — every row's axes mean what its `source` says).
+///
+/// A commit row needs no tag: its provenance is the commit concept and its
+/// stamp is committer time. An observation row's stamp is the instant a
+/// writer saw the tree, so it says which writer, and what plan if any
+/// produced it. The fields are borrowed from the FFI call so tagging costs
+/// no allocation per row.
+#[derive(Clone, Copy, Debug)]
+pub struct ObservationSource<'a> {
+    /// `"mutation"`, `"watcher"`, `"analyze"`, or `"update"` for a bare
+    /// single-file write with no surface behind it.
+    pub source: &'a str,
+    pub tool: Option<&'a str>,
+    pub plan_id: Option<&'a str>,
+    pub attempt_id: Option<&'a str>,
+    /// The lineage the observation is written to (P5d slice B). `None`
+    /// resolves through the store's recorded checkout
+    /// ([`CodeGraphStore::observation_lineage`]), which is `main` unless a
+    /// commit-time store watched a checkout. An explicit name wins: the
+    /// checkout sweep writes both lineages and cannot let a racing HEAD
+    /// decide which one it is talking to.
+    pub lineage: Option<&'a str>,
+}
+
+impl<'a> ObservationSource<'a> {
+    /// The bare single-file update: no plan, no tool. Everything else is a
+    /// surface that knows more.
+    pub const BARE: &'static str = "update";
+
+    pub fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            tool: None,
+            plan_id: None,
+            attempt_id: None,
+            lineage: None,
+        }
+    }
+
+    /// Name the lineage this observation belongs to, overriding the store's
+    /// recorded checkout.
+    pub fn on_lineage(mut self, lineage: &'a str) -> Self {
+        self.lineage = Some(lineage);
+        self
+    }
+}
+
+/// Mark every row of an observation flush with its source (P5d, INV-17).
+///
+/// Applied to the rows a write is about to flush, not to the builders: the
+/// builders are shared with the commit path, and a commit row must never
+/// carry this tag. `extra.coderadar` is merged (Macrame's `extra` is
+/// replace-whole, so building a fresh map would drop `source_blob`), and a
+/// row whose `extra` is absent or not an object is left alone rather than
+/// given a payload the reader did not ask for.
+///
+/// Retirements are deliberately not tagged: a tombstone asserts absence, not
+/// content, so there is no content provenance to misattribute — its
+/// `retired` flag and its stamp already say what it is.
+pub fn tag_observation_rows(rows: &mut [ConceptUpsert], obs: &ObservationSource<'_>) {
+    for row in rows.iter_mut() {
+        let mut extra: serde_json::Value = row
+            .extra
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !extra.is_object() {
+            continue;
+        }
+        let inner = extra
+            .as_object_mut()
+            .expect("checked above")
+            .entry("coderadar".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let Some(inner) = inner.as_object_mut() else {
+            continue;
+        };
+        inner.insert("source".to_string(), serde_json::json!(obs.source));
+        for (key, value) in [
+            ("tool", obs.tool),
+            ("plan_id", obs.plan_id),
+            ("attempt_id", obs.attempt_id),
+        ] {
+            if let Some(value) = value {
+                inner.insert(key.to_string(), serde_json::json!(value));
+            }
+        }
+        row.extra = Some(extra.to_string());
+    }
+}
+
 /// Entity metadata is stored canonically in `content`; the small subset needed
 /// for indexed maintenance queries is mirrored in Macrame 0.18's `extra`.
 pub fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> ConceptUpsert {
+    build_concept_at(unit, file_path, language, &now_iso8601())
+}
+
+/// Stamped twin (P5a.2, DR-41): the same v1 pre-flush row at an explicit
+/// `valid_from` — commit time on the P5 path.
+pub fn build_concept_at(
+    unit: &ExtractedUnit,
+    file_path: &str,
+    language: &str,
+    valid_from: &str,
+) -> ConceptUpsert {
     let entity_id = unit.entity_id();
     let (title, _kind, metadata) = entity_meta(unit, file_path, language);
 
@@ -2565,7 +4158,7 @@ pub fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> C
     // same run); the digest-less shape is also what legacy rows look like.
     let extra = coderadar_extra(&metadata, None).to_string();
 
-    let valid_from = now_iso8601();
+    let valid_from = valid_from.to_string();
 
     ConceptUpsert::new(entity_id, title.to_string())
         .content(content)
@@ -2745,14 +4338,74 @@ fn v2_common(
 /// or a stale envelope version (a v1 row can agree on all three yet still
 /// need the v2 upgrade rewrite — and any future meta_version bump must
 /// rewrite every row exactly once).
-fn concept_changed(
-    concept: &ConceptUpsert,
-    current: Option<&(String, String, String, bool)>,
-) -> bool {
-    let Some((title, content, extra, retired)) = current else {
+/// One resolved overlay/ancestor version as a write-side comparison row.
+/// The `retired` flag the mint row carries is not exposed by the
+/// resolution type; a retired belief reads closed through its interval,
+/// which is exactly what the bulk law compares.
+fn version_row(v: &macrame::temporal::ConceptVersion) -> CurrentRow {
+    CurrentRow {
+        title: v.title.clone(),
+        content: v.content.clone(),
+        extra: v.extra.clone(),
+        valid_from: v.valid_from.clone().unwrap_or_default(),
+        valid_to: v.valid_to.clone().unwrap_or_default(),
+        retired: false,
+        branch_id: v.branch_id.clone(),
+    }
+}
+
+/// The bulk's projection key: one read per (writer, stamp, id).
+type ProjectionRow = Option<CurrentRow>;
+fn projection_key(writer: &str, stamp: &str, id: &str) -> String {
+    format!("{writer}\u{0}{stamp}\u{0}{id}")
+}
+
+/// The bulk's unchanged filter: an act whose candidate is byte-identical
+/// to the projection row its own decision read is dropped. A row the
+/// decision found ABSENT always writes (a first mint must land, and
+/// fail-open toward facts is the settled direction). Attachment to the
+/// decided projection is what makes this lawful for branch rows: their
+/// comparison is their resolved state, not another lineage's row.
+fn act_is_new(act: &ConceptUpsert, projection: &HashMap<String, Option<CurrentRow>>) -> bool {
+    let writer = act.branch.as_ref().map(|b| b.as_str()).unwrap_or_default();
+    match projection.get(&projection_key(writer, &act.valid_from, &act.id)) {
+        None => true,
+        Some(row) => concept_changed(act, row.as_ref()),
+    }
+}
+
+/// The part of `extra` a change decision reads (P5d): `source`, `tool`,
+/// `plan_id` and `attempt_id` are provenance, not belief. Two writes that
+/// found identical content must not mint a version apiece just because a
+/// different writer looked at it — the second look moves the store's
+/// observation mark instead, which is where its instant belongs.
+///
+/// An `extra` that does not parse is compared as the raw string, which keeps
+/// the old "cannot read it, treat it as different" behaviour.
+fn provenance_blind(extra: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(extra) else {
+        return extra.to_string();
+    };
+    if let Some(inner) = value
+        .get_mut("coderadar")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for key in ["source", "tool", "plan_id", "attempt_id"] {
+            inner.remove(key);
+        }
+    }
+    value.to_string()
+}
+
+fn concept_changed(concept: &ConceptUpsert, current: Option<&CurrentRow>) -> bool {
+    let Some(row) = current else {
         return true;
     };
-    if title != &concept.title || retired != &concept.retired {
+    let title = row.title.as_str();
+    let content = row.content.as_str();
+    let extra = row.extra.as_str();
+    let retired = row.retired;
+    if title != concept.title || retired != concept.retired {
         return true;
     }
     // In Macrame 0.18, `None` means leave app attributes untouched. Compare
@@ -2760,7 +4413,7 @@ fn concept_changed(
     if concept
         .extra
         .as_ref()
-        .is_some_and(|expected| expected != extra)
+        .is_some_and(|expected| provenance_blind(expected) != provenance_blind(extra))
     {
         return true;
     }
@@ -3025,7 +4678,18 @@ pub fn build_v2_concepts_all(
     projection: &ProjectedGraph,
     digests: &SourceBlobDigests,
 ) -> Vec<ConceptUpsert> {
-    let now = now_iso8601();
+    build_v2_concepts_all_at(projection, digests, &now_iso8601())
+}
+
+/// Stamped twin (P5a.2, DR-41): the same post-cascade flush at an explicit
+/// `valid_from` — commit time on the P5 path. `now` below is the flush
+/// stamp, not the clock: wall-clock by default, commit time when told.
+pub fn build_v2_concepts_all_at(
+    projection: &ProjectedGraph,
+    digests: &SourceBlobDigests,
+    valid_from: &str,
+) -> Vec<ConceptUpsert> {
+    let now = valid_from.to_string();
     let mut out: Vec<ConceptUpsert> = Vec::new();
     for m in projection.modules.values() {
         let digest = digest_for_module(&m.id, digests);
@@ -3062,8 +4726,20 @@ pub fn build_v2_concepts_for_file(
     file_path: &str,
     digests: &SourceBlobDigests,
 ) -> Vec<ConceptUpsert> {
+    build_v2_concepts_for_file_at(projection, file_path, digests, &now_iso8601())
+}
+
+/// Stamped twin (P5a.2, DR-41): the same single-file flush at an explicit
+/// `valid_from` — commit time on the P5 path. `now` below is the flush
+/// stamp, not the clock.
+pub fn build_v2_concepts_for_file_at(
+    projection: &ProjectedGraph,
+    file_path: &str,
+    digests: &SourceBlobDigests,
+    valid_from: &str,
+) -> Vec<ConceptUpsert> {
+    let now = valid_from.to_string();
     let prefix = format!("{file_path}::");
-    let now = now_iso8601();
     let mut out: Vec<ConceptUpsert> = Vec::new();
     for m in projection.modules.values() {
         if m.id.starts_with(&prefix) {
@@ -3128,17 +4804,133 @@ pub enum V2ConceptClass {
     /// Field entities (fields ride inside their Class), so these are
     /// skipped with a warning.
     StandaloneField,
-    /// P3 content-version spine concept (`kind = 'content_version'`) and
-    /// P4 branch-content pointer (`kind = 'branch_content'`).
+    /// P3 content-version spine concept (`kind = 'content_version'`),
+    /// P4 branch-content pointer (`kind = 'branch_content'`), and P5
+    /// commit concept (`kind = 'commit'`).
     /// Ledger infrastructure, not entities: timeless,
     /// digest-addressed, read through `history_of` / the branch read
-    /// path. Skipped by entity loaders exactly like standalone fields —
-    /// matching them before the canonical check is what keeps them out
-    /// of `V1Leftover` (which hard-fails the load) and out of
-    /// `parse_v2_concept` (which has no arm for either).
+    /// path / the ingest report. Skipped by entity loaders exactly like
+    /// standalone fields — matching them before the canonical check is
+    /// what keeps them out of `V1Leftover` (which hard-fails the load)
+    /// and out of `parse_v2_concept` (which has no arm for any of them).
     Spine,
+    /// P6a annotation or comment (`kind = 'annotation' | 'comment'`).
+    /// User data read ledger-direct by `annotations::versions_for`, never
+    /// projected into the graph. Without this arm they fell to
+    /// `V1Leftover`: the load refused, and the analyze fallback's v1
+    /// sweep retired every annotation in the store.
+    Note,
     /// Content that is not JSON or has no kind.
     Unreadable,
+}
+
+/// One rename link row (P5b.7, A-11).
+#[derive(Debug, Clone, PartialEq)]
+pub struct RenameLink {
+    pub old_id: String,
+    pub new_id: String,
+    pub old_path: String,
+    pub new_path: String,
+    pub commit: String,
+    pub similarity: Option<u16>,
+    pub valid_from: String,
+}
+
+impl CodeGraphStore {
+    /// One rename row by its exact key: `renamed:{old_id}` for the forward
+    /// hop, `became:{new_id}` for the reverse one.
+    fn rename_row(&self, key: &str) -> macrame::Result<Option<RenameLink>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT content, valid_from FROM concepts WHERE id = ?1 \
+                     ORDER BY retired ASC, valid_from DESC LIMIT 1",
+                    libsql::params![key],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? else {
+                return Ok(None);
+            };
+            let content: String = row.get(0).unwrap_or_default();
+            let valid_from: String = row.get(1).unwrap_or_default();
+            Ok(rename_link_from_content(&content, &valid_from))
+        })
+    }
+
+    /// Follow one id forward through its renames (P5b.7). Returns the id it
+    /// resolves to now and the hops taken, oldest first. The walk stops at
+    /// the first id it has already visited — a file renamed *back* to an
+    /// earlier name is a cycle, and the id inside it is the answer.
+    pub fn rename_chain(&self, id: &str) -> macrame::Result<(String, Vec<RenameLink>)> {
+        let mut hops: Vec<RenameLink> = Vec::new();
+        let mut current = id.to_string();
+        let mut seen: Vec<String> = vec![current.clone()];
+        loop {
+            let Some(link) = self.rename_row(&format!("renamed:{current}"))? else {
+                break;
+            };
+            if seen.contains(&link.new_id) {
+                current = link.new_id;
+                break;
+            }
+            seen.push(link.new_id.clone());
+            current = link.new_id.clone();
+            hops.push(link);
+            if hops.len() > 64 {
+                break;
+            }
+        }
+        Ok((current, hops))
+    }
+
+    /// Walk backwards from an id to the ids it was renamed from (P5b.7),
+    /// oldest first. Same cycle guard as [`Self::rename_chain`].
+    pub fn rename_predecessors(&self, id: &str) -> macrame::Result<Vec<RenameLink>> {
+        let mut hops: Vec<RenameLink> = Vec::new();
+        let mut current = id.to_string();
+        let mut seen: Vec<String> = vec![current.clone()];
+        loop {
+            let Some(link) = self.rename_row(&format!("became:{current}"))? else {
+                break;
+            };
+            if seen.contains(&link.old_id) {
+                break;
+            }
+            seen.push(link.old_id.clone());
+            current = link.old_id.clone();
+            hops.push(link);
+            if hops.len() > 64 {
+                break;
+            }
+        }
+        hops.reverse();
+        Ok(hops)
+    }
+}
+
+/// Parse a link row's payload. A row that is not a rename row (or is torn)
+/// reads as no link: the read paths treat a missing link as "not renamed",
+/// never as an error.
+fn rename_link_from_content(content: &str, valid_from: &str) -> Option<RenameLink> {
+    let v: serde_json::Value = serde_json::from_str(content).ok()?;
+    if v.get("kind").and_then(|k| k.as_str()) != Some(crate::graph::ingest::RENAME_KIND) {
+        return None;
+    }
+    let field = |key: &str| v.get(key).and_then(|x| x.as_str()).map(str::to_string);
+    Some(RenameLink {
+        old_id: field("old_id")?,
+        new_id: field("new_id")?,
+        old_path: field("old_path")?,
+        new_path: field("new_path")?,
+        commit: field("commit")?,
+        similarity: v
+            .get("similarity")
+            .and_then(|s| s.as_u64())
+            .map(|s| s as u16),
+        valid_from: valid_from.to_string(),
+    })
 }
 
 /// Pre-scan classification for cold start (cheap: parses content once).
@@ -3152,8 +4944,20 @@ pub fn classify_v2_concept(content: &str) -> V2ConceptClass {
     if kind == "field" {
         return V2ConceptClass::StandaloneField;
     }
-    if kind == "content_version" || kind == edge_type::BRANCH_CONTENT_KIND {
+    if kind == "content_version"
+        || kind == edge_type::BRANCH_CONTENT_KIND
+        || kind == edge_type::COMMIT_KIND
+    {
         return V2ConceptClass::Spine;
+    }
+    if kind == crate::annotations::ANNOTATION_KIND
+        || kind == crate::annotations::COMMENT_KIND
+        // P5b.7: a rename link is a note about two ids, the way an
+        // annotation is — it stays out of the projection, the listings,
+        // search and the coverage sets.
+        || kind == crate::graph::ingest::RENAME_KIND
+    {
+        return V2ConceptClass::Note;
     }
     if V2_CANONICAL_KINDS.contains(&kind)
         && v.get("meta_version").and_then(|m| m.as_u64()) == Some(V2_META_VERSION)
@@ -3980,6 +5784,10 @@ mod concept_v2_tests {
             classify_v2_concept(field),
             V2ConceptClass::StandaloneField
         ));
+        for kind in ["annotation", "comment"] {
+            let note = format!(r#"{{"kind": "{kind}", "about": "a.py::f", "body": "- x\n"}}"#);
+            assert!(matches!(classify_v2_concept(&note), V2ConceptClass::Note));
+        }
         assert!(matches!(
             classify_v2_concept("not json"),
             V2ConceptClass::Unreadable
@@ -4004,6 +5812,258 @@ pub fn edge_properties_json(props: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two opens of one path share one engine, and the survivor keeps
+    /// working when the other handle drops.
+    ///
+    /// Both halves are load-bearing. Sharing is what makes a second open on
+    /// POSIX possible at all (libSQL refuses a second `Database` on a live
+    /// path: `SqliteFailure(5, "database is locked")` — the ubuntu runner
+    /// caught this on every op that opened a store beside a loaded graph).
+    /// The survivor assertion is why the share is an `Arc` and not a second
+    /// engine: with two engines, closing either one leaves the other
+    /// answering current reads but losing the rows the close folded into a
+    /// snapshot — probed, and the shape `#[doc]` on `StoreInner` records.
+    ///
+    /// The file is deliberately *not* expected to be removable afterwards:
+    /// the engine's write actor keeps it open for the process's life, and a
+    /// shutdown is the engine's process-final act rather than a handle's.
+    /// `ops.rebuild` is the one operation that must move a store, and it
+    /// moves before opening, refusing a loaded graph (P8); `forget_store` is
+    /// how it stops a later open from joining the engine that still points
+    /// at the moved inode.
+    /// Two opens racing on one path must end up on **one** engine.
+    ///
+    /// The registry used to release its lock between the lookup and the
+    /// insert, so two threads could both find the map empty and both open:
+    /// Windows then answered from two engines on one file (the state
+    /// [`StoreInner`] calls unsafe), POSIX failed the second open with
+    /// `database is locked` — the very failure the registry exists to
+    /// remove. The MCP daemon releases the interpreter lock around ops, so
+    /// the race is reachable in production, not just here.
+    ///
+    /// Identity is the allocation itself: every thread must come back with
+    /// the same `Arc<StoreInner>`, which is stricter than "a store works".
+    #[test]
+    fn concurrent_opens_of_one_path_share_one_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("raced.db");
+        let threads = 8;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(threads));
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let store = CodeGraphStore::open(&path).unwrap();
+                    let engine = std::sync::Arc::as_ptr(&store.inner) as usize;
+                    (engine, store)
+                })
+            })
+            .collect();
+        let finished: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("no racing open may fail"))
+            .collect();
+        let first = finished[0].0;
+        for (engine, store) in &finished {
+            assert_eq!(*engine, first, "a racing open minted a second engine");
+            assert!(store.git_marks().is_ok(), "the shared engine answers");
+        }
+        assert_eq!(
+            finished[0].1.handles(),
+            threads,
+            "one handle per thread; the registry's references do not count"
+        );
+    }
+
+    /// Two spellings of one file are one store — where the filesystem says so.
+    ///
+    /// Windows and default macOS ignore letter case; Linux does not. Asking
+    /// the filesystem (`canonicalize`) gets both right, and folding case by
+    /// hand would merge two genuinely different stores on a case-sensitive
+    /// volume.
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn two_spellings_of_one_path_are_one_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cased.db");
+        let opened = CodeGraphStore::open(&path).unwrap();
+        let shouted = dir.path().join("CASED.DB");
+        let joined = CodeGraphStore::open(&shouted).unwrap();
+        assert_eq!(
+            std::sync::Arc::as_ptr(&opened.inner),
+            std::sync::Arc::as_ptr(&joined.inner),
+            "one file, one engine, however it is spelled"
+        );
+    }
+
+    /// Two spellings that the paths alone cannot reconcile are one store.
+    ///
+    /// A symlinked directory is the portable stand-in for what a CI runner
+    /// actually hit: `tempfile` hands back a spelling the filesystem does not
+    /// consider canonical (an 8.3 directory name on Windows, `/var` vs
+    /// `/private/var` on macOS). The first open has to register both — the
+    /// lexical spelling it was given and the canonical one the file grew into
+    /// — or the second open looks up a key that was never inserted and opens
+    /// a second engine beside the first.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_spelling_joins_the_same_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let via_real = CodeGraphStore::open(real.join("store.db")).unwrap();
+        let via_link = CodeGraphStore::open(link.join("store.db")).unwrap();
+        assert_eq!(
+            std::sync::Arc::as_ptr(&via_real.inner),
+            std::sync::Arc::as_ptr(&via_link.inner),
+            "a symlinked spelling of one file is one engine"
+        );
+    }
+
+    /// `forget_store` clears **every** spelling a path can be registered
+    /// under, which is what `ops.rebuild` needs: it forgets while the file
+    /// still exists and then names the path again after the move, when only
+    /// the lexical spelling is computable. It does not release the engine —
+    /// nothing can (see [`StoreInner`]) — so this pins the bookkeeping, not a
+    /// re-open of the same live path.
+    #[test]
+    fn forgetting_a_store_clears_every_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("moved.db");
+        let store = CodeGraphStore::open(&path).unwrap();
+        assert!(holds_store(&path));
+        forget_store(&path);
+        assert!(!holds_store(&path), "the lexical spelling is gone");
+        // Forgetting a path that holds nothing is a no-op, not a panic.
+        forget_store(dir.path().join("never-opened.db"));
+        assert!(store.git_marks().is_ok(), "the engine itself still answers");
+    }
+
+    #[test]
+    fn two_opens_of_one_path_share_one_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.db");
+        let a = CodeGraphStore::open(&path).unwrap();
+        let b = CodeGraphStore::open(&path).unwrap();
+        assert_eq!(
+            std::sync::Arc::as_ptr(&a.inner),
+            std::sync::Arc::as_ptr(&b.inner),
+            "the second open joins the first"
+        );
+        assert_eq!(a.handles(), 2, "one handle each");
+        drop(b);
+        assert_eq!(a.handles(), 1, "and the survivor keeps the engine");
+        assert!(a.git_marks().is_ok(), "reads still answer after the drop");
+        // The registry holds the engine for the process's life, which is what
+        // makes the next open join instead of minting a second `Database`.
+        drop(a);
+        let c = CodeGraphStore::open(&path).unwrap();
+        assert_eq!(c.handles(), 1, "the registry kept it alive for this open");
+        assert!(c.git_marks().is_ok());
+    }
+
+    /// P5b.5's backfill shape: a closed version may be written *before*
+    /// the live open one, and the ledger answers both axes correctly
+    /// afterwards — the valid axis sees the backfilled belief in its own
+    /// interval, the recorded/live read still sees the open one, and the
+    /// chain does not overlap.
+    ///
+    /// This is the write half only. The ingest half (a window that ends at
+    /// the cursor, walked newest-first so every close names its successor)
+    /// is the next slice; the guard change is what makes it possible.
+    #[test]
+    fn a_closed_version_may_backfill_before_the_live_open_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("backfill.db")).unwrap();
+        let open = "9999-12-31T23:59:59.999999Z";
+        let at = |id: &str, from: &str, to: &str, text: &str| {
+            macrame::ConceptUpsert::new(id, id)
+                .content(format!("{{\"t\":\"{text}\"}}"))
+                .valid_from(from)
+                .valid_to(to)
+        };
+        let dec = "2026-12-01T00:00:00.000000Z";
+        let jun = "2026-06-01T00:00:00.000000Z";
+        let jan = "2026-01-01T00:00:00.000000Z";
+        store
+            .upsert_concepts_bulk(&[at("a", dec, open, "dec")])
+            .unwrap();
+        // Newest-first: each backfilled row closes at the successor's start.
+        store
+            .upsert_concepts_bulk(&[at("a", jun, dec, "jun")])
+            .unwrap();
+        store
+            .upsert_concepts_bulk(&[at("a", jan, jun, "jan")])
+            .unwrap();
+
+        let content_at = |ts: &str| {
+            store
+                .reconstruct_valid(ts)
+                .unwrap()
+                .concepts
+                .get("a")
+                .map(|c| c.content.clone())
+        };
+        assert_eq!(
+            content_at("2026-02-01T00:00:00.000000Z").as_deref(),
+            Some("{\"t\":\"jan\"}")
+        );
+        assert_eq!(
+            content_at("2026-07-01T00:00:00.000000Z").as_deref(),
+            Some("{\"t\":\"jun\"}")
+        );
+        assert_eq!(
+            content_at("2027-01-01T00:00:00.000000Z").as_deref(),
+            Some("{\"t\":\"dec\"}")
+        );
+        // The live projection kept the latest belief throughout.
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let live = crate::storage::runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query("SELECT content FROM concepts WHERE id = 'a'", ())
+                    .await
+                    .unwrap();
+                rows.next()
+                    .await
+                    .unwrap()
+                    .map(|r| r.get::<String>(0).unwrap())
+            })
+            .unwrap();
+        assert_eq!(live, "{\"t\":\"dec\"}");
+        // And the chain is clean at the engine's own check.
+        drop(_guard);
+        let overlaps = crate::storage::runtime()
+            .block_on(store.db().verify_concept_intervals())
+            .unwrap();
+        assert!(
+            overlaps.is_empty(),
+            "intervals must chain, got {overlaps:?}"
+        );
+
+        // A malformed backfill is still refused: open-in-the-past would be
+        // a second open interval, and a row that overlaps the live span has
+        // no successor to close at.
+        let open_backfill =
+            store.upsert_concepts_bulk(&[at("a", "2025-01-01T00:00:00.000000Z", open, "old")]);
+        assert!(open_backfill.is_err(), "an open row cannot backfill");
+        let overlapping = store.upsert_concepts_bulk(&[at(
+            "a",
+            "2026-03-01T00:00:00.000000Z",
+            "2026-09-01T00:00:00.000000Z",
+            "mid",
+        )]);
+        assert!(
+            overlapping.is_err(),
+            "a span inside the live belief has no chain"
+        );
+    }
 
     /// DR-11 slice 3: persist flushes hashes into concept JSON, because
     /// compute never touches files and the ledger would otherwise keep
@@ -4039,7 +6099,7 @@ mod tests {
         let before = store
             .fetch_current_states(&["math.py::add".to_string()])
             .unwrap();
-        assert!(!before["math.py::add"].1.contains("embedding_hash"));
+        assert!(!before["math.py::add"].content.contains("embedding_hash"));
         // Persist writes vectors AND flushes the hash into the concept.
         let snap = graph.snapshot();
         let report = store
@@ -4053,7 +6113,7 @@ mod tests {
         let after = store
             .fetch_current_states(&["math.py::add".to_string()])
             .unwrap();
-        let content = &after["math.py::add"].1;
+        let content = &after["math.py::add"].content;
         assert!(
             content.contains("\"embedding_hash\":\"m#pp1#x\""),
             "{content}"
@@ -5361,7 +7421,8 @@ mod tests {
             .block_on(async {
                 let mut rows = leak_conn
                     .query(
-                        "SELECT COUNT(*) FROM transaction_log                          WHERE payload LIKE ?1 AND entity_id LIKE 'm.py@%'",
+                        "SELECT COUNT(*) FROM transaction_log \
+                         WHERE payload LIKE ?1 AND entity_id LIKE 'm.py@%'",
                         libsql::params![format!("%{d1}%")],
                     )
                     .await
@@ -5396,7 +7457,7 @@ mod tests {
         assert_eq!(second, first);
         let n: i64 = runtime().block_on(async {
             let mut rows = store
-                .db
+                .db()
                 .read_conn()
                 .query("SELECT COUNT(*) FROM blobs", ())
                 .await
@@ -5406,7 +7467,7 @@ mod tests {
         assert_eq!(n, 1, "content-addressed: one row for identical bytes");
         // And the bytes come back.
         let back: Vec<u8> = runtime()
-            .block_on(store.db.blob_get(&digest))
+            .block_on(store.db().blob_get(&digest))
             .unwrap()
             .unwrap();
         assert_eq!(back, bytes);
@@ -5487,7 +7548,7 @@ mod tests {
         let path = dir.path().join("blobs.db");
         let store = CodeGraphStore::open(&path).unwrap();
         let bytes = b"def f():\n    return 1\n";
-        let digest = runtime().block_on(store.db.blob_put(bytes)).unwrap();
+        let digest = runtime().block_on(store.db().blob_put(bytes)).unwrap();
         assert_eq!(digest.len(), 64, "sha256 hex: {digest:?}");
         assert!(
             digest
@@ -5495,11 +7556,1519 @@ mod tests {
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "lowercase hex: {digest:?}"
         );
-        let back = runtime().block_on(store.db.blob_get(&digest)).unwrap();
+        let back = runtime().block_on(store.db().blob_get(&digest)).unwrap();
         assert_eq!(back.as_deref(), Some(bytes.as_slice()));
         let missing = runtime()
-            .block_on(store.db.blob_get(&"0".repeat(64)))
+            .block_on(store.db().blob_get(&"0".repeat(64)))
             .unwrap();
         assert_eq!(missing, None, "unknown digest reads as absent");
+    }
+    /// M6-g uptake (Amendment 2 §10 item 3, U-5): the trunk supersession is
+    /// Macrame's own `supersede(true)` write — close and open in ONE call,
+    /// one transaction, one stamp (D-312) — not CodeRadar's own close-then-
+    /// open pair (the F2 two-flush window a hand-written close re-creates:
+    /// between the two calls the id has no open belief). The proof is the
+    /// stamp: the closed row and the opened one share the act's
+    /// `recorded_at`, which two separate `write_concepts` calls cannot do
+    /// (each call takes its own clock).
+    #[test]
+    fn bulk_supersede_closes_and_opens_at_one_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("bssup.db")).unwrap();
+        let t0 = "2026-01-01T10:00:00.000000Z";
+        let v1 = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(t0)
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[v1]).unwrap(), 1);
+        let s1 = "2026-01-01T10:00:02.000000Z";
+        let v2 = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py","v":2}"#)
+            .valid_from(s1)
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[v2]).unwrap(), 1);
+        // The projection holds the open row the write planted.
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let (pf, pt, pc): (String, String, String) = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT valid_from, valid_to, content FROM concepts WHERE id = ?1",
+                        libsql::params!["m.py::module"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .unwrap();
+                Ok::<_, macrame::DbError>((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(pf, s1, "the projection opens at the new start");
+        assert_eq!(pt, TS_OPEN);
+        assert!(pc.contains("\"v\":2"), "the new body is live: {pc}");
+        // The closed belief is a log row beside the opened one, and the two
+        // share ONE recorded_at: close and open in one call.
+        let (cf, ce, cstamp): (String, String, String) = runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT json_extract(payload, '$.valid_from'), json_extract(payload, '$.valid_to'), recorded_at \
+                     FROM transaction_log WHERE table_name = 'concepts' \
+                     AND entity_id = ?1 AND json_extract(payload, '$.valid_from') = ?2",
+                    libsql::params!["m.py::module", t0],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let row = rows
+                .next()
+                .await
+                .map_err(macrame::DbError::Engine)?
+                .expect("the close of the supersession is on the log");
+            Ok::<_, macrame::DbError>((
+                row.get::<String>(0).unwrap_or_default(),
+                row.get::<String>(1).unwrap_or_default(),
+                row.get::<String>(2).unwrap_or_default(),
+            ))
+        })
+            .unwrap();
+        assert_eq!(cf, t0);
+        assert_eq!(ce, s1, "the closed row ends where the open begins");
+        let open_stamp = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT recorded_at FROM transaction_log WHERE table_name = 'concepts' \
+                     AND entity_id = ?1 AND json_extract(payload, '$.valid_from') = ?2",
+                        libsql::params!["m.py::module", s1],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .expect("the open is on the log");
+                Ok::<_, macrame::DbError>(row.get::<String>(0).unwrap_or_default())
+            })
+            .unwrap();
+        assert_eq!(
+            cstamp, open_stamp,
+            "the close and the open carry one stamp: two calls would not"
+        );
+    }
+
+    /// M6-g uptake: an out-of-order version (its start before the live row's)
+    /// refuses the whole bulk call BEFORE anything is written, naming the id
+    /// and both starts. Macrame's single-open law would refuse it anyway, but
+    /// per chunk — some chunks of the same bulk may have committed already.
+    /// The caller's pre-write refusal keeps the bulk all-or-nothing for the
+    /// caller's bug.
+    #[test]
+    fn out_of_order_version_refuses_the_bulk_before_any_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("ooo.db")).unwrap();
+        let t0 = "2026-01-01T10:00:00.000000Z";
+        let v1 = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(t0)
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[v1]).unwrap(), 1);
+        let early = "2026-01-01T09:59:59.000000Z";
+        let bad = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py","v":2}"#)
+            .valid_from(early)
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        let err = store.upsert_concepts_bulk(&[bad]).unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains("m.py::module") && text.contains(t0) && text.contains(early),
+            "the refusal names the id and both starts: {text}"
+        );
+        // Nothing written: the projection still holds the first row, and its
+        // content is still the first body.
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let (pf, pc): (String, String) = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT valid_from, content FROM concepts WHERE id = ?1",
+                        libsql::params!["m.py::module"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .unwrap();
+                Ok::<_, macrame::DbError>((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(pf, t0);
+        assert!(
+            !pc.contains("\"v\":2"),
+            "the bad version never landed: {pc}"
+        );
+    }
+
+    /// A rerun that replays a commit's stamps writes the SAME start again
+    /// (the content changed since the last replay, so filter_unchanged keeps
+    /// it): the D-291 re-assert of one start, not a supersession and not a
+    /// refusal — the write lands, the interval stays one open interval at
+    /// that start, and the projection shows the rewritten body.
+    #[test]
+    fn same_start_rewrite_is_the_reassert() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("reassert.db")).unwrap();
+        let s0 = "2026-01-01T10:00:00.000000Z";
+        let v1 = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(s0)
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[v1]).unwrap(), 1);
+        let v1b = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py","done":true}"#)
+            .valid_from(s0)
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[v1b]).unwrap(), 1);
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let (pf, pc): (String, String) = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT valid_from, content FROM concepts WHERE id = ?1",
+                        libsql::params!["m.py::module"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .unwrap();
+                Ok::<_, macrame::DbError>((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(
+            pf, s0,
+            "the start is unchanged — a re-assert, not a new row"
+        );
+        assert!(
+            pc.contains("\"done\":true"),
+            "the rewritten body is live: {pc}"
+        );
+    }
+
+    /// M6-g uptake: the embedding-hash flush is a same-start re-assert of
+    /// derived state at the row's OWN start, at the row's OWN end. A row
+    /// the sweep retired (its settled row) is history — its hash is never
+    /// re-derived, and widening it to the open end (a derived-state write
+    /// changing a settled belief's interval) is exactly the shape the
+    /// uptaken law refuses. The live row keys its own start, and each
+    /// diagnostic read opens one connection at a time: the guard drops
+    /// between the flush calls.
+    #[test]
+    fn hash_flush_leaves_a_settled_row_alone_and_keys_the_rows_own_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, s1, _post) = generations_store(dir.path());
+        let n = store
+            .flush_embedding_hashes(&[("m.py::module".to_string(), "keyed-hash".to_string())])
+            .unwrap();
+        assert_eq!(n, 0, "a settled row's hash is not rewritten");
+        let (mf, mt, retired, mc): (String, String, i64, String) = {
+            let (_g, conn) = store.open_diagnostic_conn().unwrap();
+            runtime()
+                .block_on(async {
+                    let mut rows = conn
+                        .query(
+                            "SELECT valid_from, valid_to, retired, content FROM concepts \
+                         WHERE id = ?1",
+                            libsql::params!["m.py::module"],
+                        )
+                        .await
+                        .map_err(macrame::DbError::Engine)?;
+                    let row = rows
+                        .next()
+                        .await
+                        .map_err(macrame::DbError::Engine)?
+                        .unwrap();
+                    Ok::<_, macrame::DbError>((
+                        row.get::<String>(0).unwrap_or_default(),
+                        row.get::<String>(1).unwrap_or_default(),
+                        row.get::<i64>(2).unwrap_or(0),
+                        row.get::<String>(3).unwrap_or_default(),
+                    ))
+                })
+                .unwrap()
+        };
+        // The fixture retires m at s1 (the retirement act at that start):
+        // start, end and flag stay exactly as the retirement wrote them.
+        assert_eq!(mf, s1, "the settled row's start is untouched: {mf}");
+        assert_eq!(mt, TS_OPEN, "the settled row's end is untouched: {mt}");
+        assert_eq!(retired, 1, "the D-2a retirement stands");
+        assert!(!mc.contains("keyed-hash"), "no hash landed on the dead row");
+        // The LIVE row (n, open since s1) is a same-start re-assert at its
+        // own start — not at the flush's clock.
+        let n = store
+            .flush_embedding_hashes(&[("n.py::module".to_string(), "keyed-hash".to_string())])
+            .unwrap();
+        assert_eq!(n, 1);
+        let (nf, nt): (String, String) = {
+            let (_g, conn) = store.open_diagnostic_conn().unwrap();
+            runtime()
+                .block_on(async {
+                    let mut rows = conn
+                        .query(
+                            "SELECT valid_from, valid_to FROM concepts WHERE id = ?1",
+                            libsql::params!["n.py::module"],
+                        )
+                        .await
+                        .map_err(macrame::DbError::Engine)?;
+                    let row = rows
+                        .next()
+                        .await
+                        .map_err(macrame::DbError::Engine)?
+                        .unwrap();
+                    Ok::<_, macrame::DbError>((
+                        row.get::<String>(0).unwrap_or_default(),
+                        row.get::<String>(1).unwrap_or_default(),
+                    ))
+                })
+                .unwrap()
+        };
+        assert_eq!(nf, s1, "the re-assert keys the row's own start");
+        assert_eq!(nt, TS_OPEN, "the live row carries its open end");
+    }
+}
+
+#[cfg(test)]
+mod stamped_write_tests {
+    use super::*;
+
+    #[test]
+    fn nudge_passes_greater_stamps_unnudged() {
+        let (stamp, nudged) = nudge_valid_from(
+            Some("2026-10-29T10:00:00+00:00"),
+            "2026-10-29T10:00:01+00:00",
+        );
+        assert!(!nudged);
+        assert_eq!(stamp, "2026-10-29T10:00:01+00:00");
+    }
+
+    #[test]
+    fn nudge_advances_ties_by_one_microsecond() {
+        let (stamp, nudged) = nudge_valid_from(
+            Some("2026-10-29T10:00:00+00:00"),
+            "2026-10-29T10:00:00+00:00",
+        );
+        assert!(nudged, "a tie must be flagged for stamp_nudged");
+        assert_eq!(stamp, "2026-10-29T10:00:00.000001Z");
+    }
+
+    #[test]
+    fn nudge_compares_instants_not_offset_spellings() {
+        // 10:00:01+01:00 is 09:00:01Z — before the 09:30Z bound despite
+        // sorting after it lexicographically. String comparison would
+        // pass this through; the nudge must catch it.
+        let (stamp, nudged) =
+            nudge_valid_from(Some("2026-10-29T09:30:00Z"), "2026-10-29T10:00:01+01:00");
+        assert!(nudged);
+        assert_eq!(stamp, "2026-10-29T09:30:00.000001Z");
+    }
+
+    #[test]
+    fn nudge_rejects_regressing_stamps() {
+        let (stamp, nudged) = nudge_valid_from(
+            Some("2026-10-29T10:00:00+00:00"),
+            "2026-10-28T10:00:00+00:00",
+        );
+        assert!(nudged, "a backwards stamp must never be written");
+        assert_eq!(stamp, "2026-10-29T10:00:00.000001Z");
+    }
+
+    #[test]
+    fn nudge_without_a_bound_passes_through() {
+        let (stamp, nudged) = nudge_valid_from(None, "2026-10-29T10:00:00+00:00");
+        assert!(!nudged);
+        assert_eq!(stamp, "2026-10-29T10:00:00+00:00");
+    }
+
+    #[test]
+    fn zulu_normalizer_folds_offsets_into_the_instant() {
+        // Macrame's normalize_timestamp accepts only ...SS.ffffffZ, so
+        // the write boundary speaks Zulu and the offset folds here.
+        assert_eq!(
+            zulu_valid_from("2026-10-29T10:00:01+01:00"),
+            Some("2026-10-29T09:00:01.000000Z".to_string())
+        );
+        assert_eq!(
+            zulu_valid_from("2026-10-29T10:00:00.000000Z"),
+            Some("2026-10-29T10:00:00.000000Z".to_string())
+        );
+        assert_eq!(zulu_valid_from("not a stamp"), None);
+    }
+
+    fn one_module_projection() -> ProjectedGraph {
+        use std::collections::HashMap;
+        use std::sync::Arc;
+        let mut modules = HashMap::new();
+        modules.insert(
+            "m.py::module".to_string(),
+            Arc::new(crate::types::Module {
+                id: "m.py::module".to_string(),
+                name: "m".to_string(),
+                path: std::path::PathBuf::from("m.py"),
+                language: crate::types::Language::Python,
+                package: None,
+                exports: Vec::new(),
+                star_exports: None,
+                uses: Vec::new(),
+                resolved_uses: Vec::new(),
+                attr_reads: Vec::new(),
+                classes: Vec::new(),
+                functions: Vec::new(),
+                imports: Vec::new(),
+                constants: Vec::new(),
+                type_aliases: Vec::new(),
+                parse_quality: crate::types::ParseQuality::Clean,
+                file_version: 1,
+                content_hash: 0x9e37,
+                embedding: crate::types::EmbeddingVec::default(),
+            }),
+        );
+        ProjectedGraph {
+            modules,
+            classes: HashMap::new(),
+            functions: HashMap::new(),
+            imports: HashMap::new(),
+            constants: HashMap::new(),
+            type_aliases: HashMap::new(),
+            routes: HashMap::new(),
+            file_to_modules: HashMap::new(),
+            module_by_dotted_name: HashMap::new(),
+            module_path_index: HashMap::new(),
+            importers: HashMap::new(),
+            imports_by_importer: HashMap::new(),
+            callers_by_callee: HashMap::new(),
+            callees_by_caller: HashMap::new(),
+            call_evidence: HashMap::new(),
+            subclasses: HashMap::new(),
+            implementers: HashMap::new(),
+            instantiated_by: HashMap::new(),
+            referenced_by: HashMap::new(),
+            path_maps: crate::graph::path_maps::PathMaps::default(),
+            decorated_by: HashMap::new(),
+            overridden_by: HashMap::new(),
+            overrides_base: HashMap::new(),
+            ambiguous_bases: Vec::new(),
+            synthetic_edges: Default::default(),
+        }
+    }
+
+    /// P5a.2: a stamped flush lands the given `valid_from` — every
+    /// concept the build mints carries the commit stamp, not the clock.
+    #[test]
+    fn stamped_concept_build_carries_the_given_stamp() {
+        let projection = one_module_projection();
+        let digests = SourceBlobDigests::new();
+        let stamp = "2026-10-29T10:00:00+00:00";
+        let built = build_v2_concepts_all_at(&projection, &digests, stamp);
+        assert_eq!(built.len(), 1);
+        assert!(built.iter().all(|c| c.valid_from == stamp));
+        let filed = build_v2_concepts_for_file_at(&projection, "m.py", &digests, stamp);
+        assert_eq!(filed.len(), 1);
+        assert!(filed.iter().all(|c| c.valid_from == stamp));
+        // And the default twin still stamps the clock.
+        let clocked = build_v2_concepts_all(&projection, &digests);
+        assert!(clocked.iter().all(|c| c.valid_from != stamp));
+    }
+
+    /// P5a.2: `history_of` over three commit-stamped generations returns
+    /// commit order (newest first), each version carrying its commit stamp.
+    #[test]
+    fn stamped_spine_generations_read_back_in_commit_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("p5a2.db")).unwrap();
+        let stamps = [
+            "2026-10-29T10:00:00.000000Z",
+            "2026-10-29T10:00:01.000000Z",
+            "2026-10-29T10:00:02.000000Z",
+        ];
+        let mut digests = Vec::new();
+        for (i, contents) in [b"x = 1\n".as_slice(), b"x = 2\n", b"x = 3\n"]
+            .iter()
+            .enumerate()
+        {
+            let digest = match store.put_source_blob("m.py", contents).unwrap() {
+                BlobOutcome::Stored { digest, .. } => digest,
+                outcome => panic!("blob {i} must store, got {outcome:?}"),
+            };
+            store
+                .maintain_content_spine(&[("m.py::module".to_string(), digest.clone())], stamps[i])
+                .unwrap();
+            digests.push(digest);
+        }
+        let chain = store.history_of("m.py").unwrap();
+        assert_eq!(chain.len(), 3);
+        assert_eq!(chain[0].digest, digests[2]);
+        assert_eq!(chain[0].valid_from, stamps[2]);
+        assert_eq!(chain[1].digest, digests[1]);
+        assert_eq!(chain[1].valid_from, stamps[1]);
+        assert_eq!(chain[2].digest, digests[0]);
+        assert_eq!(chain[2].valid_from, stamps[0]);
+    }
+
+    /// P5a.2 (H-14 pin): the chain follows the stamps, not the insertion
+    /// order. An out-of-order ingest would silently reorder history with
+    /// no error anywhere — which is exactly why INV-10 refuses it (P5a.3)
+    /// instead of letting the reads sort it out.
+    #[test]
+    fn out_of_order_stamps_reorder_the_chain_silently() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("p5a2c.db")).unwrap();
+        // Inserted d1, d2, d3 — but d2's stamp predates d1's.
+        let stamps = [
+            "2026-10-29T10:00:00.000000Z",
+            "2026-10-29T09:00:01.000000Z",
+            "2026-10-29T10:00:02.000000Z",
+        ];
+        let mut digests = Vec::new();
+        for (i, contents) in [b"x = 1\n".as_slice(), b"x = 2\n", b"x = 3\n"]
+            .iter()
+            .enumerate()
+        {
+            let digest = match store.put_source_blob("m.py", contents).unwrap() {
+                BlobOutcome::Stored { digest, .. } => digest,
+                outcome => panic!("blob {i} must store, got {outcome:?}"),
+            };
+            store
+                .maintain_content_spine(&[("m.py::module".to_string(), digest.clone())], stamps[i])
+                .unwrap();
+            digests.push(digest);
+        }
+        let chain = store.history_of("m.py").unwrap();
+        assert_eq!(chain.len(), 3);
+        // Stamp order, not insertion order: d1 sorts between d3 and d2.
+        assert_eq!(chain[0].digest, digests[2]);
+        assert_eq!(chain[1].digest, digests[0]);
+        assert_eq!(chain[2].digest, digests[1]);
+    }
+
+    /// P5d: tagging merges into `extra` — a row that carried a digest still
+    /// carries it, and the source lands beside it.
+    #[test]
+    fn observation_tagging_merges_and_never_drops_extra() {
+        let row = v2_upsert(
+            "m.py::module",
+            "m",
+            serde_json::json!({"kind": "module", "file_path": "m.py"}),
+            "2026-01-01T00:00:00.000000Z",
+            Some("abc123"),
+        );
+        let mut rows = vec![row];
+        tag_observation_rows(
+            &mut rows,
+            &ObservationSource {
+                source: "mutation",
+                tool: Some("replace_entity_body"),
+                plan_id: Some("01PLAN"),
+                attempt_id: Some("01ATTEMPT"),
+                lineage: None,
+            },
+        );
+        let extra: serde_json::Value =
+            serde_json::from_str(rows[0].extra.as_deref().unwrap()).unwrap();
+        let inner = &extra["coderadar"];
+        assert_eq!(inner["source"], "mutation");
+        assert_eq!(inner["tool"], "replace_entity_body");
+        assert_eq!(inner["plan_id"], "01PLAN");
+        assert_eq!(inner["attempt_id"], "01ATTEMPT");
+        // The merge is the point: the digest the write was about survives.
+        assert_eq!(inner["source_blob"], "abc123");
+        assert_eq!(inner["kind"], "module");
+    }
+
+    /// P5d: provenance is not belief. Two writes that found identical
+    /// content must not mint a version apiece — otherwise every no-op
+    /// reindex would churn `valid_from` (the spine test caught exactly
+    /// this) — while a genuine extra change still reads as one.
+    #[test]
+    fn provenance_does_not_make_a_row_look_changed() {
+        let plain = r#"{"coderadar":{"format":1,"kind":"module","source":"analyze"}}"#;
+        let with_plan = r#"{"coderadar":{"format":1,"kind":"module","source":"mutation","plan_id":"01P","attempt_id":"01A","tool":"t"}}"#;
+        assert_eq!(provenance_blind(plain), provenance_blind(with_plan));
+        let different =
+            r#"{"coderadar":{"format":1,"kind":"module","source":"analyze","file_path":"m.py"}}"#;
+        assert_ne!(provenance_blind(plain), provenance_blind(different));
+        // An `extra` that does not parse keeps the old compare-as-string law.
+        assert_ne!(provenance_blind("not json"), provenance_blind(plain));
+    }
+
+    /// P5d (H-26): the observation mark names how far ahead the recorded
+    /// axis sits, so it only ever moves forward.
+    #[test]
+    fn the_observation_mark_is_monotonic() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("obs.db")).unwrap();
+        store
+            .record_observation_instant("main", "2026-03-01T10:00:00.000000Z")
+            .unwrap();
+        store
+            .record_observation_instant("main", "2026-03-01T09:00:00.000000Z")
+            .unwrap();
+        assert_eq!(
+            store.observation_instant("main").unwrap().as_deref(),
+            Some("2026-03-01T10:00:00.000000Z")
+        );
+        store
+            .record_observation_instant("main", "2026-03-02T10:00:00.000000Z")
+            .unwrap();
+        assert_eq!(
+            store.observation_instant("main").unwrap().as_deref(),
+            Some("2026-03-02T10:00:00.000000Z")
+        );
+    }
+
+    /// P5a.2: a stamped branch write lands the stamp on both rows it
+    /// mints — the spine concept and the branch pointer concept.
+    #[test]
+    fn stamped_branch_write_lands_the_given_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("p5a2b.db")).unwrap();
+        store.fork_branch("feat", "main").unwrap();
+        let stamp = zulu_valid_from("2026-10-29T10:00:00+00:00").unwrap();
+        let spine_id = store
+            .write_branch_content_at("m.py", b"x = 1\n", "feat", &stamp)
+            .unwrap();
+        let pointer_id = branch_pointer_id("m.py", "feat");
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let stamps: std::collections::HashMap<String, String> = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT id, valid_from FROM concepts WHERE id IN (?1, ?2)",
+                        libsql::params![pointer_id.as_str(), spine_id.as_str()],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let mut out = std::collections::HashMap::new();
+                while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                    out.insert(
+                        row.get::<String>(0).unwrap_or_default(),
+                        row.get::<String>(1).unwrap_or_default(),
+                    );
+                }
+                Ok::<_, macrame::DbError>(out)
+            })
+            .unwrap();
+        assert_eq!(
+            stamps.get(&pointer_id).map(String::as_str),
+            Some(stamp.as_str())
+        );
+        assert_eq!(
+            stamps.get(&spine_id).map(String::as_str),
+            Some(stamp.as_str())
+        );
+    }
+
+    /// P5a.3: retiring at an explicit stamp closes the concept row at
+    /// that stamp — a file deleted in a commit ends at the commit's
+    /// time, not at ingest time.
+    #[test]
+    fn retire_entities_at_lands_the_given_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("ret.db")).unwrap();
+        let v1 = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m"}"#)
+            .valid_from("2026-01-01T10:00:00.000000Z")
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[v1]).unwrap(), 1);
+        let (n, _) = store
+            .retire_entities_at(&["m.py::module".to_string()], "2026-01-02T10:00:00.000000Z")
+            .unwrap();
+        assert_eq!(n, 1);
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let valid_to: String = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT valid_to FROM concepts WHERE id = ?1 AND retired = 1",
+                        libsql::params!["m.py::module"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .expect("retired row exists");
+                Ok::<_, macrame::DbError>(row.get::<String>(0).unwrap_or_default())
+            })
+            .unwrap();
+        assert_eq!(valid_to, "2026-01-02T10:00:00.000000Z");
+    }
+
+    /// P5a.3: the tree-scoped edge sweep closes a deleted call at the
+    /// commit's stamp — `reconstruct` before the commit still sees it,
+    /// after does not.
+    #[test]
+    fn retire_stale_edges_at_closes_at_the_given_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("rete.db")).unwrap();
+        for id in ["a.py::f", "b.py::g"] {
+            let v = macrame::ConceptUpsert::new(id, id)
+                .content(r#"{"kind":"function","name":"x"}"#)
+                .valid_from("2026-01-01T10:00:00.000000Z")
+                .valid_to(TS_OPEN.to_string())
+                .retired(false);
+            store.upsert_concepts_bulk(&[v]).unwrap();
+        }
+        store
+            .assert_edge(
+                "a.py::f",
+                "b.py::g",
+                "CALLS",
+                "{}",
+                "2026-01-01T10:00:00.000000Z",
+                1.0,
+            )
+            .unwrap();
+        let retired = store
+            .retire_stale_edges_at(
+                &std::collections::HashSet::new(),
+                "2026-01-02T10:00:00.000000Z",
+            )
+            .unwrap();
+        assert_eq!(retired, 1);
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let valid_to: String = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT valid_to FROM links WHERE source_id = ?1 \
+                         AND target_id = ?2 AND edge_type = ?3 \
+                         ORDER BY valid_from DESC LIMIT 1",
+                        libsql::params!["a.py::f", "b.py::g", "CALLS"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .expect("edge row exists");
+                Ok::<_, macrame::DbError>(row.get::<String>(0).unwrap_or_default())
+            })
+            .unwrap();
+        assert_eq!(valid_to, "2026-01-02T10:00:00.000000Z");
+    }
+
+    /// P5a.3: the commit kind is ledger infrastructure — the cold-start
+    /// classifier skips it exactly like the spine and the pointers, so a
+    /// store with ingested history still loads.
+    #[test]
+    fn commit_kind_classifies_as_spine() {
+        let content = r#"{"meta_version":2,"kind":"commit","sha":"abc"}"#;
+        assert!(matches!(
+            classify_v2_concept(content),
+            V2ConceptClass::Spine
+        ));
+    }
+
+    /// P5a.3 (INV-12): the stamping-mode flag round-trips through `kv` —
+    /// the mechanism both the ingest claim and the analyze refusal read.
+    #[test]
+    fn stamping_mode_flag_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("kv.db")).unwrap();
+        assert_eq!(
+            store
+                .kv_get_sync(crate::graph::ingest::STAMPING_MODE_KEY)
+                .unwrap(),
+            None
+        );
+        store
+            .kv_put_sync(
+                crate::graph::ingest::STAMPING_MODE_KEY,
+                crate::graph::ingest::MODE_COMMIT_TIME,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .kv_get_sync(crate::graph::ingest::STAMPING_MODE_KEY)
+                .unwrap()
+                .as_deref(),
+            Some(crate::graph::ingest::MODE_COMMIT_TIME)
+        );
+    }
+
+    /// P5a.4 (DR-41): a tombstone reads as absent on its lineage and
+    /// changes nothing on the trunk. The file is gone on the branch even
+    /// though the trunk still holds it — absence, never trunk fallback,
+    /// never empty bytes.
+    #[test]
+    fn tombstone_reads_as_absent_not_fallback() {
+        // Local twin of `tests::source_ref_store`: a trunk module with a
+        // digest plus one function (separate test modules, no shared
+        // fixtures across them).
+        fn trunk_module_store(dir: &std::path::Path) -> CodeGraphStore {
+            let store = CodeGraphStore::open(dir.join("refs.db")).unwrap();
+            let digest = "c".repeat(64);
+            let module_extra =
+                format!(r#"{{"coderadar":{{"format":1,"source_blob":"{digest}"}}}}"#);
+            let module = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+                .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+                .extra(module_extra)
+                .valid_from(now_iso8601())
+                .valid_to(TS_OPEN.to_string())
+                .retired(false);
+            assert_eq!(store.upsert_concepts_bulk(&[module]).unwrap(), 1);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            store
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = trunk_module_store(dir.path());
+        store.fork_branch("feat", "main").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let stamp = now_iso8601();
+        store
+            .write_branch_tombstone_at("m.py", "feat", &stamp)
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let at = now_iso8601();
+        let gone = store
+            .entity_source_ref_at("m.py::module", &at, "feat")
+            .unwrap();
+        assert!(gone.is_none(), "tombstoned on feat: {gone:?}");
+        let kept = store
+            .entity_source_ref_at("m.py::module", &at, "main")
+            .unwrap()
+            .expect("trunk still holds m.py");
+        assert_eq!(kept.digest.as_deref(), Some("c".repeat(64).as_str()));
+    }
+
+    /// macrame-db 0.22.0 (D-314/D-315): the API cannot raise `CrossLineage`
+    /// any more — every (lineage, id) concept write is routable. A branch
+    /// restate of a trunk-owned id is the branch's own takeover: the
+    /// projection row is open and starts before the restate, so the act
+    /// rides `supersede(true)` on the branch — the cut + own version on
+    /// the branch's own lineage (one stamp), the trunk row untouched.
+    #[test]
+    fn branch_restate_of_trunk_id_is_the_branch_s_own_takeover() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("restate.db")).unwrap();
+        let module = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[module]).unwrap(), 1);
+        store.fork_branch("feat", "main").unwrap();
+        let restate = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py","changed":true}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(macrame::BranchId::new("feat").unwrap());
+        assert_eq!(store.upsert_concepts_bulk(&[restate]).unwrap(), 1);
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let (trunk_row, branch_rows, cuts): (String, i64, i64) = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT content FROM concepts WHERE id = ?1 ORDER BY branch_id LIMIT 1",
+                        libsql::params!["m.py::module"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let trunk_content = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .map(|row| row.get::<String>(0).unwrap_or_default())
+                    .expect("the trunk row survives untouched");
+                rows = conn
+                .query(
+                    "SELECT COUNT(*) FROM concept_versions WHERE id = ?1 AND branch_id = 'feat'",
+                    libsql::params!["m.py::module"],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+                let branch_count: i64 = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .map(|row| row.get::<i64>(0).unwrap_or(0))
+                    .unwrap();
+                rows = conn
+                    .query(
+                        "SELECT COUNT(*) FROM concept_cuts WHERE id = ?1 AND branch_id = 'feat'",
+                        libsql::params!["m.py::module"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let cut_count: i64 = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .map(|row| row.get::<i64>(0).unwrap_or(0))
+                    .unwrap();
+                Ok::<_, macrame::DbError>((trunk_content, branch_count, cut_count))
+            })
+            .unwrap();
+        // The trunk's row keeps what it carried (the takeover happens on
+        // the branch's own lineage), the branch holds its own version, and
+        // the cut caps the fall-through where the takeover begins.
+        assert!(
+            !trunk_row.contains("\"changed\":true"),
+            "trunk untouched: {trunk_row:?}"
+        );
+        assert_eq!(branch_rows, 1, "one own version on the branch");
+        assert_eq!(cuts, 1, "one cut at the takeover's stamp");
+    }
+
+    /// The trunk's retire never speaks for another lineage (0.22.0
+    /// post-merge review; P5a.4's mint-lineage round-trip before it): a
+    /// branch-minted row the trunk does not hold is left alone.
+    #[test]
+    fn trunk_retire_leaves_a_branch_mint_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("retline.db")).unwrap();
+        store.fork_branch("feat", "main").unwrap();
+        let minted = macrame::ConceptUpsert::new("n.py::module", "n.py::module")
+            .content(r#"{"meta_version":2,"kind":"module","name":"n.py","file_path":"n.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(macrame::BranchId::new("feat").unwrap());
+        assert_eq!(store.upsert_concepts_bulk(&[minted]).unwrap(), 1);
+        let (n, _) = store
+            .retire_entities_at(&["n.py::module".to_string()], &now_iso8601())
+            .unwrap();
+        assert_eq!(n, 0, "the trunk holds nothing to retire");
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let (retired, branch_id): (i64, String) = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT retired, branch_id FROM concepts WHERE id = ?1",
+                        libsql::params!["n.py::module"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .expect("retired row exists");
+                Ok::<_, macrame::DbError>((
+                    row.get::<i64>(0).unwrap_or(0),
+                    row.get::<String>(1).unwrap_or_default(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(retired, 0, "the branch's mint is untouched");
+        assert_eq!(branch_id, "feat");
+    }
+
+    /// The trunk deletes a function it adopted at a merge (0.22.0
+    /// post-merge review): the tombstone lands on main — the adoption's
+    /// own lineage — and the branch that minted it still believes it.
+    #[test]
+    fn trunk_retire_of_an_adopted_id_closes_main_not_the_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("retadopt.db")).unwrap();
+        store.fork_branch("feat", "main").unwrap();
+        let row = |title: &str, from: &str| {
+            macrame::ConceptUpsert::new("c.py::g", title)
+                .content(format!(
+                    r#"{{"meta_version":2,"kind":"function","name":"g","file_path":"c.py","content_hash":"{title}"}}"#
+                ))
+                .valid_from(from.to_string())
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)
+        };
+        let feat = macrame::BranchId::new("feat").unwrap();
+        store
+            .upsert_concepts_bulk(
+                &[row("f", "2026-01-01T00:00:00.000000Z").on_branch(feat.clone())],
+            )
+            .unwrap();
+        store
+            .upsert_concepts_bulk(&[row("adopted", "2026-02-01T00:00:00.000000Z")])
+            .unwrap();
+        let (n, _) = store
+            .retire_entities_at(&["c.py::g".to_string()], "2026-03-01T00:00:00.000000Z")
+            .unwrap();
+        assert_eq!(n, 1);
+        let at = |branch: &macrame::BranchId, instant: &str| {
+            runtime()
+                .block_on(
+                    store.db().concepts_by_id(
+                        &["c.py::g".to_string()],
+                        macrame::ReadPlan::new()
+                            .on(branch.clone())
+                            .valid_at(instant.to_string()),
+                    ),
+                )
+                .unwrap()
+                .len()
+        };
+        let main = macrame::BranchId::new("main").unwrap();
+        assert_eq!(
+            at(&main, "2026-02-15T00:00:00.000000Z"),
+            1,
+            "the adopted window stands"
+        );
+        assert_eq!(
+            at(&main, "2026-04-01T00:00:00.000000Z"),
+            0,
+            "retired on main"
+        );
+        assert_eq!(
+            at(&feat, "2026-04-01T00:00:00.000000Z"),
+            1,
+            "the branch still believes it"
+        );
+        // A re-run is a no-op: the trunk no longer holds the id.
+        let (again, _) = store
+            .retire_entities_at(&["c.py::g".to_string()], "2026-03-01T00:00:00.000000Z")
+            .unwrap();
+        assert_eq!(again, 0);
+        assert_eq!(at(&feat, "2026-04-01T00:00:00.000000Z"), 1);
+    }
+
+    /// P5a.5 (DR-41): the embedding-hash flush restates rows it did not
+    /// mint, so each upsert rides the row's mint lineage — a branch-minted
+    /// entity flushed on the trunk tripped the cross-lineage trigger on
+    /// its own id (fail-open `[diag]`, hashes never landed).
+    #[test]
+    fn embedding_hash_flush_carries_the_mint_lineage() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("embline.db")).unwrap();
+        store.fork_branch("feat", "main").unwrap();
+        let minted = macrame::ConceptUpsert::new("e.py::g", "e.py::g")
+            .content(r#"{"meta_version":2,"kind":"function","name":"g","file_path":"e.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(macrame::BranchId::new("feat").unwrap());
+        assert_eq!(store.upsert_concepts_bulk(&[minted]).unwrap(), 1);
+        let n = store
+            .flush_embedding_hashes(&[("e.py::g".to_string(), "keyed-hash".to_string())])
+            .unwrap();
+        assert_eq!(n, 1);
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let (content, branch_id): (String, String) = runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query(
+                        "SELECT content, branch_id FROM concepts WHERE id = ?1",
+                        libsql::params!["e.py::g"],
+                    )
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(macrame::DbError::Engine)?
+                    .expect("flushed row exists");
+                Ok::<_, macrame::DbError>((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                ))
+            })
+            .unwrap();
+        assert_eq!(branch_id, "feat");
+        assert!(content.contains("keyed-hash"), "hash landed: {content}");
+    }
+
+    /// P5a.4 (DR-41): sweep candidates are mint-lineage rows. A trunk
+    /// sweep never retires a branch-minted module (it is not in the
+    /// trunk's tree and never will be); a branch sweep never touches
+    /// trunk rows (global ids — the candidate set is where the scoping
+    /// lives).
+    #[test]
+    fn sweep_candidates_are_mint_lineage_scoped() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("sweep.db")).unwrap();
+        let trunk_module = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[trunk_module]).unwrap(), 1);
+        store.fork_branch("feat", "main").unwrap();
+        let minted = macrame::ConceptUpsert::new("n.py::module", "n.py::module")
+            .content(r#"{"meta_version":2,"kind":"module","name":"n.py","file_path":"n.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(macrame::BranchId::new("feat").unwrap());
+        assert_eq!(store.upsert_concepts_bulk(&[minted]).unwrap(), 1);
+        let trunk_keep: std::collections::HashSet<String> =
+            ["m.py::module".to_string()].into_iter().collect();
+        // The branch-minted module is live, file-annotated, and absent
+        // from the trunk keep set — an unscoped sweep would retire it.
+        let retired = store
+            .retire_stale_file_concepts_at(&trunk_keep, &now_iso8601(), "main")
+            .unwrap();
+        assert_eq!(retired, 0, "trunk sweep must spare branch-minted rows");
+        let retired = store
+            .retire_stale_file_concepts_at(
+                &std::collections::HashSet::new(),
+                &now_iso8601(),
+                "feat",
+            )
+            .unwrap();
+        assert_eq!(retired, 1, "branch sweep retires its own stale rows");
+    }
+
+    /// P5a.4 (DR-41): `mint_lineage` names the mint lineage — the query
+    /// both ingest lineages consult before minting entity concepts.
+    #[test]
+    fn mint_lineage_names_the_mint_lineage() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("mint.db")).unwrap();
+        let trunk_module = macrame::ConceptUpsert::new("m.py::module", "m.py::module")
+            .content(r#"{"kind":"module","name":"m.py","file_path":"m.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false);
+        assert_eq!(store.upsert_concepts_bulk(&[trunk_module]).unwrap(), 1);
+        assert!(
+            matches!(
+                store.mint_lineage("m.py::module").unwrap().as_deref(),
+                None | Some("main")
+            ),
+            "trunk rows read as trunk (or default)"
+        );
+        assert_eq!(store.mint_lineage("nope.py::module").unwrap(), None);
+        store.fork_branch("feat", "main").unwrap();
+        let minted = macrame::ConceptUpsert::new("n.py::module", "n.py::module")
+            .content(r#"{"meta_version":2,"kind":"module","name":"n.py","file_path":"n.py"}"#)
+            .valid_from(now_iso8601())
+            .valid_to(TS_OPEN.to_string())
+            .retired(false)
+            .on_branch(macrame::BranchId::new("feat").unwrap());
+        assert_eq!(store.upsert_concepts_bulk(&[minted]).unwrap(), 1);
+        assert_eq!(
+            store.mint_lineage("n.py::module").unwrap().as_deref(),
+            Some("feat")
+        );
+    }
+
+    /// M6-g follow-up (the review's unconfirmed item, two-read protocol):
+    /// the retirement act re-asserts the row at the row's own start with
+    /// `retired = 1` and `valid_to = ts`. Read as Macrame's doc reads
+    /// `retired` — "not believed from this row's start on" — that shape
+    /// hides the row's whole live window, not only the time after the
+    /// retirement instant. The protocol: read at a mid instant before the
+    /// retire, retire, read at the same mid instant again. The same mid
+    /// instant must stay believed on both lineages; only instants from the
+    /// retirement stamp onward go absent. Stamps run through a `FakeClock`
+    /// at the commit-stamp times so `recorded_at` lands where a commit-time
+    /// store lands it (recorded = the commit's stamps).
+    /// M6-g follow-up shadow rails: both halves share one opener whose
+    /// fake clock sits on the first commit's stamps.
+    fn shared_open(
+        secs: (u64, u64, u64, u64, u64),
+        name: &str,
+    ) -> (
+        tempfile::TempDir,
+        CodeGraphStore,
+        std::sync::Arc<macrame::prelude::FakeClock>,
+    ) {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let fake = std::sync::Arc::new(macrame::prelude::FakeClock::new(
+            SystemTime::UNIX_EPOCH + Duration::from_secs(secs.0),
+        ));
+        let clock: std::sync::Arc<dyn macrame::prelude::Clock> = fake.clone();
+        let db = runtime()
+            .block_on(macrame::Database::open_with_clock(
+                dir.path().join(name),
+                None,
+                clock,
+            ))
+            .unwrap();
+        // A clock-bearing open bypasses the registry on purpose: the fake
+        // clock is the point, and two such opens in one test are two
+        // different stores by construction.
+        (
+            dir,
+            CodeGraphStore {
+                inner: std::sync::Arc::new(StoreInner { db }),
+            },
+            fake,
+        )
+    }
+
+    #[test]
+    fn retire_keeps_the_trunk_s_live_window_readable_below_the_cut() {
+        // 2026-01-01, 2026-01-02, 2026-01-15, 2026-02-01, 2026-02-15 (UTC).
+        // 2026-01-01, 2026-01-02, 2026-01-15, 2026-02-01, 2026-02-15 (UTC).
+        let secs = (
+            1_767_225_600u64,
+            1_767_312_000u64,
+            1_768_320_000u64,
+            1_769_904_000u64,
+            1_771_113_600u64,
+        );
+        let (_dir, store, fake) = shared_open(secs, "retire-window.db");
+        let (t01, _tw, tmid, t02, tpost) = (
+            "2026-01-01T00:00:00.000000Z",
+            "2026-01-02T00:00:00.000000Z",
+            "2026-01-15T00:00:00.000000Z",
+            "2026-02-01T00:00:00.000000Z",
+            "2026-02-15T00:00:00.000000Z",
+        );
+        let content = "def g():
+    return 1
+";
+        store
+            .upsert_concepts_bulk(&[ConceptUpsert::new("c.py::g", "c.py::g")
+                .content(
+                    "def g():
+    return 1
+",
+                )
+                .valid_from(t01)
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)])
+            .unwrap();
+        assert!(
+            store
+                .reconstruct_on(tmid, "main")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "sanity: the entity is believed at {tmid} before the retire"
+        );
+        assert!(
+            walk_holds(&store, "c.py::g", tmid, "main"),
+            "sanity (walk): the entity holds at {tmid} before the retire"
+        );
+        assert!(
+            runtime()
+                .block_on(
+                    store
+                        .db()
+                        .reconstruct_as_of(macrame::temporal::AsOf::valid_at(tmid))
+                )
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "sanity (valid fold): the entity holds at {tmid} before the retire"
+        );
+        // The commit clock rides to the retirement's stamp before the retire.
+        fake.advance(std::time::Duration::from_secs(secs.3 - secs.0));
+        let (retired_concepts, edges) = store
+            .retire_entities_at(&["c.py::g".to_string()], t02)
+            .unwrap();
+        assert_eq!(retired_concepts, 1);
+        assert_eq!(edges, 0, "no edges in this fixture");
+        dump_rows(&store, "c.py::g", "TRUNK-after-retire");
+        assert!(
+            store
+                .reconstruct_on(tmid, "main")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "TRUNK_FOLDER: the live window [t01, t02) must survive the retire at {t02}; \
+             the mid read at {tmid} lost it"
+        );
+        assert!(
+            runtime()
+                .block_on(
+                    store
+                        .db()
+                        .reconstruct_as_of(macrame::temporal::AsOf::valid_at(tmid))
+                )
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "TRUNK_VALID_FOLD: the live window [t01, t02) must survive the retire; \
+             the valid-axis fold's mid read at {tmid} lost it"
+        );
+        assert!(
+            !runtime()
+                .block_on(
+                    store
+                        .db()
+                        .reconstruct_as_of(macrame::temporal::AsOf::valid_at(tpost))
+                )
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "TRUNK_VALID_FOLD: the valid-axis fold must not hold the entity after {tpost}"
+        );
+        // The trunk walk's undecided rows paste the log's own per-start
+        // window for the id (Macrame D-316: the same method answers the same
+        // past date whatever the branch spelling), so the mid instant reads
+        // the close row's live window - the same truth the two folds assert
+        // beside this pin. CodeRadar's production past reads
+        // (`Snapshot`/`as_of`/`source_refs_at`) are the folds; the walk now
+        // agrees with them below the cut.
+        assert!(
+            walk_holds(&store, "c.py::g", tmid, "main"),
+            "THE_WALK_PASTES: the pre-cut instant reads the close row's live window"
+        );
+        assert!(
+            !walk_holds(&store, "c.py::g", tpost, "main"),
+            "TRUNK_WALK: the walk must not still hold the entity after {tpost}"
+        );
+        assert!(
+            !store
+                .reconstruct_on(tpost, "main")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "TRUNK: the entity is gone after {tpost} > {t02}"
+        );
+        // D-291's re-add law: a later write follows the tombstone's death.
+        // The tombstone here starts at the retirement instant, so the
+        // partition must not read it as an open interval a later re-add
+        // would overlap.
+        let t03 = "2026-03-01T00:00:00.000000Z";
+        store
+            .upsert_concepts_bulk(&[ConceptUpsert::new("c.py::g", "c.py::g")
+                .content(content)
+                .valid_from(t03)
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)])
+            .unwrap();
+        assert!(
+            store
+                .reconstruct_on(t03, "main")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "the re-add at {t03} is believed"
+        );
+        assert!(
+            store
+                .reconstruct_on(tpost, "main")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "the re-add resurrects the entity from {t03} onward, not at {tpost}"
+        );
+        assert!(
+            walk_holds(&store, "c.py::g", t03, "main"),
+            "the walk holds the re-added entity at {t03}"
+        );
+        assert!(
+            walk_holds(&store, "c.py::g", tmid, "main"),
+            "TRUNK_WALK: the earlier window's close row still answers the mid instant (the re-add's own window starts later)"
+        );
+    }
+
+    #[test]
+    fn retire_keeps_the_branch_s_live_window_readable_below_the_cut() {
+        // 2026-01-01, 2026-01-02, 2026-01-15, 2026-02-01, 2026-02-15 (UTC).
+        // 2026-01-01, 2026-01-02, 2026-01-15, 2026-02-01, 2026-02-15 (UTC).
+        let secs = (
+            1_767_225_600u64,
+            1_767_312_000u64,
+            1_768_320_000u64,
+            1_769_904_000u64,
+            1_771_113_600u64,
+        );
+        let (_dir, store, fake) = shared_open(secs, "retire-window-branch.db");
+        let (t01, tw, tmid, t02, tpost) = (
+            "2026-01-01T00:00:00.000000Z",
+            "2026-01-02T00:00:00.000000Z",
+            "2026-01-15T00:00:00.000000Z",
+            "2026-02-01T00:00:00.000000Z",
+            "2026-02-15T00:00:00.000000Z",
+        );
+        let content = "def g():
+    return 1
+";
+        store
+            .upsert_concepts_bulk(&[ConceptUpsert::new("c.py::g", "c.py::g")
+                .content(content)
+                .valid_from(t01)
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)])
+            .unwrap();
+        // The commit clock rides to the branch write's stamp: commit-time
+        // stores record at the commit.
+        fake.advance(std::time::Duration::from_secs(secs.1 - secs.0));
+        store.fork_branch("feature", "main").unwrap();
+        // D-315-era branch write: an own version at the branch's own stamps
+        // (the takeover marker rides like decide_acts draws it).
+        store
+            .upsert_concepts_bulk(&[ConceptUpsert::new("c.py::g", "c.py::g")
+                .content(content)
+                .valid_from(tw)
+                .valid_to(TS_OPEN.to_string())
+                .retired(false)
+                .supersede(true)
+                .on_branch(macrame::BranchId::new("feature").unwrap())])
+            .unwrap();
+        assert!(
+            store
+                .reconstruct_on(tmid, "feature")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "sanity: the branch believes the entity at {tmid} before the retire"
+        );
+        assert!(
+            walk_holds(&store, "c.py::g", tmid, "feature"),
+            "sanity (walk): the branch holds the entity at {tmid} before the retire"
+        );
+        // The commit clock rides to the retirement's stamp before the retire.
+        fake.advance(std::time::Duration::from_secs(secs.3 - secs.1));
+        let (asked, written) = store
+            .retire_entities_on_branch_at(&["c.py::g".to_string()], "feature", t02)
+            .unwrap();
+        assert_eq!(asked, 1);
+        assert_eq!(written, 1, "the retirement was written, not refused");
+        dump_rows(&store, "c.py::g", "BRANCH-after-retire");
+        assert!(
+            store
+                .reconstruct_on(tmid, "feature")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "BRANCH_FOLDER: the live window [tw, t02) must survive the retire at {t02}; \
+             the mid read at {tmid} lost it"
+        );
+        assert!(
+            walk_holds(&store, "c.py::g", tmid, "feature"),
+            "BRANCH_WALK: the live window [tw, t02) must survive the retire at {t02}; \
+             the walk's mid read at {tmid} lost it"
+        );
+        assert!(
+            !walk_holds(&store, "c.py::g", tpost, "feature"),
+            "BRANCH_WALK: the walk must not still hold the entity after {tpost}"
+        );
+        assert!(
+            !store
+                .reconstruct_on(tpost, "feature")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "BRANCH: the entity is gone after {tpost} > {t02}"
+        );
+    }
+
+    /// The M6b walk (the valid-axis read `decide_acts` and the real-reader
+    /// oracle use): which lineage holds an open belief for the id at one
+    /// valid instant. Presence is the answer; the row shape is the proof.
+    fn walk_holds(store: &CodeGraphStore, id: &str, ts: &str, branch: &str) -> bool {
+        !runtime()
+            .block_on(
+                store.db().concepts_by_id(
+                    &[id.to_string()],
+                    macrame::prelude::ReadPlan::new()
+                        .on(macrame::BranchId::new(branch).unwrap())
+                        .valid_at(ts),
+                ),
+            )
+            .unwrap()
+            .is_empty()
+    }
+
+    /// Dump the raw rows the retire produced, meal by meal: the projection,
+    /// the overlay's versions and cuts, and the log payloads that fold.
+    fn dump_rows(store: &CodeGraphStore, id: &str, leg: &str) {
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let mut concept_rows = runtime()
+            .block_on(conn.query(
+                "SELECT branch_id, valid_from, valid_to, retired, recorded_at \
+                     FROM concepts WHERE id = ?1",
+                [id],
+            ))
+            .unwrap();
+        runtime().block_on(async {
+            while let Some(row) = concept_rows.next().await.unwrap() {
+                println!(
+                    "[{leg}] concepts: {} | {} | {} | {} | {}",
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                    row.get::<i64>(3).unwrap_or(i64::MIN),
+                    row.get::<String>(4).unwrap_or_default(),
+                );
+            }
+        });
+        let mut versions = runtime()
+            .block_on(conn.query(
+                "SELECT branch_id, valid_from, valid_to, recorded_at \
+                     FROM concept_versions WHERE id = ?1 ORDER BY branch_id, valid_from",
+                [id],
+            ))
+            .unwrap();
+        runtime().block_on(async {
+            while let Some(row) = versions.next().await.unwrap() {
+                println!(
+                    "[{leg}] versions: {} | {} | {} | {}",
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                    row.get::<String>(3).unwrap_or_default(),
+                );
+            }
+        });
+        let mut cuts = runtime()
+            .block_on(conn.query(
+                "SELECT branch_id, cut_at, recorded_at FROM concept_cuts \
+                     WHERE id = ?1 ORDER BY branch_id, cut_at",
+                [id],
+            ))
+            .unwrap();
+        runtime().block_on(async {
+            while let Some(row) = cuts.next().await.unwrap() {
+                println!(
+                    "[{leg}] cuts: {} | {} | {}",
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                );
+            }
+        });
+        let mut logs = runtime()
+            .block_on(conn.query(
+                "SELECT seq_id, recorded_at, operation, branch_id, payload \
+                     FROM transaction_log WHERE entity_id = ?1 AND table_name = 'concepts' \
+                     ORDER BY seq_id",
+                [id],
+            ))
+            .unwrap();
+        runtime().block_on(async {
+            while let Some(row) = logs.next().await.unwrap() {
+                println!(
+                    "[{leg}] log#{} {} {} {} {}",
+                    row.get::<i64>(0).unwrap_or(0),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                    row.get::<String>(3).unwrap_or_default(),
+                    row.get::<String>(4).unwrap_or_default(),
+                );
+            }
+        });
     }
 }

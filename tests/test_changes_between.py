@@ -135,8 +135,8 @@ class TestFourClasses:
         real = _core.content_hashes_at
         seen: list[str] = []
 
-        def rewritten(ids, ts, branch="main"):
-            out = real(ids, ts, branch)
+        def rewritten(ids, ts, branch="main", valid=False):
+            out = real(ids, ts, branch, valid=valid)
             seen.append(ts)
             if len(seen) == 2:
                 for raw, entry in out["hashes"].items():
@@ -235,9 +235,9 @@ class TestFoldDiscipline:
         calls = []
         real = _core.content_hashes_at
 
-        def counting(ids, ts, branch="main"):
+        def counting(ids, ts, branch="main", valid=False):
             calls.append(ts)
-            return real(ids, ts, branch)
+            return real(ids, ts, branch, valid=valid)
 
         monkeypatch.setattr(_core, "content_hashes_at", counting)
         ops.changes_between(t0, t1)
@@ -254,8 +254,8 @@ class TestRespellingMerge:
         assert _core.canonical_id(old) == _core.canonical_id(new) == new
         real = _core.content_hashes_at
 
-        def crafted(ids, ts, branch="main"):
-            out = real(ids, ts, branch)
+        def crafted(ids, ts, branch="main", valid=False):
+            out = real(ids, ts, branch, valid=valid)
             entry = {"id": new, "content_hash": 12345,
                      "start_line": 1, "end_line": 3}
             out["hashes"][old] = dict(entry, id=old)
