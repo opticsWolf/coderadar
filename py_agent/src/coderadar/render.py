@@ -82,8 +82,33 @@ def search(query: str, kind: str | None, results: list[dict], *,
         sig = entity.get("signature")
         if sig:
             lines.append(f"- **Signature:** `{sig}`")
+        notes = entity.get("notes") or []
+        if notes:
+            lines.extend(_why_lines(notes))
         lines.append("")
     return "\n".join(lines)
+
+
+def _why_lines(notes: list[dict], indent: str = "") -> list[str]:
+    """One line per note: id, kind, open count and the body's first line.
+
+    The body's head is the legible part; the full text is in the JSON.
+    Annotations say how many items are still open — the fact that makes a
+    note actionable — and an all-checked list shows `0 open`, never
+    nothing.
+    """
+    out = []
+    for note in notes:
+        body = (note.get("body") or "").strip().splitlines()
+        head = body[0] if body else "(empty)"
+        if len(head) > 140:
+            head = head[:140] + "..."
+        mark = ""
+        if note.get("kind") == "annotation":
+            mark = f" ({note.get('open', 0)} open)"
+        out.append(
+            f"{indent}- **Why:** `{note.get('id', '?')}`{mark} — {head}")
+    return out
 
 
 def _caller_rows(results: list[dict]) -> list[str]:
@@ -728,6 +753,9 @@ def search_similar(query: str, results: list[dict]) -> str:
         doc = r.get("docstring")
         if doc:
             lines.append(f"   {doc[:120]}{'...' if len(doc) > 120 else ''}")
+        notes = r.get("notes") or []
+        if notes:
+            lines.extend(_why_lines(notes, indent="   "))
         lines.append("")
     return "\n".join(lines)
 
@@ -745,6 +773,9 @@ def search_hybrid(query: str, results: list[dict]) -> str:
         lines.append(f"{i}. `{r.get('name', r.get('id', '?'))}` ({r.get('kind', '?')}) — "
                      f"RRF {r.get('score', 0.0):.4f} ({', '.join(arms) or 'no arm'})")
         lines.append(f"   File: `{r.get('file_path', '?')}`")
+        notes = r.get("notes") or []
+        if notes:
+            lines.extend(_why_lines(notes, indent="   "))
         lines.append("")
     return "\n".join(lines)
 
@@ -1001,6 +1032,29 @@ def rebuild(result: dict) -> str:
     if not embeddings.get("embedded"):
         out.append("embeddings       skipped (run compute-embeddings to restore vectors)")
     return "\n".join(out)
+
+
+def open_items(result: dict) -> str:
+    """Open task items as a legible list (P6b).
+
+    One row per item: where it sits (`about:line`), what it asks, and the
+    id a revise names. Grouped by `about` so a file's items read together;
+    the count is stated once, up top.
+    """
+    items = result["items"]
+    scope = result.get("scope") or "(whole store)"
+    if not items:
+        return f"No open items under {scope}."
+    lines = [f"## Open items: {scope}", f"{len(items)} item(s)", ""]
+    current = None
+    for item in items:
+        if item["about"] != current:
+            current = item["about"]
+            lines.append(f"### `{current}`")
+        lines.append(
+            f"- line {item['line']}: {item['text']}  "
+            f"(`{item['id']}`)")
+    return "\n".join(lines)
 
 
 def annotation_versions(result: dict) -> str:

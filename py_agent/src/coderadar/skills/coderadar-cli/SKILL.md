@@ -71,6 +71,7 @@ coderadar annotations-on TARGET   # every annotation version on a concept, newes
 coderadar comments-on TARGET      # every comment version on a concept, newest first
 coderadar annotation-history ID   # every version of one annotation row
 coderadar comment-history ID      # every version of one comment row
+coderadar open-items [--scope PREFIX]   # every unchecked task item; PREFIX covers `a.py::f` and `a.py::C.m` (P6b)
 coderadar export-annotations [--out FILE] [--store PATH]  # the store's own rows as one JSON document (P8, A-9)
 coderadar import-annotations FILE [--on-conflict error|skip] [--store PATH]  # chains replayed and read back, all-or-nothing validation
 coderadar rebuild-store [--repo PATH] [--store PATH] [--branches a,b] [--export FILE] [--embed]  # fresh store from git + the export; the old one moves to .pre-rebuild-<stamp> (P8, INV-18)
@@ -80,6 +81,12 @@ coderadar diagnose [--unresolved] [--low-confidence]
 
 `traverse` caps `--max-depth` at 10; `--edge-kinds` is comma-separated and
 accepts `inherits` for `extends`.
+
+`search`, `search-similar` and `search-hybrid` hits may carry `notes` — the
+annotations and comments anchored to the entity, to an enclosing id
+(`a.py::C` for a method) or to its file — so a result says why the code is
+the way it is, not just that it exists. `open-items` is the same data
+aggregated: every item still unchecked, annotations only.
 
 `export-annotations` without `--out` prints the document and nothing else, so
 `coderadar export-annotations > a.json` is the plain form. `rebuild-store` is

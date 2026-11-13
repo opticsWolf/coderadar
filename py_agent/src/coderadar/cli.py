@@ -789,6 +789,17 @@ def comment_history_cmd(id: str, fmt: str):
         lambda result: render.annotation_versions(result))
 
 
+@main.command(name="open-items")
+@click.option("--scope", default=None,
+              help="Prefix on the annotated id (`a.py` covers `a.py::f`); default: the whole store.")
+@_format_option
+def open_items(scope: str | None, fmt: str):
+    """Every unchecked task item under SCOPE, annotations only (P6b)."""
+    from . import ops, render
+    _enter_project()
+    _op(fmt, lambda: ops.open_items(scope), render.open_items)
+
+
 def _store_arg(store_path: str | None) -> str | None:
     """An explicit --store wins; otherwise the project's standard store when
     it exists (a fresh CLI process has no loaded graph to fall back on)."""

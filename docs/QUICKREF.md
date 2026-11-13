@@ -39,6 +39,8 @@ Never run two servers on one store — the second gets `DB_LOCKED`.
 | Heal commit bodies | — (ops-only) | — | `ops.backfill_commit_messages(repo, store)` |
 | Annotate / comment | `coderadar annotate ABOUT BODY` / `comment ABOUT BODY` | — | `g.annotate(…)` / `g.comment(…)` |
 | Annotation versions | `coderadar annotations-on T` / `comments-on T` | `coderadar_annotations_on` / `…_comments_on` | `g.annotations_on(…)` / `g.comments_on(…)` |
+| Open task items | `coderadar open-items [--scope P]` | `coderadar_open_items` | `g.open_items(scope)` |
+| Notes on a hit | — (rides search results as `notes`) | — (rides search results) | `ops.search(…)` hits carry `notes` |
 | Export user data | `coderadar export-annotations [--out F]` | — | `g.export_annotations(path)` / `ops.export_annotations(store_path=…)` |
 | Import user data | `coderadar import-annotations F` | — | `g.import_annotations(src, on_conflict=…)` |
 | Rebuild store | `coderadar rebuild-store` | — | `ops.rebuild(repo, store_path=…)` (fresh process) |

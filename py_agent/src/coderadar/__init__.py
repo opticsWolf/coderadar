@@ -832,6 +832,16 @@ class CodeGraph:
         from . import ops
         return ops.comment_history(id, graph=self)
 
+    def open_items(self, scope: str | None = None) -> dict[str, Any]:
+        """Every unchecked task item under a scope, annotations only (P6b).
+
+        `scope` is a prefix on each row's `about` id (`a.py` covers
+        `a.py::f`); `None` reads the whole store. MCP
+        ``coderadar_open_items``.
+        """
+        from . import ops
+        return ops.open_items(scope, graph=self)
+
     def export_annotations(self, path: str | None = None) -> dict[str, Any]:
         """Export every annotation and comment chain as one JSON document
         (P8, A-9/INV-18).

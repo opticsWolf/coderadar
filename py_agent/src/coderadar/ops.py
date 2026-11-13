@@ -64,6 +64,7 @@ __all__ = [
     "module_children",
     "node",
     "normalize_query_spelling",
+    "open_items",
     "parse_names",
     "query",
     "read_source",
@@ -96,6 +97,7 @@ OPERATIONS = (
     "verify_history",
     "changes_between",
     "annotations_on", "comments_on", "annotation_history", "comment_history",
+    "open_items",
     "traverse", "get_smells", "dead_code", "find_clones", "find_scaffolding",
     "replace_body", "update_signature", "rename", "create_entity",
     "reindex", "update_file", "status", "set_project",
@@ -388,7 +390,9 @@ def search(query: str, kind: str | None = None, top_k: int = 10) -> list[dict]:
     """Keyword search over entity names, signatures and docstrings.
 
     Tokens match independently (OR). `kind` narrows to one of
-    :data:`SEARCH_KINDS`; at most 20 results.
+    :data:`SEARCH_KINDS`; at most 20 results. Each hit may carry
+    ``notes`` — the annotations and comments anchored to it or to an
+    enclosing id (P6b: "why" next to "what").
     """
     _require_index()
     if not query.strip():
@@ -401,7 +405,7 @@ def search(query: str, kind: str | None = None, top_k: int = 10) -> list[dict]:
     results = _text_search(query, min(top_k, 20))
     if kind:
         results = [r for r in results if r.get("kind") == kind or r.get("entity_type") == kind]
-    return results[:top_k]
+    return _attach_notes(results[:top_k])
 
 
 def search_symbols(query: str, top_k: int = 10, raw: bool = False) -> list[dict]:
@@ -1083,7 +1087,7 @@ def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
     if isinstance(query, str) and not query.strip():
         raise InvalidRequest("Please provide a natural-language query for semantic search.")
     if not isinstance(query, str):
-        return _ss(list(query), top_k)
+        return _attach_notes(_ss(list(query), top_k))
 
     _require_index()
     try:
@@ -1094,7 +1098,7 @@ def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
         raise EngineError(f"Embedding failed: {e}") from None
 
     try:
-        return _ss(embedding, min(top_k, 20))
+        return _attach_notes(_ss(embedding, min(top_k, 20)))
     except RuntimeError as e:
         if "embedding dimension" in str(e):
             # A dimension conflict cannot be computed away (same model in,
@@ -1103,7 +1107,7 @@ def search_similar(query: str | Sequence[float], top_k: int = 10) -> list[dict]:
         # No embeddings in the index yet — compute them once and retry.
         try:
             compute_embeddings()
-            return _ss(embedding, min(top_k, 20))
+            return _attach_notes(_ss(embedding, min(top_k, 20)))
         except EngineError:
             # Explicit dimension/model errors stay explicit, never
             # downgraded to "computing failed".
@@ -1159,7 +1163,7 @@ def search_hybrid(query: str | Sequence[float], top_k: int = 10,
                 r["name"] = ent.get("name", r["id"])
                 r["kind"] = ent.get("kind", "?")
                 r["file_path"] = ent.get("file_path", "?")
-        return rows
+        return _attach_notes(rows)
 
     try:
         return run()
@@ -1763,6 +1767,117 @@ def comment_history(id: str, *, graph: Any = None) -> dict:
     except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
         raise EngineError(f"comment_history returned unparseable JSON: {e}") from None
     return {"id": str(id), "versions": versions, "count": len(versions)}
+
+
+def open_items(scope: str | None = None, *, store_path: str | Path | None = None,
+               graph: Any = None) -> dict:
+    """Every unchecked task item under a scope (P6b, DR-44's list grammar).
+
+    `scope` is a prefix on each row's `about` id — `a.py` covers `a.py::f`
+    and `a.py::C.m`, `pkg/` covers everything under it; `None` reads the
+    whole store. Annotations only, by construction: comments are freeform
+    and have no items to list, so they never appear here.
+
+    Returns ``{"scope", "items", "count"}``, each item
+    ``{"id", "about", "n", "line", "text"}``. Only the current version of
+    a row counts — a superseded version's items are gone and a checked
+    item disappears the moment it is revised — and a retired row
+    contributes nothing. Read-only; no MCP writes (Q-4/H-13).
+    """
+    _require_index()
+    _ = graph or _graph()
+    # A store path is the fresh-process case (a CLI `--store`); otherwise
+    # the loaded graph's store answers, exactly as every other note read
+    # does. Never the handle's default path: opening a second store on a
+    # file this process already holds is the Windows-lock hazard.
+    target = str(store_path) if store_path is not None else None
+    try:
+        from coderadar._core import open_items as _open
+        raw = _open(scope, target) if target else _open(scope)
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        items = list(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"open_items returned unparseable JSON: {e}") from None
+    return {"scope": scope, "items": items, "count": len(items)}
+
+
+def _note_scopes(hit: dict) -> list[str]:
+    """The abouts an annotation could name for one search hit (P6b).
+
+    A note may be anchored to the entity, to any enclosing id (`a.py::C`
+    for `a.py::C.m`, `a.py` for both) or to the file itself. Entity ids
+    are `file::Class.member` and nested classes are dot-joined, so the
+    ancestors are the id's `::` prefixes and, within the innermost
+    segment, its `.` prefixes — a rule, not a guess about naming.
+    """
+    scopes: list[str] = []
+    entity_id = hit.get("id")
+    if entity_id:
+        parts = str(entity_id).split("::")
+        tail = parts[-1].split(".")
+        head = parts[:-1]
+        for k in range(len(tail), 0, -1):
+            scopes.append("::".join(head + [".".join(tail[:k])]))
+        for i in range(len(head), 0, -1):
+            scopes.append("::".join(head[:i]))
+    file_path = hit.get("file_path")
+    if file_path and file_path != "?" and file_path not in scopes:
+        scopes.append(str(file_path))
+    return scopes
+
+
+def _attach_notes(rows: list[dict]) -> list[dict]:
+    """Attach the live notes each hit is asking about — 'why' next to
+    'what' (P6b).
+
+    One ledger read for the whole result set, then the notes are grouped
+    onto their hit. A hit with no notes carries no key, so a store without
+    annotations returns exactly the pre-P6b shape; a storeless graph
+    answers no notes. Newest first within a hit; both kinds ride together,
+    named by `kind` (annotations are the checklist, comments the prose).
+    """
+    if not rows:
+        return rows
+    try:
+        from coderadar._core import notes_for as _notes
+    except ImportError:
+        return rows
+    abouts: list[str] = []
+    for row in rows:
+        for about in _note_scopes(row):
+            if about not in abouts:
+                abouts.append(about)
+    if not abouts:
+        return rows
+    try:
+        import json as _json
+        notes = list(_json.loads(_notes(abouts)))
+    except Exception:  # noqa: BLE001 - the join is additive, never fatal
+        return rows
+    if not notes:
+        return rows
+    grouped: dict[str, list[dict]] = {}
+    for note in notes:
+        grouped.setdefault(note.get("about", ""), []).append(note)
+    for row in rows:
+        found: list[dict] = []
+        seen: set[str] = set()
+        for about in _note_scopes(row):
+            for note in grouped.get(about, ()):
+                if note["id"] in seen:
+                    continue
+                seen.add(note["id"])
+                found.append(note)
+        if found:
+            row["notes"] = found
+    return rows
 
 
 def _store_for(store_path: str | Path | None, graph: Any = None) -> str | None:

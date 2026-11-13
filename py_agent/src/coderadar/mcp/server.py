@@ -59,7 +59,7 @@ Need more? Call it again with more specific names.
 - `coderadar_as_of` — the graph at a past timestamp
 - `coderadar_verify_history` — per-generation byte coverage: whether the past can be reconstructed
 - `coderadar_changes_between` — entity diff between two instants from recorded hashes (no byte reads)
-- `coderadar_annotations_on` / `coderadar_comments_on` — annotation/comment versions on a concept (the why); `coderadar_annotation_history` / `coderadar_comment_history` — one row's chain
+- `coderadar_annotations_on` / `coderadar_comments_on` — annotation/comment versions on a concept (the why); `coderadar_annotation_history` / `coderadar_comment_history` — one row's chain; `coderadar_open_items` — the unchecked task items under a scope, aggregated across annotations
 - `coderadar_resolve` — framework references: routes (`/users/:id`), `*Model` / `*View` names
 - `coderadar_get_smells`, `coderadar_dead_code`, `coderadar_find_clones`, `coderadar_find_scaffolding` — quality findings. Dead code is ranked evidence, not proof: check `coderadar_affected` before deleting.
 - `coderadar_diagnose` — graph self-health (unresolved targets, ambiguous bases); empty reads as clean.
@@ -755,6 +755,36 @@ def create_server(graph: Any) -> MCPServer:
             return mismatch
 
         return _comment_history(graph, id)
+
+    # ── coderadar_open_items — the checklist aggregate ──────────────
+
+    @mcp.tool(
+        description=(
+            "Every unchecked task item under a scope, annotations only: the "
+            "open work the ledgers' checklists record, read from each row's "
+            "current version (a checked item is gone, a superseded body's "
+            "items are gone, a retired row contributes nothing). `scope` is "
+            "a prefix on the annotated id — `a.py` covers `a.py::f` and "
+            "`a.py::C.m`; omit it for the whole store. Comments are freeform "
+            "and never appear: only lists can be aggregated."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_open_items(
+        scope: str | None = None,
+        project_path: str | None = None,
+    ) -> str:
+        """Unchecked task items under a scope (P6b)."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _open_items(graph, scope)
 
     # ── coderadar_traverse — edge traversal ──────────────────────────
 
@@ -1753,6 +1783,17 @@ def _comment_history(graph: Any, id: str) -> str:
     except ops.OpError as e:
         return _op_message(e, failed="Comment history")
     return render.annotation_versions(result)
+
+
+def _open_items(graph: Any, scope: str | None) -> str:
+    """Unchecked task items under a scope (P6b)."""
+    try:
+        result = ops.open_items(scope, graph=graph)
+    except ops.EngineError as e:
+        return f"Open items failed: {e}"
+    except ops.OpError as e:
+        return _op_message(e, failed="Open items")
+    return render.open_items(result)
 
 
 def _traverse(

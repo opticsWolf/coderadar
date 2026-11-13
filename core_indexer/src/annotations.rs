@@ -1532,6 +1532,196 @@ pub fn history(
     }
 }
 
+// ── Aggregation and the search-side "why" join (P6b) ──────────────────
+//
+// Two reads that cost the ledger nothing new: the open-item aggregate and
+// the notes a hit is asking about. Both scan `concepts` — the mint
+// projection holds exactly one row per annotation id, at its live body, so
+// "current version" is the table itself and no chain is walked (a
+// superseded body's items are simply not there). Annotations and comments
+// stay out of every coverage universe (INV-13): these reads are the only
+// places that aggregate them, and they never feed a count.
+
+/// One unchecked task item read from a live annotation body.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OpenItem {
+    pub id: String,
+    pub about: String,
+    pub n: u64,
+    /// 1-based line in the stored body — the coordinate a revise names.
+    pub line: usize,
+    pub text: String,
+}
+
+/// One live note row, as the search join hands it back.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Note {
+    pub id: String,
+    pub kind: String,
+    pub about: String,
+    pub n: u64,
+    pub body: String,
+    pub open: usize,
+    pub valid_from: String,
+}
+
+/// Parse a live row's `(about, n, body)`. Rows are canonical linter output,
+/// so a missing field is a store written by something other than this
+/// writer — skipped rather than guessed at.
+fn live_body(content: &str) -> Option<(String, u64, String)> {
+    let v: serde_json::Value = serde_json::from_str(content).ok()?;
+    Some((
+        v.get("about")?.as_str()?.to_string(),
+        v.get("n")?.as_u64()?,
+        v.get("body")?.as_str()?.to_string(),
+    ))
+}
+
+/// Read every live `(id, content, valid_from)` row of the two note kinds.
+fn live_note_rows(
+    store: &crate::storage::CodeGraphStore,
+    kinds: &str,
+) -> Result<Vec<(String, String, String)>, AnnError> {
+    // `kinds` is an SQL fragment the two callers hold as constants (a
+    // literal list), never caller text.
+    let sql = format!(
+        "SELECT id, content, valid_from FROM concepts WHERE retired = 0 \
+         AND json_extract(content, '$.kind') IN ({kinds})"
+    );
+    let (_guard, conn) = store
+        .open_diagnostic_conn()
+        .map_err(|e| AnnError::Store(format!("{e:?}")))?;
+    crate::storage::runtime()
+        .block_on(async {
+            let mut rows = conn
+                .query(&sql, ())
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                out.push((
+                    row.get::<String>(0).unwrap_or_default(),
+                    row.get::<String>(1).unwrap_or_default(),
+                    row.get::<String>(2).unwrap_or_default(),
+                ));
+            }
+            Ok::<_, macrame::DbError>(out)
+        })
+        .map_err(|e| AnnError::Store(format!("{e:?}")))
+}
+
+/// Whether `about` is in `scope` (P6b's aggregation scope).
+///
+/// A scope names an id or an ancestor of one: `a.py` covers `a.py` and
+/// `a.py::f` but not `a.pyx::z` (a plain string prefix would), `a.py::C`
+/// covers `a.py::C.m` (classes dot-join their members), and `pkg/`
+/// (trailing slash) covers everything under that directory. The boundary
+/// rule is what makes a file scope mean the file.
+fn in_scope(about: &str, scope: &str) -> bool {
+    if scope.is_empty() || about == scope {
+        return true;
+    }
+    if scope.ends_with('/') {
+        return about.starts_with(scope);
+    }
+    match about.strip_prefix(scope) {
+        Some(rest) => rest.starts_with("::") || (scope.contains("::") && rest.starts_with('.')),
+        None => false,
+    }
+}
+
+/// Every unchecked task item under `scope` (P6b).
+///
+/// `scope` names an id or an ancestor of one (see [`in_scope`]); `None` or
+/// an empty scope reads the whole store. Annotations only, by construction
+/// — comments are freeform and have no items to list (§4's price, paid
+/// knowingly). Items come back ordered by `(about, n, line)` so a diff of
+/// two runs is a diff of what changed.
+///
+/// A retired row contributes nothing: retire is an act, and its items are
+/// closed with it, not merely hidden.
+pub fn open_items(
+    store: &crate::storage::CodeGraphStore,
+    scope: Option<&str>,
+) -> Result<Vec<OpenItem>, AnnError> {
+    let rows = live_note_rows(store, "'annotation'")?;
+    let mut items = Vec::new();
+    for (id, content, _valid_from) in rows {
+        let Some((about, n, body)) = live_body(&content) else {
+            continue;
+        };
+        if let Some(scope) = scope.filter(|s| !s.is_empty()) {
+            if !in_scope(&about, scope) {
+                continue;
+            }
+        }
+        for (i, line) in body.lines().enumerate() {
+            let Some(rest) = line.trim_start().strip_prefix("- [ ]") else {
+                continue;
+            };
+            items.push(OpenItem {
+                id: id.clone(),
+                about: about.clone(),
+                n,
+                line: i + 1,
+                text: rest.trim().to_string(),
+            });
+        }
+    }
+    items.sort_by(|a, b| {
+        a.about
+            .cmp(&b.about)
+            .then(a.n.cmp(&b.n))
+            .then(a.line.cmp(&b.line))
+    });
+    Ok(items)
+}
+
+/// The live notes anchored to any of `abouts` (P6b's "why" next to
+/// "what"). Newest first within each about; retired rows are withdrawn
+/// notes and do not ride along.
+///
+/// The filter is local rather than an SQL `IN` list: the note set is small
+/// by construction (user writes, not code — hundreds, not millions), and a
+/// scan keeps one query shape instead of a variable-length placeholder
+/// list.
+pub fn notes_for(
+    store: &crate::storage::CodeGraphStore,
+    abouts: &[String],
+) -> Result<Vec<Note>, AnnError> {
+    if abouts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let wanted: std::collections::HashSet<&str> = abouts.iter().map(String::as_str).collect();
+    let rows = live_note_rows(store, "'annotation', 'comment'")?;
+    let mut notes = Vec::new();
+    for (id, content, valid_from) in rows {
+        let Some((about, n, body)) = live_body(&content) else {
+            continue;
+        };
+        if !wanted.contains(about.as_str()) {
+            continue;
+        }
+        let kind = row_kind(&content).unwrap_or_default();
+        notes.push(Note {
+            id,
+            kind,
+            open: body_open(&body),
+            about,
+            n,
+            body,
+            valid_from,
+        });
+    }
+    notes.sort_by(|a, b| {
+        a.about
+            .cmp(&b.about)
+            .then(b.valid_from.cmp(&a.valid_from))
+            .then(b.n.cmp(&a.n))
+    });
+    Ok(notes)
+}
+
 // ── The data boundary (P8, A-9/INV-18) ─────────────────────────────────
 //
 // Everything in the store but annotations and comments is derived from
@@ -2111,6 +2301,74 @@ mod store_tests {
         let dir = tempfile::tempdir().unwrap();
         let store = CodeGraphStore::open(dir.path().join(name)).unwrap();
         (dir, store)
+    }
+
+    #[test]
+    fn open_items_aggregate_the_live_lists_only() {
+        let (_dir, store) = test_store("p6b1.db");
+        create(&store, ANNOTATION_KIND, "a.py::f", "- [ ] one\n- [x] two\n").unwrap();
+        create(&store, ANNOTATION_KIND, "a.py::C.m", "- [ ] three\n").unwrap();
+        create(&store, ANNOTATION_KIND, "a.pyx::z", "- [ ] lookalike\n").unwrap();
+        create(
+            &store,
+            COMMENT_KIND,
+            "a.py::f",
+            "- [ ] prose is not an item\n",
+        )
+        .unwrap();
+
+        let all = open_items(&store, None).unwrap();
+        assert_eq!(
+            all.iter().map(|i| i.text.as_str()).collect::<Vec<_>>(),
+            vec!["three", "one", "lookalike"]
+        );
+        // A file scope is the file, not every id starting with its name;
+        // a class scope reaches dotted members; a directory scope needs
+        // the trailing slash.
+        assert_eq!(open_items(&store, Some("a.py")).unwrap().len(), 2);
+        assert_eq!(open_items(&store, Some("a.py::C")).unwrap().len(), 1);
+        assert_eq!(open_items(&store, Some("a.pyx")).unwrap().len(), 1);
+        assert_eq!(open_items(&store, Some("a.py/")).unwrap().len(), 0);
+
+        // Revising replaces the body: the old items are gone, and a
+        // retired row contributes nothing at all.
+        let row = all
+            .iter()
+            .find(|i| i.about == "a.py::f")
+            .unwrap()
+            .id
+            .clone();
+        revise(&store, &row, "- [x] one\n- [ ] four\n").unwrap();
+        let live = open_items(&store, Some("a.py::f")).unwrap();
+        assert_eq!(
+            live.iter().map(|i| i.text.as_str()).collect::<Vec<_>>(),
+            vec!["four"]
+        );
+        retire(&store, &row).unwrap();
+        assert!(open_items(&store, Some("a.py::f")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn notes_for_joins_by_about_and_drops_withdrawn_rows() {
+        let (_dir, store) = test_store("p6b2.db");
+        let ann = create(&store, ANNOTATION_KIND, "a.py::f", "- [ ] why\n").unwrap();
+        create(&store, COMMENT_KIND, "a.py", "file-level prose").unwrap();
+        create(&store, COMMENT_KIND, "b.py::g", "elsewhere").unwrap();
+
+        let notes = notes_for(&store, &["a.py::f".to_string(), "a.py".to_string()]).unwrap();
+        assert_eq!(
+            notes.iter().map(|n| n.about.as_str()).collect::<Vec<_>>(),
+            vec!["a.py", "a.py::f"]
+        );
+        let f = notes.iter().find(|n| n.about == "a.py::f").unwrap();
+        assert_eq!(f.kind, ANNOTATION_KIND);
+        assert_eq!(f.open, 1);
+        assert_eq!(f.n, 1);
+
+        retire(&store, &ann.id).unwrap();
+        let after = notes_for(&store, &["a.py::f".to_string()]).unwrap();
+        assert!(after.is_empty());
+        assert!(notes_for(&store, &[]).unwrap().is_empty());
     }
 
     #[test]

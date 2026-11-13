@@ -110,6 +110,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(comments_on, m)?)?;
     m.add_function(wrap_pyfunction!(annotation_history, m)?)?;
     m.add_function(wrap_pyfunction!(comment_history, m)?)?;
+    m.add_function(wrap_pyfunction!(open_items, m)?)?;
+    m.add_function(wrap_pyfunction!(notes_for, m)?)?;
     m.add_function(wrap_pyfunction!(export_annotations, m)?)?;
     m.add_function(wrap_pyfunction!(import_annotations, m)?)?;
     m.add_function(wrap_pyfunction!(graph_is_loaded, m)?)?;
@@ -3060,6 +3062,37 @@ fn comment_history(py: Python<'_>, id: &str) -> PyResult<String> {
         .allow_threads(|| crate::annotations::history(&store, id))
         .map_err(annotation_ffi_error)?;
     serde_json::to_string(&versions)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// Every unchecked task item under `scope` (P6b): a prefix on each row's
+/// `about` id, or `None`/`""` for the whole store. Annotations only — the
+/// list grammar is what makes an aggregate possible.
+#[pyfunction]
+#[pyo3(signature = (scope=None, store_path=None))]
+fn open_items(py: Python<'_>, scope: Option<&str>, store_path: Option<&str>) -> PyResult<String> {
+    let store = annotation_store(store_path)?;
+    let items = py
+        .allow_threads(|| crate::annotations::open_items(&store, scope))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&items)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
+}
+
+/// The live notes anchored to any of `abouts` (P6b's "why" join).
+///
+/// A storeless graph answers `[]` honestly: there is no ledger to hold
+/// notes, and the search it accompanies already worked memory-only.
+#[pyfunction]
+fn notes_for(py: Python<'_>, abouts: Vec<String>) -> PyResult<String> {
+    let store = match snapshot_store() {
+        Ok(store) => store,
+        Err(_) => return Ok("[]".to_string()),
+    };
+    let notes = py
+        .allow_threads(|| crate::annotations::notes_for(&store, &abouts))
+        .map_err(annotation_ffi_error)?;
+    serde_json::to_string(&notes)
         .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
 }
 

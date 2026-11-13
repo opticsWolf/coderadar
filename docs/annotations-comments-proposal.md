@@ -212,6 +212,17 @@ per maintainer call); 29-tool MCP surface untouched.
   annotation/comment vectors answer *why* — and there are hundreds of rows,
   not millions of generations, so H-19's cost reasoning permits it. Current
   version only, re-embedded on edit (keyed-dedup absorbs the unchanged).
+  *(2026-11-13, deferred as built: the projection's typed maps are what
+  `search_similar` materializes hits from, so a vector keyed by an annotation
+  id is scored and then dropped — and a notes map inside the projection would
+  enter `graph_stats` and every entity universe, crossing INV-13. The
+  relational join landed instead; note embeddings need a decision about
+  count semantics or an engine-side multi-space search.)*
+- The join as built (P6b, 2026-11-13): every search path attaches `notes` to
+  a hit — the live annotations and comments anchored to the entity, to an
+  enclosing id (`a.py::C` for `a.py::C.m`) or to its file — newest first,
+  both kinds named by `kind`, retired rows withdrawn. A hit with none
+  carries no key, so the pre-P6b shape is unchanged.
 - MCP: **reads yes, writes no.** Q-4's reasoning (an agent should ask what
   it can trust) covers the four read ops; H-13 covers the refusal of MCP
   writes. Same split as P5a.3/P5a.5.
@@ -265,7 +276,8 @@ per maintainer call); 29-tool MCP surface untouched.
   present).
 - **P6b — aggregation + vectors.** `open_items` over annotations, both
   kinds as embed targets (current version), search-side join ("why"
-  alongside "what").
+  alongside "what"). *(2026-11-13: `open_items` and the join shipped; the
+  embed-target half deferred — see §6.)*
 - **P6c — commit messages.** Message fields in `commit_concept` for new
   ingests + `backfill_commit_messages` for existing stores.
 - **Deferred:** list nesting, branch-local rows, MCP writes (same bar as
@@ -289,6 +301,9 @@ per maintainer call); 29-tool MCP surface untouched.
   exact contract. `annotations_on` returns newest-first; the first version
   is the live row.)
 - **Q-C — embed both kinds?** (§6 argues yes; cost is small but nonzero.)
+  *(2026-11-13: deferred — the cost turned out to be architectural, not
+  small: it crosses the projection's entity universes (INV-13). Still open,
+  now scoped as "note embeddings", not "embed the concepts".)*
 - **Q-D — DR rows:** `DR-44` (annotation/comment kinds + gates), `DR-45`
   (commit message storage)? File when P6a scopes, not before.
 

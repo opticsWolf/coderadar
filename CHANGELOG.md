@@ -6,6 +6,19 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- P6b, aggregation and the "why" join — the checklists get a reader and every search hit
+  can say why. New op `open_items` (CLI `open-items`, MCP `coderadar_open_items`) lists the
+  unchecked task items of every live annotation under a scope: the scope names an id or an
+  ancestor of one (`a.py` is the file, `a.py::C` reaches `a.py::C.m`, `pkg/` the directory),
+  only current versions count (a superseded body's items are gone), a retired row
+  contributes nothing, and comments never appear — only lists can be aggregated. `search`,
+  `search_similar` and `search_hybrid` now attach `notes` to a hit: the live annotations
+  and comments anchored to the entity, to an enclosing id or to its file, newest first and
+  named by kind, so a result answers "why next to what". A hit with no notes carries no key,
+  so existing shapes are unchanged. The note-as-embed-target half of P6b is deliberately
+  deferred with its reason recorded (concepts are not projection entities; the vector table
+  would score notes and then drop them, and a notes map would cross INV-13's count line).
+  Gates: 598 lib; pytest 1390 passed / 1 skipped / 1 xfailed.
 - P8, the data boundary — the store's own rows leave and come back (A-9/INV-18):
   `export_annotations` writes every annotation/comment chain as one `coderadar.annotations.v1`
   document (id, kind, about, n, mint lineage, and each version's body, start, close and retire);

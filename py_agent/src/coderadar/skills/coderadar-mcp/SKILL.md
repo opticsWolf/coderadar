@@ -57,6 +57,7 @@ this changes, what did this look like at time T, where are the smells.
 | `coderadar_changes_between` | entity diff between two instants from hashes (works at 0% coverage) |
 | `coderadar_annotations_on` / `coderadar_comments_on` | annotation/comment versions on a concept, newest first (the why) |
 | `coderadar_annotation_history` / `coderadar_comment_history` | version chain of one annotation/comment row |
+| `coderadar_open_items` | every unchecked task item under a scope (annotations only) |
 | `coderadar_module_children` | a module's contents |
 | `coderadar_reindex` (`full`) / `coderadar_update_file` | refresh; full walk only on demand |
 | `coderadar_status` / `coderadar_set_project` | freshness + root switching |
@@ -91,6 +92,7 @@ coderadar_annotations_on(target)                # the why: lists on a concept
 coderadar_comments_on(target)                   # the why: prose on a concept
 coderadar_annotation_history(id)                # one annotation's versions
 coderadar_comment_history(id)                   # one comment's versions
+coderadar_open_items(scope=None)                # unchecked task items, annotations only
 coderadar_module_children(module_id)              # '{file_path}::module'
 coderadar_diagnose(unresolved=True, low_confidence=True)
 coderadar_status()
