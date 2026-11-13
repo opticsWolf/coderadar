@@ -393,7 +393,7 @@ pub fn zulu_valid_from(ts: &str) -> Option<String> {
 
 /// Epoch microseconds of an RFC3339 stamp (`Z` or `±HH:MM`, optional
 /// fractional seconds). `None` when the shape is not a timestamp at all.
-fn parse_rfc3339_epoch_micros(stamp: &str) -> Option<i128> {
+pub(crate) fn parse_rfc3339_epoch_micros(stamp: &str) -> Option<i128> {
     let (date, time) = stamp.split_once('T')?;
     let mut date_parts = date.split('-');
     let year: i64 = date_parts.next()?.parse().ok()?;
@@ -702,6 +702,34 @@ impl CodeGraphStore {
     /// [`Self::decide_acts`] sorts every changed row into the act Macrame's
     /// law demands, and the out-of-order refusal happens BEFORE anything is
     /// written.
+    /// Record that an observation write happened at `instant` (P5d, H-26).
+    ///
+    /// The mark is the only thing ingest needs to know about observations:
+    /// it seeds INV-11's nudge chain, so a commit discovered afterwards that
+    /// would open a start behind a recorded belief is nudged past it and
+    /// flagged (`stamps_nudged`), never written backwards. Monotonic on
+    /// purpose — an out-of-order caller cannot rewind it, because the mark's
+    /// job is to name how far ahead the recorded axis already sits.
+    pub fn record_observation_instant(&self, instant: &str) -> macrame::Result<()> {
+        let key = crate::graph::ingest::OBSERVED_KEY;
+        if let Some(current) = self.kv_get_sync(key)? {
+            if let (Some(prev), Some(next)) = (
+                parse_rfc3339_epoch_micros(&current),
+                parse_rfc3339_epoch_micros(instant),
+            ) {
+                if next <= prev {
+                    return Ok(());
+                }
+            }
+        }
+        self.kv_put_sync(key, instant)
+    }
+
+    /// The latest observation instant this store recorded, if any (P5d).
+    pub fn observation_instant(&self) -> macrame::Result<Option<String>> {
+        self.kv_get_sync(crate::graph::ingest::OBSERVED_KEY)
+    }
+
     pub fn upsert_concepts_bulk(&self, concepts: &[ConceptUpsert]) -> macrame::Result<usize> {
         if concepts.is_empty() {
             return Ok(0);
@@ -3706,6 +3734,83 @@ fn coderadar_extra(content: &serde_json::Value, source_blob: Option<&str>) -> se
     )
 }
 
+/// Where an observation write's rows came from (P5d, §3.1.3; INV-17 as
+/// narrowed — every row's axes mean what its `source` says).
+///
+/// A commit row needs no tag: its provenance is the commit concept and its
+/// stamp is committer time. An observation row's stamp is the instant a
+/// writer saw the tree, so it says which writer, and what plan if any
+/// produced it. The fields are borrowed from the FFI call so tagging costs
+/// no allocation per row.
+#[derive(Clone, Copy, Debug)]
+pub struct ObservationSource<'a> {
+    /// `"mutation"`, `"watcher"`, `"analyze"`, or `"update"` for a bare
+    /// single-file write with no surface behind it.
+    pub source: &'a str,
+    pub tool: Option<&'a str>,
+    pub plan_id: Option<&'a str>,
+    pub attempt_id: Option<&'a str>,
+}
+
+impl<'a> ObservationSource<'a> {
+    /// The bare single-file update: no plan, no tool. Everything else is a
+    /// surface that knows more.
+    pub const BARE: &'static str = "update";
+
+    pub fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            tool: None,
+            plan_id: None,
+            attempt_id: None,
+        }
+    }
+}
+
+/// Mark every row of an observation flush with its source (P5d, INV-17).
+///
+/// Applied to the rows a write is about to flush, not to the builders: the
+/// builders are shared with the commit path, and a commit row must never
+/// carry this tag. `extra.coderadar` is merged (Macrame's `extra` is
+/// replace-whole, so building a fresh map would drop `source_blob`), and a
+/// row whose `extra` is absent or not an object is left alone rather than
+/// given a payload the reader did not ask for.
+///
+/// Retirements are deliberately not tagged: a tombstone asserts absence, not
+/// content, so there is no content provenance to misattribute — its
+/// `retired` flag and its stamp already say what it is.
+pub fn tag_observation_rows(rows: &mut [ConceptUpsert], obs: &ObservationSource<'_>) {
+    for row in rows.iter_mut() {
+        let mut extra: serde_json::Value = row
+            .extra
+            .as_deref()
+            .and_then(|raw| serde_json::from_str(raw).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !extra.is_object() {
+            continue;
+        }
+        let inner = extra
+            .as_object_mut()
+            .expect("checked above")
+            .entry("coderadar".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        let Some(inner) = inner.as_object_mut() else {
+            continue;
+        };
+        inner.insert("source".to_string(), serde_json::json!(obs.source));
+        for (key, value) in [
+            ("tool", obs.tool),
+            ("plan_id", obs.plan_id),
+            ("attempt_id", obs.attempt_id),
+        ] {
+            if let Some(value) = value {
+                inner.insert(key.to_string(), serde_json::json!(value));
+            }
+        }
+        row.extra = Some(extra.to_string());
+    }
+}
+
 /// Entity metadata is stored canonically in `content`; the small subset needed
 /// for indexed maintenance queries is mirrored in Macrame 0.18's `extra`.
 pub fn build_concept(unit: &ExtractedUnit, file_path: &str, language: &str) -> ConceptUpsert {
@@ -3944,6 +4049,29 @@ fn act_is_new(act: &ConceptUpsert, projection: &HashMap<String, Option<CurrentRo
     }
 }
 
+/// The part of `extra` a change decision reads (P5d): `source`, `tool`,
+/// `plan_id` and `attempt_id` are provenance, not belief. Two writes that
+/// found identical content must not mint a version apiece just because a
+/// different writer looked at it — the second look moves the store's
+/// observation mark instead, which is where its instant belongs.
+///
+/// An `extra` that does not parse is compared as the raw string, which keeps
+/// the old "cannot read it, treat it as different" behaviour.
+fn provenance_blind(extra: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(extra) else {
+        return extra.to_string();
+    };
+    if let Some(inner) = value
+        .get_mut("coderadar")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for key in ["source", "tool", "plan_id", "attempt_id"] {
+            inner.remove(key);
+        }
+    }
+    value.to_string()
+}
+
 fn concept_changed(concept: &ConceptUpsert, current: Option<&CurrentRow>) -> bool {
     let Some(row) = current else {
         return true;
@@ -3960,7 +4088,7 @@ fn concept_changed(concept: &ConceptUpsert, current: Option<&CurrentRow>) -> boo
     if concept
         .extra
         .as_ref()
-        .is_some_and(|expected| expected != extra)
+        .is_some_and(|expected| provenance_blind(expected) != provenance_blind(extra))
     {
         return true;
     }
@@ -7365,6 +7493,80 @@ mod stamped_write_tests {
         assert_eq!(chain[0].digest, digests[2]);
         assert_eq!(chain[1].digest, digests[0]);
         assert_eq!(chain[2].digest, digests[1]);
+    }
+
+    /// P5d: tagging merges into `extra` — a row that carried a digest still
+    /// carries it, and the source lands beside it.
+    #[test]
+    fn observation_tagging_merges_and_never_drops_extra() {
+        let row = v2_upsert(
+            "m.py::module",
+            "m",
+            serde_json::json!({"kind": "module", "file_path": "m.py"}),
+            "2026-01-01T00:00:00.000000Z",
+            Some("abc123"),
+        );
+        let mut rows = vec![row];
+        tag_observation_rows(
+            &mut rows,
+            &ObservationSource {
+                source: "mutation",
+                tool: Some("replace_entity_body"),
+                plan_id: Some("01PLAN"),
+                attempt_id: Some("01ATTEMPT"),
+            },
+        );
+        let extra: serde_json::Value =
+            serde_json::from_str(rows[0].extra.as_deref().unwrap()).unwrap();
+        let inner = &extra["coderadar"];
+        assert_eq!(inner["source"], "mutation");
+        assert_eq!(inner["tool"], "replace_entity_body");
+        assert_eq!(inner["plan_id"], "01PLAN");
+        assert_eq!(inner["attempt_id"], "01ATTEMPT");
+        // The merge is the point: the digest the write was about survives.
+        assert_eq!(inner["source_blob"], "abc123");
+        assert_eq!(inner["kind"], "module");
+    }
+
+    /// P5d: provenance is not belief. Two writes that found identical
+    /// content must not mint a version apiece — otherwise every no-op
+    /// reindex would churn `valid_from` (the spine test caught exactly
+    /// this) — while a genuine extra change still reads as one.
+    #[test]
+    fn provenance_does_not_make_a_row_look_changed() {
+        let plain = r#"{"coderadar":{"format":1,"kind":"module","source":"analyze"}}"#;
+        let with_plan = r#"{"coderadar":{"format":1,"kind":"module","source":"mutation","plan_id":"01P","attempt_id":"01A","tool":"t"}}"#;
+        assert_eq!(provenance_blind(plain), provenance_blind(with_plan));
+        let different =
+            r#"{"coderadar":{"format":1,"kind":"module","source":"analyze","file_path":"m.py"}}"#;
+        assert_ne!(provenance_blind(plain), provenance_blind(different));
+        // An `extra` that does not parse keeps the old compare-as-string law.
+        assert_ne!(provenance_blind("not json"), provenance_blind(plain));
+    }
+
+    /// P5d (H-26): the observation mark names how far ahead the recorded
+    /// axis sits, so it only ever moves forward.
+    #[test]
+    fn the_observation_mark_is_monotonic() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("obs.db")).unwrap();
+        store
+            .record_observation_instant("2026-03-01T10:00:00.000000Z")
+            .unwrap();
+        store
+            .record_observation_instant("2026-03-01T09:00:00.000000Z")
+            .unwrap();
+        assert_eq!(
+            store.observation_instant().unwrap().as_deref(),
+            Some("2026-03-01T10:00:00.000000Z")
+        );
+        store
+            .record_observation_instant("2026-03-02T10:00:00.000000Z")
+            .unwrap();
+        assert_eq!(
+            store.observation_instant().unwrap().as_deref(),
+            Some("2026-03-02T10:00:00.000000Z")
+        );
     }
 
     /// P5a.2: a stamped branch write lands the stamp on both rows it

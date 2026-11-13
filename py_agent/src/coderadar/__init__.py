@@ -167,6 +167,15 @@ class UpdateReport:
     #: The file was gone from disk, so its entities were dropped instead.
     removed: bool = False
     entities_removed: int = 0
+    #: P5d: the instant this update recorded. On a git-filled store the write
+    #: is an *observation* — every row it flushed carries this stamp on both
+    #: axes, closing the commit-era interval it replaces. Empty when the write
+    #: did not reach the store (a dropped file, a refused plan).
+    observed_at: str = ""
+    #: P5d (INV-17): where those rows came from — ``"mutation"``,
+    #: ``"watcher"``, ``"analyze"``, or ``"update"`` for a bare single-file
+    #: write. Commit rows carry no source: the commit concept is theirs.
+    source: str = ""
     #: §1.9 (DR-30 notice): this update's blob outcome. Watcher batches
     #: fold per-file reports by summation.
     blobs_stored: int = 0
@@ -253,6 +262,10 @@ class MutationSyncSummary:
     updated_files: list[str] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
     warnings: list[dict[str, Any]] = field(default_factory=list)
+    #: P5d: one `{file, observed_at, source}` per file whose edit became an
+    #: observation row. A synchronized mutation on a git-filled store used to
+    #: report nothing here and leave the edit invisible (F5).
+    observations: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -901,7 +914,9 @@ class CodeGraph:
 
     @_bound_to_loaded_project
     def update_file(self, file_path: str, content: str | None = None,
-                    force: bool = False) -> UpdateReport:
+                    force: bool = False, *, source: str | None = None,
+                    tool: str | None = None, plan_id: str | None = None,
+                    attempt_id: str | None = None) -> UpdateReport:
         """Update the graph after a file change.
 
         Phase 1: Rust parses, diffs, and stages changes.
@@ -933,7 +948,11 @@ class CodeGraph:
             )
         try:
             from coderadar._core import update_file as _update_file_rust
-            result = _update_file_rust(file_path, content, force)
+            result = _update_file_rust(
+                file_path, content, force,
+                source=source, tool=tool, plan_id=plan_id,
+                attempt_id=attempt_id,
+            )
             # §1.3 (DR-10): re-extract this file's routes (scope = file;
             # ghosts retire via the diff). Best-effort: extraction must
             # never fail the update, but its warning belongs in the report.
@@ -968,6 +987,8 @@ class CodeGraph:
                     blobs_skipped_oversize=int(result.get("blobs_skipped_oversize", 0)),
                     blobs_skipped_excluded=int(result.get("blobs_skipped_excluded", 0)),
                     blobs_bytes=int(result.get("blobs_bytes", 0)),
+                    observed_at=str(result.get("observed_at", "") or ""),
+                    source=str(result.get("source", "") or ""),
                 )
             return UpdateReport(
                 affected_files=[file_path], changed_symbols=[],
@@ -1237,7 +1258,13 @@ class CodeGraph:
                                if entry.expected_hash}
             if disk_status in ("Installed", "Restored"):
                 sync = self._synchronize_mutation_files(
-                    plan.affected_files, expected_hashes, clear_embeddings_for_file)
+                    plan.affected_files, expected_hashes, clear_embeddings_for_file,
+                    provenance={
+                        "source": "mutation",
+                        "tool": plan.tool,
+                        "plan_id": plan.id,
+                        "attempt_id": attempt_id,
+                    })
             else:
                 # NotInstalled performed no install; DiskIncomplete has no
                 # proven final bytes. Neither gets blind "success" sync.
@@ -1304,6 +1331,7 @@ class CodeGraph:
         affected_files: list[str],
         expected_hashes: dict[str, str],
         clear_embeddings_for_file: Any,
+        provenance: dict[str, Any] | None = None,
     ) -> MutationSyncSummary:
         """Synchronize every touched file and prove its bytes.
 
@@ -1312,6 +1340,10 @@ class CodeGraph:
         carries the exact hash the facade must observe. Multi-file plans
         keep the existing R2-17 second pass so cross-file resolution
         converges.
+
+        `provenance` (P5d) is how the edit is recorded, not just shown: on a
+        git-filled store each update is an observation write, and every row it
+        flushes says which mutation produced it.
         """
         attempted_files = sorted(set(affected_files) | set(expected_hashes))
         if not attempted_files:
@@ -1321,6 +1353,7 @@ class CodeGraph:
                 updated_files=[],
                 errors=[],
                 warnings=[],
+                observations=[],
             )
         errors: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = []
@@ -1329,7 +1362,7 @@ class CodeGraph:
         def synchronize_once(label: str) -> None:
             for target in attempted_files:
                 try:
-                    report = self.update_file(target)
+                    report = self.update_file(target, **(provenance or {}))
                 except Exception as exc:  # noqa: BLE001 - sync must report, not raise
                     errors.append({
                         "stage": "graph_sync",
@@ -1447,12 +1480,24 @@ class CodeGraph:
             state = "Partial"
         else:
             state = "Synchronized"
+        # P5d: the observations this sync recorded, one per synchronized file.
+        # A file whose update failed made no row, so it names no instant.
+        observations = [
+            {
+                "file": target,
+                "observed_at": reports[target].observed_at,
+                "source": reports[target].source,
+            }
+            for target in updated_files
+            if reports[target].observed_at
+        ]
         return MutationSyncSummary(
             state=state,  # type: ignore[arg-type]
             attempted_files=attempted_files,
             updated_files=updated_files,
             errors=errors,
             warnings=warnings,
+            observations=observations,
         )
 
     # ── Stats / Debug ──────────────────────────────────────────────────

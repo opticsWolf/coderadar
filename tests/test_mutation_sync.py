@@ -137,7 +137,7 @@ def test_synchronization_covers_affected_files_without_expected_hashes(project, 
 
     updated: list[str] = []
 
-    def _updated(self, file_path, content=None, force=False):
+    def _updated(self, file_path, content=None, force=False, **provenance):
         updated.append(file_path)
         return _report(file_path, "EXPECTED" if file_path == "app.py" else "OTHER")
 
@@ -207,7 +207,7 @@ def test_apply_incomplete_when_sync_sees_another_writers_bytes(project, monkeypa
     graph = CodeGraph()
     plan = graph.plan_replace_body(_entity_id("greet"), 'return "hi"', dry_run=True)
 
-    def _wrong_bytes(self, file_path, content=None, force=False):
+    def _wrong_bytes(self, file_path, content=None, force=False, **provenance):
         assert file_path == "app.py"
         return _report(file_path, "0" * 16)
 
@@ -251,7 +251,7 @@ def test_rollback_incomplete_when_restored_sync_sees_another_writers_bytes(
         warnings=[],
     )
 
-    def _wrong_bytes(self, file_path, content=None, force=False):
+    def _wrong_bytes(self, file_path, content=None, force=False, **provenance):
         assert file_path == "app.py"
         return _report(file_path, "0" * 16)
 
@@ -365,7 +365,7 @@ def test_concurrent_apply_calls_share_one_operation_lock(project, monkeypatch):
             assert proceed.wait(timeout=10)
         return raw
 
-    def _updated(self, file_path, content=None, force=False):
+    def _updated(self, file_path, content=None, force=False, **provenance):
         return _report(file_path, "EXPECTED")
 
     monkeypatch.setattr(_core, "apply_mutation", _fake_apply)

@@ -6,6 +6,18 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- Temporal P5d, first slice — observation writes (§3.1.3/A-7/INV-17): an index-now write on a
+  git-filled store is no longer refused. `update_file`, `remove_file` and `analyze` record what
+  they saw, stamped at the instant they saw it on both axes, with the previous interval closing
+  where the new one opens — and every row says where it came from (`extra.coderadar.source`,
+  plus `tool`/`plan_id`/`attempt_id` for a mutation). A synchronized mutation is `Applied` again
+  and its sync summary reports `observations: [{file, observed_at, source}]`; INV-12 narrows to
+  "every row's axes mean what its source says", and provenance is blind to the unchanged-filter,
+  so a no-op reindex asserts nothing instead of churning `valid_from`. H-26 lands with it: the
+  store marks the latest observation (`coderadar.observed.main`) and both ingest arms seed the
+  nudge chain with it, so a commit discovered afterwards that would open a start behind a
+  recorded belief is nudged past it and counted in `stamps_nudged`. F5 flips. Gates: 595 lib;
+  pytest 1359 passed / 1 skipped / 1 xfailed.
 - Temporal P5b.3 — the valid axis on the trunk (A-2/D-3/INV-16): `as_of` and `changes_between` take
   `valid=True`, `CodeGraph.as_of` / `Snapshot` pass it through, and the `_core` reads carry it as a
   flag, so MCP/CLI/Python share one lowering — Macrame's `reconstruct_as_of(AsOf::valid_at(..))`.

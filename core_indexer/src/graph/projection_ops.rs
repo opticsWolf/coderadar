@@ -785,13 +785,43 @@ impl CodeGraph {
     /// "clean"`, `parse_errors: 0`, `elapsed_ms: 0.0` regardless of what
     /// happened — which made the Python and MCP failure branches keyed off
     /// `parse_quality` dead code. It is measured here now.
+    /// Single-file update with no surface behind it: a bare observation
+    /// write (`source: "update"`). The wrapper keeps the spelling the graph
+    /// tests and pre-P5d callers use.
     pub fn update_file(
         &self,
         file_path: &str,
         content: Option<&str>,
+        force: Option<bool>,
+    ) -> Result<UpdateOutcome, String> {
+        self.update_file_observed(
+            file_path,
+            content,
+            force,
+            &crate::storage::ObservationSource::new(crate::storage::ObservationSource::BARE),
+        )
+    }
+
+    /// Update one file as an **observation write** (P5d, §3.1.3; A-7/INV-17):
+    /// the caller names where the rows came from, and every row of the flush
+    /// carries that source.
+    ///
+    /// One instant stamps the whole write on both axes — the moment the
+    /// writer saw this tree. Opening an interval at `observed_at` closes the
+    /// live one (P5b.1's law, now Macrame's one-write supersession) and turns
+    /// the previous commit's content into history; nothing is retracted.
+    pub fn update_file_observed(
+        &self,
+        file_path: &str,
+        content: Option<&str>,
         _force: Option<bool>,
+        observation: &crate::storage::ObservationSource<'_>,
     ) -> Result<UpdateOutcome, String> {
         let started = std::time::Instant::now();
+        // One clock read per write: two would split one observed event into
+        // two generations and let the diff's close and the flush's open
+        // disagree about the instant.
+        let observed_at = crate::storage::now_iso8601();
         // F14: mint the SAME form `analyze` writes (project-relative dot
         // prefix, native separators) — not `normalize_path_str`'s
         // forward-slash form, which forked every updated entity's id.
@@ -897,7 +927,7 @@ impl CodeGraph {
             &units,
             file_path,
             &lang,
-            &crate::storage::now_iso8601(),
+            &observed_at,
             true,
         );
         // Keep the dotted-name fast path in sync (cheap; module set is
@@ -927,25 +957,39 @@ impl CodeGraph {
         // cold start parses back. Replaces the old pre-cascade v1
         // `persist_entities` flush.
         if let Some(ref store) = self.store {
-            let mut v2 =
-                crate::storage::build_v2_concepts_for_file(&projection, file_path, &digests);
+            // P5d: the whole flush takes the observation's one instant —
+            // the unstamped builder reads the clock again, which would open
+            // the entity rows milliseconds after the spine and split one
+            // observed event into two generations.
+            let mut v2 = crate::storage::build_v2_concepts_for_file_at(
+                &projection,
+                file_path,
+                &digests,
+                &observed_at,
+            );
             // P3 (DR-38): content-version spine for this file, appended
             // to the SAME bulk — one flush, one commit, one generation
             // (P1 `recorded_generations` counts DISTINCT `recorded_at`
             // per commit). Concepts first is FK order; a spine-compute
             // failure is loud but must not fail the entity flush.
             if let Some(digest) = digests.get(file_path) {
-                let now = crate::storage::now_iso8601();
-                match store
-                    .spine_upserts_for(&[(format!("{file_path}::module"), digest.clone())], &now)
-                {
+                match store.spine_upserts_for(
+                    &[(format!("{file_path}::module"), digest.clone())],
+                    &observed_at,
+                ) {
                     Ok(extra) => v2.extend(extra),
                     Err(e) => persistence_errors
                         .push(format!("spine computation failed for {file_path}: {e:?}")),
                 }
             }
+            // P5d (INV-17): every content row of an observation write says
+            // where it came from, then the store records how far ahead the
+            // recorded axis now sits (H-26's seed).
+            crate::storage::tag_observation_rows(&mut v2, observation);
             if let Err(e) = store.upsert_concepts_bulk(&v2) {
                 persistence_errors.push(format!("concept flush failed for {file_path}: {e:?}"));
+            } else if let Err(e) = store.record_observation_instant(&observed_at) {
+                persistence_errors.push(format!("observation mark failed for {file_path}: {e:?}"));
             }
         }
         // Scoped: an edit to one file must not re-assert the project's whole
@@ -1003,6 +1047,8 @@ impl CodeGraph {
             blobs_skipped_oversize: blob_oversize,
             blobs_skipped_excluded: blob_excluded,
             blobs_bytes: blob_bytes,
+            observed_at: observed_at.clone(),
+            source: observation.source.to_string(),
         })
     }
 

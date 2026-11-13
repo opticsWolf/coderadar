@@ -206,10 +206,9 @@ class TestF4MergeBringsBranchFiles:
 
 
 class TestF5RecordedEdits:
-    @pytest.mark.xfail(strict=True, reason=(
-        "F5: a git-filled store refuses update_file (INV-12), so a successful "
-        "mutation ends ApplyIncomplete and the edit is invisible to a no-at "
-        "read. Flips in P5d (observation writes)."))
+    # F5 flipped in P5d: a mutation on a git-filled store is an observation
+    # write (§3.1.3), so the edit opens a start at the instant it was seen and
+    # the recorded default read answers it.
     def test_a_mutation_on_a_git_filled_store_is_recorded(self, tmp_path, monkeypatch):
         repo = _init_repo(tmp_path / "repo")
         _commit(repo, "c1", "2026-01-01T10:00:00+00:00",

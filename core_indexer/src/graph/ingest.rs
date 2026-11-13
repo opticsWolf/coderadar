@@ -46,6 +46,28 @@ pub const MODE_INDEX_NOW: &str = "index-now";
 /// P5 ingest stamping: the commit's time, per commit.
 pub const MODE_COMMIT_TIME: &str = "commit-time";
 
+/// The latest observation instant the store recorded on the trunk (P5d,
+/// H-26). Observations are truncated to the trunk in P5d's first slice —
+/// checkout-driven lineage writes are the second — so one mark answers for
+/// the store. Plain name: it is written and read by this crate only.
+pub const OBSERVED_KEY: &str = "coderadar.observed.main";
+
+/// The later of two RFC3339 stamps, for seeding INV-11's nudge chain. An
+/// unparseable side loses to a parseable one; two unparseable sides keep the
+/// first, which the later nudge treats as "no seed".
+fn later_instant(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(left), Some(right)) => match (
+            crate::storage::parse_rfc3339_epoch_micros(&left),
+            crate::storage::parse_rfc3339_epoch_micros(&right),
+        ) {
+            (Some(l), Some(r)) if r > l => Some(right),
+            _ => Some(left),
+        },
+        (left, right) => left.or(right),
+    }
+}
+
 /// Last ingested commit on a lineage: INV-10's comparison point and what
 /// makes an interrupted ingest resumable (H-20: a cursor, never a blob
 /// reference, so losing it repeats work instead of losing bytes).
@@ -525,6 +547,17 @@ pub fn ingest_history(
         ),
         None => (None, None),
     };
+    // P5d (H-26): a recorded observation is a belief no commit may open a
+    // start behind. Seeding the nudge chain with it means a commit whose
+    // committer time precedes the observation lands after it, flagged
+    // `stamps_nudged` — P5b.5 lifts the constraint properly, by folding the
+    // valid axis instead of appending to the recorded one.
+    if let Some(ref store) = store {
+        let observed = store
+            .observation_instant()
+            .map_err(|e| IngestError::Store(format!("cannot read observation mark: {e:?}")))?;
+        stamp_prev = later_instant(stamp_prev, observed);
+    }
     if let Some(ref h) = head {
         // The cursor names a commit the repository no longer has: rebased,
         // force-pushed, or shallow-fetched away (P5-D8). The ledger keeps
@@ -1276,6 +1309,15 @@ pub fn ingest_branch_history(
         ),
         None => (None, None),
     };
+    // P5d (H-26): the trunk's observation mark seeds a branch's nudge chain
+    // too -- the branch inherits the trunk's rows, so a write of its own
+    // must not open a start behind a belief the trunk already recorded.
+    if let Some(ref store) = store {
+        let observed = store
+            .observation_instant()
+            .map_err(|e| IngestError::Store(format!("cannot read observation mark: {e:?}")))?;
+        stamp_prev = later_instant(stamp_prev, observed);
+    }
     if let Some(ref h) = head {
         let git = git2::Repository::open(repo).map_err(GitError::Open)?;
         if git.revparse_single(h).is_err() {

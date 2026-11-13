@@ -285,26 +285,12 @@ fn temporal_err(e: macrame::DbError) -> PyErr {
     }
 }
 
-/// INV-12 enforcement for the index-now write paths (`analyze`,
-/// `update_file`, `remove_file`): a store whose stamping mode is
-/// commit-time refuses clock-stamped writes, because mixing the two axes
-/// in one store is exactly what the mode flag exists to prevent. The
-/// message names the one legal move.
-fn store_is_commit_time(store: &crate::storage::CodeGraphStore) -> bool {
-    store
-        .kv_get_sync(crate::graph::ingest::STAMPING_MODE_KEY)
-        .ok()
-        .flatten()
-        .as_deref()
-        == Some(crate::graph::ingest::MODE_COMMIT_TIME)
-}
-
-fn commit_time_refusal() -> String {
-    "refusing [commit-time]: this store's stamping mode is commit-time (written by \n\
-     ingest-history); index-now writes would mix stamps (INV-12) — re-ingest the range \n\
-     instead of analyzing or updating"
-        .to_string()
-}
+// INV-12 narrowed (P5d): the mode flag records how the store was *filled*
+// — `index-now` by `analyze`, `commit-time` by `ingest-history` — and no
+// longer decides what it may accept. The law is now per row: every row's
+// axes mean what its `source` says (INV-17). A `commit-time` store accepts
+// an observation write, and the rows it writes say so in
+// `extra.coderadar.source`, stamped at the instant the writer saw the tree.
 
 /// Map an ingest failure to the error the Python layer contracts on:
 /// caller-caused refusals (bad branch, bad revision, ancestry, cursor,
@@ -786,16 +772,6 @@ fn analyze_inner(
             }
         }
     }
-    // INV-12: index-now writes must refuse a commit-time store. A reindex
-    // over ingested history would mix clock stamps into the commit-time
-    // axis — the one mixing the flag exists to refuse. Re-ingest the
-    // range instead.
-    if let Some(ref store) = graph.store {
-        if store_is_commit_time(store) {
-            return Err(commit_time_refusal());
-        }
-    }
-
     let root_path = std::path::Path::new(root);
     let mut total_entities = 0usize;
     let mut files_indexed = 0usize;
@@ -1120,16 +1096,25 @@ fn analyze_inner(
                     })
                 })
                 .collect();
+            let analyzed_at = crate::storage::now_iso8601();
             if !spine_inputs.is_empty() {
-                let now = crate::storage::now_iso8601();
-                match store.spine_upserts_for(&spine_inputs, &now) {
+                match store.spine_upserts_for(&spine_inputs, &analyzed_at) {
                     Ok(extra) => v2.extend(extra),
                     Err(e) => eprintln!("[diag] spine computation failed: {e:?}"),
                 }
             }
+            // P5d (INV-17): an analyze over a git-filled store is a
+            // whole-tree observation. Its rows say so, and the store records
+            // how far ahead the recorded axis now sits.
+            crate::storage::tag_observation_rows(
+                &mut v2,
+                &crate::storage::ObservationSource::new("analyze"),
+            );
             if let Err(e) = store.upsert_concepts_bulk(&v2) {
                 concept_flush_succeeded = false;
                 eprintln!("[diag] v2 concept flush failed: {e:?}");
+            } else if let Err(e) = store.record_observation_instant(&analyzed_at) {
+                eprintln!("[diag] observation mark failed: {e:?}");
             }
         }
         // Persist resolved edges to Macrame store
@@ -1301,11 +1286,17 @@ fn query_graph(py: Python<'_>, query_str: &str) -> PyResult<PyObject> {
 /// (`signature_changed` / `body_changed`); `new_unresolved` / `newly_resolved`
 /// list `{entity_id, target}` call targets that appeared or went away.
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (file_path, content=None, force=None, source=None, tool=None, plan_id=None, attempt_id=None))]
 fn update_file(
     py: Python<'_>,
     file_path: &str,
     content: Option<&str>,
     force: Option<bool>,
+    source: Option<&str>,
+    tool: Option<&str>,
+    plan_id: Option<&str>,
+    attempt_id: Option<&str>,
 ) -> PyResult<PyObject> {
     // Re-parse, re-resolve and persist without the GIL, like `analyze`. The
     // lock on the global graph is taken inside, so it is held for the work
@@ -1315,14 +1306,18 @@ fn update_file(
             let guard = GLOBAL_GRAPH.read();
             match guard.as_ref() {
                 Some(graph) => {
-                    // INV-12: a live-updated file carries the clock, which
-                    // would mix stamps into a commit-time store.
-                    if let Some(store) = graph.store.as_ref() {
-                        if store_is_commit_time(store) {
-                            return Err(commit_time_refusal());
-                        }
-                    }
-                    graph.update_file(file_path, content, force)
+                    // P5d (INV-12 narrowed): a live update on a git-filled
+                    // store is an *observation write* — it opens a start at
+                    // the instant this writer saw the tree and says so in its
+                    // rows. Refusing it would leave a successful edit
+                    // invisible on the recorded axis (F5).
+                    let observation = crate::storage::ObservationSource {
+                        source: source.unwrap_or(crate::storage::ObservationSource::BARE),
+                        tool,
+                        plan_id,
+                        attempt_id,
+                    };
+                    graph.update_file_observed(file_path, content, force, &observation)
                 }
                 None => Err("No graph loaded — run coderadar init first".to_string()),
             }
@@ -1378,6 +1373,10 @@ fn update_file(
     dict.set_item("newly_resolved", refs(&outcome.newly_resolved))?;
     dict.set_item("epoch_before", outcome.epoch_before)?;
     dict.set_item("epoch_after", outcome.epoch_after)?;
+    // P5d (INV-17): the observation this write made — its instant on both
+    // axes and the writer it is attributed to.
+    dict.set_item("observed_at", &outcome.observed_at)?;
+    dict.set_item("source", &outcome.source)?;
     // §1.9 notice: per-file blob outcome rides the update report (DR-30).
     dict.set_item("blobs_stored", outcome.blobs_stored)?;
     dict.set_item("blobs_skipped_oversize", outcome.blobs_skipped_oversize)?;
@@ -1391,14 +1390,10 @@ fn update_file(
 fn remove_file(file_path: &str) -> PyResult<PyObject> {
     let py = unsafe { Python::assume_gil_acquired() };
     with_graph(|graph, _snap| {
-        // INV-12: same clock-mixing refusal as `update_file`.
-        if let Some(store) = graph.store.as_ref() {
-            if store_is_commit_time(store) {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    commit_time_refusal(),
-                ));
-            }
-        }
+        // P5d: a deletion observed on a git-filled store is an observation
+        // too (the tombstone retires at this writer's instant). Retire rows
+        // carry no `source`: an absence has no content provenance, and
+        // `retired: true` plus the stamp already say what it is.
         let started = std::time::Instant::now();
         // F14: remove by the canonical form or the walk-form entry is
         // never found (forward-slash input vs `\` -joined stored ids).

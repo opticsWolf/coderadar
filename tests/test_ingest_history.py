@@ -301,13 +301,17 @@ class TestRefusals:
         with pytest.raises(ops.InvalidRequest, match="store_path"):
             ops.ingest_history(str(repo))
 
-    def test_commit_time_store_refuses_index_now_writes(self, tmp_path):
+    def test_commit_time_store_accepts_an_observation_write(self, tmp_path):
+        """INV-12 narrowed in P5d: the mode flag says how the store was
+        filled, not what it may accept. A live write is an observation — it
+        lands, and its rows say where they came from."""
         repo, _ = _three_commit_repo(tmp_path)
         ops.ingest_history(str(repo), store_path=str(_store_path(repo)))
         from coderadar import coldstart
         coldstart.build_graph(str(repo))
-        with pytest.raises(Exception, match="commit-time"):
-            _core.update_file("a.py", "x = 9\n", False)
+        report = _core.update_file("a.py", "x = 9" + chr(10), False)
+        assert report["source"] == "update", report
+        assert report["observed_at"], report
 
 
 class TestCli:

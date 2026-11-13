@@ -281,6 +281,11 @@ answer non-empty; P5c makes it right for branches.
 On an index-now store that is already the "record on success" event. On a commit-time store
 `update_file` refuses (INV-12, `lib.rs:1316`), so every successful edit ends `ApplyIncomplete`.
 
+> *(2026-11-13: steps 2 and 3 below are built — P5d's first slice; step 1's sync-first
+> arrives with the commit-driven half, and the H-26 nudge covers a commit that lands behind
+> anyway. `at=<sha>`'s `dirty_at_commit` reporting still reads the working tree, as stated
+> under the last heading.)*
+
 **Proposed.** A successful mutation emits one **observation write**:
 
 1. **Sync first.** Ingest any commits that have landed on the checked-out lineage since its cursor,
@@ -618,6 +623,26 @@ while CodeRadar was off. Needs P5b.1
 because every observation opens a new start. **Flips** F5's test. Independent of every upstream
 request.
 
+*(2026-11-13: the observation half landed — F5 flipped. An index-now write on a `commit-time`
+store is no longer refused: INV-12 narrowed to "every row's axes mean what its `source` says", so
+`update_file`, `remove_file` and `analyze` write **observation rows** stamped at the instant the
+writer saw the tree, tagged in `extra.coderadar` (`source` + `tool`/`plan_id`/`attempt_id`), and the
+previous interval closes where the new one opens. `update_file` takes the provenance from its
+caller, so a mutation's rows say `mutation` and name the plan and attempt; a bare call says
+`update`. The sync summary reports `observations: [{file, observed_at, source}]` and a
+synchronized mutation is `Applied` again. One clock read per write is the whole event: the entity
+flush and the spine take the same instant, and provenance is **provenance-blind** to the
+unchanged-filter — a no-op reindex that finds identical bytes asserts nothing, or every no-op
+would churn `valid_from` (the spine test caught exactly that).*
+
+*(H-26's other half, also landed: the store records the observation instant in
+`coderadar.observed.main` (monotonic), and both ingest arms seed INV-11's nudge chain with it —
+so a commit discovered afterwards that would open a start behind a recorded belief is nudged past
+it and counted in `stamps_nudged`, never written backwards. What remains of P5d is the
+commit-driven half: the ref watcher / post-commit hook, checkout switching the observation's
+lineage after writing the left lineage's dirty files back to its head (D-4 a1), and startup
+catching up on what changed while CodeRadar was off.)*
+
 ### P6b — Aggregation and vectors (no dependency)
 
 As proposed: `open_items` over annotations, annotations and comments as embed targets (current
@@ -650,7 +675,7 @@ already require.
 | 2 | P6b, P8 | — | each other |
 | 2 | P5b.7 rename links *(closed 2026-11-12 — git detection at the default 50 %, `CommitPlan.renamed`, one row per id under `renamed:{old_id}` plus the reverse `became:{new_id}` key, `rename` in the INV-13 exclusions; reads follow the chain and mark `via_rename` (annotations/comments both directions, `history_of` across the chain, `find_entity` via `_core.rename_chain`). The score is `100` only for a byte-identical pair and `null` otherwise — git2 exposes no score. F6 flipped. Gates: 592 lib, pytest 1346/1/2xf)* | — | everything in order 2 |
 | 3 | P5b.6 branch names + generations *(closed 2026-11-12 — D-6 c selection: one lineage per own-commit tip, every other name an address read through the commit index (`parent_drift` reported); D-5 generations: a rebase or rewrite starts `{branch}#n`, the trunk refuses `TrunkRewritten`, a tip moved onto the trunk refuses `BranchNowMerged`. Two defects the tests caught: the address fold ran on the name (Macrame refuses a lineage-less name) and `#` is illegal in kv keys (D-280) — keys hex-encode unsafe names behind a `:` marker, plain names unchanged. Gates: 591 lib, pytest 1338/1/3xf)* | P5b.3a | P5d, P5b.2 |
-| 3 | P5d live tree | P5b.1 | P5b.2 |
+| 3 | P5d live tree *(observation writes closed 2026-11-13 — INV-12 narrowed, source-tagged rows, one instant per write, `observations` in the sync summary, F5 flipped; H-26's nudge seed in both ingest arms. Gates: 595 lib, pytest 1359/1/1xf. The commit-driven half — watcher/hook, checkout's lineage switch with D-4 a1, startup catch-up — stands.)* | P5b.1 | P5b.2 |
 | 3 | P5b.2 adopt 0.22.0 *(closed 2026-11-11 — [patch] retired, the lock rides crates.io `0.22.0`; engine identical to the rev pin (no src/ diff 40719ac to tag); gates 589 lib + pytest 1303/1/4xf, scratch migration disorder 0)* | P5b.1 (U-1 released 2026-11-01) | P5d |
 | 4 | P5b.3 valid reads (trunk) *(closed 2026-11-12 — `valid=` on `as_of`, `changes_between`, the `Snapshot` and the five `_core` reads; `resolve_valid_read` names the instant and `basis: "valid"`, lowered to Macrame's `reconstruct_as_of(AsOf::valid_at)`, trunk-only; a branch refuses `ValidBranchNeedsU2`, `at=` refuses `ValidAtNeedsP5b4`. `history_of` needs no flag (the spine is the valid axis) and `verify_history` samples recorded generations by design — both stated in §6. Gates: 592 lib, pytest 1353/1/2xf)* | P5b.2 | — |
 | 5 | P5b.4 sha addressing | P5b.3 | P5b.5 |
@@ -781,7 +806,7 @@ same-start; the slot fix lands upstream (40719ac) with its own reader-side pin.)
 |---|---|---|
 | H-21 | **The two-flush window.** Between the close flush and the open flush a concept is valid nowhere | P5b.1: shared stamp, cursor after the open flush, resumable; U-5 removes it *(2026-11-09: U-5 is D-312, ships in 0.22.0; P5b.1 builds on it)* |
 | H-22 | *(Withdrawn 2026-10-31 with the overlay; see H-26.)* | — |
-| H-26 | **Observations ahead of a late commit.** A commit fetched from elsewhere can carry a committer time earlier than an edit already observed on the same lineage, which would open a start behind the open one | Sync before every observation write (§3.1.3); a commit that still lands behind is nudged after the latest start and flagged `stamp_nudged`, as INV-11 does for ties |
+| H-26 | **Observations ahead of a late commit.** A commit fetched from elsewhere can carry a committer time earlier than an edit already observed on the same lineage, which would open a start behind the open one | Sync before every observation write (§3.1.3); a commit that still lands behind is nudged after the latest start and flagged `stamp_nudged`, as INV-11 does for ties *(2026-11-13: the nudge seed exists — `coderadar.observed.main`, read by both ingest arms; sync-first arrives with P5d's commit-driven half and P5b.5 lifts the constraint by folding the valid axis instead of appending)* |
 | H-27 | **The horizon is a `kv` row.** Lost, every past read falls back to the recorded arm and answers empty again | Rebuildable from the ledger (the first `commit:` row per lineage); `verify_history` reports a missing horizon on a git-filled store as an error, not a warning |
 | H-28 | **Merging an ingested branch before U-4.** Files the branch minted reach the trunk as bytes without entities; the trunk's symbol reads miss them | The ingest report lists them (`cross-lineage-id`) and the merge commit's summary counts them; a trunk read for such a path reports `minted_on: <lineage>` instead of answering absent; U-4 requested next to U-1 (Q-15) *(2026-11-09: 0.22.0's D-315 resolves the substance — the trunk asserts its own first version and reads answer; this mitigation is the wording for pre-overlay pin stores)* |
 | H-29 | **A rename git does not detect.** Below the similarity threshold, or a rename combined with a large edit, stays a delete plus an add, and annotations stay on the old id | Annotations on a closed id are listed by `annotations --orphaned`; a manual `link-rename old new` writes the same link row P5b.7 writes |
