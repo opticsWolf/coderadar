@@ -2269,7 +2269,7 @@ class GitWatcher:
             self._thread.join(timeout=5.0)
             self._thread = None
 
-    def __enter__(self) -> GitWatcher:
+    def __enter__(self) -> GitWatcher:  # noqa: PYI034 - typing.Self needs 3.11+
         return self.start()
 
     def __exit__(self, *args) -> None:
@@ -2314,6 +2314,7 @@ __all__ = [
     "BatchContext",
     "CodeGraph",
     "CodeRadarError",
+    "GitWatcher",
     "MutationEdit",
     "MutationError",
     "MutationFailure",
@@ -2329,7 +2330,6 @@ __all__ = [
     "StaleHandle",
     "SymbolChange",
     "UpdateReport",
-    "GitWatcher",
     "Watcher",
     "analyze",
     "blob_stats",

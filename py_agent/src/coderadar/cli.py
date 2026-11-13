@@ -819,7 +819,6 @@ def _store_arg(store_path: str | None) -> str | None:
 @_format_option
 def export_annotations(out: str | None, store_path: str | None, fmt: str):
     """Export every annotation and comment chain as one JSON document (P8, A-9)."""
-    from pathlib import Path as _Path
 
     from . import ops, render
     target = _store_arg(store_path)

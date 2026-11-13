@@ -291,6 +291,7 @@ def find_entity(entity_id: str) -> dict | None:
         return found
     try:
         import json as _json
+
         from coderadar._core import rename_chain
         chain = _json.loads(rename_chain(canonical))
     except (ImportError, RuntimeError, ValueError):
@@ -2160,14 +2161,32 @@ def sync_git(repo: str | Path, *, store_path: str | Path | None = None,
     try:
         from coderadar._core import (
             branch_plan as _branch_plan,
+        )
+        from coderadar._core import (
             git_blob_text as _blob_text,
+        )
+        from coderadar._core import (
             git_head as _head,
+        )
+        from coderadar._core import (
             git_marks as _marks,
+        )
+        from coderadar._core import (
             git_workdir_changes as _changes,
+        )
+        from coderadar._core import (
             indexed_root_py as _indexed_root,
+        )
+        from coderadar._core import (
             record_branch_addresses as _addresses,
+        )
+        from coderadar._core import (
             record_git_marks as _write_marks,
+        )
+        from coderadar._core import (
             remove_file as _remove,
+        )
+        from coderadar._core import (
             update_file as _update,
         )
     except ImportError as e:  # pragma: no cover - extension always built in CI

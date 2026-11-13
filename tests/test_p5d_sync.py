@@ -21,7 +21,6 @@ import subprocess
 import time
 
 import pytest
-
 from coderadar import GitWatcher, load, ops
 
 try:

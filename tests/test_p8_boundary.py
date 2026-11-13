@@ -20,7 +20,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from coderadar import load, ops
 
 try:
@@ -104,7 +103,8 @@ def _script(tmp_path: Path, text: str, name: str) -> Path:
 
 def _run(script: Path, *args, cwd: Path) -> dict:
     done = subprocess.run([sys.executable, str(script), *map(str, args)],
-                          cwd=str(cwd), capture_output=True, text=True)
+                          cwd=str(cwd), capture_output=True, text=True,
+                          check=False)
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout.strip().splitlines()[-1])
 

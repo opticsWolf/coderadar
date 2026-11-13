@@ -18,7 +18,6 @@ import sqlite3
 import subprocess
 
 import pytest
-
 from coderadar import load, ops
 
 try:

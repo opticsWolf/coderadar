@@ -6,6 +6,24 @@ use super::module_resolution::{find_module_by_dotted_name, normalize_path_str};
 use super::CodeGraph;
 use crate::types::*;
 
+/// Where a file diff's retirements land (P5d, B1).
+///
+/// Three states, and they are a sum rather than a bool plus an optional
+/// name: the branch ingest collects removed ids and retires them on its
+/// own lineage, the trunk retires its own, and a projection-only pass
+/// (the branch sweep's staging) retires nothing. Spelling the third state
+/// "false" and the second "true, None" left the combination (false,
+/// Some(_)) constructible and meaningless.
+#[derive(Clone, Copy)]
+pub enum RetireScope<'a> {
+    /// Projection-only: the caller retires later, on its own act.
+    Skip,
+    /// The trunk's own row space.
+    Trunk,
+    /// A branch's row space (P5d B1's lineage routing).
+    Branch(&'a str),
+}
+
 impl CodeGraph {
     /// Close removed entities in the persistent ledger and report failures.
     ///
@@ -312,8 +330,9 @@ impl CodeGraph {
     /// entities (same ID + same content hashes) are left in place, avoiding
     /// unnecessary hashmap churn and edge recalculation.
     /// Returns (inserted_count, removed_count, removed_ids,
-    /// retirement_error). Compared and retired in-store only when
-    /// `retire_in_store` says so.
+    /// retirement_error). The retire lands where `retire` says: the
+    /// caller decides, because a branch collect retires on its own
+    /// lineage later and the trunk retires its own here.
     pub fn apply_diff_update(
         &self,
         projection: &mut ProjectedGraph,
@@ -321,8 +340,7 @@ impl CodeGraph {
         file_path: &str,
         language: &Language,
         valid_from: &str,
-        retire_in_store: bool,
-        retire_lineage: Option<&str>,
+        retire: RetireScope<'_>,
     ) -> (usize, usize, Vec<EntityId>, Option<String>) {
         // 1. Collect old entity hashes from projection.
         //    Normalize entity IDs for cross-platform prefix matching.
@@ -789,10 +807,12 @@ impl CodeGraph {
         // - the branch ingest collects `removed_ids` and retires them on
         // its own lineage through the branch sweep; retiring here would
         // close an inherited id's trunk row for a branch-local delete.
-        let retirement_error = if retire_in_store {
-            self.try_retire_in_store_on(removed_ids.iter(), valid_from, retire_lineage)
-        } else {
-            None
+        let retirement_error = match retire {
+            RetireScope::Skip => None,
+            RetireScope::Trunk => self.try_retire_in_store_on(removed_ids.iter(), valid_from, None),
+            RetireScope::Branch(lineage) => {
+                self.try_retire_in_store_on(removed_ids.iter(), valid_from, Some(lineage))
+            }
         };
 
         (inserted, removed, removed_ids.clone(), retirement_error)
@@ -956,8 +976,7 @@ impl CodeGraph {
             file_path,
             &lang,
             &observed_at,
-            true,
-            Some(lineage.as_str()),
+            RetireScope::Branch(lineage.as_str()),
         );
         // Keep the dotted-name fast path in sync (cheap; module set is
         // unchanged today, but a stale index would silently degrade the

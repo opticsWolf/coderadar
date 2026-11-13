@@ -13,7 +13,6 @@ import sqlite3
 import subprocess
 
 import pytest
-
 from coderadar import ops
 
 _OPEN_SENTINEL = "9999-12-31T23:59:59.999999Z"

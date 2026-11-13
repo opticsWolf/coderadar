@@ -15,7 +15,6 @@ import os
 import subprocess
 
 import pytest
-
 from coderadar import ops
 
 try:

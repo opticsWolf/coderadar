@@ -296,6 +296,7 @@ class TestColdReload:
 
     def test_git_filled_store_with_a_note_still_loads(self, tmp_path, monkeypatch):
         import subprocess
+
         from coderadar import coldstart
         monkeypatch.chdir(tmp_path)
         (tmp_path / "a.py").write_text(A, encoding="utf-8", newline="\n")

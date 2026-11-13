@@ -23,7 +23,7 @@ import pytest
 from coderadar import ops
 
 try:
-    from coderadar import _core
+    from coderadar import _core  # noqa: F401 - the import is the availability probe
     _CORE = True
 except ImportError:  # pragma: no cover - gate for CI without the extension
     _CORE = False

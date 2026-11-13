@@ -178,7 +178,7 @@ class TestBranchReadsOwnContent:
         graph = _load(repo)
 
         from coderadar._core import recorded_generations
-        branch_gens = recorded_generations(None, None, "feature")
+        _branch_gens = recorded_generations(None, None, "feature")
         # P5b.3a: a branch's recorded generations all precede its horizon
         # (the first import completes after them), so those instants answer
         # from git history, and until P5c the branch arm sees the parent as
@@ -407,7 +407,7 @@ class TestBranchSweepRetires:
         # a.py is trunk-minted (a function the branch never wrote);
         # deleting the file mints the module tombstone AND cuts the
         # inherited entity (the review's "only ::module got a marker" gap).
-        repo, shas = self._mini_repo(tmp_path / "repo", "def f():\n    return 1\n")
+        repo, _shas = self._mini_repo(tmp_path / "repo", "def f():\n    return 1\n")
         ops.ingest_history(str(repo), store_path=str(_store_path(repo)))
         _commit(repo, "d1", "2026-01-05T10:00:00+00:00", {},
                 delete=("a.py",))
@@ -437,7 +437,7 @@ class TestBranchSweepRetires:
         # the sweep (an in-file delete never leaves the tree, so the file
         # filter alone would keep it alive). h survives, riding its
         # takeover.
-        repo, shas = self._mini_repo(
+        repo, _shas = self._mini_repo(
             tmp_path / "repo", "def f():\n    return 1\ndef h():\n    return 2\n")
         ops.ingest_history(str(repo), store_path=str(_store_path(repo)))
         _commit(repo, "e1", "2026-01-05T10:00:00+00:00",
@@ -447,7 +447,7 @@ class TestBranchSweepRetires:
                                     store_path=str(_store_path(repo)))
         assert report["commits_ingested"] == 1
         assert report["head"] == sha_e1
-        graph = _load(repo)
+        _load(repo)
         # P5b.3a: the branch's recorded generations precede its horizon, so
         # the read addresses the commit by its committer time (e1, whose
         # sweep cut f).
@@ -462,7 +462,7 @@ class TestBranchSweepRetires:
         # all-mints filter saw the trunk row and dropped the write as
         # "unchanged", so the branch kept reading its f1 version. The
         # branch compares its RESOLVED state: the revert writes.
-        repo, shas = self._mini_repo(tmp_path / "repo", "def f():\n    return 1\n")
+        repo, _shas = self._mini_repo(tmp_path / "repo", "def f():\n    return 1\n")
         ops.ingest_history(str(repo), store_path=str(_store_path(repo)))
         _commit(repo, "f1", "2026-01-04T10:00:00+00:00",
                 {"a.py": "def g():\n    return 1\n"})
@@ -475,7 +475,7 @@ class TestBranchSweepRetires:
                                     store_path=str(_store_path(repo)))
         assert report["commits_ingested"] == 1
         assert report["head"] == sha_f3
-        graph = _load(repo)
+        _load(repo)
         gens = self._last_generation("feature")
         refs = _refs(["a.py::f", "a.py::g"], gens, "feature")
         # The trunk's own row held f's digest already; the WRITE still

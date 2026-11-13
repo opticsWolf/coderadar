@@ -15,7 +15,6 @@ import os
 import subprocess
 
 import pytest
-
 from coderadar import ops
 
 try:
@@ -121,7 +120,7 @@ class TestSelection:
         assert out["refs"]["a.py::module"]["digest"] == _digest("x = 2\n")
 
     def test_a_branch_with_its_own_commits_stays_a_lineage(self, tmp_path):
-        repo, shas = _branchy_repo(tmp_path / "repo")
+        repo, _shas = _branchy_repo(tmp_path / "repo")
         dest = _dest(tmp_path)
         report = ops.migrate_to_commit_time(str(repo), str(dest), embed=False,
                                             verify=False)

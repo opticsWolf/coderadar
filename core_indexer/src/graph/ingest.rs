@@ -932,8 +932,7 @@ pub fn ingest_history(
                 canonical_path,
                 lang,
                 &stamp,
-                true,
-                None,
+                crate::graph::projection_ops::RetireScope::Trunk,
             );
             if let Some(error) = retirement_error {
                 eprintln!("[ingest] retire-after-diff failed for {canonical_path}: {error}");
@@ -1738,8 +1737,7 @@ pub fn ingest_branch_history(
                 canonical_path,
                 lang,
                 &stamp,
-                false,
-                None,
+                crate::graph::projection_ops::RetireScope::Skip,
             );
             removed_ids.extend(removed);
             if let Some(error) = retirement_error {
@@ -2633,8 +2631,7 @@ pub fn reingest_merged_commits(
                 canonical_path,
                 lang,
                 &stamp,
-                true,
-                None,
+                crate::graph::projection_ops::RetireScope::Trunk,
             );
             if let Some(e) = retire_err {
                 commit_failed_files.push(FailedFile {
@@ -4130,19 +4127,6 @@ mod backfill_tests {
         .unwrap();
     }
 
-    /// The trunk walk's own run (findings 1 and 2's shape): the whole
-    /// plan, commit-time stamps, everything the walk writes.
-    fn ingest_main(store_path: &std::path::Path, repo: &str) {
-        crate::graph::ingest::ingest_history(
-            &store_path.to_string_lossy(),
-            repo,
-            "main",
-            None,
-            false,
-        )
-        .unwrap();
-    }
-
     /// The vintage shape, forged on a store where the walk already ran
     /// (under the fixed read): the trunk-side evidence for every id under
     /// each prefix removed under the archive-session marker the delete
@@ -4280,7 +4264,7 @@ mod backfill_tests {
         let repo_s = dir.path().to_string_lossy().to_string();
         let store_path = dir.path().join("heal.db");
         ingest_feat(&store_path, &repo_s);
-        let (m, _e) = apply_merge(&repo, &a, &b);
+        let (_m, _e) = apply_merge(&repo, &a, &b);
         let first = crate::graph::ingest::reingest_merged_commits(
             &store_path.to_string_lossy(),
             &repo_s,
@@ -4401,7 +4385,7 @@ mod backfill_tests {
         let store_path = dir.path().join("walk.db");
         let repo_s = dir.path().to_string_lossy().to_string();
         ingest_feat(&store_path, &repo_s);
-        let (m, e) = apply_merge(&repo, &a, &b);
+        let (_m, e) = apply_merge(&repo, &a, &b);
         // The trunk's own walks read the write's own resolution: the
         // merged file's next edit lands the trunk's next version there,
         // instead of a refused whole-commit bulk halting the walk.

@@ -22,8 +22,8 @@ except ImportError:
 pytestmark = pytest.mark.skipif(
     not _CORE, reason="Rust _core extension not built")
 
-from coderadar import _core as _C  # noqa: E402
-from coderadar import ops  # noqa: E402
+from coderadar import _core as _C
+from coderadar import ops
 
 
 def _digest(content: str) -> str:
@@ -110,7 +110,7 @@ def test_git_history_arm_returns_the_earlier_commit(tmp_path):
 
 
 def test_recorded_arm_after_the_horizon(tmp_path):
-    repo = _fixture(tmp_path)
+    _fixture(tmp_path)
     out = _C.source_refs_at(["a.py::module"],
                             "2999-01-01T00:00:00.000000Z", "main")
     assert out["basis"] == "recorded", out
@@ -201,7 +201,7 @@ def test_snapshot_strict_refuses_the_git_history_arm(tmp_path):
     # Construction is lazy (no index scan per snapshot); the arm resolves
     # at the first read, and that is where the refusal lands.
     with pytest.raises(ops.InvalidRequest, match="BeforeHorizon"):
-        _snapshot(repo, "2026-01-02T12:00:00.000000Z", strict=True).basis
+        _ = _snapshot(repo, "2026-01-02T12:00:00.000000Z", strict=True).basis
 
 
 def test_snapshot_before_history_refuses(tmp_path):

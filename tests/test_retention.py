@@ -264,7 +264,7 @@ class TestBackup:
         # must treat that as absent. Craft one (valid sqlite, no blobs).
         g, _t0, t1, digests = generations
         _hot, _cold = _store_files(Path.cwd())
-        hot, cold = _hot, _cold
+        cold = _cold
         assert not cold.exists()
         c = sqlite3.connect(str(cold))
         try:
