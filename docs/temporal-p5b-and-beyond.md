@@ -771,8 +771,9 @@ flush. Next: item (5) P5b.6, then P5b.7/P6b/P8 beside, then the 0.15.0 release.)
 **Suggested releases.** 0.15.0: P6a, P6c, P5b.0, P5b.1, P5b.3a, P5b.6, and with them P5a's two
 commands at store format 1 (D-7 d) — the first release in which a git-filled store answers every
 past time. If 0.15.0 is cut before those three phases, it ships without the commands.
-*(Revised 2026-11-01, 0.21.0 released; 2026-11-11: P5b.2 is now the 0.22.0 registry switch.)* 0.16.0: P5b.2 (pin 0.22.0 + libSQL 0.10), P5d, P5b.7 and
-P8 — the release that may make a commit-time store the store of record (§8). 0.17.0: P5b.3 (trunk),
+*(Revised 2026-11-01, 0.21.0 released; 2026-11-11: P5b.2 is now the 0.22.0 registry switch; 2026-11-13: P5d, P5b.7 and P8 landed before
+any cut, so the next release carries them — the 0.16.0 lane below collapses into it, and 0.16.0 is P6b + P9. The
+0.15.0 gate (P5b.1, P5b.3a, P5b.6) has been met since `1969fa6`; nothing blocks the cut but the choice of when.)* 0.16.0: P6b + P9. 0.17.0: P5b.3 (trunk),
 P5b.4, P5b.5. Branch valid reads when U-2 exists; P5c when U-3 exists (U-4's substance rides
 D-315).
 
