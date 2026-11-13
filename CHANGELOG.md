@@ -6,6 +6,15 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- The store is opened once per path, per process. A second open of a store this process already
+  holds now joins the live handle instead of constructing a second engine. Two measured reasons:
+  libSQL refuses a second `Database` on a live path on POSIX (`SqliteFailure(5, "database is
+  locked")` — the ubuntu runner failed every op that opened a store beside a loaded graph, a
+  second `ingest_history`, or a backfill; Windows tolerated it, so the bug was invisible off CI),
+  and closing either of two engines is not safe — the survivor keeps answering current reads but
+  loses the rows the close folded into its snapshot. Engines therefore live until the process
+  does, which is what the design already assumed; the sharing is new, and `ops.rebuild`'s
+  move-before-open order (P8) is unchanged and still required.
 - P5b.5, slice 1 — the backfill write shape. The store's bulk concept write accepts a closed,
   non-retirement version starting before the live open one, provided its `valid_to` is at or
   before the live belief's start: the past gains an abutting interval, the open belief keeps its

@@ -268,6 +268,17 @@ One store directory, four artifacts:
   indexed_config.json     # honored excludes (DR-31 staleness tripwire)
 ```
 
+- **One engine per store path, per process.** Every `CodeGraphStore::open`
+  of a path already open in this process joins the live handle instead of
+  opening a second `Database`. Two reasons, both measured: libSQL refuses a
+  second open on a live path on POSIX (`SqliteFailure(5, "database is
+  locked")`, silent on Windows), and an engine shutdown is a process-final
+  act — closing one of two engines leaves the other answering current reads
+  but losing the rows the close folded into its snapshot (and the same for a
+  later-open store, even on another path). So the registry hands out shared
+  handles and nothing closes a store mid-process; the engine's write actor
+  keeps the file open until the process ends, which is why `ops.rebuild`
+  moves the file before opening anything and refuses a loaded graph.
 - **The ledger is bitemporal.** `valid_from/valid_to` = world time,
   `recorded_at` = learned time. Code history means **recorded time**:
   `reconstruct(T)` folds facts with `recorded_at <= T` (`bfs_over_state`).

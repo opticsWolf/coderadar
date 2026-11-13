@@ -484,8 +484,93 @@ fn format_epoch_micros_zulu(micros: i128) -> String {
 
 // ── CodeGraphStore — owns the Macrame Database + Runtime ────────────────────
 
+/// One open store file, shared by every handle in this process.
+///
+/// Two facts force this shape, both measured rather than assumed:
+///
+/// 1. **A second `Database` on a path already open in this process fails on
+///    POSIX.** Not "sometimes": libSQL's open on the same file returns
+///    `SqliteFailure(5, "database is locked")`, while Windows tolerates it.
+///    Every op that opens a store by path while another handle is live — a
+///    second `ingest_history`, a backfill beside a loaded graph — failed this
+///    way on the ubuntu runner and nowhere else.
+/// 2. **A close is not safe to perform while the process keeps working.**
+///    Probed both ways: closing one of two handles on *one* path leaves the
+///    survivor answering current reads but losing rows the close folded into
+///    its snapshot, and closing a handle for one path does the same to a
+///    handle opened afterwards for *another* path. So the engine's shutdown
+///    is a process-final act, not a per-handle one.
+///
+/// Hence: one [`StoreInner`] per path, handed out as `Arc`s, never closed.
+/// The `Database`'s write actor keeps the file open for the life of the
+/// process, as it always did — that is the engine's contract, and the
+/// release-side cost is confined to operations that move a store file
+/// (`ops.rebuild` already moves before opening, and refuses a loaded graph).
+struct StoreInner {
+    db: Database,
+}
+
 pub struct CodeGraphStore {
-    pub db: Database,
+    inner: std::sync::Arc<StoreInner>,
+}
+
+impl Clone for CodeGraphStore {
+    fn clone(&self) -> Self {
+        Self {
+            inner: std::sync::Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl CodeGraphStore {
+    /// The engine handle.
+    pub fn db(&self) -> &Database {
+        &self.inner.db
+    }
+
+    /// How many handles this process holds on the same file.
+    ///
+    /// Exposed for the test that pins the sharing contract; nothing in the
+    /// read/write paths branches on it.
+    pub fn handles(&self) -> usize {
+        std::sync::Arc::strong_count(&self.inner)
+    }
+}
+
+/// Handles handed out for one path, so a second open joins the first.
+///
+/// `Weak` on purpose: a live entry means the file is already open, and a
+/// dead one is a store whose handles are gone — the next open mints a fresh
+/// engine there. The map therefore never holds a store alive.
+static OPEN_STORES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Weak<StoreInner>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// One path's identity for the registry.
+///
+/// Absolute and normalized, without requiring the file to exist yet: `open`
+/// creates it. `canonicalize` would fail on every first open, so this is the
+/// parent-aware spelling — the working directory is where a relative store
+/// path lands, and `..`/`.` are resolved lexically.
+fn store_key(path: &std::path::Path) -> std::path::PathBuf {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let mut out = std::path::PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// One tokio runtime for every store in the process.
@@ -560,6 +645,17 @@ impl CodeGraphStore {
         path: impl AsRef<Path>,
         cadence: Option<SnapshotCadence>,
     ) -> macrame::Result<Self> {
+        let path = path.as_ref();
+        let key = store_key(path);
+        // A second open of a file this process already holds joins the open
+        // handle. Opening again is not merely wasteful: it is refused by
+        // libSQL on POSIX (§`StoreInner`), and closing either of the two
+        // would empty the other's temporal reads.
+        if let Ok(map) = OPEN_STORES.lock() {
+            if let Some(existing) = map.get(&key).and_then(std::sync::Weak::upgrade) {
+                return Ok(Self { inner: existing });
+            }
+        }
         let db = {
             let _open_guard = DIAGNOSTIC_OPEN_LOCK
                 .lock()
@@ -570,7 +666,17 @@ impl CodeGraphStore {
         // from the in-memory projection. Re-assert on every open so restored
         // database backups regain the derived index automatically.
         runtime().block_on(db.register_extra_index(CODERADAR_EXTRA_FILE_PATH))?;
-        Ok(Self { db })
+        let inner = std::sync::Arc::new(StoreInner { db });
+        if let Ok(mut map) = OPEN_STORES.lock() {
+            // Dead entries are the paths whose handles all went away. They
+            // cost a `Weak` each, so they are swept rather than accumulated
+            // — a test process opens thousands of one-off stores.
+            if map.len() > 64 {
+                map.retain(|_, weak| weak.strong_count() > 0);
+            }
+            map.insert(key, std::sync::Arc::downgrade(&inner));
+        }
+        Ok(Self { inner })
     }
 
     /// §1.9 write-through: content-addressed put of one file's bytes.
@@ -609,7 +715,7 @@ impl CodeGraphStore {
             record_blob_outcome(&outcome);
             return Ok(outcome);
         }
-        match runtime().block_on(self.db.blob_put(bytes)) {
+        match runtime().block_on(self.db().blob_put(bytes)) {
             Ok(digest) => {
                 validate_digest(&digest).map_err(|e| {
                     macrame::DbError::InvalidDigest(format!(
@@ -647,7 +753,7 @@ impl CodeGraphStore {
         {
             return Ok(());
         }
-        runtime().block_on(self.db.upsert_concept(concept))
+        runtime().block_on(self.db().upsert_concept(concept))
     }
 
     /// Synchronous wrapper — bulk upsert entities from one file.
@@ -807,7 +913,7 @@ impl CodeGraphStore {
         // converts via From (the committed prefix stays committed; upserts
         // are idempotent so the next run heals it). CodeRadar never passes
         // a cancel token, so interruption here is a real chunk failure.
-        Ok(runtime().block_on(self.db.write_concepts(acts))?)
+        Ok(runtime().block_on(self.db().write_concepts(acts))?)
     }
 
     /// The write decision, per changed row, from the projection the
@@ -909,7 +1015,7 @@ impl CodeGraphStore {
                         .on(bid.clone())
                         .valid_at((*stamp).to_string());
                     let resolved: Vec<macrame::temporal::ConceptVersion> =
-                        runtime().block_on(self.db.concepts_by_id(&gids, plan))?;
+                        runtime().block_on(self.db().concepts_by_id(&gids, plan))?;
                     for v in resolved {
                         overlay_all.insert(((*stamp).to_string(), v.id.clone()), version_row(&v));
                     }
@@ -1027,7 +1133,7 @@ impl CodeGraphStore {
                     let plan = macrame::ReadPlan::new()
                         .on(bid.clone())
                         .valid_at((*stamp).to_string());
-                    let resolved = runtime().block_on(self.db.concepts_by_id(&gids, plan))?;
+                    let resolved = runtime().block_on(self.db().concepts_by_id(&gids, plan))?;
                     for v in resolved {
                         resolved_all.insert(((*stamp).to_string(), v.id.clone()), v);
                     }
@@ -1223,7 +1329,7 @@ impl CodeGraphStore {
     /// capture queries without discriminating. Bounded internally
     /// (`PRAGMA analysis_limit`), ~19ms at 40k edges upstream.
     pub fn analyze(&self) -> macrame::Result<()> {
-        runtime().block_on(self.db.analyze())
+        runtime().block_on(self.db().analyze())
     }
 
     /// Open a read-only diagnostic connection, one at a time process-wide.
@@ -1253,7 +1359,7 @@ impl CodeGraphStore {
         let guard = DIAGNOSTIC_OPEN_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let conn = runtime().block_on(self.db.diagnostic_conn())?;
+        let conn = runtime().block_on(self.db().diagnostic_conn())?;
         Ok((guard, conn))
     }
 
@@ -1396,13 +1502,13 @@ impl CodeGraphStore {
             if dim == 0 {
                 return Ok(0);
             }
-            runtime().block_on(self.db.register_model(&model, dim))?;
+            runtime().block_on(self.db().register_model(&model, dim))?;
             let plain: Vec<(String, Vec<f32>)> = vs
                 .iter()
                 .map(|(id, v, _)| (id.clone(), v.clone()))
                 .collect();
             runtime()
-                .block_on(self.db.upsert_embeddings(&model, plain))
+                .block_on(self.db().upsert_embeddings(&model, plain))
                 .map_err(|e| {
                     // BulkInterrupted carries the written count; the cause is
                     // what the caller answers. A foreign-key failure means
@@ -1711,7 +1817,7 @@ impl CodeGraphStore {
         if concepts.is_empty() {
             return Ok(0);
         }
-        Ok(runtime().block_on(self.db.write_concepts(concepts))?)
+        Ok(runtime().block_on(self.db().write_concepts(concepts))?)
     }
 
     /// Message bodies for commit rows minted before the body field existed
@@ -1799,7 +1905,7 @@ impl CodeGraphStore {
         }
         let healed = concepts.len();
         if !concepts.is_empty() {
-            runtime().block_on(self.db.write_concepts(concepts))?;
+            runtime().block_on(self.db().write_concepts(concepts))?;
         }
         Ok((healed, skipped))
     }
@@ -1878,7 +1984,7 @@ impl CodeGraphStore {
     /// hot→cold fallback, so archive never breaks a read.
     pub fn blob_get(&self, digest: &str) -> macrame::Result<Option<Vec<u8>>> {
         macrame::blob::validate_digest(digest)?;
-        runtime().block_on(self.db.blob_get(digest))
+        runtime().block_on(self.db().blob_get(digest))
     }
 
     /// Ref for one entity out of an already-folded state: the single
@@ -2082,7 +2188,7 @@ impl CodeGraphStore {
     /// `<store-stem>_archive.db` sibling — backup means the hot+cold pair,
     /// a hot-only copy is pointers (recorded digests, no bytes).
     pub fn archive(&self, cutoff: &str) -> macrame::Result<macrame::temporal::ArchiveReport> {
-        runtime().block_on(self.db.archive(cutoff))
+        runtime().block_on(self.db().archive(cutoff))
     }
 
     /// The honest error for a store without the FTS index: names the table
@@ -2197,7 +2303,7 @@ impl CodeGraphStore {
                         .on(main.clone())
                         .valid_at(ts.clone());
                     let resolved = self
-                        .db
+                        .db()
                         .concepts_by_id(std::slice::from_ref(id), plan)
                         .await?;
                     if let Some(v) = resolved.into_iter().next() {
@@ -2282,7 +2388,7 @@ impl CodeGraphStore {
                 // NotFound means something else closed it first; that is the
                 // desired end state either way.
                 if self
-                    .db
+                    .db()
                     .retire_edge(
                         source.as_str(),
                         target.as_str(),
@@ -2299,7 +2405,7 @@ impl CodeGraphStore {
 
             let concepts_retired = concepts.len();
             if concepts_retired > 0 {
-                self.db.write_concepts(concepts).await?;
+                self.db().write_concepts(concepts).await?;
             }
             Ok::<_, macrame::DbError>((concepts_retired, edges_retired))
         });
@@ -2525,7 +2631,7 @@ impl CodeGraphStore {
                         .on(bid.clone())
                         .valid_at(ts.clone());
                     let resolved = self
-                        .db
+                        .db()
                         .concepts_by_id(std::slice::from_ref(id), plan)
                         .await?;
                     if resolved.is_empty() {
@@ -2715,7 +2821,7 @@ impl CodeGraphStore {
             let mut n = 0usize;
             for (source, target, etype, valid_from) in stale {
                 if self
-                    .db
+                    .db()
                     .retire_edge(
                         source.as_str(),
                         target.as_str(),
@@ -2922,7 +3028,7 @@ impl CodeGraphStore {
             let mut n = 0usize;
             for (source, target, etype, valid_from) in &stale {
                 if self
-                    .db
+                    .db()
                     .retire_edge(
                         source.as_str(),
                         target.as_str(),
@@ -2963,12 +3069,12 @@ impl CodeGraphStore {
             .valid_from(valid_from)
             .weight(weight)
             .properties(properties_json);
-        runtime().block_on(self.db.assert_edge(edge))
+        runtime().block_on(self.db().assert_edge(edge))
     }
 
     /// Bulk assert edges (atomic — one transaction stamp per D-014).
     pub fn assert_edges_bulk(&self, edges: Vec<EdgeAssertion>) -> macrame::Result<usize> {
-        runtime().block_on(self.db.write_bulk_atomic(edges))
+        runtime().block_on(self.db().write_bulk_atomic(edges))
     }
 
     /// Traverse the graph from a source entity (current state).
@@ -3004,12 +3110,12 @@ impl CodeGraphStore {
         if !edge_types.is_empty() {
             traversal = traversal.edge_types(edge_types.to_vec());
         }
-        runtime().block_on(self.db.load_subgraph_with(&traversal, ts, 10_000_000))
+        runtime().block_on(self.db().load_subgraph_with(&traversal, ts, 10_000_000))
     }
 
     /// Reconstruct state as of a timestamp.
     pub fn reconstruct(&self, ts: &str) -> macrame::Result<MaterializedState> {
-        runtime().block_on(self.db.reconstruct(ts))
+        runtime().block_on(self.db().reconstruct(ts))
     }
 
     /// State at `ts` as `branch` saw it (P4, DR-40): the ancestry
@@ -3022,7 +3128,7 @@ impl CodeGraphStore {
     /// `reconstruct` unchanged (Macrame's `Trunk` shape pays nothing).
     /// Unknown branches refuse with `DbError::UnknownBranch`.
     pub fn reconstruct_on(&self, ts: &str, branch: &str) -> macrame::Result<MaterializedState> {
-        runtime().block_on(self.db.reconstruct_on(ts, branch))
+        runtime().block_on(self.db().reconstruct_on(ts, branch))
     }
 
     /// The **valid-axis** fold at one git instant (P5b.3, D-3/INV-16):
@@ -3034,7 +3140,7 @@ impl CodeGraphStore {
     /// folding the trunk for it.
     pub fn reconstruct_valid(&self, ts: &str) -> macrame::Result<MaterializedState> {
         runtime().block_on(
-            self.db
+            self.db()
                 .reconstruct_as_of(macrame::temporal::AsOf::valid_at(ts)),
         )
     }
@@ -3115,7 +3221,7 @@ impl CodeGraphStore {
     /// table), not a fold — the same reason `recorded_generations` is a
     /// listing. A database that never forked answers exactly the trunk.
     pub fn branches(&self) -> macrame::Result<Vec<BranchInfo>> {
-        let out = runtime().block_on(self.db.branches())?;
+        let out = runtime().block_on(self.db().branches())?;
         Ok(out
             .into_iter()
             .map(|b| BranchInfo {
@@ -3135,7 +3241,7 @@ impl CodeGraphStore {
     pub fn fork_branch(&self, name: &str, from: &str) -> macrame::Result<BranchInfo> {
         let name = BranchId::new(name)?;
         let from = BranchId::new(from)?;
-        let b = runtime().block_on(self.db.fork(name, from))?;
+        let b = runtime().block_on(self.db().fork(name, from))?;
         Ok(BranchInfo {
             name: b.id.as_str().to_string(),
             parent: b.parent.as_ref().map(|p| p.as_str().to_string()),
@@ -3149,13 +3255,13 @@ impl CodeGraphStore {
     /// branch-global `kv`, outside the ledger by design (H-20 — never a
     /// blob reference, only mode strings and commit shas).
     pub(crate) fn kv_get_sync(&self, key: &str) -> macrame::Result<Option<String>> {
-        runtime().block_on(self.db.kv_get(key))
+        runtime().block_on(self.db().kv_get(key))
     }
 
     /// Sync `kv_store` write (P5a.3, DR-41). One or two keys per commit
     /// (head + stamp); the write actor serializes them.
     pub(crate) fn kv_put_sync(&self, key: &str, value: &str) -> macrame::Result<()> {
-        runtime().block_on(self.db.kv_put(key, value))
+        runtime().block_on(self.db().kv_put(key, value))
     }
 
     /// Record divergent content for `path` on `branch` (P4, DR-40): the
@@ -3353,7 +3459,7 @@ impl CodeGraphStore {
     /// refuse via the ancestry lookup (never trunk-fallback).
     pub fn visible_module_concept_ids(&self, branch: &str) -> macrame::Result<Vec<String>> {
         let mut out = self.module_concept_ids(branch)?;
-        for ancestor in runtime().block_on(self.db.ancestry(branch))? {
+        for ancestor in runtime().block_on(self.db().ancestry(branch))? {
             if ancestor.branch_id != branch {
                 out.extend(self.module_concept_ids(&ancestor.branch_id)?);
             }
@@ -3428,7 +3534,7 @@ impl CodeGraphStore {
     /// what P2's diff sweeps when it runs on a lineage.
     pub fn visible_all_concept_ids(&self, branch: &str) -> macrame::Result<Vec<String>> {
         let mut out = self.all_concept_ids(branch)?;
-        for ancestor in runtime().block_on(self.db.ancestry(branch))? {
+        for ancestor in runtime().block_on(self.db().ancestry(branch))? {
             if ancestor.branch_id != branch {
                 out.extend(self.all_concept_ids(&ancestor.branch_id)?);
             }
@@ -5598,6 +5704,35 @@ pub fn edge_properties_json(props: &[(&str, &str)]) -> String {
 mod tests {
     use super::*;
 
+    /// Two opens of one path share one engine, and the survivor keeps
+    /// working when the other handle drops.
+    ///
+    /// Both halves are load-bearing. Sharing is what makes a second open on
+    /// POSIX possible at all (libSQL refuses a second `Database` on a live
+    /// path: `SqliteFailure(5, "database is locked")` — the ubuntu runner
+    /// caught this on every op that opened a store beside a loaded graph).
+    /// The survivor assertion is why the share is an `Arc` and not a second
+    /// engine: with two engines, closing either one leaves the other
+    /// answering current reads but losing the rows the close folded into a
+    /// snapshot — probed, and the shape `#[doc]` on `StoreInner` records.
+    ///
+    /// The file is deliberately *not* expected to be removable afterwards:
+    /// the engine's write actor keeps it open for the process's life, and a
+    /// shutdown is the engine's process-final act rather than a handle's.
+    /// `ops.rebuild` is the one operation that must move a store, and it
+    /// moves before opening, refusing a loaded graph (P8).
+    #[test]
+    fn two_opens_of_one_path_share_one_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shared.db");
+        let a = CodeGraphStore::open(&path).unwrap();
+        let b = CodeGraphStore::open(&path).unwrap();
+        assert_eq!(a.handles(), 2, "the second open joins the first");
+        drop(b);
+        assert_eq!(a.handles(), 1, "and the survivor keeps the engine");
+        assert!(a.git_marks().is_ok(), "reads still answer after the drop");
+    }
+
     /// P5b.5's backfill shape: a closed version may be written *before*
     /// the live open one, and the ledger answers both axes correctly
     /// afterwards — the valid axis sees the backfilled belief in its own
@@ -5670,7 +5805,7 @@ mod tests {
         // And the chain is clean at the engine's own check.
         drop(_guard);
         let overlaps = crate::storage::runtime()
-            .block_on(store.db.verify_concept_intervals())
+            .block_on(store.db().verify_concept_intervals())
             .unwrap();
         assert!(
             overlaps.is_empty(),
@@ -7087,7 +7222,7 @@ mod tests {
         assert_eq!(second, first);
         let n: i64 = runtime().block_on(async {
             let mut rows = store
-                .db
+                .db()
                 .read_conn()
                 .query("SELECT COUNT(*) FROM blobs", ())
                 .await
@@ -7097,7 +7232,7 @@ mod tests {
         assert_eq!(n, 1, "content-addressed: one row for identical bytes");
         // And the bytes come back.
         let back: Vec<u8> = runtime()
-            .block_on(store.db.blob_get(&digest))
+            .block_on(store.db().blob_get(&digest))
             .unwrap()
             .unwrap();
         assert_eq!(back, bytes);
@@ -7178,7 +7313,7 @@ mod tests {
         let path = dir.path().join("blobs.db");
         let store = CodeGraphStore::open(&path).unwrap();
         let bytes = b"def f():\n    return 1\n";
-        let digest = runtime().block_on(store.db.blob_put(bytes)).unwrap();
+        let digest = runtime().block_on(store.db().blob_put(bytes)).unwrap();
         assert_eq!(digest.len(), 64, "sha256 hex: {digest:?}");
         assert!(
             digest
@@ -7186,10 +7321,10 @@ mod tests {
                 .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "lowercase hex: {digest:?}"
         );
-        let back = runtime().block_on(store.db.blob_get(&digest)).unwrap();
+        let back = runtime().block_on(store.db().blob_get(&digest)).unwrap();
         assert_eq!(back.as_deref(), Some(bytes.as_slice()));
         let missing = runtime()
-            .block_on(store.db.blob_get(&"0".repeat(64)))
+            .block_on(store.db().blob_get(&"0".repeat(64)))
             .unwrap();
         assert_eq!(missing, None, "unknown digest reads as absent");
     }
@@ -8153,7 +8288,7 @@ mod stamped_write_tests {
         let at = |branch: &macrame::BranchId, instant: &str| {
             runtime()
                 .block_on(
-                    store.db.concepts_by_id(
+                    store.db().concepts_by_id(
                         &["c.py::g".to_string()],
                         macrame::ReadPlan::new()
                             .on(branch.clone())
@@ -8341,7 +8476,16 @@ mod stamped_write_tests {
                 clock,
             ))
             .unwrap();
-        (dir, CodeGraphStore { db }, fake)
+        // A clock-bearing open bypasses the registry on purpose: the fake
+        // clock is the point, and two such opens in one test are two
+        // different stores by construction.
+        (
+            dir,
+            CodeGraphStore {
+                inner: std::sync::Arc::new(StoreInner { db }),
+            },
+            fake,
+        )
     }
 
     #[test]
@@ -8393,7 +8537,7 @@ mod stamped_write_tests {
             runtime()
                 .block_on(
                     store
-                        .db
+                        .db()
                         .reconstruct_as_of(macrame::temporal::AsOf::valid_at(tmid))
                 )
                 .unwrap()
@@ -8422,7 +8566,7 @@ mod stamped_write_tests {
             runtime()
                 .block_on(
                     store
-                        .db
+                        .db()
                         .reconstruct_as_of(macrame::temporal::AsOf::valid_at(tmid))
                 )
                 .unwrap()
@@ -8435,7 +8579,7 @@ mod stamped_write_tests {
             !runtime()
                 .block_on(
                     store
-                        .db
+                        .db()
                         .reconstruct_as_of(macrame::temporal::AsOf::valid_at(tpost))
                 )
                 .unwrap()
@@ -8602,7 +8746,7 @@ mod stamped_write_tests {
     fn walk_holds(store: &CodeGraphStore, id: &str, ts: &str, branch: &str) -> bool {
         !runtime()
             .block_on(
-                store.db.concepts_by_id(
+                store.db().concepts_by_id(
                     &[id.to_string()],
                     macrame::prelude::ReadPlan::new()
                         .on(macrame::BranchId::new(branch).unwrap())
