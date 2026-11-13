@@ -5926,24 +5926,23 @@ mod tests {
         );
     }
 
-    /// A store that has been moved away is forgotten under **both** of its
-    /// spellings: the one it was registered with (canonical, while the file
-    /// existed) and the lexical one a post-move caller can still name it by.
-    /// `ops.rebuild` depends on this — it forgets, then moves, then ingests
-    /// through a fresh engine for the new file.
+    /// `forget_store` clears **every** spelling a path can be registered
+    /// under, which is what `ops.rebuild` needs: it forgets while the file
+    /// still exists and then names the path again after the move, when only
+    /// the lexical spelling is computable. It does not release the engine —
+    /// nothing can (see [`StoreInner`]) — so this pins the bookkeeping, not a
+    /// re-open of the same live path.
     #[test]
-    fn forgetting_a_moved_store_clears_both_spellings() {
+    fn forgetting_a_store_clears_every_spelling() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("moved.db");
         let store = CodeGraphStore::open(&path).unwrap();
         assert!(holds_store(&path));
         forget_store(&path);
         assert!(!holds_store(&path), "the lexical spelling is gone");
-        // A fresh open after the forget mints a new engine even though the
-        // old one is still alive (it cannot be closed) — the moved-file case.
-        drop(store);
-        let again = CodeGraphStore::open(&path).unwrap();
-        assert!(again.git_marks().is_ok());
+        // Forgetting a path that holds nothing is a no-op, not a panic.
+        forget_store(dir.path().join("never-opened.db"));
+        assert!(store.git_marks().is_ok(), "the engine itself still answers");
     }
 
     #[test]
