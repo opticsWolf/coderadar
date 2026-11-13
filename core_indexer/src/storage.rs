@@ -559,28 +559,51 @@ static OPEN_STORES: std::sync::LazyLock<
 /// that still points at the old inode. `ops.rebuild` calls it before it
 /// moves the store aside; nothing else should.
 pub fn forget_store(path: impl AsRef<Path>) {
-    let key = store_key(path.as_ref());
+    let path = path.as_ref();
+    // Both spellings: the store was registered under whichever one described
+    // the file when it was opened, and a caller may be naming it after the
+    // move that made it stop existing.
+    let keys = [store_key(path), lexical_key(path)];
     if let Ok(mut map) = OPEN_STORES.lock() {
-        map.remove(&key);
+        for key in keys {
+            map.remove(&key);
+        }
     }
 }
 
 /// Whether this process holds an engine for `path`.
 pub fn holds_store(path: impl AsRef<Path>) -> bool {
-    let key = store_key(path.as_ref());
+    let path = path.as_ref();
+    let keys = [store_key(path), lexical_key(path)];
     OPEN_STORES
         .lock()
-        .map(|map| map.contains_key(&key))
+        .map(|map| keys.iter().any(|key| map.contains_key(key)))
         .unwrap_or(false)
 }
 
 /// One path's identity for the registry.
 ///
-/// Absolute and normalized, without requiring the file to exist yet: `open`
-/// creates it. `canonicalize` would fail on every first open, so this is the
-/// parent-aware spelling — the working directory is where a relative store
-/// path lands, and `..`/`.` are resolved lexically.
+/// **An existing file answers with its on-disk identity.** `canonicalize`
+/// folds letter case and resolves symlinks the way the filesystem itself
+/// does, which is the only authority on whether two spellings name one file:
+/// Windows and default macOS are case-insensitive, Linux is not, and the
+/// same code has to be right on all three. Folding case by hand would be
+/// wrong on a case-sensitive volume — two distinct stores would share one
+/// engine — so the filesystem decides.
+///
+/// A path that does not exist yet (the first open creates it) has nothing to
+/// canonicalize, so it falls back to [`lexical_key`], the best predictor
+/// available. [`forget_store`] and [`holds_store`] therefore try both.
 fn store_key(path: &std::path::Path) -> std::path::PathBuf {
+    match std::fs::canonicalize(path) {
+        Ok(real) => strip_verbatim(real),
+        Err(_) => lexical_key(path),
+    }
+}
+
+/// The path's spelling without asking the filesystem: absolute, with `.` and
+/// `..` resolved lexically.
+fn lexical_key(path: &std::path::Path) -> std::path::PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -599,6 +622,29 @@ fn store_key(path: &std::path::Path) -> std::path::PathBuf {
         }
     }
     out
+}
+
+/// Drop Windows' verbatim prefix from a canonical path.
+///
+/// `fs::canonicalize` answers with the verbatim spelling on Windows; the
+/// prefix is an I/O detail, not part of the file's identity, and keeping it
+/// would make the canonical and lexical spellings of one file incomparable —
+/// the case `forget_store` has to anticipate when a store has just been moved
+/// away.
+fn strip_verbatim(path: std::path::PathBuf) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        if let Some(text) = path.to_str() {
+            if let Some(rest) = text.strip_prefix(r"\\?\") {
+                // A UNC path has no un-prefixed spelling of the same meaning;
+                // only drive-letter paths are unwrapped.
+                if !rest.starts_with("UNC\\") {
+                    return std::path::PathBuf::from(rest);
+                }
+            }
+        }
+    }
+    path
 }
 
 /// One tokio runtime for every store in the process.
@@ -669,6 +715,18 @@ impl CodeGraphStore {
     /// Serialised with every other libSQL open in this process — see
     /// [`DIAGNOSTIC_OPEN_LOCK`]. Opening is the racing operation, and it does
     /// not care whether the opener is a diagnostic read or a whole database.
+    ///
+    /// The registry lock is held across the lookup, the open and the insert,
+    /// which is the whole point: releasing it in between let two threads each
+    /// see an empty map, each open, and each keep the engine it opened — two
+    /// engines on one file on Windows, one failure on POSIX. The open below
+    /// takes no lock this one leads to, so holding it costs the serialisation
+    /// that [`DIAGNOSTIC_OPEN_LOCK`] already imposes.
+    ///
+    /// **The cadence belongs to the engine, not the caller.** A store this
+    /// process already has returns the existing engine with its cadence
+    /// untouched, so the first opener's argument wins and a later caller's is
+    /// ignored (production is the only caller that passes one).
     pub fn open_with_cadence(
         path: impl AsRef<Path>,
         cadence: Option<SnapshotCadence>,
@@ -679,12 +737,13 @@ impl CodeGraphStore {
         // handle. Opening again is not merely wasteful: it is refused by
         // libSQL on POSIX (§`StoreInner`), and closing either of the two
         // would empty the other's temporal reads.
-        if let Ok(map) = OPEN_STORES.lock() {
-            if let Some(existing) = map.get(&key) {
-                return Ok(Self {
-                    inner: std::sync::Arc::clone(existing),
-                });
-            }
+        let mut map = OPEN_STORES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = map.get(&key) {
+            return Ok(Self {
+                inner: std::sync::Arc::clone(existing),
+            });
         }
         let db = {
             let _open_guard = DIAGNOSTIC_OPEN_LOCK
@@ -697,12 +756,10 @@ impl CodeGraphStore {
         // database backups regain the derived index automatically.
         runtime().block_on(db.register_extra_index(CODERADAR_EXTRA_FILE_PATH))?;
         let inner = std::sync::Arc::new(StoreInner { db });
-        if let Ok(mut map) = OPEN_STORES.lock() {
-            // A racing open may have registered first; joining it is correct
-            // — both callers then share one engine either way.
-            map.entry(key)
-                .or_insert_with(|| std::sync::Arc::clone(&inner));
-        }
+        // No `entry(...).or_insert_with` dance: this thread holds the lock
+        // from the lookup above, so nothing can have registered `key` in
+        // between and the engine it inserts is the engine every caller gets.
+        map.insert(key, std::sync::Arc::clone(&inner));
         Ok(Self { inner })
     }
 
@@ -5750,6 +5807,93 @@ mod tests {
     /// moves before opening, refusing a loaded graph (P8); `forget_store` is
     /// how it stops a later open from joining the engine that still points
     /// at the moved inode.
+    /// Two opens racing on one path must end up on **one** engine.
+    ///
+    /// The registry used to release its lock between the lookup and the
+    /// insert, so two threads could both find the map empty and both open:
+    /// Windows then answered from two engines on one file (the state
+    /// [`StoreInner`] calls unsafe), POSIX failed the second open with
+    /// `database is locked` — the very failure the registry exists to
+    /// remove. The MCP daemon releases the interpreter lock around ops, so
+    /// the race is reachable in production, not just here.
+    ///
+    /// Identity is the allocation itself: every thread must come back with
+    /// the same `Arc<StoreInner>`, which is stricter than "a store works".
+    #[test]
+    fn concurrent_opens_of_one_path_share_one_engine() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("raced.db");
+        let threads = 8;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(threads));
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let store = CodeGraphStore::open(&path).unwrap();
+                    let engine = std::sync::Arc::as_ptr(&store.inner) as usize;
+                    (engine, store)
+                })
+            })
+            .collect();
+        let finished: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("no racing open may fail"))
+            .collect();
+        let first = finished[0].0;
+        for (engine, store) in &finished {
+            assert_eq!(*engine, first, "a racing open minted a second engine");
+            assert!(store.git_marks().is_ok(), "the shared engine answers");
+        }
+        assert_eq!(
+            finished[0].1.handles(),
+            threads + 1,
+            "the registry's own reference plus one per handle"
+        );
+    }
+
+    /// Two spellings of one file are one store — where the filesystem says so.
+    ///
+    /// Windows and default macOS ignore letter case; Linux does not. Asking
+    /// the filesystem (`canonicalize`) gets both right, and folding case by
+    /// hand would merge two genuinely different stores on a case-sensitive
+    /// volume.
+    #[cfg(any(windows, target_os = "macos"))]
+    #[test]
+    fn two_spellings_of_one_path_are_one_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Cased.db");
+        let opened = CodeGraphStore::open(&path).unwrap();
+        let shouted = dir.path().join("CASED.DB");
+        let joined = CodeGraphStore::open(&shouted).unwrap();
+        assert_eq!(
+            std::sync::Arc::as_ptr(&opened.inner),
+            std::sync::Arc::as_ptr(&joined.inner),
+            "one file, one engine, however it is spelled"
+        );
+    }
+
+    /// A store that has been moved away is forgotten under **both** of its
+    /// spellings: the one it was registered with (canonical, while the file
+    /// existed) and the lexical one a post-move caller can still name it by.
+    /// `ops.rebuild` depends on this — it forgets, then moves, then ingests
+    /// through a fresh engine for the new file.
+    #[test]
+    fn forgetting_a_moved_store_clears_both_spellings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("moved.db");
+        let store = CodeGraphStore::open(&path).unwrap();
+        assert!(holds_store(&path));
+        forget_store(&path);
+        assert!(!holds_store(&path), "the lexical spelling is gone");
+        // A fresh open after the forget mints a new engine even though the
+        // old one is still alive (it cannot be closed) — the moved-file case.
+        drop(store);
+        let again = CodeGraphStore::open(&path).unwrap();
+        assert!(again.git_marks().is_ok());
+    }
+
     #[test]
     fn two_opens_of_one_path_share_one_engine() {
         let dir = tempfile::tempdir().unwrap();

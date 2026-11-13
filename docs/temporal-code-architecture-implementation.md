@@ -1110,6 +1110,20 @@ instead of re-entering a live engine (`2f50e38`), and the battery's MCP case was
 33 tools. The contract — including that a close is a process-final act and an external writer is
 invisible to a live engine — is recorded in `docs/store-and-retention.md`.
 
+Review of the release tree caught two gaps in that registry before the tag. The registration was
+not one critical section: `open_with_cadence` released the lock between the lookup and the insert,
+so two threads could each open and each keep its own engine — silent on Windows, `database is
+locked` on POSIX, and reachable from the MCP daemon because it drops the interpreter lock around
+ops; it now holds one lock across lookup, open and insert, and
+`concurrent_opens_of_one_path_share_one_engine` fails on the old shape (verified by reverting it).
+The key was also lexical-only, so `D:\x.db` and `d:\x.db` were two stores; it now asks the
+filesystem (`canonicalize`, folding case and symlinks exactly where the platform folds them) and
+falls back to the lexical spelling only for a file that does not exist yet — therefore
+`forget_store`/`holds_store` try both. Two release-process gaps closed with it: `ci.yml` now runs
+both suites on `macos-latest` (a shipped wheel on the otherwise-untested POSIX platform), and
+`release.yml` gains a `verify-version` job (`scripts/check_tag_version.py`) because publishing is
+one-way and the workflow trusted whatever `pyproject.toml` said.
+
 Documented limits shipped with the release: F3 (`test_p5b_truth`) stays `xfail` until a branch can
 see its merge base (Macrame U-3/D-318); a branch valid read refuses by name until U-2/D-317; P5b.5
 ships its write shape with the ingest window as the next slice; P6b's note-embeddings half is

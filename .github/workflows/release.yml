@@ -11,9 +11,24 @@ on:
         required: true
 
 jobs:
+  verify-version:
+    name: Tag matches the package version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag against pyproject.toml
+        # Publishing is one-way: a tag cut against the wrong commit would put
+        # wheels on PyPI claiming a version the source never declares. The
+        # manual-dispatch input is honoured so a dispatch cannot sidestep it.
+        env:
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+        run: python scripts/check_tag_version.py
+
   build-wheels:
     name: Build wheel (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    needs: verify-version
     strategy:
       fail-fast: false
       matrix:
@@ -56,6 +71,7 @@ jobs:
   sdist:
     name: Build source distribution
     runs-on: ubuntu-latest
+    needs: verify-version
     steps:
       - uses: actions/checkout@v4
 

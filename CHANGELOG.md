@@ -12,8 +12,8 @@ and then read at a time, on a branch, or on the belief axis, with each
 answer naming the basis it came from and each refusal naming its reason.
 Annotations, comments and the users' task lists live on the same ledger and
 leave it as a document (`coderadar.annotations.v1`), so the store's own data
-survives a rebuild. Nineteen entries below, P5a through P8; the last one is
-the store contract all of them stand on — one engine per path, per process.
+survives a rebuild. Nineteen entries below, P5a through P8, newest first;
+the top one is the store contract all of them stand on — one engine per path, per process.
 
 - The store is opened once per path, per process. A second open of a store this process already
   holds now joins the live handle instead of constructing a second engine. Two measured reasons:
@@ -24,6 +24,12 @@ the store contract all of them stand on — one engine per path, per process.
   loses the rows the close folded into its snapshot. Engines therefore live until the process
   does, which is what the design already assumed; the sharing is new, and `ops.rebuild`'s
   move-before-open order (P8) is unchanged and still required.
+  The registration is one critical section — lookup, open and insert under one lock —
+  because releasing it in between let two threads open twice and each keep its own engine
+  (silent on Windows, `database is locked` on POSIX); and the registry key is the path the
+  filesystem reports for an existing file, so letter case and symlinks fold where the
+  platform folds them and nowhere else. `forget_store` accepts both spellings, which is
+  what `ops.rebuild` needs after it moves the file.
 - P5b.5, slice 1 — the backfill write shape. The store's bulk concept write accepts a closed,
   non-retirement version starting before the live open one, provided its `valid_to` is at or
   before the live belief's start: the past gains an abutting interval, the open belief keeps its
@@ -187,9 +193,10 @@ the store contract all of them stand on — one engine per path, per process.
   store holding one refused to load; on an index-now store the `build_graph` fallback then ran
   `analyze`, whose v1 sweep retired every annotation, and a commit-time store stopped loading.
   They now classify as `V2ConceptClass::Note` and are skipped.
-- Temporal P5a (DR-41, **accepted — Q-6 yes (`bf618e0`); built on dev; production
-  migration not run; Q-7, Q-8 answered, Q-9, Q-10 open; releases only once P5b.1, P5b.3a and
-  P5b.6 land, at store format 1 — D-7 d in `docs/temporal-p5b-and-beyond.md`**):
+- Temporal P5a (DR-41, **accepted — Q-6 yes (`bf618e0`); released in 0.15.0 with P5b.1,
+  P5b.3a and P5b.6, at store format 1 — D-7 d in `docs/temporal-p5b-and-beyond.md`;
+  Q-7, Q-8 answered, Q-9, Q-10 open; migrating a pre-0.15 store is the store owner's
+  `migrate-to-commit-time` run, not a release step**):
   commit-driven ingestion writes history at commit time. `plan_ingest` walker (P5a.1),
   stamped valid_from threading with the INV-11 nudge and Zulu boundary (P5a.2),
   `ingest_history` op + CLI `ingest-history` with per-commit stamped flushes, commit

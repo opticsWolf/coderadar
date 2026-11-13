@@ -572,8 +572,8 @@ tips → addresses → sweep → marks), and `watch --git` runs it.
 ## 16. Decision index
 
 Full rationale per row lives in the register (`coderadar-decision-register`
-in `okfgraph.db` at the repo root). Statuses at v0.14.0, with DR-41 and
-DR-43..DR-45 brought to `dev` as of 2026-10-31 (unreleased):
+in `okfgraph.db` at the repo root). Statuses at v0.15.0 (2026-11-13), which
+shipped DR-41 and DR-43..DR-45:
 
 | ID | Decision | Status |
 |---|---|---|
@@ -617,11 +617,11 @@ DR-43..DR-45 brought to `dev` as of 2026-10-31 (unreleased):
 | DR-38 | `content_version` spine: concepts-only, digest-free payloads (P3) | closed (v0.14.0; `f3625c6`) |
 | DR-39 | Duplicate `content.source` beside the blob | withdrawn (2026-10-28) |
 | DR-40 | Branch-aware reads: `reconstruct_on` + pointer concepts (P4) | closed (v0.14.0; `a4ac405`) |
-| DR-41 | Commit-driven ingestion (P5) | accepted (Q-6 yes, `bf618e0`); P5a built on dev (`8cf8cbc`..`13315d8`); production migration not run; P5b not started |
+| DR-41 | Commit-driven ingestion (P5) | closed (0.15.0; P5a–P5d, `8cf8cbc`..`ac03dcb`); a pre-0.15 store migrates with `migrate-to-commit-time`, the owner's run |
 | DR-42 | `open_synthetic_triples` is an inclusion list (H-3) | closed (v0.14.0; `600d689`) |
-| DR-43 | Valid-axis state fold lives upstream in Macrame (F-6/INV-6) | implemented upstream (Macrame 0.20.0, D-291..D-294), not adopted — pin is 0.19.1; the backfill fix shipped in Macrame 0.21.0 (D-303, 2026-11-01), adopted in P5b.2 after P5b.1 (`temporal-p5b-and-beyond.md`) |
-| DR-44 | `annotation` + `comment` concepts with write-boundary lint (P6a) | implemented (dev; `b4eeb2c`, edge annotation rejected `21e6082`) |
-| DR-45 | Commit message bodies + ops-only `backfill_commit_messages` (P6c slice) | implemented (dev; `fa4104e`) |
+| DR-43 | Valid-axis state fold lives upstream in Macrame (F-6/INV-6) | adopted (0.15.0; pin 0.22.0): Macrame 0.20.0 built the fold (D-291..D-294), 0.21.0 the backfill fix (D-303); P5b.2 took both after P5b.1 (`temporal-p5b-and-beyond.md`) |
+| DR-44 | `annotation` + `comment` concepts with write-boundary lint (P6a) | implemented (0.15.0; `b4eeb2c`, edge annotation rejected `21e6082`) |
+| DR-45 | Commit message bodies + ops-only `backfill_commit_messages` (P6c slice) | implemented (0.15.0; `fa4104e`) |
 
 ---
 

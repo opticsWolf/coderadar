@@ -49,7 +49,21 @@ Consequences worth knowing:
   `tests/test_p5b3a_horizon.py::_fresh_process` is the worked example.
 - **Repeated ops are fine now**: a second `ingest_history` on one store, a
   backfill beside a loaded graph, `open_items(store_path=…)` after `load` —
-  all join the same engine.
+  all join the same engine. The lookup, the open and the registration happen
+  under one lock: releasing it in between let two threads each open and each
+  keep its own engine (a silent second engine on Windows, `database is
+  locked` on POSIX) — the race the MCP daemon can reach because it drops the
+  interpreter lock around ops.
+- **One file, one identity.** The registry key is the path the filesystem
+  reports for an existing file (`canonicalize`), so letter case and symlinks
+  fold exactly where the platform folds them — Windows and default macOS are
+  case-insensitive, Linux is not, and folding case by hand would merge two
+  genuine stores on a case-sensitive volume. A path that does not exist yet
+  falls back to its lexical spelling, which is why `forget_store` and
+  `holds_store` consult both.
+- **The cadence belongs to the engine.** A later `open_with_cadence` joins
+  the engine the first opener configured and its own cadence argument is
+  ignored, silently — production is the only caller that passes one.
 
 ## Backup = hot + cold, quiesced
 
