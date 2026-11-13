@@ -20,6 +20,37 @@ Reads never break across the move: `blob_get` falls back hot→cold, and
 `reconstruct(T)` unions hot+cold history. A hot entry naming a cold-only
 blob copies it back (`blobs_restored` in the report).
 
+## One engine per store path, per process
+
+Opening a store joins the engine this process already has for that path;
+there is never a second one. Two measured reasons (probed on 0.14.0 /
+macrame-db 0.22.0, see `storage::StoreInner`):
+
+- libSQL refuses a second `Database` on a live path on POSIX
+  (`SqliteFailure(5, "database is locked")`) and tolerates it on Windows —
+  so "open it again" is a platform-dependent bug, not a style choice.
+- Closing one of two engines is not a shutdown: the survivor keeps
+  answering current reads but loses the rows the close folded into its
+  snapshot (and a store opened *afterwards*, even on another path, sees the
+  same loss). An engine's shutdown is a process-final act.
+
+Consequences worth knowing:
+
+- **The file stays open for the process's life.** Nothing can move or
+  delete a store this process has opened (`ops.rebuild` therefore moves the
+  store first, refuses a loaded graph, and calls `_core.forget_store` so the
+  ingest after the move mints an engine for the new file rather than joining
+  the one aimed at the backup).
+- **An external writer is invisible.** A `sqlite3` connection in the same
+  process that deletes rows behind a live engine changes the file, not the
+  engine's view; the next op through the engine still sees the old rows.
+  Tests that need that shape must cross a process boundary — child ingests,
+  child exits, parent (or another child) does the mutation and the repair.
+  `tests/test_p5b3a_horizon.py::_fresh_process` is the worked example.
+- **Repeated ops are fine now**: a second `ingest_history` on one store, a
+  backfill beside a loaded graph, `open_items(store_path=…)` after `load` —
+  all join the same engine.
+
 ## Backup = hot + cold, quiesced
 
 1. Quiesce writers (no analyze/update/watch running — the suite holds none).
