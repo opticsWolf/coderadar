@@ -6,6 +6,15 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- P5b.5, slice 1 — the backfill write shape. The store's bulk concept write accepts a closed,
+  non-retirement version starting before the live open one, provided its `valid_to` is at or
+  before the live belief's start: the past gains an abutting interval, the open belief keeps its
+  end, and nothing is superseded. The engine already had the machinery (the projection's write
+  declines the update, the row is logged and marked for the next read's correction); the refusal
+  was ours, a forward-only fallback in `upsert_concepts_bulk`. Open-in-the-past, a span inside the
+  live belief, and a backfilled retirement still refuse before anything is written, and a chained
+  backfill now reads correctly on the valid axis with invariants clean. The ingest window that
+  uses this is the next slice.
 - P6b, aggregation and the "why" join — the checklists get a reader and every search hit
   can say why. New op `open_items` (CLI `open-items`, MCP `coderadar_open_items`) lists the
   unchecked task items of every live annotation under a scope: the scope names an id or an

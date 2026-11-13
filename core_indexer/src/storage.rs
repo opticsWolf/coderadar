@@ -975,12 +975,29 @@ impl CodeGraphStore {
                                 acts.push((*c).clone());
                             } else if row.valid_from < c.valid_from {
                                 acts.push((*c).clone().supersede(true));
+                            } else if !is_open_end(&c.valid_to)
+                                && !c.retired
+                                && c.valid_to.as_str() <= row.valid_from.as_str()
+                            {
+                                // P5b.5's backfill shape (A-8, INV-10′): a
+                                // closed version written *before* the live
+                                // open one. The live belief keeps its open
+                                // end; the past gains an interval that ends
+                                // where the next belief begins, so the chain
+                                // abuts and nothing is superseded. The
+                                // projection's own `WHERE excluded.valid_from
+                                // >= concepts.valid_from` declines the update,
+                                // Macrame logs the row and marks the pair for
+                                // the next read's correction (D-303), which is
+                                // exactly the ledger's out-of-order contract.
+                                acts.push((*c).clone());
                             } else {
                                 return Err(macrame::DbError::Engine(libsql::Error::Misuse(
                                     format!(
                                         "upsert_concepts_bulk: {id}'s incoming version \
                                          starts {start}, before the live row's {live} — \
-                                         versions per id go forward; refusing before \
+                                         only a closed version that ends at or before \
+                                         {live} may backfill (P5b.5); refusing before \
                                          anything is written",
                                         id = c.id.as_str(),
                                         start = c.valid_from,
@@ -5580,6 +5597,103 @@ pub fn edge_properties_json(props: &[(&str, &str)]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// P5b.5's backfill shape: a closed version may be written *before*
+    /// the live open one, and the ledger answers both axes correctly
+    /// afterwards — the valid axis sees the backfilled belief in its own
+    /// interval, the recorded/live read still sees the open one, and the
+    /// chain does not overlap.
+    ///
+    /// This is the write half only. The ingest half (a window that ends at
+    /// the cursor, walked newest-first so every close names its successor)
+    /// is the next slice; the guard change is what makes it possible.
+    #[test]
+    fn a_closed_version_may_backfill_before_the_live_open_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("backfill.db")).unwrap();
+        let open = "9999-12-31T23:59:59.999999Z";
+        let at = |id: &str, from: &str, to: &str, text: &str| {
+            macrame::ConceptUpsert::new(id, id)
+                .content(format!("{{\"t\":\"{text}\"}}"))
+                .valid_from(from)
+                .valid_to(to)
+        };
+        let dec = "2026-12-01T00:00:00.000000Z";
+        let jun = "2026-06-01T00:00:00.000000Z";
+        let jan = "2026-01-01T00:00:00.000000Z";
+        store
+            .upsert_concepts_bulk(&[at("a", dec, open, "dec")])
+            .unwrap();
+        // Newest-first: each backfilled row closes at the successor's start.
+        store
+            .upsert_concepts_bulk(&[at("a", jun, dec, "jun")])
+            .unwrap();
+        store
+            .upsert_concepts_bulk(&[at("a", jan, jun, "jan")])
+            .unwrap();
+
+        let content_at = |ts: &str| {
+            store
+                .reconstruct_valid(ts)
+                .unwrap()
+                .concepts
+                .get("a")
+                .map(|c| c.content.clone())
+        };
+        assert_eq!(
+            content_at("2026-02-01T00:00:00.000000Z").as_deref(),
+            Some("{\"t\":\"jan\"}")
+        );
+        assert_eq!(
+            content_at("2026-07-01T00:00:00.000000Z").as_deref(),
+            Some("{\"t\":\"jun\"}")
+        );
+        assert_eq!(
+            content_at("2027-01-01T00:00:00.000000Z").as_deref(),
+            Some("{\"t\":\"dec\"}")
+        );
+        // The live projection kept the latest belief throughout.
+        let (_guard, conn) = store.open_diagnostic_conn().unwrap();
+        let live = crate::storage::runtime()
+            .block_on(async {
+                let mut rows = conn
+                    .query("SELECT content FROM concepts WHERE id = 'a'", ())
+                    .await
+                    .unwrap();
+                rows.next()
+                    .await
+                    .unwrap()
+                    .map(|r| r.get::<String>(0).unwrap())
+            })
+            .unwrap();
+        assert_eq!(live, "{\"t\":\"dec\"}");
+        // And the chain is clean at the engine's own check.
+        drop(_guard);
+        let overlaps = crate::storage::runtime()
+            .block_on(store.db.verify_concept_intervals())
+            .unwrap();
+        assert!(
+            overlaps.is_empty(),
+            "intervals must chain, got {overlaps:?}"
+        );
+
+        // A malformed backfill is still refused: open-in-the-past would be
+        // a second open interval, and a row that overlaps the live span has
+        // no successor to close at.
+        let open_backfill =
+            store.upsert_concepts_bulk(&[at("a", "2025-01-01T00:00:00.000000Z", open, "old")]);
+        assert!(open_backfill.is_err(), "an open row cannot backfill");
+        let overlapping = store.upsert_concepts_bulk(&[at(
+            "a",
+            "2026-03-01T00:00:00.000000Z",
+            "2026-09-01T00:00:00.000000Z",
+            "mid",
+        )]);
+        assert!(
+            overlapping.is_err(),
+            "a span inside the live belief has no chain"
+        );
+    }
 
     /// DR-11 slice 3: persist flushes hashes into concept JSON, because
     /// compute never touches files and the ledger would otherwise keep

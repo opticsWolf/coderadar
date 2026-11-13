@@ -513,6 +513,35 @@ correction on the recorded axis and leaves valid-axis answers for untouched file
 as ingesting them in order, at every commit, and different recorded-axis answers exactly where the
 order differed. That pair of assertions is Doctrine VIII as a test.
 
+*(2026-11-13, slice 1 landed: the write shape. Probes first, because the answer was not where the
+plan assumed. Macrame's own write path already accepts a **closed** version written before an
+existing open one — `UPSERT_CONCEPT`'s `WHERE excluded.valid_from >= concepts.valid_from` declines
+the projection update, the row is logged, and the pair is marked for the next read's correction
+(D-303) — so the engine needs no change. The refusal was CodeRadar's: `upsert_concepts_bulk`'s W1
+classification had one arm per forward case and a fallback that refused every earlier start. That
+fallback now has a named arm: an earlier start is accepted when the row is **closed**, not a
+retirement, and `valid_to <= live.valid_from` — a version whose successor it abuts, which is
+INV-15's chain shape. Anything else (open in the past, a span inside the live belief, a backfilled
+retirement) still refuses, before anything is written.
+`a_closed_version_may_backfill_before_the_live_open_one` pins it end to end: two chained
+backfills, the valid axis answering each interval, the live projection unchanged,
+`verify_concept_intervals` clean, and both malformed shapes refused.)*
+
+*(What remains, and the shape it must take. The ingest half is a **prefix window**: `--from` a
+commit that is an ancestor of the lineage's cursor, with every planned commit strictly before it,
+walked forward with a one-change-per-file lookahead so each written version closes at its
+successor's start (the next change inside the window, or the live row's start, or the retirement
+that ended it). Reversing the walk was rejected: the sweep, the retire acts and the spine all read
+forward, and reversing them would rewrite four subsystems to answer one question. **Interior
+backfill is deliberately out**: inserting a window between two ingested ranges would have to move
+an existing closed interval's end, and a closed interval's end is a belief the ledger already
+recorded — a correction to history, a different act from extending it, and it needs its own
+decision rather than a side effect of P5b.5. The proof will therefore be: a history ingested as
+contiguous chunks newest-first answers every commit's valid axis identically to a single in-order
+ingest, with the recorded axis differing exactly where the chunk order differed — Doctrine VIII's
+pair with prefix windows, the shape the plan's "backfill a branch that predates the store" case
+actually needs.)*
+
 ### P5b.6 — Branch names: selection, addresses, generations (needs P5b.3a)
 
 **Selection (D-6 c).** The ingest set is the trunk plus every branch, local or remote-tracking,
@@ -745,7 +774,7 @@ already require.
 | 3 | P5b.2 adopt 0.22.0 *(closed 2026-11-11 — [patch] retired, the lock rides crates.io `0.22.0`; engine identical to the rev pin (no src/ diff 40719ac to tag); gates 589 lib + pytest 1303/1/4xf, scratch migration disorder 0)* | P5b.1 (U-1 released 2026-11-01) | P5d |
 | 4 | P5b.3 valid reads (trunk) *(closed 2026-11-12 — `valid=` on `as_of`, `changes_between`, the `Snapshot` and the five `_core` reads; `resolve_valid_read` names the instant and `basis: "valid"`, lowered to Macrame's `reconstruct_as_of(AsOf::valid_at)`, trunk-only; a branch refuses `ValidBranchNeedsU2`, `at=` refuses `ValidAtNeedsP5b4`. `history_of` needs no flag (the spine is the valid axis) and `verify_history` samples recorded generations by design — both stated in §6. Gates: 592 lib, pytest 1353/1/2xf)* | P5b.2 | — |
 | 5 | P5b.4 sha addressing | P5b.3 | P5b.5 |
-| 5 | P5b.5 out-of-order ingest | P5b.3 | P5b.4 |
+| 5 | P5b.5 out-of-order ingest *(slice 1 closed 2026-11-13 — the write shape: `upsert_concepts_bulk` accepts a closed, non-retirement version starting before the live open one when `valid_to <= live.valid_from` (the abutting chain), leaving the projection and the open belief untouched; the engine already supported it, the forward-only fallback was CodeRadar's. Malformed shapes still refuse before any write. The ingest half (prefix window, one-change lookahead, incumbent-vs-arriving closes) and the Doctrine VIII proof remain)* | P5b.3 | P5b.4 |
 | 6 | P5b.3 branch reads | U-2 | — |
 | 7 | P5c lineage fidelity | U-3 (U-4's substance: D-315, 0.22.0) | — |
 | — | P9 | each phase it exposes | — |
