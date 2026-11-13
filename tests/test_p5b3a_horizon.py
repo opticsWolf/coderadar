@@ -11,6 +11,7 @@ ingested before this phase.
 import json
 import sqlite3
 import subprocess
+import sys
 
 import pytest
 from coderadar import ops
@@ -76,6 +77,39 @@ def _store_path(repo):
 def _ingest(repo):
     return ops.ingest_history(str(repo), branch="main",
                               store_path=str(_store_path(repo)))
+
+
+_INGEST_STEP = """
+import sys
+from coderadar import ops
+ops.ingest_history(sys.argv[1], branch=sys.argv[2], store_path=sys.argv[3])
+"""
+
+_BACKFILL_STEP = """
+import json, sys
+from coderadar import ops
+print(json.dumps(ops.backfill_commit_index(sys.argv[1], store_path=sys.argv[2])))
+"""
+
+
+def _fresh_process(tmp_path, body, *args):
+    """Run one step in a new interpreter, because a store cannot be re-entered.
+
+    The engine keeps the file for the life of the process that opened it and
+    keeps reading the snapshot it opened with — so a raw `sqlite3` write from
+    *this* process is invisible to it. These pre-phase tests delete kv rows
+    behind the engine's back and then ask an op to repair them; in one process
+    the op's fill-only arm still sees the rows as present and writes nothing.
+    A child that exits releases the file, so the delete and the repair cross a
+    process boundary.
+    """
+    script = tmp_path / "step.py"
+    script.write_text(body, encoding="utf-8")
+    done = subprocess.run([sys.executable, str(script), *map(str, args)],
+                          cwd=str(tmp_path), capture_output=True, text=True,
+                          check=False)
+    assert done.returncode == 0, done.stderr
+    return done.stdout
 
 
 def _kv(store_path, key):
@@ -171,16 +205,16 @@ def test_commit_done_instants_bound_each_commit(tmp_path):
 
 def test_backfill_rebuilds_index_from_ledger(tmp_path):
     repo = _three_commits(tmp_path)
-    _ingest(repo)
     store = _store_path(repo)
+    _fresh_process(tmp_path, _INGEST_STEP, str(repo), "main", str(store))
     con = sqlite3.connect(str(store))
     con.execute("DELETE FROM kv_store WHERE key LIKE 'coderadar.horizon.%'"
                 " OR key LIKE 'coderadar.commit_done.%'")
     con.commit()
     con.close()
     assert _kv(store, "coderadar.horizon.main") is None
-    report = ops.backfill_commit_index(branch="main",
-                                       store_path=str(store))
+    out = _fresh_process(tmp_path, _BACKFILL_STEP, "main", str(store))
+    report = json.loads(out.strip().splitlines()[-1])
     assert report["commits_indexed"] == 3, report
     assert report["collisions"] == [], report
     assert _kv(store, "coderadar.horizon.main"), "no horizon after backfill"
@@ -286,25 +320,25 @@ def test_derived_completion_covers_the_cut_on_a_rebuilt_index(tmp_path):
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "c1", env=_stamp_env("2026-01-01T10:00:00+00:00"))
     _git(repo, "checkout", "-qb", "feature")
-    ops.ingest_history(str(repo), store_path=str(_store_path(repo)))
+    store = _store_path(repo)
+    _fresh_process(tmp_path, _INGEST_STEP, str(repo), "main", str(store))
     (repo / "a.py").write_text("def h():\n    return 2\n",
                                encoding="utf-8", newline="\n")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-qm", "e1", env=_stamp_env("2026-01-05T10:00:00+00:00"))
     sha = subprocess.run(["git", "rev-parse", "feature"], cwd=str(repo),
                          check=True, capture_output=True, text=True).stdout.strip()
-    ops.ingest_history(str(repo), branch="feature",
-                       store_path=str(_store_path(repo)))
+    _fresh_process(tmp_path, _INGEST_STEP, str(repo), "feature", str(store))
 
     # Simulate the pre-phase store: completions absent.
-    con = sqlite3.connect(str(_store_path(repo)))
+    con = sqlite3.connect(str(store))
     try:
         con.execute("DELETE FROM kv_store WHERE key LIKE 'coderadar.commit_done.%'")
         con.commit()
     finally:
         con.close()
-    report = ops.backfill_commit_index(
-        "feature", store_path=str(_store_path(repo)))
+    out = _fresh_process(tmp_path, _BACKFILL_STEP, "feature", str(store))
+    report = json.loads(out.strip().splitlines()[-1])
     assert report["commits_indexed"] == 1
     done = _kv(_store_path(repo), f"coderadar.commit_done.feature.{sha}")
     assert done is not None
