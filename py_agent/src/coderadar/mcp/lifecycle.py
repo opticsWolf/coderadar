@@ -132,12 +132,28 @@ class ParentWatchdog:
 
     def _run(self) -> None:
         while not self._stop.wait(self._interval):
+            # `stop()` can land between the wait and this line; without the
+            # re-check the loop polls once more after the caller believes it
+            # stopped (the macOS runner caught exactly that).
+            if self._stop.is_set():
+                return
             if not self._alive(self._ppid):
                 self._on_orphan(f"parent process {self._ppid} exited")
                 return
 
     def stop(self) -> None:
+        """Stop polling. Returns once no further poll can happen.
+
+        The join is what makes that true: `_run` may be inside a probe when
+        the event is set, and a caller that then observes the probe's side
+        effects is looking at an already-stopped watchdog. Bounded, because a
+        probe that blocks must not hold up the caller (the thread is a
+        daemon; letting it finish on its own is the fallback).
+        """
         self._stop.set()
+        thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(1.0, self._interval * 10))
 
     def check_once(self) -> bool:
         """Run one poll's worth of logic. Returns whether the parent is alive."""
