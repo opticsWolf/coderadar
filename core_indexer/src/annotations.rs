@@ -849,10 +849,7 @@ fn needs_escape(chunk: &str) -> bool {
     // `[text]` at line start would re-parse as a shortcut reference link
     // (or nothing, dropping the brackets on some renderers); the
     // backslash keeps stored bytes literal.
-    if chunk.starts_with('[') {
-        return true;
-    }
-    false
+    chunk.starts_with('[')
 }
 
 // ── Store operations ────────────────────────────────────────────────────

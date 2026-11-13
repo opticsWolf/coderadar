@@ -115,6 +115,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(export_annotations, m)?)?;
     m.add_function(wrap_pyfunction!(import_annotations, m)?)?;
     m.add_function(wrap_pyfunction!(graph_is_loaded, m)?)?;
+    m.add_function(wrap_pyfunction!(forget_store, m)?)?;
+    m.add_function(wrap_pyfunction!(holds_store, m)?)?;
     m.add_function(wrap_pyfunction!(archive, m)?)?;
     m.add_function(wrap_pyfunction!(search_entities, m)?)?;
     m.add_function(wrap_pyfunction!(graph_stats, m)?)?;
@@ -3103,6 +3105,33 @@ fn notes_for(py: Python<'_>, abouts: Vec<String>) -> PyResult<String> {
 #[pyfunction]
 fn graph_is_loaded() -> bool {
     GLOBAL_GRAPH.read().is_some()
+}
+
+/// Drop this process's engine for a store path (P8's rebuild, before the
+/// move).
+///
+/// The engine cannot be shut down mid-process — a close leaves later reads
+/// in the process losing the rows the close folded into its snapshot (see
+/// `storage::StoreInner`). What this does is narrower and sufficient for a
+/// rebuild: the path's registry entry goes, so the opens that follow the
+/// move mint an engine for the *new* file instead of joining the one whose
+/// descriptor still points at the moved backup.
+///
+/// `store_path=None` means the loaded graph's store, which a rebuild cannot
+/// have (it refuses a loaded graph first) — a `None` here is a no-op.
+#[pyfunction]
+#[pyo3(signature = (store_path=None))]
+fn forget_store(store_path: Option<&str>) {
+    if let Some(path) = store_path {
+        crate::storage::forget_store(path);
+    }
+}
+
+/// Whether this process holds an engine for `store_path` (rebuild's
+/// diagnostic; the op's own guard is `graph_is_loaded`).
+#[pyfunction]
+fn holds_store(store_path: &str) -> bool {
+    crate::storage::holds_store(store_path)
 }
 
 /// Every annotation and comment row, with its whole version chain, as one

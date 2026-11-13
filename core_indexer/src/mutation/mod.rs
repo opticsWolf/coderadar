@@ -3345,10 +3345,7 @@ fn params_span_valid(source: &str, name: &str, span: ByteSpan) -> bool {
     // unrelated code (the F4 mangler) fails here.
     let line_start = source[..span.start].rfind('\n').map(|i| i + 1).unwrap_or(0);
     let prefix = &source[line_start..span.start];
-    if !prefix_ends_with_name_call(prefix, name) {
-        return false;
-    }
-    true
+    prefix_ends_with_name_call(prefix, name)
 }
 
 /// Whether `prefix` (line text up to, but excluding, the paren) ends with

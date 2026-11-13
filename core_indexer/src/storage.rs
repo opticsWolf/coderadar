@@ -539,12 +539,40 @@ impl CodeGraphStore {
 
 /// Handles handed out for one path, so a second open joins the first.
 ///
-/// `Weak` on purpose: a live entry means the file is already open, and a
-/// dead one is a store whose handles are gone — the next open mints a fresh
-/// engine there. The map therefore never holds a store alive.
+/// `Arc`, not `Weak`, for the reason the sharing exists: the engine keeps
+/// the file open for the life of the process, so a "dead" entry would still
+/// be a locked file — minting a fresh `Database` there is exactly the
+/// `database is locked` failure this map removes. An entry therefore lives
+/// as long as the process, which is the same lifetime the engine gives the
+/// file. [`forget_store`] is the one way out, for an operation that is about
+/// to replace the file itself (`ops.rebuild`).
 static OPEN_STORES: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Weak<StoreInner>>>,
+    std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Arc<StoreInner>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Drop the registry's handle for a path.
+///
+/// **Only for an operation that is about to remove or replace the file.**
+/// The engine's own handle is not released (it cannot be — a shutdown breaks
+/// the process's later reads), so what this buys is the *next* open minting
+/// a fresh engine for the file at that path instead of joining an engine
+/// that still points at the old inode. `ops.rebuild` calls it before it
+/// moves the store aside; nothing else should.
+pub fn forget_store(path: impl AsRef<Path>) {
+    let key = store_key(path.as_ref());
+    if let Ok(mut map) = OPEN_STORES.lock() {
+        map.remove(&key);
+    }
+}
+
+/// Whether this process holds an engine for `path`.
+pub fn holds_store(path: impl AsRef<Path>) -> bool {
+    let key = store_key(path.as_ref());
+    OPEN_STORES
+        .lock()
+        .map(|map| map.contains_key(&key))
+        .unwrap_or(false)
+}
 
 /// One path's identity for the registry.
 ///
@@ -652,8 +680,10 @@ impl CodeGraphStore {
         // libSQL on POSIX (§`StoreInner`), and closing either of the two
         // would empty the other's temporal reads.
         if let Ok(map) = OPEN_STORES.lock() {
-            if let Some(existing) = map.get(&key).and_then(std::sync::Weak::upgrade) {
-                return Ok(Self { inner: existing });
+            if let Some(existing) = map.get(&key) {
+                return Ok(Self {
+                    inner: std::sync::Arc::clone(existing),
+                });
             }
         }
         let db = {
@@ -668,13 +698,10 @@ impl CodeGraphStore {
         runtime().block_on(db.register_extra_index(CODERADAR_EXTRA_FILE_PATH))?;
         let inner = std::sync::Arc::new(StoreInner { db });
         if let Ok(mut map) = OPEN_STORES.lock() {
-            // Dead entries are the paths whose handles all went away. They
-            // cost a `Weak` each, so they are swept rather than accumulated
-            // — a test process opens thousands of one-off stores.
-            if map.len() > 64 {
-                map.retain(|_, weak| weak.strong_count() > 0);
-            }
-            map.insert(key, std::sync::Arc::downgrade(&inner));
+            // A racing open may have registered first; joining it is correct
+            // — both callers then share one engine either way.
+            map.entry(key)
+                .or_insert_with(|| std::sync::Arc::clone(&inner));
         }
         Ok(Self { inner })
     }
@@ -5720,17 +5747,26 @@ mod tests {
     /// the engine's write actor keeps it open for the process's life, and a
     /// shutdown is the engine's process-final act rather than a handle's.
     /// `ops.rebuild` is the one operation that must move a store, and it
-    /// moves before opening, refusing a loaded graph (P8).
+    /// moves before opening, refusing a loaded graph (P8); `forget_store` is
+    /// how it stops a later open from joining the engine that still points
+    /// at the moved inode.
     #[test]
     fn two_opens_of_one_path_share_one_engine() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shared.db");
         let a = CodeGraphStore::open(&path).unwrap();
         let b = CodeGraphStore::open(&path).unwrap();
-        assert_eq!(a.handles(), 2, "the second open joins the first");
+        // Two handles plus the registry's own reference: the registry holds
+        // the engine for the process's life, which is what makes the third
+        // open below join instead of minting a second `Database`.
+        assert_eq!(a.handles(), 3, "the second open joins the first");
         drop(b);
-        assert_eq!(a.handles(), 1, "and the survivor keeps the engine");
+        assert_eq!(a.handles(), 2, "and the survivor keeps the engine");
         assert!(a.git_marks().is_ok(), "reads still answer after the drop");
+        drop(a);
+        let c = CodeGraphStore::open(&path).unwrap();
+        assert_eq!(c.handles(), 2, "the registry kept it alive for this open");
+        assert!(c.git_marks().is_ok());
     }
 
     /// P5b.5's backfill shape: a closed version may be written *before*

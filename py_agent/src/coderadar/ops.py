@@ -2801,6 +2801,20 @@ def rebuild(repo: str | Path, *, store_path: str | Path | None = None,
             raise InvalidRequest(f"cannot create {store.parent}: {e}") from None
     started = _time.perf_counter()
 
+    # The registry would otherwise hand the *ingest* below the engine that
+    # already points at the file this call is about to move: on Windows the
+    # move succeeds only because nothing holds it, and on POSIX it succeeds
+    # outright — and then the ingest would keep writing through a descriptor
+    # aimed at the backup. Forgetting the path first makes the opens after
+    # the move mint an engine for the new file. (The old engine's handle is
+    # not released; the engine cannot be shut down mid-process, which is why
+    # this op refuses a loaded graph instead of closing one.)
+    try:
+        from coderadar._core import forget_store as _forget
+        _forget(store_s)
+    except ImportError:  # pragma: no cover - extension always built in CI
+        pass
+
     # 1. The old store moves aside, first: the engine keeps a store file
     # locked for the life of the process once anything has opened it, so
     # the move must precede this process's own first open. Nothing is
