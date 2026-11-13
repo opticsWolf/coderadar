@@ -439,6 +439,12 @@ with documented pending consumers.
   patches: no bump. Minor cut accumulates (0.15.0).
 - **Register currency is a release-gate input:** DR rows update the same
   session as the code.
+- **Platforms:** the Python suite runs on ubuntu, windows and macOS (macOS
+  ships a wheel, and the store contract is about POSIX locking); the Rust
+  suite runs on ubuntu and windows only, because `cargo test` on macOS
+  cannot link pyo3's `extension-module`. `release.yml` gates on
+  `scripts/check_tag_version.py` before it builds anything: the tag must
+  match `pyproject.toml`, since a PyPI publish cannot be taken back.
 
 ---
 

@@ -1096,13 +1096,13 @@ store schema v29. `ARCHITECTURE.md` also gained the behavior it was missing: §1
 history, branch addressing, the valid axis, observations, rename links, notes and the export/rebuild
 boundary, and §7 the store's one-engine-per-path contract.
 
-Gate bundle at the cut: **Rust 600 lib + 5 integration passed, 1 ignored**; `cargo fmt --check` and
+Gate bundle at the cut: **Rust 603 lib + 5 integration passed, 1 ignored**; `cargo fmt --check` and
 `cargo clippy --all-targets -D warnings` clean; **Python 1390 passed, 1 skipped, 1 xfailed**
 (`tests/`, `cr_edit_tests` excluded as always, 1392 collected) on a rebuilt `0.15.0` wheel; the
 round-2 dogfood battery 121/121. Surface: **34 MCP tools** (33 + `coderadar_open_items`).
 
-**CI is green on the release tree** — all six jobs, ubuntu and windows runners, first green run
-since 2026-10-29. Getting there was the release's real work: the suite had been assuming a store
+**CI is green on the release tree** — all seven jobs across ubuntu, windows and (for the Python
+suite) macOS, first green run since 2026-10-29, at `3d27232`. Getting there was the release's real work: the suite had been assuming a store
 could be opened again (twice in one process, or from a child beside a parent that held it), which
 libSQL refuses on POSIX and Windows only appears to allow. `CodeGraphStore` now hands out one shared
 engine per path per process (`bd353ac`, `613bd68`), two horizon tests cross a process boundary
@@ -1119,8 +1119,14 @@ ops; it now holds one lock across lookup, open and insert, and
 The key was also lexical-only, so `D:\x.db` and `d:\x.db` were two stores; it now asks the
 filesystem (`canonicalize`, folding case and symlinks exactly where the platform folds them) and
 falls back to the lexical spelling only for a file that does not exist yet — therefore
-`forget_store`/`holds_store` try both. Two release-process gaps closed with it: `ci.yml` now runs
-both suites on `macos-latest` (a shipped wheel on the otherwise-untested POSIX platform), and
+`forget_store`/`holds_store` try both. The runners sharpened that: the key had also to be *stable
+across the file's creation* (the first open can only compute the lexical spelling, the second
+canonicalizes — an 8.3 directory on Windows, `/var` → `/private/var` on macOS, and the mismatch
+minted the second engine the aliasing was meant to prevent), so the insert records both spellings.
+Two release-process gaps closed with it: `ci.yml` runs the Python suite on `macos-latest` (a
+shipped wheel on the otherwise-untested POSIX platform; the Rust leg cannot follow — `cargo test`
+there will not link pyo3's `extension-module` — so the leg that builds a real wheel is the right
+one), and
 `release.yml` gains a `verify-version` job (`scripts/check_tag_version.py`) because publishing is
 one-way and the workflow trusted whatever `pyproject.toml` said.
 
