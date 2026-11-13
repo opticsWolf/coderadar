@@ -4832,7 +4832,10 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             })?;
             if !legacy.is_empty() {
                 return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "store {db} predates the 0.10 canonical id format: {} live id(s)                      are spelled with a dot prefix or native separators (e.g. {:?}).                      Re-analyze to migrate it — `coderadar analyze` (cold start does                      this automatically), or `coderadar store-repair` to inspect it.",
+                    "store {db} predates the 0.10 canonical id format: {} live id(s) \
+                     are spelled with a dot prefix or native separators (e.g. {:?}). \
+                     Re-analyze to migrate it — `coderadar analyze` (cold start does \
+                     this automatically), or `coderadar store-repair` to inspect it.",
                     legacy.len(),
                     legacy.first().cloned().unwrap_or_default(),
                 )));
@@ -4860,11 +4863,8 @@ fn load_snapshot(py: Python<'_>, db_path: &str, root: Option<&str>) -> PyResult<
             // pyproject takes effect on the next cold start without a
             // re-analyze. `root` absent ⇒ empty maps (old behaviour).
             if let Some(r) = root {
-                projection.path_maps = crate::graph::path_maps::PathMaps::discover(
-                    r,
-                    &config.project,
-                    &[],
-                );
+                projection.path_maps =
+                    crate::graph::path_maps::PathMaps::discover(r, &config.project, &[]);
             }
             graph.resolve_imports(&mut projection);
             graph.populate_class_methods(&mut projection);

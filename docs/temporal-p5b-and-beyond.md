@@ -15,8 +15,8 @@
 > "delivered through adoption", not "done"). It also ships **D-314** (the concept overlay:
 > per-lineage versions and cuts, the read walk, the search and archive arms) and **D-316** (a
 > past instant still reads below a cut or supersede through the walk, capped at the ancestry
-> cutoff). **U-2 and U-3 remain unfiled**; they are the remaining upstream path (§7 and Q-13
-> mark it).
+> cutoff). U-2 and U-3 were then unfiled *(filed 2026-11-11 — see (2) below)*; they are the
+> remaining upstream path (§7 and Q-13 mark it).
 >
 > **Updated 2026-11-11: Macrame `v0.22.0` is released** - tag `v0.22.0` on `69336d7` (all three
 > branches ff-merged there; the docs record at `1d57dae`), published to crates.io and PyPI the
@@ -25,9 +25,9 @@
 > `42984289951`: 749 + 3 skipped on all five legs). The release carried a fix round the
 > 2026-11-09 note predates: python.yml's clippy leg gained mypy `--strict` on the binding
 > (`67ced5a`, `69336d7`), and the py3.10 floor leg came back after M1b's `datetime.UTC` import
-> had silenced it since Nov 7. CodeRadar pins the release commit. **U-2 and U-3 remain
-> unfiled**; they are the remaining upstream path (§7 and Q-13 mark it), and the v0.23.0
-> plan files them.
+> had silenced it since Nov 7. CodeRadar pins the release (crates.io `0.22.0`, `605c367`).
+> U-2 and U-3 are the remaining upstream path (§7 and Q-13 mark it); the v0.23.0 plan files
+> them (see (2) below).
 >
 > **Updated 2026-11-11 (2): U-2 and U-3 are filed.** Macrame's `v0.23.0` plan takes them as D-317 (U-2, the lineage-resolved valid fold) and D-318 (U-3, the fork's valid-axis cut). The 11-11 paragraph above is history as to filing; §7's 11-11 paragraph is the operative order.
 >
@@ -425,11 +425,11 @@ two-flush window shrinks to the ordering discipline above.)*
 **Proves it:** INV-15 holds on the migration fixture and on a scratch self-host run *(proved 2026-11-11: fixture 17 concepts / 21 versions, self-host 354 commits / 16,701 concepts / 33,641 versions, disorder 0 both; the engine overlap check replicated at ledger level — the py binding pins v21 and cannot open a v29 store)*; the suite runs
 green against the pinned Macrame build with the guard active *(2026-11-11: `0.20.0` in the prior wording is history — the proof runs on the `0.22.0` pin; the proof also fixed F2's sentinel to both spellings — the lone legacy spelling had passed vacuously since the uptake)*.
 
-### P5b.2 — Adopt Macrame 0.22.0 (needs P5b.1; U-1 released 2026-11-01) *(2026-11-11: retitled from 0.21.0 — the pin already rides a `0.22.0` rev at `40719ac`; what remains is the registry switch, §7)*
+### P5b.2 — Adopt Macrame 0.22.0 (needs P5b.1; U-1 released 2026-11-01) *(2026-11-11: retitled from 0.21.0 — the pin already rides a `0.22.0` rev at `40719ac`; the registry switch closed it the same day, `605c367`)* **(done 2026-11-11)**
 
 Move `macrame-db` to `0.22.0` and `libsql` to `0.10` in one change (`core_indexer/Cargo.toml:30,50`;
 the two must match, because `diagnostic_conn()` hands out Macrame's connections). No API drift is
-known: the 0.21.0 break (`Overlap.within_batch`) is unused here, and the 0.22.0 breaks ride the M6-g uptake *(2026-11-11: version retitled; the rev pin at `40719ac` becomes the registry pin)*. Rerun the full gate bundle and the
+known: the 0.21.0 break (`Overlap.within_batch`) is unused here, and the 0.22.0 breaks ride the M6-g uptake *(2026-11-11: version retitled; the rev pin at `40719ac` became the registry pin, `605c367`)*. Rerun the full gate bundle and the
 scratch migration, and require `verify_concept_intervals` to report nothing and `concept_disorder`
 to stay empty on an in-order ingest *(closed 2026-11-11: [patch] retired for the crates.io pin, bundle 589 lib + 1303/1/4xf, scratch migration disorder 0 — overlap check replicated at ledger level, the py binding pins v21)*. Not 0.20.0: its backfill defect is P5b.5's write.
 

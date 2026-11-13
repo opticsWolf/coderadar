@@ -4391,7 +4391,8 @@ impl CodeGraphStore {
         runtime().block_on(async {
             let mut rows = conn
                 .query(
-                    "SELECT content, valid_from FROM concepts WHERE id = ?1                      ORDER BY retired ASC, valid_from DESC LIMIT 1",
+                    "SELECT content, valid_from FROM concepts WHERE id = ?1 \
+                     ORDER BY retired ASC, valid_from DESC LIMIT 1",
                     libsql::params![key],
                 )
                 .await
@@ -6715,7 +6716,8 @@ mod tests {
             .block_on(async {
                 let mut rows = leak_conn
                     .query(
-                        "SELECT COUNT(*) FROM transaction_log                          WHERE payload LIKE ?1 AND entity_id LIKE 'm.py@%'",
+                        "SELECT COUNT(*) FROM transaction_log \
+                         WHERE payload LIKE ?1 AND entity_id LIKE 'm.py@%'",
                         libsql::params![format!("%{d1}%")],
                     )
                     .await
@@ -7088,27 +7090,29 @@ mod tests {
         assert_eq!(n, 0, "a settled row's hash is not rewritten");
         let (mf, mt, retired, mc): (String, String, i64, String) = {
             let (_g, conn) = store.open_diagnostic_conn().unwrap();
-            runtime().block_on(async {
-                let mut rows = conn
-                    .query(
-                        "SELECT valid_from, valid_to, retired, content FROM concepts                          WHERE id = ?1",
-                        libsql::params!["m.py::module"],
-                    )
-                    .await
-                    .map_err(macrame::DbError::Engine)?;
-                let row = rows
-                    .next()
-                    .await
-                    .map_err(macrame::DbError::Engine)?
-                    .unwrap();
-                Ok::<_, macrame::DbError>((
-                    row.get::<String>(0).unwrap_or_default(),
-                    row.get::<String>(1).unwrap_or_default(),
-                    row.get::<i64>(2).unwrap_or(0),
-                    row.get::<String>(3).unwrap_or_default(),
-                ))
-            })
-            .unwrap()
+            runtime()
+                .block_on(async {
+                    let mut rows = conn
+                        .query(
+                            "SELECT valid_from, valid_to, retired, content FROM concepts \
+                         WHERE id = ?1",
+                            libsql::params!["m.py::module"],
+                        )
+                        .await
+                        .map_err(macrame::DbError::Engine)?;
+                    let row = rows
+                        .next()
+                        .await
+                        .map_err(macrame::DbError::Engine)?
+                        .unwrap();
+                    Ok::<_, macrame::DbError>((
+                        row.get::<String>(0).unwrap_or_default(),
+                        row.get::<String>(1).unwrap_or_default(),
+                        row.get::<i64>(2).unwrap_or(0),
+                        row.get::<String>(3).unwrap_or_default(),
+                    ))
+                })
+                .unwrap()
         };
         // The fixture retires m at s1 (the retirement act at that start):
         // start, end and flag stay exactly as the retirement wrote them.
@@ -7996,16 +8000,26 @@ mod stamped_write_tests {
         assert_eq!(edges, 0, "no edges in this fixture");
         dump_rows(&store, "c.py::g", "TRUNK-after-retire");
         assert!(
-            store.reconstruct_on(tmid, "main").unwrap().concepts.contains_key("c.py::g"),
-            "TRUNK_FOLDER: the live window [t01, t02) must survive the retire at {t02};              the mid read at {tmid} lost it"
-        );
-        assert!(
-            runtime()
-                .block_on(store.db.reconstruct_as_of(macrame::temporal::AsOf::valid_at(tmid)))
+            store
+                .reconstruct_on(tmid, "main")
                 .unwrap()
                 .concepts
                 .contains_key("c.py::g"),
-            "TRUNK_VALID_FOLD: the live window [t01, t02) must survive the retire;              the valid-axis fold's mid read at {tmid} lost it"
+            "TRUNK_FOLDER: the live window [t01, t02) must survive the retire at {t02}; \
+             the mid read at {tmid} lost it"
+        );
+        assert!(
+            runtime()
+                .block_on(
+                    store
+                        .db
+                        .reconstruct_as_of(macrame::temporal::AsOf::valid_at(tmid))
+                )
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "TRUNK_VALID_FOLD: the live window [t01, t02) must survive the retire; \
+             the valid-axis fold's mid read at {tmid} lost it"
         );
         assert!(
             !runtime()
@@ -8145,12 +8159,18 @@ mod stamped_write_tests {
         assert_eq!(written, 1, "the retirement was written, not refused");
         dump_rows(&store, "c.py::g", "BRANCH-after-retire");
         assert!(
-            store.reconstruct_on(tmid, "feature").unwrap().concepts.contains_key("c.py::g"),
-            "BRANCH_FOLDER: the live window [tw, t02) must survive the retire at {t02};              the mid read at {tmid} lost it"
+            store
+                .reconstruct_on(tmid, "feature")
+                .unwrap()
+                .concepts
+                .contains_key("c.py::g"),
+            "BRANCH_FOLDER: the live window [tw, t02) must survive the retire at {t02}; \
+             the mid read at {tmid} lost it"
         );
         assert!(
             walk_holds(&store, "c.py::g", tmid, "feature"),
-            "BRANCH_WALK: the live window [tw, t02) must survive the retire at {t02};              the walk's mid read at {tmid} lost it"
+            "BRANCH_WALK: the live window [tw, t02) must survive the retire at {t02}; \
+             the walk's mid read at {tmid} lost it"
         );
         assert!(
             !walk_holds(&store, "c.py::g", tpost, "feature"),
@@ -8188,12 +8208,11 @@ mod stamped_write_tests {
     fn dump_rows(store: &CodeGraphStore, id: &str, leg: &str) {
         let (_guard, conn) = store.open_diagnostic_conn().unwrap();
         let mut concept_rows = runtime()
-            .block_on(
-                conn.query(
-                    "SELECT branch_id, valid_from, valid_to, retired, recorded_at                      FROM concepts WHERE id = ?1",
-                    [id],
-                ),
-            )
+            .block_on(conn.query(
+                "SELECT branch_id, valid_from, valid_to, retired, recorded_at \
+                     FROM concepts WHERE id = ?1",
+                [id],
+            ))
             .unwrap();
         runtime().block_on(async {
             while let Some(row) = concept_rows.next().await.unwrap() {
@@ -8208,12 +8227,11 @@ mod stamped_write_tests {
             }
         });
         let mut versions = runtime()
-            .block_on(
-                conn.query(
-                    "SELECT branch_id, valid_from, valid_to, recorded_at                      FROM concept_versions WHERE id = ?1 ORDER BY branch_id, valid_from",
-                    [id],
-                ),
-            )
+            .block_on(conn.query(
+                "SELECT branch_id, valid_from, valid_to, recorded_at \
+                     FROM concept_versions WHERE id = ?1 ORDER BY branch_id, valid_from",
+                [id],
+            ))
             .unwrap();
         runtime().block_on(async {
             while let Some(row) = versions.next().await.unwrap() {
@@ -8227,12 +8245,11 @@ mod stamped_write_tests {
             }
         });
         let mut cuts = runtime()
-            .block_on(
-                conn.query(
-                    "SELECT branch_id, cut_at, recorded_at FROM concept_cuts                      WHERE id = ?1 ORDER BY branch_id, cut_at",
-                    [id],
-                ),
-            )
+            .block_on(conn.query(
+                "SELECT branch_id, cut_at, recorded_at FROM concept_cuts \
+                     WHERE id = ?1 ORDER BY branch_id, cut_at",
+                [id],
+            ))
             .unwrap();
         runtime().block_on(async {
             while let Some(row) = cuts.next().await.unwrap() {
@@ -8245,12 +8262,12 @@ mod stamped_write_tests {
             }
         });
         let mut logs = runtime()
-            .block_on(
-                conn.query(
-                    "SELECT seq_id, recorded_at, operation, branch_id, payload                      FROM transaction_log WHERE entity_id = ?1 AND table_name = 'concepts'                      ORDER BY seq_id",
-                    [id],
-                ),
-            )
+            .block_on(conn.query(
+                "SELECT seq_id, recorded_at, operation, branch_id, payload \
+                     FROM transaction_log WHERE entity_id = ?1 AND table_name = 'concepts' \
+                     ORDER BY seq_id",
+                [id],
+            ))
             .unwrap();
         runtime().block_on(async {
             while let Some(row) = logs.next().await.unwrap() {

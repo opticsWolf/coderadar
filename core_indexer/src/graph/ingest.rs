@@ -3278,20 +3278,26 @@ impl std::fmt::Display for ReadArmError {
             ReadArmError::UnknownBranch { name, tip } => match tip {
                 Some(tip) => write!(
                     f,
-                    "UnknownBranch: {name:?} points at {tip}, which no lineage in this                      store holds — ingest it before reading the name"
+                    "UnknownBranch: {name:?} points at {tip}, which no lineage in this \
+                     store holds — ingest it before reading the name"
                 ),
                 None => write!(
                     f,
-                    "UnknownBranch: {name:?} is not a lineage in this store and records no                      tip (D-6 c) — ingest the branch, or read its commit by sha"
+                    "UnknownBranch: {name:?} is not a lineage in this store and records no \
+                     tip (D-6 c) — ingest the branch, or read its commit by sha"
                 ),
             },
             ReadArmError::ValidBranchNeedsU2 { branch } => write!(
                 f,
-                "ValidBranchNeedsU2: the valid axis on {branch:?} needs Macrame's \n                 lineage-resolved valid fold (U-2, 0.23.0) - folding the trunk would \n                 answer with a different lineage's history, so nothing is answered"
+                "ValidBranchNeedsU2: the valid axis on {branch:?} needs Macrame's \
+                 lineage-resolved valid fold (U-2, 0.23.0) - folding the trunk would \
+                 answer with a different lineage's history, so nothing is answered"
             ),
             ReadArmError::ValidAtNeedsP5b4 { address } => write!(
                 f,
-                "ValidAtNeedsP5b4: at={address:?} on the valid axis needs commit \n                 addressing (P5b.4) to turn the address into an instant; pass the \n                 instant as the positional timestamp instead"
+                "ValidAtNeedsP5b4: at={address:?} on the valid axis needs commit \
+                 addressing (P5b.4) to turn the address into an instant; pass the \
+                 instant as the positional timestamp instead"
             ),
         }
     }
@@ -4068,10 +4074,14 @@ mod backfill_tests {
             for id in ids {
                 let id = id.to_string();
                 for sql in [
-                    "DELETE FROM concept_version_fts_rows                       WHERE id LIKE ?1 AND branch_id IN ('', 'main')",
-                    "DELETE FROM concept_versions                       WHERE id LIKE ?1 AND branch_id IN ('', 'main')",
-                    "DELETE FROM transaction_log                       WHERE entity_id LIKE ?1 AND branch_id IN ('', 'main')",
-                    "DELETE FROM concepts                       WHERE id LIKE ?1 AND branch_id IN ('', 'main')",
+                    "DELETE FROM concept_version_fts_rows \
+                      WHERE id LIKE ?1 AND branch_id IN ('', 'main')",
+                    "DELETE FROM concept_versions \
+                      WHERE id LIKE ?1 AND branch_id IN ('', 'main')",
+                    "DELETE FROM transaction_log \
+                      WHERE entity_id LIKE ?1 AND branch_id IN ('', 'main')",
+                    "DELETE FROM concepts \
+                      WHERE id LIKE ?1 AND branch_id IN ('', 'main')",
                 ] {
                     conn.execute(sql, libsql::params![id.clone()])
                         .await
@@ -4091,7 +4101,8 @@ mod backfill_tests {
         crate::storage::runtime().block_on(async {
             let mut rows = conn
                 .query(
-                    "SELECT valid_from, content FROM concept_versions                       WHERE id = ?1 AND branch_id IN ('', 'main') ORDER BY valid_from",
+                    "SELECT valid_from, content FROM concept_versions \
+                      WHERE id = ?1 AND branch_id IN ('', 'main') ORDER BY valid_from",
                     libsql::params![id],
                 )
                 .await
