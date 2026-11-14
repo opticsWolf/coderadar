@@ -2021,7 +2021,7 @@ fn entities_at(
     // P5b.3a: the arm resolves the fold instant (recorded past the
     // horizon, the commit's completion before it) and names the basis.
     let resolved = if valid {
-        crate::graph::ingest::resolve_valid_read(branch, &ts, at).map_err(arm_err)?
+        crate::graph::ingest::resolve_valid_read(&store, branch, &ts, at).map_err(arm_err)?
     } else {
         crate::graph::ingest::resolve_temporal_read(&store, read_lineage(branch), &ts, strict, at)
             .map_err(arm_err)?
@@ -2281,8 +2281,9 @@ fn entity_source_ref_at(
         // P5b.3a/P5b.3: the arm resolves the fold instant; the singular
         // keeps its ref-or-None shape (no basis to surface on one ref).
         if valid {
-            let resolved = crate::graph::ingest::resolve_valid_read(branch, &ts, at.as_deref())
-                .map_err(arm_err)?;
+            let resolved =
+                crate::graph::ingest::resolve_valid_read(store, branch, &ts, at.as_deref())
+                    .map_err(arm_err)?;
             let state = store
                 .reconstruct_valid(&resolved.fold_ts)
                 .map_err(temporal_err)?;
@@ -2351,7 +2352,8 @@ fn source_refs_at(
     };
     // P5b.3a/P5b.3: the arm resolves the fold instant and names the basis.
     let resolved = if valid {
-        crate::graph::ingest::resolve_valid_read(branch, &ts, at.as_deref()).map_err(arm_err)?
+        crate::graph::ingest::resolve_valid_read(&store, branch, &ts, at.as_deref())
+            .map_err(arm_err)?
     } else {
         crate::graph::ingest::resolve_temporal_read(
             &store,

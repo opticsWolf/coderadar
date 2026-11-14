@@ -6,6 +6,17 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- **Commits as addresses (P5b.4).** `at=` now takes a sha or a name the store
+  knows — a branch, a `{branch}#{n}` generation, an address-only name — on
+  either axis, and resolves it to the instant that axis folds at: the
+  recorded axis at the commit's completion (when the ledger learned it), the
+  valid axis at the commit's own stamp (what its rows carry, nudge included).
+  The two instants are the point of the feature; folding the valid axis at a
+  completion instant would answer the present for a commit from last year.
+  An unknown sha or name refuses by name and never rounds to a neighbour; an
+  address that resolves into a branch lineage still refuses with
+  `ValidBranchNeedsU2` on the valid axis.
+
 - **Backfill windows (P5b.5, the ingest half).** `ingest_history` takes
   `to=<sha>`: every commit after `from` and strictly before the lineage's
   belief start, walked forward and written as closed intervals that abut

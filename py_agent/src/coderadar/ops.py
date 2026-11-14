@@ -1237,17 +1237,26 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     the last commit at or before T (``horizon`` carries *H(L)*, ``commit``
     its sha, `None` on the recorded arm). ``strict=True`` refuses the
     git-history arm (``BeforeHorizon``); ``at=<sha>`` addresses a commit
-    directly (A-3). A T before the lineage's first commit refuses
+    directly (A-3): a sha, a branch name, or a `{branch}#{n}` generation.
+    A T before the lineage's first commit refuses
     (``BeforeHistory``) rather than answering empty.
 
     ``valid=True`` (P5b.3, A-2/INV-16) reads the same instant on the
     **valid** axis instead: the ledger's own intervals answer "what was
-    true then", so no horizon and no commit index are involved and
-    ``basis`` is ``"valid"``. It is trunk-only until Macrame's
-    lineage-resolved valid fold (U-2, 0.23.0): a branch refuses with
-    ``ValidBranchNeedsU2`` rather than folding the trunk for it, and
-    ``at=`` refuses with ``ValidAtNeedsP5b4`` (turning an address into an
-    instant is P5b.4's job — INV-16 forbids guessing which axis it names).
+    true then", so no horizon is involved and ``basis`` is ``"valid"``.
+    It is trunk-only until Macrame's lineage-resolved valid fold (U-2,
+    0.23.0): a branch refuses with ``ValidBranchNeedsU2`` rather than
+    folding the trunk for it, and so does an address that resolves into a
+    branch lineage.
+
+    ``at=`` (P5b.4, A-3) addresses a commit on either axis and resolves it
+    to what that axis folds: a sha, or a name the store knows (a branch, a
+    ``{branch}#{n}`` generation, an address-only name), never rounded to a
+    neighbour. The recorded axis folds at the ledger's completion instant
+    for that commit; the valid axis folds at the commit's own stamp, which
+    is what its rows carry (nudge included). An unknown sha refuses
+    (``unknown commit``), an unknown name refuses (``UnknownBranch``), and
+    an address ``at`` may not be combined with a positional instant.
     """
     if not timestamp and at is None:
         raise InvalidRequest(

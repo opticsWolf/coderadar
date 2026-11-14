@@ -3825,8 +3825,6 @@ pub enum ReadArmError {
     Store(String),
     /// `at=` names no commit on the lineage.
     UnknownCommit { lineage: String, sha: String },
-    /// `at=` names a ref: sha addressing is P5b.3a, refs are P5b.4.
-    RefNeedsP5b4 { address: String },
     /// P5b.6 (D-6 c): the name is neither a lineage nor a recorded branch
     /// address. Never guessed, never trunk-fallback.
     UnknownBranch { name: String, tip: Option<String> },
@@ -3834,9 +3832,6 @@ pub enum ReadArmError {
     /// lineage-resolved valid fold). The trunk's fold would be a
     /// different lineage's history, so the read refuses instead.
     ValidBranchNeedsU2 { branch: String },
-    /// P5b.3: `at=` on the valid axis resolves an address to an instant,
-    /// which is P5b.4's job (INV-16 — no implicit crossing).
-    ValidAtNeedsP5b4 { address: String },
 }
 
 impl std::fmt::Display for ReadArmError {
@@ -3868,10 +3863,6 @@ impl std::fmt::Display for ReadArmError {
                 f,
                 "unknown commit {sha:?} on lineage {lineage:?} — it names no commit concept"
             ),
-            ReadArmError::RefNeedsP5b4 { address } => write!(
-                f,
-                "at={address:?} names a ref: sha addressing is P5b.3a, refs arrive with P5b.4"
-            ),
             ReadArmError::UnknownBranch { name, tip } => match tip {
                 Some(tip) => write!(
                     f,
@@ -3890,12 +3881,6 @@ impl std::fmt::Display for ReadArmError {
                  lineage-resolved valid fold (U-2, 0.23.0) - folding the trunk would \
                  answer with a different lineage's history, so nothing is answered"
             ),
-            ReadArmError::ValidAtNeedsP5b4 { address } => write!(
-                f,
-                "ValidAtNeedsP5b4: at={address:?} on the valid axis needs commit \
-                 addressing (P5b.4) to turn the address into an instant; pass the \
-                 instant as the positional timestamp instead"
-            ),
         }
     }
 }
@@ -3905,38 +3890,179 @@ impl std::fmt::Display for ReadArmError {
 /// The valid fold answers "what was true at this git instant" from the
 /// rows' own intervals, so it needs neither the horizon nor the commit
 /// index: `fold_ts` is the instant itself and `basis` says `valid`.
-/// Two shapes refuse rather than substitute an answer:
 ///
-/// * a branch name — Macrame's valid fold is trunk-only until U-2's
-///   lineage-resolved form (0.23.0), and folding the trunk for a branch
-///   would answer with a different lineage's history;
-/// * `at=` — turning a sha or ref into an instant is P5b.4's job, and
-///   guessing which axis an address names is what INV-16 forbids.
+/// `at=` (P5b.4/A-3) is resolved to the pair an address denotes — the
+/// lineage that holds the commit and the instant to fold — by the same
+/// resolver the recorded arm uses, so a sha and a name mean the same thing
+/// on both axes and nothing rounds to a neighbour. The answer still belongs
+/// to the trunk: an address into a branch lineage refuses with
+/// `ValidBranchNeedsU2` rather than folding the trunk for it, and so does a
+/// branch name (Macrame's valid fold is trunk-only until U-2, 0.23.0).
 pub fn resolve_valid_read(
+    store: &CodeGraphStore,
     branch: &str,
     timestamp: &str,
     at: Option<&str>,
 ) -> Result<ResolvedRead, ReadArmError> {
-    if let Some(address) = at {
-        return Err(ReadArmError::ValidAtNeedsP5b4 {
-            address: address.to_string(),
-        });
-    }
     if branch != "main" {
         return Err(ReadArmError::ValidBranchNeedsU2 {
             branch: branch.to_string(),
         });
     }
+    let Some(address) = at else {
+        return Ok(ResolvedRead {
+            fold_ts: timestamp.to_string(),
+            basis: "valid",
+            sha: None,
+            horizon: None,
+            dirty_at_commit: Vec::new(),
+            address: false,
+            parent_drift: 0,
+            fold_branch: "main".to_string(),
+        });
+    };
+    let addressed = resolve_address(store, branch, address)?;
+    if addressed.lineage != "main" {
+        return Err(ReadArmError::ValidBranchNeedsU2 {
+            branch: addressed.lineage,
+        });
+    }
     Ok(ResolvedRead {
-        fold_ts: timestamp.to_string(),
+        fold_ts: addressed.stamp,
         basis: "valid",
-        sha: None,
+        sha: addressed.sha,
         horizon: None,
         dirty_at_commit: Vec::new(),
-        address: false,
+        address: addressed.named,
         parent_drift: 0,
         fold_branch: "main".to_string(),
     })
+}
+
+/// P5b.4/A-3: what an `at=` address denotes. Three spellings, one
+/// resolution: a timestamp restates the instant on the asked lineage, a sha
+/// resolves through its commit concept to the lineage that holds it and its
+/// completion instant (nudged, so it resolves to itself), and any other
+/// address is a name the store already knows — a lineage, or a
+/// `{name}#{n}` generation — resolved to the tip it records. Nothing
+/// rounds: an unknown sha is `UnknownCommit`, an unknown name is
+/// `UnknownBranch`, and neither falls back to the trunk.
+struct AddressedCommit {
+    lineage: String,
+    sha: Option<String>,
+    /// The instant the *recorded* axis folds at: when the ledger learned
+    /// this commit (`commit_done`, wall clock — P5b.3a/INV-10).
+    completion: String,
+    /// The instant the *valid* axis folds at: the commit's own stamp as its
+    /// rows carry it, nudge included, so the address resolves to itself.
+    stamp: String,
+    /// True when the address was a name (the answer came from an address,
+    /// not from the commit it names).
+    named: bool,
+}
+
+fn resolve_address(
+    store: &CodeGraphStore,
+    lineage: &str,
+    address: &str,
+) -> Result<AddressedCommit, ReadArmError> {
+    if let Ok(instant) = macrame::util::timestamp::normalize(address) {
+        return Ok(AddressedCommit {
+            lineage: lineage.to_string(),
+            sha: None,
+            completion: instant.clone(),
+            stamp: instant,
+            named: false,
+        });
+    }
+    if address.len() == 40 && address.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let (owner, stamp) = commit_owner(store, lineage, address)?;
+        let completion = completion_or_backfill(store, &owner, address)?;
+        return Ok(AddressedCommit {
+            lineage: owner,
+            sha: Some(address.to_string()),
+            completion,
+            stamp: stamp.ok_or_else(|| ReadArmError::UnknownCommit {
+                lineage: lineage.to_string(),
+                sha: address.to_string(),
+            })?,
+            named: false,
+        });
+    }
+    // A name: `branch_lineage_key` follows a rewritten name to its newest
+    // generation (D-5). The tip is the name's own when it records one (the
+    // key tracks it across the move), else the lineage's tip, else its
+    // ingest cursor — a generation has no tip key of its own, and its cursor
+    // is exactly the newest commit it completed.
+    let name_lineage = store
+        .kv_get_sync(&branch_lineage_key(address))
+        .map_err(|e| ReadArmError::Store(format!("cannot read lineage map: {e:?}")))?
+        .unwrap_or_else(|| address.to_string());
+    let tip = match store
+        .kv_get_sync(&branch_tip_key(address))
+        .map_err(|e| ReadArmError::Store(format!("cannot read branch tip: {e:?}")))?
+    {
+        Some(tip) => Some(tip),
+        None => store
+            .kv_get_sync(&branch_tip_key(&name_lineage))
+            .map_err(|e| ReadArmError::Store(format!("cannot read branch tip: {e:?}")))?
+            .or(store
+                .kv_get_sync(&ingest_head_key(&name_lineage))
+                .map_err(|e| ReadArmError::Store(format!("cannot read cursor: {e:?}")))?),
+    };
+    let Some(tip) = tip else {
+        return Err(ReadArmError::UnknownBranch {
+            name: address.to_string(),
+            tip: None,
+        });
+    };
+    // An address-only name points at another lineage's commit (D-6 c), so
+    // the owner is the commit's, not the name's.
+    let (owner, stamp) = commit_owner(store, &name_lineage, &tip)?;
+    let completion = completion_or_backfill(store, &owner, &tip)?;
+    Ok(AddressedCommit {
+        lineage: owner,
+        sha: Some(tip.clone()),
+        completion,
+        stamp: stamp.ok_or_else(|| ReadArmError::UnknownBranch {
+            name: address.to_string(),
+            tip: Some(tip),
+        })?,
+        named: true,
+    })
+}
+
+/// The lineage whose commit index holds `sha`, and the stamp its rows
+/// carry (P5b.4). The asked lineage answers first (its own walk's stamps
+/// are authoritative for it), then the commit concept's owner — which is
+/// what lets a branch read name a trunk commit, and an address-only name
+/// answer at all.
+fn commit_owner(
+    store: &CodeGraphStore,
+    lineage: &str,
+    sha: &str,
+) -> Result<(String, Option<String>), ReadArmError> {
+    let found = |stamps: Vec<(String, String)>, owner: &str| {
+        stamps
+            .into_iter()
+            .find(|(candidate, _)| candidate == sha)
+            .map(|(_, stamp)| (owner.to_string(), Some(stamp)))
+    };
+    let stamps = commit_stamps(store, lineage)
+        .map_err(|e| ReadArmError::Store(format!("cannot list commits: {e}")))?;
+    if let Some(hit) = found(stamps, lineage) {
+        return Ok(hit);
+    }
+    let owner = store
+        .kv_get_sync(&commit_lineage_key(sha))
+        .map_err(|e| ReadArmError::Store(format!("cannot read commit owner: {e:?}")))?
+        .ok_or_else(|| ReadArmError::UnknownCommit {
+            lineage: lineage.to_string(),
+            sha: sha.to_string(),
+        })?;
+    let stamps = commit_stamps(store, &owner)
+        .map_err(|e| ReadArmError::Store(format!("cannot list commits: {e}")))?;
+    Ok(found(stamps, &owner).unwrap_or((owner, None)))
 }
 
 /// Resolve a temporal read to its fold instant (P5b.3a, §3.1.1–3.1.2).
@@ -4076,30 +4202,17 @@ fn resolve_commit_address(
     if macrame::util::timestamp::normalize(address).is_ok() {
         return resolve_temporal_read(store, lineage, address, strict, None);
     }
-    let is_sha = address.len() == 40 && address.bytes().all(|b| b.is_ascii_hexdigit());
-    if !is_sha {
-        return Err(ReadArmError::RefNeedsP5b4 {
-            address: address.to_string(),
-        });
-    }
     // A-3: a sha resolves through its commit concept to the lineage that
     // holds it — asking a branch name for a trunk sha is legitimate, and on
-    // an address name (no lineage of its own) it is the only path.
-    let owner = match commit_stamps(store, lineage)
-        .map_err(|e| ReadArmError::Store(format!("cannot list commits: {e}")))?
-        .into_iter()
-        .any(|(sha, _)| sha == address)
-    {
-        true => lineage.to_string(),
-        false => store
-            .kv_get_sync(&commit_lineage_key(address))
-            .map_err(|e| ReadArmError::Store(format!("cannot read commit owner: {e:?}")))?
-            .ok_or_else(|| ReadArmError::UnknownCommit {
-                lineage: lineage.to_string(),
-                sha: address.to_string(),
-            })?,
+    // an address name (no lineage of its own) it is the only path. P5b.4's
+    // ref half is the same resolution over a name's tip, so both spellings
+    // land in one shape.
+    let addressed = resolve_address(store, lineage, address)?;
+    let Some(sha) = addressed.sha else {
+        // Only a timestamp address lacks a sha, and it returned above.
+        return resolve_temporal_read(store, lineage, address, strict, None);
     };
-    let fold_ts = completion_or_backfill(store, &owner, address)?;
+    let fold_ts = addressed.completion;
     // P5b.3a: no observation rows exist until P5d, so the dirty set is
     // empty and `strict` has nothing to refuse. The check ships with the
     // field so P5d fills the set without changing the rule.
@@ -4114,12 +4227,12 @@ fn resolve_commit_address(
     Ok(ResolvedRead {
         fold_ts,
         basis: "git-history",
-        sha: Some(address.to_string()),
+        sha: Some(sha),
         horizon,
         dirty_at_commit,
-        address: false,
+        address: addressed.named,
         parent_drift: 0,
-        fold_branch: owner,
+        fold_branch: addressed.lineage,
     })
 }
 

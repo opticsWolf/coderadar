@@ -521,7 +521,11 @@ tips → addresses → sweep → marks), and `watch --git` runs it.
   rebuilds both from the ledger for stores written before this phase.
 - **Branches.** `as_of`/`lookup` take an address (`at=`) that names a
   branch, a `{branch}#{n}` generation (a rewrite bumps the generation;
-  merges and trunk rewrites do not), or a commit. Every answer names the
+  merges and trunk rewrites do not), or a commit (sha) — on either axis
+  (P5b.4): the address resolves to the instant that axis folds at, the
+  recorded one folding at the commit's completion and the valid one at
+  the commit's own stamp. Nothing rounds; an unknown name or sha refuses
+  by name. Every answer names the
   basis it came from — `recorded`, `git-history` (a pre-horizon commit read
   from git), or `valid` — and a refusal is a reason, never a blank.
 - **Valid axis.** On the trunk, `valid=True` reads the belief axis
