@@ -4,6 +4,27 @@ Patch releases accumulate toward the next minor (+0.0.1 per implemented feature,
 bump commit named in the feature's DR row). The v0.12 plan history lives
 in `docs/` (v1 frozen, consolidated trio authoritative).
 
+## Unreleased
+
+- **Backfill windows (P5b.5, the ingest half).** `ingest_history` takes
+  `to=<sha>`: every commit after `from` and strictly before the lineage's
+  belief start, walked forward and written as closed intervals that abut
+  the belief they precede, so a store that starts at a later commit can be
+  given its prefix. `from=None` reaches the root; `to` must be the belief
+  start (`report["belief_start"]`), which the report states so callers
+  chain chunks newest-first instead of guessing. A window's first commit
+  writes its whole tree (it is the store's new root), each file closes
+  where its next belief begins, no sweep/edges/cursor/stamp/tip/horizon
+  moves, and a closed id's life ends with the tombstone the forward run
+  would have written — otherwise the live projection would keep listing a
+  deleted entity. The proof is Doctrine VIII's pair: a history ingested as
+  contiguous chunks newest-first answers every commit's valid axis
+  identically to one in-order ingest (six tests, incl. a deletion and a
+  never-touched file). Two engine-side arms were the price: a closed
+  version may backfill before a settled (closed) incumbent, not only an
+  open one, and the unchanged-content gate keeps a byte-identical row
+  whose start precedes the resolved one.
+
 ## 0.15.0 (2026-11-13)
 
 Temporal P5: history as it was lived. A store can now be filled from git

@@ -1160,6 +1160,24 @@ impl CodeGraphStore {
                                 } else {
                                     acts.push((*c).clone());
                                 }
+                            } else if !is_open_end(&c.valid_to)
+                                && !c.retired
+                                && c.valid_from.as_str() < row.valid_from.as_str()
+                                && c.valid_to.as_str() <= row.valid_from.as_str()
+                            {
+                                // P5b.5 (INV-10'): a closed version written
+                                // before a *settled* row — the same abutting
+                                // chain one link lower. A window's earlier
+                                // chunk can leave a closed row as the
+                                // lineage's current one (a content version
+                                // at a boundary whose successor is already
+                                // recorded), so the backfill arm above (which
+                                // asks the incumbent to be open) is not
+                                // enough; the invariant the write must keep
+                                // is the chain's, not the incumbent's end.
+                                // The projection declines the update exactly
+                                // as it does for the open case (D-303).
+                                acts.push((*c).clone());
                             } else if !is_open_end(&row.valid_to) {
                                 if overlay_hit {
                                     // An overlay row's covered closed span is
@@ -1179,10 +1197,12 @@ impl CodeGraphStore {
                                              settled non-retired row [{start}, {end}) - \
                                              the ledger's own record is inconsistent \
                                              with a forward write; refusing before \
-                                             anything lands",
+                                             anything lands (incoming [{inc_from}, {inc_to}))",
                                             id = c.id.as_str(),
                                             start = row.valid_from,
                                             end = row.valid_to,
+                                            inc_from = c.valid_from,
+                                            inc_to = c.valid_to,
                                         ),
                                     )));
                                 }
@@ -3523,6 +3543,124 @@ impl CodeGraphStore {
         })
     }
 
+    /// The trunk's stamp for `commit:{sha}` (P5b.5): the instant the
+    /// lineage recorded that commit at, which is the comparison point a
+    /// backfill window's closes need — the successor commit's own start,
+    /// nudged or not, as the store actually wrote it. `None` when this
+    /// lineage never ingested the commit (a ghost, a branch-only commit).
+    pub fn trunk_commit_stamp(&self, sha: &str) -> macrame::Result<Option<String>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT valid_from FROM concepts                      WHERE id = ?1 AND branch_id IN ('', 'main')                      ORDER BY valid_from ASC LIMIT 1",
+                    libsql::params![format!("commit:{sha}")],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            Ok(rows
+                .next()
+                .await
+                .map_err(macrame::DbError::Engine)?
+                .and_then(|row| row.get::<String>(0).ok()))
+        })
+    }
+
+    /// The commit whose stamp is the smallest on the trunk (P5b.5): the
+    /// first commit the lineage ever ingested, i.e. where its belief
+    /// begins. Forward ingest stamps strictly increase (INV-11), and a
+    /// window writes older stamps than the belief it precedes, so the
+    /// minimum is always the belief's own start — the boundary the next
+    /// window must abut.
+    pub fn earliest_trunk_commit(&self) -> macrame::Result<Option<String>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT id FROM concepts                      WHERE id LIKE 'commit:%' AND branch_id IN ('', 'main')                      ORDER BY valid_from ASC, id ASC LIMIT 1",
+                    (),
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            Ok(rows
+                .next()
+                .await
+                .map_err(macrame::DbError::Engine)?
+                .and_then(|row| row.get::<String>(0).ok())
+                .and_then(|id| id.strip_prefix("commit:").map(str::to_string)))
+        })
+    }
+
+    /// The earliest trunk belief start for `id` strictly after `after`
+    /// (P5b.5): the next version's `valid_from`, over all three places the
+    /// trunk keeps one — `concepts` (the current row), the overlay
+    /// (`concept_versions`, adopted or branch-written versions), and
+    /// `transaction_log` (the W1 write path's own history: a displacement
+    /// logs the displaced row with its span, which is where a window's
+    /// earlier chunk left an entity version when a later belief was
+    /// already recorded). A window needs this because the row it must
+    /// abut is not always the current one.
+    pub fn next_trunk_start(&self, id: &str, after: &str) -> macrame::Result<Option<String>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT MIN(vf) FROM (                         SELECT valid_from AS vf FROM concepts                           WHERE id = ?1 AND branch_id IN ('', 'main') AND valid_from > ?2                         UNION ALL                         SELECT valid_from AS vf FROM concept_versions                           WHERE id = ?1 AND branch_id IN ('', 'main') AND valid_from > ?2                         UNION ALL                         SELECT json_extract(payload, '$.valid_from') AS vf                           FROM transaction_log                           WHERE table_name = 'concepts' AND entity_id = ?1                             AND branch_id IN ('', 'main')                             AND json_extract(payload, '$.valid_from') > ?2                      )",
+                    libsql::params![id, after],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            Ok(rows
+                .next()
+                .await
+                .map_err(macrame::DbError::Engine)?
+                .and_then(|row| row.get::<Option<String>>(0).ok().flatten()))
+        })
+    }
+
+    /// The trunk's current row for each of `ids` that has one:
+    /// `(valid_from, valid_to, retired)` (P5b.5's window post-pass). A
+    /// window writes closed rows for belief that ended before the tip; a
+    /// closed row as the trunk's *current* row is a shape forward ingest
+    /// never leaves (it tombstones), so the post-pass tombstone is what
+    /// keeps the live projection honest. Chunked: a window's id set is
+    /// every entity it saw.
+    pub fn trunk_rows(
+        &self,
+        ids: &[String],
+    ) -> macrame::Result<std::collections::HashMap<String, (String, String, bool)>> {
+        let mut out = std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(out);
+        }
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        for chunk in ids.chunks(400) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
+                "SELECT id, valid_from, valid_to, retired FROM concepts                  WHERE id IN ({placeholders}) AND branch_id IN ('', 'main')"
+            );
+            let params = libsql::params_from_iter(chunk.iter().map(|s| s.as_str()));
+            runtime().block_on(async {
+                let mut rows = conn
+                    .query(&sql, params)
+                    .await
+                    .map_err(macrame::DbError::Engine)?;
+                while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                    out.insert(
+                        row.get::<String>(0).unwrap_or_default(),
+                        (
+                            row.get::<String>(1).unwrap_or_default(),
+                            row.get::<String>(2).unwrap_or_default(),
+                            row.get::<i64>(3).unwrap_or(0) != 0,
+                        ),
+                    );
+                }
+                Ok::<(), macrame::DbError>(())
+            })?;
+        }
+        Ok(out)
+    }
+
     /// Ids of every module concept the ledger ever described on a branch
     /// (P1, DR-36): the input universe for a per-generation sweep.
     ///
@@ -4370,7 +4508,21 @@ fn act_is_new(act: &ConceptUpsert, projection: &HashMap<String, Option<CurrentRo
     let writer = act.branch.as_ref().map(|b| b.as_str()).unwrap_or_default();
     match projection.get(&projection_key(writer, &act.valid_from, &act.id)) {
         None => true,
-        Some(row) => concept_changed(act, row.as_ref()),
+        Some(row) => {
+            // A backfill is a new interval even when its content is not
+            // (P5b.5): the same bytes re-asserted at an *earlier* start than
+            // the row the read resolved are a different version of the
+            // chain, and the unchanged gate would otherwise drop the write
+            // that gives the belief its earlier span. Forward re-asserts
+            // keep the gate: identical content at a later start is an
+            // observation, not a version.
+            if let Some(row) = row {
+                if act.valid_from.as_str() < row.valid_from.as_str() {
+                    return true;
+                }
+            }
+            concept_changed(act, row.as_ref())
+        }
     }
 }
 
@@ -5966,6 +6118,81 @@ mod tests {
         let c = CodeGraphStore::open(&path).unwrap();
         assert_eq!(c.handles(), 1, "the registry kept it alive for this open");
         assert!(c.git_marks().is_ok());
+    }
+
+    /// P5b.5's backfill shape, the settled case: a closed version may be
+    /// written before a *closed* incumbent too — a window's earlier chunk can
+    /// leave a closed row as the lineage's current one, and the interval it
+    /// must abut is the chain's, not the incumbent's open end. The same
+    /// write also pins the gate that keeps an identical-content backfill
+    /// alive: byte-identical re-asserts at an earlier start are new
+    /// intervals, not repeats.
+    #[test]
+    fn a_closed_version_may_backfill_before_a_settled_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CodeGraphStore::open(dir.path().join("settled.db")).unwrap();
+        let at = |id: &str, from: &str, to: &str, text: &str| {
+            macrame::ConceptUpsert::new(id, id)
+                .content(format!("{{\"t\":\"{text}\"}}"))
+                .valid_from(from)
+                .valid_to(to)
+        };
+        let jan = "2026-01-01T00:00:00.000000Z";
+        let feb = "2026-02-01T00:00:00.000000Z";
+        let mar = "2026-03-01T00:00:00.000000Z";
+        let apr = "2026-04-01T00:00:00.000000Z";
+        let content_at = |ts: &str, id: &str| {
+            store
+                .reconstruct_valid(ts)
+                .unwrap()
+                .concepts
+                .get(id)
+                .map(|c| c.content.clone())
+        };
+
+        // The incumbent is closed — a settled span, not an open belief.
+        store
+            .upsert_concepts_bulk(&[at("b", feb, mar, "feb")])
+            .unwrap();
+        store
+            .upsert_concepts_bulk(&[at("b", jan, feb, "jan")])
+            .unwrap();
+        assert_eq!(
+            content_at("2026-01-15T00:00:00.000000Z", "b").as_deref(),
+            Some("{\"t\":\"jan\"}")
+        );
+        assert_eq!(
+            content_at("2026-02-15T00:00:00.000000Z", "b").as_deref(),
+            Some("{\"t\":\"feb\"}")
+        );
+        assert_eq!(content_at(apr, "b"), None);
+
+        // Identical content at an earlier start is still a new interval.
+        store
+            .upsert_concepts_bulk(&[at("c", feb, mar, "same")])
+            .unwrap();
+        store
+            .upsert_concepts_bulk(&[at("c", jan, feb, "same")])
+            .unwrap();
+        assert_eq!(
+            content_at("2026-01-15T00:00:00.000000Z", "c").as_deref(),
+            Some("{\"t\":\"same\"}")
+        );
+
+        // The chain is clean and a real overlap still refuses.
+        let overlaps = crate::storage::runtime()
+            .block_on(store.db().verify_concept_intervals())
+            .unwrap();
+        assert!(
+            overlaps.is_empty(),
+            "intervals must chain, got {overlaps:?}"
+        );
+        let overlap =
+            store.upsert_concepts_bulk(&[at("b", "2026-01-15T00:00:00.000000Z", mar, "overlap")]);
+        assert!(
+            overlap.is_err(),
+            "a span inside a settled chain has no room"
+        );
     }
 
     /// P5b.5's backfill shape: a closed version may be written *before*

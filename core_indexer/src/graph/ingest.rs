@@ -276,7 +276,28 @@ pub struct IngestReport {
     /// survived the rename.
     pub renames_recorded: usize,
     pub renames: Vec<RenameReport>,
+    /// The commit this lineage's belief begins at (P5b.5): the first commit
+    /// it ever ingested, derived from the commit concepts' own stamps. A
+    /// backfill window's `to` names exactly this commit, and after a window
+    /// it becomes the window's first commit — newest-first chunks abut by
+    /// construction, with no gap a caller could leave by accident.
+    pub belief_start: Option<String>,
+    /// The backfill window this run walked, when it walked one (P5b.5).
+    pub window: Option<WindowReport>,
     pub elapsed_secs: f64,
+}
+
+/// One backfill window as the report states it (P5b.5, INV-10′): the
+/// commits after `from` and strictly before `to`, written as closed
+/// intervals that abut the belief they precede. `edges_skipped` is always
+/// true — edge persistence is forward-only, and the window does not invent
+/// a closed edge interval this phase has no use for.
+#[derive(Debug, Clone, Serialize)]
+pub struct WindowReport {
+    pub from: Option<String>,
+    pub to: String,
+    pub commits: usize,
+    pub edges_skipped: bool,
 }
 
 /// One detected rename as the report states it (P5b.7).
@@ -358,6 +379,40 @@ pub enum IngestError {
         branch: String,
         tip: String,
     },
+    /// P5b.5: a backfill window was asked for on a store that does not
+    /// exist yet. A window writes closed intervals for belief that *is*
+    /// recorded; with no belief there is nothing to abut, and the fresh
+    /// path is a plain forward ingest.
+    WindowNeedsBelief {
+        path: String,
+    },
+    /// P5b.5: `to` is not where this lineage's belief starts. Windows are
+    /// newest-first contiguous chunks — a window that ends anywhere else
+    /// would leave a hole between the two beliefs that nothing fills.
+    WindowEndMismatch {
+        requested: String,
+        belief_start: String,
+    },
+    /// P5b.5: `to` does not lie on the chain walked from `from` (a wrong
+    /// ref, or a `from` that is not an ancestor of it).
+    WindowOffChain {
+        to: String,
+        from: Option<String>,
+    },
+    /// P5b.5: everything before the belief's start is already ingested —
+    /// the walk found no commit to write.
+    WindowEmpty {
+        belief_start: String,
+    },
+    /// P5b.5: a window commit's successor instant is not strictly after
+    /// its own. The successor's stamp comes from the store, so this means
+    /// the ingested side's nudge chain disagrees with the window's (a
+    /// skewed clock): the close would not abut the window row but precede
+    /// it, and refusing is the only honest answer.
+    WindowStampsOverlap {
+        commit: String,
+        successor: String,
+    },
 }
 
 impl std::fmt::Display for IngestError {
@@ -434,6 +489,33 @@ impl std::fmt::Display for IngestError {
                  like that is an address, not a lineage (D-6 c): re-run the migration to
                  record it, or delete the branch"
             ),
+            IngestError::WindowNeedsBelief { path } => write!(
+                f,
+                "ingest-history [window-needs-belief]: {path:?} holds no lineage belief yet                  (P5b.5): a backfill window writes closed intervals *below* a recorded                  belief, so the first run must be a plain forward ingest"
+            ),
+            IngestError::WindowEndMismatch {
+                requested,
+                belief_start,
+            } => write!(
+                f,
+                "ingest-history [window-end]: the window must end at this lineage's belief                  start {belief_start:?}, not {requested:?} (P5b.5: windows are newest-first                  contiguous chunks; any other end leaves a hole nothing fills)"
+            ),
+            IngestError::WindowOffChain { to, from } => write!(
+                f,
+                "ingest-history [window-off-chain]: {to:?} is not on the chain walked from                  {:?} — pass a `from` that is an ancestor of the window's end",
+                from.as_deref().unwrap_or("(the root)")
+            ),
+            IngestError::WindowEmpty { belief_start } => write!(
+                f,
+                "ingest-history [window-empty]: nothing precedes the belief start                  {belief_start:?} on this chain — there is no window to write"
+            ),
+            IngestError::WindowStampsOverlap {
+                commit,
+                successor,
+            } => write!(
+                f,
+                "ingest-history [window-stamps]: window commit {commit:?}'s successor starts                  at {successor:?}, which is not after the window row it must close — the                  ingested side's stamps disagree with the window's; refusing rather than                  writing an interval that runs backwards"
+            ),
         }
     }
 }
@@ -444,6 +526,197 @@ impl From<GitError> for IngestError {
     }
 }
 
+// ── the backfill window (P5b.5, INV-10′) ──────────────────────────────
+
+/// A planned backfill window: the commits after `from` and strictly before
+/// `to` (the lineage's belief start), the stamps they write at, and the one
+/// fact the writer derives from them — where each written version closes.
+///
+/// The close is per **file**, not per id: a file's rows are minted together
+/// from one snapshot, so "the next change to this file" is one instant for
+/// all of them. Within the window it is the next commit that changes or
+/// deletes the file; past the window it is the store's own stamp for the
+/// first commit that touches it again (the belief's next assertion); a file
+/// nothing touches again stays open — its window version *is* the belief
+/// from then on.
+struct WindowPlan {
+    /// The window's start as the caller asked for it (`None` = the root).
+    from: Option<String>,
+    /// The belief start the window abuts (its exclusive end).
+    end_sha: String,
+    /// Commits before this index belong to the window.
+    end_index: usize,
+    /// One stamp per window commit — INV-11's chain seeded from nothing,
+    /// because the whole window lies below the lineage's recorded stamps.
+    stamps: Vec<String>,
+    /// Which of those stamps the nudge moved.
+    nudged: Vec<bool>,
+    /// File → ascending plan indices whose plan changes or deletes it.
+    touches: HashMap<String, Vec<usize>>,
+    /// File → the first post-window commit that touches it again, by sha.
+    post: HashMap<String, String>,
+    /// The store's stamp for each of those commits.
+    post_stamps: HashMap<String, String>,
+    /// File → where the store's own belief starts for it. A chunk boundary
+    /// writes the whole tree, so an earlier chunk holds the file's first
+    /// row at the boundary stamp even when no *commit* touched it; that row
+    /// is the file's next belief and the window's version must close there.
+    /// When a post-window commit also re-asserts the file, the earlier of
+    /// the two is the successor (the boundary row usually wins).
+    after: HashMap<String, String>,
+}
+
+impl WindowPlan {
+    /// The instant a version written at `index` closes at: the next touch's
+    /// stamp inside the window, else the first belief after it, else open.
+    fn close_end(&self, path: &str, index: usize) -> Option<String> {
+        if let Some(list) = self.touches.get(path) {
+            if let Some(next) = list.iter().find(|&&j| j > index) {
+                return Some(self.stamps[*next].clone());
+            }
+        }
+        let by_commit = self
+            .post
+            .get(path)
+            .and_then(|sha| self.post_stamps.get(sha))
+            .cloned();
+        let by_row = self.after.get(path).cloned();
+        match (by_commit, by_row) {
+            (Some(commit), Some(row)) => Some(commit.min(row)),
+            (left, right) => left.or(right),
+        }
+    }
+}
+
+/// Plan one window (P5b.5). Read-only: a dry run plans exactly what a real
+/// run writes, and every refusal is decided before the first blob or row.
+fn plan_window(
+    store: &CodeGraphStore,
+    store_path: &str,
+    plan: &[CommitPlan],
+    from: Option<&str>,
+    to: &str,
+    belief_start: Option<&str>,
+    canonical: &dyn Fn(&Path) -> String,
+) -> Result<WindowPlan, IngestError> {
+    // A window writes *below* a recorded belief. With no belief there is
+    // nothing to abut: the fresh path is a plain forward ingest.
+    let Some(birth) = belief_start else {
+        return Err(IngestError::WindowNeedsBelief {
+            path: store_path.to_string(),
+        });
+    };
+    let Some(end_index) = plan.iter().position(|commit| commit.sha == to) else {
+        return Err(IngestError::WindowOffChain {
+            to: to.to_string(),
+            from: from.map(str::to_string),
+        });
+    };
+    if to != birth {
+        return Err(IngestError::WindowEndMismatch {
+            requested: to.to_string(),
+            belief_start: birth.to_string(),
+        });
+    }
+    if end_index == 0 {
+        return Err(IngestError::WindowEmpty {
+            belief_start: birth.to_string(),
+        });
+    }
+
+    let mut stamps = Vec::with_capacity(end_index);
+    let mut nudged = Vec::with_capacity(end_index);
+    let mut prev: Option<String> = None;
+    for commit in &plan[..end_index] {
+        let (nudged_from, was_nudged) = nudge_valid_from(prev.as_deref(), &commit.committer_ts);
+        let stamp = zulu_valid_from(&nudged_from).expect("nudge output is always a timestamp");
+        stamps.push(stamp.clone());
+        nudged.push(was_nudged);
+        prev = Some(stamp);
+    }
+
+    let mut touches: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, commit) in plan[..end_index].iter().enumerate() {
+        for rel in commit.changed.iter().chain(commit.deleted.iter()) {
+            touches.entry(canonical(rel)).or_default().push(index);
+        }
+    }
+    // The first belief assertion after the window, per file: the next
+    // commit that re-asserts it is where the window's last version ends.
+    let mut post: HashMap<String, String> = HashMap::new();
+    for commit in plan.iter().skip(end_index) {
+        for rel in commit.changed.iter().chain(commit.deleted.iter()) {
+            post.entry(canonical(rel))
+                .or_insert_with(|| commit.sha.clone());
+        }
+    }
+    // The store wrote those commits, so its stamp is the truth (nudged or
+    // not); a commit the store never recorded (a ghost) falls back to the
+    // commit's own time, which is the best available statement.
+    let mut post_stamps: HashMap<String, String> = HashMap::new();
+    for sha in post.values() {
+        if post_stamps.contains_key(sha) {
+            continue;
+        }
+        let stamp = store
+            .trunk_commit_stamp(sha)
+            .map_err(|e| IngestError::Store(format!("cannot read a commit stamp: {e:?}")))?
+            .unwrap_or_else(|| {
+                plan.iter()
+                    .find(|commit| &commit.sha == sha)
+                    .map(|commit| commit.committer_ts.clone())
+                    .unwrap_or_default()
+            });
+        post_stamps.insert(sha.clone(), stamp);
+    }
+
+    // A file no post-window commit re-asserts may still have a belief: the
+    // boundary chunk before this one wrote its *tree*, so the store's row
+    // for the file can start at that chunk's stamp. Close there rather than
+    // leave the version open underneath it (the guard refuses the overlap).
+    let mut after: HashMap<String, String> = HashMap::new();
+    for path in touches.keys() {
+        let Some(last) = touches[path].last() else {
+            continue;
+        };
+        if let Some(start) = store
+            .next_trunk_start(&format!("{path}::module"), &stamps[*last])
+            .map_err(|e| IngestError::Store(format!("cannot read belief rows: {e:?}")))?
+        {
+            after.insert(path.clone(), start);
+        }
+    }
+
+    let window = WindowPlan {
+        from: from.map(str::to_string),
+        end_sha: to.to_string(),
+        end_index,
+        stamps,
+        nudged,
+        touches,
+        post,
+        post_stamps,
+        after,
+    };
+    // Every close must name an instant strictly after the row it closes.
+    // A window's stamps are historical, so a violation means the *ingested*
+    // side's nudge chain disagrees with the window's — a skewed clock, not
+    // something to paper over.
+    for (path, indices) in &window.touches {
+        for &index in indices {
+            if let Some(end) = window.close_end(path, index) {
+                if end <= window.stamps[index] {
+                    return Err(IngestError::WindowStampsOverlap {
+                        commit: plan[index].sha.clone(),
+                        successor: end,
+                    });
+                }
+            }
+        }
+    }
+    Ok(window)
+}
+
 // ── the op ────────────────────────────────────────────────────────────────
 
 /// Ingest one git branch's first-parent history into the trunk lineage.
@@ -452,11 +725,22 @@ impl From<GitError> for IngestError {
 /// start (a commit sha, or `None` to resume from the `kv` cursor / ingest
 /// from the root); `dry_run` plans without writing anything, including no
 /// store creation and no cursor advance.
+///
+/// `to` turns the run into a **backfill window** (P5b.5, INV-10′): every
+/// commit after `from` and strictly before `to`, walked forward and written
+/// as closed intervals that abut the belief starting at `to`. `to` must be
+/// the lineage's belief start (`report.belief_start`) — windows are
+/// newest-first contiguous chunks, so the next chunk's `to` is this chunk's
+/// first commit. A window moves no cursor, stamp, tip or horizon; it writes
+/// no edges and runs no sweep; it writes each commit's concept and its
+/// `commit_done` mark at the instant the ledger learned it, which is exactly
+/// the recorded-axis difference Doctrine VIII expects.
 pub fn ingest_history(
     store_path: &str,
     repo: &str,
     branch: &str,
     from: Option<&str>,
+    to: Option<&str>,
     dry_run: bool,
 ) -> Result<IngestReport, IngestError> {
     let started = Instant::now();
@@ -497,6 +781,8 @@ pub fn ingest_history(
         trunk_synced: 0,
         renames_recorded: 0,
         renames: Vec::new(),
+        belief_start: None,
+        window: None,
         elapsed_secs: 0.0,
     };
 
@@ -593,26 +879,52 @@ pub fn ingest_history(
             return Err(IngestError::UnknownHighWater { head: h.clone() });
         }
     }
-    let effective_from: Option<String> = match (from, &head) {
-        (Some(f), Some(h)) if f != h => {
-            return Err(IngestError::OutOfOrder {
-                head: h.clone(),
-                from: f.to_string(),
-            })
+    // P5b.5: where this lineage's belief begins. Derived from the commit
+    // concepts' own stamps, so it needs no new `kv` key and heals old
+    // stores: forward stamps strictly increase, and a window writes older
+    // stamps than the belief it precedes, so the minimum is always the
+    // belief's start.
+    let belief_start: Option<String> = match &store {
+        Some(store) => store
+            .earliest_trunk_commit()
+            .map_err(|e| IngestError::Store(format!("cannot read belief start: {e:?}")))?,
+        None => None,
+    };
+    report.belief_start = belief_start.clone();
+
+    // A window validates against the belief, not the cursor: `from` is
+    // whatever the caller says (or the root), `to` is the belief start.
+    let effective_from: Option<String> = if to.is_some() {
+        from.map(str::to_string)
+    } else {
+        match (from, &head) {
+            (Some(f), Some(h)) if f != h => {
+                return Err(IngestError::OutOfOrder {
+                    head: h.clone(),
+                    from: f.to_string(),
+                })
+            }
+            (Some(f), _) => Some(f.to_string()),
+            (None, h) => h.clone(),
         }
-        (Some(f), _) => Some(f.to_string()),
-        (None, h) => h.clone(),
     };
     report.from = effective_from.clone();
     report.head = head.clone();
+
+    // The path form the ingest keys files by: canonical, repo-relative,
+    // forward slashes — the same spelling the projection and the rows use.
+    let repo_root = Path::new(repo);
+    let canonical = |rel: &Path| -> String {
+        canonical_file_form_with_root(&rel.to_string_lossy().replace('\\', "/"), repo_root)
+    };
 
     // The walk itself. Unknown branch / revision / ancestry surface here
     // as the walker's typed errors, before anything is written. On the
     // trunk, a cursor that left the chain is D-5's `TrunkRewritten`: a
     // branch takes a new generation, the trunk cannot.
-    let plan: Vec<CommitPlan> = match plan_ingest(repo, branch, effective_from.as_deref()) {
+    let plan_all: Vec<CommitPlan> = match plan_ingest(repo, branch, effective_from.as_deref()) {
         Ok(plan) => plan,
-        Err(GitError::NotAncestor(cursor)) => {
+        Err(GitError::NotAncestor(cursor)) if to.is_none() => {
             let tip = match git2::Repository::open(repo) {
                 Ok(git) => git
                     .revparse_single(branch)
@@ -626,7 +938,7 @@ pub fn ingest_history(
         }
         Err(e) => return Err(e.into()),
     };
-    if let (Some(ef), Some(first)) = (effective_from.as_ref(), plan.first()) {
+    if let (Some(ef), Some(first)) = (effective_from.as_ref(), plan_all.first()) {
         if !first.parents.contains(ef) {
             return Err(IngestError::NotDescendant {
                 from: ef.clone(),
@@ -635,11 +947,46 @@ pub fn ingest_history(
         }
     }
 
+    // P5b.5: cut the walk at the belief start and plan the closes.
+    let window_plan: Option<WindowPlan> = match to {
+        None => None,
+        Some(end) => {
+            let Some(store_ref) = store.as_ref() else {
+                return Err(IngestError::WindowNeedsBelief {
+                    path: store_path.to_string(),
+                });
+            };
+            Some(plan_window(
+                store_ref,
+                store_path,
+                &plan_all,
+                from,
+                end,
+                belief_start.as_deref(),
+                &canonical,
+            )?)
+        }
+    };
+    let plan: Vec<CommitPlan> = match &window_plan {
+        None => plan_all,
+        Some(window) => plan_all[..window.end_index].to_vec(),
+    };
+
     if dry_run {
         for commit in &plan {
             report.commits_skipped.push(SkippedCommit {
                 sha: commit.sha.clone(),
                 reason: "dry-run".to_string(),
+            });
+        }
+        // A planned window is reported exactly as a written one: the plan
+        // is the whole contract, and a dry run must answer it.
+        if let Some(window) = &window_plan {
+            report.window = Some(WindowReport {
+                from: window.from.clone(),
+                to: window.end_sha.clone(),
+                commits: plan.len(),
+                edges_skipped: true,
             });
         }
         report.elapsed_secs = started.elapsed().as_secs_f64();
@@ -676,10 +1023,6 @@ pub fn ingest_history(
         }
     };
 
-    let repo_root = Path::new(repo);
-    let canonical = |rel: &Path| -> String {
-        canonical_file_form_with_root(&rel.to_string_lossy().replace('\\', "/"), repo_root)
-    };
     let git = git2::Repository::open(repo).map_err(GitError::Open)?;
     let mut query_cache: HashMap<crate::types::Language, crate::extract::tagger::CompiledQuery> =
         HashMap::new();
@@ -688,6 +1031,10 @@ pub fn ingest_history(
     // store already holds): the first put of a digest stores, repeats
     // dedupe — within and across runs, since a resume never re-puts.
     let mut seen_digests: HashSet<String> = HashSet::new();
+    // P5b.5: the last version written per id and where it closed, for the
+    // post-pass tombstone. A later commit that re-asserts the id open
+    // removes it again — open belief needs no tombstone.
+    let mut window_last_ends: HashMap<String, String> = HashMap::new();
 
     let total = plan.len();
     for (index, commit) in plan.iter().enumerate() {
@@ -695,8 +1042,19 @@ pub fn ingest_history(
         // INV-11: the stamp strictly increases along the lineage. Ties
         // (second-resolution committer time) and regressions advance by
         // the smallest representable step, flagged for `stamp_nudged`.
-        let (nudged, was_nudged) = nudge_valid_from(stamp_prev.as_deref(), &commit.committer_ts);
-        let stamp = zulu_valid_from(&nudged).expect("nudge output is always a timestamp");
+        // A window's chain was planned whole (it lies entirely below the
+        // recorded stamps, so the store seeds nothing).
+        let (stamp, was_nudged) = match &window_plan {
+            Some(window) => (window.stamps[index].clone(), window.nudged[index]),
+            None => {
+                let (nudged, was_nudged) =
+                    nudge_valid_from(stamp_prev.as_deref(), &commit.committer_ts);
+                (
+                    zulu_valid_from(&nudged).expect("nudge output is always a timestamp"),
+                    was_nudged,
+                )
+            }
+        };
         if was_nudged {
             report.stamps_nudged += 1;
         }
@@ -724,6 +1082,15 @@ pub fn ingest_history(
             }
         };
 
+        // A window's first commit is its belief's own root: it writes the
+        // whole tree, not a diff (the store below has no earlier tree to
+        // inherit unchanged files from). Every later commit is a diff.
+        let changed_files: &[PathBuf] = if window_plan.is_some() && index == 0 {
+            &commit.tree
+        } else {
+            &commit.changed
+        };
+
         // Blob puts first (put-then-assert, per commit): bytes land before
         // any concept names their digest, so a crash between leaves orphan
         // blobs at worst — never a live digest pointing at absent bytes.
@@ -749,7 +1116,7 @@ pub fn ingest_history(
         // must not sink the commit.
         let mut bad_languages: HashSet<crate::types::Language> = HashSet::new();
         let mut ghost_detail: Option<String> = None;
-        for rel in commit.changed.iter().filter(|p| !excluded(p.as_path())) {
+        for rel in changed_files.iter().filter(|p| !excluded(p.as_path())) {
             let bytes = match blob_bytes(repo, &sha, rel) {
                 Ok(bytes) => bytes,
                 Err(e) => {
@@ -914,8 +1281,7 @@ pub fn ingest_history(
             .filter(|p| !excluded(p.as_path()))
             .map(|p| canonical(p.as_path()))
             .collect();
-        report.files_excluded += commit
-            .changed
+        report.files_excluded += changed_files
             .iter()
             .chain(commit.deleted.iter())
             .filter(|p| excluded(p.as_path()))
@@ -925,6 +1291,16 @@ pub fn ingest_history(
         // unit of every changed path is diffed in. One clone per commit,
         // one commit back — diffs touch disjoint id sets.
         let mut projection = (*graph.snapshot()).clone();
+        // P5b.5: a window's diff retires nothing. Entities that vanish are
+        // expressed by the interval that stops being written (the version
+        // before them already closes at this commit's stamp), not by a
+        // retirement act in the past — the engine refuses those, and the
+        // valid axis does not need them.
+        let retire_scope = if window_plan.is_some() {
+            crate::graph::projection_ops::RetireScope::Skip
+        } else {
+            crate::graph::projection_ops::RetireScope::Trunk
+        };
         for (canonical_path, lang, units) in &parsed_units {
             let (_, _, _, retirement_error) = graph.apply_diff_update(
                 &mut projection,
@@ -932,14 +1308,33 @@ pub fn ingest_history(
                 canonical_path,
                 lang,
                 &stamp,
-                crate::graph::projection_ops::RetireScope::Trunk,
+                retire_scope,
             );
             if let Some(error) = retirement_error {
                 eprintln!("[ingest] retire-after-diff failed for {canonical_path}: {error}");
             }
         }
         for canonical_path in &deleted {
-            graph.remove_file_entities(&mut projection, canonical_path, &stamp, None);
+            if window_plan.is_some() {
+                // Projection only: the empty unit set diffs the file's
+                // entities away without a store write.
+                let lang = crate::types::Language::from_extension(
+                    Path::new(canonical_path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or(""),
+                );
+                graph.apply_diff_update(
+                    &mut projection,
+                    &[],
+                    canonical_path,
+                    &lang,
+                    &stamp,
+                    crate::graph::projection_ops::RetireScope::Skip,
+                );
+            } else {
+                graph.remove_file_entities(&mut projection, canonical_path, &stamp, None);
+            }
             projection
                 .file_to_modules
                 .remove(&PathBuf::from(canonical_path));
@@ -966,12 +1361,35 @@ pub fn ingest_history(
             .expect("ingest graph always holds a store");
         let mut concepts: Vec<macrame::ConceptUpsert> = Vec::new();
         for (canonical_path, _, _) in &parsed_units {
-            concepts.extend(crate::storage::build_v2_concepts_for_file_at(
+            let built = crate::storage::build_v2_concepts_for_file_at(
                 &projection,
                 canonical_path,
                 &digests,
                 &stamp,
-            ));
+            );
+            match &window_plan {
+                None => concepts.extend(built),
+                Some(window) => {
+                    // Every row the file's snapshot mints closes where the
+                    // file's next belief begins (per-file, not per-id: the
+                    // rows are minted together, so one instant answers for
+                    // all of them). No successor: the version is open — it
+                    // *is* the belief from here on.
+                    let end = window.close_end(canonical_path, index);
+                    for concept in built {
+                        match &end {
+                            Some(close) => {
+                                window_last_ends.insert(concept.id.clone(), close.clone());
+                                concepts.push(concept.valid_to(close.clone()));
+                            }
+                            None => {
+                                window_last_ends.remove(&concept.id);
+                                concepts.push(concept);
+                            }
+                        }
+                    }
+                }
+            }
         }
         // P5b.7 (A-11): rename links ride the same flush. One row per
         // rename for the module and one per entity whose name survived it;
@@ -1011,7 +1429,28 @@ pub fn ingest_history(
             .collect();
         if !spine_inputs.is_empty() {
             match store.spine_upserts_for(&spine_inputs, &stamp) {
-                Ok(extra) => concepts.extend(extra),
+                Ok(extra) => match &window_plan {
+                    // A window's spine row is closed like the entity rows:
+                    // the same content version may already be open at the
+                    // belief's start, and an open row cannot be written
+                    // below one (the guard refuses it) — the abutting
+                    // closed row chains onto it instead.
+                    Some(window) => {
+                        for concept in extra {
+                            let file = concept
+                                .id
+                                .split('@')
+                                .next()
+                                .unwrap_or(&concept.id)
+                                .to_string();
+                            match window.close_end(&file, index) {
+                                Some(close) => concepts.push(concept.valid_to(close)),
+                                None => concepts.push(concept),
+                            }
+                        }
+                    }
+                    None => concepts.extend(extra),
+                },
                 Err(e) => eprintln!("[ingest] spine computation failed at {sha}: {e:?}"),
             }
         }
@@ -1036,11 +1475,21 @@ pub fn ingest_history(
         // is not re-asserted, so unchanged edges keep their original
         // commit stamp — only new facts write. Deletions retire through
         // the cascade below, not here.
-        for (canonical_path, _, _) in &parsed_units {
-            if let Err(e) = graph.persist_edges_scoped_at(&projection, Some(canonical_path), &stamp)
-            {
-                crate::storage::record_edge_persist_error(format!("{sha}:{canonical_path}: {e:?}"));
-                eprintln!("[ingest] scoped edge persistence failed for {canonical_path}: {e:?}");
+        // P5b.5: a window writes no edges. Edge persistence is
+        // forward-only, and a closed edge interval is a shape this phase
+        // deliberately does not invent; the report says `edges_skipped`.
+        if window_plan.is_none() {
+            for (canonical_path, _, _) in &parsed_units {
+                if let Err(e) =
+                    graph.persist_edges_scoped_at(&projection, Some(canonical_path), &stamp)
+                {
+                    crate::storage::record_edge_persist_error(format!(
+                        "{sha}:{canonical_path}: {e:?}"
+                    ));
+                    eprintln!(
+                        "[ingest] scoped edge persistence failed for {canonical_path}: {e:?}"
+                    );
+                }
             }
         }
         // The sweep, scoped to the running projection (the commit's full
@@ -1048,7 +1497,10 @@ pub fn ingest_history(
         // longer believes close at the commit's stamp. Gated per P5-D9 —
         // a commit that does not fully parse must not retire anything.
         // (A failed flush halts above, so the flush always succeeded here.)
-        if commit_failed_files.is_empty() {
+        // P5b.5: a window's "file absent" is an interval fact expressed by
+        // closes, never a retirement act — the sweep's act would retire the
+        // trunk's present from a historical tree.
+        if window_plan.is_none() && commit_failed_files.is_empty() {
             let mut keep_ids: HashSet<String> = HashSet::new();
             for id in projection.modules.keys() {
                 keep_ids.insert(id.clone());
@@ -1087,20 +1539,26 @@ pub fn ingest_history(
 
         // The cursor advances per commit (H-20): an interrupted ingest
         // resumes after the last completed commit, never inside one.
-        store
-            .kv_put_sync(&ingest_head_key(lineage), &sha)
-            .map_err(|e| IngestError::Store(format!("cannot advance cursor: {e:?}")))?;
-        store
-            .kv_put_sync(&ingest_stamp_key(lineage), &stamp)
-            .map_err(|e| IngestError::Store(format!("cannot advance stamp: {e:?}")))?;
+        // A window moves no cursor and no stamp: both name the newest
+        // belief, and the window is older than it.
+        if window_plan.is_none() {
+            store
+                .kv_put_sync(&ingest_head_key(lineage), &sha)
+                .map_err(|e| IngestError::Store(format!("cannot advance cursor: {e:?}")))?;
+            store
+                .kv_put_sync(&ingest_stamp_key(lineage), &stamp)
+                .map_err(|e| IngestError::Store(format!("cannot advance stamp: {e:?}")))?;
+        }
         // P5b.6 (D-6 c): which lineage holds this sha — the address
         // resolution's one lookup, and the tip the name points at.
         store
             .kv_put_sync(&commit_lineage_key(&sha), lineage)
             .map_err(|e| IngestError::Store(format!("cannot record commit owner: {e:?}")))?;
-        store
-            .kv_put_sync(&branch_tip_key(branch), &sha)
-            .map_err(|e| IngestError::Store(format!("cannot record branch tip: {e:?}")))?;
+        if window_plan.is_none() {
+            store
+                .kv_put_sync(&branch_tip_key(branch), &sha)
+                .map_err(|e| IngestError::Store(format!("cannot record branch tip: {e:?}")))?;
+        }
         // P5b.3a: the commit's completion instant — recorded after the
         // sweep and cursor, before the next commit's first write. A fold
         // at this instant sees exactly this commit's state (INV-10).
@@ -1111,8 +1569,55 @@ pub fn ingest_history(
         // The next commit's first write must stamp strictly later (below).
         wait_past_instant(&completion);
         stamp_prev = Some(stamp);
-        report.head = Some(sha);
+        if window_plan.is_none() {
+            report.head = Some(sha);
+        }
         report.commits_ingested += 1;
+    }
+    // P5b.5, the window's one act: where the window's last version for an
+    // id closed because the id's life ended before the tip, forward ingest
+    // would have left a tombstone at that same instant. The window wrote
+    // the closed interval instead, so the trunk's current row would be a
+    // closed, non-retired shape no read expects (the live projection would
+    // keep listing a deleted entity). Writing the tombstone is not a new
+    // decision about the past — it is the act the forward run performed at
+    // that instant, at the same instant.
+    // A forward run that started the belief (no earlier commit) names its
+    // own first commit; a resume keeps the stored answer untouched.
+    if window_plan.is_none() {
+        report.belief_start = belief_start
+            .clone()
+            .or_else(|| plan.first().map(|commit| commit.sha.clone()));
+    }
+    if let Some(window) = &window_plan {
+        let store_ref = graph
+            .store
+            .as_ref()
+            .expect("ingest graph always holds a store");
+        let ids: Vec<String> = window_last_ends.keys().cloned().collect();
+        let rows = store_ref
+            .trunk_rows(&ids)
+            .map_err(|e| IngestError::Store(format!("cannot read window rows: {e:?}")))?;
+        let mut by_end: HashMap<String, Vec<String>> = HashMap::new();
+        for (id, end) in &window_last_ends {
+            if let Some((start, close, retired)) = rows.get(id) {
+                if !retired && close == end && start < end {
+                    by_end.entry(end.clone()).or_default().push(id.clone());
+                }
+            }
+        }
+        for (end, ids) in by_end {
+            if let Err(e) = store_ref.retire_entities_at(&ids, &end) {
+                eprintln!("[ingest] window tombstone failed at {end}: {e:?}");
+            }
+        }
+        report.window = Some(WindowReport {
+            from: window.from.clone(),
+            to: window.end_sha.clone(),
+            commits: total,
+            edges_skipped: true,
+        });
+        report.belief_start = plan.first().map(|commit| commit.sha.clone());
     }
     // P5b.3a: the first import that finishes on this phase backfills the
     // index it never wrote — horizon, completions, format flag — from the
@@ -1224,6 +1729,8 @@ pub fn ingest_branch_history(
         trunk_synced: 0,
         renames_recorded: 0,
         renames: Vec::new(),
+        belief_start: None,
+        window: None,
         elapsed_secs: 0.0,
     };
 
@@ -2118,7 +2625,7 @@ fn start_next_generation(
     }
     // Sync the trunk: the new generation's fork is only meaningful if the
     // store holds the parent history it forks from.
-    let trunk = ingest_history(store_path, repo, parent_ref, None, dry_run)?;
+    let trunk = ingest_history(store_path, repo, parent_ref, None, None, dry_run)?;
     let generation = store
         .kv_get_sync(&generation_key(branch))
         .map_err(|e| IngestError::Store(format!("cannot read generation: {e:?}")))?
@@ -2258,6 +2765,8 @@ pub fn reingest_merged_commits(
         trunk_synced: 0,
         renames_recorded: 0,
         renames: Vec::new(),
+        belief_start: None,
+        window: None,
         elapsed_secs: 0.0,
     };
     let store_file = std::path::Path::new(store_path);
@@ -4394,6 +4903,7 @@ mod backfill_tests {
             &repo_s,
             "main",
             None,
+            None,
             false,
         )
         .unwrap();
@@ -4441,6 +4951,7 @@ mod backfill_tests {
             &store_path.to_string_lossy(),
             &repo_s,
             "main",
+            None,
             None,
             false,
         )

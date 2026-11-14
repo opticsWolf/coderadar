@@ -2593,7 +2593,7 @@ fn canonical_id(entity_id: &str) -> String {
 /// `ValueError`; infrastructure failures are `RuntimeError`.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (store_path, repo, branch = "main", from = None, dry_run = false, lineage = None, parent_ref = "main"))]
+#[pyo3(signature = (store_path, repo, branch = "main", from = None, dry_run = false, lineage = None, parent_ref = "main", to = None))]
 fn ingest_history(
     py: Python<'_>,
     store_path: &str,
@@ -2603,6 +2603,7 @@ fn ingest_history(
     dry_run: bool,
     lineage: Option<&str>,
     parent_ref: &str,
+    to: Option<&str>,
 ) -> PyResult<String> {
     use crate::graph::ingest::IngestError;
     // P5a.4 (DR-41): the lineage routes. No lineage (or the trunk's
@@ -2620,7 +2621,7 @@ fn ingest_history(
                         branch: branch.to_string(),
                     });
                 }
-                crate::graph::ingest::ingest_history(store_path, repo, branch, from, dry_run)
+                crate::graph::ingest::ingest_history(store_path, repo, branch, from, to, dry_run)
             } else {
                 // P5b.6/D-5: a branch that moved gets a new generation;
                 // an explicit `lineage` keeps the typed refusal instead.
@@ -2649,7 +2650,12 @@ fn ingest_history(
                 | IngestError::LineageExists { .. }
                 | IngestError::InvalidLineage { .. }
                 | IngestError::TrunkRewritten { .. }
-                | IngestError::BranchNowMerged { .. } => true,
+                | IngestError::BranchNowMerged { .. }
+                | IngestError::WindowNeedsBelief { .. }
+                | IngestError::WindowEndMismatch { .. }
+                | IngestError::WindowOffChain { .. }
+                | IngestError::WindowEmpty { .. }
+                | IngestError::WindowStampsOverlap { .. } => true,
                 IngestError::Store(_) => false,
             };
             if user_error {

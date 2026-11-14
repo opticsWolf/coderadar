@@ -580,6 +580,48 @@ answers must agree between A and B; the recorded axis must differ exactly where 
 The interval assertions are the real test: `verify_concept_intervals` clean, and each file's valid
 interval ends where the next change begins (no gaps, no overlaps).)*
 
+*(2026-11-14, slice 2 landed — the writer. Five facts the code decided, four of them
+against the design note above.)*
+
+*`--to`, not `--from-root`.* The window's end is the parameter a caller needs (it must name the
+lineage's belief start), and `from=None` already spells the root, so one new option beat a second
+meaning for `--from`. Every run reports `belief_start`; a window's `to` is that value, and after the
+run it is the window's own first commit — newest-first chunks abut with no boundary a caller can
+misplace. A window also reports `window: {from, to, commits, edges_skipped}`.
+
+*The window's first commit writes its **tree**, not a diff.* A prefix window is the store's new
+root: there is no earlier ingested tree for unchanged files to inherit from, so the first window
+commit writes everything it holds (the walker already ships `tree`).
+
+*The successor is the store's belief start, not just the plan's next touch.* The boundary chunk
+writes full trees, so a file that no post-window commit touches still has a belief row at the
+boundary stamp; the window's last version must close there. `next_trunk_start` reads all three
+places the trunk keeps a version's span — `concepts`, `concept_versions`, and `transaction_log`
+(the W1 path's own history: a displaced row is logged with its span). Without the log the query
+finds only the newest row and the close lands too late.
+
+*Two guard generalisations, both the chain's invariant rather than the incumbent's shape.*
+`upsert_concepts_bulk` now accepts a closed version written before a **settled** row (the backfill
+arm asked the incumbent to be open; a chunk boundary can leave a closed current row — content
+versions do). And `act_is_new` keeps an identical-content row whose start precedes the resolved
+row's: the unchanged gate would otherwise drop a byte-identical backfill and the interval would
+never be written.
+
+*One act the window does perform.* Where its last version for an id closed because the id's life
+ended before the tip, the forward run would have left a tombstone at that instant; the window writes
+that same tombstone, at that same instant (content from the row itself). Without it the trunk's
+current row would be a closed, non-retired shape no read expects, and the live projection would keep
+listing a deleted entity. Nothing else is written: no edges, no sweep, no cursor, stamp, tip or
+horizon.
+
+*Proof.* `tests/test_p5b5_window.py` (six tests): one history with an add, a modify, a deletion and a
+file never touched again, ingested in order into store A and as two newest-first chunks into store
+B (which starts at a later commit, the "store that predates its own history" case). Every commit's
+valid-axis digest and the current state agree; the refusals (wrong end, no belief, off-chain, empty
+window) and a dry run that writes nothing are pinned. At the storage level,
+`a_closed_version_may_backfill_before_a_settled_one` pins the chain shape and the unchanged-gate
+arm.*
+
 ### P5b.6 — Branch names: selection, addresses, generations (needs P5b.3a)
 
 **Selection (D-6 c).** The ingest set is the trunk plus every branch, local or remote-tracking,
@@ -812,7 +854,7 @@ already require.
 | 3 | P5b.2 adopt 0.22.0 *(closed 2026-11-11 — [patch] retired, the lock rides crates.io `0.22.0`; engine identical to the rev pin (no src/ diff 40719ac to tag); gates 589 lib + pytest 1303/1/4xf, scratch migration disorder 0)* | P5b.1 (U-1 released 2026-11-01) | P5d |
 | 4 | P5b.3 valid reads (trunk) *(closed 2026-11-12 — `valid=` on `as_of`, `changes_between`, the `Snapshot` and the five `_core` reads; `resolve_valid_read` names the instant and `basis: "valid"`, lowered to Macrame's `reconstruct_as_of(AsOf::valid_at)`, trunk-only; a branch refuses `ValidBranchNeedsU2`, `at=` refuses `ValidAtNeedsP5b4`. `history_of` needs no flag (the spine is the valid axis) and `verify_history` samples recorded generations by design — both stated in §6. Gates: 592 lib, pytest 1353/1/2xf)* | P5b.2 | — |
 | 5 | P5b.4 sha addressing | P5b.3 | P5b.5 |
-| 5 | P5b.5 out-of-order ingest *(slice 1 closed 2026-11-13 — the write shape: `upsert_concepts_bulk` accepts a closed, non-retirement version starting before the live open one when `valid_to <= live.valid_from` (the abutting chain), leaving the projection and the open belief untouched; the engine already supported it, the forward-only fallback was CodeRadar's. Malformed shapes still refuse before any write. The ingest half (prefix window, one-change lookahead, incumbent-vs-arriving closes) and the Doctrine VIII proof remain; **the release tree went CI-green 2026-11-13 at `2f50e38`** — all six jobs on both platforms, the first green run since 2026-10-29. The blocker was the store's contract, not P5b.5: a second `Database` on a live path is refused on POSIX and a mid-process close empties later reads, so `CodeGraphStore` hands out one engine per path per process (`bd353ac`, `613bd68`) and two horizon tests cross a process boundary (`2f50e38`). The cut landed as `4d3cf87` (versions, changelog, baselines, ARCHITECTURE §14.2), then a review of that tree fixed the registry's last race (registration under one lock), keyed it by the filesystem's own spelling with a lexical alias, added the macOS Python leg and a tag-vs-version gate before publishing (`1e37a4f`, `f383cc5`, `3d27232`; seven jobs green).)* | P5b.3 | P5b.4 |
+| 5 | P5b.5 out-of-order ingest *(slice 1 closed 2026-11-13 — the write shape: `upsert_concepts_bulk` accepts a closed, non-retirement version starting before the live open one when `valid_to <= live.valid_from` (the abutting chain), leaving the projection and the open belief untouched; the engine already supported it, the forward-only fallback was CodeRadar's. Malformed shapes still refuse before any write. **[2026-11-14] Slice 2 closed — the ingest half and the Doctrine VIII proof: `ingest_history(..., to=<belief start>)` walks a prefix window forward, writes each commit's rows closed at the file's next belief (the next in-window touch, else the store's own next start, else open), writes the boundary chunk's tree as the window's root, performs no sweep, edge write, cursor/stamp/tip/horizon move, and tombstones only where the id's life ended before the tip; six tests compare a full ingest against two newest-first chunks commit by commit (`tests/test_p5b5_window.py`).** **the release tree went CI-green 2026-11-13 at `2f50e38`** — all six jobs on both platforms, the first green run since 2026-10-29. The blocker was the store's contract, not P5b.5: a second `Database` on a live path is refused on POSIX and a mid-process close empties later reads, so `CodeGraphStore` hands out one engine per path per process (`bd353ac`, `613bd68`) and two horizon tests cross a process boundary (`2f50e38`). The cut landed as `4d3cf87` (versions, changelog, baselines, ARCHITECTURE §14.2), then a review of that tree fixed the registry's last race (registration under one lock), keyed it by the filesystem's own spelling with a lexical alias, added the macOS Python leg and a tag-vs-version gate before publishing (`1e37a4f`, `f383cc5`, `3d27232`; seven jobs green).)* | P5b.3 | P5b.4 |
 | 6 | P5b.3 branch reads | U-2 | — |
 | 7 | P5c lineage fidelity | U-3 (U-4's substance: D-315, 0.22.0) | — |
 | — | P9 | each phase it exposes | — |

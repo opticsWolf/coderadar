@@ -1123,6 +1123,7 @@ def ingest_history(result: dict) -> str:
         f"from             {result['from'] or '(root)'}",
         f"fork             {result.get('fork_point') or '(trunk)'}",
         f"head             {result['head'] or '(unchanged)'}",
+        f"belief           {result.get('belief_start') or '(none)'}",
         (
             f"commits          ingested={result['commits_ingested']}  "
             f"skipped={len(result['commits_skipped'])}  "
@@ -1142,6 +1143,13 @@ def ingest_history(result: dict) -> str:
         f"elapsed          {result['elapsed_secs']:.1f}s",
     ]
     out = head
+    window = result.get("window")
+    if window:
+        out.append("")
+        out.append(
+            f"backfill window  ({window['from'] or '(root)'}, {window['to']})  "
+            f"commits={window['commits']}  edges_skipped={window['edges_skipped']}"
+        )
     if result["commits_skipped"]:
         out.append("\nskipped commits:")
         out += [f"  {s['sha'][:12]}  {s['reason']}" for s in result["commits_skipped"]]

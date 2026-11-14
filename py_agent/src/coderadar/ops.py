@@ -2013,7 +2013,8 @@ def import_annotations(source: str | Path | dict, *,
 def ingest_history(repo: str | Path, branch: str = "main",
                    from_sha: str | None = None, dry_run: bool = False,
                    lineage: str | None = None, parent_ref: str = "main",
-                   *, store_path: str | Path | None = None,
+                   *, to_sha: str | None = None,
+                   store_path: str | Path | None = None,
                    graph: Any = None) -> dict:
     """Commit-driven history ingest into the trunk or a branch lineage
     (P5a.3/P5a.4, DR-41).
@@ -2064,6 +2065,22 @@ def ingest_history(repo: str | Path, branch: str = "main",
     plans without writing anything, including no store creation and no
     fork.
 
+    ``to_sha`` turns the run into a **backfill window** (P5b.5,
+    INV-10'): every commit after ``from_sha`` and strictly before
+    ``to_sha``, walked forward and written as closed intervals that abut
+    the belief already recorded from ``to_sha`` on. ``to_sha`` must be
+    this lineage's belief start (``report["belief_start"]``) — windows
+    are newest-first contiguous chunks, so the next chunk's ``to_sha`` is
+    this chunk's first commit, and ``from_sha=None`` reaches the root. A
+    window moves no cursor, stamp, tip or horizon, writes no edges and
+    runs no sweep; it reports ``window: {"from", "to", "commits",
+    "edges_skipped"}`` and updates ``belief_start`` to the window's first
+    commit. The whole point is the pair of assertions Doctrine VIII
+    states: a history ingested as contiguous chunks newest-first answers
+    every commit's **valid axis** identically to one in-order ingest,
+    with the recorded axis differing exactly where the chunk order
+    differed.
+
     ``adoptions`` (macrame-db 0.22.0, D-315): a merge file whose
     module id was minted on the merging lineage is an ADOPTED first
     version - the trunk mints its own from the merge's bytes,
@@ -2094,7 +2111,8 @@ def ingest_history(repo: str | Path, branch: str = "main",
                       str(from_sha) if from_sha is not None else None,
                       bool(dry_run),
                       str(lineage) if lineage is not None else None,
-                      str(parent_ref))
+                      str(parent_ref),
+                      str(to_sha) if to_sha is not None else None)
     except ImportError as e:
         raise EngineError(f"native extension unavailable: {e}") from None
     except ValueError as e:

@@ -917,6 +917,10 @@ def rebuild_store(repo: str, store_path: str | None, branches: str | None,
               help="Exclusive window start (a sha). Omit to resume from the cursor "
               "(or start at the root / fork). "
               "A sha that is not the cursor is refused (INV-10).")
+@click.option("--to", "to_sha", default=None,
+              help="Backfill window end (a sha): write every commit after --from and "
+              "strictly before it, as closed intervals. Must be the lineage's belief "
+              "start (the report's belief_start) — windows are newest-first chunks.")
 @click.option("--dry-run", is_flag=True,
               help="Plan without writing anything (no store creation, no fork, no cursor).")
 @click.option("--store", "store_path", required=True,
@@ -924,7 +928,7 @@ def rebuild_store(repo: str, store_path: str | None, branches: str | None,
               "A legacy index-now store is refused (INV-12).")
 @_format_option
 def ingest_history(repo: str, branch: str, lineage: str | None,
-                   parent_ref: str, from_sha: str | None,
+                   parent_ref: str, from_sha: str | None, to_sha: str | None,
                    dry_run: bool, store_path: str, fmt: str):
     """Ingest a git branch's history onto the trunk or a branch lineage (P5a.3/P5a.4, DR-41)."""
     from pathlib import Path as _Path
@@ -937,7 +941,7 @@ def ingest_history(repo: str, branch: str, lineage: str | None,
     _enter_project()
     _op(fmt, lambda: ops.ingest_history(repo, branch, from_sha, dry_run,
                                         lineage=lineage, parent_ref=parent_ref,
-                                        store_path=store_path),
+                                        to_sha=to_sha, store_path=store_path),
         lambda result: render.ingest_history(result))
 
 

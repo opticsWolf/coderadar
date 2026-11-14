@@ -528,6 +528,17 @@ tips → addresses → sweep → marks), and `watch --git` runs it.
   (`reconstruct_valid`); a branch's valid read is refused until the
   engine can cut a fork's belief axis (Macrame U-2/D-317) — the read names
   that, and the recorded axis keeps working.
+- **Backfill windows (P5b.5).** `ingest_history(..., to=<belief start>)`
+  walks a prefix window: every commit after `from` and strictly before
+  `to`, written as closed intervals that abut the belief starting there
+  (the window's first commit writes its tree; each file's version closes
+  at its next belief — the next change inside the window, else the
+  store's own next start, else it stays open). A window moves no cursor,
+  stamp, tip or horizon, writes no edges and runs no sweep, and writes
+  each commit's `commit_done` mark at the instant the ledger learned it —
+  the recorded-axis difference that makes Doctrine VIII's pair testable:
+  a history ingested as newest-first chunks answers every commit's valid
+  axis identically to one in-order ingest.
 - **Observations (P5d).** Rows carry `observed_at`/`source`
   (`ingest`, `sync`, `watch`); an observation lands on the lineage whose
   tree it saw, and `test_retention`-style sweeps retire per lineage.
