@@ -101,6 +101,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ingest_history, m)?)?;
     m.add_function(wrap_pyfunction!(reingest_merged_commits, m)?)?;
     m.add_function(wrap_pyfunction!(backfill_commit_index, m)?)?;
+    m.add_function(wrap_pyfunction!(store_status, m)?)?;
     m.add_function(wrap_pyfunction!(backfill_commit_messages, m)?)?;
     m.add_function(wrap_pyfunction!(annotate, m)?)?;
     m.add_function(wrap_pyfunction!(comment, m)?)?;
@@ -2021,7 +2022,7 @@ fn entities_at(
     // P5b.3a: the arm resolves the fold instant (recorded past the
     // horizon, the commit's completion before it) and names the basis.
     let resolved = if valid {
-        crate::graph::ingest::resolve_valid_read(branch, &ts, at).map_err(arm_err)?
+        crate::graph::ingest::resolve_valid_read(&store, branch, &ts, at).map_err(arm_err)?
     } else {
         crate::graph::ingest::resolve_temporal_read(&store, read_lineage(branch), &ts, strict, at)
             .map_err(arm_err)?
@@ -2281,8 +2282,9 @@ fn entity_source_ref_at(
         // P5b.3a/P5b.3: the arm resolves the fold instant; the singular
         // keeps its ref-or-None shape (no basis to surface on one ref).
         if valid {
-            let resolved = crate::graph::ingest::resolve_valid_read(branch, &ts, at.as_deref())
-                .map_err(arm_err)?;
+            let resolved =
+                crate::graph::ingest::resolve_valid_read(store, branch, &ts, at.as_deref())
+                    .map_err(arm_err)?;
             let state = store
                 .reconstruct_valid(&resolved.fold_ts)
                 .map_err(temporal_err)?;
@@ -2351,7 +2353,8 @@ fn source_refs_at(
     };
     // P5b.3a/P5b.3: the arm resolves the fold instant and names the basis.
     let resolved = if valid {
-        crate::graph::ingest::resolve_valid_read(branch, &ts, at.as_deref()).map_err(arm_err)?
+        crate::graph::ingest::resolve_valid_read(&store, branch, &ts, at.as_deref())
+            .map_err(arm_err)?
     } else {
         crate::graph::ingest::resolve_temporal_read(
             &store,
@@ -2593,7 +2596,7 @@ fn canonical_id(entity_id: &str) -> String {
 /// `ValueError`; infrastructure failures are `RuntimeError`.
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (store_path, repo, branch = "main", from = None, dry_run = false, lineage = None, parent_ref = "main"))]
+#[pyo3(signature = (store_path, repo, branch = "main", from = None, dry_run = false, lineage = None, parent_ref = "main", to = None))]
 fn ingest_history(
     py: Python<'_>,
     store_path: &str,
@@ -2603,6 +2606,7 @@ fn ingest_history(
     dry_run: bool,
     lineage: Option<&str>,
     parent_ref: &str,
+    to: Option<&str>,
 ) -> PyResult<String> {
     use crate::graph::ingest::IngestError;
     // P5a.4 (DR-41): the lineage routes. No lineage (or the trunk's
@@ -2620,7 +2624,7 @@ fn ingest_history(
                         branch: branch.to_string(),
                     });
                 }
-                crate::graph::ingest::ingest_history(store_path, repo, branch, from, dry_run)
+                crate::graph::ingest::ingest_history(store_path, repo, branch, from, to, dry_run)
             } else {
                 // P5b.6/D-5: a branch that moved gets a new generation;
                 // an explicit `lineage` keeps the typed refusal instead.
@@ -2649,7 +2653,12 @@ fn ingest_history(
                 | IngestError::LineageExists { .. }
                 | IngestError::InvalidLineage { .. }
                 | IngestError::TrunkRewritten { .. }
-                | IngestError::BranchNowMerged { .. } => true,
+                | IngestError::BranchNowMerged { .. }
+                | IngestError::WindowNeedsBelief { .. }
+                | IngestError::WindowEndMismatch { .. }
+                | IngestError::WindowOffChain { .. }
+                | IngestError::WindowEmpty { .. }
+                | IngestError::WindowStampsOverlap { .. } => true,
                 IngestError::Store(_) => false,
             };
             if user_error {
@@ -2803,6 +2812,27 @@ fn record_branch_addresses(store_path: &str, entries: Vec<(String, String)>) -> 
         written += 1;
     }
     Ok(written)
+}
+
+/// The store's ingest state, read-only (P9, Q-10): per name and per
+/// lineage the cursor, stamp, horizon, tip, generation, and the counts of
+/// recorded commits and completion marks. This is the ingest *report* an
+/// agent may see without the writer — Q-10's answer is "the report, never
+/// the write" — and it names what the store holds rather than what one run
+/// did (ghosts are run-local; coverage is `verify_history`'s question).
+/// Refusals (store missing) are `ValueError`; the JSON is `StoreStatus`.
+#[pyfunction]
+fn store_status(store_path: &str) -> PyResult<String> {
+    let store = crate::storage::CodeGraphStore::open(store_path).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "store_status cannot open {store_path:?}: {e:?}"
+        ))
+    })?;
+    let report = crate::graph::ingest::store_status(&store).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("store_status failed: {e}"))
+    })?;
+    serde_json::to_string(&report)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
 }
 
 /// Rebuild one lineage's horizon + commit index from the ledger (P5b.3a,

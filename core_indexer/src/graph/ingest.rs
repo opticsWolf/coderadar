@@ -276,7 +276,28 @@ pub struct IngestReport {
     /// survived the rename.
     pub renames_recorded: usize,
     pub renames: Vec<RenameReport>,
+    /// The commit this lineage's belief begins at (P5b.5): the first commit
+    /// it ever ingested, derived from the commit concepts' own stamps. A
+    /// backfill window's `to` names exactly this commit, and after a window
+    /// it becomes the window's first commit — newest-first chunks abut by
+    /// construction, with no gap a caller could leave by accident.
+    pub belief_start: Option<String>,
+    /// The backfill window this run walked, when it walked one (P5b.5).
+    pub window: Option<WindowReport>,
     pub elapsed_secs: f64,
+}
+
+/// One backfill window as the report states it (P5b.5, INV-10′): the
+/// commits after `from` and strictly before `to`, written as closed
+/// intervals that abut the belief they precede. `edges_skipped` is always
+/// true — edge persistence is forward-only, and the window does not invent
+/// a closed edge interval this phase has no use for.
+#[derive(Debug, Clone, Serialize)]
+pub struct WindowReport {
+    pub from: Option<String>,
+    pub to: String,
+    pub commits: usize,
+    pub edges_skipped: bool,
 }
 
 /// One detected rename as the report states it (P5b.7).
@@ -358,6 +379,40 @@ pub enum IngestError {
         branch: String,
         tip: String,
     },
+    /// P5b.5: a backfill window was asked for on a store that does not
+    /// exist yet. A window writes closed intervals for belief that *is*
+    /// recorded; with no belief there is nothing to abut, and the fresh
+    /// path is a plain forward ingest.
+    WindowNeedsBelief {
+        path: String,
+    },
+    /// P5b.5: `to` is not where this lineage's belief starts. Windows are
+    /// newest-first contiguous chunks — a window that ends anywhere else
+    /// would leave a hole between the two beliefs that nothing fills.
+    WindowEndMismatch {
+        requested: String,
+        belief_start: String,
+    },
+    /// P5b.5: `to` does not lie on the chain walked from `from` (a wrong
+    /// ref, or a `from` that is not an ancestor of it).
+    WindowOffChain {
+        to: String,
+        from: Option<String>,
+    },
+    /// P5b.5: everything before the belief's start is already ingested —
+    /// the walk found no commit to write.
+    WindowEmpty {
+        belief_start: String,
+    },
+    /// P5b.5: a window commit's successor instant is not strictly after
+    /// its own. The successor's stamp comes from the store, so this means
+    /// the ingested side's nudge chain disagrees with the window's (a
+    /// skewed clock): the close would not abut the window row but precede
+    /// it, and refusing is the only honest answer.
+    WindowStampsOverlap {
+        commit: String,
+        successor: String,
+    },
 }
 
 impl std::fmt::Display for IngestError {
@@ -434,6 +489,33 @@ impl std::fmt::Display for IngestError {
                  like that is an address, not a lineage (D-6 c): re-run the migration to
                  record it, or delete the branch"
             ),
+            IngestError::WindowNeedsBelief { path } => write!(
+                f,
+                "ingest-history [window-needs-belief]: {path:?} holds no lineage belief yet                  (P5b.5): a backfill window writes closed intervals *below* a recorded                  belief, so the first run must be a plain forward ingest"
+            ),
+            IngestError::WindowEndMismatch {
+                requested,
+                belief_start,
+            } => write!(
+                f,
+                "ingest-history [window-end]: the window must end at this lineage's belief                  start {belief_start:?}, not {requested:?} (P5b.5: windows are newest-first                  contiguous chunks; any other end leaves a hole nothing fills)"
+            ),
+            IngestError::WindowOffChain { to, from } => write!(
+                f,
+                "ingest-history [window-off-chain]: {to:?} is not on the chain walked from                  {:?} — pass a `from` that is an ancestor of the window's end",
+                from.as_deref().unwrap_or("(the root)")
+            ),
+            IngestError::WindowEmpty { belief_start } => write!(
+                f,
+                "ingest-history [window-empty]: nothing precedes the belief start                  {belief_start:?} on this chain — there is no window to write"
+            ),
+            IngestError::WindowStampsOverlap {
+                commit,
+                successor,
+            } => write!(
+                f,
+                "ingest-history [window-stamps]: window commit {commit:?}'s successor starts                  at {successor:?}, which is not after the window row it must close — the                  ingested side's stamps disagree with the window's; refusing rather than                  writing an interval that runs backwards"
+            ),
         }
     }
 }
@@ -444,6 +526,197 @@ impl From<GitError> for IngestError {
     }
 }
 
+// ── the backfill window (P5b.5, INV-10′) ──────────────────────────────
+
+/// A planned backfill window: the commits after `from` and strictly before
+/// `to` (the lineage's belief start), the stamps they write at, and the one
+/// fact the writer derives from them — where each written version closes.
+///
+/// The close is per **file**, not per id: a file's rows are minted together
+/// from one snapshot, so "the next change to this file" is one instant for
+/// all of them. Within the window it is the next commit that changes or
+/// deletes the file; past the window it is the store's own stamp for the
+/// first commit that touches it again (the belief's next assertion); a file
+/// nothing touches again stays open — its window version *is* the belief
+/// from then on.
+struct WindowPlan {
+    /// The window's start as the caller asked for it (`None` = the root).
+    from: Option<String>,
+    /// The belief start the window abuts (its exclusive end).
+    end_sha: String,
+    /// Commits before this index belong to the window.
+    end_index: usize,
+    /// One stamp per window commit — INV-11's chain seeded from nothing,
+    /// because the whole window lies below the lineage's recorded stamps.
+    stamps: Vec<String>,
+    /// Which of those stamps the nudge moved.
+    nudged: Vec<bool>,
+    /// File → ascending plan indices whose plan changes or deletes it.
+    touches: HashMap<String, Vec<usize>>,
+    /// File → the first post-window commit that touches it again, by sha.
+    post: HashMap<String, String>,
+    /// The store's stamp for each of those commits.
+    post_stamps: HashMap<String, String>,
+    /// File → where the store's own belief starts for it. A chunk boundary
+    /// writes the whole tree, so an earlier chunk holds the file's first
+    /// row at the boundary stamp even when no *commit* touched it; that row
+    /// is the file's next belief and the window's version must close there.
+    /// When a post-window commit also re-asserts the file, the earlier of
+    /// the two is the successor (the boundary row usually wins).
+    after: HashMap<String, String>,
+}
+
+impl WindowPlan {
+    /// The instant a version written at `index` closes at: the next touch's
+    /// stamp inside the window, else the first belief after it, else open.
+    fn close_end(&self, path: &str, index: usize) -> Option<String> {
+        if let Some(list) = self.touches.get(path) {
+            if let Some(next) = list.iter().find(|&&j| j > index) {
+                return Some(self.stamps[*next].clone());
+            }
+        }
+        let by_commit = self
+            .post
+            .get(path)
+            .and_then(|sha| self.post_stamps.get(sha))
+            .cloned();
+        let by_row = self.after.get(path).cloned();
+        match (by_commit, by_row) {
+            (Some(commit), Some(row)) => Some(commit.min(row)),
+            (left, right) => left.or(right),
+        }
+    }
+}
+
+/// Plan one window (P5b.5). Read-only: a dry run plans exactly what a real
+/// run writes, and every refusal is decided before the first blob or row.
+fn plan_window(
+    store: &CodeGraphStore,
+    store_path: &str,
+    plan: &[CommitPlan],
+    from: Option<&str>,
+    to: &str,
+    belief_start: Option<&str>,
+    canonical: &dyn Fn(&Path) -> String,
+) -> Result<WindowPlan, IngestError> {
+    // A window writes *below* a recorded belief. With no belief there is
+    // nothing to abut: the fresh path is a plain forward ingest.
+    let Some(birth) = belief_start else {
+        return Err(IngestError::WindowNeedsBelief {
+            path: store_path.to_string(),
+        });
+    };
+    let Some(end_index) = plan.iter().position(|commit| commit.sha == to) else {
+        return Err(IngestError::WindowOffChain {
+            to: to.to_string(),
+            from: from.map(str::to_string),
+        });
+    };
+    if to != birth {
+        return Err(IngestError::WindowEndMismatch {
+            requested: to.to_string(),
+            belief_start: birth.to_string(),
+        });
+    }
+    if end_index == 0 {
+        return Err(IngestError::WindowEmpty {
+            belief_start: birth.to_string(),
+        });
+    }
+
+    let mut stamps = Vec::with_capacity(end_index);
+    let mut nudged = Vec::with_capacity(end_index);
+    let mut prev: Option<String> = None;
+    for commit in &plan[..end_index] {
+        let (nudged_from, was_nudged) = nudge_valid_from(prev.as_deref(), &commit.committer_ts);
+        let stamp = zulu_valid_from(&nudged_from).expect("nudge output is always a timestamp");
+        stamps.push(stamp.clone());
+        nudged.push(was_nudged);
+        prev = Some(stamp);
+    }
+
+    let mut touches: HashMap<String, Vec<usize>> = HashMap::new();
+    for (index, commit) in plan[..end_index].iter().enumerate() {
+        for rel in commit.changed.iter().chain(commit.deleted.iter()) {
+            touches.entry(canonical(rel)).or_default().push(index);
+        }
+    }
+    // The first belief assertion after the window, per file: the next
+    // commit that re-asserts it is where the window's last version ends.
+    let mut post: HashMap<String, String> = HashMap::new();
+    for commit in plan.iter().skip(end_index) {
+        for rel in commit.changed.iter().chain(commit.deleted.iter()) {
+            post.entry(canonical(rel))
+                .or_insert_with(|| commit.sha.clone());
+        }
+    }
+    // The store wrote those commits, so its stamp is the truth (nudged or
+    // not); a commit the store never recorded (a ghost) falls back to the
+    // commit's own time, which is the best available statement.
+    let mut post_stamps: HashMap<String, String> = HashMap::new();
+    for sha in post.values() {
+        if post_stamps.contains_key(sha) {
+            continue;
+        }
+        let stamp = store
+            .trunk_commit_stamp(sha)
+            .map_err(|e| IngestError::Store(format!("cannot read a commit stamp: {e:?}")))?
+            .unwrap_or_else(|| {
+                plan.iter()
+                    .find(|commit| &commit.sha == sha)
+                    .map(|commit| commit.committer_ts.clone())
+                    .unwrap_or_default()
+            });
+        post_stamps.insert(sha.clone(), stamp);
+    }
+
+    // A file no post-window commit re-asserts may still have a belief: the
+    // boundary chunk before this one wrote its *tree*, so the store's row
+    // for the file can start at that chunk's stamp. Close there rather than
+    // leave the version open underneath it (the guard refuses the overlap).
+    let mut after: HashMap<String, String> = HashMap::new();
+    for path in touches.keys() {
+        let Some(last) = touches[path].last() else {
+            continue;
+        };
+        if let Some(start) = store
+            .next_trunk_start(&format!("{path}::module"), &stamps[*last])
+            .map_err(|e| IngestError::Store(format!("cannot read belief rows: {e:?}")))?
+        {
+            after.insert(path.clone(), start);
+        }
+    }
+
+    let window = WindowPlan {
+        from: from.map(str::to_string),
+        end_sha: to.to_string(),
+        end_index,
+        stamps,
+        nudged,
+        touches,
+        post,
+        post_stamps,
+        after,
+    };
+    // Every close must name an instant strictly after the row it closes.
+    // A window's stamps are historical, so a violation means the *ingested*
+    // side's nudge chain disagrees with the window's — a skewed clock, not
+    // something to paper over.
+    for (path, indices) in &window.touches {
+        for &index in indices {
+            if let Some(end) = window.close_end(path, index) {
+                if end <= window.stamps[index] {
+                    return Err(IngestError::WindowStampsOverlap {
+                        commit: plan[index].sha.clone(),
+                        successor: end,
+                    });
+                }
+            }
+        }
+    }
+    Ok(window)
+}
+
 // ── the op ────────────────────────────────────────────────────────────────
 
 /// Ingest one git branch's first-parent history into the trunk lineage.
@@ -452,11 +725,22 @@ impl From<GitError> for IngestError {
 /// start (a commit sha, or `None` to resume from the `kv` cursor / ingest
 /// from the root); `dry_run` plans without writing anything, including no
 /// store creation and no cursor advance.
+///
+/// `to` turns the run into a **backfill window** (P5b.5, INV-10′): every
+/// commit after `from` and strictly before `to`, walked forward and written
+/// as closed intervals that abut the belief starting at `to`. `to` must be
+/// the lineage's belief start (`report.belief_start`) — windows are
+/// newest-first contiguous chunks, so the next chunk's `to` is this chunk's
+/// first commit. A window moves no cursor, stamp, tip or horizon; it writes
+/// no edges and runs no sweep; it writes each commit's concept and its
+/// `commit_done` mark at the instant the ledger learned it, which is exactly
+/// the recorded-axis difference Doctrine VIII expects.
 pub fn ingest_history(
     store_path: &str,
     repo: &str,
     branch: &str,
     from: Option<&str>,
+    to: Option<&str>,
     dry_run: bool,
 ) -> Result<IngestReport, IngestError> {
     let started = Instant::now();
@@ -497,6 +781,8 @@ pub fn ingest_history(
         trunk_synced: 0,
         renames_recorded: 0,
         renames: Vec::new(),
+        belief_start: None,
+        window: None,
         elapsed_secs: 0.0,
     };
 
@@ -593,26 +879,52 @@ pub fn ingest_history(
             return Err(IngestError::UnknownHighWater { head: h.clone() });
         }
     }
-    let effective_from: Option<String> = match (from, &head) {
-        (Some(f), Some(h)) if f != h => {
-            return Err(IngestError::OutOfOrder {
-                head: h.clone(),
-                from: f.to_string(),
-            })
+    // P5b.5: where this lineage's belief begins. Derived from the commit
+    // concepts' own stamps, so it needs no new `kv` key and heals old
+    // stores: forward stamps strictly increase, and a window writes older
+    // stamps than the belief it precedes, so the minimum is always the
+    // belief's start.
+    let belief_start: Option<String> = match &store {
+        Some(store) => store
+            .earliest_trunk_commit()
+            .map_err(|e| IngestError::Store(format!("cannot read belief start: {e:?}")))?,
+        None => None,
+    };
+    report.belief_start = belief_start.clone();
+
+    // A window validates against the belief, not the cursor: `from` is
+    // whatever the caller says (or the root), `to` is the belief start.
+    let effective_from: Option<String> = if to.is_some() {
+        from.map(str::to_string)
+    } else {
+        match (from, &head) {
+            (Some(f), Some(h)) if f != h => {
+                return Err(IngestError::OutOfOrder {
+                    head: h.clone(),
+                    from: f.to_string(),
+                })
+            }
+            (Some(f), _) => Some(f.to_string()),
+            (None, h) => h.clone(),
         }
-        (Some(f), _) => Some(f.to_string()),
-        (None, h) => h.clone(),
     };
     report.from = effective_from.clone();
     report.head = head.clone();
+
+    // The path form the ingest keys files by: canonical, repo-relative,
+    // forward slashes — the same spelling the projection and the rows use.
+    let repo_root = Path::new(repo);
+    let canonical = |rel: &Path| -> String {
+        canonical_file_form_with_root(&rel.to_string_lossy().replace('\\', "/"), repo_root)
+    };
 
     // The walk itself. Unknown branch / revision / ancestry surface here
     // as the walker's typed errors, before anything is written. On the
     // trunk, a cursor that left the chain is D-5's `TrunkRewritten`: a
     // branch takes a new generation, the trunk cannot.
-    let plan: Vec<CommitPlan> = match plan_ingest(repo, branch, effective_from.as_deref()) {
+    let plan_all: Vec<CommitPlan> = match plan_ingest(repo, branch, effective_from.as_deref()) {
         Ok(plan) => plan,
-        Err(GitError::NotAncestor(cursor)) => {
+        Err(GitError::NotAncestor(cursor)) if to.is_none() => {
             let tip = match git2::Repository::open(repo) {
                 Ok(git) => git
                     .revparse_single(branch)
@@ -626,7 +938,7 @@ pub fn ingest_history(
         }
         Err(e) => return Err(e.into()),
     };
-    if let (Some(ef), Some(first)) = (effective_from.as_ref(), plan.first()) {
+    if let (Some(ef), Some(first)) = (effective_from.as_ref(), plan_all.first()) {
         if !first.parents.contains(ef) {
             return Err(IngestError::NotDescendant {
                 from: ef.clone(),
@@ -635,11 +947,46 @@ pub fn ingest_history(
         }
     }
 
+    // P5b.5: cut the walk at the belief start and plan the closes.
+    let window_plan: Option<WindowPlan> = match to {
+        None => None,
+        Some(end) => {
+            let Some(store_ref) = store.as_ref() else {
+                return Err(IngestError::WindowNeedsBelief {
+                    path: store_path.to_string(),
+                });
+            };
+            Some(plan_window(
+                store_ref,
+                store_path,
+                &plan_all,
+                from,
+                end,
+                belief_start.as_deref(),
+                &canonical,
+            )?)
+        }
+    };
+    let plan: Vec<CommitPlan> = match &window_plan {
+        None => plan_all,
+        Some(window) => plan_all[..window.end_index].to_vec(),
+    };
+
     if dry_run {
         for commit in &plan {
             report.commits_skipped.push(SkippedCommit {
                 sha: commit.sha.clone(),
                 reason: "dry-run".to_string(),
+            });
+        }
+        // A planned window is reported exactly as a written one: the plan
+        // is the whole contract, and a dry run must answer it.
+        if let Some(window) = &window_plan {
+            report.window = Some(WindowReport {
+                from: window.from.clone(),
+                to: window.end_sha.clone(),
+                commits: plan.len(),
+                edges_skipped: true,
             });
         }
         report.elapsed_secs = started.elapsed().as_secs_f64();
@@ -676,10 +1023,6 @@ pub fn ingest_history(
         }
     };
 
-    let repo_root = Path::new(repo);
-    let canonical = |rel: &Path| -> String {
-        canonical_file_form_with_root(&rel.to_string_lossy().replace('\\', "/"), repo_root)
-    };
     let git = git2::Repository::open(repo).map_err(GitError::Open)?;
     let mut query_cache: HashMap<crate::types::Language, crate::extract::tagger::CompiledQuery> =
         HashMap::new();
@@ -688,6 +1031,10 @@ pub fn ingest_history(
     // store already holds): the first put of a digest stores, repeats
     // dedupe — within and across runs, since a resume never re-puts.
     let mut seen_digests: HashSet<String> = HashSet::new();
+    // P5b.5: the last version written per id and where it closed, for the
+    // post-pass tombstone. A later commit that re-asserts the id open
+    // removes it again — open belief needs no tombstone.
+    let mut window_last_ends: HashMap<String, String> = HashMap::new();
 
     let total = plan.len();
     for (index, commit) in plan.iter().enumerate() {
@@ -695,8 +1042,19 @@ pub fn ingest_history(
         // INV-11: the stamp strictly increases along the lineage. Ties
         // (second-resolution committer time) and regressions advance by
         // the smallest representable step, flagged for `stamp_nudged`.
-        let (nudged, was_nudged) = nudge_valid_from(stamp_prev.as_deref(), &commit.committer_ts);
-        let stamp = zulu_valid_from(&nudged).expect("nudge output is always a timestamp");
+        // A window's chain was planned whole (it lies entirely below the
+        // recorded stamps, so the store seeds nothing).
+        let (stamp, was_nudged) = match &window_plan {
+            Some(window) => (window.stamps[index].clone(), window.nudged[index]),
+            None => {
+                let (nudged, was_nudged) =
+                    nudge_valid_from(stamp_prev.as_deref(), &commit.committer_ts);
+                (
+                    zulu_valid_from(&nudged).expect("nudge output is always a timestamp"),
+                    was_nudged,
+                )
+            }
+        };
         if was_nudged {
             report.stamps_nudged += 1;
         }
@@ -724,6 +1082,15 @@ pub fn ingest_history(
             }
         };
 
+        // A window's first commit is its belief's own root: it writes the
+        // whole tree, not a diff (the store below has no earlier tree to
+        // inherit unchanged files from). Every later commit is a diff.
+        let changed_files: &[PathBuf] = if window_plan.is_some() && index == 0 {
+            &commit.tree
+        } else {
+            &commit.changed
+        };
+
         // Blob puts first (put-then-assert, per commit): bytes land before
         // any concept names their digest, so a crash between leaves orphan
         // blobs at worst — never a live digest pointing at absent bytes.
@@ -749,7 +1116,7 @@ pub fn ingest_history(
         // must not sink the commit.
         let mut bad_languages: HashSet<crate::types::Language> = HashSet::new();
         let mut ghost_detail: Option<String> = None;
-        for rel in commit.changed.iter().filter(|p| !excluded(p.as_path())) {
+        for rel in changed_files.iter().filter(|p| !excluded(p.as_path())) {
             let bytes = match blob_bytes(repo, &sha, rel) {
                 Ok(bytes) => bytes,
                 Err(e) => {
@@ -914,8 +1281,7 @@ pub fn ingest_history(
             .filter(|p| !excluded(p.as_path()))
             .map(|p| canonical(p.as_path()))
             .collect();
-        report.files_excluded += commit
-            .changed
+        report.files_excluded += changed_files
             .iter()
             .chain(commit.deleted.iter())
             .filter(|p| excluded(p.as_path()))
@@ -925,6 +1291,16 @@ pub fn ingest_history(
         // unit of every changed path is diffed in. One clone per commit,
         // one commit back — diffs touch disjoint id sets.
         let mut projection = (*graph.snapshot()).clone();
+        // P5b.5: a window's diff retires nothing. Entities that vanish are
+        // expressed by the interval that stops being written (the version
+        // before them already closes at this commit's stamp), not by a
+        // retirement act in the past — the engine refuses those, and the
+        // valid axis does not need them.
+        let retire_scope = if window_plan.is_some() {
+            crate::graph::projection_ops::RetireScope::Skip
+        } else {
+            crate::graph::projection_ops::RetireScope::Trunk
+        };
         for (canonical_path, lang, units) in &parsed_units {
             let (_, _, _, retirement_error) = graph.apply_diff_update(
                 &mut projection,
@@ -932,14 +1308,33 @@ pub fn ingest_history(
                 canonical_path,
                 lang,
                 &stamp,
-                crate::graph::projection_ops::RetireScope::Trunk,
+                retire_scope,
             );
             if let Some(error) = retirement_error {
                 eprintln!("[ingest] retire-after-diff failed for {canonical_path}: {error}");
             }
         }
         for canonical_path in &deleted {
-            graph.remove_file_entities(&mut projection, canonical_path, &stamp, None);
+            if window_plan.is_some() {
+                // Projection only: the empty unit set diffs the file's
+                // entities away without a store write.
+                let lang = crate::types::Language::from_extension(
+                    Path::new(canonical_path)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or(""),
+                );
+                graph.apply_diff_update(
+                    &mut projection,
+                    &[],
+                    canonical_path,
+                    &lang,
+                    &stamp,
+                    crate::graph::projection_ops::RetireScope::Skip,
+                );
+            } else {
+                graph.remove_file_entities(&mut projection, canonical_path, &stamp, None);
+            }
             projection
                 .file_to_modules
                 .remove(&PathBuf::from(canonical_path));
@@ -966,12 +1361,35 @@ pub fn ingest_history(
             .expect("ingest graph always holds a store");
         let mut concepts: Vec<macrame::ConceptUpsert> = Vec::new();
         for (canonical_path, _, _) in &parsed_units {
-            concepts.extend(crate::storage::build_v2_concepts_for_file_at(
+            let built = crate::storage::build_v2_concepts_for_file_at(
                 &projection,
                 canonical_path,
                 &digests,
                 &stamp,
-            ));
+            );
+            match &window_plan {
+                None => concepts.extend(built),
+                Some(window) => {
+                    // Every row the file's snapshot mints closes where the
+                    // file's next belief begins (per-file, not per-id: the
+                    // rows are minted together, so one instant answers for
+                    // all of them). No successor: the version is open — it
+                    // *is* the belief from here on.
+                    let end = window.close_end(canonical_path, index);
+                    for concept in built {
+                        match &end {
+                            Some(close) => {
+                                window_last_ends.insert(concept.id.clone(), close.clone());
+                                concepts.push(concept.valid_to(close.clone()));
+                            }
+                            None => {
+                                window_last_ends.remove(&concept.id);
+                                concepts.push(concept);
+                            }
+                        }
+                    }
+                }
+            }
         }
         // P5b.7 (A-11): rename links ride the same flush. One row per
         // rename for the module and one per entity whose name survived it;
@@ -1011,7 +1429,28 @@ pub fn ingest_history(
             .collect();
         if !spine_inputs.is_empty() {
             match store.spine_upserts_for(&spine_inputs, &stamp) {
-                Ok(extra) => concepts.extend(extra),
+                Ok(extra) => match &window_plan {
+                    // A window's spine row is closed like the entity rows:
+                    // the same content version may already be open at the
+                    // belief's start, and an open row cannot be written
+                    // below one (the guard refuses it) — the abutting
+                    // closed row chains onto it instead.
+                    Some(window) => {
+                        for concept in extra {
+                            let file = concept
+                                .id
+                                .split('@')
+                                .next()
+                                .unwrap_or(&concept.id)
+                                .to_string();
+                            match window.close_end(&file, index) {
+                                Some(close) => concepts.push(concept.valid_to(close)),
+                                None => concepts.push(concept),
+                            }
+                        }
+                    }
+                    None => concepts.extend(extra),
+                },
                 Err(e) => eprintln!("[ingest] spine computation failed at {sha}: {e:?}"),
             }
         }
@@ -1036,11 +1475,21 @@ pub fn ingest_history(
         // is not re-asserted, so unchanged edges keep their original
         // commit stamp — only new facts write. Deletions retire through
         // the cascade below, not here.
-        for (canonical_path, _, _) in &parsed_units {
-            if let Err(e) = graph.persist_edges_scoped_at(&projection, Some(canonical_path), &stamp)
-            {
-                crate::storage::record_edge_persist_error(format!("{sha}:{canonical_path}: {e:?}"));
-                eprintln!("[ingest] scoped edge persistence failed for {canonical_path}: {e:?}");
+        // P5b.5: a window writes no edges. Edge persistence is
+        // forward-only, and a closed edge interval is a shape this phase
+        // deliberately does not invent; the report says `edges_skipped`.
+        if window_plan.is_none() {
+            for (canonical_path, _, _) in &parsed_units {
+                if let Err(e) =
+                    graph.persist_edges_scoped_at(&projection, Some(canonical_path), &stamp)
+                {
+                    crate::storage::record_edge_persist_error(format!(
+                        "{sha}:{canonical_path}: {e:?}"
+                    ));
+                    eprintln!(
+                        "[ingest] scoped edge persistence failed for {canonical_path}: {e:?}"
+                    );
+                }
             }
         }
         // The sweep, scoped to the running projection (the commit's full
@@ -1048,7 +1497,10 @@ pub fn ingest_history(
         // longer believes close at the commit's stamp. Gated per P5-D9 —
         // a commit that does not fully parse must not retire anything.
         // (A failed flush halts above, so the flush always succeeded here.)
-        if commit_failed_files.is_empty() {
+        // P5b.5: a window's "file absent" is an interval fact expressed by
+        // closes, never a retirement act — the sweep's act would retire the
+        // trunk's present from a historical tree.
+        if window_plan.is_none() && commit_failed_files.is_empty() {
             let mut keep_ids: HashSet<String> = HashSet::new();
             for id in projection.modules.keys() {
                 keep_ids.insert(id.clone());
@@ -1087,20 +1539,26 @@ pub fn ingest_history(
 
         // The cursor advances per commit (H-20): an interrupted ingest
         // resumes after the last completed commit, never inside one.
-        store
-            .kv_put_sync(&ingest_head_key(lineage), &sha)
-            .map_err(|e| IngestError::Store(format!("cannot advance cursor: {e:?}")))?;
-        store
-            .kv_put_sync(&ingest_stamp_key(lineage), &stamp)
-            .map_err(|e| IngestError::Store(format!("cannot advance stamp: {e:?}")))?;
+        // A window moves no cursor and no stamp: both name the newest
+        // belief, and the window is older than it.
+        if window_plan.is_none() {
+            store
+                .kv_put_sync(&ingest_head_key(lineage), &sha)
+                .map_err(|e| IngestError::Store(format!("cannot advance cursor: {e:?}")))?;
+            store
+                .kv_put_sync(&ingest_stamp_key(lineage), &stamp)
+                .map_err(|e| IngestError::Store(format!("cannot advance stamp: {e:?}")))?;
+        }
         // P5b.6 (D-6 c): which lineage holds this sha — the address
         // resolution's one lookup, and the tip the name points at.
         store
             .kv_put_sync(&commit_lineage_key(&sha), lineage)
             .map_err(|e| IngestError::Store(format!("cannot record commit owner: {e:?}")))?;
-        store
-            .kv_put_sync(&branch_tip_key(branch), &sha)
-            .map_err(|e| IngestError::Store(format!("cannot record branch tip: {e:?}")))?;
+        if window_plan.is_none() {
+            store
+                .kv_put_sync(&branch_tip_key(branch), &sha)
+                .map_err(|e| IngestError::Store(format!("cannot record branch tip: {e:?}")))?;
+        }
         // P5b.3a: the commit's completion instant — recorded after the
         // sweep and cursor, before the next commit's first write. A fold
         // at this instant sees exactly this commit's state (INV-10).
@@ -1111,8 +1569,55 @@ pub fn ingest_history(
         // The next commit's first write must stamp strictly later (below).
         wait_past_instant(&completion);
         stamp_prev = Some(stamp);
-        report.head = Some(sha);
+        if window_plan.is_none() {
+            report.head = Some(sha);
+        }
         report.commits_ingested += 1;
+    }
+    // P5b.5, the window's one act: where the window's last version for an
+    // id closed because the id's life ended before the tip, forward ingest
+    // would have left a tombstone at that same instant. The window wrote
+    // the closed interval instead, so the trunk's current row would be a
+    // closed, non-retired shape no read expects (the live projection would
+    // keep listing a deleted entity). Writing the tombstone is not a new
+    // decision about the past — it is the act the forward run performed at
+    // that instant, at the same instant.
+    // A forward run that started the belief (no earlier commit) names its
+    // own first commit; a resume keeps the stored answer untouched.
+    if window_plan.is_none() {
+        report.belief_start = belief_start
+            .clone()
+            .or_else(|| plan.first().map(|commit| commit.sha.clone()));
+    }
+    if let Some(window) = &window_plan {
+        let store_ref = graph
+            .store
+            .as_ref()
+            .expect("ingest graph always holds a store");
+        let ids: Vec<String> = window_last_ends.keys().cloned().collect();
+        let rows = store_ref
+            .trunk_rows(&ids)
+            .map_err(|e| IngestError::Store(format!("cannot read window rows: {e:?}")))?;
+        let mut by_end: HashMap<String, Vec<String>> = HashMap::new();
+        for (id, end) in &window_last_ends {
+            if let Some((start, close, retired)) = rows.get(id) {
+                if !retired && close == end && start < end {
+                    by_end.entry(end.clone()).or_default().push(id.clone());
+                }
+            }
+        }
+        for (end, ids) in by_end {
+            if let Err(e) = store_ref.retire_entities_at(&ids, &end) {
+                eprintln!("[ingest] window tombstone failed at {end}: {e:?}");
+            }
+        }
+        report.window = Some(WindowReport {
+            from: window.from.clone(),
+            to: window.end_sha.clone(),
+            commits: total,
+            edges_skipped: true,
+        });
+        report.belief_start = plan.first().map(|commit| commit.sha.clone());
     }
     // P5b.3a: the first import that finishes on this phase backfills the
     // index it never wrote — horizon, completions, format flag — from the
@@ -1224,6 +1729,8 @@ pub fn ingest_branch_history(
         trunk_synced: 0,
         renames_recorded: 0,
         renames: Vec::new(),
+        belief_start: None,
+        window: None,
         elapsed_secs: 0.0,
     };
 
@@ -2118,7 +2625,7 @@ fn start_next_generation(
     }
     // Sync the trunk: the new generation's fork is only meaningful if the
     // store holds the parent history it forks from.
-    let trunk = ingest_history(store_path, repo, parent_ref, None, dry_run)?;
+    let trunk = ingest_history(store_path, repo, parent_ref, None, None, dry_run)?;
     let generation = store
         .kv_get_sync(&generation_key(branch))
         .map_err(|e| IngestError::Store(format!("cannot read generation: {e:?}")))?
@@ -2258,6 +2765,8 @@ pub fn reingest_merged_commits(
         trunk_synced: 0,
         renames_recorded: 0,
         renames: Vec::new(),
+        belief_start: None,
+        window: None,
         elapsed_secs: 0.0,
     };
     let store_file = std::path::Path::new(store_path);
@@ -3316,8 +3825,6 @@ pub enum ReadArmError {
     Store(String),
     /// `at=` names no commit on the lineage.
     UnknownCommit { lineage: String, sha: String },
-    /// `at=` names a ref: sha addressing is P5b.3a, refs are P5b.4.
-    RefNeedsP5b4 { address: String },
     /// P5b.6 (D-6 c): the name is neither a lineage nor a recorded branch
     /// address. Never guessed, never trunk-fallback.
     UnknownBranch { name: String, tip: Option<String> },
@@ -3325,9 +3832,6 @@ pub enum ReadArmError {
     /// lineage-resolved valid fold). The trunk's fold would be a
     /// different lineage's history, so the read refuses instead.
     ValidBranchNeedsU2 { branch: String },
-    /// P5b.3: `at=` on the valid axis resolves an address to an instant,
-    /// which is P5b.4's job (INV-16 — no implicit crossing).
-    ValidAtNeedsP5b4 { address: String },
 }
 
 impl std::fmt::Display for ReadArmError {
@@ -3359,10 +3863,6 @@ impl std::fmt::Display for ReadArmError {
                 f,
                 "unknown commit {sha:?} on lineage {lineage:?} — it names no commit concept"
             ),
-            ReadArmError::RefNeedsP5b4 { address } => write!(
-                f,
-                "at={address:?} names a ref: sha addressing is P5b.3a, refs arrive with P5b.4"
-            ),
             ReadArmError::UnknownBranch { name, tip } => match tip {
                 Some(tip) => write!(
                     f,
@@ -3381,12 +3881,6 @@ impl std::fmt::Display for ReadArmError {
                  lineage-resolved valid fold (U-2, 0.23.0) - folding the trunk would \
                  answer with a different lineage's history, so nothing is answered"
             ),
-            ReadArmError::ValidAtNeedsP5b4 { address } => write!(
-                f,
-                "ValidAtNeedsP5b4: at={address:?} on the valid axis needs commit \
-                 addressing (P5b.4) to turn the address into an instant; pass the \
-                 instant as the positional timestamp instead"
-            ),
         }
     }
 }
@@ -3396,38 +3890,341 @@ impl std::fmt::Display for ReadArmError {
 /// The valid fold answers "what was true at this git instant" from the
 /// rows' own intervals, so it needs neither the horizon nor the commit
 /// index: `fold_ts` is the instant itself and `basis` says `valid`.
-/// Two shapes refuse rather than substitute an answer:
 ///
-/// * a branch name — Macrame's valid fold is trunk-only until U-2's
-///   lineage-resolved form (0.23.0), and folding the trunk for a branch
-///   would answer with a different lineage's history;
-/// * `at=` — turning a sha or ref into an instant is P5b.4's job, and
-///   guessing which axis an address names is what INV-16 forbids.
+/// `at=` (P5b.4/A-3) is resolved to the pair an address denotes — the
+/// lineage that holds the commit and the instant to fold — by the same
+/// resolver the recorded arm uses, so a sha and a name mean the same thing
+/// on both axes and nothing rounds to a neighbour. The answer still belongs
+/// to the trunk: an address into a branch lineage refuses with
+/// `ValidBranchNeedsU2` rather than folding the trunk for it, and so does a
+/// branch name (Macrame's valid fold is trunk-only until U-2, 0.23.0).
 pub fn resolve_valid_read(
+    store: &CodeGraphStore,
     branch: &str,
     timestamp: &str,
     at: Option<&str>,
 ) -> Result<ResolvedRead, ReadArmError> {
-    if let Some(address) = at {
-        return Err(ReadArmError::ValidAtNeedsP5b4 {
-            address: address.to_string(),
-        });
-    }
     if branch != "main" {
         return Err(ReadArmError::ValidBranchNeedsU2 {
             branch: branch.to_string(),
         });
     }
+    let Some(address) = at else {
+        return Ok(ResolvedRead {
+            fold_ts: timestamp.to_string(),
+            basis: "valid",
+            sha: None,
+            horizon: None,
+            dirty_at_commit: Vec::new(),
+            address: false,
+            parent_drift: 0,
+            fold_branch: "main".to_string(),
+        });
+    };
+    let addressed = resolve_address(store, branch, address)?;
+    if addressed.lineage != "main" {
+        return Err(ReadArmError::ValidBranchNeedsU2 {
+            branch: addressed.lineage,
+        });
+    }
     Ok(ResolvedRead {
-        fold_ts: timestamp.to_string(),
+        fold_ts: addressed.stamp,
         basis: "valid",
-        sha: None,
+        sha: addressed.sha,
         horizon: None,
         dirty_at_commit: Vec::new(),
-        address: false,
+        address: addressed.named,
         parent_drift: 0,
         fold_branch: "main".to_string(),
     })
+}
+
+/// P5b.4/A-3: what an `at=` address denotes. Three spellings, one
+/// resolution: a timestamp restates the instant on the asked lineage, a sha
+/// resolves through its commit concept to the lineage that holds it and its
+/// completion instant (nudged, so it resolves to itself), and any other
+/// address is a name the store already knows — a lineage, or a
+/// `{name}#{n}` generation — resolved to the tip it records. Nothing
+/// rounds: an unknown sha is `UnknownCommit`, an unknown name is
+/// `UnknownBranch`, and neither falls back to the trunk.
+struct AddressedCommit {
+    lineage: String,
+    sha: Option<String>,
+    /// The instant the *recorded* axis folds at: when the ledger learned
+    /// this commit (`commit_done`, wall clock — P5b.3a/INV-10).
+    completion: String,
+    /// The instant the *valid* axis folds at: the commit's own stamp as its
+    /// rows carry it, nudge included, so the address resolves to itself.
+    stamp: String,
+    /// True when the address was a name (the answer came from an address,
+    /// not from the commit it names).
+    named: bool,
+}
+
+fn resolve_address(
+    store: &CodeGraphStore,
+    lineage: &str,
+    address: &str,
+) -> Result<AddressedCommit, ReadArmError> {
+    if let Ok(instant) = macrame::util::timestamp::normalize(address) {
+        return Ok(AddressedCommit {
+            lineage: lineage.to_string(),
+            sha: None,
+            completion: instant.clone(),
+            stamp: instant,
+            named: false,
+        });
+    }
+    if address.len() == 40 && address.bytes().all(|b| b.is_ascii_hexdigit()) {
+        let (owner, stamp) = commit_owner(store, lineage, address)?;
+        let completion = completion_or_backfill(store, &owner, address)?;
+        return Ok(AddressedCommit {
+            lineage: owner,
+            sha: Some(address.to_string()),
+            completion,
+            stamp: stamp.ok_or_else(|| ReadArmError::UnknownCommit {
+                lineage: lineage.to_string(),
+                sha: address.to_string(),
+            })?,
+            named: false,
+        });
+    }
+    // A name: `branch_lineage_key` follows a rewritten name to its newest
+    // generation (D-5). The tip is the name's own when it records one (the
+    // key tracks it across the move), else the lineage's tip, else its
+    // ingest cursor — a generation has no tip key of its own, and its cursor
+    // is exactly the newest commit it completed.
+    let name_lineage = store
+        .kv_get_sync(&branch_lineage_key(address))
+        .map_err(|e| ReadArmError::Store(format!("cannot read lineage map: {e:?}")))?
+        .unwrap_or_else(|| address.to_string());
+    let tip = match store
+        .kv_get_sync(&branch_tip_key(address))
+        .map_err(|e| ReadArmError::Store(format!("cannot read branch tip: {e:?}")))?
+    {
+        Some(tip) => Some(tip),
+        None => store
+            .kv_get_sync(&branch_tip_key(&name_lineage))
+            .map_err(|e| ReadArmError::Store(format!("cannot read branch tip: {e:?}")))?
+            .or(store
+                .kv_get_sync(&ingest_head_key(&name_lineage))
+                .map_err(|e| ReadArmError::Store(format!("cannot read cursor: {e:?}")))?),
+    };
+    let Some(tip) = tip else {
+        return Err(ReadArmError::UnknownBranch {
+            name: address.to_string(),
+            tip: None,
+        });
+    };
+    // An address-only name points at another lineage's commit (D-6 c), so
+    // the owner is the commit's, not the name's.
+    let (owner, stamp) = commit_owner(store, &name_lineage, &tip)?;
+    let completion = completion_or_backfill(store, &owner, &tip)?;
+    Ok(AddressedCommit {
+        lineage: owner,
+        sha: Some(tip.clone()),
+        completion,
+        stamp: stamp.ok_or_else(|| ReadArmError::UnknownBranch {
+            name: address.to_string(),
+            tip: Some(tip),
+        })?,
+        named: true,
+    })
+}
+
+/// The read-only view of the store's ingest state (P9, Q-10): what a
+/// caller may know without invoking the writer. One row per name the store
+/// records and one per lineage, because a name and its generation answer
+/// different questions — the name is where new commits will land, the
+/// generation is what the rows are stamped on.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StoreStatus {
+    /// `coderadar.commit_time.format`, when the store declares one. Absent
+    /// on an analyze-only store, whose reads never need a cursor.
+    pub format: Option<String>,
+    pub lineages: Vec<LineageStatus>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LineageStatus {
+    /// The name as the store records it (branch or address-only name).
+    pub name: String,
+    /// The lineage the name resolves to (itself, or its newest generation).
+    pub lineage: String,
+    /// Which generation of the name the lineage is (1 for a name that never
+    /// moved).
+    pub generation: u32,
+    /// The newest completed commit (`ingest.head`) — where a resume starts.
+    pub cursor: Option<String>,
+    /// The final `valid_from` written for the cursor (INV-11's `prev`).
+    pub stamp: Option<String>,
+    /// Where recorded observation begins (`horizon`).
+    pub horizon: Option<String>,
+    /// The tip the name points at (`branch.tip`), which a rewritten name
+    /// keeps on the new generation.
+    pub tip: Option<String>,
+    /// Commit concepts recorded on the lineage.
+    pub commits: usize,
+    /// Completion marks recorded on the lineage. Fewer than `commits` means
+    /// an interrupted run or a pre-horizon store: `backfill_commit_index`
+    /// is the repair.
+    pub completions: usize,
+    /// A name that only ever pointed at a commit another lineage holds
+    /// (D-6 c): it has a tip and no history of its own.
+    pub address_only: bool,
+}
+
+/// Assemble [`StoreStatus`] from the store's own `kv` (P9, Q-10).
+///
+/// The key set is the lineage registry — there is no table to ask — so the
+/// names come from the keys that carry them (`ingest.head`, `branch.tip`,
+/// `ingest.generation`, `branch.lineage`) and the lineages from the keys
+/// stamped per lineage (`horizon`, and every name's resolved lineage).
+/// `kv_name` hex-encodes names SQL keys cannot hold, so the suffixes are
+/// decoded before they are shown.
+///
+/// Ghost commits are deliberately absent: a ghost is a fact about one run
+/// (bytes that vanished mid-walk), not about the store, and this report
+/// only states what the store holds. Coverage is `verify_history`'s
+/// question, asked over generations rather than cursors.
+pub fn store_status(store: &CodeGraphStore) -> Result<StoreStatus, IngestError> {
+    let err = |what: &str, e: String| IngestError::Store(format!("store status {what}: {e}"));
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut lineages: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // Suffix -> the names a prefix records. `horizon` is per lineage.
+    let scans = [
+        "coderadar.ingest.head.",
+        "coderadar.branch.tip.",
+        "coderadar.ingest.generation.",
+        "coderadar.branch.lineage.",
+    ];
+    for prefix in scans {
+        for (key, _value) in store
+            .kv_prefix(prefix)
+            .map_err(|e| err(prefix, format!("{e:?}")))?
+        {
+            let Some(suffix) = key.strip_prefix(prefix) else {
+                continue;
+            };
+            names.insert(kv_name_decode(suffix).unwrap_or_else(|| suffix.to_string()));
+        }
+    }
+    for (key, _value) in store
+        .kv_prefix("coderadar.horizon.")
+        .map_err(|e| err("horizon", format!("{e:?}")))?
+    {
+        if let Some(suffix) = key.strip_prefix("coderadar.horizon.") {
+            lineages.insert(kv_name_decode(suffix).unwrap_or_else(|| suffix.to_string()));
+        }
+    }
+    let mut resolved: Vec<String> = names.into_iter().collect();
+    resolved.extend(lineages.iter().cloned());
+    resolved.sort();
+    resolved.dedup();
+    let mut rows = Vec::with_capacity(resolved.len());
+    for name in resolved {
+        // The tip belongs to the name; the lineage is where its rows live.
+        // A name that moved has a map entry (D-5); an address-only name has
+        // none, and its lineage is the owner of the commit it points at
+        // (D-6 c) — the same rule the reads use.
+        let tip = store
+            .kv_get_sync(&branch_tip_key(&name))
+            .map_err(|e| err("tip", format!("{e:?}")))?;
+        let mapped = store
+            .kv_get_sync(&branch_lineage_key(&name))
+            .map_err(|e| err("lineage map", format!("{e:?}")))?;
+        let owner = match &tip {
+            Some(tip) => store
+                .kv_get_sync(&commit_lineage_key(tip))
+                .map_err(|e| err("commit owner", format!("{e:?}")))?,
+            None => None,
+        };
+        let lineage = mapped.or(owner).unwrap_or_else(|| name.clone());
+        let generation = match store.kv_get_sync(&generation_key(&name)) {
+            Ok(Some(n)) => n.parse::<u32>().unwrap_or(1),
+            _ => lineage
+                .rsplit_once('#')
+                .and_then(|(_, n)| n.parse::<u32>().ok())
+                .unwrap_or(1),
+        };
+        // Whether the *name* carries history is a question about the name's
+        // own keys: an address-only name points at another lineage's
+        // commits, and the lineage's cursor is not its own.
+        let own_cursor = store
+            .kv_get_sync(&ingest_head_key(&name))
+            .map_err(|e| err("cursor", format!("{e:?}")))?;
+        let own_horizon = store
+            .kv_get_sync(&horizon_key(&name))
+            .map_err(|e| err("horizon", format!("{e:?}")))?;
+        let cursor = store
+            .kv_get_sync(&ingest_head_key(&lineage))
+            .map_err(|e| err("cursor", format!("{e:?}")))?;
+        let stamp = store
+            .kv_get_sync(&ingest_stamp_key(&lineage))
+            .map_err(|e| err("stamp", format!("{e:?}")))?;
+        let horizon = store
+            .kv_get_sync(&horizon_key(&lineage))
+            .map_err(|e| err("horizon", format!("{e:?}")))?;
+        let commits = commit_stamps(store, &lineage)
+            .map_err(|e| err("commits", format!("{e}")))?
+            .len();
+        let completions = store
+            .kv_prefix(&commit_done_key(&lineage, ""))
+            .map_err(|e| err("completions", format!("{e:?}")))?
+            .len();
+        rows.push(LineageStatus {
+            generation,
+            address_only: tip.is_some() && own_cursor.is_none() && own_horizon.is_none(),
+            name,
+            lineage,
+            cursor,
+            stamp,
+            horizon,
+            tip,
+            commits,
+            completions,
+        });
+    }
+    let format = store
+        .kv_get_sync(COMMIT_TIME_FORMAT_KEY)
+        .map_err(|e| err("format", format!("{e:?}")))?;
+    Ok(StoreStatus {
+        format,
+        lineages: rows,
+    })
+}
+
+/// The lineage whose commit index holds `sha`, and the stamp its rows
+/// carry (P5b.4). The asked lineage answers first (its own walk's stamps
+/// are authoritative for it), then the commit concept's owner — which is
+/// what lets a branch read name a trunk commit, and an address-only name
+/// answer at all.
+fn commit_owner(
+    store: &CodeGraphStore,
+    lineage: &str,
+    sha: &str,
+) -> Result<(String, Option<String>), ReadArmError> {
+    let found = |stamps: Vec<(String, String)>, owner: &str| {
+        stamps
+            .into_iter()
+            .find(|(candidate, _)| candidate == sha)
+            .map(|(_, stamp)| (owner.to_string(), Some(stamp)))
+    };
+    let stamps = commit_stamps(store, lineage)
+        .map_err(|e| ReadArmError::Store(format!("cannot list commits: {e}")))?;
+    if let Some(hit) = found(stamps, lineage) {
+        return Ok(hit);
+    }
+    let owner = store
+        .kv_get_sync(&commit_lineage_key(sha))
+        .map_err(|e| ReadArmError::Store(format!("cannot read commit owner: {e:?}")))?
+        .ok_or_else(|| ReadArmError::UnknownCommit {
+            lineage: lineage.to_string(),
+            sha: sha.to_string(),
+        })?;
+    let stamps = commit_stamps(store, &owner)
+        .map_err(|e| ReadArmError::Store(format!("cannot list commits: {e}")))?;
+    Ok(found(stamps, &owner).unwrap_or((owner, None)))
 }
 
 /// Resolve a temporal read to its fold instant (P5b.3a, §3.1.1–3.1.2).
@@ -3567,30 +4364,17 @@ fn resolve_commit_address(
     if macrame::util::timestamp::normalize(address).is_ok() {
         return resolve_temporal_read(store, lineage, address, strict, None);
     }
-    let is_sha = address.len() == 40 && address.bytes().all(|b| b.is_ascii_hexdigit());
-    if !is_sha {
-        return Err(ReadArmError::RefNeedsP5b4 {
-            address: address.to_string(),
-        });
-    }
     // A-3: a sha resolves through its commit concept to the lineage that
     // holds it — asking a branch name for a trunk sha is legitimate, and on
-    // an address name (no lineage of its own) it is the only path.
-    let owner = match commit_stamps(store, lineage)
-        .map_err(|e| ReadArmError::Store(format!("cannot list commits: {e}")))?
-        .into_iter()
-        .any(|(sha, _)| sha == address)
-    {
-        true => lineage.to_string(),
-        false => store
-            .kv_get_sync(&commit_lineage_key(address))
-            .map_err(|e| ReadArmError::Store(format!("cannot read commit owner: {e:?}")))?
-            .ok_or_else(|| ReadArmError::UnknownCommit {
-                lineage: lineage.to_string(),
-                sha: address.to_string(),
-            })?,
+    // an address name (no lineage of its own) it is the only path. P5b.4's
+    // ref half is the same resolution over a name's tip, so both spellings
+    // land in one shape.
+    let addressed = resolve_address(store, lineage, address)?;
+    let Some(sha) = addressed.sha else {
+        // Only a timestamp address lacks a sha, and it returned above.
+        return resolve_temporal_read(store, lineage, address, strict, None);
     };
-    let fold_ts = completion_or_backfill(store, &owner, address)?;
+    let fold_ts = addressed.completion;
     // P5b.3a: no observation rows exist until P5d, so the dirty set is
     // empty and `strict` has nothing to refuse. The check ships with the
     // field so P5d fills the set without changing the rule.
@@ -3605,12 +4389,12 @@ fn resolve_commit_address(
     Ok(ResolvedRead {
         fold_ts,
         basis: "git-history",
-        sha: Some(address.to_string()),
+        sha: Some(sha),
         horizon,
         dirty_at_commit,
-        address: false,
+        address: addressed.named,
         parent_drift: 0,
-        fold_branch: owner,
+        fold_branch: addressed.lineage,
     })
 }
 
@@ -4394,6 +5178,7 @@ mod backfill_tests {
             &repo_s,
             "main",
             None,
+            None,
             false,
         )
         .unwrap();
@@ -4441,6 +5226,7 @@ mod backfill_tests {
             &store_path.to_string_lossy(),
             &repo_s,
             "main",
+            None,
             None,
             false,
         )

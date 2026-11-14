@@ -4,6 +4,65 @@ Patch releases accumulate toward the next minor (+0.0.1 per implemented feature,
 bump commit named in the feature's DR row). The v0.12 plan history lives
 in `docs/` (v1 frozen, consolidated trio authoritative).
 
+## 0.16.0 (2026-11-14)
+
+Two axes you can address, a prefix you can backfill, and a store that says whether
+it is whole. A caller may name a commit — sha, branch or `{branch}#{n}` generation —
+instead of an instant, on either axis; a store that starts at a later commit may be
+given the history before it, in newest-first chunks that answer the same valid axis
+as one in-order ingest; and both the read surfaces and the store's own ingest report
+say which fact an answer rests on. Four entries below, newest first; P5b.5 and P9
+close, P5b.4 opens commit addressing.
+
+- **The store's own ingest state (P9, slice 2).** `coderadar_ingest_status`
+  (`coderadar ingest-status`, `ops.ingest_status`) reports what the store
+  records about its own history: per name and per lineage the cursor, stamp,
+  horizon, tip, generation, recorded commits and completion marks, and the
+  declared format. It is Q-10's answer — the ingest *report*, never the
+  write — with `completions < commits` naming `backfill_commit_index` as
+  the repair. An address-only name reports its owner lineage and no cursor;
+  ghost commits stay out because they describe one run rather than the
+  store, and coverage remains `verify_history`'s question. Reads never
+  create a store: a missing path refuses by name. (35 MCP tools.)
+
+- **The temporal read surface (P9, slice 1).** `coderadar_as_of` takes `at`
+  (a sha, a branch, or a `{branch}#{n}` generation), `branch`, `valid` and
+  `strict`; `coderadar_changes_between` takes `valid`. `coderadar as-of`
+  gained `--at/--branch/--valid/--strict`, `changes-between` gained
+  `--valid`, and QUICKREF, the MCP skill and the server instructions name
+  them in the same commit. The answers already named their axis; the
+  surface's job was passing the arguments through.
+
+- **Commits as addresses (P5b.4).** `at=` now takes a sha or a name the store
+  knows — a branch, a `{branch}#{n}` generation, an address-only name — on
+  either axis, and resolves it to the instant that axis folds at: the
+  recorded axis at the commit's completion (when the ledger learned it), the
+  valid axis at the commit's own stamp (what its rows carry, nudge included).
+  The two instants are the point of the feature; folding the valid axis at a
+  completion instant would answer the present for a commit from last year.
+  An unknown sha or name refuses by name and never rounds to a neighbour; an
+  address that resolves into a branch lineage still refuses with
+  `ValidBranchNeedsU2` on the valid axis.
+
+- **Backfill windows (P5b.5, the ingest half).** `ingest_history` takes
+  `to=<sha>`: every commit after `from` and strictly before the lineage's
+  belief start, walked forward and written as closed intervals that abut
+  the belief they precede, so a store that starts at a later commit can be
+  given its prefix. `from=None` reaches the root; `to` must be the belief
+  start (`report["belief_start"]`), which the report states so callers
+  chain chunks newest-first instead of guessing. A window's first commit
+  writes its whole tree (it is the store's new root), each file closes
+  where its next belief begins, no sweep/edges/cursor/stamp/tip/horizon
+  moves, and a closed id's life ends with the tombstone the forward run
+  would have written — otherwise the live projection would keep listing a
+  deleted entity. The proof is Doctrine VIII's pair: a history ingested as
+  contiguous chunks newest-first answers every commit's valid axis
+  identically to one in-order ingest (six tests, incl. a deletion and a
+  never-touched file). Two engine-side arms were the price: a closed
+  version may backfill before a settled (closed) incumbent, not only an
+  open one, and the unchanged-content gate keeps a byte-identical row
+  whose start precedes the resolved one.
+
 ## 0.15.0 (2026-11-13)
 
 Temporal P5: history as it was lived. A store can now be filled from git

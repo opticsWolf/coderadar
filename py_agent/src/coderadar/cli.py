@@ -593,12 +593,24 @@ def module_children(module_id: str, fmt: str):
 @click.argument("symbols", nargs=-1)
 @click.option("--query", "-q", "query_text", default="",
               help="Free text naming the symbols, instead of or besides SYMBOLS.")
+@click.option("--at", default=None,
+              help="Address a commit instead of a timestamp: a sha, a branch, or a "
+              "{branch}#{n} generation. Never rounds to a neighbour.")
+@click.option("--branch", default="main", show_default=True,
+              help="Lineage to read. The valid axis is trunk-only until Macrame U-2.")
+@click.option("--valid", "valid", is_flag=True,
+              help="Read the valid axis (what was true in the repository) instead "
+              "of the recorded one (what the store had observed).")
+@click.option("--strict", is_flag=True,
+              help="Refuse the git-history fallback (a read before the horizon).")
 @_format_option
-def as_of(timestamp: str, symbols: tuple, query_text: str, fmt: str):
-    """Look SYMBOLS up as of TIMESTAMP (MCP coderadar_as_of)."""
+def as_of(timestamp: str, symbols: tuple, query_text: str, at: str | None,
+          branch: str, valid: bool, strict: bool, fmt: str):
+    """Look SYMBOLS up as of TIMESTAMP, or at an address (MCP coderadar_as_of)."""
     from . import ops, render
     _enter_project()
-    _op(fmt, lambda: ops.as_of(timestamp, query_text, list(symbols)),
+    _op(fmt, lambda: ops.as_of(timestamp, query_text, list(symbols), branch,
+                               strict=strict, at=at, valid=valid),
         lambda result: render.as_of(
             result,
             example=f'coderadar as-of --timestamp "{timestamp}" --symbols User',
@@ -629,6 +641,20 @@ def verify_history(from_ts: str | None, to_ts: str | None, generations: int,
         lambda result: render.verify_history(result, offenders=offenders))
 
 
+@main.command(name="ingest-status")
+@click.option("--store", "store_path", default=None,
+              help="Store to read. Default: the loaded project's store.")
+@_format_option
+def ingest_status(store_path: str | None, fmt: str):
+    """Report the store's own ingest state (MCP coderadar_ingest_status)."""
+    from pathlib import Path as _Path
+
+    from . import ops, render
+    store = str(_Path(store_path).resolve()) if store_path else None
+    _enter_project()
+    _op(fmt, lambda: ops.ingest_status(store_path=store), render.ingest_status)
+
+
 @main.command(name="changes-between")
 @click.option("--t1", "t1", required=True,
               help="Window start (ISO 8601 UTC).")
@@ -638,12 +664,16 @@ def verify_history(from_ts: str | None, to_ts: str | None, generations: int,
               help="File path as indexed, or an id prefix. Omit for the whole universe.")
 @click.option("--branch", default="main", show_default=True,
               help="Ledger branch to diff.")
+@click.option("--valid", "valid", is_flag=True,
+              help="Diff the valid axis (what was true at each instant) instead of "
+              "the recorded one.")
 @_format_option
-def changes_between(t1: str, t2: str, scope: str | None, branch: str, fmt: str):
+def changes_between(t1: str, t2: str, scope: str | None, branch: str,
+                    valid: bool, fmt: str):
     """Report added/removed/modified/moved entities (MCP coderadar_changes_between)."""
     from . import ops, render
     _enter_project()
-    _op(fmt, lambda: ops.changes_between(t1, t2, scope, branch),
+    _op(fmt, lambda: ops.changes_between(t1, t2, scope, branch, valid=valid),
         lambda result: render.changes_between(result))
 
 
@@ -917,6 +947,10 @@ def rebuild_store(repo: str, store_path: str | None, branches: str | None,
               help="Exclusive window start (a sha). Omit to resume from the cursor "
               "(or start at the root / fork). "
               "A sha that is not the cursor is refused (INV-10).")
+@click.option("--to", "to_sha", default=None,
+              help="Backfill window end (a sha): write every commit after --from and "
+              "strictly before it, as closed intervals. Must be the lineage's belief "
+              "start (the report's belief_start) — windows are newest-first chunks.")
 @click.option("--dry-run", is_flag=True,
               help="Plan without writing anything (no store creation, no fork, no cursor).")
 @click.option("--store", "store_path", required=True,
@@ -924,7 +958,7 @@ def rebuild_store(repo: str, store_path: str | None, branches: str | None,
               "A legacy index-now store is refused (INV-12).")
 @_format_option
 def ingest_history(repo: str, branch: str, lineage: str | None,
-                   parent_ref: str, from_sha: str | None,
+                   parent_ref: str, from_sha: str | None, to_sha: str | None,
                    dry_run: bool, store_path: str, fmt: str):
     """Ingest a git branch's history onto the trunk or a branch lineage (P5a.3/P5a.4, DR-41)."""
     from pathlib import Path as _Path
@@ -937,7 +971,7 @@ def ingest_history(repo: str, branch: str, lineage: str | None,
     _enter_project()
     _op(fmt, lambda: ops.ingest_history(repo, branch, from_sha, dry_run,
                                         lineage=lineage, parent_ref=parent_ref,
-                                        store_path=store_path),
+                                        to_sha=to_sha, store_path=store_path),
         lambda result: render.ingest_history(result))
 
 

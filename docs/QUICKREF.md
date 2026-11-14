@@ -1,6 +1,6 @@
 # CodeRadar Quick Reference
 
-> v0.15.0 · Full design: `ARCHITECTURE.md` · Agent skills:
+> v0.16.0 · Full design: `ARCHITECTURE.md` · Agent skills:
 > `coderadar/skills/coderadar-{mcp,cli}/SKILL.md` (bundled; install with
 > `coderadar skills install`) · Query language:
 > `coderadar docs query-language` (generated — read it, don't guess fields).
@@ -23,6 +23,9 @@ Never run two servers on one store — the second gets `DB_LOCKED`.
 
 | Task | CLI | MCP | Python |
 |---|---|---|---|
+| Build history | `coderadar ingest-history --repo R --store S` | — (write) | `ops.ingest_history(R, store_path=S)` |
+| Backfill a prefix | `coderadar ingest-history … --from A --to B` | — (write) | `ops.ingest_history(…, to_sha=B)` |
+| Is the store whole? | `coderadar ingest-status` | `coderadar_ingest_status` | `ops.ingest_status()` |
 | Find symbol | `coderadar search foo` | `coderadar_search` | `g.search("foo")` |
 | Keyword search | — (API-only) | — | `g.search_symbols("token", top_k=10)` |
 | Who calls X | `coderadar callers pkg.mod.fn` | `coderadar_callers` | `g.callers("…")` |
@@ -32,9 +35,10 @@ Never run two servers on one store — the second gets `DB_LOCKED`.
 | Resolve import/route | `coderadar resolve "a.b.c"` | `coderadar_resolve` | `g.resolve("…")` |
 | Structured query | `coderadar query "functions where …"` | `coderadar_query` | `g.query("…")` |
 | Smells / dead code | `coderadar get-smells`, `dead-code` | `coderadar_get_smells`, `…_dead_code` | `g.get_smells()` |
-| History read | — (via Python) | `coderadar_as_of` | `snap = g.as_of(t, branch="main"); snap.read_bytes(id)` |
+| History read | `coderadar as-of T --valid` | `coderadar_as_of` | `snap = g.as_of(t, branch="main"); snap.read_bytes(id)` |
+| Read at a commit | `coderadar as-of --at SHA` | `coderadar_as_of(at=…)` | `ops.as_of("", at=sha, valid=True)` |
 | Trust that history | `coderadar verify-history` | `coderadar_verify_history` | `ops.verify_history()` |
-| What changed T1→T2 | `coderadar changes-between T1 T2` | `coderadar_changes_between` | `ops.changes_between(t1, t2)` |
+| What changed T1→T2 | `coderadar changes-between --t1 T1 --t2 T2 --valid` | `coderadar_changes_between` | `ops.changes_between(t1, t2, valid=True)` |
 | Versions of a file | `coderadar history FILE` | — | `g.history_of("…")` |
 | Heal commit bodies | — (ops-only) | — | `ops.backfill_commit_messages(repo, store)` |
 | Annotate / comment | `coderadar annotate ABOUT BODY` / `comment ABOUT BODY` | — | `g.annotate(…)` / `g.comment(…)` |
@@ -98,7 +102,7 @@ default_dry_run = true
 ## Version notes
 
 +0.0.1 per feature (`pyproject` + workspace `Cargo.toml`, one bump commit).
-Specs, tests, dep patches: no bump. Current: **0.15.0**, `macrame-db` 0.22.0,
+Specs, tests, dep patches: no bump. Current: **0.16.0**, `macrame-db` 0.22.0,
 store schema v29. `../CHANGELOG.md` is the per-version record.
 
 `verify-history` reports coverage for the generations a store actually wrote

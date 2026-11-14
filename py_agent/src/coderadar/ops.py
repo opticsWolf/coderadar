@@ -61,6 +61,7 @@ __all__ = [
     "friendly_entity_id",
     "get_smells",
     "history_of",
+    "ingest_status",
     "module_children",
     "node",
     "normalize_query_spelling",
@@ -95,6 +96,7 @@ OPERATIONS = (
     "explore", "node", "search", "affected", "resolve", "query",
     "search_similar", "search_hybrid", "compute_embeddings", "module_children", "as_of",
     "verify_history",
+    "ingest_status",
     "changes_between",
     "annotations_on", "comments_on", "annotation_history", "comment_history",
     "open_items",
@@ -1237,17 +1239,26 @@ def as_of(timestamp: str, query: str = "", symbols: Sequence[str] | None = None,
     the last commit at or before T (``horizon`` carries *H(L)*, ``commit``
     its sha, `None` on the recorded arm). ``strict=True`` refuses the
     git-history arm (``BeforeHorizon``); ``at=<sha>`` addresses a commit
-    directly (A-3). A T before the lineage's first commit refuses
+    directly (A-3): a sha, a branch name, or a `{branch}#{n}` generation.
+    A T before the lineage's first commit refuses
     (``BeforeHistory``) rather than answering empty.
 
     ``valid=True`` (P5b.3, A-2/INV-16) reads the same instant on the
     **valid** axis instead: the ledger's own intervals answer "what was
-    true then", so no horizon and no commit index are involved and
-    ``basis`` is ``"valid"``. It is trunk-only until Macrame's
-    lineage-resolved valid fold (U-2, 0.23.0): a branch refuses with
-    ``ValidBranchNeedsU2`` rather than folding the trunk for it, and
-    ``at=`` refuses with ``ValidAtNeedsP5b4`` (turning an address into an
-    instant is P5b.4's job — INV-16 forbids guessing which axis it names).
+    true then", so no horizon is involved and ``basis`` is ``"valid"``.
+    It is trunk-only until Macrame's lineage-resolved valid fold (U-2,
+    0.23.0): a branch refuses with ``ValidBranchNeedsU2`` rather than
+    folding the trunk for it, and so does an address that resolves into a
+    branch lineage.
+
+    ``at=`` (P5b.4, A-3) addresses a commit on either axis and resolves it
+    to what that axis folds: a sha, or a name the store knows (a branch, a
+    ``{branch}#{n}`` generation, an address-only name), never rounded to a
+    neighbour. The recorded axis folds at the ledger's completion instant
+    for that commit; the valid axis folds at the commit's own stamp, which
+    is what its rows carry (nudge included). An unknown sha refuses
+    (``unknown commit``), an unknown name refuses (``UnknownBranch``), and
+    an address ``at`` may not be combined with a positional instant.
     """
     if not timestamp and at is None:
         raise InvalidRequest(
@@ -2013,7 +2024,8 @@ def import_annotations(source: str | Path | dict, *,
 def ingest_history(repo: str | Path, branch: str = "main",
                    from_sha: str | None = None, dry_run: bool = False,
                    lineage: str | None = None, parent_ref: str = "main",
-                   *, store_path: str | Path | None = None,
+                   *, to_sha: str | None = None,
+                   store_path: str | Path | None = None,
                    graph: Any = None) -> dict:
     """Commit-driven history ingest into the trunk or a branch lineage
     (P5a.3/P5a.4, DR-41).
@@ -2064,6 +2076,22 @@ def ingest_history(repo: str | Path, branch: str = "main",
     plans without writing anything, including no store creation and no
     fork.
 
+    ``to_sha`` turns the run into a **backfill window** (P5b.5,
+    INV-10'): every commit after ``from_sha`` and strictly before
+    ``to_sha``, walked forward and written as closed intervals that abut
+    the belief already recorded from ``to_sha`` on. ``to_sha`` must be
+    this lineage's belief start (``report["belief_start"]``) — windows
+    are newest-first contiguous chunks, so the next chunk's ``to_sha`` is
+    this chunk's first commit, and ``from_sha=None`` reaches the root. A
+    window moves no cursor, stamp, tip or horizon, writes no edges and
+    runs no sweep; it reports ``window: {"from", "to", "commits",
+    "edges_skipped"}`` and updates ``belief_start`` to the window's first
+    commit. The whole point is the pair of assertions Doctrine VIII
+    states: a history ingested as contiguous chunks newest-first answers
+    every commit's **valid axis** identically to one in-order ingest,
+    with the recorded axis differing exactly where the chunk order
+    differed.
+
     ``adoptions`` (macrame-db 0.22.0, D-315): a merge file whose
     module id was minted on the merging lineage is an ADOPTED first
     version - the trunk mints its own from the merge's bytes,
@@ -2094,7 +2122,8 @@ def ingest_history(repo: str | Path, branch: str = "main",
                       str(from_sha) if from_sha is not None else None,
                       bool(dry_run),
                       str(lineage) if lineage is not None else None,
-                      str(parent_ref))
+                      str(parent_ref),
+                      str(to_sha) if to_sha is not None else None)
     except ImportError as e:
         raise EngineError(f"native extension unavailable: {e}") from None
     except ValueError as e:
@@ -2517,6 +2546,50 @@ def backfill_commit_index(branch: str = "main",
         return dict(_json.loads(raw))
     except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
         raise EngineError(f"backfill_commit_index returned unparseable JSON: {e}") from None
+
+
+def ingest_status(*, store_path: str | Path | None = None,
+                  graph: Any = None) -> dict:
+    """What the store records about its own ingest (P9, Q-10).
+
+    The read-only half of the ingest report, and the answer to Q-10 ("the
+    report, never the write"): per name and per lineage, the cursor
+    (`ingest.head`), the stamp, the horizon, the tip the name points at, the
+    generation, how many commit concepts the lineage holds and how many
+    completion marks exist. ``completions < commits`` means an interrupted
+    run or a pre-horizon store — ``backfill_commit_index`` is the repair.
+    ``address_only`` marks a name that only ever pointed at a commit another
+    lineage holds (D-6 c).
+
+    Deliberately absent: ghost commits (a fact about one run, not about the
+    store) and coverage (``verify_history``'s question, asked per
+    generation). ``format`` is the store's declared stamping mode and is
+    ``None`` on an analyze-only store. The store is ``store_path``, else the
+    given graph's database.
+    """
+    if store_path is None and graph is not None:
+        store_path = getattr(graph, "_db_path", None)
+    if store_path is None:
+        raise InvalidRequest(
+            "ingest_status needs a store_path (or a graph carrying one).")
+    # A read must not create a store: the engine's open does, so check first.
+    if not Path(store_path).exists():
+        raise InvalidRequest(
+            f"no store at {store_path} — ingest a branch's history first.")
+    try:
+        from coderadar._core import store_status as _status
+        raw = _status(str(store_path))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"ingest_status returned unparseable JSON: {e}") from None
 
 
 def _lineage_plan(repo_s: str, branches: list[str] | None,

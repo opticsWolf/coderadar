@@ -883,6 +883,52 @@ def as_of(result: dict, *,
     return "\n".join(lines)
 
 
+def ingest_status(result: dict) -> str:
+    """The store's own ingest state, one line per name (P9, Q-10).
+
+    Counts before addresses: a reader looking for "is this store whole?"
+    reads ``commits/completions`` and stops. An address-only name is
+    marked as such (it has a tip and no history of its own), and every
+    short lineage names the repair rather than leaving the count to speak
+    for itself.
+    """
+    fmt = result.get("format")
+    out = [
+        "## Ingest state",
+        "",
+        f"format           {'commit-time (P5b.1+)' if fmt else 'analyze-only'}",
+        "",
+    ]
+    rows = result.get("lineages") or []
+    if not rows:
+        out.append("No lineage is recorded: ingest a branch's history first.")
+        return chr(10).join(out)
+    for row in rows:
+        commits = row.get("commits", 0)
+        completions = row.get("completions", 0)
+        head = (
+            f"{row.get('name', '?')}"
+            f"  gen {row.get('generation', 1)}"
+            f"  commits {commits}/{completions}"
+        )
+        if row.get("address_only"):
+            head += f"  address -> {(row.get('tip') or '?')[:12]}"
+        else:
+            if row.get("cursor"):
+                head += f"  cursor {(row['cursor'])[:12]}"
+            if row.get("horizon"):
+                head += f"  horizon {row['horizon']}"
+        if row.get("lineage") and row["lineage"] != row.get("name"):
+            head += f"  (lineage {row['lineage']})"
+        out.append(head)
+        if not row.get("address_only") and completions < commits:
+            out.append(
+                f"  incomplete: {commits - completions} commit(s) lack a "
+                f"completion mark - run backfill_commit_index for "
+                f"{row.get('lineage', row.get('name'))}")
+    return chr(10).join(out)
+
+
 def verify_history(result: dict, *, offenders: int = 10) -> str:
     """Per-generation byte coverage as legible text (P1, DR-36).
 
@@ -1123,6 +1169,7 @@ def ingest_history(result: dict) -> str:
         f"from             {result['from'] or '(root)'}",
         f"fork             {result.get('fork_point') or '(trunk)'}",
         f"head             {result['head'] or '(unchanged)'}",
+        f"belief           {result.get('belief_start') or '(none)'}",
         (
             f"commits          ingested={result['commits_ingested']}  "
             f"skipped={len(result['commits_skipped'])}  "
@@ -1142,6 +1189,13 @@ def ingest_history(result: dict) -> str:
         f"elapsed          {result['elapsed_secs']:.1f}s",
     ]
     out = head
+    window = result.get("window")
+    if window:
+        out.append("")
+        out.append(
+            f"backfill window  ({window['from'] or '(root)'}, {window['to']})  "
+            f"commits={window['commits']}  edges_skipped={window['edges_skipped']}"
+        )
     if result["commits_skipped"]:
         out.append("\nskipped commits:")
         out += [f"  {s['sha'][:12]}  {s['reason']}" for s in result["commits_skipped"]]

@@ -7,9 +7,11 @@ was true in the repository at this instant", from the ledger's own
 intervals: no horizon, no commit index, `basis == "valid"`.
 
 Trunk reads ship now. Branch reads refuse with `ValidBranchNeedsU2`
-(Macrame U-2, 0.23.0) rather than folding the trunk for a branch, and `at=`
-refuses with `ValidAtNeedsP5b4` — invocation axes are never crossed by
-guessing.
+(Macrame U-2, 0.23.0) rather than folding the trunk for a branch. `at=`
+resolves an address to the pair it denotes (P5b.4): a sha or a name the
+store knows, turned into the instant to fold — on this axis the fold then
+answers the trunk, and an address into a branch refuses with the same
+`ValidBranchNeedsU2` rather than folding the trunk for it.
 """
 
 from __future__ import annotations
@@ -173,14 +175,59 @@ class TestTheAxisRefusesWhatItCannotAnswer:
         ok = ops.as_of("2026-01-01T10:30:00.000000Z", symbols=[ID], valid=True)
         assert ok["basis"] == "valid", ok
 
-    def test_at_on_the_valid_axis_names_p5b4(self, tmp_path):
+    def test_an_address_resolves_to_the_instant_it_names(self, tmp_path):
+        # P5b.4: the sha of c2 addresses c2's own interval. The proof is
+        # that it answers what the *instant* answers — and that it is not
+        # the head's answer, which is what rounding would produce.
         repo = _three_commits(tmp_path / "repo")
         _ingest(repo)
         _load(repo)
+        c2 = subprocess.run(["git", "rev-parse", "HEAD~1"], cwd=str(repo),
+                            check=True, capture_output=True, text=True).stdout.strip()
+        addressed = ops.as_of("", symbols=[ID], at=c2, valid=True)
+        assert addressed["basis"] == "valid", addressed
+        assert addressed["commit"] == c2, addressed
+        # The address resolved to the commit's own committer time: the
+        # fold instant *is* the stamp its rows carry, so nothing rounds.
+        assert addressed["fold_ts"] == "2026-01-01T11:00:00.000000Z", addressed
+        at_instant = ops.as_of("2026-01-01T11:00:00.000000Z", symbols=[ID],
+                               valid=True)
+        assert addressed["entities"][ID] == at_instant["entities"][ID]
+        assert _ref_digest("2026-01-01T11:00:00.000000Z", valid=True) != \
+            _ref_digest("2026-01-01T12:00:00.000000Z", valid=True), (
+            "c2 and the head differ in bytes, so addressing the head could not answer c2's interval")
+
+    def test_a_name_addresses_its_tip(self, tmp_path):
+        repo = _three_commits(tmp_path / "repo")
+        _ingest(repo)
+        _load(repo)
+        by_name = ops.as_of("", symbols=[ID], at="main", valid=True)
         head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo),
                               check=True, capture_output=True, text=True).stdout.strip()
-        with pytest.raises(ops.InvalidRequest, match="ValidAtNeedsP5b4"):
-            ops.as_of("", symbols=[ID], at=head, valid=True)
+        by_sha = ops.as_of("", symbols=[ID], at=head, valid=True)
+        assert by_name["commit"] == head, by_name
+        assert by_name["entities"][ID] == by_sha["entities"][ID]
+
+    def test_an_unknown_address_refuses_and_never_rounds(self, tmp_path):
+        repo = _three_commits(tmp_path / "repo")
+        _ingest(repo)
+        _load(repo)
+        with pytest.raises(ops.InvalidRequest, match="unknown commit"):
+            ops.as_of("", symbols=[ID], at="0" * 40, valid=True)
+        with pytest.raises(ops.InvalidRequest, match="UnknownBranch"):
+            ops.as_of("", symbols=[ID], at="no-such-branch", valid=True)
+
+    def test_an_address_into_a_branch_names_u2(self, tmp_path):
+        repo = _three_commits(tmp_path / "repo")
+        _git(repo, "checkout", "-q", "-b", "feature", "HEAD")
+        _commit(repo, "f1", "2026-01-01T13:00:00+00:00", {"b.py": "y = 1\n"})
+        _ingest(repo)
+        _ingest(repo, branch="feature")
+        _load(repo)
+        f1 = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo),
+                            check=True, capture_output=True, text=True).stdout.strip()
+        with pytest.raises(ops.InvalidRequest, match="ValidBranchNeedsU2"):
+            ops.as_of("", symbols=[ID], at=f1, valid=True)
 
     def test_a_snapshot_names_the_valid_axis(self, tmp_path):
         repo = _three_commits(tmp_path / "repo")

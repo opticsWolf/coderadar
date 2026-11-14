@@ -1,6 +1,6 @@
 # CodeRadar Architecture
 
-> **Living document.** Baseline: v0.15.0 (`dev`), `macrame-db` 0.22.0,
+> **Living document.** Baseline: v0.16.0 (`dev`), `macrame-db` 0.22.0,
 > store schema v29. Update with feature commits the way `CHANGELOG.md` is
 > updated — a section that describes behavior the code no longer has is a bug.
 > Design *history* (why things are the way they are) lives in the
@@ -101,7 +101,7 @@ CodeRadar/
     __init__.py                 # CodeGraph facade, Snapshot, errors
     ops.py                      # OPERATIONS: validated shared op layer
     cli.py                      # click CLI (graph ops + local-only cmds)
-    mcp/server.py               # 34 tools, thin over ops
+    mcp/server.py               # 35 tools, thin over ops
     coldstart.py                # ledger load + changed-files refresh
     config.py                   # .coderadar.toml (pydantic, §12)
     resolvers/ framework.py     # L2–L4 cascade + framework routes (DR-10)
@@ -184,7 +184,7 @@ side never touches ledger handles.
   cwd-rooted serving state.
 - **`agent/graphrag.py`, `lsp/pool.py`** — kept as named seams with wiring
   triggers in their headers (DR-16); neither is on any hot path.
-- **`mcp/server.py`** — 34 tools, thin over `ops`, plus server instructions
+- **`mcp/server.py`** — 35 tools, thin over `ops`, plus server instructions
   (language count, staleness guidance — README-tested).
 - **`cli.py`** — graph ops plus local-only commands (`init`, `visualize`,
   `shell`, `git`, `exclude`, `watch`, `load-snapshot`, `store-repair`,
@@ -521,13 +521,28 @@ tips → addresses → sweep → marks), and `watch --git` runs it.
   rebuilds both from the ledger for stores written before this phase.
 - **Branches.** `as_of`/`lookup` take an address (`at=`) that names a
   branch, a `{branch}#{n}` generation (a rewrite bumps the generation;
-  merges and trunk rewrites do not), or a commit. Every answer names the
+  merges and trunk rewrites do not), or a commit (sha) — on either axis
+  (P5b.4): the address resolves to the instant that axis folds at, the
+  recorded one folding at the commit's completion and the valid one at
+  the commit's own stamp. Nothing rounds; an unknown name or sha refuses
+  by name. Every answer names the
   basis it came from — `recorded`, `git-history` (a pre-horizon commit read
   from git), or `valid` — and a refusal is a reason, never a blank.
 - **Valid axis.** On the trunk, `valid=True` reads the belief axis
   (`reconstruct_valid`); a branch's valid read is refused until the
   engine can cut a fork's belief axis (Macrame U-2/D-317) — the read names
   that, and the recorded axis keeps working.
+- **Backfill windows (P5b.5).** `ingest_history(..., to=<belief start>)`
+  walks a prefix window: every commit after `from` and strictly before
+  `to`, written as closed intervals that abut the belief starting there
+  (the window's first commit writes its tree; each file's version closes
+  at its next belief — the next change inside the window, else the
+  store's own next start, else it stays open). A window moves no cursor,
+  stamp, tip or horizon, writes no edges and runs no sweep, and writes
+  each commit's `commit_done` mark at the instant the ledger learned it —
+  the recorded-axis difference that makes Doctrine VIII's pair testable:
+  a history ingested as newest-first chunks answers every commit's valid
+  axis identically to one in-order ingest.
 - **Observations (P5d).** Rows carry `observed_at`/`source`
   (`ingest`, `sync`, `watch`); an observation lands on the lineage whose
   tree it saw, and `test_retention`-style sweeps retire per lineage.

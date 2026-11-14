@@ -498,11 +498,31 @@ generations by design — its question is "did every indexing act leave reconstr
 the valid axis has no generation list to sample; a valid variant would be a different audit, filed
 when a consumer asks for one.)*
 
-### P5b.4 — Commits as addresses (blocked by P5b.3)
+### P5b.4 — Commits as addresses (closed 2026-11-14)
 
 `at` accepts a sha or a ref (A-3), resolved through the commit concept to its lineage and committer
 time, with the INV-11 nudge applied so a nudged stamp resolves to itself. An unknown sha refuses;
 it never rounds to the nearest commit.
+
+*(2026-11-14, landed — and the one thing the design note could not know.)* The address resolves to
+*one* commit and to *both* axes' instants, because the axes fold at different times: the recorded
+axis folds at the commit's **completion** instant (`commit_done` — when the ledger learned it, wall
+clock, which is what a recorded fold at that instant sees), while the valid axis folds at the
+commit's **own stamp** (its rows' `valid_from`, nudge included). A read that folded the valid axis
+at the completion instant would answer the present for a commit from last year — the first test
+written for this caught it, and that is why the resolver returns a pair.
+
+Names resolve to the tip the store records for them, in three keys: the name's own
+`branch.tip.{name}` (it keeps tracking the tip after a rewrite moves the name), else the lineage's,
+else the lineage's **ingest cursor** — a generation has no tip key of its own, and its cursor is
+exactly the newest commit it completed. A name that points at another lineage's commit (D-6 c)
+takes its owner from the commit, not from the name.
+
+The implementation is shared with the recorded arm: `resolve_address` is the one resolver, so a sha
+and a name mean the same thing on both axes, and the two P5b.4 placeholders (`RefNeedsP5b4`,
+`ValidAtNeedsP5b4`) are gone rather than kept as aliases. The valid arm still belongs to the trunk:
+an address that resolves into a branch lineage refuses with `ValidBranchNeedsU2` — the same refusal
+a branch *name* gets, for the same reason.
 
 ### P5b.5 — Out-of-order ingest (blocked by P5b.3)
 
@@ -579,6 +599,48 @@ then window-backfills `(root, fork)` in contiguous chunks newest-first. Every co
 answers must agree between A and B; the recorded axis must differ exactly where the chunk order did.
 The interval assertions are the real test: `verify_concept_intervals` clean, and each file's valid
 interval ends where the next change begins (no gaps, no overlaps).)*
+
+*(2026-11-14, slice 2 landed — the writer. Five facts the code decided, four of them
+against the design note above.)*
+
+*`--to`, not `--from-root`.* The window's end is the parameter a caller needs (it must name the
+lineage's belief start), and `from=None` already spells the root, so one new option beat a second
+meaning for `--from`. Every run reports `belief_start`; a window's `to` is that value, and after the
+run it is the window's own first commit — newest-first chunks abut with no boundary a caller can
+misplace. A window also reports `window: {from, to, commits, edges_skipped}`.
+
+*The window's first commit writes its **tree**, not a diff.* A prefix window is the store's new
+root: there is no earlier ingested tree for unchanged files to inherit from, so the first window
+commit writes everything it holds (the walker already ships `tree`).
+
+*The successor is the store's belief start, not just the plan's next touch.* The boundary chunk
+writes full trees, so a file that no post-window commit touches still has a belief row at the
+boundary stamp; the window's last version must close there. `next_trunk_start` reads all three
+places the trunk keeps a version's span — `concepts`, `concept_versions`, and `transaction_log`
+(the W1 path's own history: a displaced row is logged with its span). Without the log the query
+finds only the newest row and the close lands too late.
+
+*Two guard generalisations, both the chain's invariant rather than the incumbent's shape.*
+`upsert_concepts_bulk` now accepts a closed version written before a **settled** row (the backfill
+arm asked the incumbent to be open; a chunk boundary can leave a closed current row — content
+versions do). And `act_is_new` keeps an identical-content row whose start precedes the resolved
+row's: the unchanged gate would otherwise drop a byte-identical backfill and the interval would
+never be written.
+
+*One act the window does perform.* Where its last version for an id closed because the id's life
+ended before the tip, the forward run would have left a tombstone at that instant; the window writes
+that same tombstone, at that same instant (content from the row itself). Without it the trunk's
+current row would be a closed, non-retired shape no read expects, and the live projection would keep
+listing a deleted entity. Nothing else is written: no edges, no sweep, no cursor, stamp, tip or
+horizon.
+
+*Proof.* `tests/test_p5b5_window.py` (six tests): one history with an add, a modify, a deletion and a
+file never touched again, ingested in order into store A and as two newest-first chunks into store
+B (which starts at a later commit, the "store that predates its own history" case). Every commit's
+valid-axis digest and the current state agree; the refusals (wrong end, no belief, off-chain, empty
+window) and a dry run that writes nothing are pinned. At the storage level,
+`a_closed_version_may_backfill_before_a_settled_one` pins the chain shape and the unchanged-gate
+arm.*
 
 ### P5b.6 — Branch names: selection, addresses, generations (needs P5b.3a)
 
@@ -795,6 +857,39 @@ expose the ingest *report* (lineage cursors, ghost commits, coverage), never the
 QUICKREF, SKILL and server instructions move in the same commit as the op, as the drift tests
 already require.
 
+*(2026-11-14, slice 1 landed — the temporal read surface.)* `coderadar_as_of` now carries the
+four arguments the ops have grown: `at` (a sha, a branch, or a `{branch}#{n}` generation, P5b.4),
+`branch` (P5b.6), `valid` (P5b.3) and `strict` (P5b.3a); `coderadar_changes_between` carries
+`valid`. `coderadar as-of` gained `--at/--branch/--valid/--strict` and `changes-between` gained
+`--valid`, and QUICKREF, the MCP skill and the server instructions name them in the same commit.
+The renderer already named the axis (P5b.3a), so the surface's job was passing the arguments
+through, not re-deciding what an answer says. Tests: `tests/mcp/test_temporal_args.py` — the schema
+advertises the four, an address reads both arms, an unknown address is a reason, and the diff runs
+on the valid axis.
+
+*(2026-11-14, slice 2 landed — Q-10's read-only ingest report.)* `coderadar_ingest_status`
+carries the report as *state*, not as a run: per name and per lineage the cursor, stamp, horizon,
+tip, generation, recorded commits and completion marks, plus the store's declared format. Three
+pieces that did not exist were the price of asking: a `kv_prefix` read (`substr`, not `LIKE` — `_`
+is a legal plain name character), the decode of `kv_name`'s hex form so a name is shown as it was
+written, and the tool-count drift (34 → 35). `completions < commits` names the repair
+(`backfill_commit_index`) in the rendered text rather than leaving a reader to subtract.
+
+Two distinctions the implementation had to keep straight, both from existing law: an **address-only
+name** has no history of its own, so whether *it* is an address is a question about its own keys
+(its tip at its own `branch.tip`), while the lineage it reports is the owner of the commit it points
+at (D-6 c) — the same rule the reads use, so `old` reports `lineage main` and `commits 3` without
+claiming a cursor. And **ghosts stay out**: a ghost commit is a fact about one run ("bytes vanished
+mid-walk"), the store does not persist it, and a report that invented one would be the invented
+answer this phase refuses elsewhere. Coverage remains `verify_history`'s question, asked per
+generation rather than per cursor.
+
+A read must not create a store, and the engine's `open` does: `ops.ingest_status` checks the path
+first and refuses with `no store at … — ingest a branch's history first`, which is the one place the
+op deviates from `backfill_commit_index`'s open-or-create. Tests:
+`tests/test_p9_ingest_status.py` — a built store's lineages and its address-only name, a rewrite's
+new generation, the incomplete-store repair line, and the missing-store refusal.
+
 ---
 
 ## 7. Sequencing
@@ -811,11 +906,11 @@ already require.
 | 3 | P5d live tree *(observation writes closed 2026-11-13 — INV-12 narrowed, source-tagged rows, one instant per write, `observations` in the sync summary, F5 flipped; H-26's nudge seed in both ingest arms. Lineage routing landed 2026-11-13 — a bare write lands on the recorded checkout (`coderadar.git.checkout`), a branch observation moves onto the branch's row space (W1 mint / W2 overlay), retires through the branch's act, persists no edges and seeds only its own mark; `analyze` refuses a branch checkout by name. Gates: 595 lib, pytest 1365/1/1xf. Commit-driven half closed 2026-11-13 — `ops.sync_git` ingests the trunk and every branch with own commits, records addresses, sweeps a checkout (left lineage back to its head, carried edits on the new one) and startup (`source: "startup"`), marks `checkout`/`head`/`dirty`; `GitWatcher` polls HEAD (`watch --git`). Gates: 596 lib, pytest 1370/1/1xf. Not wired: the mutation path's sync-first (H-26's nudge covers it) and the caller-owned graph reload after a checkout.)* | P5b.1 | P5b.2 |
 | 3 | P5b.2 adopt 0.22.0 *(closed 2026-11-11 — [patch] retired, the lock rides crates.io `0.22.0`; engine identical to the rev pin (no src/ diff 40719ac to tag); gates 589 lib + pytest 1303/1/4xf, scratch migration disorder 0)* | P5b.1 (U-1 released 2026-11-01) | P5d |
 | 4 | P5b.3 valid reads (trunk) *(closed 2026-11-12 — `valid=` on `as_of`, `changes_between`, the `Snapshot` and the five `_core` reads; `resolve_valid_read` names the instant and `basis: "valid"`, lowered to Macrame's `reconstruct_as_of(AsOf::valid_at)`, trunk-only; a branch refuses `ValidBranchNeedsU2`, `at=` refuses `ValidAtNeedsP5b4`. `history_of` needs no flag (the spine is the valid axis) and `verify_history` samples recorded generations by design — both stated in §6. Gates: 592 lib, pytest 1353/1/2xf)* | P5b.2 | — |
-| 5 | P5b.4 sha addressing | P5b.3 | P5b.5 |
-| 5 | P5b.5 out-of-order ingest *(slice 1 closed 2026-11-13 — the write shape: `upsert_concepts_bulk` accepts a closed, non-retirement version starting before the live open one when `valid_to <= live.valid_from` (the abutting chain), leaving the projection and the open belief untouched; the engine already supported it, the forward-only fallback was CodeRadar's. Malformed shapes still refuse before any write. The ingest half (prefix window, one-change lookahead, incumbent-vs-arriving closes) and the Doctrine VIII proof remain; **the release tree went CI-green 2026-11-13 at `2f50e38`** — all six jobs on both platforms, the first green run since 2026-10-29. The blocker was the store's contract, not P5b.5: a second `Database` on a live path is refused on POSIX and a mid-process close empties later reads, so `CodeGraphStore` hands out one engine per path per process (`bd353ac`, `613bd68`) and two horizon tests cross a process boundary (`2f50e38`). The cut landed as `4d3cf87` (versions, changelog, baselines, ARCHITECTURE §14.2), then a review of that tree fixed the registry's last race (registration under one lock), keyed it by the filesystem's own spelling with a lexical alias, added the macOS Python leg and a tag-vs-version gate before publishing (`1e37a4f`, `f383cc5`, `3d27232`; seven jobs green).)* | P5b.3 | P5b.4 |
+| 5 | P5b.4 sha/ref addressing *(closed 2026-11-14 — `at=` resolves on both axes through one resolver: a sha via the commit concept's owner, a name via its own tip key, its lineage's tip, or its ingest cursor (a generation's only tip record). The two axes fold at different instants — recorded at `commit_done`, valid at the commit's own stamp — so the address carries both; the valid arm still refuses an address into a branch lineage (`ValidBranchNeedsU2`). `RefNeedsP5b4` and `ValidAtNeedsP5b4` retired. Six tests: name=sha, trunk name, rewrite+generation, unknown name on both axes, unknown sha, timestamp restatement) | P5b.3 | P5b.5 |
+| 5 | P5b.5 out-of-order ingest *(slice 1 closed 2026-11-13 — the write shape: `upsert_concepts_bulk` accepts a closed, non-retirement version starting before the live open one when `valid_to <= live.valid_from` (the abutting chain), leaving the projection and the open belief untouched; the engine already supported it, the forward-only fallback was CodeRadar's. Malformed shapes still refuse before any write. **[2026-11-14] Slice 2 closed — the ingest half and the Doctrine VIII proof: `ingest_history(..., to=<belief start>)` walks a prefix window forward, writes each commit's rows closed at the file's next belief (the next in-window touch, else the store's own next start, else open), writes the boundary chunk's tree as the window's root, performs no sweep, edge write, cursor/stamp/tip/horizon move, and tombstones only where the id's life ended before the tip; six tests compare a full ingest against two newest-first chunks commit by commit (`tests/test_p5b5_window.py`).** **the release tree went CI-green 2026-11-13 at `2f50e38`** — all six jobs on both platforms, the first green run since 2026-10-29. The blocker was the store's contract, not P5b.5: a second `Database` on a live path is refused on POSIX and a mid-process close empties later reads, so `CodeGraphStore` hands out one engine per path per process (`bd353ac`, `613bd68`) and two horizon tests cross a process boundary (`2f50e38`). The cut landed as `4d3cf87` (versions, changelog, baselines, ARCHITECTURE §14.2), then a review of that tree fixed the registry's last race (registration under one lock), keyed it by the filesystem's own spelling with a lexical alias, added the macOS Python leg and a tag-vs-version gate before publishing (`1e37a4f`, `f383cc5`, `3d27232`; seven jobs green).)* | P5b.3 | P5b.4 |
 | 6 | P5b.3 branch reads | U-2 | — |
 | 7 | P5c lineage fidelity | U-3 (U-4's substance: D-315, 0.22.0) | — |
-| — | P9 | each phase it exposes | — |
+| — | P9 *(slice 1 closed 2026-11-14 — `coderadar_as_of` gains `at`/`branch`/`valid`/`strict`, `coderadar_changes_between` gains `valid`, CLI and QUICKREF/SKILL/instructions in the same commit; the read-only ingest report (Q-10) landed in slice 2: `coderadar_ingest_status` over a `kv_prefix` read, 35 tools)* | each phase it exposes | — |
 
 The critical path is upstream: U-1 gated the pin and is released (0.21.0, 2026-11-01); U-2 gates
 branch reads, U-3 and U-4 gate P5c. U-4 is also what lets an ingested branch merge without losing
@@ -860,7 +955,9 @@ past time. If 0.15.0 is cut before those three phases, it ships without the comm
 any cut, so the next release carries them — the 0.16.0 lane below collapses into it, and 0.16.0 is P6b + P9. The
 0.15.0 gate (P5b.1, P5b.3a, P5b.6) has been met since `1969fa6`; nothing blocks the cut but the choice of when.)* 0.16.0: P6b + P9. 0.17.0: P5b.3 (trunk),
 P5b.4, P5b.5. Branch valid reads when U-2 exists; P5c when U-3 exists (U-4's substance rides
-D-315).
+D-315). *(2026-11-14: **0.16.0 cut** — P5b.5's ingest window, P5b.4 and P9's two slices. P6b had
+already ridden 0.15.0, so the lane named above was spent before this cut; 0.17.0 is now branch
+valid reads (U-2) and then P5c (U-3), which is the whole of what is left on this plan.)*
 
 ---
 
