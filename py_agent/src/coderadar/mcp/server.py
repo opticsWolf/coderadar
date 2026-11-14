@@ -56,9 +56,9 @@ Need more? Call it again with more specific names.
 - `coderadar_affected` — transitive callers (blast radius), centrality-ranked; `coderadar_callers` / `coderadar_callees` — direct 1-hop neighbours
 - `coderadar_traverse` — any edge kind, upstream or downstream
 - `coderadar_query` — structured queries, e.g. `functions where caller_count == 0` (full reference: resource `docs://query-language`)
-- `coderadar_as_of` — the graph at a past timestamp
+- `coderadar_as_of` — the graph at a past timestamp, on either axis (`valid=true` reads what was true then, the default reads what the store had recorded); `at=` addresses a commit (sha, branch, `{branch}#{n}`) instead of an instant
 - `coderadar_verify_history` — per-generation byte coverage: whether the past can be reconstructed
-- `coderadar_changes_between` — entity diff between two instants from recorded hashes (no byte reads)
+- `coderadar_changes_between` — entity diff between two instants from recorded hashes (no byte reads); `valid=true` diffs the repository's own states
 - `coderadar_annotations_on` / `coderadar_comments_on` — annotation/comment versions on a concept (the why); `coderadar_annotation_history` / `coderadar_comment_history` — one row's chain; `coderadar_open_items` — the unchecked task items under a scope, aggregated across annotations
 - `coderadar_resolve` — framework references: routes (`/users/:id`), `*Model` / `*View` names
 - `coderadar_get_smells`, `coderadar_dead_code`, `coderadar_find_clones`, `coderadar_find_scaffolding` — quality findings. Dead code is ranked evidence, not proof: check `coderadar_affected` before deleting.
@@ -566,6 +566,12 @@ def create_server(graph: Any) -> MCPServer:
             "Query the code graph as it existed at a specific point in time. "
             "Macrame's bitemporal ledger stores every version of every entity and edge, "
             "so this reconstructs the graph at any past timestamp. "
+            "The answer names its axis: the default is the recorded one (what the "
+            "store had observed by then), valid=true is what was true in the "
+            "repository at that instant. at= addresses a commit instead of a "
+            "timestamp — a sha, a branch, or a {branch}#{n} generation — and never "
+            "rounds to a neighbour. branch= reads a branch lineage; strict=true "
+            "refuses the git-history fallback. "
             "Use for: 'what did this look like last week?', 'when was X introduced?'."
         ),
         annotations={
@@ -579,6 +585,10 @@ def create_server(graph: Any) -> MCPServer:
         timestamp: str,
         query: str = "",
         symbols: list[str] | None = None,
+        at: str | None = None,
+        branch: str = "main",
+        valid: bool = False,
+        strict: bool = False,
         project_path: str | None = None,
     ) -> str:
         """Temporal graph query."""
@@ -586,7 +596,8 @@ def create_server(graph: Any) -> MCPServer:
         if mismatch:
             return mismatch
 
-        return _as_of(graph, timestamp, query, symbols or [])
+        return _as_of(graph, timestamp, query, symbols or [], at=at,
+                      branch=branch, valid=valid, strict=strict)
 
     # ── coderadar_verify_history — per-generation byte coverage ──
 
@@ -634,7 +645,9 @@ def create_server(graph: Any) -> MCPServer:
             "added / removed / modified / moved per entity, no byte reads. "
             "Use it to ask what changed between two timestamps — it works "
             "even where byte coverage is 0%. Equal hash is evidence of no "
-            "change, not proof; scope bounds the diff to one file or id prefix."
+            "change, not proof; scope bounds the diff to one file or id prefix. "
+            "valid=true compares what was true in the repository at both instants "
+            "instead of what the store had recorded."
         ),
         annotations={
             "read_only_hint": True,
@@ -648,6 +661,7 @@ def create_server(graph: Any) -> MCPServer:
         t2: str,
         scope: str | None = None,
         branch: str = "main",
+        valid: bool = False,
         project_path: str | None = None,
     ) -> str:
         """Added/removed/modified/moved entities between two instants."""
@@ -655,7 +669,7 @@ def create_server(graph: Any) -> MCPServer:
         if mismatch:
             return mismatch
 
-        return _changes_between(graph, t1, t2, scope, branch)
+        return _changes_between(graph, t1, t2, scope, branch, valid=valid)
 
     # ── coderadar_annotations_on / coderadar_comments_on — rationale reads ──
 
@@ -1703,10 +1717,13 @@ def _callees(graph: Any, entity_id: str) -> str:
     return render.callees(entity_id, results)
 
 
-def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str]) -> str:
-    """Look symbols up at a past timestamp."""
+def _as_of(graph: Any, timestamp: str, query: str, symbols: list[str], *,
+           at: str | None = None, branch: str = "main", valid: bool = False,
+           strict: bool = False) -> str:
+    """Look symbols up at a past timestamp, on either axis (P5b.3/P5b.4)."""
     try:
-        result = ops.as_of(timestamp, query, symbols, graph=graph)
+        result = ops.as_of(timestamp, query, symbols, branch, strict=strict,
+                           at=at, valid=valid, graph=graph)
     except ops.EngineError as e:
         return f"Temporal query failed: {e}. Ensure Macrame snapshots are enabled."
     except ops.OpError as e:
@@ -1730,10 +1747,12 @@ def _verify_history(graph: Any, from_ts: str | None, to_ts: str | None,
 
 
 def _changes_between(graph: Any, t1: str, t2: str,
-                     scope: str | None, branch: str) -> str:
+                     scope: str | None, branch: str,
+                     valid: bool = False) -> str:
     """Entity diff between two instants, hash-based (P2, DR-37)."""
     try:
-        result = ops.changes_between(t1, t2, scope, branch, graph=graph)
+        result = ops.changes_between(t1, t2, scope, branch, valid=valid,
+                                     graph=graph)
     except ops.EngineError as e:
         return f"History diff failed: {e}"
     except ops.OpError as e:

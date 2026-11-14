@@ -857,6 +857,25 @@ expose the ingest *report* (lineage cursors, ghost commits, coverage), never the
 QUICKREF, SKILL and server instructions move in the same commit as the op, as the drift tests
 already require.
 
+*(2026-11-14, slice 1 landed — the temporal read surface.)* `coderadar_as_of` now carries the
+four arguments the ops have grown: `at` (a sha, a branch, or a `{branch}#{n}` generation, P5b.4),
+`branch` (P5b.6), `valid` (P5b.3) and `strict` (P5b.3a); `coderadar_changes_between` carries
+`valid`. `coderadar as-of` gained `--at/--branch/--valid/--strict` and `changes-between` gained
+`--valid`, and QUICKREF, the MCP skill and the server instructions name them in the same commit.
+The renderer already named the axis (P5b.3a), so the surface's job was passing the arguments
+through, not re-deciding what an answer says. Tests: `tests/mcp/test_temporal_args.py` — the schema
+advertises the four, an address reads both arms, an unknown address is a reason, and the diff runs
+on the valid axis.
+
+*Still open in P9:* Q-10's read-only ingest report. Its shape is decided (one tool over the store's
+own kv — per lineage the cursor, stamp, horizon, tip, generation, recorded commits and completions;
+ghosts are run-local by construction, so coverage stays `verify_history`'s question) and it needs
+three pieces that do not exist yet: a `kv_prefix` read (a `substr` match, because `_` is a legal
+plain name character and a `LIKE` prefix would over-match), the decode of `kv_name`'s hex form for
+display, and the tool-count drift (34 → 35) across ARCHITECTURE and the project-path test. That is
+the next slice, not a gap in this one: every argument this slice exposes is what an agent needs to
+ask a historical question today.
+
 ---
 
 ## 7. Sequencing
@@ -877,7 +896,7 @@ already require.
 | 5 | P5b.5 out-of-order ingest *(slice 1 closed 2026-11-13 — the write shape: `upsert_concepts_bulk` accepts a closed, non-retirement version starting before the live open one when `valid_to <= live.valid_from` (the abutting chain), leaving the projection and the open belief untouched; the engine already supported it, the forward-only fallback was CodeRadar's. Malformed shapes still refuse before any write. **[2026-11-14] Slice 2 closed — the ingest half and the Doctrine VIII proof: `ingest_history(..., to=<belief start>)` walks a prefix window forward, writes each commit's rows closed at the file's next belief (the next in-window touch, else the store's own next start, else open), writes the boundary chunk's tree as the window's root, performs no sweep, edge write, cursor/stamp/tip/horizon move, and tombstones only where the id's life ended before the tip; six tests compare a full ingest against two newest-first chunks commit by commit (`tests/test_p5b5_window.py`).** **the release tree went CI-green 2026-11-13 at `2f50e38`** — all six jobs on both platforms, the first green run since 2026-10-29. The blocker was the store's contract, not P5b.5: a second `Database` on a live path is refused on POSIX and a mid-process close empties later reads, so `CodeGraphStore` hands out one engine per path per process (`bd353ac`, `613bd68`) and two horizon tests cross a process boundary (`2f50e38`). The cut landed as `4d3cf87` (versions, changelog, baselines, ARCHITECTURE §14.2), then a review of that tree fixed the registry's last race (registration under one lock), keyed it by the filesystem's own spelling with a lexical alias, added the macOS Python leg and a tag-vs-version gate before publishing (`1e37a4f`, `f383cc5`, `3d27232`; seven jobs green).)* | P5b.3 | P5b.4 |
 | 6 | P5b.3 branch reads | U-2 | — |
 | 7 | P5c lineage fidelity | U-3 (U-4's substance: D-315, 0.22.0) | — |
-| — | P9 | each phase it exposes | — |
+| — | P9 *(slice 1 closed 2026-11-14 — `coderadar_as_of` gains `at`/`branch`/`valid`/`strict`, `coderadar_changes_between` gains `valid`, CLI and QUICKREF/SKILL/instructions in the same commit; the read-only ingest report (Q-10) is the remaining slice, its design recorded above)* | each phase it exposes | — |
 
 The critical path is upstream: U-1 gated the pin and is released (0.21.0, 2026-11-01); U-2 gates
 branch reads, U-3 and U-4 gate P5c. U-4 is also what lets an ingested branch merge without losing

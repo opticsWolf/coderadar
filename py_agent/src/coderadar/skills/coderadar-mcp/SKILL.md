@@ -52,9 +52,9 @@ this changes, what did this look like at time T, where are the smells.
 | `coderadar_diagnose` | unresolved refs, ambiguous edges |
 | `coderadar_get_smells` / `coderadar_dead_code` | smells / entry-point-aware dead code |
 | `coderadar_find_clones` / `coderadar_find_scaffolding` | clones / scaffolding |
-| `coderadar_as_of` | names+entities at timestamp T |
+| `coderadar_as_of` | names+entities at timestamp T, on either axis (`valid`); `at=` takes a sha, branch or `{branch}#n` |
 | `coderadar_verify_history` | per-generation byte coverage (can the past be reconstructed) |
-| `coderadar_changes_between` | entity diff between two instants from hashes (works at 0% coverage) |
+| `coderadar_changes_between` | entity diff between two instants from hashes (works at 0% coverage); `valid` diffs the repository's states |
 | `coderadar_annotations_on` / `coderadar_comments_on` | annotation/comment versions on a concept, newest first (the why) |
 | `coderadar_annotation_history` / `coderadar_comment_history` | version chain of one annotation/comment row |
 | `coderadar_open_items` | every unchecked task item under a scope (annotations only) |
@@ -85,9 +85,11 @@ coderadar_callers(entity_id)                      # 1 hop upstream
 coderadar_callees(entity_id)                      # 1 hop downstream
 coderadar_affected(entity_id, max_depth=5)        # transitive blast radius
 coderadar_resolve(name, limit=5)                  # '/users/:id', '*Model', '*View'
-coderadar_as_of(timestamp, query="", symbols=[])  # names at T, not bytes at T
+coderadar_as_of(timestamp, query="", symbols=[],          # names at T, not bytes at T
+               at=None, branch="main", valid=False,       # at=: sha/branch/{branch}#n
+               strict=False)
 coderadar_verify_history(from_ts=None, to_ts=None, generations=25)  # trust in history
-coderadar_changes_between(t1, t2, scope=None)  # what changed, hash-based
+coderadar_changes_between(t1, t2, scope=None, valid=False)  # what changed, hash-based
 coderadar_annotations_on(target)                # the why: lists on a concept
 coderadar_comments_on(target)                   # the why: prose on a concept
 coderadar_annotation_history(id)                # one annotation's versions

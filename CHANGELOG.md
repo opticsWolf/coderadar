@@ -6,6 +6,14 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- **The temporal read surface (P9, slice 1).** `coderadar_as_of` takes `at`
+  (a sha, a branch, or a `{branch}#{n}` generation), `branch`, `valid` and
+  `strict`; `coderadar_changes_between` takes `valid`. `coderadar as-of`
+  gained `--at/--branch/--valid/--strict`, `changes-between` gained
+  `--valid`, and QUICKREF, the MCP skill and the server instructions name
+  them in the same commit. The answers already named their axis; the
+  surface's job was passing the arguments through.
+
 - **Commits as addresses (P5b.4).** `at=` now takes a sha or a name the store
   knows — a branch, a `{branch}#{n}` generation, an address-only name — on
   either axis, and resolves it to the instant that axis folds at: the
