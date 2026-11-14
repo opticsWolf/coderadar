@@ -1,6 +1,6 @@
 # CodeRadar Quick Reference
 
-> v0.15.0 · Full design: `ARCHITECTURE.md` · Agent skills:
+> v0.16.0 · Full design: `ARCHITECTURE.md` · Agent skills:
 > `coderadar/skills/coderadar-{mcp,cli}/SKILL.md` (bundled; install with
 > `coderadar skills install`) · Query language:
 > `coderadar docs query-language` (generated — read it, don't guess fields).
@@ -102,7 +102,7 @@ default_dry_run = true
 ## Version notes
 
 +0.0.1 per feature (`pyproject` + workspace `Cargo.toml`, one bump commit).
-Specs, tests, dep patches: no bump. Current: **0.15.0**, `macrame-db` 0.22.0,
+Specs, tests, dep patches: no bump. Current: **0.16.0**, `macrame-db` 0.22.0,
 store schema v29. `../CHANGELOG.md` is the per-version record.
 
 `verify-history` reports coverage for the generations a store actually wrote

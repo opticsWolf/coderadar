@@ -1086,6 +1086,34 @@ though not *in* git, since `.gitignore` excludes `*.db`, so a clone gets the doc
 Both halves of the "gaps" paragraph are resolved: H-11/H-12/H-13 and the coverage numbers are in the
 graph, beside the decisions they qualify.
 
+### 2026-11-14 — v0.16.0 cut (P5b.4, P5b.5, P9 released)
+
+Version bumped `0.15.0` → `0.16.0` per DR-26 (`pyproject.toml` + workspace `Cargo.toml` together,
+lock synced, `_FALLBACK_VERSION` with them), the Unreleased block became the `0.16.0` section (four
+entries), and the baseline claims in `README.md`, `QUICKREF.md` and `ARCHITECTURE.md` were brought to
+`0.16.0` / `macrame-db` 0.22.0 / store schema v29.
+
+Gate bundle at the cut: **Rust 604 lib + 5 integration passed, 1 ignored**; `cargo fmt --check` and
+`cargo clippy --all-targets -D warnings` clean; **Python 1415 passed, 1 skipped, 1 xfailed** (`tests/`,
+`cr_edit_tests` excluded as always, 1417 collected) on a rebuilt `0.16.0` wheel; the round-2 dogfood
+battery **121/121**, run on the release tree. Surface: **35 MCP tools** (34 + `coderadar_ingest_status`).
+
+What the release carries, and what it closes: P5b.5's ingest window (the second half of the write
+shape — a store's prefix may now be backfilled newest-first, each chunk abutting the belief it
+precedes), P5b.4 (commit addressing on both axes), and P9's two slices (the four read arguments the
+MCP and CLI tools were missing, and the read-only ingest report). Two facts the cycle's tests forced
+into the open belong beside the shipped behavior: the **two axes fold at different instants** —
+the recorded one at a commit's completion (when the ledger learned it), the valid one at the commit's
+own stamp — and a window's successor is **the store's belief start**, not merely the plan's next
+touch (`next_trunk_start` reads `concepts`, `concept_versions` and `transaction_log`, because a
+displaced row is logged with its span). The first was a wrong answer found by writing the test; the
+second was a refusal found by running it.
+
+Still open, by name: F3 (`test_p5b_truth`) waits for a branch to see its merge base (Macrame
+U-3/D-318); a branch valid read refuses with `ValidBranchNeedsU2` until U-2/D-317; P6b's
+note-embeddings half stays deferred with its reason; the retraction verb is P5c-gated. The next
+temporal step is upstream, and it is one read-side cycle: U-2 first, U-3 on its fold.
+
 ### 2026-11-13 — v0.15.0 cut (P5a–P5d, P6, P8 released)
 
 Version bumped `0.14.0` → `0.15.0` per DR-26 (`pyproject.toml` + workspace `Cargo.toml` together,

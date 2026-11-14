@@ -1,6 +1,6 @@
 # CodeRadar Architecture
 
-> **Living document.** Baseline: v0.15.0 (`dev`), `macrame-db` 0.22.0,
+> **Living document.** Baseline: v0.16.0 (`dev`), `macrame-db` 0.22.0,
 > store schema v29. Update with feature commits the way `CHANGELOG.md` is
 > updated — a section that describes behavior the code no longer has is a bug.
 > Design *history* (why things are the way they are) lives in the

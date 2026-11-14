@@ -955,7 +955,9 @@ past time. If 0.15.0 is cut before those three phases, it ships without the comm
 any cut, so the next release carries them — the 0.16.0 lane below collapses into it, and 0.16.0 is P6b + P9. The
 0.15.0 gate (P5b.1, P5b.3a, P5b.6) has been met since `1969fa6`; nothing blocks the cut but the choice of when.)* 0.16.0: P6b + P9. 0.17.0: P5b.3 (trunk),
 P5b.4, P5b.5. Branch valid reads when U-2 exists; P5c when U-3 exists (U-4's substance rides
-D-315).
+D-315). *(2026-11-14: **0.16.0 cut** — P5b.5's ingest window, P5b.4 and P9's two slices. P6b had
+already ridden 0.15.0, so the lane named above was spent before this cut; 0.17.0 is now branch
+valid reads (U-2) and then P5c (U-3), which is the whole of what is left on this plan.)*
 
 ---
 

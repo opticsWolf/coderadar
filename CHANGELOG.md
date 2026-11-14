@@ -4,7 +4,15 @@ Patch releases accumulate toward the next minor (+0.0.1 per implemented feature,
 bump commit named in the feature's DR row). The v0.12 plan history lives
 in `docs/` (v1 frozen, consolidated trio authoritative).
 
-## Unreleased
+## 0.16.0 (2026-11-14)
+
+Two axes you can address, a prefix you can backfill, and a store that says whether
+it is whole. A caller may name a commit — sha, branch or `{branch}#{n}` generation —
+instead of an instant, on either axis; a store that starts at a later commit may be
+given the history before it, in newest-first chunks that answer the same valid axis
+as one in-order ingest; and both the read surfaces and the store's own ingest report
+say which fact an answer rests on. Four entries below, newest first; P5b.5 and P9
+close, P5b.4 opens commit addressing.
 
 - **The store's own ingest state (P9, slice 2).** `coderadar_ingest_status`
   (`coderadar ingest-status`, `ops.ingest_status`) reports what the store
