@@ -61,6 +61,7 @@ __all__ = [
     "friendly_entity_id",
     "get_smells",
     "history_of",
+    "ingest_status",
     "module_children",
     "node",
     "normalize_query_spelling",
@@ -95,6 +96,7 @@ OPERATIONS = (
     "explore", "node", "search", "affected", "resolve", "query",
     "search_similar", "search_hybrid", "compute_embeddings", "module_children", "as_of",
     "verify_history",
+    "ingest_status",
     "changes_between",
     "annotations_on", "comments_on", "annotation_history", "comment_history",
     "open_items",
@@ -2544,6 +2546,50 @@ def backfill_commit_index(branch: str = "main",
         return dict(_json.loads(raw))
     except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
         raise EngineError(f"backfill_commit_index returned unparseable JSON: {e}") from None
+
+
+def ingest_status(*, store_path: str | Path | None = None,
+                  graph: Any = None) -> dict:
+    """What the store records about its own ingest (P9, Q-10).
+
+    The read-only half of the ingest report, and the answer to Q-10 ("the
+    report, never the write"): per name and per lineage, the cursor
+    (`ingest.head`), the stamp, the horizon, the tip the name points at, the
+    generation, how many commit concepts the lineage holds and how many
+    completion marks exist. ``completions < commits`` means an interrupted
+    run or a pre-horizon store — ``backfill_commit_index`` is the repair.
+    ``address_only`` marks a name that only ever pointed at a commit another
+    lineage holds (D-6 c).
+
+    Deliberately absent: ghost commits (a fact about one run, not about the
+    store) and coverage (``verify_history``'s question, asked per
+    generation). ``format`` is the store's declared stamping mode and is
+    ``None`` on an analyze-only store. The store is ``store_path``, else the
+    given graph's database.
+    """
+    if store_path is None and graph is not None:
+        store_path = getattr(graph, "_db_path", None)
+    if store_path is None:
+        raise InvalidRequest(
+            "ingest_status needs a store_path (or a graph carrying one).")
+    # A read must not create a store: the engine's open does, so check first.
+    if not Path(store_path).exists():
+        raise InvalidRequest(
+            f"no store at {store_path} — ingest a branch's history first.")
+    try:
+        from coderadar._core import store_status as _status
+        raw = _status(str(store_path))
+    except ImportError as e:
+        raise EngineError(f"native extension unavailable: {e}") from None
+    except ValueError as e:
+        raise InvalidRequest(str(e)) from None
+    except Exception as e:  # noqa: BLE001 - surfaced as EngineError
+        raise EngineError(str(e)) from None
+    try:
+        import json as _json
+        return dict(_json.loads(raw))
+    except Exception as e:  # noqa: BLE001 - a corrupt report is an engine bug
+        raise EngineError(f"ingest_status returned unparseable JSON: {e}") from None
 
 
 def _lineage_plan(repo_s: str, branches: list[str] | None,

@@ -764,6 +764,19 @@ class CodeGraph:
         from . import ops
         return ops.changes_between(t1, t2, scope, branch, graph=self)
 
+    def ingest_status(self) -> dict[str, Any]:
+        """What the store records about its own ingest (MCP
+        ``coderadar_ingest_status``).
+
+        Per name and per lineage: the cursor, stamp, horizon, tip,
+        generation, and how many commits and completion marks the lineage
+        holds. The read-only half of the ingest report (P9, Q-10) — it
+        never writes, and ghost commits stay out because they describe one
+        run rather than the store.
+        """
+        from . import ops
+        return ops.ingest_status(graph=self)
+
     def history_of(self, file: str) -> dict[str, Any]:
         """Every content a file ever had, newest first (P3, no MCP surface).
 

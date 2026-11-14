@@ -54,6 +54,7 @@ this changes, what did this look like at time T, where are the smells.
 | `coderadar_find_clones` / `coderadar_find_scaffolding` | clones / scaffolding |
 | `coderadar_as_of` | names+entities at timestamp T, on either axis (`valid`); `at=` takes a sha, branch or `{branch}#n` |
 | `coderadar_verify_history` | per-generation byte coverage (can the past be reconstructed) |
+| `coderadar_ingest_status` | the store's own ingest state: cursors, horizons, tips, generations, commits vs completions |
 | `coderadar_changes_between` | entity diff between two instants from hashes (works at 0% coverage); `valid` diffs the repository's states |
 | `coderadar_annotations_on` / `coderadar_comments_on` | annotation/comment versions on a concept, newest first (the why) |
 | `coderadar_annotation_history` / `coderadar_comment_history` | version chain of one annotation/comment row |
@@ -89,6 +90,7 @@ coderadar_as_of(timestamp, query="", symbols=[],          # names at T, not byte
                at=None, branch="main", valid=False,       # at=: sha/branch/{branch}#n
                strict=False)
 coderadar_verify_history(from_ts=None, to_ts=None, generations=25)  # trust in history
+coderadar_ingest_status()                        # is the store's history complete?
 coderadar_changes_between(t1, t2, scope=None, valid=False)  # what changed, hash-based
 coderadar_annotations_on(target)                # the why: lists on a concept
 coderadar_comments_on(target)                   # the why: prose on a concept

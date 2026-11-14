@@ -641,6 +641,20 @@ def verify_history(from_ts: str | None, to_ts: str | None, generations: int,
         lambda result: render.verify_history(result, offenders=offenders))
 
 
+@main.command(name="ingest-status")
+@click.option("--store", "store_path", default=None,
+              help="Store to read. Default: the loaded project's store.")
+@_format_option
+def ingest_status(store_path: str | None, fmt: str):
+    """Report the store's own ingest state (MCP coderadar_ingest_status)."""
+    from pathlib import Path as _Path
+
+    from . import ops, render
+    store = str(_Path(store_path).resolve()) if store_path else None
+    _enter_project()
+    _op(fmt, lambda: ops.ingest_status(store_path=store), render.ingest_status)
+
+
 @main.command(name="changes-between")
 @click.option("--t1", "t1", required=True,
               help="Window start (ISO 8601 UTC).")

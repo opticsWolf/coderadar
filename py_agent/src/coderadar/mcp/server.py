@@ -58,6 +58,7 @@ Need more? Call it again with more specific names.
 - `coderadar_query` — structured queries, e.g. `functions where caller_count == 0` (full reference: resource `docs://query-language`)
 - `coderadar_as_of` — the graph at a past timestamp, on either axis (`valid=true` reads what was true then, the default reads what the store had recorded); `at=` addresses a commit (sha, branch, `{branch}#{n}`) instead of an instant
 - `coderadar_verify_history` — per-generation byte coverage: whether the past can be reconstructed
+- `coderadar_ingest_status` — what the store records about its own ingest: per-lineage cursor, horizon, tip, generation, commits vs completions (read-only; never the writer)
 - `coderadar_changes_between` — entity diff between two instants from recorded hashes (no byte reads); `valid=true` diffs the repository's own states
 - `coderadar_annotations_on` / `coderadar_comments_on` — annotation/comment versions on a concept (the why); `coderadar_annotation_history` / `coderadar_comment_history` — one row's chain; `coderadar_open_items` — the unchecked task items under a scope, aggregated across annotations
 - `coderadar_resolve` — framework references: routes (`/users/:id`), `*Model` / `*View` names
@@ -670,6 +671,36 @@ def create_server(graph: Any) -> MCPServer:
             return mismatch
 
         return _changes_between(graph, t1, t2, scope, branch, valid=valid)
+
+    # ── coderadar_ingest_status — the store's own ingest state ──
+
+    @mcp.tool(
+        description=(
+            "What the store records about its own ingest, per branch and "
+            "generation: the cursor a resume would start at, the horizon where "
+            "recorded observation begins, the tip the name points at, how many "
+            "commits the lineage holds and how many completion marks exist. "
+            "Use it to answer 'is this store's history complete?' before quoting "
+            "it — commits without completion marks mean an interrupted run. "
+            "Read-only: it reports the store, never writes to it, and coverage "
+            "is coderadar_verify_history's question."
+        ),
+        annotations={
+            "read_only_hint": True,
+            "destructive_hint": False,
+            "idempotent_hint": True,
+            "open_world_hint": False,
+        },
+    )
+    def coderadar_ingest_status(
+        project_path: str | None = None,
+    ) -> str:
+        """Per-lineage ingest state: cursors, horizons, tips, counts."""
+        mismatch = _wrong_project(project_path)
+        if mismatch:
+            return mismatch
+
+        return _ingest_status(graph)
 
     # ── coderadar_annotations_on / coderadar_comments_on — rationale reads ──
 
@@ -1744,6 +1775,17 @@ def _verify_history(graph: Any, from_ts: str | None, to_ts: str | None,
     except ops.OpError as e:
         return _op_message(e, failed="History verification")
     return render.verify_history(result, offenders=offenders)
+
+
+def _ingest_status(graph: Any) -> str:
+    """The store's own ingest state, read-only (P9, Q-10)."""
+    try:
+        result = ops.ingest_status(graph=graph)
+    except ops.EngineError as e:
+        return f"Ingest status failed: {e}"
+    except ops.OpError as e:
+        return _op_message(e, failed="Ingest status")
+    return render.ingest_status(result)
 
 
 def _changes_between(graph: Any, t1: str, t2: str,

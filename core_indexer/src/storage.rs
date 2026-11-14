@@ -3393,6 +3393,38 @@ impl CodeGraphStore {
         runtime().block_on(self.db().kv_put(key, value))
     }
 
+    /// Every `kv_store` row whose key starts with `prefix` (P9): the
+    /// read-only ingest report lists per-lineage state, and the key set is
+    /// how it learns which lineages exist — there is no registry table to
+    /// ask.
+    ///
+    /// `substr` rather than `LIKE`, because `_` is a legal character in a
+    /// plain branch name (a `LIKE` prefix would match keys it must not).
+    /// Schema dependency (Q-3): names the `kv_store` columns directly, so
+    /// a rename breaks loudly instead of answering a plausible wrong set.
+    pub(crate) fn kv_prefix(&self, prefix: &str) -> macrame::Result<Vec<(String, String)>> {
+        let (_guard, conn) = self.open_diagnostic_conn()?;
+        let len = libsql::Value::Integer(prefix.len() as i64);
+        let prefix = libsql::Value::Text(prefix.to_string());
+        runtime().block_on(async {
+            let mut rows = conn
+                .query(
+                    "SELECT key, value FROM kv_store \
+                     WHERE substr(key, 1, ?1) = ?2 ORDER BY key",
+                    vec![len, prefix],
+                )
+                .await
+                .map_err(macrame::DbError::Engine)?;
+            let mut out = Vec::new();
+            while let Some(row) = rows.next().await.map_err(macrame::DbError::Engine)? {
+                let key: String = row.get(0).unwrap_or_default();
+                let value: String = row.get(1).unwrap_or_default();
+                out.push((key, value));
+            }
+            Ok(out)
+        })
+    }
+
     /// Record divergent content for `path` on `branch` (P4, DR-40): the
     /// one branch-legal way to disagree with the trunk about a file's
     /// bytes. Concepts are lineage-frozen (D-225: a branch inherits and

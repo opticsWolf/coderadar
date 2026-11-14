@@ -6,6 +6,17 @@ in `docs/` (v1 frozen, consolidated trio authoritative).
 
 ## Unreleased
 
+- **The store's own ingest state (P9, slice 2).** `coderadar_ingest_status`
+  (`coderadar ingest-status`, `ops.ingest_status`) reports what the store
+  records about its own history: per name and per lineage the cursor, stamp,
+  horizon, tip, generation, recorded commits and completion marks, and the
+  declared format. It is Q-10's answer — the ingest *report*, never the
+  write — with `completions < commits` naming `backfill_commit_index` as
+  the repair. An address-only name reports its owner lineage and no cursor;
+  ghost commits stay out because they describe one run rather than the
+  store, and coverage remains `verify_history`'s question. Reads never
+  create a store: a missing path refuses by name. (35 MCP tools.)
+
 - **The temporal read surface (P9, slice 1).** `coderadar_as_of` takes `at`
   (a sha, a branch, or a `{branch}#{n}` generation), `branch`, `valid` and
   `strict`; `coderadar_changes_between` takes `valid`. `coderadar as-of`

@@ -101,6 +101,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ingest_history, m)?)?;
     m.add_function(wrap_pyfunction!(reingest_merged_commits, m)?)?;
     m.add_function(wrap_pyfunction!(backfill_commit_index, m)?)?;
+    m.add_function(wrap_pyfunction!(store_status, m)?)?;
     m.add_function(wrap_pyfunction!(backfill_commit_messages, m)?)?;
     m.add_function(wrap_pyfunction!(annotate, m)?)?;
     m.add_function(wrap_pyfunction!(comment, m)?)?;
@@ -2811,6 +2812,27 @@ fn record_branch_addresses(store_path: &str, entries: Vec<(String, String)>) -> 
         written += 1;
     }
     Ok(written)
+}
+
+/// The store's ingest state, read-only (P9, Q-10): per name and per
+/// lineage the cursor, stamp, horizon, tip, generation, and the counts of
+/// recorded commits and completion marks. This is the ingest *report* an
+/// agent may see without the writer — Q-10's answer is "the report, never
+/// the write" — and it names what the store holds rather than what one run
+/// did (ghosts are run-local; coverage is `verify_history`'s question).
+/// Refusals (store missing) are `ValueError`; the JSON is `StoreStatus`.
+#[pyfunction]
+fn store_status(store_path: &str) -> PyResult<String> {
+    let store = crate::storage::CodeGraphStore::open(store_path).map_err(|e| {
+        pyo3::exceptions::PyValueError::new_err(format!(
+            "store_status cannot open {store_path:?}: {e:?}"
+        ))
+    })?;
+    let report = crate::graph::ingest::store_status(&store).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("store_status failed: {e}"))
+    })?;
+    serde_json::to_string(&report)
+        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("report JSON: {e}")))
 }
 
 /// Rebuild one lineage's horizon + commit index from the ledger (P5b.3a,

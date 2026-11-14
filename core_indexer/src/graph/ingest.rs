@@ -4032,6 +4032,168 @@ fn resolve_address(
     })
 }
 
+/// The read-only view of the store's ingest state (P9, Q-10): what a
+/// caller may know without invoking the writer. One row per name the store
+/// records and one per lineage, because a name and its generation answer
+/// different questions — the name is where new commits will land, the
+/// generation is what the rows are stamped on.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StoreStatus {
+    /// `coderadar.commit_time.format`, when the store declares one. Absent
+    /// on an analyze-only store, whose reads never need a cursor.
+    pub format: Option<String>,
+    pub lineages: Vec<LineageStatus>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LineageStatus {
+    /// The name as the store records it (branch or address-only name).
+    pub name: String,
+    /// The lineage the name resolves to (itself, or its newest generation).
+    pub lineage: String,
+    /// Which generation of the name the lineage is (1 for a name that never
+    /// moved).
+    pub generation: u32,
+    /// The newest completed commit (`ingest.head`) — where a resume starts.
+    pub cursor: Option<String>,
+    /// The final `valid_from` written for the cursor (INV-11's `prev`).
+    pub stamp: Option<String>,
+    /// Where recorded observation begins (`horizon`).
+    pub horizon: Option<String>,
+    /// The tip the name points at (`branch.tip`), which a rewritten name
+    /// keeps on the new generation.
+    pub tip: Option<String>,
+    /// Commit concepts recorded on the lineage.
+    pub commits: usize,
+    /// Completion marks recorded on the lineage. Fewer than `commits` means
+    /// an interrupted run or a pre-horizon store: `backfill_commit_index`
+    /// is the repair.
+    pub completions: usize,
+    /// A name that only ever pointed at a commit another lineage holds
+    /// (D-6 c): it has a tip and no history of its own.
+    pub address_only: bool,
+}
+
+/// Assemble [`StoreStatus`] from the store's own `kv` (P9, Q-10).
+///
+/// The key set is the lineage registry — there is no table to ask — so the
+/// names come from the keys that carry them (`ingest.head`, `branch.tip`,
+/// `ingest.generation`, `branch.lineage`) and the lineages from the keys
+/// stamped per lineage (`horizon`, and every name's resolved lineage).
+/// `kv_name` hex-encodes names SQL keys cannot hold, so the suffixes are
+/// decoded before they are shown.
+///
+/// Ghost commits are deliberately absent: a ghost is a fact about one run
+/// (bytes that vanished mid-walk), not about the store, and this report
+/// only states what the store holds. Coverage is `verify_history`'s
+/// question, asked over generations rather than cursors.
+pub fn store_status(store: &CodeGraphStore) -> Result<StoreStatus, IngestError> {
+    let err = |what: &str, e: String| IngestError::Store(format!("store status {what}: {e}"));
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut lineages: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // Suffix -> the names a prefix records. `horizon` is per lineage.
+    let scans = [
+        "coderadar.ingest.head.",
+        "coderadar.branch.tip.",
+        "coderadar.ingest.generation.",
+        "coderadar.branch.lineage.",
+    ];
+    for prefix in scans {
+        for (key, _value) in store
+            .kv_prefix(prefix)
+            .map_err(|e| err(prefix, format!("{e:?}")))?
+        {
+            let Some(suffix) = key.strip_prefix(prefix) else {
+                continue;
+            };
+            names.insert(kv_name_decode(suffix).unwrap_or_else(|| suffix.to_string()));
+        }
+    }
+    for (key, _value) in store
+        .kv_prefix("coderadar.horizon.")
+        .map_err(|e| err("horizon", format!("{e:?}")))?
+    {
+        if let Some(suffix) = key.strip_prefix("coderadar.horizon.") {
+            lineages.insert(kv_name_decode(suffix).unwrap_or_else(|| suffix.to_string()));
+        }
+    }
+    let mut resolved: Vec<String> = names.into_iter().collect();
+    resolved.extend(lineages.iter().cloned());
+    resolved.sort();
+    resolved.dedup();
+    let mut rows = Vec::with_capacity(resolved.len());
+    for name in resolved {
+        // The tip belongs to the name; the lineage is where its rows live.
+        // A name that moved has a map entry (D-5); an address-only name has
+        // none, and its lineage is the owner of the commit it points at
+        // (D-6 c) — the same rule the reads use.
+        let tip = store
+            .kv_get_sync(&branch_tip_key(&name))
+            .map_err(|e| err("tip", format!("{e:?}")))?;
+        let mapped = store
+            .kv_get_sync(&branch_lineage_key(&name))
+            .map_err(|e| err("lineage map", format!("{e:?}")))?;
+        let owner = match &tip {
+            Some(tip) => store
+                .kv_get_sync(&commit_lineage_key(tip))
+                .map_err(|e| err("commit owner", format!("{e:?}")))?,
+            None => None,
+        };
+        let lineage = mapped.or(owner).unwrap_or_else(|| name.clone());
+        let generation = match store.kv_get_sync(&generation_key(&name)) {
+            Ok(Some(n)) => n.parse::<u32>().unwrap_or(1),
+            _ => lineage
+                .rsplit_once('#')
+                .and_then(|(_, n)| n.parse::<u32>().ok())
+                .unwrap_or(1),
+        };
+        // Whether the *name* carries history is a question about the name's
+        // own keys: an address-only name points at another lineage's
+        // commits, and the lineage's cursor is not its own.
+        let own_cursor = store
+            .kv_get_sync(&ingest_head_key(&name))
+            .map_err(|e| err("cursor", format!("{e:?}")))?;
+        let own_horizon = store
+            .kv_get_sync(&horizon_key(&name))
+            .map_err(|e| err("horizon", format!("{e:?}")))?;
+        let cursor = store
+            .kv_get_sync(&ingest_head_key(&lineage))
+            .map_err(|e| err("cursor", format!("{e:?}")))?;
+        let stamp = store
+            .kv_get_sync(&ingest_stamp_key(&lineage))
+            .map_err(|e| err("stamp", format!("{e:?}")))?;
+        let horizon = store
+            .kv_get_sync(&horizon_key(&lineage))
+            .map_err(|e| err("horizon", format!("{e:?}")))?;
+        let commits = commit_stamps(store, &lineage)
+            .map_err(|e| err("commits", format!("{e}")))?
+            .len();
+        let completions = store
+            .kv_prefix(&commit_done_key(&lineage, ""))
+            .map_err(|e| err("completions", format!("{e:?}")))?
+            .len();
+        rows.push(LineageStatus {
+            generation,
+            address_only: tip.is_some() && own_cursor.is_none() && own_horizon.is_none(),
+            name,
+            lineage,
+            cursor,
+            stamp,
+            horizon,
+            tip,
+            commits,
+            completions,
+        });
+    }
+    let format = store
+        .kv_get_sync(COMMIT_TIME_FORMAT_KEY)
+        .map_err(|e| err("format", format!("{e:?}")))?;
+    Ok(StoreStatus {
+        format,
+        lineages: rows,
+    })
+}
+
 /// The lineage whose commit index holds `sha`, and the stamp its rows
 /// carry (P5b.4). The asked lineage answers first (its own walk's stamps
 /// are authoritative for it), then the commit concept's owner — which is

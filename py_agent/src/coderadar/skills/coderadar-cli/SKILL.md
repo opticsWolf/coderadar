@@ -57,11 +57,12 @@ coderadar callers ENTITY_ID                  # one hop up; transitive = affected
 coderadar callees ENTITY_ID                  # one hop down
 coderadar affected ENTITY_ID [--max-depth 5] # transitive callers, the blast radius
 coderadar resolve '/users/:id' [--limit 5]   # routes, *Model / *View names
-coderadar as-of TIMESTAMP [SYMBOL]... [-q TEXT]   # names at T, not bytes at T
+coderadar as-of TIMESTAMP [SYMBOL]... [-q TEXT] [--at SHA|BRANCH|BRANCH#N] [--branch NAME] [--valid] [--strict]  # names at T (or at an address), either axis
 coderadar verify-history [--from TS --to TS] [--generations 25 | --all]  # can the past be reconstructed
-coderadar changes-between --t1 TS --t2 TS [--scope FILE|PREFIX]  # what changed, hash-based
+coderadar ingest-status [--store PATH]   # the store's own ingest state: cursors, horizons, tips, commits vs completions
+coderadar changes-between --t1 TS --t2 TS [--scope FILE|PREFIX] [--valid]  # what changed, hash-based
 coderadar history FILE                   # every content FILE ever had, newest first
-coderadar ingest-history --repo PATH --store PATH [--branch main] [--lineage NAME] [--parent-ref main] [--from SHA] [--dry-run]  # commit-driven history ingest (P5a.3/P5a.4)
+coderadar ingest-history --repo PATH --store PATH [--branch main] [--lineage NAME] [--parent-ref main] [--from SHA] [--to SHA] [--dry-run]  # commit-driven history ingest (P5a.3/P5a.4); --to backfills a window
 coderadar migrate-to-commit-time --repo PATH --store NEW [--branches a,b] [--parent-ref main] [--no-embed] [--no-verify]  # new commit-time store: trunk, branches, one embedding pass, coverage (P5a.5)
 coderadar annotate ABOUT BODY  # mint an enforced-list annotation on a concept (BODY '-' reads stdin; P6a)
 coderadar comment ABOUT BODY   # mint a freeform comment on a concept (P6a)

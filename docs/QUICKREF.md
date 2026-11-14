@@ -35,6 +35,7 @@ Never run two servers on one store — the second gets `DB_LOCKED`.
 | History read | `coderadar as-of T --valid` | `coderadar_as_of` | `snap = g.as_of(t, branch="main"); snap.read_bytes(id)` |
 | Read at a commit | `coderadar as-of --at SHA` | `coderadar_as_of(at=…)` | `ops.as_of("", at=sha, valid=True)` |
 | Trust that history | `coderadar verify-history` | `coderadar_verify_history` | `ops.verify_history()` |
+| Is the store whole? | `coderadar ingest-status` | `coderadar_ingest_status` | `ops.ingest_status()` |
 | What changed T1→T2 | `coderadar changes-between --t1 T1 --t2 T2 --valid` | `coderadar_changes_between` | `ops.changes_between(t1, t2, valid=True)` |
 | Versions of a file | `coderadar history FILE` | — | `g.history_of("…")` |
 | Heal commit bodies | — (ops-only) | — | `ops.backfill_commit_messages(repo, store)` |
