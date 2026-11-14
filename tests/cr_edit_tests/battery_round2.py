@@ -330,9 +330,10 @@ try:
     names = []
     if tools_r and "result" in tools_r:
         names = [t.get("name", "") for t in tools_r["result"].get("tools", [])]
-    # 33 through P5d; P6b's aggregation added coderadar_open_items (34).
-    check(SEC, "mcp-tools-list-34", len(names) == 34, f"got {len(names)}: {names[:5]}")
-    ok22 = len(names) == 34
+    # 33 through P5d; P6b's aggregation added coderadar_open_items (34);
+    # P9's read-only ingest report added coderadar_ingest_status (35).
+    check(SEC, "mcp-tools-list-35", len(names) == 35, f"got {len(names)}: {names[:5]}")
+    ok22 = len(names) == 35
     if ok22:
         send({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
               "params": {"name": "coderadar_search", "arguments": {"query": "combine", "top_k": 3}}})
