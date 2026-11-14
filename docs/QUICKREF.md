@@ -98,6 +98,7 @@ default_dry_run = true
 | `TemporalUnsupported` on callers-at-T | decided NO-GO (§3.3) — restructure the question to live graph + `as_of` names/bytes |
 | `InvalidRequest: stored graph` | keyword search needs a served (stored) graph → `reindex` first |
 | AttributeError on a removed name | use the canonical op; CLI + Python removals landed in 0.13 |
+| `[diag] v2 concept flush failed: OverlappingConcept … AlreadyRecorded` | the store's open rows use the pre-0.22 sentinel (`9999-12-31T00:00:00.000000Z`); reads work, writes refuse → rebuild or migrate the store (`docs/store-and-retention.md`) |
 
 ## Version notes
 

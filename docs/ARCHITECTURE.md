@@ -436,7 +436,7 @@ with documented pending consumers.
 - **Version policy (DR-26, process-open):** `pyproject.toml` + workspace
   `Cargo.toml` together, +0.0.1 per implemented feature, one bump commit
   named in the feature's DR row. Spec/test/verification-only and dep
-  patches: no bump. Minor cut accumulates (0.15.0).
+  patches: no bump. Minor cut accumulates (0.16.0).
 - **Register currency is a release-gate input:** DR rows update the same
   session as the code.
 - **Platforms:** the Python suite runs on ubuntu, windows and macOS (macOS
@@ -505,7 +505,7 @@ INV-13 exclusion pins (verify verdict, diff universe, and embedding
 counts identical with both kinds present). Writes are ops + CLI;
 reads add four MCP tools.
 
-### 14.2 Commit-time history and branch reads (v0.15, P5a–P5b, P5d)
+### 14.2 Commit-time history and branch reads (v0.15–0.16, P5a–P5b, P5d, P9)
 
 A store has a **stamping mode**. A commit-time store writes a commit's own
 committer time as `valid_from` (`nudge_valid_from` keeps a same-second tie
@@ -524,8 +524,10 @@ tips → addresses → sweep → marks), and `watch --git` runs it.
   merges and trunk rewrites do not), or a commit (sha) — on either axis
   (P5b.4): the address resolves to the instant that axis folds at, the
   recorded one folding at the commit's completion and the valid one at
-  the commit's own stamp. Nothing rounds; an unknown name or sha refuses
-  by name. Every answer names the
+  the commit's own stamp. A name resolves to the tip its own key records
+  (a rewritten name keeps its new generation's), else its lineage's, else
+  the lineage's ingest cursor — a generation has no tip key of its own.
+  Nothing rounds; an unknown name or sha refuses by name. Every answer names the
   basis it came from — `recorded`, `git-history` (a pre-horizon commit read
   from git), or `valid` — and a refusal is a reason, never a blank.
 - **Valid axis.** On the trunk, `valid=True` reads the belief axis
@@ -543,6 +545,15 @@ tips → addresses → sweep → marks), and `watch --git` runs it.
   the recorded-axis difference that makes Doctrine VIII's pair testable:
   a history ingested as newest-first chunks answers every commit's valid
   axis identically to one in-order ingest.
+- **The store's own report (P9).** `ingest_status` (`coderadar
+  ingest-status`, MCP `coderadar_ingest_status`) states what the store
+  records about its own ingest — per name and per lineage the cursor,
+  stamp, horizon, tip, generation, and how many commit concepts and
+  completion marks it holds; `completions < commits` names
+  `backfill_commit_index` as the repair. Read-only by contract (Q-10: the
+  report, never the write), and it does not create a store: a missing
+  path refuses by name. Ghost commits stay out (a fact about one run, not
+  the store) and coverage stays `verify_history`'s question.
 - **Observations (P5d).** Rows carry `observed_at`/`source`
   (`ingest`, `sync`, `watch`); an observation lands on the lineage whose
   tree it saw, and `test_retention`-style sweeps retire per lineage.
@@ -593,8 +604,10 @@ tips → addresses → sweep → marks), and `watch --git` runs it.
 ## 16. Decision index
 
 Full rationale per row lives in the register (`coderadar-decision-register`
-in `okfgraph.db` at the repo root). Statuses at v0.15.0 (2026-11-13), which
-shipped DR-41 and DR-43..DR-45:
+in `okfgraph.db` at the repo root). Statuses at v0.16.0 (2026-11-14).
+0.16.0 added no decision of its own: it implements A-3 (addresses, P5b.4),
+the P5b.5 write shape and Q-10 (the report, never the write), and finishes
+DR-41's ingest face:
 
 | ID | Decision | Status |
 |---|---|---|
@@ -638,7 +651,7 @@ shipped DR-41 and DR-43..DR-45:
 | DR-38 | `content_version` spine: concepts-only, digest-free payloads (P3) | closed (v0.14.0; `f3625c6`) |
 | DR-39 | Duplicate `content.source` beside the blob | withdrawn (2026-10-28) |
 | DR-40 | Branch-aware reads: `reconstruct_on` + pointer concepts (P4) | closed (v0.14.0; `a4ac405`) |
-| DR-41 | Commit-driven ingestion (P5) | closed (0.15.0; P5a–P5d, `8cf8cbc`..`ac03dcb`); a pre-0.15 store migrates with `migrate-to-commit-time`, the owner's run |
+| DR-41 | Commit-driven ingestion (P5) | closed (0.15.0; P5a–P5d, `8cf8cbc`..`ac03dcb`); a pre-0.15 store migrates with `migrate-to-commit-time`, the owner's run. 0.16.0 completed the ingest face: P5b.4 addresses on both axes, P5b.5 prefix windows, P9's read surface and report (`9a53867`..`7706f24`) |
 | DR-42 | `open_synthetic_triples` is an inclusion list (H-3) | closed (v0.14.0; `600d689`) |
 | DR-43 | Valid-axis state fold lives upstream in Macrame (F-6/INV-6) | adopted (0.15.0; pin 0.22.0): Macrame 0.20.0 built the fold (D-291..D-294), 0.21.0 the backfill fix (D-303); P5b.2 took both after P5b.1 (`temporal-p5b-and-beyond.md`) |
 | DR-44 | `annotation` + `comment` concepts with write-boundary lint (P6a) | implemented (0.15.0; `b4eeb2c`, edge annotation rejected `21e6082`) |

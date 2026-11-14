@@ -100,6 +100,41 @@ exist`). Restore the pair and everything resolves.
   to no entity. Whole-file exactness is the module's read
   (`{file}::module` returns the full blob, CRLF included).
 
+## Stores written before macrame 0.22 (the legacy open end)
+
+An open interval is spelled `9999-12-31T23:59:59.999999Z` (`TS_OPEN`) since the
+`macrame-db` 0.22.0 pin. Stores written earlier hold `9999-12-31T00:00:00.000000Z`
+(`TS_OPEN_LEGACY`) on their open rows. Reads admit both spellings (`is_open_end`), so
+queries keep answering; **writes do not**, because the engine's single-open/supersede
+law keys on its own sentinel. The first `analyze` over such a store refuses the whole
+concept flush:
+
+```
+[diag] v2 concept flush failed: OverlappingConcept { ... id: "core_indexer/src/fs/git.rs::module",
+       valid_from: "…", valid_to: "9999-12-31T23:59:59.999999Z",
+       existing_from: "2026-10-03T…", existing_to: "9999-12-31T00:00:00.000000Z", provenance: AlreadyRecorded }
+[coderadar] WARNING edge persistence failed part way through: NotFound(...)
+```
+
+The new span is open, the incumbent is open *in the old spelling*, so the engine sees
+an overlap rather than a supersession: its supersede path looks for its own sentinel,
+finds nothing open, and an ordinary upsert then fails the interval guard. This has been
+the behavior since the 0.22.0 pin (M6-g slice 1, `622bde4`) — it is not new in 0.16.0, and
+a store whose rows are all new-spelling never sees it.
+
+The guards around it hold: the stale-concept sweep is skipped when the flush failed, so
+concepts keep their old rows instead of being retired against a batch that never landed.
+(The edge retraction pass still runs, so *edges* can drift in the same run; that is the
+`WARNING edge persistence failed` line above, not a concept loss.) Re-running does not
+help: every attempt meets the same incumbent, and the one path that would replace it —
+the stale-file retire sweep — is skipped precisely because the flush failed.
+
+The cure is a store that writes one sentinel, not an in-place patch: `coderadar
+rebuild-store` (git projects), `migrate-to-commit-time`, or a fresh `analyze` into a
+new store file. Detecting the shape is one query —
+`SELECT COUNT(*) FROM concepts WHERE valid_to = '9999-12-31T00:00:00.000000Z'` — and it
+belongs in a health report rather than in prose; until then, this section is the check.
+
 ## Restoring
 
 Copy the pair back, `coderadar.load(store, root)`, and every retained

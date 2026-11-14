@@ -9,6 +9,12 @@
 > (`bf618e0`), so DR-41 is **accepted**; the production migration has not run, and the store of
 > record is still the index-now store. P5b's upstream half exists — Macrame 0.20.0 ships the
 > valid-axis fold (§5 P5b) — and CodeRadar has not adopted it. §8 and §10 carry the detail.
+>
+> **Status (2026-11-14):** the plan above is built and shipped. P5b.2 adopted `macrame-db` 0.22.0
+> (2026-11-11); P5b.4 (commit addressing) and P5b.5 (prefix windows) shipped in **0.16.0**
+> (2026-11-14), and P9 closed the read surfaces. The body below is the plan as drafted — its
+> "not adopted" rows and its "unreleased" states are the record of 2026-10-31, not the current
+> behavior. `temporal-p5b-and-beyond.md` is where the phases' state lives.
 
 ---
 

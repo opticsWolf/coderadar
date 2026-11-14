@@ -1,6 +1,9 @@
 # Annotations & comments proposal (P6 programme sketch)
 
 **Status (2026-10-30): P6a built on `dev` (DR-44 filed as implemented); P6c built ahead of it (DR-45 filed as implemented). Q-B decided below; Q-C stays P6b; Q-D closed by the two DR rows.**
+*(2026-11-14: P6b shipped in v0.15.0 — `open_items` aggregation and the notes join on every search
+surface; its note-embeddings half stays deferred with its reason (concepts are not projection
+entities). Q-C's remaining half is unchanged.)*
 Answers the maintainer's "annotate every type/edge with structured markdown,
 store comments in the database, store commit messages separately" as structure,
 architecture, and ideas. Intended reader: whoever scopes the next programme

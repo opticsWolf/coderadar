@@ -57,7 +57,7 @@ coderadar callers ENTITY_ID                  # one hop up; transitive = affected
 coderadar callees ENTITY_ID                  # one hop down
 coderadar affected ENTITY_ID [--max-depth 5] # transitive callers, the blast radius
 coderadar resolve '/users/:id' [--limit 5]   # routes, *Model / *View names
-coderadar as-of TIMESTAMP [SYMBOL]... [-q TEXT] [--at SHA|BRANCH|BRANCH#N] [--branch NAME] [--valid] [--strict]  # names at T (or at an address), either axis
+coderadar as-of [TIMESTAMP] [SYMBOL]... [-q TEXT] [--at SHA|BRANCH|BRANCH#N] [--branch NAME] [--valid] [--strict]  # names at T or at an address (then TIMESTAMP is omitted), either axis
 coderadar verify-history [--from TS --to TS] [--generations 25 | --all]  # can the past be reconstructed
 coderadar ingest-status [--store PATH]   # the store's own ingest state: cursors, horizons, tips, commits vs completions
 coderadar changes-between --t1 TS --t2 TS [--scope FILE|PREFIX] [--valid]  # what changed, hash-based

@@ -3,6 +3,12 @@
 > **Date:** 2026-10-27 · **Baseline:** CodeRadar v0.13.0 (`e68c443`, `main`) on `macrame-db 0.19.1`
 > **Status:** design proposal — nothing here is implemented. No decision register row yet.
 > §6 has a working prototype (`scripts/verify_history.py`) and §2.5 reports what it measured.
+>
+> **Status (2026-11-14): built.** Both gaps this document names were closed — `verify_history` and
+> the `content_version` spine shipped in v0.14.0 (DR-36, DR-38), and commit-driven ingestion
+> (the sampling fix it calls the only cure) shipped across v0.15.0–v0.16.0 (P5, DR-41). The body
+> below is the proposal as written on 2026-10-27: its file/line references are the state at
+> `e68c443`, and "nothing here is implemented" is the author's date, not the system's.
 > **Question answered:** can the bitemporal ledger carry *code* history (not just structural
 > history), is one content-addressed blob per file enough, and what is the lightweight diffable
 > structure that makes "how did this change between T1 and T2" a query rather than a byte fetch.
