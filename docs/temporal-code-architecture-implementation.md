@@ -1114,6 +1114,32 @@ U-3/D-318); a branch valid read refuses with `ValidBranchNeedsU2` until U-2/D-31
 note-embeddings half stays deferred with its reason; the retraction verb is P5c-gated. The next
 temporal step is upstream, and it is one read-side cycle: U-2 first, U-3 on its fold.
 
+**Tagged and published 2026-11-14.** `main` at `e27df18` (the second `--no-ff` merge of
+`origin/dev`, carrying the documentation audit; tree identical to dev's green run), CI green there
+across all seven jobs, `v0.16.0` annotated tag pushed, and `release.yml` green end to end: the
+tag-vs-version gate, three platform wheels, the sdist, and the PyPI trusted publish — the registry
+answering `latest: 0.16.0` with all four artifacts.
+
+The audit done before the tag was the release's most useful hour, and its findings are in the
+commit that carries them (`6a74764`): two stale README counts, a QUICKREF invocation the CLI
+refused (`coderadar as-of --at SHA` — the positional timestamp was required, so the address read
+P9 had just exposed could not be used from the CLI at all), a missing ARCHITECTURE bullet for the
+ingest report, two design docs still calling shipped work a proposal, and the plan's INV-10
+prediction corrected where the code disagreed (a window records at learn time, so the recorded fold
+survives; the fold that absorbs out-of-order writing is the valid one). It also recorded, rather
+than fixed, the **store that cannot heal**: since the 0.22.0 pin, a store holding pre-0.22 open ends
+(`9999-12-31T00:00:00.000000Z`) refuses the whole concept flush because the engine's supersede looks
+for its own sentinel, and the sweep that would replace the incumbent is skipped because the flush
+failed — reads keep answering, writes stop. `docs/store-and-retention.md` carries the symptom, the
+one-query detector and the cures; QUICKREF's troubleshooting table names the line an operator sees.
+
+One process slip belongs beside the 0.15.0 merge correction. The audit commit was made while the
+working branch was still `main` (the merge had just happened, and no checkout followed), so it
+landed *after* the merge instead of on `dev`. Nothing had been pushed: the commit was cherry-picked
+onto `dev`, `main` reset to the merge, and the second merge took `origin/dev`. The rule the 0.15.0
+record drew is about naming the remote ref; this one is its sibling — after a release merge,
+`git branch --show-current` before the next commit.
+
 ### 2026-11-13 — v0.15.0 cut (P5a–P5d, P6, P8 released)
 
 Version bumped `0.14.0` → `0.15.0` per DR-26 (`pyproject.toml` + workspace `Cargo.toml` together,
