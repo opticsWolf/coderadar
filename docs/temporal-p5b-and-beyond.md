@@ -270,6 +270,12 @@ The same index serves `at=<sha>` (A-3). When P5b.5 lifts INV-10, recorded order 
 commit order and step 2 is replaced by the valid fold (`reconstruct_as_of`, valid = committer time
 of *C*). The read's API and its `basis` label do not change, only how it is computed.
 
+*(2026-11-14: the prediction did not survive the code, and the code is right. A window records its
+rows at the instant the ledger learned them — `commit_done` is wall clock, by P5b.3a's own definition
+— so it writes *below a belief* without reordering the recorded axis. Recorded order still equals
+the order the store learned commits, which is what INV-10 was always about; the fold that had to
+absorb out-of-order writing is the valid one, and it does, per file and per chunk. Step 2 stands.)*
+
 Branch caveat: until P5c, a branch read on this arm inherits whatever F3 leaks, because the
 recorded fold at the completion instant sees the parent as it was at the fork. The arm makes the
 answer non-empty; P5c makes it right for branches.
@@ -378,6 +384,10 @@ Inherits INV-1..INV-14. INV-10 is replaced; the rest are new.
 - **INV-10′ — Per lineage, valid intervals form a chain.** Replaces "recorded order equals commit
   order". Out-of-order ingest becomes legal once reads use the valid axis (P5b.3) and Macrame
   guards the chain (D-291 and U-1). INV-10 stays enforced until both are true. P5b.5 lifts it.
+  *(2026-11-14: as shipped, INV-10 still governs forward ingest — `from` must be the cursor — and a
+  window is the one sanctioned way to write below a belief, where the engine's chain arm (a closed
+  version before a settled one) and `verify_concept_intervals` are what INV-10′ names. "Lifts it" was
+  too strong a word for what the window does.)*
 - **INV-15 — One open interval, abutting versions.** For every concept, at most one interval is
   open, and each version's `valid_to` equals its successor's `valid_from`. Checked after every
   ingest by `verify_concept_intervals`, which must report nothing.
@@ -471,12 +481,13 @@ a departed entity back to life; the map reads cuts now, which is also what makes
 store's arm correct. A snapshot stays lazy: the arm resolves at the first read, not at
 `as_of` construction, so no commit-index scan is paid to create one.
 
-### P5b.3 — Valid-axis reads (blocked by P5b.2; branch reads by U-2)
+### P5b.3 — Valid-axis reads (trunk closed 2026-11-12; branch reads still blocked by U-2)
 
 Every temporal op (`as_of`, `entities_at`, `source_refs_at`, `changes_between`, `verify_history`,
 `history_of`'s intervals) gains an explicit `valid=` (A-2, D-3, INV-16), lowered to
 `reconstruct_as_of`. The recorded default and P5b.3a's horizon rule stay. The git-history arm
-switches from the commit index to the valid fold only when P5b.5 lifts INV-10. Trunk reads ship as
+switches from the commit index to the valid fold only when P5b.5 lifts INV-10 (it does not, as
+shipped — see P5b.3a's note on recorded order: the recorded fold survives). Trunk reads ship as
 soon as P5b.2 lands. Branch reads wait for U-2 and meanwhile refuse on the valid axis with an error
 that names U-2, rather than answering for the trunk.
 
@@ -524,7 +535,7 @@ and a name mean the same thing on both axes, and the two P5b.4 placeholders (`Re
 an address that resolves into a branch lineage refuses with `ValidBranchNeedsU2` — the same refusal
 a branch *name* gets, for the same reason.
 
-### P5b.5 — Out-of-order ingest (blocked by P5b.3)
+### P5b.5 — Out-of-order ingest (closed 2026-11-14 — the landed notes below, and §7's row)
 
 The original P5b. Lift INV-10 for INV-10′: backfill a branch that predates the store, ingest a
 second remote, re-ingest a range after a parser fix (re-asserting existing starts, which is a
@@ -633,6 +644,12 @@ that same tombstone, at that same instant (content from the row itself). Without
 current row would be a closed, non-retired shape no read expects, and the live projection would keep
 listing a deleted entity. Nothing else is written: no edges, no sweep, no cursor, stamp, tip or
 horizon.
+
+*One arm is a guard, not a shape.* If a file has neither an in-window successor nor a row at the
+belief start, its last version stays open. A valid window cannot produce that state — present at
+`to` means the boundary chunk's tree wrote a row there, absent means a deletion at or inside the
+window closed it — so the arm exists to fail safe rather than to write an unclosable row, and the
+decision above ("closed rows only") is what a window actually writes.
 
 *Proof.* `tests/test_p5b5_window.py` (six tests): one history with an add, a modify, a deletion and a
 file never touched again, ingested in order into store A and as two newest-first chunks into store

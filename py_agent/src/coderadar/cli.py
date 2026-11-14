@@ -589,7 +589,7 @@ def module_children(module_id: str, fmt: str):
 
 
 @main.command(name="as-of")
-@click.argument("timestamp")
+@click.argument("timestamp", required=False, default="")
 @click.argument("symbols", nargs=-1)
 @click.option("--query", "-q", "query_text", default="",
               help="Free text naming the symbols, instead of or besides SYMBOLS.")

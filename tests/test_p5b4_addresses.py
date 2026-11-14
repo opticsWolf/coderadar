@@ -164,6 +164,19 @@ class TestAGenerationStaysAddressable:
             _digest("x = 2\nfeature = 1\n")
 
 
+class TestTheCliCanSayIt:
+    def test_an_address_read_needs_no_positional_timestamp(self):
+        # `coderadar as-of --at SHA` is the documented spelling, so the
+        # parser must accept it: the address *is* the instant. (Found in the
+        # 0.16.0 docs audit: QUICKREF taught the spelling the CLI refused.)
+        from coderadar.cli import main
+        command = main.commands["as-of"]
+        ctx = command.make_context("as-of", ["--at", "f" * 40])
+        assert ctx.params["at"] == "f" * 40
+        assert ctx.params["timestamp"] == ""
+        assert ctx.params["valid"] is False
+
+
 class TestNothingRounds:
     def test_an_unknown_name_refuses_on_both_axes(self, tmp_path):
         repo, _shas = _repo(tmp_path / "repo")
