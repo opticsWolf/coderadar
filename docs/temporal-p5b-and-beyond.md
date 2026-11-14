@@ -757,6 +757,20 @@ D-315 has the receiving lineage assert merged files' concepts and a windowing ge
 its predecessor's minted ids. What remains of P5c is the valid-axis cut and reads (U-2, U-3)
 and `parent_drift`'s drop to 0.)*
 
+*(2026-11-14: **the retraction verb is not required.** The ask was carried from D-315's amendment as
+"`this lineage absent from T on` where the lineage holds an own row starting past T" and marked
+P5c-gated; Macrame's v0.23.0 plan §7 Q5 named CodeRadar as the only candidate consumer. Filed during
+M1/U-2 and answered: no CodeRadar workflow produces that state — A-5 is inheritance (U-3's cut),
+A-6 and P5b.7 are forward assertions, D-5 answers rewrites with generations, and A-8/P5-D8 already
+says nothing recorded is retracted (A-9's answer to "it should not have been recorded" is a rebuild).
+Measured on 0.22.0: a retirement at T3 against an own row at T5 is refused at all three layers
+(single write `ConceptSingleOpen`, engine bulk `OverlappingConcept`, CodeRadar's decision the P5b.5
+backfill refusal), and the act-first order is a point close a later write re-opens — no row shape
+binds the future, which is the write law, not a gap. `docs/temporal-retraction-case.md` carries the
+state, the reads at T2/T4/T6, the probe (`scripts/retraction_probe.py`) and the reopen trigger: a
+named workflow needing a *single lineage's own row* invisible from before its start, which would
+amend P5-D8 first. Not a gate on U-2 or U-3; nothing to schedule in 0.23.0.)*
+
 ### P5d — The live tree (needs P5b.1)
 
 *(Revised 2026-10-31.)* Observation writes (A-7, D-4, INV-17, §3.1.3): the mutation event, the

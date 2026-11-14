@@ -1111,7 +1111,7 @@ second was a refusal found by running it.
 
 Still open, by name: F3 (`test_p5b_truth`) waits for a branch to see its merge base (Macrame
 U-3/D-318); a branch valid read refuses with `ValidBranchNeedsU2` until U-2/D-317; P6b's
-note-embeddings half stays deferred with its reason; the retraction verb is P5c-gated. The next
+note-embeddings half stays deferred with its reason; the retraction verb is P5c-gated. *(2026-11-14: filed as **not required** — no workflow names the case; `docs/temporal-retraction-case.md`.)* The next
 temporal step is upstream, and it is one read-side cycle: U-2 first, U-3 on its fold.
 
 **Tagged and published 2026-11-14.** `main` at `e27df18` (the second `--no-ff` merge of
