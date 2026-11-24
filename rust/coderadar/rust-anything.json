@@ -1,0 +1,707 @@
+{
+  "schema": "rust-anything/bridge@1",
+  "root": "D:\\User\\Documents\\Rust\\coderadar",
+  "unit": "py_agent/src/coderadar/ops.py",
+  "language": "python",
+  "kind": "pyo3",
+  "crate_name": "coderadar",
+  "exports": [
+    {
+      "name": "friendly_entity_id",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 201,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "canonical_entity_id",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 215,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "display_file",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 258,
+      "params": [
+        {
+          "name": "d",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "find_entity",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 275,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "dict | undefined",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "callers",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 339,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "callees",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 350,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "suggest_entities",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 359,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "limit",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "3"
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "search",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 392,
+      "params": [
+        {
+          "name": "query",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "kind",
+          "ts_type": "string | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "top_k",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "10"
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "search_symbols",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 414,
+      "params": [
+        {
+          "name": "query",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "top_k",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "10"
+        },
+        {
+          "name": "raw",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "False"
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "node",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 448,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "include_neighbors",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "False"
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "affected",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 458,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "max_depth",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "5"
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "module_children",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 512,
+      "params": [
+        {
+          "name": "module_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "resolve",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 531,
+      "params": [
+        {
+          "name": "name",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "limit",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "5"
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "normalize_query_spelling",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 567,
+      "params": [
+        {
+          "name": "query",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "parse_names",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 584,
+      "params": [
+        {
+          "name": "query",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "symbols",
+          "ts_type": "string[] | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        }
+      ],
+      "returns": "string[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "resolve_names",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 600,
+      "params": [
+        {
+          "name": "names",
+          "ts_type": "string[]",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "explore",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 742,
+      "params": [
+        {
+          "name": "query",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"\""
+        },
+        {
+          "name": "symbols",
+          "ts_type": "string[] | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "direction",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"both\""
+        },
+        {
+          "name": "max_files",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "8"
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "traverse",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 805,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "direction",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"both\""
+        },
+        {
+          "name": "edge_kinds",
+          "ts_type": "string[] | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "max_depth",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "3"
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "query",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 859,
+      "params": [
+        {
+          "name": "query",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "canonical_file_path",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3615,
+      "params": [
+        {
+          "name": "file_path",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    }
+  ],
+  "classes": [],
+  "js_only": [
+    {
+      "name": "blob_get",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 618,
+      "reason": "kept on request"
+    },
+    {
+      "name": "archive",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 642,
+      "reason": "kept on request"
+    },
+    {
+      "name": "read_source",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 693,
+      "reason": "kept on request"
+    },
+    {
+      "name": "stale_files",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 717,
+      "reason": "kept on request"
+    },
+    {
+      "name": "compute_embeddings",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 967,
+      "reason": "kept on request"
+    },
+    {
+      "name": "search_similar",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 1078,
+      "reason": "kept on request"
+    },
+    {
+      "name": "branches",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 1199,
+      "reason": "kept on request"
+    },
+    {
+      "name": "as_of",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 1219,
+      "reason": "kept on request"
+    },
+    {
+      "name": "verify_history",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 1343,
+      "reason": "kept on request"
+    },
+    {
+      "name": "history_of",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 1496,
+      "reason": "kept on request"
+    },
+    {
+      "name": "open_items",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 1784,
+      "reason": "kept on request"
+    },
+    {
+      "name": "backfill_commit_index",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 2511,
+      "reason": "kept on request"
+    },
+    {
+      "name": "ingest_status",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 2551,
+      "reason": "kept on request"
+    },
+    {
+      "name": "backfill_commit_messages",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 2994,
+      "reason": "kept on request"
+    },
+    {
+      "name": "changes_between",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3040,
+      "reason": "kept on request"
+    },
+    {
+      "name": "dead_code",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3272,
+      "reason": "kept on request"
+    },
+    {
+      "name": "get_smells",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3287,
+      "reason": "kept on request"
+    },
+    {
+      "name": "find_clones",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3300,
+      "reason": "kept on request"
+    },
+    {
+      "name": "diagnose",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3313,
+      "reason": "kept on request"
+    },
+    {
+      "name": "find_scaffolding",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3475,
+      "reason": "kept on request"
+    },
+    {
+      "name": "replace_body",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3506,
+      "reason": "kept on request"
+    },
+    {
+      "name": "update_signature",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3520,
+      "reason": "kept on request"
+    },
+    {
+      "name": "rename",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3533,
+      "reason": "kept on request"
+    },
+    {
+      "name": "render_entity_code",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3541,
+      "reason": "kept on request"
+    },
+    {
+      "name": "create_entity",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3632,
+      "reason": "kept on request"
+    },
+    {
+      "name": "reindex",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3665,
+      "reason": "kept on request"
+    },
+    {
+      "name": "update_file",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3724,
+      "reason": "kept on request"
+    },
+    {
+      "name": "status",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3738,
+      "reason": "kept on request"
+    },
+    {
+      "name": "OpError",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 112,
+      "reason": "class: inherits from Exception"
+    },
+    {
+      "name": "NoExtension",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 116,
+      "reason": "class: inherits from OpError"
+    },
+    {
+      "name": "NoIndex",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 120,
+      "reason": "class: inherits from OpError"
+    },
+    {
+      "name": "InvalidRequest",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 124,
+      "reason": "class: inherits from OpError"
+    },
+    {
+      "name": "NotFound",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 140,
+      "reason": "class: inherits from OpError, public attribute `candidates`, public attribute `detail`, public attribute `entity_id`"
+    },
+    {
+      "name": "EngineError",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 155,
+      "reason": "class: inherits from OpError"
+    },
+    {
+      "name": "MissingDependency",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 159,
+      "reason": "class: inherits from OpError"
+    },
+    {
+      "name": "NoEmbeddings",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 163,
+      "reason": "class: inherits from OpError"
+    },
+    {
+      "name": "MutationFailed",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 167,
+      "reason": "class: inherits from OpError"
+    },
+    {
+      "name": "ContentUnavailable",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 171,
+      "reason": "class: inherits from OpError"
+    }
+  ]
+}

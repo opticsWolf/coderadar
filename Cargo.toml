@@ -1,5 +1,5 @@
 [workspace]
-members = ["core_indexer"]
+members = ["core_indexer", "rust/coderadar"]
 resolver = "2"
 
 [workspace.package]

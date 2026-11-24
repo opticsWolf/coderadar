@@ -1,0 +1,27 @@
+{
+  "all_ops_exports": [
+    "friendly_entity_id", "canonical_entity_id", "display_file", "find_entity",
+    "callers", "callees", "suggest_entities", "search", "search_symbols",
+    "node", "affected", "module_children", "resolve", "normalize_query_spelling",
+    "parse_names", "resolve_names", "blob_get", "archive", "read_source",
+    "stale_files", "explore", "traverse", "query", "compute_embeddings",
+    "search_similar", "branches", "as_of", "verify_history", "history_of",
+    "open_items", "backfill_commit_index", "ingest_status",
+    "backfill_commit_messages", "changes_between", "dead_code", "get_smells",
+    "find_clones", "diagnose", "find_scaffolding", "replace_body",
+    "update_signature", "rename", "render_entity_code", "canonical_file_path",
+    "create_entity", "reindex", "update_file", "status"
+  ],
+  "unit1": [
+    "friendly_entity_id", "canonical_entity_id", "display_file", "find_entity",
+    "callers", "callees", "suggest_entities", "search", "search_symbols",
+    "node", "affected", "module_children", "resolve", "normalize_query_spelling",
+    "parse_names", "resolve_names", "explore", "traverse", "query",
+    "canonical_file_path"
+  ],
+  "unit2": [
+    "annotate", "comment", "revise_annotation", "retire_annotation",
+    "annotations_on", "comments_on", "annotation_history", "comment_history",
+    "open_items", "export_annotations", "import_annotations"
+  ]
+}

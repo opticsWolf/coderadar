@@ -1,0 +1,321 @@
+{"fn": "canonical_file_path", "args": ["m.py"]}
+{"fn": "friendly_entity_id", "args": [".\\proj\\src\\lib.rs::name"]}
+{"fn": "friendly_entity_id", "args": ["proj/src/lib.rs::name"]}
+{"fn": "friendly_entity_id", "args": ["./proj/src/lib.rs::name"]}
+{"fn": "friendly_entity_id", "args": ["./app.py::module"]}
+{"fn": "canonical_entity_id", "args": ["proj/src/lib.rs::name"]}
+{"fn": "canonical_entity_id", "args": [".\\proj\\src\\lib.rs::name"]}
+{"fn": "canonical_entity_id", "args": [".\\proj/src/lib.rs::name"]}
+{"fn": "canonical_entity_id", "args": ["does/not/exist::nope"]}
+{"fn": "parse_names", "args": ["", []]}
+{"fn": "search", "args": ["   ", null, 10]}
+{"fn": "search", "args": ["zzzqqq xynx", null, 10]}
+{"fn": "search", "args": ["real_symbol", null, 10]}
+{"fn": "friendly_entity_id", "args": ["lib.py::real_symbol"]}
+{"fn": "canonical_entity_id", "args": ["C:\\Users\\Main\\AppData\\Local\\Temp\\pytest-of-Main\\pytest-7875\\test_an_escape_path_into_the_o0\\proj_a\\m.py::alpha_fn"]}
+{"fn": "search", "args": ["fn", null, 10]}
+{"fn": "friendly_entity_id", "args": ["m.py::beta_fn"]}
+{"fn": "parse_names", "args": ["", ["a.py::foo"]]}
+{"fn": "resolve", "args": ["UserService", 5]}
+{"fn": "query", "args": ["functions where name contains 'x'"]}
+{"fn": "module_children", "args": ["test.py::module"]}
+{"fn": "traverse", "args": ["test.py::func", "both", null, 3]}
+{"fn": "resolve", "args": ["/users/42"]}
+{"fn": "parse_names", "args": ["", ["a.py::module"]]}
+{"fn": "query", "args": ["functions where is_async == true"]}
+{"fn": "display_file", "args": [{"id": "app.py::fetch", "decorators": [], "complexity": 1, "parent_id": null, "caller_count": 0, "callers": [], "is_override": false, "file_path": "app.py", "kind": "function", "line": 15, "name": "fetch", "callee_count": 0, "resolved_call_targets": [], "line_count": 1, "parent_class": "", "is_async": true, "parameter_count": 1, "docstring": "", "callees": []}]}
+{"fn": "query", "args": ["functions where is_async == false"]}
+{"fn": "display_file", "args": [{"name": "describe", "decorators": [], "docstring": "base", "callee_count": 0, "parameter_count": 1, "resolved_call_targets": [], "line_count": 1, "is_override": false, "is_async": false, "line": 2, "kind": "method", "complexity": 1, "file_path": "app.py", "caller_count": 0, "callees": [], "parent_class": "app.py::Base", "callers": [], "id": "app.py::Base.describe", "parent_id": "app.py::Base"}]}
+{"fn": "display_file", "args": [{"caller_count": 1, "parent_class": "", "docstring": "x", "file_path": "app.py", "parent_id": null, "resolved_call_targets": [], "callee_count": 0, "line_count": 1, "decorators": [], "callers": ["app.py::Derived.describe"], "id": "app.py::helper", "name": "helper", "callees": [], "is_override": false, "is_async": false, "parameter_count": 0, "complexity": 1, "kind": "function", "line": 11}]}
+{"fn": "display_file", "args": [{"callee_count": 0, "is_override": false, "line": 19, "line_count": 1, "parameter_count": 0, "caller_count": 0, "complexity": 1, "resolved_call_targets": [], "callers": [], "id": "app.py::gen", "decorators": [], "is_async": false, "docstring": "", "file_path": "app.py", "kind": "function", "name": "gen", "parent_id": null, "callees": [], "parent_class": ""}]}
+{"fn": "display_file", "args": [{"line_count": 1, "is_async": false, "parameter_count": 1, "name": "describe", "is_override": true, "line": 7, "complexity": 1, "docstring": "derived", "id": "app.py::Derived.describe", "kind": "method", "file_path": "app.py", "callers": [], "callee_count": 1, "caller_count": 0, "resolved_call_targets": ["app.py::helper"], "parent_id": "app.py::Derived", "callees": ["app.py::helper"], "decorators": [], "parent_class": "app.py::Derived"}]}
+{"fn": "callers", "args": [".\\app.py::helper"]}
+{"fn": "node", "args": ["a.py::module"]}
+{"fn": "find_entity", "args": ["a.py::module"]}
+{"fn": "canonical_entity_id", "args": ["a.py::module"]}
+{"fn": "search", "args": ["combine", "bogus_kind", 5]}
+{"fn": "node", "args": ["big/drop.py::module", false]}
+{"fn": "find_entity", "args": ["big/drop.py::module"]}
+{"fn": "canonical_entity_id", "args": ["big/drop.py::module"]}
+{"fn": "suggest_entities", "args": ["big/drop.py::module"]}
+{"fn": "node", "args": ["keep.py::module", false]}
+{"fn": "find_entity", "args": ["keep.py::module"]}
+{"fn": "canonical_entity_id", "args": ["keep.py::module"]}
+{"fn": "traverse", "args": ["chain.py::top", "both", null, 3]}
+{"fn": "find_entity", "args": ["chain.py::top"]}
+{"fn": "canonical_entity_id", "args": ["chain.py::top"]}
+{"fn": "traverse", "args": ["chain.py::top", "both", ["imports"], 3]}
+{"fn": "resolve", "args": ["/users/:id"]}
+{"fn": "affected", "args": ["app.py::get_user"]}
+{"fn": "find_entity", "args": ["app.py::get_user"]}
+{"fn": "canonical_entity_id", "args": ["app.py::get_user"]}
+{"fn": "node", "args": ["app.py::flask:route:/users/<id>"]}
+{"fn": "find_entity", "args": ["app.py::flask:route:/users/<id>"]}
+{"fn": "canonical_entity_id", "args": ["app.py::flask:route:/users/<id>"]}
+{"fn": "affected", "args": ["app.py::flask:route:/users/<id>"]}
+{"fn": "resolve", "args": ["/users/:id", 5]}
+{"fn": "friendly_entity_id", "args": ["app.py::get_user"]}
+{"fn": "node", "args": ["app.py::flask:route:/orders/<id>"]}
+{"fn": "find_entity", "args": ["app.py::flask:route:/orders/<id>"]}
+{"fn": "canonical_entity_id", "args": ["app.py::flask:route:/orders/<id>"]}
+{"fn": "resolve", "args": ["/orders/:id"]}
+{"fn": "node", "args": ["app.py::flask:route:/health"]}
+{"fn": "find_entity", "args": ["app.py::flask:route:/health"]}
+{"fn": "canonical_entity_id", "args": ["app.py::flask:route:/health"]}
+{"fn": "suggest_entities", "args": ["app.py::flask:route:/health"]}
+{"fn": "resolve", "args": ["/health"]}
+{"fn": "callees", "args": ["app.py::get_user"]}
+{"fn": "resolve", "args": ["/no/such/route"]}
+{"fn": "parse_names", "args": ["User.save authenticate logout", []]}
+{"fn": "normalize_query_spelling", "args": ["User.save authenticate logout"]}
+{"fn": "parse_names", "args": ["", ["User", "AdminUser"]]}
+{"fn": "parse_names", "args": ["  ,  ", []]}
+{"fn": "normalize_query_spelling", "args": ["  ,  "]}
+{"fn": "parse_names", "args": ["a User x", []]}
+{"fn": "normalize_query_spelling", "args": ["a User x"]}
+{"fn": "search", "args": ["User", null, 10]}
+{"fn": "friendly_entity_id", "args": ["models.py::User"]}
+{"fn": "friendly_entity_id", "args": ["services.py::UserService.user_count"]}
+{"fn": "friendly_entity_id", "args": ["services.py::UserService"]}
+{"fn": "friendly_entity_id", "args": ["models.py::find_user_by_id"]}
+{"fn": "friendly_entity_id", "args": ["services.py::create_user"]}
+{"fn": "friendly_entity_id", "args": ["services.py::format_username"]}
+{"fn": "friendly_entity_id", "args": ["models.py::AdminUser.can_manage_users"]}
+{"fn": "friendly_entity_id", "args": ["models.py::AdminUser"]}
+{"fn": "friendly_entity_id", "args": ["services.py::import@4"]}
+{"fn": "friendly_entity_id", "args": ["__init__.py::import@5"]}
+{"fn": "search", "args": ["create_user", "function", 10]}
+{"fn": "search", "args": ["User", null, 5]}
+{"fn": "explore", "args": ["create_user", [], "both", 8]}
+{"fn": "parse_names", "args": ["create_user", []]}
+{"fn": "normalize_query_spelling", "args": ["create_user"]}
+{"fn": "resolve_names", "args": [["create_user"]]}
+{"fn": "find_entity", "args": ["create_user"]}
+{"fn": "canonical_entity_id", "args": ["create_user"]}
+{"fn": "explore", "args": ["create_user", [], "downstream", 8]}
+{"fn": "search", "args": ["AdminUser"], "kwargs": {"top_k": 3}}
+{"fn": "node", "args": ["models.py::AdminUser", true]}
+{"fn": "find_entity", "args": ["models.py::AdminUser"]}
+{"fn": "canonical_entity_id", "args": ["models.py::AdminUser"]}
+{"fn": "search", "args": ["format_username"], "kwargs": {"top_k": 3}}
+{"fn": "node", "args": ["services.py::format_username", true]}
+{"fn": "find_entity", "args": ["services.py::format_username"]}
+{"fn": "canonical_entity_id", "args": ["services.py::format_username"]}
+{"fn": "affected", "args": ["services.py::format_username", 3]}
+{"fn": "friendly_entity_id", "args": ["services.py::UserService.register"]}
+{"fn": "explore", "args": ["", ["create_user", "format_username"], "both", 8]}
+{"fn": "parse_names", "args": ["", ["create_user", "format_username"]]}
+{"fn": "resolve_names", "args": [["create_user", "format_username"]]}
+{"fn": "find_entity", "args": ["format_username"]}
+{"fn": "canonical_entity_id", "args": ["format_username"]}
+{"fn": "resolve_names", "args": [["User", "create_user"]]}
+{"fn": "find_entity", "args": ["User"]}
+{"fn": "canonical_entity_id", "args": ["User"]}
+{"fn": "explore", "args": ["", [], "both", 8]}
+{"fn": "explore", "args": ["xyzzynonexistent_12345", [], "both", 8]}
+{"fn": "parse_names", "args": ["xyzzynonexistent_12345", []]}
+{"fn": "normalize_query_spelling", "args": ["xyzzynonexistent_12345"]}
+{"fn": "resolve_names", "args": [["xyzzynonexistent_12345"]]}
+{"fn": "find_entity", "args": ["xyzzynonexistent_12345"]}
+{"fn": "canonical_entity_id", "args": ["xyzzynonexistent_12345"]}
+{"fn": "node", "args": ["nonexistent::ghost_entity", false]}
+{"fn": "find_entity", "args": ["nonexistent::ghost_entity"]}
+{"fn": "canonical_entity_id", "args": ["nonexistent::ghost_entity"]}
+{"fn": "suggest_entities", "args": ["nonexistent::ghost_entity"]}
+{"fn": "search", "args": ["", null, 5]}
+{"fn": "search", "args": ["xyzzynonexistent_abcdef", null, 5]}
+{"fn": "affected", "args": ["nonexistent::ghost", 5]}
+{"fn": "find_entity", "args": ["nonexistent::ghost"]}
+{"fn": "canonical_entity_id", "args": ["nonexistent::ghost"]}
+{"fn": "suggest_entities", "args": ["nonexistent::ghost"]}
+{"fn": "explore", "args": ["AdminUser", [], "both", 8]}
+{"fn": "parse_names", "args": ["AdminUser", []]}
+{"fn": "normalize_query_spelling", "args": ["AdminUser"]}
+{"fn": "resolve_names", "args": [["AdminUser"]]}
+{"fn": "find_entity", "args": ["AdminUser"]}
+{"fn": "canonical_entity_id", "args": ["AdminUser"]}
+{"fn": "search", "args": ["User", null, 2]}
+{"fn": "node", "args": ["models.py::User", false]}
+{"fn": "find_entity", "args": ["models.py::User"]}
+{"fn": "canonical_entity_id", "args": ["models.py::User"]}
+{"fn": "normalize_query_spelling", "args": ["GenServer:handle_call/3"]}
+{"fn": "normalize_query_spelling", "args": ["mod:fn"]}
+{"fn": "normalize_query_spelling", "args": ["cowboy_stream_h:request_process/3"]}
+{"fn": "normalize_query_spelling", "args": ["kind:function lang:python User"]}
+{"fn": "normalize_query_spelling", "args": ["create_user format_username"]}
+{"fn": "parse_names", "args": ["GenServer:handle_call/3 spawn/1", []]}
+{"fn": "normalize_query_spelling", "args": ["GenServer:handle_call/3 spawn/1"]}
+{"fn": "search", "args": ["User", null, 3]}
+{"fn": "search", "args": ["User"], "kwargs": {"top_k": 3}}
+{"fn": "explore", "args": ["User", [], "both", 8]}
+{"fn": "parse_names", "args": ["User", []]}
+{"fn": "normalize_query_spelling", "args": ["User"]}
+{"fn": "resolve_names", "args": [["User"]]}
+{"fn": "resolve", "args": ["", 5]}
+{"fn": "query", "args": [""]}
+{"fn": "query", "args": ["functions where name contains 'create'"]}
+{"fn": "display_file", "args": [{"line_count": 3, "callees": ["models.py::User", "services.py::format_username"], "complexity": 1, "resolved_call_targets": ["services.py::format_username", "models.py::User"], "is_override": false, "kind": "function", "parent_class": "", "is_async": false, "docstring": "Create a new User instance.", "decorators": [], "id": "services.py::create_user", "parent_id": null, "callee_count": 2, "return_type": "User", "callers": ["services.py::UserService.register"], "file_path": "services.py", "parameter_count": 3, "name": "create_user", "line": 12, "caller_count": 1}]}
+{"fn": "query", "args": ["functions where parameter_count > 0"]}
+{"fn": "display_file", "args": [{"name": "user_count", "kind": "property", "is_override": false, "docstring": "Number of registered users.", "line": 46, "resolved_call_targets": ["len"], "is_async": false, "callees": ["external::len"], "parent_class": "services.py::UserService", "id": "services.py::UserService.user_count", "callers": [], "parent_id": "services.py::UserService", "caller_count": 0, "parameter_count": 1, "callee_count": 1, "file_path": "services.py", "line_count": 2, "decorators": ["@property"], "complexity": 1}]}
+{"fn": "display_file", "args": [{"parent_id": null, "caller_count": 1, "complexity": 1, "line": 7, "kind": "function", "name": "format_username", "callees": [], "resolved_call_targets": [], "parent_class": "", "line_count": 2, "docstring": "Format a username for display — uses str builtins.", "callers": ["services.py::create_user"], "is_async": false, "callee_count": 0, "file_path": "services.py", "parameter_count": 1, "decorators": [], "id": "services.py::format_username", "is_override": false}]}
+{"fn": "display_file", "args": [{"caller_count": 0, "id": "services.py::UserService.register", "resolved_call_targets": ["services.py::create_user"], "decorators": [], "docstring": "Register a new user — calls create_user.", "is_async": false, "name": "register", "file_path": "services.py", "kind": "method", "complexity": 1, "parent_id": "services.py::UserService", "is_override": false, "callers": [], "callees": ["services.py::create_user"], "line_count": 4, "parent_class": "services.py::UserService", "parameter_count": 4, "return_type": "User", "callee_count": 1, "line": 24}]}
+{"fn": "display_file", "args": [{"return_type": "AdminUser", "id": "services.py::UserService.promote_to_admin", "parent_id": "services.py::UserService", "complexity": 1, "name": "promote_to_admin", "callee_count": 1, "parent_class": "services.py::UserService", "decorators": [], "callers": [], "file_path": "services.py", "line_count": 9, "callees": ["models.py::AdminUser"], "caller_count": 0, "is_async": false, "resolved_call_targets": ["models.py::AdminUser"], "is_override": false, "line": 34, "parameter_count": 3, "kind": "method", "docstring": "Promote a User to AdminUser."}]}
+{"fn": "display_file", "args": [{"resolved_call_targets": ["len"], "parameter_count": 1, "callees": ["external::len"], "kind": "method", "docstring": "@", "id": "models.py::User.is_valid", "name": "is_valid", "complexity": 1, "file_path": "models.py", "is_async": false, "parent_class": "models.py::User", "callee_count": 1, "is_override": false, "line_count": 1, "decorators": [], "line": 17, "caller_count": 0, "parent_id": "models.py::User", "callers": []}]}
+{"fn": "display_file", "args": [{"line": 29, "parameter_count": 2, "decorators": [], "parent_id": "models.py::AdminUser", "file_path": "models.py", "caller_count": 0, "docstring": "", "callers": [], "id": "models.py::AdminUser.grant_permission", "return_type": "None", "name": "grant_permission", "line_count": 1, "is_async": false, "parent_class": "models.py::AdminUser", "complexity": 1, "callee_count": 0, "is_override": false, "resolved_call_targets": [], "callees": [], "kind": "method"}]}
+{"fn": "display_file", "args": [{"name": "find_user_by_id", "line_count": 5, "decorators": [], "line": 36, "kind": "function", "is_override": false, "parent_class": "", "id": "models.py::find_user_by_id", "complexity": 3, "caller_count": 1, "callers": ["services.py::UserService.find_by_id"], "return_type": "Optional[User]", "is_async": false, "parent_id": null, "file_path": "models.py", "resolved_call_targets": [], "parameter_count": 2, "callee_count": 0, "callees": [], "docstring": "Find a user in a list by ID."}]}
+{"fn": "display_file", "args": [{"docstring": "manage_users", "parameter_count": 1, "parent_id": "models.py::AdminUser", "kind": "method", "caller_count": 0, "is_async": false, "resolved_call_targets": [], "line_count": 1, "line": 32, "callee_count": 0, "name": "can_manage_users", "callers": [], "decorators": [], "parent_class": "models.py::AdminUser", "file_path": "models.py", "is_override": false, "complexity": 1, "callees": [], "id": "models.py::AdminUser.can_manage_users"}]}
+{"fn": "display_file", "args": [{"line_count": 1, "is_async": false, "kind": "method", "callers": [], "callees": [], "parent_class": "models.py::User", "complexity": 1, "parent_id": "models.py::User", "name": "display_name", "callee_count": 0, "resolved_call_targets": [], "caller_count": 0, "is_override": false, "docstring": "f\"{self.name} <{self.email}>", "decorators": [], "id": "models.py::User.display_name", "file_path": "models.py", "line": 14, "parameter_count": 1}]}
+{"fn": "display_file", "args": [{"complexity": 1, "docstring": "f\"[ADMIN] {self.name}", "parent_id": "models.py::AdminUser", "id": "models.py::AdminUser.display_name", "parent_class": "models.py::AdminUser", "parameter_count": 1, "callers": [], "caller_count": 0, "file_path": "models.py", "kind": "method", "name": "display_name", "is_override": true, "decorators": [], "callees": [], "line_count": 1, "is_async": false, "resolved_call_targets": [], "callee_count": 0, "line": 26}]}
+{"fn": "display_file", "args": [{"parameter_count": 3, "line_count": 3, "callees": ["models.py::User", "services.py::format_username"], "caller_count": 1, "parent_class": "", "docstring": "Create a new User instance.", "return_type": "User", "line": 12, "resolved_call_targets": ["services.py::format_username", "models.py::User"], "parent_id": null, "decorators": [], "callers": ["services.py::UserService.register"], "is_override": false, "id": "services.py::create_user", "kind": "function", "name": "create_user", "is_async": false, "complexity": 1, "file_path": "services.py", "callee_count": 2}]}
+{"fn": "display_file", "args": [{"return_type": "User | None", "callees": ["models.py::find_user_by_id"], "kind": "method", "caller_count": 0, "is_async": false, "docstring": "Find user by ID — calls find_user_by_id from models.", "line_count": 2, "parameter_count": 2, "is_override": false, "id": "services.py::UserService.find_by_id", "decorators": [], "callee_count": 1, "complexity": 1, "parent_id": "services.py::UserService", "name": "find_by_id", "parent_class": "services.py::UserService", "resolved_call_targets": ["models.py::find_user_by_id"], "file_path": "services.py", "line": 30, "callers": []}]}
+{"fn": "display_file", "args": [{"is_async": false, "parent_class": "services.py::UserService", "is_override": false, "line": 21, "name": "__init__", "callee_count": 0, "id": "services.py::UserService.__init__", "decorators": [], "docstring": "", "resolved_call_targets": [], "complexity": 1, "file_path": "services.py", "line_count": 1, "parent_id": "services.py::UserService", "callees": [], "caller_count": 0, "parameter_count": 1, "kind": "method", "callers": []}]}
+{"fn": "query", "args": ["functions where is_async == false limit 5"]}
+{"fn": "display_file", "args": [{"caller_count": 0, "callee_count": 1, "line": 46, "callers": [], "parent_id": "services.py::UserService", "id": "services.py::UserService.user_count", "kind": "property", "line_count": 2, "callees": ["external::len"], "resolved_call_targets": ["len"], "name": "user_count", "is_async": false, "parameter_count": 1, "file_path": "services.py", "decorators": ["@property"], "docstring": "Number of registered users.", "complexity": 1, "parent_class": "services.py::UserService", "is_override": false}]}
+{"fn": "display_file", "args": [{"parent_id": null, "parent_class": "", "name": "format_username", "resolved_call_targets": [], "kind": "function", "is_async": false, "decorators": [], "id": "services.py::format_username", "file_path": "services.py", "caller_count": 1, "docstring": "Format a username for display — uses str builtins.", "line": 7, "is_override": false, "callee_count": 0, "callees": [], "line_count": 2, "parameter_count": 1, "complexity": 1, "callers": ["services.py::create_user"]}]}
+{"fn": "display_file", "args": [{"id": "services.py::UserService.register", "resolved_call_targets": ["services.py::create_user"], "parent_class": "services.py::UserService", "decorators": [], "docstring": "Register a new user — calls create_user.", "is_async": false, "parent_id": "services.py::UserService", "callers": [], "line": 24, "parameter_count": 4, "complexity": 1, "file_path": "services.py", "name": "register", "caller_count": 0, "callee_count": 1, "callees": ["services.py::create_user"], "is_override": false, "kind": "method", "line_count": 4, "return_type": "User"}]}
+{"fn": "display_file", "args": [{"callees": ["models.py::AdminUser"], "callee_count": 1, "decorators": [], "parent_id": "services.py::UserService", "caller_count": 0, "parameter_count": 3, "resolved_call_targets": ["models.py::AdminUser"], "is_override": false, "docstring": "Promote a User to AdminUser.", "return_type": "AdminUser", "is_async": false, "kind": "method", "parent_class": "services.py::UserService", "name": "promote_to_admin", "id": "services.py::UserService.promote_to_admin", "file_path": "services.py", "line_count": 9, "callers": [], "line": 34, "complexity": 1}]}
+{"fn": "display_file", "args": [{"line": 17, "callees": ["external::len"], "is_override": false, "parent_class": "models.py::User", "kind": "method", "caller_count": 0, "parameter_count": 1, "line_count": 1, "resolved_call_targets": ["len"], "decorators": [], "complexity": 1, "id": "models.py::User.is_valid", "callee_count": 1, "file_path": "models.py", "name": "is_valid", "parent_id": "models.py::User", "callers": [], "docstring": "@", "is_async": false}]}
+{"fn": "query", "args": ["functions where name contains 'user' and name contains 'create'"]}
+{"fn": "display_file", "args": [{"callee_count": 2, "docstring": "Create a new User instance.", "return_type": "User", "line": 12, "callers": ["services.py::UserService.register"], "id": "services.py::create_user", "kind": "function", "parent_class": "", "line_count": 3, "parent_id": null, "resolved_call_targets": ["services.py::format_username", "models.py::User"], "caller_count": 1, "parameter_count": 3, "is_override": false, "is_async": false, "callees": ["models.py::User", "services.py::format_username"], "name": "create_user", "complexity": 1, "decorators": [], "file_path": "services.py"}]}
+{"fn": "query", "args": ["functions where name == 'nope_a' or name == 'create_user'"]}
+{"fn": "display_file", "args": [{"parent_id": null, "name": "create_user", "callee_count": 2, "complexity": 1, "kind": "function", "caller_count": 1, "return_type": "User", "parent_class": "", "docstring": "Create a new User instance.", "is_override": false, "id": "services.py::create_user", "callers": ["services.py::UserService.register"], "line": 12, "decorators": [], "is_async": false, "line_count": 3, "callees": ["models.py::User", "services.py::format_username"], "resolved_call_targets": ["services.py::format_username", "models.py::User"], "parameter_count": 3, "file_path": "services.py"}]}
+{"fn": "module_children", "args": [""]}
+{"fn": "module_children", "args": ["models.py::module"]}
+{"fn": "canonical_entity_id", "args": ["models.py::module"]}
+{"fn": "traverse", "args": ["", "both", null, 3]}
+{"fn": "traverse", "args": ["nonexistent::ghost", "both", null, 3]}
+{"fn": "traverse", "args": ["shapes.ts::Circle", "downstream", ["implements"]]}
+{"fn": "find_entity", "args": ["shapes.ts::Circle"]}
+{"fn": "canonical_entity_id", "args": ["shapes.ts::Circle"]}
+{"fn": "traverse", "args": ["shapes.ts::Shape", "upstream", ["implements"]]}
+{"fn": "find_entity", "args": ["shapes.ts::Shape"]}
+{"fn": "canonical_entity_id", "args": ["shapes.ts::Shape"]}
+{"fn": "traverse", "args": ["shapes.ts::Sub", "downstream", ["extends"]]}
+{"fn": "find_entity", "args": ["shapes.ts::Sub"]}
+{"fn": "canonical_entity_id", "args": ["shapes.ts::Sub"]}
+{"fn": "traverse", "args": ["app.py::alpha", "downstream", ["decorates"]]}
+{"fn": "find_entity", "args": ["app.py::alpha"]}
+{"fn": "canonical_entity_id", "args": ["app.py::alpha"]}
+{"fn": "traverse", "args": ["helpers.py::validate", "upstream", ["decorates"]]}
+{"fn": "find_entity", "args": ["helpers.py::validate"]}
+{"fn": "canonical_entity_id", "args": ["helpers.py::validate"]}
+{"fn": "traverse", "args": ["app.py::build", "downstream", ["instantiates"]]}
+{"fn": "find_entity", "args": ["app.py::build"]}
+{"fn": "canonical_entity_id", "args": ["app.py::build"]}
+{"fn": "traverse", "args": ["eng.py::Engine", "upstream", ["instantiates"]]}
+{"fn": "find_entity", "args": ["eng.py::Engine"]}
+{"fn": "canonical_entity_id", "args": ["eng.py::Engine"]}
+{"fn": "traverse", "args": ["handlers.py::get_handler", "downstream", ["references"]]}
+{"fn": "find_entity", "args": ["handlers.py::get_handler"]}
+{"fn": "canonical_entity_id", "args": ["handlers.py::get_handler"]}
+{"fn": "traverse", "args": ["handlers.py::greeter", "upstream", ["references"]]}
+{"fn": "find_entity", "args": ["handlers.py::greeter"]}
+{"fn": "canonical_entity_id", "args": ["handlers.py::greeter"]}
+{"fn": "traverse", "args": ["handlers.py::get_handler", "downstream", ["calls"]]}
+{"fn": "traverse", "args": ["app.ts::module", "downstream", ["imports"]]}
+{"fn": "find_entity", "args": ["app.ts::module"]}
+{"fn": "canonical_entity_id", "args": ["app.ts::module"]}
+{"fn": "traverse", "args": ["packages/web/app.ts::module", "downstream", ["imports"]]}
+{"fn": "find_entity", "args": ["packages/web/app.ts::module"]}
+{"fn": "canonical_entity_id", "args": ["packages/web/app.ts::module"]}
+{"fn": "canonical_file_path", "args": ["a/b.py"]}
+{"fn": "canonical_file_path", "args": ["D:\\User\\Documents\\Rust\\coderadar\\x\\y.py"]}
+{"fn": "canonical_file_path", "args": [".\\a.py"]}
+{"fn": "canonical_entity_id", "args": ["app.py::greet"]}
+{"fn": "canonical_entity_id", "args": ["app.py::Greeter"]}
+{"fn": "canonical_file_path", "args": ["app.py"]}
+{"fn": "canonical_entity_id", "args": ["app.py::shout"]}
+{"fn": "canonical_entity_id", "args": ["app.py::Base.save"]}
+{"fn": "canonical_entity_id", "args": ["app.py::Child.save"]}
+{"fn": "canonical_entity_id", "args": ["app.py::Manager.save_state"]}
+{"fn": "search", "args": ["helper", null, 10]}
+{"fn": "search", "args": ["Store", "class", 10]}
+{"fn": "search", "args": ["helper", "bogus", 10]}
+{"fn": "node", "args": ["app.py::helper", false]}
+{"fn": "find_entity", "args": ["app.py::helper"]}
+{"fn": "canonical_entity_id", "args": ["app.py::helper"]}
+{"fn": "node", "args": ["app.py::helper", true]}
+{"fn": "node", "args": ["app.py::helperx", false]}
+{"fn": "find_entity", "args": ["app.py::helperx"]}
+{"fn": "canonical_entity_id", "args": ["app.py::helperx"]}
+{"fn": "suggest_entities", "args": ["app.py::helperx"]}
+{"fn": "affected", "args": ["app.py::helper", 5]}
+{"fn": "module_children", "args": ["app.py::module"]}
+{"fn": "canonical_entity_id", "args": ["app.py::module"]}
+{"fn": "module_children", "args": ["  "]}
+{"fn": "module_children", "args": ["nope.py::module"]}
+{"fn": "canonical_entity_id", "args": ["nope.py::module"]}
+{"fn": "resolve", "args": ["Store", 5]}
+{"fn": "search", "args": ["entry", null, 10]}
+{"fn": "search", "args": ["load", null, 10]}
+{"fn": "parse_names", "args": ["", ["a.py::module", "a.py::f", "b.py::module", "b.py::g", "c.py::module", "c.py::k", "d.py::module", "d.py::h"]]}
+{"fn": "find_entity", "args": ["old.py::foo"]}
+{"fn": "canonical_entity_id", "args": ["old.py::foo"]}
+{"fn": "find_entity", "args": ["new.py::foo"]}
+{"fn": "canonical_entity_id", "args": ["new.py::foo"]}
+{"fn": "search", "args": ["m"]}
+{"fn": "search", "args": ["h"]}
+{"fn": "search", "args": ["f"]}
+{"fn": "node", "args": ["pkg.model.Widget.render", false]}
+{"fn": "find_entity", "args": ["pkg.model.Widget.render"]}
+{"fn": "canonical_entity_id", "args": ["pkg.model.Widget.render"]}
+{"fn": "node", "args": ["pkg/model.py::Widget.render", false]}
+{"fn": "find_entity", "args": ["pkg/model.py::Widget.render"]}
+{"fn": "canonical_entity_id", "args": ["pkg/model.py::Widget.render"]}
+{"fn": "suggest_entities", "args": ["pkg.model.Widget.rendr"]}
+{"fn": "suggest_entities", "args": ["pkg.model.Nothing.zzz"]}
+{"fn": "friendly_entity_id", "args": ["app.py::Store"]}
+{"fn": "friendly_entity_id", "args": ["app.py::Store.load"]}
+{"fn": "display_file", "args": [{"name": "Store.load", "kind": "function", "id": "app.py::Store.load", "depth": 1}]}
+{"fn": "display_file", "args": [{"name": "f1", "kind": "function", "id": "a.py::f1", "file_path": "a.py", "start_line": 1}]}
+{"fn": "display_file", "args": [{"name": "f2", "kind": "function", "id": "a.py::f2", "file_path": "a.py", "start_line": 2}]}
+{"fn": "display_file", "args": [{"name": "alpha", "kind": "function", "id": "a.py::alpha", "file_path": "a.py", "similarity": 0.912}]}
+{"fn": "callees", "args": ["main.rs::main"]}
+{"fn": "callees", "args": ["alpha.rs::local_caller"]}
+{"fn": "callees", "args": ["beta.rs::run"]}
+{"fn": "callees", "args": ["alpha.rs::helper"]}
+{"fn": "callers", "args": ["alpha.rs::helper"]}
+{"fn": "search_symbols", "args": ["watcher debounce"]}
+{"fn": "search_symbols", "args": ["rename function"]}
+{"fn": "search_symbols", "args": ["watcher", 50]}
+{"fn": "search_symbols", "args": ["service token"]}
+{"fn": "node", "args": ["svc.py::authenticate"]}
+{"fn": "find_entity", "args": ["svc.py::authenticate"]}
+{"fn": "canonical_entity_id", "args": ["svc.py::authenticate"]}
+{"fn": "search_symbols", "args": ["watcher debounce", 50]}
+{"fn": "search_symbols", "args": ["watcher debounce restart index token", 50]}
+{"fn": "search_symbols", "args": [""]}
+{"fn": "search_symbols", "args": ["   "]}
+{"fn": "search_symbols", "args": ["xylophone zebra quux"]}
+{"fn": "search_symbols", "args": ["cats not dogs"]}
+{"fn": "search_symbols", "args": ["say \"hi"]}
+{"fn": "search_symbols", "args": ["a*b (c)"]}
+{"fn": "search_symbols", "args": ["watcher svc"]}
+{"fn": "search_symbols", "args": ["watcher OR svc"], "kwargs": {"raw": true}}
+{"fn": "search_symbols", "args": ["token"]}
+{"fn": "parse_names", "args": ["", ["mod.py::old_name", "mod.py::never_existed"]]}
+{"fn": "parse_names", "args": ["", ["mod.py::caller"]]}
+{"fn": "parse_names", "args": ["", ["mod.py::old_name"]]}
+{"fn": "node", "args": ["pkg/mod.py::helper", false]}
+{"fn": "find_entity", "args": ["pkg/mod.py::helper"]}
+{"fn": "canonical_entity_id", "args": ["pkg/mod.py::helper"]}
+{"fn": "friendly_entity_id", "args": ["pkg/mod.py::helper"]}
+{"fn": "node", "args": ["pkg/mod.py::helpr", false]}
+{"fn": "find_entity", "args": ["pkg/mod.py::helpr"]}
+{"fn": "canonical_entity_id", "args": ["pkg/mod.py::helpr"]}
+{"fn": "suggest_entities", "args": ["pkg/mod.py::helpr"]}
+{"fn": "query", "args": ["functions where nonsense =="]}
+{"fn": "traverse", "args": ["pkg/mod.py::helper", "upstream", null, 3]}
+{"fn": "canonical_file_path", "args": ["C:\\Users\\Main\\AppData\\Local\\Temp\\pytest-of-Main\\pytest-7875\\outside_48512.py"]}
+{"fn": "callers", "args": ["pkg/mod.py::helper"]}
+{"fn": "callees", "args": ["pkg/mod.py::caller"]}
+{"fn": "callers", "args": ["pkg/mod.py::nosuch"]}
+{"fn": "find_entity", "args": ["pkg/mod.py::nosuch"]}
+{"fn": "canonical_entity_id", "args": ["pkg/mod.py::nosuch"]}
+{"fn": "search", "args": ["zzzz_no_such_token", null, 10]}
+{"fn": "explore", "args": ["", ["zzzz_no_such_symbol"], "both", 8]}
+{"fn": "parse_names", "args": ["", ["zzzz_no_such_symbol"]]}
+{"fn": "resolve_names", "args": [["zzzz_no_such_symbol"]]}
+{"fn": "find_entity", "args": ["zzzz_no_such_symbol"]}
+{"fn": "canonical_entity_id", "args": ["zzzz_no_such_symbol"]}
+{"fn": "resolve", "args": ["zzzz_no_such_route", 5]}

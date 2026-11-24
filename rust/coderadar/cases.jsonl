@@ -1,0 +1,1204 @@
+{"fn": "friendly_entity_id", "args": [".leading"], "ok": ".leading"}
+{"fn": "friendly_entity_id", "args": ["ünïcödé"], "ok": "ünïcödé"}
+{"fn": "friendly_entity_id", "args": ["Hello World"], "ok": "Hello World"}
+{"fn": "friendly_entity_id", "args": [""], "ok": ""}
+{"fn": "friendly_entity_id", "args": ["İstanbul"], "ok": "İstanbul"}
+{"fn": "friendly_entity_id", "args": ["ab"], "ok": "ab"}
+{"fn": "friendly_entity_id", "args": ["./x/**/*.json日本語のテキスト"], "ok": "x/**/*.json日本語のテキスト"}
+{"fn": "friendly_entity_id", "args": ["é"], "ok": "é"}
+{"fn": "friendly_entity_id", "args": ["abc"], "ok": "abc"}
+{"fn": "friendly_entity_id", "args": ["a:b:cΣΊΣΥΦΟΣ"], "ok": "a:b:cΣΊΣΥΦΟΣ"}
+{"fn": "friendly_entity_id", "args": ["src/a/b.tsab"], "ok": "src/a/b.tsab"}
+{"fn": "friendly_entity_id", "args": ["a.b.c"], "ok": "a.b.c"}
+{"fn": "friendly_entity_id", "args": ["a😀b😀c"], "ok": "a😀b😀c"}
+{"fn": "friendly_entity_id", "args": ["emoji 👍🏽 mix"], "ok": "emoji 👍🏽 mix"}
+{"fn": "friendly_entity_id", "args": ["日本語のテキスト"], "ok": "日本語のテキスト"}
+{"fn": "friendly_entity_id", "args": ["{name} has {count} itemsa.b.c"], "ok": "{name} has {count} itemsa.b.c"}
+{"fn": "friendly_entity_id", "args": ["ns:key.path"], "ok": "ns:key.path"}
+{"fn": "friendly_entity_id", "args": ["HELLO"], "ok": "HELLO"}
+{"fn": "friendly_entity_id", "args": ["a..babc"], "ok": "a..babc"}
+{"fn": "friendly_entity_id", "args": ["abcHello World"], "ok": "abcHello World"}
+{"fn": "friendly_entity_id", "args": ["héllo wörld"], "ok": "héllo wörld"}
+{"fn": "friendly_entity_id", "args": ["👍🏽 thumbs"], "ok": "👍🏽 thumbs"}
+{"fn": "friendly_entity_id", "args": ["日本語"], "ok": "日本語"}
+{"fn": "friendly_entity_id", "args": ["straße"], "ok": "straße"}
+{"fn": "friendly_entity_id", "args": ["ılık ırmak"], "ok": "ılık ırmak"}
+{"fn": "friendly_entity_id", "args": ["👨‍👩‍👧 family"], "ok": "👨‍👩‍👧 family"}
+{"fn": "friendly_entity_id", "args": ["a b"], "ok": "a b"}
+{"fn": "friendly_entity_id", "args": ["ΣΊΣΥΦΟΣ"], "ok": "ΣΊΣΥΦΟΣ"}
+{"fn": "friendly_entity_id", "args": ["a😀b"], "ok": "a😀b"}
+{"fn": "friendly_entity_id", "args": ["﻿bom"], "ok": "﻿bom"}
+{"fn": "friendly_entity_id", "args": ["a²b x½ y①"], "ok": "a²b x½ y①"}
+{"fn": "friendly_entity_id", "args": ["aⅠb Ⅻ"], "ok": "aⅠb Ⅻ"}
+{"fn": "friendly_entity_id", "args": ["a𐐀b 𝐀bc"], "ok": "a𐐀b 𝐀bc"}
+{"fn": "friendly_entity_id", "args": ["कि ٣٤"], "ok": "कि ٣٤"}
+{"fn": "friendly_entity_id", "args": ["Iı İi"], "ok": "Iı İi"}
+{"fn": "friendly_entity_id", "args": ["K K k"], "ok": "K K k"}
+{"fn": "friendly_entity_id", "args": ["ſ s S"], "ok": "ſ s S"}
+{"fn": "friendly_entity_id", "args": ["x‍y 👨‍👩‍👧"], "ok": "x‍y 👨‍👩‍👧"}
+{"fn": "friendly_entity_id", "args": ["a b c　d"], "ok": "a b c　d"}
+{"fn": "friendly_entity_id", "args": ["١٢٣ ٤٥"], "ok": "١٢٣ ٤٥"}
+{"fn": "friendly_entity_id", "args": ["𝟘𝟙 ²³"], "ok": "𝟘𝟙 ²³"}
+{"fn": "friendly_entity_id", "args": ["snake_case foo-bar o'neil"], "ok": "snake_case foo-bar o'neil"}
+{"fn": "friendly_entity_id", "args": ["ǅungla Ǆ"], "ok": "ǅungla Ǆ"}
+{"fn": "friendly_entity_id", "args": ["one\r\ntwo threefour"], "ok": "one\r\ntwo threefour"}
+{"fn": "friendly_entity_id", "args": ["café café"], "ok": "café café"}
+{"fn": "friendly_entity_id", "args": ["ΣΑΣ σας ς"], "ok": "ΣΑΣ σας ς"}
+{"fn": "canonical_entity_id", "args": ["straße"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["abc"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["Hello World"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["key_name-1"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["😀"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["﻿bom"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["İstanbul"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["a..b.leading"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["a"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["{name} has {count} items"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["src/a/b.ts"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["日本語のテキスト"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["a.b.ckey_name-1"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["ns:key.path"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["emoji 👍🏽 mix"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["😀.leading"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["hello"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["é"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["ünïcödé"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["a😀b😀c"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["héllo wörld"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["👍🏽 thumbs"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["日本語"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": [""], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["ılık ırmak"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["👨‍👩‍👧 family"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["a b"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["ΣΊΣΥΦΟΣ"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["a😀b"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["a²b x½ y①"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["aⅠb Ⅻ"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["a𐐀b 𝐀bc"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["कि ٣٤"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["Iı İi"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["K K k"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["ſ s S"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["x‍y 👨‍👩‍👧"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["a b c　d"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["١٢٣ ٤٥"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["𝟘𝟙 ²³"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["snake_case foo-bar o'neil"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["ǅungla Ǆ"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["one\r\ntwo threefour"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["café café"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["ΣΑΣ σας ς"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "display_file", "args": [true], "error": "AttributeError: 'bool' object has no attribute 'get'"}
+{"fn": "display_file", "args": [[]], "error": "AttributeError: 'list' object has no attribute 'get'"}
+{"fn": "display_file", "args": [{"a": "b"}], "ok": "?"}
+{"fn": "display_file", "args": [null], "error": "AttributeError: 'NoneType' object has no attribute 'get'"}
+{"fn": "display_file", "args": [["a", 1]], "error": "AttributeError: 'list' object has no attribute 'get'"}
+{"fn": "display_file", "args": [{}], "ok": "?"}
+{"fn": "display_file", "args": [0], "error": "AttributeError: 'int' object has no attribute 'get'"}
+{"fn": "display_file", "args": [{"a": {"b": "c"}}], "ok": "?"}
+{"fn": "display_file", "args": ["x"], "error": "AttributeError: 'str' object has no attribute 'get'"}
+{"fn": "find_entity", "args": [""], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["  padded  "], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["a﻿bom"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["ab"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["line1\nline2"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["src/a/b.ts"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["a..b"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["a.b.c"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["trailing."], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["src/a/b.ts﻿bom"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["İstanbul"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["HELLO"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["ünïcödé"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["😀"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["ünïcödéa"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["straße日本語のテキスト"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["é"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["ΣΊΣΥΦΟΣ"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["HELLOemoji 👍🏽 mix"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["abckey_name-1"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["héllo wörld"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["👍🏽 thumbs"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["日本語"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["straße"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["ılık ırmak"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["👨‍👩‍👧 family"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["a b"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["a😀b"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["﻿bom"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["a²b x½ y①"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["aⅠb Ⅻ"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["a𐐀b 𝐀bc"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["कि ٣٤"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["Iı İi"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["K K k"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["ſ s S"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["x‍y 👨‍👩‍👧"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["a b c　d"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["١٢٣ ٤٥"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["𝟘𝟙 ²³"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["snake_case foo-bar o'neil"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["ǅungla Ǆ"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["one\r\ntwo threefour"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["café café"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["ΣΑΣ σας ς"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["ünïcödé"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["tab\tseparated"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["a:b:c"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["﻿bom"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["hello"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["src/a/b.ts"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["src/a/b.tsa😀b😀c"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["é日本語のテキスト"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["a"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["a  padded  "], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["ababc"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["İstanbul"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["./x/**/*.json"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["a.b.c"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["trailing."], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["😀a😀b😀c"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["a😀b😀cHELLO"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["日本語のテキストa.b.c"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["ab"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["a😀b😀c"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["héllo wörld"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["👍🏽 thumbs"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["日本語"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": [""], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["é"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["straße"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["ılık ırmak"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["👨‍👩‍👧 family"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["a b"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["ΣΊΣΥΦΟΣ"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["a😀b"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["a²b x½ y①"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["aⅠb Ⅻ"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["a𐐀b 𝐀bc"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["कि ٣٤"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["Iı İi"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["K K k"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["ſ s S"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["x‍y 👨‍👩‍👧"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["a b c　d"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["١٢٣ ٤٥"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["𝟘𝟙 ²³"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["snake_case foo-bar o'neil"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["ǅungla Ǆ"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["one\r\ntwo threefour"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["café café"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["ΣΑΣ σας ς"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["  padded  "], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["aa"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["{name} has {count} items"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["straße"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["./x/**/*.json"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["trailing."], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["İstanbul"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["a.b.c"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["line1\nline2"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["key_name-1"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["a"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["ns:key.pathhello world"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["HELLOab"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["src/a/b.ts"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["a😀b😀c"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["emoji 👍🏽 mix"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["é"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": [".leading"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["line1\nline2a..b"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["Hello World"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["héllo wörld"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["👍🏽 thumbs"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["日本語"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": [""], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["ılık ırmak"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["👨‍👩‍👧 family"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["a b"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["ΣΊΣΥΦΟΣ"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["a😀b"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["﻿bom"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["a²b x½ y①"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["aⅠb Ⅻ"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["a𐐀b 𝐀bc"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["कि ٣٤"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["Iı İi"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["K K k"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["ſ s S"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["x‍y 👨‍👩‍👧"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["a b c　d"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["١٢٣ ٤٥"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["𝟘𝟙 ²³"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["snake_case foo-bar o'neil"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["ǅungla Ǆ"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["one\r\ntwo threefour"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["café café"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["ΣΑΣ σας ς"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["😀", {"$undefined": true}], "ok": []}
+{"fn": "suggest_entities", "args": [".leading", 9223372036854775807], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["ns:key.path{name} has {count} items"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["trailing.", 2147483647], "ok": []}
+{"fn": "suggest_entities", "args": ["a😀b😀ctab\tseparated", 0], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["é", 1], "ok": []}
+{"fn": "suggest_entities", "args": ["日本語のテキスト", 0], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["", 7], "ok": []}
+{"fn": "suggest_entities", "args": [":./x/**/*.json", 7], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["a.b.c", -100], "ok": []}
+{"fn": "suggest_entities", "args": ["İstanbul", -2147483648], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["trailing../x/**/*.json", 0], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["a😀b😀c", 9223372036854775807], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["line1\nline2line1\nline2", 0], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": [".leadingtab\tseparated", 42], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["", -2147483648], "ok": []}
+{"fn": "suggest_entities", "args": ["é", 42], "ok": []}
+{"fn": "suggest_entities", "args": ["emoji 👍🏽 mix", 255], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["a", 7], "ok": []}
+{"fn": "suggest_entities", "args": ["hello", 42], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["héllo wörld", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["👍🏽 thumbs", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["日本語", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["", {"$undefined": true}], "ok": []}
+{"fn": "suggest_entities", "args": ["é", {"$undefined": true}], "ok": []}
+{"fn": "suggest_entities", "args": ["İstanbul", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["straße", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["ılık ırmak", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["👨‍👩‍👧 family", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["a b", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["ΣΊΣΥΦΟΣ", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["a😀b", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["﻿bom", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["a²b x½ y①", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["aⅠb Ⅻ", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["a𐐀b 𝐀bc", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["कि ٣٤", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["Iı İi", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["K K k", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["ſ s S", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["x‍y 👨‍👩‍👧", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["a b c　d", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["١٢٣ ٤٥", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["𝟘𝟙 ²³", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["snake_case foo-bar o'neil", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["ǅungla Ǆ", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["one\r\ntwo threefour", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["café café", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["ΣΑΣ σας ς", {"$undefined": true}], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["😀", -7], "ok": []}
+{"fn": "suggest_entities", "args": ["😀", -1], "ok": []}
+{"fn": "suggest_entities", "args": ["😀", 0], "ok": []}
+{"fn": "suggest_entities", "args": ["😀", 2147483648], "ok": []}
+{"fn": "suggest_entities", "args": ["😀", -2147483649], "ok": []}
+{"fn": "suggest_entities", "args": ["😀", 9007199254740993], "ok": []}
+{"fn": "suggest_entities", "args": ["😀", 9223372036854775807], "ok": []}
+{"fn": "suggest_entities", "args": ["😀", -9223372036854775808], "ok": []}
+{"fn": "search", "args": ["😀", "Hello World"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["./x/**/*.json", "{name} has {count} items", -1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["a😀b😀c", {"$undefined": true}, 0], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["ünïcödé", {"$undefined": true}, 100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["a", "ab", 0], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["ns:key.patha:b:c", "a😀b😀ca.b.c", -100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["ab", {"$undefined": true}, 100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["a😀b😀c", "a😀b😀chello world", 100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["a😀b😀c", "key_name-1", 7], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["ünïcödé", {"$undefined": true}, 42], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["a😀b😀c", {"$undefined": true}, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["hello", "hello world", 255], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["src/a/b.tsünïcödé", "ab", 100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["İstanbul", "İstan", 0], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": [".pat", "ns:key.path﻿bom", 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["a:b:c", {"$undefined": true}, 2], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["./x/**/*.json.leading", "﻿bom", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["﻿bom", "日本語のテキストünïcödé", {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["a.b.c", {"$undefined": true}, -2147483648], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["😀", "Hello World", -100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["éa😀b😀c", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["Hello Worlda.b.c", 9223372036854775807, false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": [".leading", 42, false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["a😀b😀c", {"$undefined": true}, true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["a", 2, false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["Hello World", 42, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["emoji 👍🏽 mix", 0, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["tab\tseparated", 42, true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["a", -100, true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["emoji 👍🏽 mix", {"$undefined": true}, true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["emoji 👍🏽 mix", -100, true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["😀", 42, true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["Hello World", -1, true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["tab\tseparated  padded  ", -1, true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["İstanbul:", {"$undefined": true}, false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["a..b", -2147483648, true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["emoji 👍🏽 mix", {"$undefined": true}, false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["İstanbulkey_name-1", 2, false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["hello", {"$undefined": true}, true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["HELLO", 100, true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["héllo wörld", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["👍🏽 thumbs", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["日本語", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["é", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["İstanbul", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["straße", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["ılık ırmak", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["👨‍👩‍👧 family", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["a b", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["ΣΊΣΥΦΟΣ", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["a😀b", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["﻿bom", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["a²b x½ y①", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["aⅠb Ⅻ", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["a𐐀b 𝐀bc", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["कि ٣٤", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["Iı İi", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["K K k", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["ſ s S", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["x‍y 👨‍👩‍👧", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["a b c　d", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["١٢٣ ٤٥", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["𝟘𝟙 ²³", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["snake_case foo-bar o'neil", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["ǅungla Ǆ", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["one\r\ntwo threefour", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["café café", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["ΣΑΣ σας ς", -100, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["éa😀b😀c", {"$undefined": true}, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["éa😀b😀c", -7, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["éa😀b😀c", -1, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["éa😀b😀c", 0, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["éa😀b😀c", 2147483648, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["éa😀b😀c", -2147483649, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["éa😀b😀c", 9007199254740993, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["éa😀b😀c", 9223372036854775807, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["éa😀b😀c", -9223372036854775808, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["line1\nline2HELLO", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["abc", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["İstanbul", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["ab"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["ΣΊΣΥΦΟΣ"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["src/a/b.ts", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["a.b.c", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["trailing.  padded  ", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["a", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["﻿bom", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["line1\nline2", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["é", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["src/a/b.tsns:key.path"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["{name} has {count} items", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["hello world", {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["emoji 👍🏽 mix", {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": [".leading", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["  padded  ", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["  padded  ", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["HELLO", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["héllo wörld", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["👍🏽 thumbs", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["日本語", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["é", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["İstanbul", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["straße", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["ılık ırmak", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["👨‍👩‍👧 family", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["a b", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["ΣΊΣΥΦΟΣ", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["a😀b", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["﻿bom", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["a²b x½ y①", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["aⅠb Ⅻ", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["a𐐀b 𝐀bc", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["कि ٣٤", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["Iı İi", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["K K k", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["ſ s S", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["x‍y 👨‍👩‍👧", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["a b c　d", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["١٢٣ ٤٥", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["𝟘𝟙 ²³", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["snake_case foo-bar o'neil", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["ǅungla Ǆ", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["one\r\ntwo threefour", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["café café", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["ΣΑΣ σας ς", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["line1\nline2HELLO", {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["trailing.", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["abc", 42], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["{name} has {count} items", 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["a", 0], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["İstanbulstraße", 2], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["ünïcödéİstanbul", {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": [".leading", 42], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["key_name-1", 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["ns:key.path", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["ab", 0], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["a😀b😀c", -100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["line1\nline2", -2147483648], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["ns:key.path", 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["İstanbul", 100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["a..b"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["emoji 👍🏽 mix", -2147483648], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["hello world", 0], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["a😀b😀c./x/**/*.json", -2147483648], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["./x/**/*.json", 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["a", -2147483648], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["héllo wörld", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["👍🏽 thumbs", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["日本語", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["é", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["İstanbul", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["straße", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["ılık ırmak", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["👨‍👩‍👧 family", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["a b", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["ΣΊΣΥΦΟΣ", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["a😀b", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["﻿bom", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["a²b x½ y①", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["aⅠb Ⅻ", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["a𐐀b 𝐀bc", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["कि ٣٤", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["Iı İi", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["K K k", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["ſ s S", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["x‍y 👨‍👩‍👧", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["a b c　d", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["١٢٣ ٤٥", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["𝟘𝟙 ²³", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["snake_case foo-bar o'neil", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["ǅungla Ǆ", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["one\r\ntwo threefour", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["café café", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["ΣΑΣ σας ς", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["trailing.", {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["trailing.", -7], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["trailing.", -1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["trailing.", 0], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["trailing.", 2147483648], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["trailing.", -2147483649], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["trailing.", 9007199254740993], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["trailing.", 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["trailing.", -9223372036854775808], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["a..b"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["İstanbulkey_name-1"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["line1\nline2"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["  padded  "], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["😀"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["é"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["ab:"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["emoji 👍🏽 mix"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["hello"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["key_name-1"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["abca..b"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["HELLOé"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["tab\tseparated"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["line1\nline2{name} has {count} items"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": [":"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["😀a.b.c"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["﻿bom"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["src/a/b.ts"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["ns:key.path"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["😀日本語のテキスト"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["héllo wörld"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["👍🏽 thumbs"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["日本語"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": [""], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["İstanbul"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["straße"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["ılık ırmak"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["👨‍👩‍👧 family"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["a b"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["ΣΊΣΥΦΟΣ"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["a😀b"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["a²b x½ y①"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["aⅠb Ⅻ"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["a𐐀b 𝐀bc"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["कि ٣٤"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["Iı İi"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["K K k"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["ſ s S"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["x‍y 👨‍👩‍👧"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["a b c　d"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["١٢٣ ٤٥"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["𝟘𝟙 ²³"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["snake_case foo-bar o'neil"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["ǅungla Ǆ"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["one\r\ntwo threefour"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["café café"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["ΣΑΣ σας ς"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["  padded  ", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["trailing.", 0], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["ünïcödé", 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["éa:b:c"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["ab", -2147483648], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["hello world", 255], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["  padded  ", 0], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["a😀b😀cemoji 👍🏽 mix"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["emoji 👍🏽 mix", 100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["a:b:c", 2], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["line1\nline2", -2147483648], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["ΣΊΣΥΦΟΣ", -100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["abc", 42], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["a{name} has {count} items", 0], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["  padded  ", -100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["straße", 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["trailing.a😀b😀c", 255], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["{name} has {count} items", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["ns:key.path", 100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["trailing.", {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["héllo wörld", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["👍🏽 thumbs", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["日本語", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["é", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["İstanbul", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["straße", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["ılık ırmak", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["👨‍👩‍👧 family", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["a b", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["ΣΊΣΥΦΟΣ", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["a😀b", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["﻿bom", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["a²b x½ y①", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["aⅠb Ⅻ", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["a𐐀b 𝐀bc", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["कि ٣٤", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["Iı İi", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["K K k", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["ſ s S", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["x‍y 👨‍👩‍👧", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["a b c　d", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["١٢٣ ٤٥", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["𝟘𝟙 ²³", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["snake_case foo-bar o'neil", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["ǅungla Ǆ", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["one\r\ntwo threefour", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["café café", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["ΣΑΣ σας ς", 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["  padded  ", {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["  padded  ", -7], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["  padded  ", -1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["  padded  ", 2147483648], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["  padded  ", -2147483649], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["  padded  ", 9007199254740993], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["  padded  ", 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["  padded  ", -9223372036854775808], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "normalize_query_spelling", "args": ["a:b:cabc"], "ok": "a:b:cabc"}
+{"fn": "normalize_query_spelling", "args": ["Hello World"], "ok": "Hello World"}
+{"fn": "normalize_query_spelling", "args": [":straße"], "ok": ":straße"}
+{"fn": "normalize_query_spelling", "args": ["ünïcödé"], "ok": "ünïcödé"}
+{"fn": "normalize_query_spelling", "args": ["src/a/b.ts"], "ok": "src/a/b.ts"}
+{"fn": "normalize_query_spelling", "args": ["é"], "ok": "é"}
+{"fn": "normalize_query_spelling", "args": ["abc"], "ok": "abc"}
+{"fn": "normalize_query_spelling", "args": ["a..btrailing."], "ok": "a..btrailing."}
+{"fn": "normalize_query_spelling", "args": ["straße"], "ok": "straße"}
+{"fn": "normalize_query_spelling", "args": ["line1\nline2"], "ok": "line1\nline2"}
+{"fn": "normalize_query_spelling", "args": ["hello"], "ok": "hello"}
+{"fn": "normalize_query_spelling", "args": [".leadingİstanbul"], "ok": ".leadingİstanbul"}
+{"fn": "normalize_query_spelling", "args": ["a:b:c"], "ok": "a:b:c"}
+{"fn": "normalize_query_spelling", "args": ["tab\tseparated"], "ok": "tab\tseparated"}
+{"fn": "normalize_query_spelling", "args": ["line1\nline2tab\tseparated"], "ok": "line1\nline2tab\tseparated"}
+{"fn": "normalize_query_spelling", "args": ["a..b.leading"], "ok": "a..b.leading"}
+{"fn": "normalize_query_spelling", "args": ["a..bhello"], "ok": "a..bhello"}
+{"fn": "normalize_query_spelling", "args": ["a.b.c"], "ok": "a.b.c"}
+{"fn": "normalize_query_spelling", "args": ["trailing."], "ok": "trailing."}
+{"fn": "normalize_query_spelling", "args": ["trailing.{name} has {count} items"], "ok": "trailing.{name} has {count} items"}
+{"fn": "normalize_query_spelling", "args": ["héllo wörld"], "ok": "héllo wörld"}
+{"fn": "normalize_query_spelling", "args": ["👍🏽 thumbs"], "ok": "👍🏽 thumbs"}
+{"fn": "normalize_query_spelling", "args": ["日本語"], "ok": "日本語"}
+{"fn": "normalize_query_spelling", "args": [""], "ok": ""}
+{"fn": "normalize_query_spelling", "args": ["İstanbul"], "ok": "İstanbul"}
+{"fn": "normalize_query_spelling", "args": ["ılık ırmak"], "ok": "ılık ırmak"}
+{"fn": "normalize_query_spelling", "args": ["👨‍👩‍👧 family"], "ok": "👨‍👩‍👧 family"}
+{"fn": "normalize_query_spelling", "args": ["a b"], "ok": "a b"}
+{"fn": "normalize_query_spelling", "args": ["ΣΊΣΥΦΟΣ"], "ok": "ΣΊΣΥΦΟΣ"}
+{"fn": "normalize_query_spelling", "args": ["a😀b"], "ok": "a😀b"}
+{"fn": "normalize_query_spelling", "args": ["﻿bom"], "ok": "﻿bom"}
+{"fn": "normalize_query_spelling", "args": ["a²b x½ y①"], "ok": "a²b x½ y①"}
+{"fn": "normalize_query_spelling", "args": ["aⅠb Ⅻ"], "ok": "aⅠb Ⅻ"}
+{"fn": "normalize_query_spelling", "args": ["a𐐀b 𝐀bc"], "ok": "a𐐀b 𝐀bc"}
+{"fn": "normalize_query_spelling", "args": ["कि ٣٤"], "ok": "कि ٣٤"}
+{"fn": "normalize_query_spelling", "args": ["Iı İi"], "ok": "Iı İi"}
+{"fn": "normalize_query_spelling", "args": ["K K k"], "ok": "K K k"}
+{"fn": "normalize_query_spelling", "args": ["ſ s S"], "ok": "ſ s S"}
+{"fn": "normalize_query_spelling", "args": ["x‍y 👨‍👩‍👧"], "ok": "x‍y 👨‍👩‍👧"}
+{"fn": "normalize_query_spelling", "args": ["a b c　d"], "ok": "a b c　d"}
+{"fn": "normalize_query_spelling", "args": ["١٢٣ ٤٥"], "ok": "١٢٣ ٤٥"}
+{"fn": "normalize_query_spelling", "args": ["𝟘𝟙 ²³"], "ok": "𝟘𝟙 ²³"}
+{"fn": "normalize_query_spelling", "args": ["snake_case foo-bar o'neil"], "ok": "snake_case foo-bar o'neil"}
+{"fn": "normalize_query_spelling", "args": ["ǅungla Ǆ"], "ok": "ǅungla Ǆ"}
+{"fn": "normalize_query_spelling", "args": ["one\r\ntwo threefour"], "ok": "one\r\ntwo threefour"}
+{"fn": "normalize_query_spelling", "args": ["café café"], "ok": "café café"}
+{"fn": "normalize_query_spelling", "args": ["ΣΑΣ σας ς"], "ok": "ΣΑΣ σας ς"}
+{"fn": "parse_names", "args": ["a.b.cé", {"$undefined": true}], "ok": ["a.b.cé"]}
+{"fn": "parse_names", "args": ["{name} has {count} items", {"$undefined": true}], "ok": ["{name}", "has", "{count}", "items"]}
+{"fn": "parse_names", "args": ["HELLO", []], "ok": ["HELLO"]}
+{"fn": "parse_names", "args": ["éé", ["ΣΊΣΥΦΟΣ"]], "ok": ["ΣΊΣΥΦΟΣ"]}
+{"fn": "parse_names", "args": ["HELLOline1\nline2", ["./x/**/*.jsonkey_name-1"]], "ok": ["./x/**/*.jsonkey_name-1"]}
+{"fn": "parse_names", "args": ["ünïcödé", []], "ok": ["ünïcödé"]}
+{"fn": "parse_names", "args": ["hello", {"$undefined": true}], "ok": ["hello"]}
+{"fn": "parse_names", "args": ["Hello World"], "ok": ["Hello", "World"]}
+{"fn": "parse_names", "args": ["line1\nline2  padded  ", []], "ok": ["line1", "line2", "padded"]}
+{"fn": "parse_names", "args": ["a..b", ["﻿bomünïcödé"]], "ok": ["﻿bomünïcödé"]}
+{"fn": "parse_names", "args": ["  padded  ", []], "ok": ["padded"]}
+{"fn": "parse_names", "args": ["", ["a:b:cab", "日本語のテキストa..b"]], "ok": ["a:b:cab", "日本語のテキストa..b"]}
+{"fn": "parse_names", "args": ["ünïcödé"], "ok": ["ünïcödé"]}
+{"fn": "parse_names", "args": ["ΣΊΣΥΦΟΣtrailing.", [".leading", "", "ns:key.path"]], "ok": [".leading", "ns:key.path"]}
+{"fn": "parse_names", "args": ["line1\nline2", {"$undefined": true}], "ok": ["line1", "line2"]}
+{"fn": "parse_names", "args": ["abc", []], "ok": ["abc"]}
+{"fn": "parse_names", "args": ["abkey_name-1"], "ok": ["abkey_name-1"]}
+{"fn": "parse_names", "args": ["tab\tseparated", {"$undefined": true}], "ok": ["tab", "separated"]}
+{"fn": "parse_names", "args": ["./x/**/*.jsonsrc/a/b.ts", ["﻿bom", "./x/**/*.json"]], "ok": ["﻿bom", "./x/**/*.json"]}
+{"fn": "parse_names", "args": ["hello", ["Hello Worldünïcödé", "hello", "ünïcödé"]], "ok": ["Hello Worldünïcödé", "hello", "ünïcödé"]}
+{"fn": "parse_names", "args": ["héllo wörld", {"$undefined": true}], "ok": ["héllo", "wörld"]}
+{"fn": "parse_names", "args": ["👍🏽 thumbs", {"$undefined": true}], "ok": ["👍🏽", "thumbs"]}
+{"fn": "parse_names", "args": ["日本語", {"$undefined": true}], "ok": ["日本語"]}
+{"fn": "parse_names", "args": ["", {"$undefined": true}], "ok": []}
+{"fn": "parse_names", "args": ["é", {"$undefined": true}], "ok": ["é"]}
+{"fn": "parse_names", "args": ["İstanbul", {"$undefined": true}], "ok": ["İstanbul"]}
+{"fn": "parse_names", "args": ["straße", {"$undefined": true}], "ok": ["straße"]}
+{"fn": "parse_names", "args": ["ılık ırmak", {"$undefined": true}], "ok": ["ılık", "ırmak"]}
+{"fn": "parse_names", "args": ["👨‍👩‍👧 family", {"$undefined": true}], "ok": ["👨‍👩‍👧", "family"]}
+{"fn": "parse_names", "args": ["a b", {"$undefined": true}], "ok": []}
+{"fn": "parse_names", "args": ["ΣΊΣΥΦΟΣ", {"$undefined": true}], "ok": ["ΣΊΣΥΦΟΣ"]}
+{"fn": "parse_names", "args": ["a😀b", {"$undefined": true}], "ok": ["a😀b"]}
+{"fn": "parse_names", "args": ["﻿bom", {"$undefined": true}], "ok": ["﻿bom"]}
+{"fn": "parse_names", "args": ["a²b x½ y①", {"$undefined": true}], "ok": ["a²b", "x½", "y①"]}
+{"fn": "parse_names", "args": ["aⅠb Ⅻ", {"$undefined": true}], "ok": ["aⅠb"]}
+{"fn": "parse_names", "args": ["a𐐀b 𝐀bc", {"$undefined": true}], "ok": ["a𐐀b", "𝐀bc"]}
+{"fn": "parse_names", "args": ["कि ٣٤", {"$undefined": true}], "ok": ["कि", "٣٤"]}
+{"fn": "parse_names", "args": ["Iı İi", {"$undefined": true}], "ok": ["Iı", "İi"]}
+{"fn": "parse_names", "args": ["K K k", {"$undefined": true}], "ok": []}
+{"fn": "parse_names", "args": ["ſ s S", {"$undefined": true}], "ok": []}
+{"fn": "parse_names", "args": ["x‍y 👨‍👩‍👧", {"$undefined": true}], "ok": ["x‍y", "👨‍👩‍👧"]}
+{"fn": "parse_names", "args": ["a b c　d", {"$undefined": true}], "ok": []}
+{"fn": "parse_names", "args": ["١٢٣ ٤٥", {"$undefined": true}], "ok": ["١٢٣", "٤٥"]}
+{"fn": "parse_names", "args": ["𝟘𝟙 ²³", {"$undefined": true}], "ok": ["𝟘𝟙", "²³"]}
+{"fn": "parse_names", "args": ["snake_case foo-bar o'neil", {"$undefined": true}], "ok": ["snake_case", "foo-bar", "o'neil"]}
+{"fn": "parse_names", "args": ["ǅungla Ǆ", {"$undefined": true}], "ok": ["ǅungla"]}
+{"fn": "parse_names", "args": ["one\r\ntwo threefour", {"$undefined": true}], "ok": ["one", "two", "three", "four"]}
+{"fn": "parse_names", "args": ["café café", {"$undefined": true}], "ok": ["café", "café"]}
+{"fn": "parse_names", "args": ["ΣΑΣ σας ς", {"$undefined": true}], "ok": ["ΣΑΣ", "σας"]}
+{"fn": "parse_names", "args": ["a.b.cé", []], "ok": ["a.b.cé"]}
+{"fn": "parse_names", "args": ["a.b.cé", ["b", "a", "B", "é", "10", "9", "a"]], "ok": ["b", "a", "B", "é", "10", "9", "a"]}
+{"fn": "resolve_names", "args": [["HELLO"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [[]], "ok": []}
+{"fn": "resolve_names", "args": [["Hello World"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [[":", "a.b.c.leading"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["ns:key.path", "😀", "﻿bom"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["a😀b😀c﻿bom"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [[":"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["a", "  padded  ab", "﻿bom"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["hello world", "é"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["a", "./x/**/*.jsonΣΊΣΥΦΟΣ", "﻿bomhello world"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["abc", "Hello World", "é"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["﻿bom", "line1\nline2Hello World"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["abc"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["a.b.c", "a😀b😀cünïcödé", "hello world"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["tab\tseparated", "日本語のテキスト"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["abcΣΊΣΥΦΟΣ", "a", "İstanbul﻿bom"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["hello"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["a.b.c  padded  ", ":"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["a", "Hello World", "a"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["straßeemoji 👍🏽 mix", "ab"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["b", "a", "B", "é", "10", "9", "a"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [{"$undefined": true}, ["{name} has {count} items", "hello world  padded  "], "emoji 👍🏽 mix", -100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [{"$undefined": true}, {"$undefined": true}, "src/a/b.tsline1\nline2", 100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["trailing.", [], "line1\nline2", 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["a:b:c  padded  ", {"$undefined": true}, {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["./x/**/*.json", []], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [{"$undefined": true}, ["é", "hello world", "a.b.c"], "日本語のテキスト", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [{"$undefined": true}, [], "trailing.", 7], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["trailing.", ["  padded  "], "./x/**/*.json", 42], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [{"$undefined": true}, ["line1\nline2", "﻿bom"], ":", -1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", [":"], "./x/**/*.json", 7], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [{"$undefined": true}, ["ΣΊΣΥΦΟΣab"], {"$undefined": true}, -1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["İstanbula.b.c", ["日本語のテキストHello World"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["emoji 👍🏽 mix", [":", "日本語のテキスト"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["ΣΊΣΥΦΟΣab", {"$undefined": true}, "hello", 2], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["  padded  a", ["abc"], "key_name-1", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [{"$undefined": true}, ["emoji 👍🏽 mixİstanbul", "é", "hello worldHello World"], "ahello world", {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["﻿bom", [], {"$undefined": true}, 42], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [{"$undefined": true}, {"$undefined": true}, "ékey_name-1"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["İstanbulabc", [], {"$undefined": true}, 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [{"$undefined": true}, ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["héllo wörld", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["👍🏽 thumbs", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["日本語", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["é", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["İstanbul", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["straße", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["ılık ırmak", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["👨‍👩‍👧 family", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["a b", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["ΣΊΣΥΦΟΣ", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["a😀b", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["﻿bom", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["a²b x½ y①", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["aⅠb Ⅻ", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["a𐐀b 𝐀bc", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["कि ٣٤", ["{name} has {count} items"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", {"$undefined": true}, "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", [], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["b", "a", "B", "é", "10", "9", "a"], "ab", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], {"$undefined": true}, 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "héllo wörld", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "👍🏽 thumbs", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "日本語", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "é", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "İstanbul", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "straße", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "ılık ırmak", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "👨‍👩‍👧 family", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "a b", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "ΣΊΣΥΦΟΣ", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "a😀b", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "﻿bom", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "a²b x½ y①", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "aⅠb Ⅻ", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "a𐐀b 𝐀bc", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "कि ٣٤", 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "ab", {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "ab", -7], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "ab", -1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "ab", 0], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "ab", 2147483648], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "ab", -2147483649], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "ab", 9007199254740993], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "ab", 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": [".leading", ["{name} has {count} items"], "ab", -9223372036854775808], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["ns:key.path", "straße﻿bom", {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["tab\tseparated", "hello world"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["abc", {"$undefined": true}, {"$undefined": true}, 255], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["日本語のテキス", "日本語のテキスト", {"$undefined": true}, -2147483648], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["straße", "key_name-1", ["a..b", "ünïcödé", "abc.leading"], 255], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["日本語のテキスト", {"$undefined": true}, [], 2], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["a:b:c", "é", [".leadingkey_name-1"], 2147483647], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["abc", "./x/**/*.json", ["ns:key.path"], -100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["hello./x/**/*.json", "Hello World", ["hello world", "abc", "HELLO"], 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["a", "key_name-1", ["ab", "key_name-1HELLO"], 42], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["straße", {"$undefined": true}, {"$undefined": true}, 2], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["ΣΊΣΥΦΟΣa..b", ".", {"$undefined": true}, 255], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["a.b.csrc/a/b.ts", {"$undefined": true}, ["日本語のテキスト", "key_name-1"], 42], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["{name} has {count} items", {"$undefined": true}, [":", "src/a/b.tsabc"], -100], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["abc", {"$undefined": true}, [], {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["ns:key.path", "日本語のテキストhello world", {"$undefined": true}, 2], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["a😀b😀cHELLO", {"$undefined": true}, ["😀", "日本語のテキスト", "src/a/b.ts"], -2147483648], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["tab\tseparated", {"$undefined": true}, ["straßesrc/a/b.ts", "hello", "ünïcödéa.b.c"], 9223372036854775807], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["HELLO", "straße", [], 1], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["emoji 👍🏽 mix", {"$undefined": true}, [], {"$undefined": true}], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["ab"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["a"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": [":"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["./x/**/*.jsonabc"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": [""], "error": "InvalidRequest: Please provide a query."}
+{"fn": "query", "args": [".leading"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["./x/**/*.json"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["﻿bom"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["ΣΊΣΥΦΟΣ"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["ns:key.path"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["😀hello world"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["hello world"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["emoji 👍🏽 mix"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["key_name-1straße"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["İstanbul"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["ünïcödé"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["hello"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["straße"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["a:b:ca.b.c"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["a.b.ca😀b😀c"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["héllo wörld"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["👍🏽 thumbs"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["日本語"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["é"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["ılık ırmak"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["👨‍👩‍👧 family"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["a b"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["a😀b"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["a²b x½ y①"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["aⅠb Ⅻ"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["a𐐀b 𝐀bc"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["कि ٣٤"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["Iı İi"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["K K k"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["ſ s S"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["x‍y 👨‍👩‍👧"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["a b c　d"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["١٢٣ ٤٥"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["𝟘𝟙 ²³"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["snake_case foo-bar o'neil"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["ǅungla Ǆ"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["one\r\ntwo threefour"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["café café"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["ΣΑΣ σας ς"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "canonical_file_path", "args": ["straße"], "ok": ".\\straße"}
+{"fn": "canonical_file_path", "args": ["tab\tseparated"], "ok": ".\\tab\tseparated"}
+{"fn": "canonical_file_path", "args": ["HELLO"], "ok": ".\\HELLO"}
+{"fn": "canonical_file_path", "args": ["日本語のテキスト"], "ok": ".\\日本語のテキスト"}
+{"fn": "canonical_file_path", "args": ["İstanbul"], "ok": ".\\İstanbul"}
+{"fn": "canonical_file_path", "args": ["hello world"], "ok": ".\\hello world"}
+{"fn": "canonical_file_path", "args": ["İstanbula.b.c"], "ok": ".\\İstanbula.b.c"}
+{"fn": "canonical_file_path", "args": ["emoji 👍🏽 mix"], "ok": ".\\emoji 👍🏽 mix"}
+{"fn": "canonical_file_path", "args": ["ns:key.path"], "ok": ".\\ns:key.path"}
+{"fn": "canonical_file_path", "args": ["  padded  straße"], "ok": ".\\  padded  straße"}
+{"fn": "canonical_file_path", "args": ["trailing."], "ok": ".\\trailing."}
+{"fn": "canonical_file_path", "args": [":"], "ok": ".\\:"}
+{"fn": "canonical_file_path", "args": ["HELLOabc"], "ok": ".\\HELLOabc"}
+{"fn": "canonical_file_path", "args": ["a😀b😀chello world"], "ok": ".\\a😀b😀chello world"}
+{"fn": "canonical_file_path", "args": [".leading"], "ok": ".\\.leading"}
+{"fn": "canonical_file_path", "args": ["ünïcödé"], "ok": ".\\ünïcödé"}
+{"fn": "canonical_file_path", "args": ["{name} has {count} items﻿bom"], "ok": ".\\{name} has {count} items﻿bom"}
+{"fn": "canonical_file_path", "args": ["./x/**/*.json"], "ok": "./x/**/*.json"}
+{"fn": "canonical_file_path", "args": ["Hello World"], "ok": ".\\Hello World"}
+{"fn": "canonical_file_path", "args": ["😀"], "ok": ".\\😀"}
+{"fn": "canonical_file_path", "args": ["héllo wörld"], "ok": ".\\héllo wörld"}
+{"fn": "canonical_file_path", "args": ["👍🏽 thumbs"], "ok": ".\\👍🏽 thumbs"}
+{"fn": "canonical_file_path", "args": ["日本語"], "ok": ".\\日本語"}
+{"fn": "canonical_file_path", "args": [""], "ok": ".\\"}
+{"fn": "canonical_file_path", "args": ["é"], "ok": ".\\é"}
+{"fn": "canonical_file_path", "args": ["ılık ırmak"], "ok": ".\\ılık ırmak"}
+{"fn": "canonical_file_path", "args": ["👨‍👩‍👧 family"], "ok": ".\\👨‍👩‍👧 family"}
+{"fn": "canonical_file_path", "args": ["a b"], "ok": ".\\a b"}
+{"fn": "canonical_file_path", "args": ["ΣΊΣΥΦΟΣ"], "ok": ".\\ΣΊΣΥΦΟΣ"}
+{"fn": "canonical_file_path", "args": ["a😀b"], "ok": ".\\a😀b"}
+{"fn": "canonical_file_path", "args": ["﻿bom"], "ok": ".\\﻿bom"}
+{"fn": "canonical_file_path", "args": ["a²b x½ y①"], "ok": ".\\a²b x½ y①"}
+{"fn": "canonical_file_path", "args": ["aⅠb Ⅻ"], "ok": ".\\aⅠb Ⅻ"}
+{"fn": "canonical_file_path", "args": ["a𐐀b 𝐀bc"], "ok": ".\\a𐐀b 𝐀bc"}
+{"fn": "canonical_file_path", "args": ["कि ٣٤"], "ok": ".\\कि ٣٤"}
+{"fn": "canonical_file_path", "args": ["Iı İi"], "ok": ".\\Iı İi"}
+{"fn": "canonical_file_path", "args": ["K K k"], "ok": ".\\K K k"}
+{"fn": "canonical_file_path", "args": ["ſ s S"], "ok": ".\\ſ s S"}
+{"fn": "canonical_file_path", "args": ["x‍y 👨‍👩‍👧"], "ok": ".\\x‍y 👨‍👩‍👧"}
+{"fn": "canonical_file_path", "args": ["a b c　d"], "ok": ".\\a b c　d"}
+{"fn": "canonical_file_path", "args": ["١٢٣ ٤٥"], "ok": ".\\١٢٣ ٤٥"}
+{"fn": "canonical_file_path", "args": ["𝟘𝟙 ²³"], "ok": ".\\𝟘𝟙 ²³"}
+{"fn": "canonical_file_path", "args": ["snake_case foo-bar o'neil"], "ok": ".\\snake_case foo-bar o'neil"}
+{"fn": "canonical_file_path", "args": ["ǅungla Ǆ"], "ok": ".\\ǅungla Ǆ"}
+{"fn": "canonical_file_path", "args": ["one\r\ntwo threefour"], "ok": ".\\one\r\ntwo threefour"}
+{"fn": "canonical_file_path", "args": ["café café"], "ok": ".\\café café"}
+{"fn": "canonical_file_path", "args": ["ΣΑΣ σας ς"], "ok": ".\\ΣΑΣ σας ς"}
+{"fn": "canonical_file_path", "args": ["m.py"], "ok": ".\\m.py"}
+{"fn": "friendly_entity_id", "args": [".\\proj\\src\\lib.rs::name"], "ok": "proj/src/lib.rs::name"}
+{"fn": "friendly_entity_id", "args": ["proj/src/lib.rs::name"], "ok": "proj/src/lib.rs::name"}
+{"fn": "friendly_entity_id", "args": ["./proj/src/lib.rs::name"], "ok": "proj/src/lib.rs::name"}
+{"fn": "friendly_entity_id", "args": ["./app.py::module"], "ok": "app.py::module"}
+{"fn": "canonical_entity_id", "args": ["proj/src/lib.rs::name"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": [".\\proj\\src\\lib.rs::name"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": [".\\proj/src/lib.rs::name"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["does/not/exist::nope"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "parse_names", "args": ["", []], "ok": []}
+{"fn": "search", "args": ["   ", null, 10], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["zzzqqq xynx", null, 10], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["real_symbol", null, 10], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "friendly_entity_id", "args": ["lib.py::real_symbol"], "ok": "lib.py::real_symbol"}
+{"fn": "canonical_entity_id", "args": ["C:\\Users\\Main\\AppData\\Local\\Temp\\pytest-of-Main\\pytest-7863\\test_an_escape_path_into_the_o0\\proj_a\\m.py::alpha_fn"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["fn", null, 10], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "friendly_entity_id", "args": ["m.py::beta_fn"], "ok": "m.py::beta_fn"}
+{"fn": "parse_names", "args": ["", ["a.py::foo"]], "ok": ["a.py::foo"]}
+{"fn": "resolve", "args": ["UserService", 5], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["functions where name contains 'x'"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["test.py::module"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["test.py::func", "both", null, 3], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["/users/42"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "parse_names", "args": ["", ["a.py::module"]], "ok": ["a.py::module"]}
+{"fn": "query", "args": ["functions where is_async == true"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "display_file", "args": [{"complexity": 1, "file_path": "app.py", "decorators": [], "parent_class": "", "line_count": 1, "is_override": false, "docstring": "", "callee_count": 0, "callers": [], "kind": "function", "resolved_call_targets": [], "callees": [], "name": "fetch", "line": 15, "parameter_count": 1, "id": "app.py::fetch", "parent_id": null, "caller_count": 0, "is_async": true}], "ok": "app.py"}
+{"fn": "query", "args": ["functions where is_async == false"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "display_file", "args": [{"line": 11, "callers": ["app.py::Derived.describe"], "resolved_call_targets": [], "id": "app.py::helper", "callee_count": 0, "is_override": false, "parent_id": null, "caller_count": 1, "complexity": 1, "decorators": [], "kind": "function", "name": "helper", "callees": [], "file_path": "app.py", "parent_class": "", "line_count": 1, "is_async": false, "docstring": "x", "parameter_count": 0}], "ok": "app.py"}
+{"fn": "display_file", "args": [{"file_path": "app.py", "parent_id": "app.py::Base", "kind": "method", "is_override": false, "is_async": false, "decorators": [], "callers": [], "callees": [], "parent_class": "app.py::Base", "callee_count": 0, "id": "app.py::Base.describe", "name": "describe", "parameter_count": 1, "resolved_call_targets": [], "line_count": 1, "line": 2, "caller_count": 0, "complexity": 1, "docstring": "base"}], "ok": "app.py"}
+{"fn": "display_file", "args": [{"callee_count": 0, "name": "gen", "is_async": false, "resolved_call_targets": [], "docstring": "", "decorators": [], "parent_id": null, "line": 19, "parameter_count": 0, "callees": [], "caller_count": 0, "id": "app.py::gen", "callers": [], "is_override": false, "complexity": 1, "parent_class": "", "line_count": 1, "file_path": "app.py", "kind": "function"}], "ok": "app.py"}
+{"fn": "display_file", "args": [{"parent_class": "app.py::Derived", "line": 7, "file_path": "app.py", "is_async": false, "decorators": [], "callee_count": 1, "resolved_call_targets": ["app.py::helper"], "complexity": 1, "line_count": 1, "callers": [], "parent_id": "app.py::Derived", "name": "describe", "callees": ["app.py::helper"], "docstring": "derived", "parameter_count": 1, "id": "app.py::Derived.describe", "kind": "method", "is_override": true, "caller_count": 0}], "ok": "app.py"}
+{"fn": "callers", "args": [".\\app.py::helper"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["a.py::module"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["a.py::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["a.py::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["combine", "bogus_kind", 5], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["big/drop.py::module", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["big/drop.py::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["big/drop.py::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["big/drop.py::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["keep.py::module", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["keep.py::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["keep.py::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["chain.py::top", "both", null, 3], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["chain.py::top"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["chain.py::top"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["chain.py::top", "both", ["imports"], 3], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["/users/:id"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["app.py::get_user"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["app.py::get_user"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::get_user"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["app.py::flask:route:/users/<id>"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["app.py::flask:route:/users/<id>"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::flask:route:/users/<id>"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["app.py::flask:route:/users/<id>"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["/users/:id", 5], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "friendly_entity_id", "args": ["app.py::get_user"], "ok": "app.py::get_user"}
+{"fn": "node", "args": ["app.py::flask:route:/orders/<id>"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["app.py::flask:route:/orders/<id>"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::flask:route:/orders/<id>"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["/orders/:id"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["app.py::flask:route:/health"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["app.py::flask:route:/health"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::flask:route:/health"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["app.py::flask:route:/health"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["/health"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["app.py::get_user"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["/no/such/route"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "parse_names", "args": ["User.save authenticate logout", []], "ok": ["User.save", "authenticate", "logout"]}
+{"fn": "normalize_query_spelling", "args": ["User.save authenticate logout"], "ok": "User.save authenticate logout"}
+{"fn": "parse_names", "args": ["", ["User", "AdminUser"]], "ok": ["User", "AdminUser"]}
+{"fn": "parse_names", "args": ["  ,  ", []], "ok": []}
+{"fn": "normalize_query_spelling", "args": ["  ,  "], "ok": "  ,  "}
+{"fn": "parse_names", "args": ["a User x", []], "ok": ["User"]}
+{"fn": "normalize_query_spelling", "args": ["a User x"], "ok": "a User x"}
+{"fn": "search", "args": ["User", null, 10], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "friendly_entity_id", "args": ["models.py::User"], "ok": "models.py::User"}
+{"fn": "friendly_entity_id", "args": ["services.py::UserService.user_count"], "ok": "services.py::UserService.user_count"}
+{"fn": "friendly_entity_id", "args": ["services.py::UserService"], "ok": "services.py::UserService"}
+{"fn": "friendly_entity_id", "args": ["models.py::find_user_by_id"], "ok": "models.py::find_user_by_id"}
+{"fn": "friendly_entity_id", "args": ["services.py::create_user"], "ok": "services.py::create_user"}
+{"fn": "friendly_entity_id", "args": ["services.py::format_username"], "ok": "services.py::format_username"}
+{"fn": "friendly_entity_id", "args": ["models.py::AdminUser.can_manage_users"], "ok": "models.py::AdminUser.can_manage_users"}
+{"fn": "friendly_entity_id", "args": ["models.py::AdminUser"], "ok": "models.py::AdminUser"}
+{"fn": "friendly_entity_id", "args": ["__init__.py::import@5"], "ok": "__init__.py::import@5"}
+{"fn": "friendly_entity_id", "args": ["__init__.py::import@6"], "ok": "__init__.py::import@6"}
+{"fn": "search", "args": ["create_user", "function", 10], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["User", null, 5], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["create_user", [], "both", 8], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "parse_names", "args": ["create_user", []], "ok": ["create_user"]}
+{"fn": "normalize_query_spelling", "args": ["create_user"], "ok": "create_user"}
+{"fn": "resolve_names", "args": [["create_user"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["create_user"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["create_user"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["create_user", [], "downstream", 8], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["AdminUser"], "kwargs": {"top_k": 3}, "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["models.py::AdminUser", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["models.py::AdminUser"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["models.py::AdminUser"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["format_username"], "kwargs": {"top_k": 3}, "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["services.py::format_username", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["services.py::format_username"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["services.py::format_username"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["services.py::format_username", 3], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "friendly_entity_id", "args": ["services.py::UserService.register"], "ok": "services.py::UserService.register"}
+{"fn": "explore", "args": ["", ["create_user", "format_username"], "both", 8], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "parse_names", "args": ["", ["create_user", "format_username"]], "ok": ["create_user", "format_username"]}
+{"fn": "resolve_names", "args": [["create_user", "format_username"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["format_username"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["format_username"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve_names", "args": [["User", "create_user"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["User"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["User"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["", [], "both", 8], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["xyzzynonexistent_12345", [], "both", 8], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "parse_names", "args": ["xyzzynonexistent_12345", []], "ok": ["xyzzynonexistent_12345"]}
+{"fn": "normalize_query_spelling", "args": ["xyzzynonexistent_12345"], "ok": "xyzzynonexistent_12345"}
+{"fn": "resolve_names", "args": [["xyzzynonexistent_12345"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["xyzzynonexistent_12345"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["xyzzynonexistent_12345"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["nonexistent::ghost_entity", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["nonexistent::ghost_entity"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["nonexistent::ghost_entity"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["nonexistent::ghost_entity"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["", null, 5], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["xyzzynonexistent_abcdef", null, 5], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["nonexistent::ghost", 5], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["nonexistent::ghost"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["nonexistent::ghost"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["nonexistent::ghost"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["AdminUser", [], "both", 8], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "parse_names", "args": ["AdminUser", []], "ok": ["AdminUser"]}
+{"fn": "normalize_query_spelling", "args": ["AdminUser"], "ok": "AdminUser"}
+{"fn": "resolve_names", "args": [["AdminUser"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["AdminUser"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["AdminUser"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["User", null, 2], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["models.py::User", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["models.py::User"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["models.py::User"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "normalize_query_spelling", "args": ["GenServer:handle_call/3"], "ok": "GenServer.handle_call"}
+{"fn": "normalize_query_spelling", "args": ["mod:fn"], "ok": "mod.fn"}
+{"fn": "normalize_query_spelling", "args": ["cowboy_stream_h:request_process/3"], "ok": "cowboy_stream_h.request_process"}
+{"fn": "normalize_query_spelling", "args": ["kind:function lang:python User"], "ok": "kind:function lang:python User"}
+{"fn": "normalize_query_spelling", "args": ["create_user format_username"], "ok": "create_user format_username"}
+{"fn": "parse_names", "args": ["GenServer:handle_call/3 spawn/1", []], "ok": ["GenServer.handle_call", "spawn"]}
+{"fn": "normalize_query_spelling", "args": ["GenServer:handle_call/3 spawn/1"], "ok": "GenServer.handle_call spawn"}
+{"fn": "search", "args": ["User", null, 3], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["User"], "kwargs": {"top_k": 3}, "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["User", [], "both", 8], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "parse_names", "args": ["User", []], "ok": ["User"]}
+{"fn": "normalize_query_spelling", "args": ["User"], "ok": "User"}
+{"fn": "resolve_names", "args": [["User"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["", 5], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": [""], "error": "InvalidRequest: Please provide a query."}
+{"fn": "query", "args": ["functions where name contains 'create'"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "display_file", "args": [{"callees": ["models.py::User", "services.py::format_username"], "id": "services.py::create_user", "file_path": "services.py", "is_async": false, "docstring": "Create a new User instance.", "resolved_call_targets": ["services.py::format_username", "models.py::User"], "is_override": false, "line_count": 3, "parameter_count": 3, "parent_id": null, "callee_count": 2, "callers": ["services.py::UserService.register"], "name": "create_user", "caller_count": 1, "complexity": 1, "parent_class": "", "return_type": "User", "line": 12, "kind": "function", "decorators": []}], "ok": "services.py"}
+{"fn": "query", "args": ["functions where parameter_count > 0"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "display_file", "args": [{"is_async": false, "callees": [], "callee_count": 0, "kind": "method", "parent_id": "models.py::AdminUser", "return_type": "None", "line_count": 1, "decorators": [], "file_path": "models.py", "id": "models.py::AdminUser.grant_permission", "callers": [], "resolved_call_targets": [], "name": "grant_permission", "caller_count": 0, "parent_class": "models.py::AdminUser", "line": 29, "docstring": "", "complexity": 1, "parameter_count": 2, "is_override": false}], "ok": "models.py"}
+{"fn": "display_file", "args": [{"parameter_count": 4, "return_type": "User", "name": "register", "id": "services.py::UserService.register", "line_count": 4, "resolved_call_targets": ["services.py::create_user"], "decorators": [], "line": 24, "callees": ["services.py::create_user"], "caller_count": 0, "docstring": "Register a new user — calls create_user.", "file_path": "services.py", "callee_count": 1, "is_override": false, "is_async": false, "complexity": 1, "parent_id": "services.py::UserService", "callers": [], "kind": "method", "parent_class": "services.py::UserService"}], "ok": "services.py"}
+{"fn": "display_file", "args": [{"kind": "property", "name": "user_count", "parameter_count": 1, "is_async": false, "callees": ["external::len"], "callee_count": 1, "decorators": ["@property"], "line_count": 2, "callers": [], "docstring": "Number of registered users.", "line": 46, "parent_class": "services.py::UserService", "is_override": false, "resolved_call_targets": ["len"], "id": "services.py::UserService.user_count", "file_path": "services.py", "caller_count": 0, "parent_id": "services.py::UserService", "complexity": 1}], "ok": "services.py"}
+{"fn": "display_file", "args": [{"id": "models.py::find_user_by_id", "name": "find_user_by_id", "parent_id": null, "file_path": "models.py", "decorators": [], "resolved_call_targets": [], "line_count": 5, "line": 36, "caller_count": 1, "complexity": 3, "return_type": "Optional[User]", "callers": ["services.py::UserService.find_by_id"], "docstring": "Find a user in a list by ID.", "kind": "function", "callees": [], "parameter_count": 2, "is_async": false, "callee_count": 0, "is_override": false, "parent_class": ""}], "ok": "models.py"}
+{"fn": "display_file", "args": [{"line_count": 3, "is_async": false, "docstring": "Create a new User instance.", "decorators": [], "callee_count": 2, "callers": ["services.py::UserService.register"], "kind": "function", "resolved_call_targets": ["services.py::format_username", "models.py::User"], "return_type": "User", "parent_id": null, "name": "create_user", "parameter_count": 3, "complexity": 1, "caller_count": 1, "parent_class": "", "is_override": false, "line": 12, "id": "services.py::create_user", "file_path": "services.py", "callees": ["models.py::User", "services.py::format_username"]}], "ok": "services.py"}
+{"fn": "display_file", "args": [{"decorators": [], "line": 32, "complexity": 1, "parameter_count": 1, "caller_count": 0, "parent_class": "models.py::AdminUser", "kind": "method", "docstring": "manage_users", "line_count": 1, "callees": [], "is_override": false, "callers": [], "resolved_call_targets": [], "name": "can_manage_users", "is_async": false, "id": "models.py::AdminUser.can_manage_users", "callee_count": 0, "file_path": "models.py", "parent_id": "models.py::AdminUser"}], "ok": "models.py"}
+{"fn": "display_file", "args": [{"line": 17, "docstring": "@", "parent_id": "models.py::User", "is_async": false, "name": "is_valid", "resolved_call_targets": ["len"], "parent_class": "models.py::User", "is_override": false, "id": "models.py::User.is_valid", "file_path": "models.py", "callers": [], "complexity": 1, "line_count": 1, "kind": "method", "callee_count": 1, "decorators": [], "parameter_count": 1, "caller_count": 0, "callees": ["external::len"]}], "ok": "models.py"}
+{"fn": "display_file", "args": [{"parameter_count": 1, "kind": "method", "is_async": false, "complexity": 1, "parent_class": "models.py::AdminUser", "file_path": "models.py", "line_count": 1, "resolved_call_targets": [], "decorators": [], "callee_count": 0, "is_override": true, "docstring": "f\"[ADMIN] {self.name}", "caller_count": 0, "id": "models.py::AdminUser.display_name", "line": 26, "name": "display_name", "callees": [], "parent_id": "models.py::AdminUser", "callers": []}], "ok": "models.py"}
+{"fn": "display_file", "args": [{"parent_id": "services.py::UserService", "parameter_count": 3, "name": "promote_to_admin", "return_type": "AdminUser", "is_override": false, "callees": ["models.py::AdminUser"], "callee_count": 1, "resolved_call_targets": ["models.py::AdminUser"], "file_path": "services.py", "line": 34, "is_async": false, "docstring": "Promote a User to AdminUser.", "kind": "method", "parent_class": "services.py::UserService", "complexity": 1, "decorators": [], "line_count": 9, "id": "services.py::UserService.promote_to_admin", "callers": [], "caller_count": 0}], "ok": "services.py"}
+{"fn": "display_file", "args": [{"id": "services.py::UserService.__init__", "kind": "method", "callee_count": 0, "callees": [], "is_override": false, "decorators": [], "parameter_count": 1, "docstring": "", "parent_class": "services.py::UserService", "name": "__init__", "callers": [], "caller_count": 0, "parent_id": "services.py::UserService", "complexity": 1, "line_count": 1, "file_path": "services.py", "is_async": false, "line": 21, "resolved_call_targets": []}], "ok": "services.py"}
+{"fn": "display_file", "args": [{"callers": ["services.py::create_user"], "id": "services.py::format_username", "file_path": "services.py", "is_override": false, "parent_id": null, "docstring": "Format a username for display — uses str builtins.", "decorators": [], "callee_count": 0, "callees": [], "resolved_call_targets": [], "is_async": false, "line": 7, "caller_count": 1, "line_count": 2, "name": "format_username", "kind": "function", "parent_class": "", "parameter_count": 1, "complexity": 1}], "ok": "services.py"}
+{"fn": "display_file", "args": [{"parent_class": "services.py::UserService", "callee_count": 1, "callees": ["models.py::find_user_by_id"], "decorators": [], "resolved_call_targets": ["models.py::find_user_by_id"], "is_override": false, "id": "services.py::UserService.find_by_id", "parent_id": "services.py::UserService", "line_count": 2, "file_path": "services.py", "complexity": 1, "docstring": "Find user by ID — calls find_user_by_id from models.", "caller_count": 0, "is_async": false, "callers": [], "parameter_count": 2, "return_type": "User | None", "name": "find_by_id", "kind": "method", "line": 30}], "ok": "services.py"}
+{"fn": "display_file", "args": [{"parameter_count": 1, "kind": "method", "is_async": false, "callee_count": 0, "callees": [], "parent_class": "models.py::User", "file_path": "models.py", "line": 14, "resolved_call_targets": [], "callers": [], "parent_id": "models.py::User", "decorators": [], "name": "display_name", "caller_count": 0, "line_count": 1, "is_override": false, "complexity": 1, "docstring": "f\"{self.name} <{self.email}>", "id": "models.py::User.display_name"}], "ok": "models.py"}
+{"fn": "query", "args": ["functions where is_async == false limit 5"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "display_file", "args": [{"resolved_call_targets": [], "decorators": [], "caller_count": 0, "callees": [], "docstring": "", "return_type": "None", "parent_id": "models.py::AdminUser", "complexity": 1, "file_path": "models.py", "line": 29, "id": "models.py::AdminUser.grant_permission", "line_count": 1, "callee_count": 0, "parameter_count": 2, "is_async": false, "callers": [], "is_override": false, "name": "grant_permission", "kind": "method", "parent_class": "models.py::AdminUser"}], "ok": "models.py"}
+{"fn": "display_file", "args": [{"return_type": "User", "id": "services.py::UserService.register", "callees": ["services.py::create_user"], "resolved_call_targets": ["services.py::create_user"], "parent_id": "services.py::UserService", "kind": "method", "parent_class": "services.py::UserService", "line": 24, "caller_count": 0, "callee_count": 1, "line_count": 4, "name": "register", "complexity": 1, "callers": [], "parameter_count": 4, "file_path": "services.py", "is_override": false, "decorators": [], "is_async": false, "docstring": "Register a new user — calls create_user."}], "ok": "services.py"}
+{"fn": "display_file", "args": [{"kind": "property", "resolved_call_targets": ["len"], "line": 46, "callee_count": 1, "line_count": 2, "caller_count": 0, "callers": [], "is_override": false, "file_path": "services.py", "docstring": "Number of registered users.", "name": "user_count", "parent_class": "services.py::UserService", "parameter_count": 1, "parent_id": "services.py::UserService", "is_async": false, "decorators": ["@property"], "complexity": 1, "id": "services.py::UserService.user_count", "callees": ["external::len"]}], "ok": "services.py"}
+{"fn": "display_file", "args": [{"caller_count": 1, "id": "models.py::find_user_by_id", "line_count": 5, "decorators": [], "return_type": "Optional[User]", "is_async": false, "docstring": "Find a user in a list by ID.", "callers": ["services.py::UserService.find_by_id"], "parent_id": null, "callees": [], "resolved_call_targets": [], "file_path": "models.py", "callee_count": 0, "name": "find_user_by_id", "kind": "function", "parent_class": "", "parameter_count": 2, "is_override": false, "complexity": 3, "line": 36}], "ok": "models.py"}
+{"fn": "display_file", "args": [{"callees": ["models.py::User", "services.py::format_username"], "docstring": "Create a new User instance.", "line": 12, "name": "create_user", "decorators": [], "kind": "function", "file_path": "services.py", "return_type": "User", "caller_count": 1, "is_override": false, "complexity": 1, "parent_id": null, "callee_count": 2, "id": "services.py::create_user", "line_count": 3, "resolved_call_targets": ["services.py::format_username", "models.py::User"], "parent_class": "", "is_async": false, "parameter_count": 3, "callers": ["services.py::UserService.register"]}], "ok": "services.py"}
+{"fn": "query", "args": ["functions where name contains 'user' and name contains 'create'"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "display_file", "args": [{"parent_id": null, "return_type": "User", "name": "create_user", "file_path": "services.py", "callee_count": 2, "resolved_call_targets": ["services.py::format_username", "models.py::User"], "line_count": 3, "callees": ["models.py::User", "services.py::format_username"], "decorators": [], "callers": ["services.py::UserService.register"], "docstring": "Create a new User instance.", "id": "services.py::create_user", "line": 12, "parent_class": "", "kind": "function", "caller_count": 1, "is_async": false, "is_override": false, "parameter_count": 3, "complexity": 1}], "ok": "services.py"}
+{"fn": "query", "args": ["functions where name == 'nope_a' or name == 'create_user'"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "display_file", "args": [{"kind": "function", "is_async": false, "line_count": 3, "callees": ["models.py::User", "services.py::format_username"], "callee_count": 2, "docstring": "Create a new User instance.", "name": "create_user", "return_type": "User", "id": "services.py::create_user", "line": 12, "file_path": "services.py", "is_override": false, "resolved_call_targets": ["services.py::format_username", "models.py::User"], "parameter_count": 3, "complexity": 1, "parent_id": null, "callers": ["services.py::UserService.register"], "decorators": [], "caller_count": 1, "parent_class": ""}], "ok": "services.py"}
+{"fn": "module_children", "args": [""], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["models.py::module"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["models.py::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["", "both", null, 3], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["nonexistent::ghost", "both", null, 3], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["shapes.ts::Circle", "downstream", ["implements"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["shapes.ts::Circle"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["shapes.ts::Circle"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["shapes.ts::Shape", "upstream", ["implements"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["shapes.ts::Shape"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["shapes.ts::Shape"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["shapes.ts::Sub", "downstream", ["extends"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["shapes.ts::Sub"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["shapes.ts::Sub"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["app.py::alpha", "downstream", ["decorates"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["app.py::alpha"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::alpha"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["helpers.py::validate", "upstream", ["decorates"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["helpers.py::validate"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["helpers.py::validate"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["app.py::build", "downstream", ["instantiates"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["app.py::build"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::build"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["eng.py::Engine", "upstream", ["instantiates"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["eng.py::Engine"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["eng.py::Engine"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["handlers.py::get_handler", "downstream", ["references"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["handlers.py::get_handler"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["handlers.py::get_handler"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["handlers.py::greeter", "upstream", ["references"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["handlers.py::greeter"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["handlers.py::greeter"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["handlers.py::get_handler", "downstream", ["calls"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["app.ts::module", "downstream", ["imports"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["app.ts::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.ts::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["packages/web/app.ts::module", "downstream", ["imports"]], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["packages/web/app.ts::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["packages/web/app.ts::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_file_path", "args": ["a/b.py"], "ok": ".\\a/b.py"}
+{"fn": "canonical_file_path", "args": ["D:\\User\\Documents\\Rust\\coderadar\\x\\y.py"], "ok": "D:\\User\\Documents\\Rust\\coderadar\\x\\y.py"}
+{"fn": "canonical_file_path", "args": [".\\a.py"], "ok": ".\\a.py"}
+{"fn": "canonical_entity_id", "args": ["app.py::greet"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::Greeter"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_file_path", "args": ["app.py"], "ok": ".\\app.py"}
+{"fn": "canonical_entity_id", "args": ["app.py::shout"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::Base.save"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::Child.save"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::Manager.save_state"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["helper", null, 10], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["Store", "class", 10], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["helper", "bogus", 10], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["app.py::helper", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["app.py::helper"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::helper"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["app.py::helper", true], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["app.py::helperx", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["app.py::helperx"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::helperx"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["app.py::helperx"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "affected", "args": ["app.py::helper", 5], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["app.py::module"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["app.py::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["  "], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "module_children", "args": ["nope.py::module"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["nope.py::module"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["Store", 5], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["entry", null, 10], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["load", null, 10], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "parse_names", "args": ["", ["a.py::module", "a.py::f", "b.py::module", "b.py::g", "c.py::module", "c.py::k", "d.py::module", "d.py::h"]], "ok": ["a.py::module", "a.py::f", "b.py::module", "b.py::g", "c.py::module", "c.py::k", "d.py::module", "d.py::h"]}
+{"fn": "find_entity", "args": ["old.py::foo"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["old.py::foo"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["new.py::foo"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["new.py::foo"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["m"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["h"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["f"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["pkg.model.Widget.render", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["pkg.model.Widget.render"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["pkg.model.Widget.render"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["pkg/model.py::Widget.render", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["pkg/model.py::Widget.render"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["pkg/model.py::Widget.render"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["pkg.model.Widget.rendr"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["pkg.model.Nothing.zzz"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "friendly_entity_id", "args": ["app.py::Store"], "ok": "app.py::Store"}
+{"fn": "friendly_entity_id", "args": ["app.py::Store.load"], "ok": "app.py::Store.load"}
+{"fn": "display_file", "args": [{"name": "Store.load", "kind": "function", "id": "app.py::Store.load", "depth": 1}], "ok": "app.py"}
+{"fn": "display_file", "args": [{"name": "f1", "kind": "function", "id": "a.py::f1", "file_path": "a.py", "start_line": 1}], "ok": "a.py"}
+{"fn": "display_file", "args": [{"name": "f2", "kind": "function", "id": "a.py::f2", "file_path": "a.py", "start_line": 2}], "ok": "a.py"}
+{"fn": "display_file", "args": [{"name": "alpha", "kind": "function", "id": "a.py::alpha", "file_path": "a.py", "similarity": 0.912}], "ok": "a.py"}
+{"fn": "callees", "args": ["main.rs::main"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["alpha.rs::local_caller"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["beta.rs::run"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["alpha.rs::helper"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["alpha.rs::helper"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["watcher debounce"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["rename function"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["watcher", 50], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["service token"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "node", "args": ["svc.py::authenticate"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["svc.py::authenticate"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["svc.py::authenticate"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["watcher debounce", 50], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["watcher debounce restart index token", 50], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": [""], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["   "], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["xylophone zebra quux"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["cats not dogs"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["say \"hi"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["a*b (c)"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["watcher svc"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["watcher OR svc"], "kwargs": {"raw": true}, "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "search_symbols", "args": ["token"], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "parse_names", "args": ["", ["mod.py::old_name", "mod.py::never_existed"]], "ok": ["mod.py::old_name", "mod.py::never_existed"]}
+{"fn": "parse_names", "args": ["", ["mod.py::caller"]], "ok": ["mod.py::caller"]}
+{"fn": "parse_names", "args": ["", ["mod.py::old_name"]], "ok": ["mod.py::old_name"]}
+{"fn": "node", "args": ["pkg/mod.py::helper", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["pkg/mod.py::helper"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["pkg/mod.py::helper"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "friendly_entity_id", "args": ["pkg/mod.py::helper"], "ok": "pkg/mod.py::helper"}
+{"fn": "node", "args": ["pkg/mod.py::helpr", false], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["pkg/mod.py::helpr"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["pkg/mod.py::helpr"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "suggest_entities", "args": ["pkg/mod.py::helpr"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "query", "args": ["functions where nonsense =="], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "traverse", "args": ["pkg/mod.py::helper", "upstream", null, 3], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "canonical_file_path", "args": ["C:\\Users\\Main\\AppData\\Local\\Temp\\pytest-of-Main\\pytest-7863\\outside_19144.py"], "ok": ".\\..\\pytest-of-Main\\pytest-7863\\outside_19144.py"}
+{"fn": "callers", "args": ["pkg/mod.py::helper"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callees", "args": ["pkg/mod.py::caller"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "callers", "args": ["pkg/mod.py::nosuch"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["pkg/mod.py::nosuch"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["pkg/mod.py::nosuch"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "search", "args": ["zzzz_no_such_token", null, 10], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "explore", "args": ["", ["zzzz_no_such_symbol"], "both", 8], "error": "NoIndex: No graph loaded — run coderadar init first"}
+{"fn": "parse_names", "args": ["", ["zzzz_no_such_symbol"]], "ok": ["zzzz_no_such_symbol"]}
+{"fn": "resolve_names", "args": [["zzzz_no_such_symbol"]], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "find_entity", "args": ["zzzz_no_such_symbol"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "canonical_entity_id", "args": ["zzzz_no_such_symbol"], "error": "RuntimeError: No graph loaded — run coderadar init first"}
+{"fn": "resolve", "args": ["zzzz_no_such_route", 5], "error": "NoIndex: No graph loaded — run coderadar init first"}

@@ -2,6 +2,7 @@
 // PyO3 bindings for the Python layer (MCP server, CLI, resolvers).
 
 pub mod annotations;
+pub mod api;
 pub mod clones;
 pub mod extract;
 mod ffi_config;
@@ -730,7 +731,7 @@ fn analyze(
     Ok(dict.into())
 }
 
-fn analyze_inner(
+pub(crate) fn analyze_inner(
     root: &str,
     create_store: bool,
     extra_excludes: &[String],
@@ -1537,7 +1538,7 @@ fn record_checkout_loaded(branch: Option<&str>) -> PyResult<()> {
 /// walk-form, update-form) while the projection is canonical. The `::`-tail
 /// (qualified name) never contains a path, so the head is everything
 /// before the first `::`. Ids without `::` pass through untouched.
-fn canonical_entity_id(entity_id: &str) -> String {
+pub(crate) fn canonical_entity_id(entity_id: &str) -> String {
     match entity_id.split_once("::") {
         Some((head, tail)) => format!(
             "{}::{}",
@@ -1556,7 +1557,7 @@ fn canonical_entity_id(entity_id: &str) -> String {
 /// same reason: their heads are names, not paths. Only heads containing a
 /// path separator or a dot (i.e. plausibly a file) go through the global
 /// root resolution; everything else keeps exact-match behavior.
-fn canonical_lookup_id(entity_id: &str) -> String {
+pub(crate) fn canonical_lookup_id(entity_id: &str) -> String {
     match entity_id.split_once("::") {
         Some((head, _))
             if head != "external"
@@ -1578,7 +1579,7 @@ fn canonical_lookup_id(entity_id: &str) -> String {
 ///
 /// `None` when no module prefix matches or the remaining symbol does not
 /// exist — callers turn that into "did you mean" candidates.
-fn resolve_qualified_name(projection: &ProjectedGraph, name: &str) -> Option<String> {
+pub(crate) fn resolve_qualified_name(projection: &ProjectedGraph, name: &str) -> Option<String> {
     use crate::graph::find_module_by_dotted_name;
 
     let (module_id, symbol) = match name.split_once("::") {
@@ -3504,7 +3505,7 @@ fn archive(py: Python<'_>, cutoff: &str) -> PyResult<PyObject> {
 /// structurally empty. Tokens are the unit of matching now; an entity's score
 /// is the sum of its per-token scores, so an entity matching several tokens
 /// outranks one matching a single one.
-fn search_tokens(query: &str) -> Vec<String> {
+pub(crate) fn search_tokens(query: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for tok in query.split_whitespace() {
         let t = tok
@@ -3530,7 +3531,7 @@ fn search_tokens(query: &str) -> Vec<String> {
 /// The signature/docstring tiers are gated on token length ≥ 3: a one- or
 /// two-character token would otherwise light up the whole project through
 /// docstring `contains`.
-fn token_entity_score(
+pub(crate) fn token_entity_score(
     name_lower: &str,
     sig_lower: Option<&str>,
     doc_lower: Option<&str>,
@@ -3569,7 +3570,7 @@ fn token_entity_score(
 /// The searchable signature text of a function: parameter names and
 /// annotations plus the return type. None when the function carries no
 /// parameter or return information at all.
-fn function_signature_text(f: &Function) -> Option<String> {
+pub(crate) fn function_signature_text(f: &Function) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     for p in &f.parameters {
         match &p.annotation {
