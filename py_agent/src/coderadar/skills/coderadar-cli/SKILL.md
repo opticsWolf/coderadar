@@ -1,6 +1,6 @@
 ---
 name: coderadar-cli
-description: Use the CodeRadar CLI in a terminal for codebase intelligence: init, status, reindex, query, traverse, callers/callees, and mutations on an indexed project. Use when MCP is unavailable, for scripting, or to create/refresh the .coderadar/ store the coderadar-mcp skill queries. Teaches current command names (pre-0.13 aliases removed) and installs the bundled MCP + CLI skill packs (`coderadar skills install`).
+description: "Use the CodeRadar CLI in a terminal for codebase intelligence: init, status, reindex, query, traverse, callers/callees, and mutations on an indexed project. Use when MCP is unavailable, for scripting, or to create/refresh the .coderadar/ store the coderadar-mcp skill queries. Teaches current command names (pre-0.13 aliases removed) and installs the bundled MCP + CLI skill packs (`coderadar skills install`)."
 ---
 
 # CodeRadar CLI

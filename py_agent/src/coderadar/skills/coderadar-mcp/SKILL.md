@@ -1,6 +1,6 @@
 ---
 name: coderadar-mcp
-description: Use CodeRadar's MCP tools (coderadar_*) for codebase intelligence on an indexed project: structural search, call graphs, blast radius, history-as-of, semantic search, smells, dead code, clones, and dry-run-first mutations. Use when the task needs graph/structural answers instead of grep loops, on any repo with a .coderadar/ store. Install the CLI/index first via the coderadar-cli skill when no store exists.
+description: "Use CodeRadar's MCP tools (coderadar_*) for codebase intelligence on an indexed project: structural search, call graphs, blast radius, history-as-of, semantic search, smells, dead code, clones, and dry-run-first mutations. Use when the task needs graph/structural answers instead of grep loops, on any repo with a .coderadar/ store. Install the CLI/index first via the coderadar-cli skill when no store exists."
 ---
 
 # CodeRadar MCP
