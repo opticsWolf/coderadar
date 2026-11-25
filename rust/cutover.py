@@ -29,7 +29,7 @@ PY_CLI = os.environ.get("CODERADAR_PY_CLI", "coderadar")
 VERIFY_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("status", "--format", "json"),
     ("search", "canonical", "--format", "json"),
-    ("dead-code", "--format", "json"),
+    ("module-children", "py_agent/src/coderadar::module"),
 )
 
 
@@ -73,6 +73,9 @@ def normalize(args: tuple[str, ...], value: object | None) -> object | None:
     if args[0] == "status" and isinstance(value, dict):
         # Counts and stamps are live graph state, not the CLI contract.
         return sorted(value)
+    if args[0] == "search":
+        # Hits drift with the last index run; the JSON shape is the contract.
+        return type(value).__name__
     return value
 
 

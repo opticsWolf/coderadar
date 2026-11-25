@@ -3114,16 +3114,19 @@ fn detect_frameworks(source: &str) -> Vec<String> {
         } else if trimmed.contains("require('express')") || trimmed.starts_with("from 'express'") {
             Some("express")
         } else if trimmed.starts_with("from '@nestjs")
+            || line.starts_with("@Controller(")
             || (line.starts_with('{') && trimmed.contains("\"@nestjs/core\""))
         {
             Some("nestjs")
         } else if trimmed.starts_with("import org.springframework") {
             Some("springboot")
         } else if trimmed.starts_with("from 'react-router")
+            || (line.starts_with('<') && trimmed.contains("route"))
             || (line.starts_with('{') && trimmed.contains("\"react-router-dom\""))
         {
             Some("react-router")
         } else if trimmed.starts_with("from 'vue-router")
+            || (line.starts_with("import") && trimmed.contains("from 'vue-router'"))
             || (line.starts_with('{') && trimmed.contains("\"vue-router\""))
         {
             Some("vue-router")
@@ -3133,6 +3136,7 @@ fn detect_frameworks(source: &str) -> Vec<String> {
             || line.starts_with("has_many ")
             || line.starts_with("belongs_to ")
             || line.starts_with("has_one ")
+            || (line.starts_with("class ") && trimmed.contains("applicationrecord"))
         {
             Some("rails")
         } else if line.starts_with("Route::get(") || line.starts_with("Route::post(") {

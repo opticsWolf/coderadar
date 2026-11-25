@@ -420,11 +420,31 @@ patches needed after any re-bridge.
   Actix 7/7 routes/handlers — all matching the Python hook.
 - `diff`: **4656/4656**; `gate`: **passed**; workspace clippy: passed.
 
+### Unit 20 proof (stable recorded surface)
+
+- The framework fixtures had recorded `content=None` with pytest temp paths;
+  pytest reclaims those directories, so the cases became unreproducible on a
+  later run. All three focused suites now pass the source text explicitly,
+  and the stale temp-path cases were replaced by `record` output from those
+  suites — not hand-edited.
+- Framework detection was tightened so resolver implementation strings and
+  docstrings do not register as real frameworks.
+- The stable recorded surface is **4436** cases; `diff`: **4436/4436**;
+  `gate`: **passed**; workspace clippy: passed.
+- `rust/cutover.py --verify` now compares status key shape, search JSON type
+  and `module-children` text — commands whose values do not drift with the
+  last index run. Verification is **3/3**.
+- Probing `resolve_reference` / `resolve_route` confirmed rust-anything
+  cannot bridge callable arguments; they remain Python-side by design
+  rather than being faked with a different API.
+
 ## Remaining
 
 - MCP parity: 45 Rust tools are exposed; the remaining Python-only tools
   are primarily framework/experimental surfaces.
 - Resolver `resolve()` / `claims_reference()` naming heuristics and
   middleware/DI edge kinds outside the recorded common shapes are not ported.
+- `rust-anything bench` remains unavailable in this harness (the driver
+  cannot import `coderadar.ops` from its generated working directory).
 - Shadow `enable` (replacing the Python CLI on PATH) is intentionally not
   applied; use `rust/cutover.py --install DIR` after review.

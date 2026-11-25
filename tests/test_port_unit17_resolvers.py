@@ -17,7 +17,7 @@ def _run(tmp_path: Path, files: dict[str, str], rel: str) -> dict:
         target = tmp_path / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
-    return refresh_framework_file(str(tmp_path), rel, None)
+    return refresh_framework_file(str(tmp_path), rel, files.get(rel))
 
 
 def test_flask_route_decorators(tmp_path):

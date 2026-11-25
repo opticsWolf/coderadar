@@ -331,5 +331,20 @@
     ],
     "cases": 4656,
     "gate": "passed"
+  },
+  "unit20": {
+    "tests": [
+      "tests/test_port_unit17_resolvers.py",
+      "tests/test_port_unit18_resolvers.py",
+      "tests/test_port_unit19_resolvers.py"
+    ],
+    "change": "content-based framework cases replace volatile temp-path cases",
+    "cases": 4436,
+    "cutover_verify": "status shape, search JSON type, module-children text",
+    "not_ported": [
+      "resolve_reference",
+      "resolve_route",
+      "resolver claims_reference/resolve heuristics"
+    ]
   }
 }
