@@ -1,27 +1,244 @@
 {
   "all_ops_exports": [
-    "friendly_entity_id", "canonical_entity_id", "display_file", "find_entity",
-    "callers", "callees", "suggest_entities", "search", "search_symbols",
-    "node", "affected", "module_children", "resolve", "normalize_query_spelling",
-    "parse_names", "resolve_names", "blob_get", "archive", "read_source",
-    "stale_files", "explore", "traverse", "query", "compute_embeddings",
-    "search_similar", "branches", "as_of", "verify_history", "history_of",
-    "open_items", "backfill_commit_index", "ingest_status",
-    "backfill_commit_messages", "changes_between", "dead_code", "get_smells",
-    "find_clones", "diagnose", "find_scaffolding", "replace_body",
-    "update_signature", "rename", "render_entity_code", "canonical_file_path",
-    "create_entity", "reindex", "update_file", "status"
+    "friendly_entity_id",
+    "canonical_entity_id",
+    "display_file",
+    "find_entity",
+    "callers",
+    "callees",
+    "suggest_entities",
+    "search",
+    "search_symbols",
+    "node",
+    "affected",
+    "module_children",
+    "resolve",
+    "normalize_query_spelling",
+    "parse_names",
+    "resolve_names",
+    "blob_get",
+    "archive",
+    "read_source",
+    "stale_files",
+    "explore",
+    "traverse",
+    "query",
+    "compute_embeddings",
+    "search_similar",
+    "branches",
+    "as_of",
+    "verify_history",
+    "history_of",
+    "open_items",
+    "backfill_commit_index",
+    "ingest_status",
+    "backfill_commit_messages",
+    "changes_between",
+    "dead_code",
+    "get_smells",
+    "find_clones",
+    "diagnose",
+    "find_scaffolding",
+    "replace_body",
+    "update_signature",
+    "rename",
+    "render_entity_code",
+    "canonical_file_path",
+    "create_entity",
+    "reindex",
+    "update_file",
+    "status"
   ],
   "unit1": [
-    "friendly_entity_id", "canonical_entity_id", "display_file", "find_entity",
-    "callers", "callees", "suggest_entities", "search", "search_symbols",
-    "node", "affected", "module_children", "resolve", "normalize_query_spelling",
-    "parse_names", "resolve_names", "explore", "traverse", "query",
+    "friendly_entity_id",
+    "canonical_entity_id",
+    "display_file",
+    "find_entity",
+    "callers",
+    "callees",
+    "suggest_entities",
+    "search",
+    "search_symbols",
+    "node",
+    "affected",
+    "module_children",
+    "resolve",
+    "normalize_query_spelling",
+    "parse_names",
+    "resolve_names",
+    "explore",
+    "traverse",
+    "query",
     "canonical_file_path"
   ],
   "unit2": [
-    "annotate", "comment", "revise_annotation", "retire_annotation",
-    "annotations_on", "comments_on", "annotation_history", "comment_history",
-    "open_items", "export_annotations", "import_annotations"
-  ]
+    "annotate",
+    "comment",
+    "revise_annotation",
+    "retire_annotation",
+    "annotations_on",
+    "comments_on",
+    "annotation_history",
+    "comment_history",
+    "open_items",
+    "export_annotations",
+    "import_annotations"
+  ],
+  "unit6": [
+    "blob_get",
+    "archive",
+    "read_source",
+    "stale_files",
+    "dead_code",
+    "get_smells",
+    "find_clones",
+    "find_scaffolding",
+    "replace_body",
+    "update_signature",
+    "rename",
+    "render_entity_code",
+    "create_entity",
+    "update_file"
+  ],
+  "unit6_notes": "diagnose excluded: its NoExtension import-failure path cannot occur in a statically linked Rust binary, so no recorded error case can reach it.",
+  "unit6b": {
+    "cli": [
+      "dead-code",
+      "smells",
+      "clones",
+      "scaffolding",
+      "blob-get",
+      "archive",
+      "stale-files",
+      "read-source"
+    ],
+    "mcp": [
+      "coderadar_dead_code",
+      "coderadar_get_smells",
+      "coderadar_find_clones",
+      "coderadar_find_scaffolding",
+      "coderadar_blob_get",
+      "coderadar_archive",
+      "coderadar_stale_files",
+      "coderadar_read_source"
+    ],
+    "deferred": [
+      "update_file",
+      "replace_body",
+      "update_signature",
+      "rename",
+      "create_entity"
+    ]
+  },
+  "unit7": [
+    "branches",
+    "as_of",
+    "verify_history",
+    "history_of",
+    "changes_between"
+  ],
+  "unit7c": {
+    "api": [
+      "lookup_at",
+      "content_hashes_at",
+      "source_refs_at",
+      "recorded_generations",
+      "visible_all_concept_ids",
+      "visible_module_concept_ids",
+      "canonical_id"
+    ],
+    "parity_checked": [
+      "as_of",
+      "changes_between",
+      "verify_history"
+    ]
+  },
+  "unit8": {
+    "api": [
+      "ingest_history",
+      "reingest_merged_commits",
+      "backfill_commit_index",
+      "backfill_commit_messages"
+    ],
+    "cli": [
+      "ingest-history",
+      "reingest-merged-commits",
+      "backfill-commit-index",
+      "backfill-commit-messages"
+    ],
+    "mcp": [
+      "coderadar_ingest_history",
+      "coderadar_reingest_merged_commits",
+      "coderadar_backfill_commit_index",
+      "coderadar_backfill_commit_messages"
+    ],
+    "gap": [
+      "sync_git",
+      "migrate_to_commit_time"
+    ]
+  },
+  "unit9": {
+    "api": [
+      "canonical_entity_id",
+      "plan_replace_body",
+      "plan_update_signature",
+      "plan_rename",
+      "plan_create_entity",
+      "apply_plan",
+      "update_file"
+    ],
+    "cli": [
+      "replace-body",
+      "update-signature",
+      "rename",
+      "create-entity",
+      "update-file"
+    ],
+    "mcp": [
+      "coderadar_replace_body",
+      "coderadar_update_signature",
+      "coderadar_rename",
+      "coderadar_create_entity",
+      "coderadar_update_file"
+    ]
+  },
+  "unit10": [
+    "extract_all_exports",
+    "canonical_route_pattern",
+    "route_patterns_match",
+    "prefer_in_dir"
+  ],
+  "unit10_gap": "17 framework resolver classes remain Python-side; only shared helpers are gated.",
+  "unit11": {
+    "module": "rust/coderadar/src/render_remaining.rs",
+    "exports_added": 31,
+    "cases": 1029,
+    "gate": "4194/4194"
+  },
+  "unit12": {
+    "api": [
+      "search_similar_vec",
+      "search_hybrid_vec",
+      "set_embeddings",
+      "clear_embeddings",
+      "persist_embeddings",
+      "embedding_targets"
+    ],
+    "port": [
+      "compute_embeddings_op",
+      "search_similar_op",
+      "search_hybrid_op"
+    ],
+    "cli": [
+      "compute-embeddings",
+      "search-similar",
+      "search-hybrid"
+    ],
+    "mcp": [
+      "coderadar_compute_embeddings",
+      "coderadar_search_similar",
+      "coderadar_search_hybrid"
+    ],
+    "gap": "deterministic local embedder is not fastembed; vector-input parity is exact"
+  }
 }

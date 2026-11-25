@@ -72,6 +72,216 @@ enum Command {
     },
     /// Run a Pest query over the projection
     Query { text: String },
+    /// Functions unreachable from any entry point
+    DeadCode {
+        #[arg(long, default_value_t = 0.6)]
+        min_confidence: f64,
+        #[arg(long)]
+        include_test_reachable: bool,
+        #[arg(long, default_value_t = 100)]
+        max_findings: i64,
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Code-smell findings
+    Smells {
+        #[arg(long)]
+        entity_id: Option<String>,
+        #[arg(long)]
+        rule_id: Option<String>,
+        #[arg(long, default_value = "normal")]
+        strictness: String,
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Duplicate-code groups
+    Clones {
+        #[arg(long, default_value_t = 10)]
+        min_lines: i64,
+        #[arg(long, default_value_t = 0.8)]
+        min_similarity: f64,
+        #[arg(long, default_value_t = 100)]
+        max_groups: i64,
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Scaffolding debt and (optionally) secrets
+    Scaffolding {
+        #[arg(long)]
+        include_secrets: bool,
+        #[arg(long, default_value_t = 100)]
+        max_findings: i64,
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Raw blob bytes by content digest
+    BlobGet { digest: String },
+    /// Archive cold blobs and old ledger rows
+    Archive { cutoff: String },
+    /// Files modified after the index was built
+    StaleFiles { paths: Vec<String> },
+    /// Line-numbered source for one entity
+    ReadSource { id: String },
+    /// Entities as they were at a recorded instant
+    AsOf {
+        timestamp: String,
+        #[arg(default_value = "")]
+        query: String,
+        #[arg(long)]
+        symbols: Vec<String>,
+        #[arg(long, default_value = "main")]
+        branch: String,
+        #[arg(long)]
+        strict: bool,
+        #[arg(long)]
+        at: Option<String>,
+        #[arg(long)]
+        valid: bool,
+    },
+    /// Byte coverage across recorded generations
+    VerifyHistory {
+        #[arg(long)]
+        from_ts: Option<String>,
+        #[arg(long)]
+        to_ts: Option<String>,
+        #[arg(long, default_value_t = 25)]
+        generations: i64,
+        #[arg(long)]
+        all: bool,
+        #[arg(long, default_value = "main")]
+        branch: String,
+        #[arg(long, default_value_t = 10)]
+        offenders: i64,
+        #[arg(long)]
+        max_generations: Option<i64>,
+    },
+    /// Every content version of a file
+    HistoryOf { file: String },
+    /// Entity changes between two instants
+    ChangesBetween {
+        t1: String,
+        t2: String,
+        #[arg(long)]
+        scope: Option<String>,
+        #[arg(long, default_value = "main")]
+        branch: String,
+        #[arg(long)]
+        valid: bool,
+    },
+    /// Ledger lineages
+    Branches,
+    /// The store's own ingest state
+    IngestStatus {
+        #[arg(long)]
+        store_path: Option<PathBuf>,
+    },
+    /// Ingest git history (dry-run by default)
+    IngestHistory {
+        repo: PathBuf,
+        #[arg(long, default_value = "main")]
+        branch: String,
+        #[arg(long)]
+        from_sha: Option<String>,
+        #[arg(long)]
+        to_sha: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        lineage: Option<String>,
+        #[arg(long, default_value = "main")]
+        parent_ref: String,
+    },
+    /// Heal merge commits skipped hollow by an older trunk walk
+    ReingestMergedCommits {
+        repo: PathBuf,
+        #[arg(long, default_value = "main")]
+        branch: String,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Rebuild a lineage's commit index
+    BackfillCommitIndex {
+        #[arg(long, default_value = "main")]
+        branch: String,
+        #[arg(long)]
+        store_path: Option<PathBuf>,
+    },
+    /// Rebuild commit messages from git objects
+    BackfillCommitMessages {
+        repo: PathBuf,
+        #[arg(long)]
+        store_path: Option<PathBuf>,
+    },
+    /// Compute embeddings for every indexed entity
+    ComputeEmbeddings {
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long, default_value_t = 32)]
+        batch_size: i64,
+        #[arg(long)]
+        recompute: bool,
+    },
+    /// Semantic search over entity embeddings
+    SearchSimilar {
+        query: String,
+        #[arg(long, default_value_t = 10)]
+        top_k: i64,
+    },
+    /// Hybrid keyword + vector search
+    SearchHybrid {
+        query: String,
+        #[arg(long, default_value_t = 10)]
+        top_k: i64,
+        #[arg(long, default_value = "")]
+        query_text: String,
+    },
+    /// Replace a function/method body (dry-run by default)
+    ReplaceBody {
+        id: String,
+        body: String,
+        #[arg(long)]
+        expected_hash: Option<String>,
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Update a signature (dry-run by default)
+    UpdateSignature {
+        id: String,
+        signature: String,
+        #[arg(long)]
+        inject_defaults: bool,
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Rename an entity and its references (dry-run by default)
+    Rename {
+        id: String,
+        new_name: String,
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Insert a new entity (dry-run by default)
+    CreateEntity {
+        file: PathBuf,
+        language: String,
+        kind: String,
+        name: String,
+        body: String,
+        #[arg(long)]
+        decorator: Vec<String>,
+        #[arg(long, default_value = "end")]
+        anchor: String,
+        #[arg(long)]
+        signature: Option<String>,
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Sync one file into the graph
+    UpdateFile {
+        file: PathBuf,
+        #[arg(long)]
+        content: Option<String>,
+    },
     /// Mint a checklist annotation
     Annotate { about: String, body: String },
     /// Mint a freeform comment
@@ -245,6 +455,286 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             ensure_loaded(&project)?;
             let rows = port::query(text)?;
             println!("{}", render::query(&rows));
+        }
+        Command::DeadCode {
+            min_confidence,
+            include_test_reachable,
+            max_findings,
+            format,
+        } => {
+            ensure_loaded(&project)?;
+            let rows = port::dead_code(min_confidence, include_test_reachable, max_findings)?;
+            print_value(&Value::Array(rows), &format, |v| {
+                render::rows(rows_as_array(v))
+            });
+        }
+        Command::Smells {
+            entity_id,
+            rule_id,
+            strictness,
+            format,
+        } => {
+            ensure_loaded(&project)?;
+            let rows = port::get_smells(entity_id, rule_id, strictness)?;
+            print_value(&Value::Array(rows), &format, |v| {
+                render::rows(rows_as_array(v))
+            });
+        }
+        Command::Clones {
+            min_lines,
+            min_similarity,
+            max_groups,
+            format,
+        } => {
+            ensure_loaded(&project)?;
+            let rows = port::find_clones(min_lines, min_similarity, max_groups)?;
+            print_value(&Value::Array(rows), &format, |v| {
+                render::rows(rows_as_array(v))
+            });
+        }
+        Command::Scaffolding {
+            include_secrets,
+            max_findings,
+            format,
+        } => {
+            ensure_loaded(&project)?;
+            let rows = port::find_scaffolding(include_secrets, max_findings)?;
+            print_value(&Value::Array(rows), &format, |v| {
+                render::rows(rows_as_array(v))
+            });
+        }
+        Command::BlobGet { digest } => {
+            let value = port::blob_get(digest)?.unwrap_or(Value::Null);
+            println!("{}", render::blob(&value));
+        }
+        Command::Archive { cutoff } => {
+            let value = port::archive(Some(cutoff))?;
+            println!("{}", render::json_text(&value));
+        }
+        Command::StaleFiles { paths } => {
+            let rows = port::stale_files(paths)?;
+            println!("{}", render::rows(&rows));
+        }
+        Command::ReadSource { id } => {
+            ensure_loaded(&project)?;
+            let entity = port::find_entity(id)?
+                .ok_or_else(|| "NotFound: entity does not exist".to_string())?;
+            let source = port::read_source(entity)?
+                .ok_or_else(|| "ContentUnavailable: no source for that entity".to_string())?;
+            println!("{source}");
+        }
+        Command::AsOf {
+            timestamp,
+            query,
+            symbols,
+            branch,
+            strict,
+            at,
+            valid,
+        } => {
+            ensure_loaded(&project)?;
+            let result = port::as_of(
+                timestamp,
+                query,
+                if symbols.is_empty() {
+                    None
+                } else {
+                    Some(symbols)
+                },
+                branch,
+                strict,
+                at,
+                valid,
+                None,
+            )?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::VerifyHistory {
+            from_ts,
+            to_ts,
+            generations,
+            all,
+            branch,
+            offenders,
+            max_generations,
+        } => {
+            ensure_loaded(&project)?;
+            let result = port::verify_history(
+                from_ts,
+                to_ts,
+                generations,
+                all,
+                branch,
+                offenders,
+                max_generations,
+                None,
+            )?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::HistoryOf { file } => {
+            ensure_loaded(&project)?;
+            let result = port::history_of(file, None)?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::ChangesBetween {
+            t1,
+            t2,
+            scope,
+            branch,
+            valid,
+        } => {
+            ensure_loaded(&project)?;
+            let result = port::changes_between(t1, t2, scope, branch, valid, None)?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::Branches => {
+            ensure_loaded(&project)?;
+            let rows = port::branches(None)?;
+            println!("{}", render::rows(&rows));
+        }
+        Command::IngestStatus { store_path } => {
+            ensure_loaded(&project)?;
+            let result = port::ingest_status(store_path.map(|p| p.to_string_lossy().to_string()))?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::IngestHistory {
+            repo,
+            branch,
+            from_sha,
+            to_sha,
+            dry_run,
+            lineage,
+            parent_ref,
+        } => {
+            ensure_loaded(&project)?;
+            let result = port::ingest_history(
+                repo.to_string_lossy().to_string(),
+                branch,
+                from_sha,
+                dry_run,
+                lineage,
+                parent_ref,
+                to_sha,
+                None,
+            )?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::ReingestMergedCommits {
+            repo,
+            branch,
+            dry_run,
+        } => {
+            ensure_loaded(&project)?;
+            let result = port::reingest_merged_commits(
+                repo.to_string_lossy().to_string(),
+                branch,
+                dry_run,
+                None,
+            )?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::BackfillCommitIndex { branch, store_path } => {
+            ensure_loaded(&project)?;
+            let result = port::backfill_commit_index(
+                branch,
+                store_path.map(|p| p.to_string_lossy().to_string()),
+            )?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::BackfillCommitMessages { repo, store_path } => {
+            ensure_loaded(&project)?;
+            let result = port::backfill_commit_messages(
+                repo.to_string_lossy().to_string(),
+                store_path.map(|p| p.to_string_lossy().to_string()),
+            )?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::ComputeEmbeddings {
+            model,
+            batch_size,
+            recompute,
+        } => {
+            ensure_loaded(&project)?;
+            let result = port::compute_embeddings_op(model, batch_size, recompute)?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::SearchSimilar { query, top_k } => {
+            ensure_loaded(&project)?;
+            let result = port::search_similar_op(Value::String(query), top_k)?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::SearchHybrid {
+            query,
+            top_k,
+            query_text,
+        } => {
+            ensure_loaded(&project)?;
+            let result = port::search_hybrid_op(Value::String(query), top_k, query_text)?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::ReplaceBody {
+            id,
+            body,
+            expected_hash,
+            apply,
+        } => {
+            ensure_loaded(&project)?;
+            let result = port::replace_body(id, body, expected_hash, !apply, None)?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::UpdateSignature {
+            id,
+            signature,
+            inject_defaults,
+            apply,
+        } => {
+            ensure_loaded(&project)?;
+            let result = port::update_signature(id, signature, inject_defaults, !apply, None)?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::Rename {
+            id,
+            new_name,
+            apply,
+        } => {
+            ensure_loaded(&project)?;
+            let result = port::rename(id, new_name, !apply, None)?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::CreateEntity {
+            file,
+            language,
+            kind,
+            name,
+            body,
+            decorator,
+            anchor,
+            signature,
+            apply,
+        } => {
+            ensure_loaded(&project)?;
+            let result = port::create_entity(
+                file.to_string_lossy().to_string(),
+                language,
+                kind,
+                name,
+                body,
+                if decorator.is_empty() {
+                    None
+                } else {
+                    Some(decorator)
+                },
+                anchor,
+                signature,
+                !apply,
+                None,
+            )?;
+            println!("{}", render::json_text(&result));
+        }
+        Command::UpdateFile { file, content } => {
+            ensure_loaded(&project)?;
+            let result = port::update_file(file.to_string_lossy().to_string(), content, None)?;
+            println!("{}", render::json_text(&result));
         }
         Command::Annotate { about, body } => {
             ensure_loaded(&project)?;

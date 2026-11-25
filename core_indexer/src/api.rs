@@ -56,7 +56,9 @@ pub fn load_projection(db_path: &str, root: Option<&str>) -> Result<Arc<Projecte
         *crate::INDEXED_ROOT.write() =
             Some(std::fs::canonicalize(r).unwrap_or_else(|_| std::path::PathBuf::from(r)));
     }
-    Ok(graph.snapshot())
+    let snapshot = graph.snapshot();
+    *crate::GLOBAL_GRAPH.write() = Some(graph);
+    Ok(snapshot)
 }
 
 fn insert(map: &mut Map<String, Value>, key: &str, value: impl Into<Value>) {
@@ -578,4 +580,1289 @@ pub fn analyze(root: &str, create_store: bool, exclude: &[String]) -> Result<Val
         "blobs_skipped_excluded": outcome.blobs_skipped_excluded,
         "blobs_bytes": outcome.blobs_bytes,
     }))
+}
+
+// ── Unit 6: engine-backed analyses and store reads ────────────────────────
+
+fn entity_name(snap: &ProjectedGraph, entity_id: &str) -> Option<String> {
+    if let Some(f) = snap.functions.get(entity_id) {
+        return Some(f.name.clone());
+    }
+    if let Some(c) = snap.classes.get(entity_id) {
+        return Some(c.name.clone());
+    }
+    snap.modules.get(entity_id).map(|m| m.name.clone())
+}
+
+/// Ranked dead-code findings, as JSON dicts in the Python binding's shape.
+///
+/// # Errors
+/// Returns `InvalidRequest` for a confidence outside [0, 1].
+pub fn dead_code(
+    snap: &Arc<ProjectedGraph>,
+    min_confidence: f64,
+    include_test_reachable: bool,
+    max_findings: usize,
+) -> Result<Vec<Value>, String> {
+    if !(0.0..=1.0).contains(&min_confidence) {
+        return Err("InvalidRequest: min_confidence must be in [0.0, 1.0]".to_string());
+    }
+    let options = crate::graph::deadcode::DeadCodeOptions {
+        include_test_only: include_test_reachable,
+        root: crate::INDEXED_ROOT.read().clone(),
+    };
+    let findings = crate::graph::deadcode::detect_dead(snap, options);
+    let mut rows = Vec::new();
+    for f in findings
+        .iter()
+        .filter(|f| f.score >= min_confidence as f32)
+        .take(max_findings)
+    {
+        let mut row = Map::new();
+        insert(&mut row, "entity_id", f.entity_id.clone());
+        insert(&mut row, "kind", f.kind.as_str());
+        insert(&mut row, "tier", f.tier.as_str());
+        insert(&mut row, "score", f.score);
+        insert(&mut row, "removable_lines", f.removable_lines);
+        insert(&mut row, "evidence", f.evidence.clone());
+        if let Some(distance) = f.nearest_root_distance {
+            insert(&mut row, "nearest_root_distance", distance as u32);
+        }
+        if let Some(name) = entity_name(snap, &f.entity_id) {
+            insert(&mut row, "entity_name", name);
+        }
+        let (file, line) = match snap.functions.get(&f.entity_id) {
+            Some(func) => {
+                let file = snap
+                    .modules
+                    .get(&func.parent_module)
+                    .map(|m| m.path.to_string_lossy().to_string())
+                    .unwrap_or_else(|| func.id.split("::").next().unwrap_or_default().to_string());
+                (file, func.line as u32)
+            }
+            None => (
+                f.entity_id
+                    .split("::")
+                    .next()
+                    .unwrap_or_default()
+                    .to_string(),
+                0u32,
+            ),
+        };
+        insert(&mut row, "file", file);
+        insert(&mut row, "line", line);
+        rows.push(Value::Object(row));
+    }
+    Ok(rows)
+}
+
+/// Code-smell findings, as JSON dicts in the Python binding's shape.
+///
+/// # Errors
+/// Returns `InvalidRequest` for an unknown strictness profile.
+pub fn smells(
+    snap: &Arc<ProjectedGraph>,
+    entity_id: Option<&str>,
+    rule_id: Option<&str>,
+    strictness: &str,
+) -> Result<Vec<Value>, String> {
+    let profile = crate::smells::profile::Strictness::parse(strictness)
+        .map_err(|e| format!("InvalidRequest: {e}"))?;
+    let findings = crate::smells::engine::SmellEngine::new().run_with_strictness(snap, profile);
+    let mut rows = Vec::new();
+    for finding in findings.iter() {
+        if entity_id.is_some_and(|id| id != finding.entity_id) {
+            continue;
+        }
+        if rule_id.is_some_and(|id| id != finding.rule_id) {
+            continue;
+        }
+        let mut row = Map::new();
+        insert(&mut row, "rule_id", finding.rule_id.clone());
+        insert(&mut row, "entity_id", finding.entity_id.clone());
+        insert(&mut row, "severity", finding.severity.as_str());
+        insert(&mut row, "message", finding.message.clone());
+        if let Some(name) = entity_name(snap, &finding.entity_id) {
+            insert(&mut row, "entity_name", name);
+        }
+        let mut signals = Map::new();
+        for (key, value) in &finding.signals {
+            insert(&mut signals, key, *value);
+        }
+        insert(&mut row, "signals", signals);
+        rows.push(Value::Object(row));
+    }
+    Ok(rows)
+}
+
+/// Clone groups, as JSON dicts in the Python binding's shape.
+///
+/// # Errors
+/// Returns `InvalidRequest` for a similarity outside [0, 1] and `EngineError`
+/// if detection panics internally.
+pub fn clones(
+    snap: &Arc<ProjectedGraph>,
+    min_lines: usize,
+    min_similarity: f64,
+    max_groups: usize,
+) -> Result<Vec<Value>, String> {
+    if !(0.0..=1.0).contains(&min_similarity) {
+        return Err("InvalidRequest: min_similarity must be in [0.0, 1.0]".to_string());
+    }
+    let options = crate::clones::CloneOptions {
+        min_lines,
+        min_similarity,
+    };
+    let detected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        crate::clones::detect_clones(snap, options)
+    }))
+    .map_err(|_| {
+        "EngineError: clone detection panicked internally (please report with min_lines/min_similarity); no results — not a clean scan".to_string()
+    })?;
+    let mut rows = Vec::new();
+    for group in detected.iter().take(max_groups) {
+        let mut row = Map::new();
+        insert(&mut row, "clone_type", group.clone_type.as_str());
+        insert(&mut row, "similarity", group.similarity);
+        insert(&mut row, "confidence_tier", group.confidence_tier.as_str());
+        row.insert(
+            "reason".to_string(),
+            group
+                .reason
+                .map(|r| Value::String(r.to_string()))
+                .unwrap_or(Value::Null),
+        );
+        let mut sources: std::collections::HashMap<String, Vec<u8>> =
+            std::collections::HashMap::new();
+        let mut instances = Vec::new();
+        for instance in &group.instances {
+            let source = sources.entry(instance.file.clone()).or_insert_with(|| {
+                crate::graph::module_resolution::read_project_file(&instance.file).into_bytes()
+            });
+            let (start_line, start_col) = crate::types::line_col_at(source, instance.span.start);
+            let (end_line, end_col) = crate::types::line_col_at(source, instance.span.end);
+            let mut d = Map::new();
+            insert(&mut d, "entity_id", instance.entity_id.clone());
+            insert(&mut d, "file", instance.file.clone());
+            insert(&mut d, "span_start", instance.span.start);
+            insert(&mut d, "span_end", instance.span.end);
+            insert(&mut d, "start_line", start_line);
+            insert(&mut d, "start_col", start_col);
+            insert(&mut d, "end_line", end_line);
+            insert(&mut d, "end_col", end_col);
+            instances.push(Value::Object(d));
+        }
+        insert(&mut row, "instances", instances);
+        rows.push(Value::Object(row));
+    }
+    Ok(rows)
+}
+
+/// Scaffolding findings, as JSON dicts in the Python binding's shape.
+///
+/// # Errors
+/// Returns `EngineError` when no project root has been indexed.
+pub fn scaffolding(
+    snap: &Arc<ProjectedGraph>,
+    include_secrets: bool,
+    max_findings: usize,
+) -> Result<Vec<Value>, String> {
+    let root = crate::INDEXED_ROOT
+        .read()
+        .clone()
+        .ok_or_else(|| "EngineError: No graph loaded — run coderadar init first".to_string())?;
+    let root = crate::fs::strip_verbatim_prefix(root);
+    let cfg = crate::scaffold::ScaffoldConfig {
+        include_secrets,
+        ..Default::default()
+    };
+    let mut findings = crate::scaffold::scan_path(&root, &cfg);
+    let (placeholders, stats) = crate::scaffold::scan_placeholder_bodies(snap);
+    findings.extend(placeholders);
+    let mut rows = Vec::new();
+    for kind in ["placeholder-body", "secret", "comment-marker", "temp-file"] {
+        for finding in findings
+            .iter()
+            .filter(|f| f.kind.as_str() == kind)
+            .take(max_findings)
+        {
+            let mut row = Map::new();
+            insert(&mut row, "kind", finding.kind.as_str());
+            insert(
+                &mut row,
+                "file",
+                crate::fs::display_path(&root, &finding.file),
+            );
+            insert(&mut row, "line", finding.line as u32);
+            insert(&mut row, "label", finding.label.clone());
+            insert(&mut row, "snippet", finding.snippet.clone());
+            rows.push(Value::Object(row));
+        }
+    }
+    let skipped = stats.skipped_no_module + stats.skipped_unreadable + stats.skipped_span;
+    let mut stats_row = Map::new();
+    insert(&mut stats_row, "kind", "scan-stats");
+    insert(&mut stats_row, "file", "");
+    insert(&mut stats_row, "line", 0u32);
+    insert(
+        &mut stats_row,
+        "label",
+        format!(
+            "placeholder scan: {} functions, {} stubs, {} skipped (no-module {}, unreadable {}, span {}; {} via id fallback)",
+            stats.functions,
+            stats.stubs,
+            skipped,
+            stats.skipped_no_module,
+            stats.skipped_unreadable,
+            stats.skipped_span,
+            stats.resolved_via_id_fallback
+        ),
+    );
+    rows.push(Value::Object(stats_row));
+    Ok(rows)
+}
+
+/// Raw blob bytes by digest, encoded as the wrapper's `$bytes` JSON marker.
+///
+/// # Errors
+/// Returns `InvalidRequest` for a malformed digest and the engine's message
+/// for a store failure.
+pub fn blob_get(store: &CodeGraphStore, digest: &str) -> Result<Option<Value>, String> {
+    if macrame::blob::validate_digest(digest).is_err() {
+        return Err(format!(
+            "InvalidRequest: malformed blob digest {digest:?}: expected 64 lowercase hex characters"
+        ));
+    }
+    match store
+        .blob_get(digest)
+        .map_err(|e| format!("EngineError: {e:?}"))?
+    {
+        Some(bytes) => Ok(Some(json!({"$bytes": bytes}))),
+        None => Ok(None),
+    }
+}
+
+/// Archive cold blobs and ledger rows before a canonical UTC cutoff.
+///
+/// # Errors
+/// Returns `InvalidRequest` for a bad timestamp and `EngineError` for a store
+/// failure.
+pub fn archive(store: &CodeGraphStore, cutoff: &str) -> Result<Value, String> {
+    let ts = macrame::util::timestamp::normalize(cutoff).map_err(|e| {
+        format!(
+            "InvalidRequest: invalid timestamp {cutoff:?}: expected Macrame canonical UTC (YYYY-MM-DDTHH:MM:SS.ffffffZ); {e:?}"
+        )
+    })?;
+    let report = store
+        .archive(&ts)
+        .map_err(|e| format!("EngineError: {e:?}"))?;
+    Ok(json!({
+        "links_archived": report.links_archived,
+        "concepts_archived": report.concepts_archived,
+        "log_entries_archived": report.log_entries_archived,
+        "horizon": report.horizon,
+        "blobs_archived": report.blobs_archived,
+        "blobs_restored": report.blobs_restored,
+        "blob_scan_bytes": report.blob_scan_bytes,
+        "cutoff": ts,
+    }))
+}
+
+// ── Unit 7b: store-level temporal primitives ─────────────────────────────
+
+/// Normalize a free-form timestamp to Macrame's canonical UTC spelling.
+///
+/// # Errors
+/// Returns the engine's `InvalidTimestamp` detail.
+pub fn normalize_timestamp(value: &str) -> Result<String, String> {
+    macrame::util::timestamp::normalize(value).map_err(|e| {
+        format!(
+            "InvalidRequest: invalid timestamp {value:?}: expected Macrame canonical UTC (YYYY-MM-DDTHH:MM:SS.ffffffZ); {e:?}"
+        )
+    })
+}
+
+/// Every lineage the ledger knows, trunk first.
+///
+/// # Errors
+/// Returns the store's message when the ledger cannot be read.
+pub fn branches(store: &CodeGraphStore) -> Result<Vec<Value>, String> {
+    let infos = store
+        .branches()
+        .map_err(|e| format!("EngineError: branches() failed: {e:?}"))?;
+    Ok(infos
+        .into_iter()
+        .map(|b| {
+            json!({
+                "name": b.name,
+                "parent": b.parent,
+                "forked_at": b.forked_at,
+                "created_at": b.created_at,
+            })
+        })
+        .collect())
+}
+
+/// The content spine of one file, plus versions reached through renames.
+///
+/// # Errors
+/// Returns the store's message when the ledger cannot be read.
+pub fn history_of(store: &CodeGraphStore, file: &str) -> Result<Value, String> {
+    let module_id = crate::canonical_lookup_id(&format!("{file}::module"));
+    let path = module_id
+        .strip_suffix("::module")
+        .unwrap_or(file)
+        .to_string();
+    let chain = store
+        .history_of(&path)
+        .map_err(|e| format!("EngineError: history_of({file:?}) failed: {e:?}"))?;
+    let predecessors = store
+        .rename_predecessors(&module_id)
+        .map_err(|e| format!("EngineError: history_of({file:?}) rename chain failed: {e:?}"))?;
+    let mut versions = Vec::new();
+    for version in &chain {
+        versions.push(json!({
+            "digest": version.digest,
+            "valid_from": version.valid_from,
+            "valid_to": version.valid_to,
+            "open": version.open,
+            "parent_digest": version.parent_digest,
+            "size_bytes": version.size_bytes,
+            "line_count": version.line_count,
+        }));
+    }
+    for link in predecessors.iter().rev() {
+        let old_path = link
+            .old_id
+            .strip_suffix("::module")
+            .unwrap_or(&link.old_path)
+            .to_string();
+        let older = store
+            .history_of(&old_path)
+            .map_err(|e| format!("EngineError: history_of({old_path:?}) failed: {e:?}"))?;
+        for version in older {
+            versions.push(json!({
+                "digest": version.digest,
+                "valid_from": version.valid_from,
+                "valid_to": version.valid_to,
+                "open": version.open,
+                "parent_digest": version.parent_digest,
+                "size_bytes": version.size_bytes,
+                "line_count": version.line_count,
+                "file": old_path,
+                "via_rename": {
+                    "from": link.old_id,
+                    "to": link.new_id,
+                    "commit": link.commit,
+                    "similarity": link.similarity,
+                },
+            }));
+        }
+    }
+    let count = versions.len();
+    Ok(json!({"file": path, "versions": versions, "count": count}))
+}
+
+/// The store's own ingest cursors, horizons and completion counts.
+///
+/// # Errors
+/// Returns `InvalidRequest` for an unreadable store and `EngineError` when
+/// the report cannot be serialized.
+pub fn ingest_status(store: &CodeGraphStore) -> Result<Value, String> {
+    let report = crate::graph::ingest::store_status(store)
+        .map_err(|e| format!("EngineError: store_status failed: {e}"))?;
+    serde_json::to_value(report).map_err(|e| format!("EngineError: store_status report JSON: {e}"))
+}
+
+// ── Unit 7c: recorded-axis fold primitives ───────────────────────────────
+
+fn arm_error(e: crate::graph::ingest::ReadArmError) -> String {
+    match e {
+        crate::graph::ingest::ReadArmError::Store(_) => format!("EngineError: {e}"),
+        other => format!("InvalidRequest: {other}"),
+    }
+}
+
+fn temporal_error(e: macrame::DbError) -> String {
+    match e {
+        macrame::DbError::UnknownBranch(name) => {
+            format!("InvalidRequest: unknown branch {name:?}: fork it first")
+        }
+        macrame::DbError::InvalidBranchId(name) => {
+            format!("InvalidRequest: invalid branch name {name:?}")
+        }
+        other => format!("EngineError: {other:?}"),
+    }
+}
+
+fn resolved_read_json(r: &crate::graph::ingest::ResolvedRead) -> Value {
+    json!({
+        "fold_ts": r.fold_ts,
+        "basis": r.basis,
+        "sha": r.sha,
+        "horizon": r.horizon,
+        "dirty_at_commit": r.dirty_at_commit,
+        "address": r.address,
+        "parent_drift": r.parent_drift,
+        "lineage": r.fold_branch,
+    })
+}
+
+struct Fold {
+    snap: Arc<ProjectedGraph>,
+    predates: bool,
+    resolved: crate::graph::ingest::ResolvedRead,
+}
+
+fn fold_projection(
+    store: &CodeGraphStore,
+    ts: &str,
+    branch: &str,
+    strict: bool,
+    at: Option<&str>,
+    valid: bool,
+) -> Result<Fold, String> {
+    let resolved = if valid {
+        crate::graph::ingest::resolve_valid_read(store, branch, ts, at).map_err(arm_error)?
+    } else {
+        let lineage = if branch == "main" { "main" } else { branch };
+        crate::graph::ingest::resolve_temporal_read(store, lineage, ts, strict, at)
+            .map_err(arm_error)?
+    };
+    let state = if valid {
+        store.reconstruct_valid(&resolved.fold_ts)
+    } else {
+        store.reconstruct_on(&resolved.fold_ts, &resolved.fold_branch)
+    }
+    .map_err(temporal_error)?;
+    let predates = state.predates_recorded_history;
+    let (projection, _) = crate::graph::cold_start::projection_from_state(&state).map_err(|e| {
+        format!(
+            "EngineError: projection at {:?} failed: {e}",
+            resolved.fold_ts
+        )
+    })?;
+    Ok(Fold {
+        snap: Arc::new(projection),
+        predates,
+        resolved,
+    })
+}
+
+/// Batched entity fold at one recorded instant.
+///
+/// # Errors
+/// Returns the arm's refusal or a store failure.
+pub fn lookup_at(
+    store: &CodeGraphStore,
+    ids: &[String],
+    timestamp: &str,
+    branch: &str,
+    strict: bool,
+    at: Option<&str>,
+    valid: bool,
+) -> Result<Value, String> {
+    let ts = if at.is_none() {
+        normalize_timestamp(timestamp)?
+    } else {
+        timestamp.to_string()
+    };
+    let fold = fold_projection(store, &ts, branch, strict, at, valid)?;
+    let snap = fold.snap;
+    let predates = fold.predates;
+    let resolved = fold.resolved;
+    let mut entities = Map::new();
+    for id in ids {
+        let canon = crate::canonical_lookup_id(id);
+        let found = entity_json(&snap, id)
+            .or_else(|| {
+                if canon != *id {
+                    entity_json(&snap, &canon)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                crate::resolve_qualified_name(&snap, &canon)
+                    .and_then(|resolved_id| entity_json(&snap, &resolved_id))
+            });
+        entities.insert(id.clone(), found.unwrap_or(Value::Null));
+    }
+    let mut out = Map::new();
+    insert(&mut out, "entities", entities);
+    insert(&mut out, "predates_recorded_history", predates);
+    for (key, value) in resolved_read_json(&resolved)
+        .as_object()
+        .unwrap_or(&Map::new())
+    {
+        out.insert(key.clone(), value.clone());
+    }
+    Ok(Value::Object(out))
+}
+
+type HashSpan = (String, Option<u64>, Option<u64>, Option<u64>);
+
+fn hash_span(snap: &ProjectedGraph, id: &str) -> Option<HashSpan> {
+    if let Some(f) = snap.functions.get(id) {
+        return Some((
+            f.id.clone(),
+            Some(f.content_hash),
+            Some(f.line as u64),
+            Some(f.exit_line as u64),
+        ));
+    }
+    if let Some(c) = snap.classes.get(id) {
+        return Some((
+            c.id.clone(),
+            Some(c.content_hash),
+            Some(c.line as u64),
+            Some(c.exit_line as u64),
+        ));
+    }
+    if let Some(m) = snap.modules.get(id) {
+        return Some((m.id.clone(), Some(m.content_hash), None, None));
+    }
+    if let Some(i) = snap.imports.get(id) {
+        return Some((i.id.clone(), None, Some(i.line as u64), None));
+    }
+    if let Some(k) = snap.constants.get(id) {
+        return Some((k.id.clone(), None, None, None));
+    }
+    if let Some(t) = snap.type_aliases.get(id) {
+        return Some((t.id.clone(), None, None, None));
+    }
+    snap.routes
+        .get(id)
+        .map(|r| (r.id.clone(), None, None, None))
+}
+
+/// Per-entity content hashes at one instant, keyed by requested id.
+///
+/// # Errors
+/// Returns the engine's refusal for a bad stamp or lineage.
+pub fn content_hashes_at(
+    store: &CodeGraphStore,
+    ids: &[String],
+    timestamp: &str,
+    branch: &str,
+    valid: bool,
+) -> Result<Value, String> {
+    let ts = normalize_timestamp(timestamp)?;
+    if valid && branch != "main" {
+        return Err("InvalidRequest: valid-axis reads on a branch need U-2".to_string());
+    }
+    let fold = fold_projection(store, &ts, branch, false, None, valid)?;
+    let snap = fold.snap;
+    let predates = fold.predates;
+    let mut hashes = Map::new();
+    for id in ids {
+        let canon = crate::canonical_lookup_id(id);
+        let found = hash_span(&snap, id)
+            .or_else(|| {
+                if canon != *id {
+                    hash_span(&snap, &canon)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                crate::resolve_qualified_name(&snap, &canon).and_then(|r| hash_span(&snap, &r))
+            });
+        let value = match found {
+            Some((actual, hash, start, end)) => json!({
+                "id": actual,
+                "content_hash": hash,
+                "start_line": start,
+                "end_line": end,
+            }),
+            None => Value::Null,
+        };
+        hashes.insert(id.clone(), value);
+    }
+    Ok(json!({"hashes": hashes, "predates_recorded_history": predates}))
+}
+
+/// Source refs for a set of entity ids at one instant.
+///
+/// # Errors
+/// Returns the arm's refusal or a store failure.
+pub fn source_refs_at(
+    store: &CodeGraphStore,
+    ids: &[String],
+    timestamp: &str,
+    branch: &str,
+    strict: bool,
+    at: Option<&str>,
+    valid: bool,
+) -> Result<Value, String> {
+    let ts = if at.is_none() {
+        normalize_timestamp(timestamp)?
+    } else {
+        timestamp.to_string()
+    };
+    let resolved = fold_projection(store, &ts, branch, strict, at, valid)?.resolved;
+    let (refs, predates) = store
+        .source_refs_at(ids, &resolved.fold_ts, &resolved.fold_branch)
+        .map_err(temporal_error)?;
+    let mut by_id = Map::new();
+    for (id, r) in refs {
+        by_id.insert(
+            id,
+            json!({
+                "id": r.id,
+                "file_path": r.file_path,
+                "digest": r.digest,
+                "span_start": r.span_start,
+                "span_end": r.span_end,
+                "has_span": r.has_span,
+                "full_file": r.full_file,
+                "start_line": r.start_line,
+                "end_line": r.end_line,
+                "handler_id": r.handler_id,
+            }),
+        );
+    }
+    let mut out = Map::new();
+    insert(&mut out, "refs", by_id);
+    insert(&mut out, "predates_recorded_history", predates);
+    for (key, value) in resolved_read_json(&resolved)
+        .as_object()
+        .unwrap_or(&Map::new())
+    {
+        out.insert(key.clone(), value.clone());
+    }
+    Ok(Value::Object(out))
+}
+
+/// Every recorded generation in a window, oldest first.
+///
+/// # Errors
+/// Returns a bad-stamp or store error.
+pub fn recorded_generations(
+    store: &CodeGraphStore,
+    from: Option<&str>,
+    to: Option<&str>,
+    branch: &str,
+) -> Result<Vec<String>, String> {
+    let lo = from.map(normalize_timestamp).transpose()?;
+    let hi = to.map(normalize_timestamp).transpose()?;
+    store
+        .recorded_generations(lo.as_deref(), hi.as_deref(), branch)
+        .map_err(|e| format!("EngineError: recorded_generations failed: {e:?}"))
+}
+
+/// Every concept id visible on a lineage.
+///
+/// # Errors
+/// Returns the store's message for an unknown lineage.
+pub fn visible_all_concept_ids(
+    store: &CodeGraphStore,
+    branch: &str,
+) -> Result<Vec<String>, String> {
+    store
+        .visible_all_concept_ids(branch)
+        .map_err(temporal_error)
+}
+
+/// Canonical id for a possibly old-spelled entity id.
+pub fn canonical_id(id: &str) -> String {
+    crate::canonical_lookup_id(id)
+}
+
+/// Every module id visible on a lineage — the universe `verify_history`
+/// sweeps (modules only, not every concept kind).
+///
+/// # Errors
+/// Returns the store's message for an unknown lineage.
+pub fn visible_module_concept_ids(
+    store: &CodeGraphStore,
+    branch: &str,
+) -> Result<Vec<String>, String> {
+    store
+        .visible_module_concept_ids(branch)
+        .map_err(temporal_error)
+}
+
+// ── Unit 8: write-side ingest ────────────────────────────────────────────
+
+fn ingest_error(e: crate::graph::ingest::IngestError) -> String {
+    use crate::graph::ingest::IngestError;
+    let user = match &e {
+        IngestError::Git(crate::fs::git::GitError::UnknownBranch(_))
+        | IngestError::Git(crate::fs::git::GitError::UnknownRevision(_))
+        | IngestError::Git(crate::fs::git::GitError::NotAncestor(_))
+        | IngestError::Git(crate::fs::git::GitError::NoCommonHistory { .. })
+        | IngestError::Git(crate::fs::git::GitError::PathNotFound { .. })
+        | IngestError::UnknownHighWater { .. }
+        | IngestError::OutOfOrder { .. }
+        | IngestError::NotDescendant { .. }
+        | IngestError::IndexNowRefused { .. }
+        | IngestError::TrunkBranchMismatch { .. }
+        | IngestError::ForkMismatch { .. }
+        | IngestError::LineageExists { .. }
+        | IngestError::InvalidLineage { .. }
+        | IngestError::TrunkRewritten { .. }
+        | IngestError::BranchNowMerged { .. }
+        | IngestError::WindowNeedsBelief { .. }
+        | IngestError::WindowEndMismatch { .. }
+        | IngestError::WindowOffChain { .. }
+        | IngestError::WindowEmpty { .. }
+        | IngestError::WindowStampsOverlap { .. } => true,
+        IngestError::Store(_) => false,
+        _ => true,
+    };
+    if user {
+        format!("InvalidRequest: {e}")
+    } else {
+        format!("EngineError: {e}")
+    }
+}
+
+/// Ingest git history into a commit-time store, trunk or branch lineage.
+///
+/// # Errors
+/// Returns the ingest refusal or a store failure.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors the Python ingest_history parameters"
+)]
+pub fn ingest_history(
+    store_path: &str,
+    repo: &str,
+    branch: &str,
+    from: Option<&str>,
+    to: Option<&str>,
+    dry_run: bool,
+    lineage: Option<&str>,
+    parent_ref: &str,
+) -> Result<Value, String> {
+    let effective = lineage.unwrap_or(branch);
+    let report = if effective == "main" {
+        crate::graph::ingest::ingest_history(store_path, repo, branch, from, to, dry_run)
+    } else {
+        crate::graph::ingest::ingest_branch_evolving(
+            store_path, repo, branch, lineage, parent_ref, from, dry_run,
+        )
+    }
+    .map_err(ingest_error)?;
+    serde_json::to_value(report).map_err(|e| format!("EngineError: report JSON: {e}"))
+}
+
+/// Heal merge commits the original trunk walk skipped hollow.
+///
+/// # Errors
+/// Returns the ingest refusal or a store failure.
+pub fn reingest_merged_commits(
+    store_path: &str,
+    repo: &str,
+    branch: &str,
+    dry_run: bool,
+) -> Result<Value, String> {
+    let report = crate::graph::ingest::reingest_merged_commits(store_path, repo, branch, dry_run)
+        .map_err(ingest_error)?;
+    serde_json::to_value(report).map_err(|e| format!("EngineError: report JSON: {e}"))
+}
+
+/// Rebuild a lineage's commit index from its ledger completions.
+///
+/// # Errors
+/// Returns a store-open refusal or an ingest failure.
+pub fn backfill_commit_index(store_path: &str, branch: &str) -> Result<Value, String> {
+    let store = CodeGraphStore::open(store_path).map_err(|e| {
+        format!("InvalidRequest: backfill_commit_index cannot open {store_path:?}: {e:?}")
+    })?;
+    let lineage = if branch == "main" { "main" } else { branch };
+    let report =
+        crate::graph::ingest::backfill_commit_index(&store, lineage, true).map_err(ingest_error)?;
+    serde_json::to_value(report).map_err(|e| format!("EngineError: report JSON: {e}"))
+}
+
+/// Rebuild commit messages from their git objects.
+///
+/// # Errors
+/// Returns a repo/store refusal or an ingest failure.
+pub fn backfill_commit_messages(store_path: &str, repo: &str) -> Result<Value, String> {
+    let report = crate::graph::ingest::backfill_commit_messages(store_path, repo)
+        .map_err(|e| format!("InvalidRequest: {e}"))?;
+    serde_json::to_value(report).map_err(|e| format!("EngineError: report JSON: {e}"))
+}
+
+// ── Unit 9: mutation planners and single-file sync ───────────────────────
+
+use std::collections::HashMap;
+use std::sync::{OnceLock, RwLock};
+
+use crate::mutation::{MutationEngine, MutationPlan};
+
+static PLANS: OnceLock<RwLock<HashMap<String, MutationPlan>>> = OnceLock::new();
+
+fn plans() -> &'static RwLock<HashMap<String, MutationPlan>> {
+    PLANS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn make_engine() -> MutationEngine {
+    let engine = MutationEngine::new(crate::active_config().mutation.clone());
+    match crate::INDEXED_ROOT.read().clone() {
+        Some(root) => engine.with_project_root(root),
+        None => engine,
+    }
+}
+
+/// Canonical form of an entity id (full spelling, not just its file head).
+pub fn canonical_entity_id(entity_id: &str) -> String {
+    crate::canonical_entity_id(entity_id)
+}
+
+fn plan_json(plan: &MutationPlan) -> Value {
+    let mut sources: HashMap<String, Vec<u8>> = HashMap::new();
+    let edits: Vec<Value> = plan
+        .edits
+        .iter()
+        .map(|e| {
+            let source = sources.entry(e.file.clone()).or_insert_with(|| {
+                crate::graph::module_resolution::read_project_file(&e.file).into_bytes()
+            });
+            let (line, col) = crate::types::line_col_at(source, e.span.start);
+            let (end_line, end_col) = crate::types::line_col_at(source, e.span.end);
+            json!({
+                "file": e.file,
+                "span_start": e.span.start,
+                "span_end": e.span.end,
+                "line": line,
+                "col": col,
+                "end_line": end_line,
+                "end_col": end_col,
+                "replacement": e.replacement,
+                "expected_hash": e.expected_hash,
+            })
+        })
+        .collect();
+    let unverified: Vec<Value> = plan
+        .unverified_sites
+        .iter()
+        .map(|u| {
+            json!({
+                "file": u.file,
+                "line": u.line,
+                "snippet": u.snippet,
+                "reason": u.reason,
+            })
+        })
+        .collect();
+    json!({
+        "id": plan.id,
+        "tool": plan.tool,
+        "diff_preview": plan.diff_preview,
+        "affected_files": plan.affected_files,
+        "warnings": plan.warnings,
+        "unverified_sites": unverified,
+        "edits": edits,
+    })
+}
+
+fn stash(plan: MutationPlan) -> (String, Value) {
+    let id = plan.id.clone();
+    let value = plan_json(&plan);
+    if let Ok(mut map) = plans().write() {
+        map.insert(id.clone(), plan);
+    }
+    (id, value)
+}
+
+fn mutation_error(e: impl std::fmt::Debug) -> String {
+    format!("MutationFailed: {e:?}")
+}
+
+/// Plan a body replacement. The plan is stashed for a later `apply_plan`.
+///
+/// # Errors
+/// Returns the planner's refusal.
+pub fn plan_replace_body(
+    entity_id: &str,
+    new_body: &str,
+    expected_hash: Option<String>,
+    dry_run: bool,
+    snap: &ProjectedGraph,
+) -> Result<(String, Value), String> {
+    let plan = make_engine()
+        .plan_body_replacement(entity_id, new_body, expected_hash, dry_run, snap)
+        .map_err(mutation_error)?;
+    Ok(stash(plan))
+}
+
+/// Plan a signature update. The plan is stashed for a later `apply_plan`.
+///
+/// # Errors
+/// Returns the planner's refusal.
+pub fn plan_update_signature(
+    entity_id: &str,
+    new_signature: &str,
+    inject_defaults: bool,
+    dry_run: bool,
+    snap: &ProjectedGraph,
+) -> Result<(String, Value), String> {
+    let plan = make_engine()
+        .plan_signature_update(
+            entity_id,
+            new_signature,
+            &HashMap::new(),
+            inject_defaults,
+            dry_run,
+            snap,
+        )
+        .map_err(mutation_error)?;
+    Ok(stash(plan))
+}
+
+/// Plan a rename. The plan is stashed for a later `apply_plan`.
+///
+/// # Errors
+/// Returns the planner's refusal.
+pub fn plan_rename(
+    entity_id: &str,
+    new_name: &str,
+    dry_run: bool,
+    snap: &ProjectedGraph,
+) -> Result<(String, Value), String> {
+    let plan = make_engine()
+        .plan_rename(entity_id, new_name, false, dry_run, snap)
+        .map_err(mutation_error)?;
+    Ok(stash(plan))
+}
+
+/// Plan a new entity. The plan is stashed for a later `apply_plan`.
+///
+/// # Errors
+/// Returns the planner's refusal.
+pub fn plan_create_entity(
+    target_file: &str,
+    anchor: &str,
+    code: &str,
+    dry_run: bool,
+    snap: &ProjectedGraph,
+) -> Result<(String, Value), String> {
+    let plan = make_engine()
+        .plan_create_entity(target_file, anchor, code, dry_run, snap)
+        .map_err(mutation_error)?;
+    Ok(stash(plan))
+}
+
+/// Apply a previously planned mutation, returning the engine's disk outcome.
+///
+/// # Errors
+/// Returns `MutationFailed` when the plan is unknown or the write fails.
+pub fn apply_plan(id: &str) -> Result<Value, String> {
+    let plan = plans()
+        .write()
+        .map_err(|e| mutation_error(e.to_string()))?
+        .remove(id)
+        .ok_or_else(|| format!("MutationFailed: unknown plan {id:?}"))?;
+    let result = make_engine().apply(&plan);
+    serde_json::to_value(result).map_err(|e| mutation_error(e.to_string()))
+}
+
+/// Sync one file into the graph, from `content` or from disk.
+///
+/// # Errors
+/// Returns the engine's update failure.
+pub fn update_file(file_path: &str, content: Option<&str>) -> Result<Value, String> {
+    let outcome = {
+        let mut guard = crate::GLOBAL_GRAPH.write();
+        let graph = guard
+            .as_mut()
+            .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
+        graph
+            .update_file(file_path, content, None)
+            .map_err(|e| format!("EngineError: {e}"))?
+    };
+    let quality = match outcome.parse_quality {
+        crate::types::ParseQuality::Clean => "clean",
+        crate::types::ParseQuality::Partial => "partial",
+        crate::types::ParseQuality::Tainted => "tainted",
+        crate::types::ParseQuality::Deferred => "deferred",
+    };
+    Ok(json!({
+        "fully_applied": outcome.parse_errors == 0,
+        "entities_added": outcome.entities_added,
+        "entities_removed": outcome.entities_removed,
+        "affected_files": outcome.affected_files,
+        "source_hash": outcome.source_hash,
+        "update_error": outcome.update_error,
+        "persistence_error": outcome.persistence_error,
+        "blob_error": outcome.blob_error,
+        "parse_quality": quality,
+        "parse_errors": outcome.parse_errors,
+        "elapsed_ms": outcome.elapsed_ms,
+        "changed_symbols": outcome.changed_symbols.iter().map(|s| json!({
+            "kind": s.kind,
+            "operation": s.operation,
+            "id": s.id,
+            "name": s.name,
+            "line": s.line,
+        })).collect::<Vec<_>>(),
+        "new_unresolved": outcome.new_unresolved,
+        "newly_resolved": outcome.newly_resolved,
+        "epoch_before": outcome.epoch_before,
+        "epoch_after": outcome.epoch_after,
+        "observed_at": outcome.observed_at,
+        "source": outcome.source,
+        "lineage": outcome.lineage,
+        "blobs_stored": outcome.blobs_stored,
+        "blobs_skipped_oversize": outcome.blobs_skipped_oversize,
+        "blobs_skipped_excluded": outcome.blobs_skipped_excluded,
+        "blobs_bytes": outcome.blobs_bytes,
+    }))
+}
+
+// ── Unit 12: embedding-backed search (pure Rust) ─────────────────────────
+
+fn cosine(query: &[f64], vector: &[f64]) -> f64 {
+    if query.len() != vector.len() || query.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0f64;
+    let mut q_norm = 0.0f64;
+    let mut v_norm = 0.0f64;
+    for (q, v) in query.iter().zip(vector.iter()) {
+        dot += q * v;
+        q_norm += q * q;
+        v_norm += v * v;
+    }
+    if q_norm == 0.0 || v_norm == 0.0 {
+        0.0
+    } else {
+        dot / (q_norm.sqrt() * v_norm.sqrt())
+    }
+}
+
+fn materialize_scored(snap: &ProjectedGraph, scored: Vec<(f64, String)>, top_k: usize) -> Value {
+    let mut scored = scored;
+    scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(top_k);
+    let rows: Vec<Value> = scored
+        .into_iter()
+        .filter_map(|(similarity, id)| {
+            let mut row = entity_json(snap, &id)?;
+            if let Some(map) = row.as_object_mut() {
+                insert(map, "similarity", similarity);
+            }
+            Some(row)
+        })
+        .collect();
+    json!(rows)
+}
+
+/// Search the persisted model table (or in-memory vectors) with a ready query vector.
+pub fn search_similar_vec(query: &[f64], top_k: usize) -> Result<Value, String> {
+    let guard = crate::GLOBAL_GRAPH.read();
+    let graph = guard
+        .as_ref()
+        .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
+    let snap = graph.snapshot();
+    if let Some(store) = graph.store.as_ref() {
+        let tables = store
+            .model_tables_at_dim(query.len())
+            .map_err(|e| format!("{e:?}"))?;
+        if tables.len() > 1 {
+            return Err(format!(
+                "embedding dimension {} matches {} model tables — one model per store is the contract. Recompute from clean with a single model.",
+                query.len(),
+                tables.len()
+            ));
+        }
+        if let Some(model) = tables.first() {
+            let vectors = store
+                .read_model_vectors(model)
+                .map_err(|e| format!("{e:?}"))?;
+            if vectors.dimension != query.len() {
+                return Err(format!(
+                    "embedding dimension mismatch: query is {}-dim but {} holds {}-dim vectors",
+                    query.len(),
+                    vectors.model_table,
+                    vectors.dimension
+                ));
+            }
+            let scored = vectors
+                .rows
+                .iter()
+                .map(|(id, vector)| {
+                    let vector: Vec<f64> = vector.iter().map(|v| *v as f64).collect();
+                    (cosine(query, &vector), id.clone())
+                })
+                .collect();
+            return Ok(materialize_scored(&snap, scored, top_k));
+        }
+    }
+    let mut scored = Vec::new();
+    for (id, entity) in &snap.functions {
+        if !entity.embedding.vec.is_empty() {
+            scored.push((cosine(query, &entity.embedding.vec), id.to_string()));
+        }
+    }
+    for (id, entity) in &snap.classes {
+        if !entity.embedding.vec.is_empty() {
+            scored.push((cosine(query, &entity.embedding.vec), id.to_string()));
+        }
+    }
+    for (id, entity) in &snap.modules {
+        if !entity.embedding.vec.is_empty() {
+            scored.push((cosine(query, &entity.embedding.vec), id.to_string()));
+        }
+    }
+    for (id, entity) in &snap.imports {
+        if !entity.embedding.vec.is_empty() {
+            scored.push((cosine(query, &entity.embedding.vec), id.to_string()));
+        }
+    }
+    for (id, entity) in &snap.constants {
+        if !entity.embedding.vec.is_empty() {
+            scored.push((cosine(query, &entity.embedding.vec), id.to_string()));
+        }
+    }
+    for (id, entity) in &snap.type_aliases {
+        if !entity.embedding.vec.is_empty() {
+            scored.push((cosine(query, &entity.embedding.vec), id.to_string()));
+        }
+    }
+    Ok(materialize_scored(&snap, scored, top_k))
+}
+
+/// Fuse keyword and vector ranks with reciprocal rank fusion.
+pub fn search_hybrid_vec(
+    model: &str,
+    text: &str,
+    query: &[f64],
+    top_k: usize,
+) -> Result<Value, String> {
+    let guard = crate::GLOBAL_GRAPH.read();
+    let graph = guard
+        .as_ref()
+        .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
+    let snap = graph.snapshot();
+    let store = graph.store.as_ref().ok_or_else(|| {
+        "search_hybrid needs a stored graph (hybrid search reads the ledger's FTS and vector tables)".to_string()
+    })?;
+    let hits = store
+        .search_hybrid(model, text, query, top_k)
+        .map_err(|e| format!("{e:?}"))?;
+    let rows: Vec<Value> = hits
+        .into_iter()
+        .filter_map(|hit| {
+            let mut row = entity_json(&snap, &hit.concept_id)?;
+            if let Some(map) = row.as_object_mut() {
+                insert(map, "score", hit.score);
+                insert(map, "vector_rank", hit.vector_rank);
+                insert(map, "keyword_rank", hit.keyword_rank);
+            }
+            Some(row)
+        })
+        .collect();
+    Ok(json!(rows))
+}
+
+/// Write a batch of vectors into the projection (one clone, not one per row).
+pub fn set_embeddings(entries: Vec<(String, Vec<f64>, String)>) -> Result<Value, String> {
+    let mut guard = crate::GLOBAL_GRAPH.write();
+    let graph = guard
+        .as_mut()
+        .ok_or_else(|| "No graph loaded — run coderadar analyze first".to_string())?;
+    let (applied, missing) = graph
+        .set_embeddings_bulk(entries)
+        .map_err(|e| e.to_string())?;
+    Ok(json!({"applied": applied, "missing": missing}))
+}
+
+/// Clear every embedding vector (model-switch maintenance).
+pub fn clear_embeddings() -> Result<Value, String> {
+    let mut guard = crate::GLOBAL_GRAPH.write();
+    let graph = guard
+        .as_mut()
+        .ok_or_else(|| "No graph loaded — run coderadar analyze first".to_string())?;
+    Ok(json!({"cleared": graph.clear_all_embeddings()}))
+}
+
+/// Persist vector keys to the ledger's per-model table.
+pub fn persist_embeddings(model: &str, entries: Vec<(String, String)>) -> Result<Value, String> {
+    let guard = crate::GLOBAL_GRAPH.read();
+    let graph = guard
+        .as_ref()
+        .ok_or_else(|| "No stored graph — vectors stay memory-only".to_string())?;
+    let store = graph
+        .store
+        .as_ref()
+        .ok_or_else(|| "No stored graph — vectors stay memory-only".to_string())?;
+    let snap = graph.snapshot();
+    let report = store
+        .persist_projection_embeddings(model, &snap, &entries)
+        .map_err(|e| format!("{e:?}"))?;
+    Ok(json!({
+        "persisted": report.persisted,
+        "model": report.model_table,
+        "dimension": report.dimension,
+        "healed": report.healed
+    }))
+}
+
+/// Collect `(id, embed_text, content_hash)` for every indexable entity.
+pub fn embedding_targets() -> Result<Vec<(String, String, String)>, String> {
+    let guard = crate::GLOBAL_GRAPH.read();
+    let graph = guard
+        .as_ref()
+        .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
+    let snap = graph.snapshot();
+    let mut out = Vec::new();
+    let mut collect = |id: &crate::types::EntityId, value: &Value| {
+        let text = [
+            value
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            value
+                .get("signature")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            value
+                .get("docstring")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        ]
+        .join(" ");
+        let hash = value
+            .get("content_hash")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        out.push((id.to_string(), text, hash));
+    };
+    for id in snap.functions.keys() {
+        if let Some(value) = entity_json(&snap, id) {
+            collect(id, &value);
+        }
+    }
+    for id in snap.classes.keys() {
+        if let Some(value) = entity_json(&snap, id) {
+            collect(id, &value);
+        }
+    }
+    for id in snap.modules.keys() {
+        if let Some(value) = entity_json(&snap, id) {
+            collect(id, &value);
+        }
+    }
+    for id in snap.imports.keys() {
+        if let Some(value) = entity_json(&snap, id) {
+            collect(id, &value);
+        }
+    }
+    for id in snap.constants.keys() {
+        if let Some(value) = entity_json(&snap, id) {
+            collect(id, &value);
+        }
+    }
+    for id in snap.type_aliases.keys() {
+        if let Some(value) = entity_json(&snap, id) {
+            collect(id, &value);
+        }
+    }
+    Ok(out)
 }

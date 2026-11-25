@@ -418,3 +418,32 @@ fn plain(v: Option<&Value>) -> String {
         None => "?".to_string(),
     }
 }
+
+/// Compact text for the analysis tables added in unit 6.
+pub fn rows(rows: &[Value]) -> String {
+    if rows.is_empty() {
+        return "No findings.".to_string();
+    }
+    let mut lines = vec![format!("{} result(s)", rows.len())];
+    for row in rows {
+        lines.push(serde_json::to_string(row).unwrap_or_else(|_| "unprintable result".to_string()));
+    }
+    lines.join("\n")
+}
+
+/// Generic JSON text for one structured result.
+pub fn json_text(value: &Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_default()
+}
+
+/// Text form of a raw blob lookup.
+pub fn blob(value: &Value) -> String {
+    match value {
+        Value::Null => "No blob at that digest.".to_string(),
+        Value::Object(map) => match map.get("$bytes") {
+            Some(Value::Array(bytes)) => format!("{} byte(s)", bytes.len()),
+            _ => json_text(value),
+        },
+        _ => json_text(value),
+    }
+}

@@ -4,7 +4,10 @@ The bridge regenerates Cargo.toml, src/lib.rs, src/pyconv.rs and the Python
 facade. It does not know that this workspace pins pyo3 0.24 (core_indexer's
 version), that optional arguments need an explicit `None` object on 0.24, or
 that CodeRadar's Python callers catch named OpError subclasses. Run this
-after every re-bridge of rust/coderadar.
+after every re-bridge of rust/coderadar. Unit 6 adds 14 more `ops.py` exports;
+re-bridging must keep all 34 exports listed in `rust/units.json`, and the
+optional `decorators` argument patch must be re-applied by hand. Unit 7 adds
+five temporal exports; `rust/units.json` lists all 39.
 """
 
 from pathlib import Path

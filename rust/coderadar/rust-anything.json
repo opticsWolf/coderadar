@@ -471,6 +471,1520 @@
       "is_generator": false,
       "type_params": [],
       "uses_instanceof": false
+    },
+    {
+      "name": "blob_get",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 618,
+      "params": [
+        {
+          "name": "digest",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "bytes | undefined",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "archive",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 642,
+      "params": [
+        {
+          "name": "cutoff",
+          "ts_type": "string | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "read_source",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 693,
+      "params": [
+        {
+          "name": "entity",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string | undefined",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "stale_files",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 717,
+      "params": [
+        {
+          "name": "file_paths",
+          "ts_type": "string[]",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "dead_code",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3272,
+      "params": [
+        {
+          "name": "min_confidence",
+          "ts_type": "number",
+          "optional": true,
+          "rest": false,
+          "default": "0.6"
+        },
+        {
+          "name": "include_test_reachable",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "False"
+        },
+        {
+          "name": "max_findings",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "100"
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "get_smells",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3287,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "rule_id",
+          "ts_type": "string | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "strictness",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"normal\""
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "find_clones",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3300,
+      "params": [
+        {
+          "name": "min_lines",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "10"
+        },
+        {
+          "name": "min_similarity",
+          "ts_type": "number",
+          "optional": true,
+          "rest": false,
+          "default": "0.8"
+        },
+        {
+          "name": "max_groups",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "100"
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "find_scaffolding",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3475,
+      "params": [
+        {
+          "name": "include_secrets",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "False"
+        },
+        {
+          "name": "max_findings",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "100"
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "replace_body",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3506,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "new_body",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "expected_hash",
+          "ts_type": "string | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "dry_run",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "True"
+        },
+        {
+          "name": "graph",
+          "ts_type": "unknown",
+          "optional": true,
+          "rest": false,
+          "default": "None",
+          "keyword_only": true
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "update_signature",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3520,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "new_signature",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "inject_defaults",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "False"
+        },
+        {
+          "name": "dry_run",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "True"
+        },
+        {
+          "name": "graph",
+          "ts_type": "unknown",
+          "optional": true,
+          "rest": false,
+          "default": "None",
+          "keyword_only": true
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "rename",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3533,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "new_name",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "dry_run",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "True"
+        },
+        {
+          "name": "graph",
+          "ts_type": "unknown",
+          "optional": true,
+          "rest": false,
+          "default": "None",
+          "keyword_only": true
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "render_entity_code",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3541,
+      "params": [
+        {
+          "name": "language",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "kind",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "name",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "body",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "decorators",
+          "ts_type": "string[] | undefined",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "signature",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"\""
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "create_entity",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3632,
+      "params": [
+        {
+          "name": "file_path",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "language",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "kind",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "name",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "body",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "decorators",
+          "ts_type": "string[] | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "anchor",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"end\""
+        },
+        {
+          "name": "signature",
+          "ts_type": "string | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "dry_run",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "True"
+        },
+        {
+          "name": "graph",
+          "ts_type": "unknown",
+          "optional": true,
+          "rest": false,
+          "default": "None",
+          "keyword_only": true
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "update_file",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3724,
+      "params": [
+        {
+          "name": "file_path",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "content",
+          "ts_type": "string | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "graph",
+          "ts_type": "unknown",
+          "optional": true,
+          "rest": false,
+          "default": "None",
+          "keyword_only": true
+        }
+      ],
+      "returns": "unknown",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "branches",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 1199,
+      "params": [
+        {
+          "name": "graph",
+          "ts_type": "unknown",
+          "optional": true,
+          "rest": false,
+          "default": "None",
+          "keyword_only": true
+        }
+      ],
+      "returns": "dict[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "as_of",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 1219,
+      "params": [
+        {
+          "name": "timestamp",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "query",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"\""
+        },
+        {
+          "name": "symbols",
+          "ts_type": "string[] | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "branch",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"main\""
+        },
+        {
+          "name": "strict",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "False",
+          "keyword_only": true
+        },
+        {
+          "name": "at",
+          "ts_type": "string | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None",
+          "keyword_only": true
+        },
+        {
+          "name": "valid",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "False",
+          "keyword_only": true
+        },
+        {
+          "name": "graph",
+          "ts_type": "unknown",
+          "optional": true,
+          "rest": false,
+          "default": "None",
+          "keyword_only": true
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "verify_history",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 1343,
+      "params": [
+        {
+          "name": "from_ts",
+          "ts_type": "string | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "to_ts",
+          "ts_type": "string | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "generations",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "25"
+        },
+        {
+          "name": "all",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "False"
+        },
+        {
+          "name": "branch",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"main\""
+        },
+        {
+          "name": "offenders",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "10"
+        },
+        {
+          "name": "max_generations",
+          "ts_type": "int | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "graph",
+          "ts_type": "unknown",
+          "optional": true,
+          "rest": false,
+          "default": "None",
+          "keyword_only": true
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "history_of",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 1496,
+      "params": [
+        {
+          "name": "file",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "graph",
+          "ts_type": "unknown",
+          "optional": true,
+          "rest": false,
+          "default": "None",
+          "keyword_only": true
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "changes_between",
+      "file": "py_agent/src/coderadar/ops.py",
+      "line": 3040,
+      "params": [
+        {
+          "name": "t1",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "t2",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "scope",
+          "ts_type": "string | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        },
+        {
+          "name": "branch",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"main\""
+        },
+        {
+          "name": "valid",
+          "ts_type": "boolean",
+          "optional": true,
+          "rest": false,
+          "default": "False",
+          "keyword_only": true
+        },
+        {
+          "name": "graph",
+          "ts_type": "unknown",
+          "optional": true,
+          "rest": false,
+          "default": "None",
+          "keyword_only": true
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "extract_all_exports",
+      "file": "py_agent/src/coderadar/resolvers/exports.py",
+      "line": 18,
+      "params": [
+        {
+          "name": "source",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string[] | undefined",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "canonical_route_pattern",
+      "file": "py_agent/src/coderadar/resolvers/resolution.py",
+      "line": 81,
+      "params": [
+        {
+          "name": "path",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "tuple",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "route_patterns_match",
+      "file": "py_agent/src/coderadar/resolvers/resolution.py",
+      "line": 99,
+      "params": [
+        {
+          "name": "query",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "candidate",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "boolean",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "prefer_in_dir",
+      "file": "py_agent/src/coderadar/resolvers/resolution.py",
+      "line": 160,
+      "params": [
+        {
+          "name": "candidates",
+          "ts_type": "unknown[]",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "name",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "dir_hint",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "confidence",
+          "ts_type": "number",
+          "optional": true,
+          "rest": false,
+          "default": "0.85",
+          "keyword_only": true
+        }
+      ],
+      "returns": "dict | undefined",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "not_found",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 18,
+      "params": [
+        {
+          "name": "entity_id",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "candidates",
+          "ts_type": "dict[]",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "hint",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"coderadar_search\""
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "search_miss",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 30,
+      "params": [
+        {
+          "name": "query",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "kind",
+          "ts_type": "string | undefined",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "search_similar",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"`coderadar_search_similar`\"",
+          "keyword_only": true
+        },
+        {
+          "name": "explore",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"`coderadar_explore`\"",
+          "keyword_only": true
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "diagnose",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 253,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "store_repair",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 280,
+      "params": [
+        {
+          "name": "db_path",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "stale_banner",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 435,
+      "params": [
+        {
+          "name": "stale_files",
+          "ts_type": "dict[]",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "referenced_paths",
+          "ts_type": "string[]",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "explore_usage",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 477,
+      "params": [
+        {
+          "name": "example",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "'coderadar_explore(query=\"User.save authenticate\")'",
+          "keyword_only": true
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "explore_miss",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 484,
+      "params": [
+        {
+          "name": "names",
+          "ts_type": "string[]",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "search",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"`coderadar_search`\"",
+          "keyword_only": true
+        },
+        {
+          "name": "search_similar",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"`coderadar_search_similar`\"",
+          "keyword_only": true
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "apply_output_budget",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 530,
+      "params": [
+        {
+          "name": "lines",
+          "ts_type": "string[]",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "max_chars",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "MAX_OUTPUT_CHARS"
+        },
+        {
+          "name": "max_per_file",
+          "ts_type": "int",
+          "optional": true,
+          "rest": false,
+          "default": "MAX_CHARS_PER_FILE"
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "extract_path_from_header",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 639,
+      "params": [
+        {
+          "name": "header",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "trim_to_char_budget",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 644,
+      "params": [
+        {
+          "name": "body_lines",
+          "ts_type": "string[]",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "max_chars",
+          "ts_type": "int",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string[]",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "query_usage",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 708,
+      "params": [],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "search_similar",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 745,
+      "params": [
+        {
+          "name": "query",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "results",
+          "ts_type": "dict[]",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "search_hybrid",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 763,
+      "params": [
+        {
+          "name": "query",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "results",
+          "ts_type": "dict[]",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "fastembed_missing",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 783,
+      "params": [
+        {
+          "name": "compute",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"`coderadar_compute_embeddings`\""
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "no_embeddings",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 793,
+      "params": [
+        {
+          "name": "compute",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"`coderadar_compute_embeddings`\""
+        },
+        {
+          "name": "reindex",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"`coderadar_reindex with_embeddings=True`\""
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "compute_embeddings",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 802,
+      "params": [
+        {
+          "name": "metrics",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "search_similar",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"`coderadar_search_similar`\"",
+          "keyword_only": true
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "ingest_status",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 886,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "export_annotations",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1012,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "import_annotations",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1031,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "rebuild",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1048,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "open_items",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1083,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "annotation_versions",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1106,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "annotation_stored",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1136,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "ingest_history",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1159,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "migrate_to_commit_time",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1211,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "edit",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1336,
+      "params": [
+        {
+          "name": "outcome",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "apply_hint",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"call again with `dry_run=False`\""
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "mutation_error",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1345,
+      "params": [
+        {
+          "name": "raw",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "update_file",
+          "ts_type": "string",
+          "optional": true,
+          "rest": false,
+          "default": "\"`coderadar_update_file`\"",
+          "keyword_only": true
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "mutation_plan",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1385,
+      "params": [
+        {
+          "name": "plan",
+          "ts_type": "unknown",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "mutation_applied",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1440,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "unknown",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "unverified_sites",
+          "ts_type": "unknown[] | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "reindex",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1578,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "status",
+      "file": "py_agent/src/coderadar/render.py",
+      "line": 1641,
+      "params": [
+        {
+          "name": "result",
+          "ts_type": "dict",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "string",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
     }
   ],
   "classes": [],
