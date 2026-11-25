@@ -296,5 +296,40 @@
     "script": "rust/cutover.py",
     "verify": 3,
     "note": "install writes a launcher; Python sources are never edited"
+  },
+  "unit17": {
+    "tests": "tests/test_port_unit17_resolvers.py",
+    "semantics": [
+      "flask_blueprint",
+      "flask_add_resource",
+      "django_router_register",
+      "fastapi_depends",
+      "express_js_routes"
+    ],
+    "cases": 4575
+  },
+  "unit18": {
+    "tests": "tests/test_port_unit18_resolvers.py",
+    "semantics": [
+      "laravel_resource",
+      "springboot_base_mapping",
+      "aspnet_route_attribute",
+      "project_level_detection"
+    ],
+    "cases": 4650,
+    "note": "stale temp-path cases re-recorded from the suite"
+  },
+  "unit19": {
+    "tests": "tests/test_port_unit19_resolvers.py",
+    "families": [
+      "nestjs",
+      "rails",
+      "react-router",
+      "vue-router",
+      "go",
+      "actix"
+    ],
+    "cases": 4656,
+    "gate": "passed"
   }
 }

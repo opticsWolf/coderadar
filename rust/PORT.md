@@ -367,11 +367,64 @@ patches needed after any re-bridge.
   expected Windows launcher.
 - `gate`: **passed**; workspace clippy: passed.
 
+### Unit 17 proof (Flask/Django/FastAPI/Express resolver semantics)
+
+- Added focused pytest cases (`tests/test_port_unit17_resolvers.py`) and
+  recorded six real mini-projects through the shared framework hook.
+- Route extraction now also emits node-less framework edges: Flask
+  `register_blueprint` (`registers`) and `add_resource` (`handles`), Django
+  DRF `router.register` (`handles`), and FastAPI `Depends` (`depends_on`).
+- Express JS/TS files no longer need an arrow function to be recognised;
+  `app.get('/users', handler)` is extracted as a route directly.
+- Raw-string route arguments (`r'^articles/...'`) are parsed like AST string
+  constants.
+- Loaded smoke: Flask blueprint/restful 0 routes / 3 handlers; Django 3/4;
+  FastAPI 2/3; Express 4/4 — all matching the Python hook.
+- Stale pytest temp-path cases were re-recorded from the suite rather than
+  hand-edited; `diff`: **4572/4572**, then **4575/4575** after unit 18.
+
+
+### Unit 18 proof (Laravel/Spring Boot/ASP.NET resolver semantics)
+
+- Added `tests/test_port_unit18_resolvers.py` and recorded three focused
+  mini-projects through the shared hook.
+- Laravel `Route::resource` expands to the five canonical routes
+  (`index`, `show`, `store`, `update`, `destroy`); all `Route::*_` verbs are
+  recognised, not only get/post.
+- Spring Boot class-level `@RequestMapping` supplies the base path for
+  `@GetMapping`/`@PostMapping`/`@PutMapping`/`@DeleteMapping`, including
+  parameterless mappings.
+- ASP.NET class-level `[Route]` supplies the base for `[HttpGet]` /
+  `[HttpPost]`, again including parameterless attributes.
+- Framework detection reads project-level tells (`pom.xml`, `composer.json`,
+  csproj) in addition to the edited file; resolver source strings are not
+  mistaken for real framework markers.
+- Re-recorded the full suite so cases whose temp directories had been
+  reclaimed were refreshed by `record`, not hand-adjusted.
+- `diff`: **4650/4650**; `gate`: **passed**; workspace clippy: passed.
+- Smoke: Laravel 9/9, Spring Boot 4/4, ASP.NET 3/3 routes/handlers.
+
+### Unit 19 proof (remaining resolver families)
+
+- Added `tests/test_port_unit19_resolvers.py` with six focused mini-projects
+  and recorded them through the shared framework hook.
+- Dedicated semantics now cover NestJS controller routes (with `@Controller`
+  base), Rails model associations, React Router JSX/`<Link>` routes with
+  `element={<Component />}` handlers, Vue Router `path:` objects with
+  `component:` handlers, Go Gin/Echo method calls and Actix `#[method]` macros
+  plus `.route(...).to(handler)` chains.
+- Project-level detection reads `package.json`, `Gemfile`, `go.mod` and
+  `Cargo.toml`; resolver implementation strings are not mistaken for real
+  framework markers.
+- Smoke: NestJS 3/3, Rails 3/3, React Router 4/4, Vue Router 3/3, Go 6/6,
+  Actix 7/7 routes/handlers — all matching the Python hook.
+- `diff`: **4656/4656**; `gate`: **passed**; workspace clippy: passed.
+
 ## Remaining
 
 - MCP parity: 45 Rust tools are exposed; the remaining Python-only tools
   are primarily framework/experimental surfaces.
-- Framework-specific resolver edge kinds beyond common route languages
-  are not emitted yet.
+- Resolver `resolve()` / `claims_reference()` naming heuristics and
+  middleware/DI edge kinds outside the recorded common shapes are not ported.
 - Shadow `enable` (replacing the Python CLI on PATH) is intentionally not
   applied; use `rust/cutover.py --install DIR` after review.

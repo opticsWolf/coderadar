@@ -3103,6 +3103,9 @@ fn detect_frameworks(source: &str) -> Vec<String> {
     if lower.contains("fastapi") {
         found.push("fastapi".to_string());
     }
+    if lower.contains("laravel/framework") {
+        found.push("laravel".to_string());
+    }
     for line in source.lines() {
         let raw = line.trim_start();
         let trimmed = raw.to_lowercase();
@@ -3110,23 +3113,47 @@ fn detect_frameworks(source: &str) -> Vec<String> {
             Some("django")
         } else if trimmed.contains("require('express')") || trimmed.starts_with("from 'express'") {
             Some("express")
-        } else if trimmed.starts_with("from '@nestjs") {
+        } else if trimmed.starts_with("from '@nestjs")
+            || (line.starts_with('{') && trimmed.contains("\"@nestjs/core\""))
+        {
             Some("nestjs")
         } else if trimmed.starts_with("import org.springframework") {
             Some("springboot")
-        } else if trimmed.starts_with("from 'react-router") {
-            Some("reactrouter")
-        } else if trimmed.starts_with("from 'vue-router") {
-            Some("vuerouter")
-        } else if trimmed.starts_with("rails.application.routes") || trimmed.starts_with("get '/") {
+        } else if trimmed.starts_with("from 'react-router")
+            || (line.starts_with('{') && trimmed.contains("\"react-router-dom\""))
+        {
+            Some("react-router")
+        } else if trimmed.starts_with("from 'vue-router")
+            || (line.starts_with('{') && trimmed.contains("\"vue-router\""))
+        {
+            Some("vue-router")
+        } else if trimmed.starts_with("rails.application.routes")
+            || trimmed.starts_with("get '/")
+            || line.starts_with("gem 'rails'")
+            || line.starts_with("has_many ")
+            || line.starts_with("belongs_to ")
+            || line.starts_with("has_one ")
+        {
             Some("rails")
         } else if line.starts_with("Route::get(") || line.starts_with("Route::post(") {
             Some("laravel")
-        } else if trimmed.starts_with("using microsoft.aspnetcore") {
+        } else if trimmed.starts_with("using microsoft.aspnetcore")
+            || trimmed.starts_with("<project sdk=\"microsoft.net.sdk.web")
+            || line.starts_with("[ApiController")
+            || line.starts_with("[HttpPost")
+            || line.starts_with("[HttpGet")
+        {
             Some("aspnet")
-        } else if trimmed.starts_with("use actix_web") {
+        } else if trimmed.starts_with("@restcontroller")
+            || trimmed.starts_with("@springbootapplication")
+        {
+            Some("springboot")
+        } else if trimmed.starts_with("use actix_web") || line.starts_with("actix-web") {
             Some("actix")
-        } else if trimmed.starts_with("\"net/http\"") || trimmed.starts_with("http.handlefunc") {
+        } else if trimmed.starts_with("\"net/http\"")
+            || trimmed.starts_with("http.handlefunc")
+            || (line.starts_with("import") && trimmed.contains("gin-gonic/gin"))
+        {
             Some("go")
         } else {
             None
@@ -3139,6 +3166,34 @@ fn detect_frameworks(source: &str) -> Vec<String> {
     }
     found.sort();
     found.dedup();
+    found
+}
+
+/// Project-level tells (pom.xml, composer.json, csproj, package.json, ...).
+fn detect_root_frameworks(root: &std::path::Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if path.extension().and_then(|ext| ext.to_str()) == Some("go") {
+            if !found.contains(&"go".to_string()) {
+                found.push("go".to_string());
+            }
+        }
+        for framework in detect_frameworks(&text) {
+            if !found.contains(&framework) {
+                found.push(framework);
+            }
+        }
+    }
     found
 }
 
@@ -3185,7 +3240,16 @@ fn walk_sources(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 fn unquote(raw: &str) -> Option<String> {
-    let trimmed = raw.trim();
+    let mut trimmed = raw.trim();
+    if trimmed.len() > 1
+        && matches!(
+            trimmed.as_bytes()[0],
+            b'r' | b'R' | b'f' | b'F' | b'u' | b'U' | b'b' | b'B'
+        )
+        && matches!(trimmed.as_bytes()[1], b'\'' | b'"' | b'`')
+    {
+        trimmed = &trimmed[1..];
+    }
     let first = trimmed.chars().next()?;
     if first != '\'' && first != '"' && first != '`' {
         return None;
@@ -3214,10 +3278,44 @@ fn second_token(raw: &str) -> String {
         .to_string()
 }
 
+fn quoted_values(raw: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut chars = raw.char_indices().peekable();
+    while let Some((_, ch)) = chars.next() {
+        if ch != '\'' && ch != '"' && ch != '`' {
+            continue;
+        }
+        let quote = ch;
+        let mut value = String::new();
+        for (_, next) in chars.by_ref() {
+            if next == quote {
+                break;
+            }
+            value.push(next);
+        }
+        if !value.is_empty() {
+            values.push(value);
+        }
+    }
+    values
+}
+
 /// Generic route patterns shared by the resolver family. Each match yields
 /// `(pattern, handler, methods, framework)`.
-fn extract_routes(source: &str) -> Vec<(String, String, Vec<String>, String)> {
+fn extract_routes(source: &str, rel_posix: &str, is_js: bool) -> (Vec<Route>, Vec<RouteEdge>) {
     let mut out = Vec::new();
+    let mut extra_edges: Vec<RouteEdge> = Vec::new();
+    let mut spring_base = String::new();
+    let mut aspnet_base = String::new();
+    let mut nest_base = String::new();
+    let is_go = std::path::Path::new(rel_posix)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        == Some("go");
+    let is_rust = std::path::Path::new(rel_posix)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        == Some("rs");
     let mut in_docstring = false;
     for line in source.lines() {
         let trimmed = line.trim();
@@ -3233,7 +3331,7 @@ fn extract_routes(source: &str) -> Vec<(String, String, Vec<String>, String)> {
             continue;
         }
         if in_docstring
-            || trimmed.starts_with('#')
+            || (trimmed.starts_with('#') && !trimmed.starts_with("#["))
             || trimmed.starts_with("//")
             || trimmed.starts_with('*')
         {
@@ -3250,7 +3348,7 @@ fn extract_routes(source: &str) -> Vec<(String, String, Vec<String>, String)> {
             || lower.contains(".patch(");
         let decorator = decorator
             && !lower.contains("route::")
-            && (trimmed.starts_with('@') || lower.contains("=>"));
+            && (trimmed.starts_with('@') || is_js || lower.contains("=>"));
         if decorator {
             if let Some(pattern) = first_arg(trimmed) {
                 let method = if lower.contains(".post(") {
@@ -3305,8 +3403,51 @@ fn extract_routes(source: &str) -> Vec<(String, String, Vec<String>, String)> {
             }
         }
 
+        // Laravel resource controllers expand to their five canonical routes.
+        if lower.contains("route::resource(") {
+            let name = first_arg(trimmed).unwrap_or_default();
+            let controller = trimmed
+                .split("resource(")
+                .nth(1)
+                .unwrap_or_default()
+                .split(',')
+                .nth(1)
+                .unwrap_or_default()
+                .trim()
+                .split("::")
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let base = format!("/{name}");
+            for (method, suffix, action) in [
+                ("GET", "", "index"),
+                ("GET", "/{id}", "show"),
+                ("POST", "", "store"),
+                ("PUT", "/{id}", "update"),
+                ("DELETE", "/{id}", "destroy"),
+            ] {
+                let handler = if controller.is_empty() {
+                    action.to_string()
+                } else {
+                    format!("{controller}.{action}")
+                };
+                out.push((
+                    format!("{base}{suffix}"),
+                    handler,
+                    vec![method.to_string()],
+                    "laravel".to_string(),
+                ));
+            }
+        }
+
         // Laravel facades.
-        if lower.contains("route::get(") || lower.contains("route::post(") {
+        if lower.contains("route::get(")
+            || lower.contains("route::post(")
+            || lower.contains("route::put(")
+            || lower.contains("route::delete(")
+            || lower.contains("route::patch(")
+            || lower.contains("route::any(")
+        {
             if let Some(pattern) = first_arg(trimmed) {
                 let method = if lower.contains("post(") {
                     "POST"
@@ -3322,28 +3463,71 @@ fn extract_routes(source: &str) -> Vec<(String, String, Vec<String>, String)> {
             }
         }
 
-        // Java / C# method annotations.
-        if lower.contains("@getmapping(")
-            || lower.contains("@postmapping(")
-            || lower.contains("[httpget(")
-            || lower.contains("[httppost(")
+        // Spring Boot mappings (class-level base path + method annotations).
+        if lower.starts_with("@requestmapping(") {
+            let base = first_arg(trimmed).unwrap_or_default();
+            spring_base = base;
+        }
+        if trimmed.starts_with('@')
+            && lower.contains("mapping")
+            && !lower.contains("requestmapping")
         {
-            if let Some(pattern) = first_arg(trimmed) {
-                let fw = if lower.contains("httppost") || lower.contains("httpget") {
-                    "aspnet"
-                } else {
-                    "springboot"
-                };
-                let method = if lower.contains("post") {
-                    "POST"
-                } else {
-                    "GET"
-                };
+            let method = if lower.contains("postmapping") {
+                "POST"
+            } else if lower.contains("putmapping") {
+                "PUT"
+            } else if lower.contains("deletemapping") {
+                "DELETE"
+            } else {
+                "GET"
+            };
+            let suffix = first_arg(trimmed).unwrap_or_default();
+            let path = if suffix.is_empty() {
+                spring_base.clone()
+            } else if spring_base.is_empty() {
+                suffix
+            } else {
+                format!("{}{}", spring_base.trim_end_matches('/'), suffix)
+            };
+            if !path.is_empty() {
+                let handler = trimmed.trim().to_string();
                 out.push((
-                    pattern,
-                    trimmed.trim().to_string(),
+                    path,
+                    handler,
                     vec![method.to_string()],
-                    fw.to_string(),
+                    "springboot".to_string(),
+                ));
+            }
+        }
+
+        // ASP.NET attributes (class-level [Route] + method attributes).
+        if lower.starts_with("[route(") {
+            let base = first_arg(trimmed).unwrap_or_default();
+            aspnet_base = format!("/{}", base.trim_start_matches('/'));
+        }
+        if trimmed.starts_with('[') && lower.contains("httpget")
+            || trimmed.starts_with('[') && lower.contains("httppost")
+        {
+            let method = if lower.contains("httppost") {
+                "POST"
+            } else {
+                "GET"
+            };
+            let suffix = first_arg(trimmed).unwrap_or_default();
+            let path = if suffix.is_empty() {
+                aspnet_base.clone()
+            } else if aspnet_base.is_empty() {
+                suffix
+            } else {
+                format!("{}{}", aspnet_base.trim_end_matches('/'), suffix)
+            };
+            if !path.is_empty() {
+                let handler = trimmed.trim().to_string();
+                out.push((
+                    path,
+                    handler,
+                    vec![method.to_string()],
+                    "aspnet".to_string(),
                 ));
             }
         }
@@ -3365,21 +3549,268 @@ fn extract_routes(source: &str) -> Vec<(String, String, Vec<String>, String)> {
             if let Some(pos) = trimmed.find(':') {
                 if let Some(pattern) = unquote(&trimmed[pos + 1..]) {
                     let fw = if lower.contains("router") || lower.contains("route") {
-                        "reactrouter"
+                        "react-router"
                     } else {
-                        "vuerouter"
+                        "vue-router"
                     };
+                    let component = trimmed
+                        .split("component:")
+                        .nth(1)
+                        .unwrap_or_default()
+                        .trim()
+                        .trim_end_matches(',')
+                        .to_string();
+                    out.push((pattern, component, vec!["GET".to_string()], fw.to_string()));
+                }
+            }
+        }
+        // NestJS controller routes.
+        if lower.starts_with("@controller(") {
+            nest_base = first_arg(trimmed).unwrap_or_default();
+        }
+        if trimmed.starts_with('@')
+            && matches!(lower.as_str(), lower if lower.starts_with("@get(") || lower.starts_with("@post(") || lower.starts_with("@put(") || lower.starts_with("@delete(") || lower.starts_with("@get()") || lower.starts_with("@post()"))
+        {
+            let method = if lower.starts_with("@post") {
+                "POST"
+            } else if lower.starts_with("@put") {
+                "PUT"
+            } else if lower.starts_with("@delete") {
+                "DELETE"
+            } else {
+                "GET"
+            };
+            let suffix = first_arg(trimmed).unwrap_or_default();
+            let path = if suffix.is_empty() {
+                nest_base.clone()
+            } else if nest_base.is_empty() {
+                suffix
+            } else {
+                format!("{}{}", nest_base.trim_end_matches('/'), suffix)
+            };
+            if !path.is_empty() {
+                out.push((
+                    path,
+                    trimmed.trim().to_string(),
+                    vec![method.to_string()],
+                    "nestjs".to_string(),
+                ));
+            }
+        }
+
+        // Rails model associations are synthetic nodes in the Ruby resolver.
+        for kind in ["has_many", "belongs_to", "has_one"] {
+            if lower.starts_with(&format!("{kind} ")) {
+                let name = trimmed
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .trim_start_matches(':')
+                    .to_string();
+                if !name.is_empty() {
                     out.push((
-                        pattern,
-                        String::new(),
-                        vec!["GET".to_string()],
-                        fw.to_string(),
+                        name.clone(),
+                        name,
+                        vec![kind.to_uppercase()],
+                        "rails".to_string(),
                     ));
                 }
             }
         }
+
+        // React Router JSX/data routes.
+        if trimmed.starts_with("<route") || lower.contains("<route ") {
+            let component = trimmed
+                .split("element={<")
+                .nth(1)
+                .and_then(|tail| tail.split(['}', ' ', '/']).next())
+                .unwrap_or_default()
+                .to_string();
+            if let Some(pos) = lower.find("path=") {
+                if let Some(pattern) = unquote(&trimmed[pos + 5..]) {
+                    out.push((
+                        pattern,
+                        component,
+                        vec!["GET".to_string()],
+                        "react-router".to_string(),
+                    ));
+                }
+            } else if lower.contains("index ") || lower.contains("index>") {
+                out.push((
+                    "index".to_string(),
+                    component,
+                    vec!["GET".to_string()],
+                    "react-router".to_string(),
+                ));
+            }
+        }
+        // Link navigation targets are routes too.
+        if lower.starts_with("<link to=") || lower.starts_with("<navlink to=") {
+            if let Some(pos) = lower.find("to=") {
+                if let Some(pattern) = unquote(&trimmed[pos + 3..]) {
+                    out.push((
+                        pattern,
+                        String::new(),
+                        vec!["GET".to_string()],
+                        "react-router".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Go Gin / Echo style method calls.
+        if is_go {
+            for (needle, method) in [
+                (".get(", "GET"),
+                (".post(", "POST"),
+                (".put(", "PUT"),
+                (".delete(", "DELETE"),
+                (".patch(", "PATCH"),
+            ] {
+                if lower.contains(needle) {
+                    if let Some(pattern) = first_arg(trimmed) {
+                        out.push((
+                            pattern,
+                            second_token(trimmed),
+                            vec![method.to_string()],
+                            "go".to_string(),
+                        ));
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Actix attribute macros and cfg.route(...) registrations.
+        if is_rust {
+            for (needle, method) in [
+                ("#[get(", "GET"),
+                ("#[post(", "POST"),
+                ("#[put(", "PUT"),
+                ("#[delete(", "DELETE"),
+            ] {
+                if lower.starts_with(needle) {
+                    if let Some(pattern) = unquote(&trimmed[needle.len()..]) {
+                        out.push((
+                            pattern,
+                            trimmed.trim().to_string(),
+                            vec![method.to_string()],
+                            "actix".to_string(),
+                        ));
+                    }
+                    break;
+                }
+            }
+            let mut rest = trimmed;
+            while let Some(pos) = rest.find(".route(") {
+                let after = &rest[pos + ".route(".len()..];
+                let segment = after;
+                if let Some(pattern) = unquote(segment) {
+                    let handler = segment
+                        .split(".to(")
+                        .nth(1)
+                        .unwrap_or_default()
+                        .split(')')
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
+                    out.push((
+                        pattern,
+                        handler,
+                        vec!["GET".to_string()],
+                        "actix".to_string(),
+                    ));
+                }
+                rest = after;
+            }
+        }
+
+        // Framework-specific edges that carry no synthetic route node.
+        if lower.contains("register_blueprint(") {
+            if let Some(open) = trimmed.find('(') {
+                let target = trimmed[open + 1..]
+                    .split(')')
+                    .next()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if !target.is_empty() {
+                    extra_edges.push((
+                        format!("{rel_posix}::app"),
+                        format!("{rel_posix}::{target}"),
+                        "synthetic:flask:registers".to_string(),
+                    ));
+                }
+            }
+        }
+        if lower.contains("add_resource(") {
+            let resource = trimmed
+                .split('(')
+                .nth(1)
+                .unwrap_or_default()
+                .split(',')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            for path in quoted_values(trimmed) {
+                extra_edges.push((
+                    format!("{rel_posix}::flask:route:{path}"),
+                    format!("{rel_posix}::{resource}"),
+                    "synthetic:flask:handles".to_string(),
+                ));
+            }
+        }
+        if lower.contains("router.register(") {
+            let values = quoted_values(trimmed);
+            let viewset = trimmed
+                .split("register(")
+                .nth(1)
+                .unwrap_or_default()
+                .split(',')
+                .nth(1)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if let Some(prefix) = values.first() {
+                extra_edges.push((
+                    format!("{rel_posix}::django:route:{prefix}"),
+                    format!("{rel_posix}::{viewset}"),
+                    "synthetic:django:handles".to_string(),
+                ));
+            }
+        }
+        if lower.contains("depends(") {
+            let handler = trimmed
+                .rsplit_once("def ")
+                .map(|(_, tail)| {
+                    tail.split('(')
+                        .next()
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string()
+                })
+                .unwrap_or_default();
+            let dependency = trimmed
+                .split("Depends(")
+                .nth(1)
+                .unwrap_or_default()
+                .split(')')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if !handler.is_empty() && !dependency.is_empty() {
+                extra_edges.push((
+                    format!("{rel_posix}::{handler}"),
+                    format!("{rel_posix}::{dependency}"),
+                    "synthetic:fastapi:depends_on".to_string(),
+                ));
+            }
+        }
     }
-    out
+    (out, extra_edges)
 }
 
 type Route = (String, String, Vec<String>, String);
@@ -3443,8 +3874,13 @@ pub fn run_framework_extraction(root: serde_json::Value) -> Result<serde_json::V
     let mut routes = 0i64;
     let mut handlers = 0i64;
     for (rel, source) in sources {
-        let found_routes: Vec<(String, String, Vec<String>, String)> = extract_routes(&source);
-        let (nodes, edges) = collect_extractions(&rel, found_routes);
+        let is_js = std::path::Path::new(&rel)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| matches!(ext, "js" | "ts" | "jsx" | "tsx"));
+        let (found_routes, extra_edges) = extract_routes(&source, &rel, is_js);
+        let (nodes, mut edges) = collect_extractions(&rel, found_routes);
+        edges.extend(extra_edges);
         routes += nodes.len() as i64;
         handlers += edges.len() as i64;
         all_nodes.extend(nodes);
@@ -3471,8 +3907,20 @@ pub fn refresh_framework_file(
         fill_report(&mut report, 0, 0, Vec::new(), registration);
         return Ok(report);
     };
-    let frameworks = detect_frameworks(&source);
-    let (nodes, edges) = collect_extractions(&rel_posix, extract_routes(&source));
+    let mut frameworks = detect_frameworks(&source);
+    for framework in detect_root_frameworks(std::path::Path::new(&root)) {
+        if !frameworks.contains(&framework) {
+            frameworks.push(framework);
+        }
+    }
+    frameworks.sort();
+    let is_js = std::path::Path::new(&rel_posix)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext, "js" | "ts" | "jsx" | "tsx"));
+    let (found_routes, extra_edges) = extract_routes(&source, &rel_posix, is_js);
+    let (nodes, mut edges) = collect_extractions(&rel_posix, found_routes);
+    edges.extend(extra_edges);
     let routes = nodes.len() as i64;
     let handlers = edges.len() as i64;
     let registration = register_routes(nodes, edges, &rel_posix);
