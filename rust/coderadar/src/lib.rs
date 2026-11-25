@@ -1419,6 +1419,45 @@ fn status(result: Bound<'_, PyAny>) -> PyResult<String> {
     status_inner(result).map_err(error)
 }
 
+fn run_framework_extraction_inner(root: Bound<'_, PyAny>) -> Result<serde_json::Value, String> {
+    let root: serde_json::Value = crate::pyconv::FromPy::from_py(&root)?;
+    let out = port::run_framework_extraction(root)?;
+    Ok(out)
+}
+
+/// `run_framework_extraction`.
+#[pyfunction]
+#[pyo3(name = "run_framework_extraction", signature = (root))]
+fn run_framework_extraction(py: Python<'_>, root: Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
+    run_framework_extraction_inner(root)
+        .map_err(error)
+        .and_then(|v| crate::pyconv::ToPy::to_py(&v, py))
+}
+
+fn refresh_framework_file_inner(
+    root: Bound<'_, PyAny>,
+    rel_posix: String,
+    content: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let root: serde_json::Value = crate::pyconv::FromPy::from_py(&root)?;
+    let out = port::refresh_framework_file(root, rel_posix, content)?;
+    Ok(out)
+}
+
+/// `refresh_framework_file`.
+#[pyfunction]
+#[pyo3(name = "refresh_framework_file", signature = (root, rel_posix, content=None))]
+fn refresh_framework_file(
+    py: Python<'_>,
+    root: Bound<'_, PyAny>,
+    rel_posix: String,
+    content: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    refresh_framework_file_inner(root, rel_posix, content)
+        .map_err(error)
+        .and_then(|v| crate::pyconv::ToPy::to_py(&v, py))
+}
+
 #[pymodule]
 #[pyo3(name = "_native")]
 fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1496,6 +1535,8 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mutation_applied, m)?)?;
     m.add_function(wrap_pyfunction!(reindex, m)?)?;
     m.add_function(wrap_pyfunction!(status, m)?)?;
+    m.add_function(wrap_pyfunction!(run_framework_extraction, m)?)?;
+    m.add_function(wrap_pyfunction!(refresh_framework_file, m)?)?;
     m.add("OpError", m.py().get_type::<OpError>())?;
     m.add("NoExtension", m.py().get_type::<NoExtension>())?;
     m.add("NoIndex", m.py().get_type::<NoIndex>())?;

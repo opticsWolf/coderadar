@@ -861,11 +861,48 @@ pub fn find_clones(
 // INFALLIBLE: the native analysis symbols are statically linked into the Rust
 // binary, so the original's `NoExtension` import failure cannot occur here.
 pub fn diagnose(unresolved: bool, low_confidence: bool) -> Result<Value, String> {
-    if graph().is_err() {
-        return Ok(json!({"unresolved": [], "ambiguous_bases": [], "ambiguous_base_count": 0}));
+    let snap = match graph() {
+        Ok(snap) => snap,
+        Err(_) => {
+            return Ok(json!({
+                "unresolved": [],
+                "ambiguous_bases": [],
+                "ambiguous_base_count": 0
+            }));
+        }
+    };
+    let mut rows = Vec::new();
+    if unresolved {
+        let functions = core_indexer::api::search(&snap, "", 1000, Some("function"))?;
+        for function in functions {
+            let id = function
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let targets = core_indexer::api::unresolved_targets(id);
+            if !targets.is_empty() {
+                rows.push(json!({
+                    "id": id,
+                    "targets": targets.join(", "),
+                }));
+            }
+        }
+        rows.sort_by(|a, b| {
+            let len = |v: &Value| v.get("targets").and_then(Value::as_str).map_or(0, str::len);
+            len(b).cmp(&len(a))
+        });
     }
-    let _ = (unresolved, low_confidence);
-    Ok(json!({"unresolved": [], "ambiguous_bases": [], "ambiguous_base_count": 0}))
+    let mut bases = Vec::new();
+    let mut base_count = 0usize;
+    if low_confidence {
+        bases = core_indexer::api::ambiguous_base_details();
+        base_count = bases.len();
+    }
+    Ok(json!({
+        "unresolved": rows,
+        "ambiguous_bases": bases,
+        "ambiguous_base_count": base_count,
+    }))
 }
 
 /// Port of `find_scaffolding` (`py_agent/src/coderadar/ops.py:3475`).
@@ -2372,6 +2409,1076 @@ pub fn search_hybrid_op(query: Value, top_k: i64, query_text: String) -> Result<
         );
     }
     core_indexer::api::search_hybrid_vec(&configured, &text, &vector, top_k.max(0) as usize)
+}
+
+/// Bring the current project's index up to date, returning an ops-shaped report.
+pub fn reindex_op(root: &std::path::Path) -> Result<Value, String> {
+    let report = core_indexer::api::analyze(&root.to_string_lossy(), false, &[])?;
+    Ok(json!({
+        "stats": {
+            "files_indexed": report.get("files_indexed").cloned().unwrap_or(json!(0)),
+            "entities_extracted": report.get("entities_extracted").cloned().unwrap_or(json!(0)),
+        }
+    }))
+}
+
+// ── Unit 14: git sync and commit-time migration ─────────────────────────
+
+fn is_excluded_sync_path(path: &str) -> bool {
+    path.split('/')
+        .any(|part| part == ".coderadar" || part == ".git")
+}
+
+fn file_digest(repo: &std::path::Path, path: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(repo.join(path)).ok()?;
+    let digest = Sha256::digest(&bytes);
+    Some(format!("{digest:x}"))
+}
+
+fn sync_ingest(
+    report: &mut serde_json::Map<String, Value>,
+    repo: &str,
+    branch: &str,
+    parent_ref: &str,
+    store: &str,
+) -> Option<Value> {
+    match ingest_history(
+        repo.to_string(),
+        branch.to_string(),
+        None,
+        false,
+        None,
+        parent_ref.to_string(),
+        None,
+        Some(store.to_string()),
+    ) {
+        Ok(done) => {
+            if done
+                .get("commits_ingested")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                > 0
+            {
+                report
+                    .get_mut("ingested")
+                    .and_then(Value::as_array_mut)
+                    .expect("report.ingested is always an array")
+                    .push(json!({
+                        "branch": branch,
+                        "lineage": done.get("lineage").cloned().unwrap_or(Value::Null),
+                        "commits_ingested": done.get("commits_ingested").cloned().unwrap_or(json!(0)),
+                        "generation": done.get("generation").cloned().unwrap_or(Value::Null),
+                    }));
+            }
+            Some(done)
+        }
+        Err(reason) => {
+            report
+                .get_mut("refusals")
+                .and_then(Value::as_array_mut)
+                .expect("report.refusals is always an array")
+                .push(json!({"branch": branch, "reason": reason}));
+            None
+        }
+    }
+}
+
+/// Port of `ops.sync_git` (`py_agent/src/coderadar/ops.py:2140`).
+pub fn sync_git(
+    repo: String,
+    store_path: Option<String>,
+    parent_ref: String,
+    catch_up: bool,
+    source: String,
+) -> Result<Value, String> {
+    if repo.trim().is_empty() {
+        return Err("InvalidRequest: Please provide a repository path.".to_string());
+    }
+    let store = write_store_path(store_path)?;
+    let head = core_indexer::api::git_head(&repo).map_err(|e| format!("InvalidRequest: {e}"))?;
+    let branches = core_indexer::api::branch_plan(&repo, &parent_ref)
+        .map_err(|e| format!("EngineError: {e}"))?;
+    let marks = core_indexer::api::git_marks(&store).map_err(|e| format!("EngineError: {e}"))?;
+
+    let mut report = serde_json::Map::new();
+    report.insert("repo".into(), json!(repo));
+    report.insert("store".into(), json!(store));
+    report.insert("head".into(), head.clone());
+    report.insert(
+        "checkout".into(),
+        head.get("branch").cloned().unwrap_or(Value::Null),
+    );
+    report.insert(
+        "previous".into(),
+        json!({
+            "checkout": marks.get("checkout").cloned().filter(|v| !v.is_null()).unwrap_or(Value::Null),
+            "head": marks.get("head").cloned().filter(|v| !v.is_null()).unwrap_or(Value::Null),
+        }),
+    );
+    report.insert("head_moved".into(), json!(false));
+    report.insert("checkout_changed".into(), json!(false));
+    report.insert("ingested".into(), json!([]));
+    report.insert("refusals".into(), json!([]));
+    report.insert("addresses_recorded".into(), json!(0));
+    report.insert("observations".into(), json!([]));
+    report.insert("skipped".into(), json!([]));
+    report.insert("dirty".into(), json!([]));
+
+    let sha = head.get("sha").and_then(Value::as_str).unwrap_or_default();
+    if sha.is_empty() {
+        core_indexer::api::record_git_marks(&store, None, None, "{}")
+            .map_err(|e| format!("EngineError: {e}"))?;
+        report.insert("empty".into(), json!(true));
+        return Ok(Value::Object(report));
+    }
+    report.insert("empty".into(), json!(false));
+
+    let trunk_tip = branches
+        .iter()
+        .find(|b| b.get("name").and_then(Value::as_str) == Some(parent_ref.as_str()))
+        .and_then(|b| b.get("tip").and_then(Value::as_str))
+        .unwrap_or(sha)
+        .to_string();
+    sync_ingest(&mut report, &repo, &parent_ref, &parent_ref, &store);
+
+    let mut picked: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for branch in &branches {
+        let name = branch
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let tip = branch
+            .get("tip")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if branch
+            .get("merged")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || tip == trunk_tip
+            || name.ends_with("/HEAD")
+        {
+            continue;
+        }
+        let replace = match picked.get(tip) {
+            None => true,
+            Some(current) => current.contains('/') && !name.contains('/'),
+        };
+        if replace {
+            picked.insert(tip.to_string(), name.to_string());
+        }
+    }
+    for (_, name) in picked {
+        sync_ingest(&mut report, &repo, &name, &parent_ref, &store);
+    }
+
+    let merged: Vec<(String, String)> = branches
+        .iter()
+        .filter(|b| b.get("merged").and_then(Value::as_bool).unwrap_or(false))
+        .filter_map(|b| {
+            Some((
+                b.get("name").and_then(Value::as_str)?.to_string(),
+                b.get("tip").and_then(Value::as_str)?.to_string(),
+            ))
+        })
+        .collect();
+    match core_indexer::api::record_branch_addresses(&store, merged) {
+        Ok(count) => {
+            report.insert("addresses_recorded".into(), json!(count));
+        }
+        Err(reason) => {
+            report
+                .get_mut("skipped")
+                .and_then(Value::as_array_mut)
+                .expect("report.skipped is always an array")
+                .push(json!({"file": "", "reason": format!("addresses: {reason}")}));
+        }
+    }
+
+    let prev_checkout = report
+        .get("previous")
+        .and_then(|v| v.get("checkout"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let prev_head = report
+        .get("previous")
+        .and_then(|v| v.get("head"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let new_checkout = head
+        .get("branch")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let same_lineage = if prev_checkout.is_empty() {
+        "main"
+    } else {
+        &prev_checkout
+    } == if new_checkout.is_empty() {
+        "main"
+    } else {
+        &new_checkout
+    };
+    report.insert(
+        "head_moved".into(),
+        json!(!prev_head.is_empty() && prev_head != sha),
+    );
+    report.insert(
+        "checkout_changed".into(),
+        json!(!prev_head.is_empty() && !same_lineage),
+    );
+
+    let repo_root = std::path::Path::new(&repo);
+    let changes: Vec<Value> = core_indexer::api::git_workdir_changes(&repo, sha)
+        .map_err(|e| format!("EngineError: {e}"))?
+        .into_iter()
+        .filter(|c| {
+            c.get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|p| !is_excluded_sync_path(p))
+        })
+        .collect();
+    let recorded: std::collections::BTreeMap<String, Option<String>> =
+        serde_json::from_str(marks.get("dirty").and_then(Value::as_str).unwrap_or("{}"))
+            .unwrap_or_default();
+    let mut current: std::collections::BTreeMap<String, Option<String>> =
+        std::collections::BTreeMap::new();
+    for change in &changes {
+        let path = change
+            .get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let digest = if change
+            .get("in_workdir")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            file_digest(repo_root, path)
+        } else {
+            None
+        };
+        current.insert(path.to_string(), digest);
+    }
+    report.insert(
+        "dirty".into(),
+        json!(current.keys().cloned().collect::<Vec<_>>()),
+    );
+
+    let sweep_ready = crate::state::projection().is_some();
+    if !sweep_ready {
+        report
+            .get_mut("skipped")
+            .and_then(Value::as_array_mut)
+            .expect("report.skipped is always an array")
+            .push(json!({
+                "file": "",
+                "reason": "no project loaded: the sweep writes through update_file/remove_file, which need the loaded graph"
+            }));
+    } else if new_checkout.is_empty() {
+        report
+            .get_mut("skipped")
+            .and_then(Value::as_array_mut)
+            .expect("report.skipped is always an array")
+            .push(json!({
+                "file": "",
+                "reason": "detached HEAD: there is no lineage to record the working tree's edits on"
+            }));
+    } else {
+        let checkout_changed = report
+            .get("checkout_changed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let head_moved = report
+            .get("head_moved")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if checkout_changed || catch_up || head_moved {
+            let (left, right, src, reset_all) = if checkout_changed {
+                (
+                    if prev_checkout.is_empty() {
+                        "main".to_string()
+                    } else {
+                        prev_checkout.clone()
+                    },
+                    new_checkout.clone(),
+                    "checkout".to_string(),
+                    true,
+                )
+            } else {
+                (
+                    new_checkout.clone(),
+                    new_checkout.clone(),
+                    source.clone(),
+                    false,
+                )
+            };
+            if !prev_head.is_empty() {
+                for path in recorded.keys() {
+                    if !reset_all && current.contains_key(path) {
+                        continue;
+                    }
+                    let content = core_indexer::api::git_blob_text(&repo, &prev_head, path).ok();
+                    observe(&mut report, path, content, &left, &src);
+                }
+            }
+            for change in &changes {
+                let path = change
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let in_workdir = change
+                    .get("in_workdir")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                if in_workdir {
+                    if !reset_all
+                        && recorded.get(path).and_then(|v| v.as_deref())
+                            == current.get(path).and_then(|v| v.as_deref())
+                        && recorded.contains_key(path)
+                    {
+                        continue;
+                    }
+                    let text = std::fs::read_to_string(repo_root.join(path)).ok();
+                    match text {
+                        Some(text) => observe(&mut report, path, Some(text), &right, &src),
+                        None => report
+                            .get_mut("skipped")
+                            .and_then(Value::as_array_mut)
+                            .expect("report.skipped is always an array")
+                            .push(json!({"file": path, "reason": "not readable as UTF-8"})),
+                    }
+                } else {
+                    observe(&mut report, path, None, &right, &src);
+                }
+            }
+        }
+    }
+
+    let mut dirty_json = serde_json::Map::new();
+    for (path, digest) in &current {
+        if let Some(digest) = digest {
+            dirty_json.insert(path.clone(), json!(digest));
+        }
+    }
+    let dirty = serde_json::to_string(&Value::Object(dirty_json))
+        .map_err(|e| format!("EngineError: cannot serialize dirty set: {e}"))?;
+    core_indexer::api::record_git_marks(
+        &store,
+        if new_checkout.is_empty() {
+            None
+        } else {
+            Some(&new_checkout)
+        },
+        Some(sha),
+        &dirty,
+    )
+    .map_err(|e| format!("EngineError: {e}"))?;
+    Ok(Value::Object(report))
+}
+
+fn observe(
+    report: &mut serde_json::Map<String, Value>,
+    path: &str,
+    content: Option<String>,
+    lineage: &str,
+    source: &str,
+) {
+    let removed = content.is_none();
+    let result = match content {
+        None => core_indexer::api::remove_file_observed(path, Some(lineage)),
+        Some(text) => {
+            core_indexer::api::update_file_observed(path, Some(&text), source, Some(lineage))
+        }
+    };
+    match result {
+        Ok(value) => {
+            let observed_at = value
+                .get("observed_at")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let mut row = serde_json::Map::new();
+            row.insert("file".into(), json!(path));
+            row.insert("lineage".into(), json!(lineage));
+            row.insert("source".into(), json!(source));
+            if removed {
+                row.insert("removed".into(), json!(true));
+            } else {
+                row.insert("observed_at".into(), json!(observed_at));
+                row.insert("removed".into(), json!(false));
+            }
+            report
+                .get_mut("observations")
+                .and_then(Value::as_array_mut)
+                .expect("report.observations is always an array")
+                .push(Value::Object(row));
+        }
+        Err(reason) => {
+            report
+                .get_mut("skipped")
+                .and_then(Value::as_array_mut)
+                .expect("report.skipped is always an array")
+                .push(json!({"file": path, "reason": reason}));
+        }
+    }
+}
+
+fn round3(value: f64) -> f64 {
+    (value * 1000.0).round() / 1000.0
+}
+
+/// Port of `ops.migrate_to_commit_time` (`py_agent/src/coderadar/ops.py:2659`).
+pub fn migrate_to_commit_time_op(
+    repo: String,
+    store: String,
+    branches: Option<Vec<String>>,
+    parent_ref: String,
+    embed: bool,
+    verify: bool,
+) -> Result<Value, String> {
+    if repo.trim().is_empty() {
+        return Err("InvalidRequest: Please provide a git repository path.".to_string());
+    }
+    if store.trim().is_empty() {
+        return Err(
+            "InvalidRequest: Please provide a destination store path (a new file; the old store is never touched)."
+                .to_string(),
+        );
+    }
+    if parent_ref.trim().is_empty() {
+        return Err("InvalidRequest: Please provide a parent ref (default 'main').".to_string());
+    }
+    let started = std::time::Instant::now();
+    if let Some(parent) = std::path::Path::new(&store).parent() {
+        if !parent.as_os_str().is_empty() && !parent.exists() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                format!(
+                    "InvalidRequest: cannot create store directory {}: {e}",
+                    parent.display()
+                )
+            })?;
+        }
+    }
+    let listed =
+        core_indexer::api::list_branches(&repo).map_err(|e| format!("InvalidRequest: {e}"))?;
+    let plan = if listed.iter().any(|b| b == "main") {
+        core_indexer::api::branch_plan(&repo, &parent_ref)
+            .map_err(|e| format!("InvalidRequest: {e}"))?
+    } else {
+        Vec::new()
+    };
+    let (ordered, addresses) = match branches {
+        Some(mut explicit) => {
+            if listed.iter().any(|b| b == "main") && !explicit.iter().any(|b| b == "main") {
+                explicit.insert(0, "main".to_string());
+            }
+            (explicit, std::collections::BTreeMap::new())
+        }
+        None => {
+            if !listed.iter().any(|b| b == "main") {
+                return Err(format!(
+                    "InvalidRequest: repository has no 'main' branch: pass branches=[...] explicitly (local branches: {}).",
+                    if listed.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        listed.join(", ")
+                    }
+                ));
+            }
+            let mut lineages: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
+            let mut addresses: std::collections::BTreeMap<String, String> =
+                std::collections::BTreeMap::new();
+            for branch in &plan {
+                let name = branch
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let tip = branch
+                    .get("tip")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if branch
+                    .get("merged")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    || name.ends_with("/HEAD")
+                {
+                    addresses.insert(name.to_string(), tip.to_string());
+                } else if lineages
+                    .get(tip)
+                    .is_none_or(|current| current.contains('/') && !name.contains('/'))
+                {
+                    lineages.insert(tip.to_string(), name.to_string());
+                }
+            }
+            let mut ordered: Vec<String> = vec![parent_ref.clone()];
+            for (_, name) in lineages {
+                if name != parent_ref {
+                    ordered.push(name);
+                }
+            }
+            (ordered, addresses)
+        }
+    };
+
+    let mut branch_reports = serde_json::Map::new();
+    for branch in &ordered {
+        let done = ingest_history(
+            repo.clone(),
+            branch.clone(),
+            None,
+            false,
+            None,
+            parent_ref.clone(),
+            None,
+            Some(store.clone()),
+        )?;
+        branch_reports.insert(branch.clone(), done);
+    }
+    let entries: Vec<(String, String)> = addresses
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let addresses_recorded = if entries.is_empty() {
+        0
+    } else {
+        core_indexer::api::record_branch_addresses(&store, entries)
+            .map_err(|e| format!("EngineError: {e}"))?
+    };
+    let merge_heal =
+        reingest_merged_commits(repo.clone(), parent_ref.clone(), false, Some(store.clone()))?;
+    let mut commits_skipped = 0i64;
+    let mut files_failed = 0i64;
+    for report in branch_reports.values() {
+        for (key, total) in [
+            ("commits_skipped", &mut commits_skipped),
+            ("files_failed", &mut files_failed),
+        ] {
+            *total += report
+                .get(key)
+                .and_then(Value::as_array)
+                .map_or(report.get(key).and_then(Value::as_i64).unwrap_or(0), |a| {
+                    a.len() as i64
+                });
+        }
+    }
+    let commits_ingested: i64 = branch_reports
+        .values()
+        .filter_map(|r| r.get("commits_ingested").and_then(Value::as_i64))
+        .sum();
+    crate::state::load(std::path::Path::new(&repo))?;
+    let embeddings = if embed {
+        let report = compute_embeddings_op(None, 32, false)?;
+        json!({"embedded": true, "embedded_count": report.get("generated").cloned().unwrap_or(json!(0))})
+    } else {
+        json!({"embedded": false})
+    };
+    let coverage = if verify {
+        let mut rows = serde_json::Map::new();
+        for branch in &ordered {
+            let verdict = verify_history(None, None, 0, true, branch.clone(), 0, None, None)?;
+            rows.insert(
+                branch.clone(),
+                json!({
+                    "byte_coverage_pct": verdict.get("byte_coverage_pct").cloned().unwrap_or(Value::Null),
+                    "totals": verdict.get("totals").cloned().unwrap_or(Value::Null),
+                    "total_generations": verdict.get("total_generations").cloned().unwrap_or(Value::Null),
+                }),
+            );
+        }
+        Value::Object(rows)
+    } else {
+        Value::Null
+    };
+    Ok(json!({
+        "repo": repo,
+        "store": store,
+        "parent_ref": parent_ref,
+        "branches": ordered,
+        "branch_reports": Value::Object(branch_reports),
+        "commits_ingested": commits_ingested,
+        "commits_skipped": commits_skipped,
+        "files_failed": files_failed,
+        "addresses": Value::Object(addresses.into_iter().map(|(k,v)|(k,json!(v))).collect()),
+        "addresses_recorded": addresses_recorded,
+        "merge_heal": merge_heal,
+        "embeddings": embeddings,
+        "verify": coverage,
+        "elapsed_secs": round3(started.elapsed().as_secs_f64()),
+    }))
+}
+
+// ── Unit 15: framework route extraction ─────────────────────────────────
+
+fn py_type_name(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "NoneType",
+        Value::Bool(_) => "bool",
+        Value::Number(n) if n.is_i64() || n.is_u64() => "int",
+        Value::Number(_) => "float",
+        Value::String(_) => "str",
+        Value::Array(_) => "list",
+        Value::Object(map) => match map.keys().next().map(String::as_str) {
+            Some("$tuple") => "tuple",
+            Some("$set") => "set",
+            Some("$bytes") => "bytes",
+            _ => "dict",
+        },
+    }
+}
+
+fn root_arg(value: &Value) -> Result<String, String> {
+    match value {
+        Value::String(path) => Ok(path.clone()),
+        other => Err(format!(
+            "TypeError: argument should be a str or an os.PathLike object where __fspath__ returns a str, not '{}'",
+            py_type_name(other)
+        )),
+    }
+}
+
+fn empty_report() -> Value {
+    json!({
+        "routes": 0,
+        "handlers": 0,
+        "frameworks": [],
+        "routes_upserted": 0,
+        "routes_retired": 0,
+        "pairs_retired": 0,
+    })
+}
+
+fn register_routes(
+    nodes: Vec<(String, String, String, String, Vec<String>, String)>,
+    edges: Vec<(String, String, String)>,
+    scope: &str,
+) -> (i64, i64, i64) {
+    match core_indexer::api::register_synthetic_routes(nodes, edges, scope) {
+        Ok(report) => (
+            report
+                .get("routes_upserted")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            report
+                .get("routes_retired")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+            report
+                .get("pairs_retired")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+        ),
+        Err(_) => (0, 0, 0),
+    }
+}
+
+fn fill_report(
+    report: &mut Value,
+    routes: i64,
+    handlers: i64,
+    frameworks: Vec<String>,
+    registration: (i64, i64, i64),
+) {
+    if let Some(map) = report.as_object_mut() {
+        map.insert("routes".into(), json!(routes));
+        map.insert("handlers".into(), json!(handlers));
+        map.insert("frameworks".into(), json!(frameworks));
+        map.insert("routes_upserted".into(), json!(registration.0));
+        map.insert("routes_retired".into(), json!(registration.1));
+        map.insert("pairs_retired".into(), json!(registration.2));
+    }
+}
+
+fn detect_frameworks(source: &str) -> Vec<String> {
+    let lower = source.to_lowercase();
+    let mut found: Vec<String> = Vec::new();
+    // The Python Flask/FastAPI detectors are intentionally broad: any
+    // mention of the framework in a project file opts the resolver in.
+    if lower.contains("flask") {
+        found.push("flask".to_string());
+    }
+    if lower.contains("fastapi") {
+        found.push("fastapi".to_string());
+    }
+    for line in source.lines() {
+        let raw = line.trim_start();
+        let trimmed = raw.to_lowercase();
+        let marker = if trimmed.starts_with("from django") || trimmed.starts_with("import django") {
+            Some("django")
+        } else if trimmed.contains("require('express')") || trimmed.starts_with("from 'express'") {
+            Some("express")
+        } else if trimmed.starts_with("from '@nestjs") {
+            Some("nestjs")
+        } else if trimmed.starts_with("import org.springframework") {
+            Some("springboot")
+        } else if trimmed.starts_with("from 'react-router") {
+            Some("reactrouter")
+        } else if trimmed.starts_with("from 'vue-router") {
+            Some("vuerouter")
+        } else if trimmed.starts_with("rails.application.routes") || trimmed.starts_with("get '/") {
+            Some("rails")
+        } else if line.starts_with("Route::get(") || line.starts_with("Route::post(") {
+            Some("laravel")
+        } else if trimmed.starts_with("using microsoft.aspnetcore") {
+            Some("aspnet")
+        } else if trimmed.starts_with("use actix_web") {
+            Some("actix")
+        } else if trimmed.starts_with("\"net/http\"") || trimmed.starts_with("http.handlefunc") {
+            Some("go")
+        } else {
+            None
+        };
+        if let Some(name) = marker {
+            if !found.iter().any(|n| n == name) {
+                found.push(name.to_string());
+            }
+        }
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+fn walk_sources(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    fn visit(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || name == "__pycache__" || name == "node_modules" {
+                continue;
+            }
+            if path.is_dir() {
+                visit(&path, out);
+            } else if path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| {
+                    matches!(
+                        ext,
+                        "py" | "js"
+                            | "ts"
+                            | "jsx"
+                            | "tsx"
+                            | "java"
+                            | "go"
+                            | "php"
+                            | "rb"
+                            | "cs"
+                            | "rs"
+                    )
+                })
+            {
+                out.push(path);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    visit(root, &mut out);
+    out.sort();
+    out
+}
+
+fn unquote(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let first = trimmed.chars().next()?;
+    if first != '\'' && first != '"' && first != '`' {
+        return None;
+    }
+    let rest = &trimmed[first.len_utf8()..];
+    let end = rest.find(first)?;
+    Some(rest[..end].to_string())
+}
+
+fn first_arg(raw: &str) -> Option<String> {
+    let open = raw.find('(')?;
+    unquote(&raw[open + 1..])
+}
+
+fn second_token(raw: &str) -> String {
+    let open = raw.find('(').unwrap_or(0);
+    raw[open + 1..]
+        .split(',')
+        .nth(1)
+        .unwrap_or_default()
+        .trim()
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '_')
+        .to_string()
+}
+
+/// Generic route patterns shared by the resolver family. Each match yields
+/// `(pattern, handler, methods, framework)`.
+fn extract_routes(source: &str) -> Vec<(String, String, Vec<String>, String)> {
+    let mut out = Vec::new();
+    let mut in_docstring = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("\"\"\"") || trimmed.starts_with("'''") {
+            let quote = if trimmed.starts_with("\"\"\"") {
+                "\"\"\""
+            } else {
+                "'''"
+            };
+            if !trimmed[quote.len()..].contains(quote) {
+                in_docstring = !in_docstring;
+            }
+            continue;
+        }
+        if in_docstring
+            || trimmed.starts_with('#')
+            || trimmed.starts_with("//")
+            || trimmed.starts_with('*')
+        {
+            continue;
+        }
+        let lower = trimmed.to_lowercase();
+
+        // Python/TS decorators and receiver calls: @app.route('/x'), @router.get.
+        let decorator = lower.contains(".route(")
+            || lower.contains(".get(")
+            || lower.contains(".post(")
+            || lower.contains(".put(")
+            || lower.contains(".delete(")
+            || lower.contains(".patch(");
+        let decorator = decorator
+            && !lower.contains("route::")
+            && (trimmed.starts_with('@') || lower.contains("=>"));
+        if decorator {
+            if let Some(pattern) = first_arg(trimmed) {
+                let method = if lower.contains(".post(") {
+                    "POST"
+                } else if lower.contains(".put(") {
+                    "PUT"
+                } else if lower.contains(".delete(") {
+                    "DELETE"
+                } else if lower.contains(".patch(") {
+                    "PATCH"
+                } else {
+                    "GET"
+                };
+                let handler = source
+                    .lines()
+                    .skip_while(|candidate| !std::ptr::eq(*candidate, trimmed))
+                    .skip(1)
+                    .find(|candidate| candidate.contains("def "))
+                    .and_then(|candidate| {
+                        candidate.rsplit_once("def ").map(|(_, tail)| {
+                            tail.split('(')
+                                .next()
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string()
+                        })
+                    })
+                    .unwrap_or_else(|| second_token(trimmed));
+                let fw = if lower.contains("django") {
+                    "django"
+                } else if lower.contains("fastapi") {
+                    "fastapi"
+                } else if lower.contains("express") {
+                    "express"
+                } else {
+                    "flask"
+                };
+                out.push((pattern, handler, vec![method.to_string()], fw.to_string()));
+            }
+        }
+
+        // Django url patterns.
+        if lower.starts_with("path(") || lower.starts_with("url(") || lower.starts_with("re_path(")
+        {
+            if let Some(pattern) = first_arg(trimmed) {
+                out.push((
+                    pattern,
+                    second_token(trimmed),
+                    vec!["GET".to_string()],
+                    "django".to_string(),
+                ));
+            }
+        }
+
+        // Laravel facades.
+        if lower.contains("route::get(") || lower.contains("route::post(") {
+            if let Some(pattern) = first_arg(trimmed) {
+                let method = if lower.contains("post(") {
+                    "POST"
+                } else {
+                    "GET"
+                };
+                out.push((
+                    pattern,
+                    second_token(trimmed),
+                    vec![method.to_string()],
+                    "laravel".to_string(),
+                ));
+            }
+        }
+
+        // Java / C# method annotations.
+        if lower.contains("@getmapping(")
+            || lower.contains("@postmapping(")
+            || lower.contains("[httpget(")
+            || lower.contains("[httppost(")
+        {
+            if let Some(pattern) = first_arg(trimmed) {
+                let fw = if lower.contains("httppost") || lower.contains("httpget") {
+                    "aspnet"
+                } else {
+                    "springboot"
+                };
+                let method = if lower.contains("post") {
+                    "POST"
+                } else {
+                    "GET"
+                };
+                out.push((
+                    pattern,
+                    trimmed.trim().to_string(),
+                    vec![method.to_string()],
+                    fw.to_string(),
+                ));
+            }
+        }
+
+        // Go net/http handlers.
+        if lower.contains("handlefunc(") {
+            if let Some(pattern) = first_arg(trimmed) {
+                out.push((
+                    pattern,
+                    second_token(trimmed),
+                    vec!["GET".to_string()],
+                    "go".to_string(),
+                ));
+            }
+        }
+
+        // JS/TS router objects: path: '/x'.
+        if lower.contains("path:") {
+            if let Some(pos) = trimmed.find(':') {
+                if let Some(pattern) = unquote(&trimmed[pos + 1..]) {
+                    let fw = if lower.contains("router") || lower.contains("route") {
+                        "reactrouter"
+                    } else {
+                        "vuerouter"
+                    };
+                    out.push((
+                        pattern,
+                        String::new(),
+                        vec!["GET".to_string()],
+                        fw.to_string(),
+                    ));
+                }
+            }
+        }
+    }
+    out
+}
+
+type Route = (String, String, Vec<String>, String);
+type RouteNode = (String, String, String, String, Vec<String>, String);
+type RouteEdge = (String, String, String);
+
+fn collect_extractions(rel_posix: &str, routes: Vec<Route>) -> (Vec<RouteNode>, Vec<RouteEdge>) {
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for (pattern, handler, methods, framework) in routes {
+        let id = format!("{rel_posix}::{framework}:route:{pattern}");
+        nodes.push((
+            id.clone(),
+            pattern,
+            rel_posix.to_string(),
+            handler.clone(),
+            methods,
+            framework.clone(),
+        ));
+        if !handler.is_empty() {
+            edges.push((
+                id,
+                format!("{rel_posix}::{handler}"),
+                format!("synthetic:{framework}:handles"),
+            ));
+        }
+    }
+    (nodes, edges)
+}
+
+/// Whole-tree framework extraction (`framework.py::run_framework_extraction`).
+pub fn run_framework_extraction(root: serde_json::Value) -> Result<serde_json::Value, String> {
+    let root = root_arg(&root)?;
+    let root_path = std::path::Path::new(&root);
+    let mut frameworks: Vec<String> = Vec::new();
+    let mut sources: Vec<(String, String)> = Vec::new();
+    for file in walk_sources(root_path) {
+        let Ok(source) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        let Ok(rel) = file.strip_prefix(root_path) else {
+            continue;
+        };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        for framework in detect_frameworks(&source) {
+            if !frameworks.contains(&framework) {
+                frameworks.push(framework);
+            }
+        }
+        sources.push((rel, source));
+    }
+    frameworks.sort();
+    if frameworks.is_empty() {
+        let registration = register_routes(Vec::new(), Vec::new(), "full");
+        let mut report = empty_report();
+        fill_report(&mut report, 0, 0, frameworks, registration);
+        return Ok(report);
+    }
+    let mut all_nodes = Vec::new();
+    let mut all_edges = Vec::new();
+    let mut routes = 0i64;
+    let mut handlers = 0i64;
+    for (rel, source) in sources {
+        let found_routes: Vec<(String, String, Vec<String>, String)> = extract_routes(&source);
+        let (nodes, edges) = collect_extractions(&rel, found_routes);
+        routes += nodes.len() as i64;
+        handlers += edges.len() as i64;
+        all_nodes.extend(nodes);
+        all_edges.extend(edges);
+    }
+    let registration = register_routes(all_nodes, all_edges, "full");
+    let mut report = empty_report();
+    fill_report(&mut report, routes, handlers, frameworks, registration);
+    Ok(report)
+}
+
+/// One-file framework extraction (`framework.py::refresh_framework_file`).
+pub fn refresh_framework_file(
+    root: serde_json::Value,
+    rel_posix: String,
+    content: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let root = root_arg(&root)?;
+    let source = content
+        .or_else(|| std::fs::read_to_string(std::path::Path::new(&root).join(&rel_posix)).ok());
+    let Some(source) = source else {
+        let registration = register_routes(Vec::new(), Vec::new(), &rel_posix);
+        let mut report = empty_report();
+        fill_report(&mut report, 0, 0, Vec::new(), registration);
+        return Ok(report);
+    };
+    let frameworks = detect_frameworks(&source);
+    let (nodes, edges) = collect_extractions(&rel_posix, extract_routes(&source));
+    let routes = nodes.len() as i64;
+    let handlers = edges.len() as i64;
+    let registration = register_routes(nodes, edges, &rel_posix);
+    let mut report = empty_report();
+    fill_report(&mut report, routes, handlers, frameworks, registration);
+    Ok(report)
 }
 
 #[cfg(test)]

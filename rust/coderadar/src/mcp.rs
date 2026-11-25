@@ -61,6 +61,14 @@ fn tool_names() -> Value {
         "coderadar_compute_embeddings",
         "coderadar_search_similar",
         "coderadar_search_hybrid",
+        "coderadar_comments_on",
+        "coderadar_annotation_history",
+        "coderadar_comment_history",
+        "coderadar_diagnose",
+        "coderadar_module_children",
+        "coderadar_resolve",
+        "coderadar_reindex",
+        "coderadar_set_project",
     ])
 }
 
@@ -363,6 +371,32 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .unwrap_or_default()
                 .to_string(),
         ),
+        "coderadar_comments_on" => crate::annotations_ops::comments_on(&arg("target")),
+        "coderadar_annotation_history" => crate::annotations_ops::annotation_history(&arg("id")),
+        "coderadar_comment_history" => crate::annotations_ops::comment_history(&arg("id")),
+        "coderadar_diagnose" => crate::port::diagnose(
+            args.get("unresolved")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            args.get("low_confidence")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        ),
+        "coderadar_module_children" => crate::port::module_children(arg("module_id")),
+        "coderadar_resolve" => crate::port::resolve(
+            arg("name"),
+            args.get("limit").and_then(Value::as_i64).unwrap_or(5),
+        ),
+        "coderadar_reindex" => {
+            let root = crate::state::root()
+                .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
+            crate::port::reindex_op(&root)
+        }
+        "coderadar_set_project" => {
+            let path = std::path::PathBuf::from(arg("project_path"));
+            crate::state::load(&path)?;
+            Ok(json!({"project": path.to_string_lossy(), "loaded": true}))
+        }
         other => Err(format!("unknown tool `{other}`")),
     }
 }

@@ -292,12 +292,86 @@ patches needed after any re-bridge.
   parity holds for vector-input searches against the engine, not for
   natural-language embedding values.
 
+### Unit 13 proof (front-door parity)
+
+- `core_indexer/src/api.rs` gained `unresolved_targets` and
+  `ambiguous_base_details`; `port::diagnose` now performs the real
+  per-function unresolved-target sweep and base-class report instead of
+  returning a hardcoded empty shape.
+- MCP gained the eight missing Python tools: `comments_on`,
+  `annotation_history`, `comment_history`, `diagnose`, `module_children`,
+  `resolve`, `reindex` and `set_project` (45 tools total).
+- The Rust CLI uses one `#[command(external_subcommand)]` capture for the
+  additional parity commands, avoiding a clap-derive stack overflow seen
+  when adding more than two top-level struct variants to this binary.
+  `resolve`, `diagnose`, `module-children`, `reindex`, note revisions and
+  note histories are all reachable with their Python spellings.
+- Loaded-graph smoke: `resolve canonical` returns real candidates;
+  `diagnose` reports clean findings; MCP `tools/list` reports 45 tools.
+- `diff`: **4194/4194** unchanged; `gate`: **passed**; workspace clippy
+  with `-D warnings`: passed.
+
+### Unit 14 proof (git sync and commit-time migration)
+
+- `core_indexer/src/api.rs` gained pure-Rust wrappers for `branch_plan`,
+  `git_head`, `git_workdir_changes`, `git_blob_text`, `git_marks`,
+  `record_git_marks`, `record_branch_addresses`, `list_branches`,
+  `update_file_observed` and `remove_file_observed`.
+- `port.rs` now implements `sync_git` and `migrate_to_commit_time`, including
+  trunk-first ingest, one lineage per unmerged tip, address recording,
+  observation marks, dirty-set digests, the merge heal and the optional
+  embeddings/verification pass.
+- The Rust CLI exposes both under its captured parity namespace:
+  `sync-git` and `migrate-to-commit-time`. Python deliberately has no MCP
+  tool for either (long, writing, migration-grade), so Rust does not add one.
+- Smoke on a fresh temporary git repository: migration ingested 1 commit on
+  `main`, `sync-git` recorded the checkout/head and a dirty `mod.py`; a
+  later content change produced one observation write. The no-op filter
+  suppresses re-asserting identical bytes.
+- `diff`: **4194/4194** unchanged; `gate`: **passed**.
+
+### Unit 15 proof (framework extraction entry points)
+
+- Bridged `framework.py::run_framework_extraction` and
+  `refresh_framework_file`; recorded **372** cases from the suite and
+  merged them into the main crate (4,566 total).
+- Added `core_indexer::api::register_synthetic_routes` so route nodes and
+  `synthetic:<framework>:handles` edges persist through the same ledger hook
+  the Python resolver used.
+- `port.rs` implements both entry points with pure-Rust framework detection
+  and route extraction (Flask/FastAPI decorators, Django path/url, Express,
+  Laravel, Spring/ASP.NET annotations, Go, React/Vue router objects), file
+  id prefixing, handler attachment and file-scoped ghost retirement.
+  Module docstrings and comments are skipped so Python source that merely
+  *documents* a framework does not mint routes.
+- Loaded Python smoke: a synthetic Flask file reports 3 routes / 3 handlers
+  with framework `flask`; no loaded graph still reports zero persistence
+  counts, as the Python hook does.
+- `diff`: **4566/4566**; `gate`: **passed**; workspace clippy: passed.
+- Honest gap: the class-per-framework `detect`/`extract` internals are not
+  mirrored method-for-method; the shared entry points and the common route
+  languages are. Unusual resolver-specific edge kinds are not emitted yet.
+
+### Unit 16 proof (cutover helper)
+
+- Added `rust/cutover.py`: `--build`, `--verify` and `--install DIR`.
+  Verification compares JSON from both CLIs for `status`, `search` and
+  `dead-code`; volatile status counts/stamps are reduced to a key-shape
+  check rather than pretending byte parity.
+- `--install` writes a `coderadar`/`coderadar.cmd` launcher pointing at the
+  Rust binary. It does not edit the Python package: `enable` remains a
+  deliberate, separately approved step.
+- `core_indexer::api::stats_full` now surfaces `revision`, `indexed_at`
+  and `indexed_root`, closing the status-shape gap the verifier found.
+- Smoke: build passed, verification **3/3**, shim generation produced the
+  expected Windows launcher.
+- `gate`: **passed**; workspace clippy: passed.
+
 ## Remaining
 
-- Framework `detect`/`extract` classes (17 resolvers) still run on the
-  Python reference; only their four shared helpers are ported.
-- `sync_git`, `migrate_to_commit_time` and the nondeterministic
-  status/backfill renderings are not wired into the Rust front door.
-- MCP parity: 37 Rust tools are exposed; the remaining Python-only tools
+- MCP parity: 45 Rust tools are exposed; the remaining Python-only tools
   are primarily framework/experimental surfaces.
-- Cutover: `coderadar-rs` runs beside the Python CLI; no cutover script yet.
+- Framework-specific resolver edge kinds beyond common route languages
+  are not emitted yet.
+- Shadow `enable` (replacing the Python CLI on PATH) is intentionally not
+  applied; use `rust/cutover.py --install DIR` after review.

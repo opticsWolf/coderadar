@@ -296,6 +296,9 @@ enum Command {
     ExportAnnotations,
     /// Replay an annotation export
     ImportAnnotations { path: PathBuf },
+    /// Additional parity commands (captured verbatim)
+    #[command(external_subcommand)]
+    External(Vec<String>),
     /// Model Context Protocol server
     Mcp {
         #[command(subcommand)]
@@ -310,6 +313,141 @@ enum McpCommand {
         #[arg(long)]
         path: Option<PathBuf>,
     },
+}
+
+fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
+    let Some(name) = args.first().cloned() else {
+        return Err("missing parity command".to_string());
+    };
+    let tail = &args[1..];
+    match name.as_str() {
+        "revise-annotation" => {
+            ensure_loaded(project)?;
+            let id = tail
+                .first()
+                .ok_or_else(|| "missing annotation id".to_string())?;
+            let body = tail
+                .get(1)
+                .ok_or_else(|| "missing revision body".to_string())?;
+            println!("{}", pretty(&notes::revise_annotation(id, body)?)?);
+        }
+        "retire-annotation" => {
+            ensure_loaded(project)?;
+            let id = tail
+                .first()
+                .ok_or_else(|| "missing annotation id".to_string())?;
+            println!("{}", pretty(&notes::retire_annotation(id)?)?);
+        }
+        "comments-on" => {
+            ensure_loaded(project)?;
+            let target = tail
+                .first()
+                .ok_or_else(|| "missing target id".to_string())?;
+            println!("{}", pretty(&notes::comments_on(target)?)?);
+        }
+        "annotation-history" => {
+            ensure_loaded(project)?;
+            let id = tail
+                .first()
+                .ok_or_else(|| "missing annotation id".to_string())?;
+            println!("{}", pretty(&notes::annotation_history(id)?)?);
+        }
+        "comment-history" => {
+            ensure_loaded(project)?;
+            let id = tail
+                .first()
+                .ok_or_else(|| "missing comment id".to_string())?;
+            println!("{}", pretty(&notes::comment_history(id)?)?);
+        }
+        "module-children" => {
+            ensure_loaded(project)?;
+            let id = tail
+                .first()
+                .ok_or_else(|| "missing module id".to_string())?;
+            println!("{}", pretty(&port::module_children(id.clone())?)?);
+        }
+        "resolve" => {
+            ensure_loaded(project)?;
+            let name = tail.first().ok_or_else(|| "missing name".to_string())?;
+            let limit = tail
+                .iter()
+                .position(|v| v == "--limit")
+                .and_then(|i| tail.get(i + 1))
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(5);
+            println!("{}", pretty(&port::resolve(name.clone(), limit)?)?);
+        }
+        "diagnose" => {
+            ensure_loaded(project)?;
+            let result = port::diagnose(
+                tail.iter().any(|v| v == "--unresolved"),
+                tail.iter().any(|v| v == "--low-confidence"),
+            )?;
+            println!("{}", port::render_diagnose(result)?);
+        }
+        "reindex" => {
+            let root = find_root(project);
+            let result = port::reindex_op(&root)?;
+            state::load(&root)?;
+            println!("{}", render::reindex(&result));
+        }
+        "sync-git" => {
+            ensure_loaded(project)?;
+            let repo = tail
+                .first()
+                .ok_or_else(|| "missing repository path".to_string())?
+                .clone();
+            let flag = |name: &str| -> Option<String> {
+                tail.iter()
+                    .position(|v| v == name)
+                    .and_then(|i| tail.get(i + 1))
+                    .cloned()
+            };
+            let result = port::sync_git(
+                repo,
+                flag("--store"),
+                flag("--parent-ref").unwrap_or_else(|| "main".to_string()),
+                !tail.iter().any(|v| v == "--no-catch-up"),
+                flag("--source").unwrap_or_else(|| "watch".to_string()),
+            )?;
+            println!("{}", pretty(&result)?);
+        }
+        "migrate-to-commit-time" => {
+            let repo = tail
+                .first()
+                .ok_or_else(|| "missing repository path".to_string())?
+                .clone();
+            let store = tail
+                .get(1)
+                .ok_or_else(|| "missing destination store path".to_string())?
+                .clone();
+            let flag = |name: &str| -> Option<String> {
+                tail.iter()
+                    .position(|v| v == name)
+                    .and_then(|i| tail.get(i + 1))
+                    .cloned()
+            };
+            let branches = flag("--branches").map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            });
+            let result = port::migrate_to_commit_time_op(
+                repo,
+                store,
+                branches,
+                flag("--parent-ref").unwrap_or_else(|| "main".to_string()),
+                !tail.iter().any(|v| v == "--no-embed"),
+                !tail.iter().any(|v| v == "--no-verify"),
+            )?;
+            println!("{}", pretty(&result)?);
+        }
+        other => return Err(format!("unknown command `{other}`")),
+    }
+    Ok(())
 }
 
 fn find_root(start: &Path) -> PathBuf {
@@ -360,7 +498,7 @@ fn status_value(root: &Path) -> Value {
                 .and_then(|m| m.modified())
                 .ok()
                 .is_some();
-            (Some(core_indexer::api::stats(snap)), fresh)
+            (Some(core_indexer::api::stats_full(snap)), fresh)
         }
         None => (None, false),
     };
@@ -775,6 +913,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             let result = notes::import_annotations(&payload, "skip")?;
             println!("{}", pretty(&result)?);
         }
+        Command::External(args) => run_external(args, &project)?,
         Command::Mcp { action } => match action {
             McpCommand::Serve { path } => {
                 let project = path.unwrap_or(project);

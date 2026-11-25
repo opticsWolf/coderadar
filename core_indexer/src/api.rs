@@ -1866,3 +1866,209 @@ pub fn embedding_targets() -> Result<Vec<(String, String, String)>, String> {
     }
     Ok(out)
 }
+
+/// Sorted, de-duplicated unresolved call targets for one entity.
+pub fn unresolved_targets(entity_id: &str) -> Vec<String> {
+    let guard = crate::GLOBAL_GRAPH.read();
+    let Some(graph) = guard.as_ref() else {
+        return Vec::new();
+    };
+    let snap = graph.snapshot();
+    crate::graph::CodeGraph::list_unresolved_targets(&snap, entity_id)
+}
+
+/// Ambiguous base-class findings as plain JSON rows.
+pub fn ambiguous_base_details() -> Vec<Value> {
+    let guard = crate::GLOBAL_GRAPH.read();
+    let Some(graph) = guard.as_ref() else {
+        return Vec::new();
+    };
+    let snap = graph.snapshot();
+    snap.ambiguous_bases
+        .iter()
+        .map(|a| {
+            json!({
+                "class": a.class_name,
+                "base": a.base_name,
+                "candidates": a.candidates.clone(),
+            })
+        })
+        .collect()
+}
+
+// ── Unit 14: git-sync primitives (pure Rust) ────────────────────────────
+
+pub fn branch_plan(repo: &str, parent_ref: &str) -> Result<Vec<Value>, String> {
+    let entries = crate::fs::git::branch_plan(repo, parent_ref)
+        .map_err(|e| format!("branch plan failed: {e:?}"))?;
+    Ok(entries
+        .into_iter()
+        .map(|e| json!({"name": e.name, "tip": e.tip, "merged": e.merged}))
+        .collect())
+}
+
+pub fn git_head(repo: &str) -> Result<Value, String> {
+    let head = crate::fs::git::head_info(repo).map_err(|e| format!("git head failed: {e:?}"))?;
+    Ok(json!({
+        "branch": head.branch,
+        "sha": head.sha,
+        "detached": head.branch.is_none() && head.sha.is_some(),
+    }))
+}
+
+pub fn git_workdir_changes(repo: &str, sha: &str) -> Result<Vec<Value>, String> {
+    let changes = crate::fs::git::workdir_changes(repo, sha)
+        .map_err(|e| format!("git workdir changes failed: {e:?}"))?;
+    Ok(changes
+        .into_iter()
+        .map(|c| json!({"path": c.path, "in_tree": c.in_tree, "in_workdir": c.in_workdir}))
+        .collect())
+}
+
+pub fn git_blob_text(repo: &str, sha: &str, path: &str) -> Result<String, String> {
+    let bytes = crate::fs::git::blob_bytes(repo, sha, std::path::Path::new(path))
+        .map_err(|e| format!("git blob failed: {e:?}"))?;
+    String::from_utf8(bytes).map_err(|_| format!("{path} at {sha} is not UTF-8"))
+}
+
+pub fn git_marks(store_path: &str) -> Result<Value, String> {
+    let store =
+        crate::storage::CodeGraphStore::open(std::path::Path::new(store_path)).map_err(|e| {
+            format!("git_marks cannot open {store_path:?}: {e:?} — ingest_history builds stores")
+        })?;
+    let marks = store
+        .git_marks()
+        .map_err(|e| format!("cannot read sync marks: {e:?}"))?;
+    Ok(json!({"checkout": marks.0, "head": marks.1, "dirty": marks.2}))
+}
+
+pub fn record_git_marks(
+    store_path: &str,
+    checkout: Option<&str>,
+    head: Option<&str>,
+    dirty: &str,
+) -> Result<(), String> {
+    let store = crate::storage::CodeGraphStore::open(std::path::Path::new(store_path))
+        .map_err(|e| format!("record_git_marks cannot open {store_path:?}: {e:?}"))?;
+    store
+        .record_git_marks(checkout, head, dirty)
+        .map_err(|e| format!("cannot write sync marks: {e:?}"))
+}
+
+pub fn record_branch_addresses(
+    store_path: &str,
+    entries: Vec<(String, String)>,
+) -> Result<usize, String> {
+    let store = crate::storage::CodeGraphStore::open(std::path::Path::new(store_path))
+        .map_err(|e| format!("cannot open store {store_path:?}: {e:?}"))?;
+    let mut written = 0usize;
+    for (name, tip) in entries {
+        match store.kv_get_sync(&crate::graph::ingest::commit_lineage_key(&tip)) {
+            Ok(Some(_)) => {}
+            _ => continue,
+        }
+        store
+            .kv_put_sync(&crate::graph::ingest::branch_tip_key(&name), &tip)
+            .map_err(|e| format!("{e:?}"))?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+/// Sync one file as an observation write (source + lineage preserved).
+pub fn update_file_observed(
+    file_path: &str,
+    content: Option<&str>,
+    source: &str,
+    lineage: Option<&str>,
+) -> Result<Value, String> {
+    let observation = crate::storage::ObservationSource {
+        source,
+        tool: None,
+        plan_id: None,
+        attempt_id: None,
+        lineage,
+    };
+    let outcome = {
+        let guard = crate::GLOBAL_GRAPH.read();
+        let graph = guard
+            .as_ref()
+            .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
+        graph
+            .update_file_observed(file_path, content, None, &observation)
+            .map_err(|e| format!("EngineError: {e}"))?
+    };
+    let quality = match outcome.parse_quality {
+        crate::types::ParseQuality::Clean => "clean",
+        crate::types::ParseQuality::Partial => "partial",
+        crate::types::ParseQuality::Tainted => "tainted",
+        crate::types::ParseQuality::Deferred => "deferred",
+    };
+    Ok(json!({
+        "fully_applied": outcome.parse_errors == 0,
+        "source_hash": outcome.source_hash,
+        "entities_added": outcome.entities_added,
+        "entities_removed": outcome.entities_removed,
+        "affected_files": outcome.affected_files,
+        "parse_quality": quality,
+        "parse_errors": outcome.parse_errors,
+        "observed_at": outcome.observed_at,
+    }))
+}
+
+/// Drop a file's entities as an observation on `lineage`.
+pub fn remove_file_observed(file_path: &str, lineage: Option<&str>) -> Result<Value, String> {
+    let canonical = crate::graph::module_resolution::canonical_file_form(file_path);
+    let removed = {
+        let guard = crate::GLOBAL_GRAPH.read();
+        let graph = guard
+            .as_ref()
+            .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
+        graph.remove_file_on(&canonical, lineage)
+    };
+    Ok(json!({"removed": removed.len(), "file": canonical}))
+}
+
+pub fn list_branches(repo: &str) -> Result<Vec<String>, String> {
+    crate::fs::git::list_branches(repo).map_err(|e| format!("list_branches: {e:?}"))
+}
+
+/// Persist framework route nodes/edges and retire ghosts outside `scope`.
+pub fn register_synthetic_routes(
+    nodes: Vec<(String, String, String, String, Vec<String>, String)>,
+    edges: Vec<(String, String, String)>,
+    scope: &str,
+) -> Result<Value, String> {
+    let mut guard = crate::GLOBAL_GRAPH.write();
+    let graph = guard
+        .as_mut()
+        .ok_or_else(|| "No graph loaded — run coderadar analyze first".to_string())?;
+    let (routes_upserted, routes_retired, pairs_retired) =
+        graph.register_synthetic_routes(nodes, edges, scope)?;
+    Ok(json!({
+        "ok": true,
+        "routes_upserted": routes_upserted,
+        "routes_retired": routes_retired,
+        "pairs_retired": pairs_retired,
+    }))
+}
+
+/// Stats plus the ledger stamp fields the Python CLI surfaces.
+pub fn stats_full(snap: &ProjectedGraph) -> Value {
+    let mut value = stats(snap);
+    if let Some(map) = value.as_object_mut() {
+        let revision = json!(*crate::LEDGER_REVISION.read());
+        let graph_guard = crate::GLOBAL_GRAPH.read();
+        let indexed_at = graph_guard
+            .as_ref()
+            .map(|graph| graph.indexed_at())
+            .unwrap_or(0.0);
+        map.insert("revision".into(), revision);
+        map.insert("indexed_at".into(), json!(indexed_at));
+        map.insert(
+            "indexed_root".into(),
+            json!(crate::indexed_root().to_string_lossy()),
+        );
+    }
+    value
+}

@@ -1985,6 +1985,55 @@
       "is_generator": false,
       "type_params": [],
       "uses_instanceof": false
+    },
+    {
+      "name": "run_framework_extraction",
+      "file": "py_agent/src/coderadar/framework.py",
+      "line": 149,
+      "params": [
+        {
+          "name": "root",
+          "ts_type": "string | Path",
+          "optional": false,
+          "rest": false
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
+    },
+    {
+      "name": "refresh_framework_file",
+      "file": "py_agent/src/coderadar/framework.py",
+      "line": 194,
+      "params": [
+        {
+          "name": "root",
+          "ts_type": "string | Path",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "rel_posix",
+          "ts_type": "string",
+          "optional": false,
+          "rest": false
+        },
+        {
+          "name": "content",
+          "ts_type": "string | undefined",
+          "optional": true,
+          "rest": false,
+          "default": "None"
+        }
+      ],
+      "returns": "dict",
+      "is_async": false,
+      "is_generator": false,
+      "type_params": [],
+      "uses_instanceof": false
     }
   ],
   "classes": [],

@@ -240,5 +240,61 @@
       "coderadar_search_hybrid"
     ],
     "gap": "deterministic local embedder is not fastembed; vector-input parity is exact"
+  },
+  "unit13": {
+    "api": [
+      "unresolved_targets",
+      "ambiguous_base_details"
+    ],
+    "mcp_added": [
+      "coderadar_comments_on",
+      "coderadar_annotation_history",
+      "coderadar_comment_history",
+      "coderadar_diagnose",
+      "coderadar_module_children",
+      "coderadar_resolve",
+      "coderadar_reindex",
+      "coderadar_set_project"
+    ],
+    "cli": "captured parity commands via external_subcommand",
+    "tools_total": 45
+  },
+  "unit14": {
+    "api": [
+      "branch_plan",
+      "git_head",
+      "git_workdir_changes",
+      "git_blob_text",
+      "git_marks",
+      "record_git_marks",
+      "record_branch_addresses",
+      "list_branches",
+      "update_file_observed",
+      "remove_file_observed"
+    ],
+    "port": [
+      "sync_git",
+      "migrate_to_commit_time_op"
+    ],
+    "cli": [
+      "sync-git",
+      "migrate-to-commit-time"
+    ]
+  },
+  "unit15": {
+    "exports": [
+      "run_framework_extraction",
+      "refresh_framework_file"
+    ],
+    "api": [
+      "register_synthetic_routes"
+    ],
+    "cases_added": 372,
+    "gate": "4566/4566"
+  },
+  "unit16": {
+    "script": "rust/cutover.py",
+    "verify": 3,
+    "note": "install writes a launcher; Python sources are never edited"
   }
 }
