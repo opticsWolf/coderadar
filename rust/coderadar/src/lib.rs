@@ -1878,6 +1878,13 @@ fn import_annotations_op(
     value_result(py, Ok(rows))
 }
 
+#[pyfunction]
+#[pyo3(name = "record_checkout_op", signature = (branch=None))]
+fn record_checkout_op(py: Python<'_>, branch: Option<String>) -> PyResult<Py<PyAny>> {
+    core_indexer::api::record_checkout(branch.as_deref()).map_err(error)?;
+    crate::pyconv::ToPy::to_py(&serde_json::Value::Null, py)
+}
+
 #[pymodule]
 #[pyo3(name = "_native")]
 fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -2003,5 +2010,6 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(call_sites_op, m)?)?;
     m.add_function(wrap_pyfunction!(export_annotations_op, m)?)?;
     m.add_function(wrap_pyfunction!(import_annotations_op, m)?)?;
+    m.add_function(wrap_pyfunction!(record_checkout_op, m)?)?;
     Ok(())
 }

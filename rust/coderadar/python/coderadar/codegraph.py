@@ -234,8 +234,30 @@ class CodeGraph:
         return _native.comment_history(id)
 
     # Mutations (dry-run by default, as in the Python API)
+    def _refresh_framework_routes(
+        self, file_path: str, content: str | None
+    ) -> str | None:
+        root = str(Path(self._db_path).parents[2])
+        absolute = Path(file_path).resolve()
+        try:
+            rel = absolute.relative_to(Path(root).resolve()).as_posix()
+        except ValueError:
+            return None
+        try:
+            _native.refresh_framework_file(root, rel, content)
+        except Exception as exc:  # noqa: BLE001 - refresh must never fail the update
+            return f"framework-route refresh failed for {file_path}: {exc}"
+        return None
+
     def update_file(self, file_path: str, content: str | None = None, **_: Any) -> Any:
-        return _native.update_file(file_path, content)
+        report = _native.update_file(file_path, content)
+        warning = self._refresh_framework_routes(file_path, content)
+        if isinstance(report, dict):
+            report["route_warning"] = warning
+        return report
+
+    def record_checkout(self, branch: str | None) -> None:
+        _native.record_checkout_op(branch)
 
     def replace_body(
         self,
@@ -323,7 +345,7 @@ class CodeGraph:
         full: bool = False,
         exclude: list[str] | None = None,
     ) -> Any:
-        return _native.reindex_op(str(Path(self._db_path).parents[1]))
+        return _native.reindex_op(str(Path(self._db_path).parents[2]))
 
     def remove_file(self, file_path: str, lineage: str | None = None) -> Any:
         return _native.remove_file_op(file_path, lineage)

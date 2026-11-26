@@ -2132,3 +2132,21 @@ pub fn call_sites(snap: &ProjectedGraph, entity_id: &str) -> Option<Value> {
             .collect::<Vec<Value>>()
     ))
 }
+
+/// Record the branch for bare observation writes on the loaded graph's store.
+pub fn record_checkout(branch: Option<&str>) -> Result<(), String> {
+    let guard = crate::GLOBAL_GRAPH.read();
+    let graph = guard
+        .as_ref()
+        .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
+    let store = graph
+        .store
+        .as_ref()
+        .ok_or_else(|| "no store behind the loaded graph".to_string())?;
+    store
+        .kv_put_sync(
+            crate::graph::ingest::CHECKOUT_KEY,
+            branch.unwrap_or("").trim(),
+        )
+        .map_err(|e| format!("cannot record checkout: {e:?}"))
+}

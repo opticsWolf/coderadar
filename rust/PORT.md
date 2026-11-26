@@ -674,3 +674,19 @@ new recorded unit.
 - `tests/test_facade_codegraph.py` now checks call sites, an export and a
   skip-conflict re-import in the temp project (`1 passed`).
 - Gate unchanged: **4445/4445**; clippy/fmt/cutover green.
+
+### Unit 30 proof (checkout and file-update route refresh)
+
+- CodeRadar's last `CodeGraph` rows were local helpers: `watch` (3),
+  `_remove_file_full` (2), `_refresh_framework_routes` (2) and
+  `record_checkout` (1).
+- Added pure-Rust `api::record_checkout` and a native wrapper; the facade
+  now delegates `record_checkout`.
+- `update_file` now runs the file-scoped framework refresh and exposes a
+  `route_warning` field. `_refresh_framework_routes` returns `None` on
+  success and a warning string on failure, matching the Python seam.
+- `reindex` now derives the project root correctly from the handle's store
+  path.
+- `tests/test_facade_codegraph.py` covers set-checkout and the success
+  branch of route refresh (`1 passed`).
+- Gate unchanged: **4445/4445**; clippy/fmt/cutover green.

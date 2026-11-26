@@ -484,5 +484,16 @@
       "core_indexer::api::call_sites"
     ],
     "test": "tests/test_facade_codegraph.py"
+  },
+  "unit30": {
+    "api": [
+      "core_indexer::api::record_checkout"
+    ],
+    "facade_methods": [
+      "record_checkout",
+      "_refresh_framework_routes"
+    ],
+    "update_file": "now runs file-scoped framework refresh",
+    "test": "tests/test_facade_codegraph.py"
   }
 }

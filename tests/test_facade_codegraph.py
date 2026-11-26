@@ -37,6 +37,10 @@ assert plan.edits and plan.affected_files
 result = g.apply(plan)
 assert result.status == "Applied", result.raw
 assert "return 2" in open("app.py", encoding="utf-8").read()
+assert result.raw.get("disk_status") == "Installed"
+warning = g._refresh_framework_routes("app.py", None)
+assert warning is None
+g.record_checkout("main")
 export = g.export_annotations()
 assert export["rows"] >= 1
 assert isinstance(g.call_sites("app.py::alpha"), list)
