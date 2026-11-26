@@ -2159,18 +2159,17 @@ pub fn default_excludes() -> Vec<String> {
 
 /// Blame rows for one file: `{line, count, author, commit}`.
 pub fn git_blame(repo: &str, file: &str) -> Result<Value, String> {
-    let rows = crate::fs::git::blame_file(repo, file)
-        .map_err(|e| format!("git blame failed: {e:?}"))?;
-    Ok(serde_json::json!(
-        rows.iter()
-            .map(|row| serde_json::json!({
-                "line": row.line_number,
-                "count": row.line_count,
-                "author": row.author,
-                "commit": row.commit,
-            }))
-            .collect::<Vec<Value>>()
-    ))
+    let rows =
+        crate::fs::git::blame_file(repo, file).map_err(|e| format!("git blame failed: {e:?}"))?;
+    Ok(serde_json::json!(rows
+        .iter()
+        .map(|row| serde_json::json!({
+            "line": row.line_number,
+            "count": row.line_count,
+            "author": row.author,
+            "commit": row.commit,
+        }))
+        .collect::<Vec<Value>>()))
 }
 
 /// Whether the worktree has no uncommitted or untracked changes.
