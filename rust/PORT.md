@@ -460,11 +460,25 @@ patches needed after any re-bridge.
   return honest empty results on this repo (no framework route fixtures
   indexed).
 
+### Unit 22 proof (middleware / DI synthetic edges)
+
+- Added `tests/test_port_unit22_edges.py` with eight focused mini-projects
+  and recorded them through the shared framework hook.
+- Emitted the edge kinds the Python resolvers actually mint: Express
+  `app.use(...)` middleware routes (including multiple handlers), Rails
+  `before_action` / `after_action` callbacks, NestJS `@Module` provider and
+  controller edges, and ASP.NET minimal-API `MapGet` / `MapPost` routes.
+- FastAPI `Depends`, Flask hooks, Go `r.Use`, Spring `@Autowired` / `@Bean`
+  and ASP.NET `UseMiddleware` were checked and are deliberately not minted:
+  the Python resolvers do not emit edges for those patterns either.
+- `diff`: **4444/4444**; `gate`: **passed**; workspace clippy: passed.
+- Smoke matched Python counts: Express 3/4, NestJS 0/2, Rails 2/2,
+  ASP.NET 1/1 routes/handlers.
+
 ## Remaining
 
 - MCP parity: 45 Rust tools are exposed; the remaining Python-only tools
   are primarily framework/experimental surfaces.
-- Middleware/DI edge kinds beyond the recorded common shapes are not emitted.
 - `rust-anything bench` remains unavailable in this harness (the driver
   cannot import `coderadar.ops` from its generated working directory).
 - Shadow `enable` (replacing the Python CLI on PATH) is intentionally not

@@ -3350,6 +3350,7 @@ fn extract_routes(source: &str, rel_posix: &str, is_js: bool) -> (Vec<Route>, Ve
     let mut spring_base = String::new();
     let mut aspnet_base = String::new();
     let mut nest_base = String::new();
+    let mut in_nest_module = false;
     let is_go = std::path::Path::new(rel_posix)
         .extension()
         .and_then(|ext| ext.to_str())
@@ -3765,6 +3766,121 @@ fn extract_routes(source: &str, rel_posix: &str, is_js: bool) -> (Vec<Route>, Ve
                     ));
                 }
                 rest = after;
+            }
+        }
+
+        // Express middleware: app.use(fn) or app.use('/path', fn, router).
+        if is_js && lower.contains(".use(") {
+            let after = trimmed.split_once(".use(").map_or("", |(_, tail)| tail);
+            let path = unquote(after).unwrap_or_else(|| "/*".to_string());
+            let handler_part = if path == "/*" {
+                after.to_string()
+            } else {
+                let quote = after.chars().next().unwrap_or('"');
+                after[1..]
+                    .find(quote)
+                    .map_or(String::new(), |i| after[i + 2..].to_string())
+            };
+            let handlers: Vec<String> = handler_part
+                .trim_start_matches([',', '"', '\'', '`'])
+                .split(',')
+                .map(|value| value.trim().trim_end_matches([')', ';']).to_string())
+                .filter(|value| !value.is_empty())
+                .collect();
+            if let Some(first) = handlers.first() {
+                out.push((
+                    path.clone(),
+                    first.clone(),
+                    vec!["USE".to_string()],
+                    "express".to_string(),
+                ));
+                for handler in handlers.iter().skip(1) {
+                    extra_edges.push((
+                        format!("{rel_posix}::express:route:USE:{path}"),
+                        format!("{rel_posix}::{handler}"),
+                        "synthetic:express:handles".to_string(),
+                    ));
+                }
+            }
+        }
+
+        // Rails controller/model callbacks are synthetic callback nodes.
+        for kind in [
+            "before_action",
+            "after_action",
+            "around_action",
+            "skip_before_action",
+            "skip_after_action",
+            "before_save",
+            "after_save",
+            "before_create",
+            "after_create",
+            "before_validation",
+            "after_validation",
+        ] {
+            if lower.starts_with(kind) {
+                let method = trimmed
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or_default()
+                    .trim_start_matches(':')
+                    .to_string();
+                if !method.is_empty() {
+                    out.push((
+                        format!("{kind} :{method}"),
+                        method,
+                        vec![kind.to_uppercase()],
+                        "rails".to_string(),
+                    ));
+                }
+                break;
+            }
+        }
+
+        // NestJS @Module declarations contribute provider/controller edges.
+        if lower.contains("@module(") {
+            in_nest_module = true;
+        }
+        if in_nest_module {
+            for key in ["controllers", "providers", "imports", "exports"] {
+                if let Some(pos) = lower.find(&format!("{key}:")) {
+                    let after = &trimmed[pos + key.len() + 1..];
+                    if let Some(open) = after.find('[') {
+                        if let Some(close) = after[open + 1..].find(']') {
+                            for value in after[open + 1..open + 1 + close].split(',') {
+                                let reference = value.trim().trim_matches([' ', '\'', '"']);
+                                if !reference.is_empty() {
+                                    let kind = key.trim_end_matches('s');
+                                    extra_edges.push((
+                                        format!("{rel_posix}::module"),
+                                        format!("{rel_posix}::{reference}"),
+                                        format!("synthetic:nestjs:{kind}"),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if lower.contains("})") {
+                in_nest_module = false;
+            }
+        }
+
+        // ASP.NET minimal APIs.
+        if lower.contains("mapget(") || lower.contains("mappost(") {
+            if let Some(pattern) = first_arg(trimmed) {
+                let method = if lower.contains("mappost(") {
+                    "POST"
+                } else {
+                    "GET"
+                };
+                out.push((
+                    pattern,
+                    second_token(trimmed),
+                    vec![method.to_string()],
+                    "aspnet".to_string(),
+                ));
             }
         }
 

@@ -361,5 +361,22 @@
     "tests": "cargo test -p coderadar --lib (10 passed)",
     "cases": 4436,
     "note": "callable searcher replaced by data-shaped pure Rust API"
+  },
+  "unit22": {
+    "tests": "tests/test_port_unit22_edges.py",
+    "edges": [
+      "express_use",
+      "rails_callbacks",
+      "nestjs_module_providers",
+      "aspnet_mapget"
+    ],
+    "cases": 4444,
+    "deliberately_not_emitted": [
+      "fastapi_app_add_middleware",
+      "flask_hooks",
+      "go_use",
+      "spring_autowired",
+      "aspnet_usemiddleware"
+    ]
   }
 }
