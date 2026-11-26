@@ -567,11 +567,10 @@ an existing Rust front door, not merely because a Python name is unbridged.
    reached through `run_framework_extraction` / `refresh_framework_file`
    and recorded fixtures. New framework families require a new focused
    test and recorded cases; do not re-port existing methods one by one.
-3. **Python facade:** `analyze` / `CodeGraph` are still Python-side. Rust
-   has `core_indexer::api::analyze`, but the public Python class is not a
-   thin wrapper yet. Open a unit only if a real Python caller must switch;
-   the return-type contract needs explicit approval because a PyO3
-   replacement would return a stats JSON rather than a live `CodeGraph`.
+3. **Python facade:** implemented in Unit 26 below for op-shaped methods.
+   Renderer-shaped methods (e.g. `status`, `open_items`, mutation plans)
+   stay on the Python package rather than being faked with different
+   argument shapes.
 4. **Annotation / git ops not in `rust-anything.json`:** `annotate`,
    `annotations_on`, `comment`, `comments_on`, `annotation_history`,
    `revise_annotation`, `retire_annotation`, `comment_history`,
@@ -607,3 +606,22 @@ python rust/bench.py --min-ms 20 --json
 Rank by `caller_count` and blast radius, then check whether the callers are
 already served by the Rust CLI/MCP. Only uncovered caller edges justify a
 new recorded unit.
+
+### Unit 26 proof (Python `CodeGraph` facade)
+
+- CodeRadar showed 101 `CodeGraph` methods; the high-fan-in ones were
+  `query` (33), `update_file` (24), `apply` (18), `as_of` (15),
+  `plan_replace_body` (9) and the annotation/read methods. `analyze` had
+  142 transitive dependents, but 154/162 call edges came from tests.
+- Added PyO3 op wrappers for `analyze`, the eight annotation/comment ops,
+  `sync_git`, `reingest_merged_commits` and `backfill_commit_messages`.
+  `analyze` indexes with Rust, loads the projection into the CLI state and
+  returns a thin `CodeGraph` handle.
+- `rust/coderadar/python/coderadar/codegraph.py` delegates query,
+  traversal, quality, bitemporal reads, mutations, annotations and git sync
+  to the native ops. It does not reimplement graph logic in Python.
+- `rust/after_bridge.py` reattaches the facade import on regeneration.
+- `tests/test_facade_codegraph.py` proves `coderadar.analyze` runs in Rust,
+  `query()` returns live rows and an annotation round-trips, all in a temp
+  project (`1 passed`).
+- `diff`/gate unchanged: **4445/4445**; clippy, cutover **4/4**.

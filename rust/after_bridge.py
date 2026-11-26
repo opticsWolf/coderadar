@@ -166,6 +166,25 @@ pyo3::create_exception!(coderadar, ContentUnavailable, OpError);
     )
     text = text[:idx] + regs + text[idx:]
     lib.write_text(text, encoding="utf-8")
+
+    # Unit 25: keep the thin CodeGraph facade attached to the generated
+    # package. The shim itself lives in a separate stable Python file.
+    facade = CRATE / "python" / "coderadar" / "__init__.py"
+    if facade.exists():
+        text = facade.read_text(encoding="utf-8")
+        if "from .codegraph import" not in text:
+            text += (
+                "
+# Unit 25: thin CodeGraph facade over the Rust-native ops.
+"
+                "from .codegraph import CodeGraph, analyze
+
+"
+                '__all__ = sorted(set(__all__) | {"CodeGraph", "analyze"})
+'
+            )
+            facade.write_text(text, encoding="utf-8")
+
     print("patched rust/coderadar for pyo3 0.24 + CodeRadar errors")
 
 

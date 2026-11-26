@@ -170,3 +170,8 @@ run_framework_extraction = _native.run_framework_extraction
 refresh_framework_file = _native.refresh_framework_file
 
 __all__ = ['affected', 'annotation_stored', 'annotation_versions', 'apply_output_budget', 'archive', 'as_of', 'blob_get', 'branches', 'callees', 'callers', 'canonical_entity_id', 'canonical_file_path', 'canonical_route_pattern', 'changes_between', 'compute_embeddings', 'create_entity', 'dead_code', 'diagnose', 'display_file', 'edit', 'explore', 'explore_miss', 'explore_usage', 'export_annotations', 'extract_all_exports', 'extract_path_from_header', 'fastembed_missing', 'find_clones', 'find_entity', 'find_scaffolding', 'friendly_entity_id', 'get_smells', 'history_of', 'import_annotations', 'ingest_status', 'migrate_to_commit_time', 'module_children', 'mutation_applied', 'mutation_error', 'mutation_plan', 'no_embeddings', 'node', 'normalize_query_spelling', 'not_found', 'open_items', 'parse_names', 'prefer_in_dir', 'query', 'query_usage', 'read_source', 'rebuild', 'reindex', 'rename', 'render_entity_code', 'replace_body', 'resolve', 'resolve_names', 'refresh_framework_file', 'run_framework_extraction', 'route_patterns_match', 'search', 'search_hybrid', 'search_miss', 'search_similar', 'search_symbols', 'stale_banner', 'stale_files', 'status', 'store_repair', 'suggest_entities', 'traverse', 'trim_to_char_budget', 'update_file', 'update_signature', 'verify_history']
+
+# Unit 25: thin CodeGraph facade over the Rust-native ops.
+from .codegraph import CodeGraph, analyze
+
+__all__ = sorted(set(__all__) | {"CodeGraph", "analyze"})

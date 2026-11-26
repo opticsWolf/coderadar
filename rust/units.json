@@ -426,5 +426,24 @@
       "local_only": 9
     },
     "next_unit_rule": "open only when CodeRadar shows a caller not served by Rust CLI/MCP"
+  },
+  "unit26": {
+    "facade": "rust/coderadar/python/coderadar/codegraph.py",
+    "native_ops": [
+      "analyze",
+      "annotate",
+      "comment",
+      "revise_annotation",
+      "retire_annotation",
+      "annotations_on",
+      "comments_on",
+      "annotation_history",
+      "comment_history",
+      "sync_git",
+      "reingest_merged_commits",
+      "backfill_commit_messages"
+    ],
+    "test": "tests/test_facade_codegraph.py",
+    "rule": "delegate op-shaped methods only; do not fake renderer-shaped APIs"
   }
 }

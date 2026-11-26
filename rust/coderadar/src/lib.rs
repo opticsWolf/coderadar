@@ -1458,6 +1458,128 @@ fn refresh_framework_file(
         .and_then(|v| crate::pyconv::ToPy::to_py(&v, py))
 }
 
+/// Thin facade entry points that were previously Python-only: analysis,
+/// annotations and git synchronisation. They return the same Python objects
+/// as the ops they delegate to, without routing through Python.
+#[pyfunction]
+#[pyo3(name = "analyze", signature = (root, create_store=false, exclude=None))]
+fn analyze_op(
+    py: Python<'_>,
+    root: String,
+    create_store: bool,
+    exclude: Option<Vec<String>>,
+) -> PyResult<Py<PyAny>> {
+    let report = core_indexer::api::analyze(&root, create_store, &exclude.unwrap_or_default())
+        .map_err(error)?;
+    crate::state::load(std::path::Path::new(&root)).map_err(error)?;
+    crate::pyconv::ToPy::to_py(&report, py)
+}
+
+#[pyfunction]
+#[pyo3(name = "annotate", signature = (about, body))]
+fn annotate_op(py: Python<'_>, about: String, body: String) -> PyResult<Py<PyAny>> {
+    crate::annotations_ops::annotate(&about, &body)
+        .map_err(error)
+        .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
+}
+
+#[pyfunction]
+#[pyo3(name = "comment", signature = (about, body))]
+fn comment_op(py: Python<'_>, about: String, body: String) -> PyResult<Py<PyAny>> {
+    crate::annotations_ops::comment(&about, &body)
+        .map_err(error)
+        .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
+}
+
+#[pyfunction]
+#[pyo3(name = "revise_annotation", signature = (id, body))]
+fn revise_annotation_op(py: Python<'_>, id: String, body: String) -> PyResult<Py<PyAny>> {
+    crate::annotations_ops::revise_annotation(&id, &body)
+        .map_err(error)
+        .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
+}
+
+#[pyfunction]
+#[pyo3(name = "retire_annotation", signature = (id))]
+fn retire_annotation_op(py: Python<'_>, id: String) -> PyResult<Py<PyAny>> {
+    crate::annotations_ops::retire_annotation(&id)
+        .map_err(error)
+        .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
+}
+
+#[pyfunction]
+#[pyo3(name = "annotations_on", signature = (target))]
+fn annotations_on_op(py: Python<'_>, target: String) -> PyResult<Py<PyAny>> {
+    crate::annotations_ops::annotations_on(&target)
+        .map_err(error)
+        .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
+}
+
+#[pyfunction]
+#[pyo3(name = "comments_on", signature = (target))]
+fn comments_on_op(py: Python<'_>, target: String) -> PyResult<Py<PyAny>> {
+    crate::annotations_ops::comments_on(&target)
+        .map_err(error)
+        .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
+}
+
+#[pyfunction]
+#[pyo3(name = "annotation_history", signature = (id))]
+fn annotation_history_op(py: Python<'_>, id: String) -> PyResult<Py<PyAny>> {
+    crate::annotations_ops::annotation_history(&id)
+        .map_err(error)
+        .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
+}
+
+#[pyfunction]
+#[pyo3(name = "comment_history", signature = (id))]
+fn comment_history_op(py: Python<'_>, id: String) -> PyResult<Py<PyAny>> {
+    crate::annotations_ops::comment_history(&id)
+        .map_err(error)
+        .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
+}
+
+#[pyfunction]
+#[pyo3(name = "sync_git", signature = (repo, store_path=None, parent_ref=String::from("main"), catch_up=true, source=String::from("watch")))]
+fn sync_git_op(
+    py: Python<'_>,
+    repo: String,
+    store_path: Option<String>,
+    parent_ref: String,
+    catch_up: bool,
+    source: String,
+) -> PyResult<Py<PyAny>> {
+    crate::port::sync_git(repo, store_path, parent_ref, catch_up, source)
+        .map_err(error)
+        .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
+}
+
+#[pyfunction]
+#[pyo3(name = "reingest_merged_commits", signature = (repo, branch=String::from("main"), dry_run=true, store_path=None))]
+fn reingest_merged_commits_op(
+    py: Python<'_>,
+    repo: String,
+    branch: String,
+    dry_run: bool,
+    store_path: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    crate::port::reingest_merged_commits(repo, branch, dry_run, store_path)
+        .map_err(error)
+        .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
+}
+
+#[pyfunction]
+#[pyo3(name = "backfill_commit_messages", signature = (repo, store_path=None))]
+fn backfill_commit_messages_op(
+    py: Python<'_>,
+    repo: String,
+    store_path: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    crate::port::backfill_commit_messages(repo, store_path)
+        .map_err(error)
+        .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
+}
+
 #[pymodule]
 #[pyo3(name = "_native")]
 fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1554,5 +1676,17 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "ContentUnavailable",
         m.py().get_type::<ContentUnavailable>(),
     )?;
+    m.add_function(wrap_pyfunction!(analyze_op, m)?)?;
+    m.add_function(wrap_pyfunction!(annotate_op, m)?)?;
+    m.add_function(wrap_pyfunction!(comment_op, m)?)?;
+    m.add_function(wrap_pyfunction!(revise_annotation_op, m)?)?;
+    m.add_function(wrap_pyfunction!(retire_annotation_op, m)?)?;
+    m.add_function(wrap_pyfunction!(annotations_on_op, m)?)?;
+    m.add_function(wrap_pyfunction!(comments_on_op, m)?)?;
+    m.add_function(wrap_pyfunction!(annotation_history_op, m)?)?;
+    m.add_function(wrap_pyfunction!(comment_history_op, m)?)?;
+    m.add_function(wrap_pyfunction!(sync_git_op, m)?)?;
+    m.add_function(wrap_pyfunction!(reingest_merged_commits_op, m)?)?;
+    m.add_function(wrap_pyfunction!(backfill_commit_messages_op, m)?)?;
     Ok(())
 }
