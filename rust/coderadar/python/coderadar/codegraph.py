@@ -9,10 +9,58 @@ left on the original Python package rather than being faked.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from . import _native
+
+
+@dataclass(frozen=True)
+class _MutationEdit:
+    file: str
+    replacement: str
+    expected_hash: str = ""
+    span_start: int | None = None
+    span_end: int | None = None
+    line: int | None = None
+    col: int | None = None
+    end_line: int | None = None
+    end_col: int | None = None
+
+
+@dataclass(frozen=True)
+class _MutationPlan:
+    id: str
+    tool: str
+    edits: list[_MutationEdit] = field(default_factory=list)
+    affected_files: list[str] = field(default_factory=list)
+    diff_preview: str = ""
+    unverified_sites: list[dict] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _MutationResult:
+    status: str
+    files_written: list[str] = field(default_factory=list)
+    syntax_errors: list[Any] = field(default_factory=list)
+    attempt_id: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+def _plan(name: str, payload: Any) -> _MutationPlan:
+    outer = payload if isinstance(payload, dict) else {}
+    data = outer.get("plan", outer) if isinstance(outer.get("plan"), dict) else outer
+    return _MutationPlan(
+        id=str(data.get("id", "")),
+        tool=name,
+        edits=[_MutationEdit(**entry) for entry in data.get("edits", []) or []],
+        affected_files=list(data.get("affected_files", []) or []),
+        diff_preview=str(data.get("diff_preview", "") or ""),
+        unverified_sites=list(data.get("unverified_sites", []) or []),
+        warnings=list(data.get("warnings", []) or []),
+    )
 
 
 class CodeGraph:
@@ -264,6 +312,71 @@ class CodeGraph:
         self, repo: str, store_path: str | None = None
     ) -> Any:
         return _native.backfill_commit_messages(repo, store_path)
+
+    # Facade state and renderer-shaped APIs with op-shaped Rust wrappers
+    def stats(self) -> Any:
+        return _native.stats_op()
+
+    def reindex(
+        self,
+        with_embeddings: bool = False,
+        full: bool = False,
+        exclude: list[str] | None = None,
+    ) -> Any:
+        return _native.reindex_op(str(Path(self._db_path).parents[1]))
+
+    def remove_file(self, file_path: str, lineage: str | None = None) -> Any:
+        return _native.remove_file_op(file_path, lineage)
+
+    def plan_replace_body(
+        self,
+        entity_id: str,
+        new_body: str,
+        expected_hash: str | None = None,
+        dry_run: bool = True,
+    ) -> _MutationPlan:
+        return _plan(
+            "replace_entity_body",
+            _native.plan_replace_body_op(entity_id, new_body, expected_hash, dry_run),
+        )
+
+    def plan_rename(
+        self, entity_id: str, new_name: str, dry_run: bool = True, **_: Any
+    ) -> _MutationPlan:
+        return _plan("rename_entity", _native.plan_rename_op(entity_id, new_name, dry_run))
+
+    def plan_create_entity(
+        self, target_file: str, anchor: str, code: str, dry_run: bool = True
+    ) -> _MutationPlan:
+        return _plan(
+            "create_entity",
+            _native.plan_create_entity_op(target_file, anchor, code, dry_run),
+        )
+
+    def open_items(self, scope: str | None = None) -> Any:
+        return _native.open_items_op(scope)
+
+    def ingest_status(self) -> Any:
+        return _native.ingest_status_op()
+
+    def diagnose(
+        self, unresolved: bool = False, low_confidence: bool = False
+    ) -> Any:
+        return _native.diagnose_op(unresolved, low_confidence)
+
+    def compute_embeddings(
+        self,
+        model_name: str | None = None,
+        batch_size: int = 32,
+        recompute: bool = False,
+    ) -> Any:
+        return _native.compute_embeddings_op(model_name, batch_size, recompute)
+
+    def search_similar(self, query: str, top_k: int = 10) -> Any:
+        return _native.search_similar_op(query, top_k)
+
+    def search_hybrid(self, query: str, top_k: int = 10) -> Any:
+        return _native.search_hybrid_op(query, top_k, query)
 
 
 def analyze(

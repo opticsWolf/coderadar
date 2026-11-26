@@ -625,3 +625,22 @@ new recorded unit.
   `query()` returns live rows and an annotation round-trips, all in a temp
   project (`1 passed`).
 - `diff`/gate unchanged: **4445/4445**; clippy, cutover **4/4**.
+
+### Unit 27 proof (facade state and mutation planners)
+
+- CodeRadar re-ranked the remaining `CodeGraph` methods: `apply` (18),
+  `plan_replace_body` (9), `plan_rename` (7), `stats` (5) and `remove_file`
+  (4) were the largest remaining edges.
+- Added op-shaped native wrappers for `stats`, `reindex`, `remove_file`,
+  `plan_replace_body`, `plan_rename`, `plan_create_entity`, `open_items`,
+  `ingest_status`, `diagnose`, `compute_embeddings`, `search_similar` and
+  `search_hybrid`, and extended the facade shim accordingly. Plans now come
+  back as `MutationPlan` dataclasses with real edits. The facade's helper
+  dataclasses are private (`_Mutation*`) so they cannot shadow the original
+  classes the gate decoder uses to replay recorded mutation cases.
+- `apply` is deliberately **not** delegated: the raw Rust `apply_plan` path
+  does not honour the Python plan's `dry_run` guard, so a dry-run plan could
+  write source. This remains Python-side until that contract is fixed.
+- `tests/test_facade_codegraph.py` now also proves `stats()` and a real
+  dry-run `plan_replace_body()` with edits (`1 passed`).
+- Gate unchanged: **4445/4445**; clippy/fmt/cutover green.

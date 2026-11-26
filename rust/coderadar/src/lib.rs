@@ -1580,6 +1580,168 @@ fn backfill_commit_messages_op(
         .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
 }
 
+fn value_result(py: Python<'_>, result: Result<serde_json::Value, String>) -> PyResult<Py<PyAny>> {
+    result
+        .map_err(error)
+        .and_then(|value| crate::pyconv::ToPy::to_py(&value, py))
+}
+
+fn loaded_snap() -> Result<std::sync::Arc<core_indexer::types::ProjectedGraph>, String> {
+    crate::state::projection()
+        .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())
+}
+
+#[pyfunction]
+#[pyo3(name = "stats_op", signature = ())]
+fn stats_op(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let snap = loaded_snap().map_err(error)?;
+    value_result(py, Ok(core_indexer::api::stats_full(&snap)))
+}
+
+#[pyfunction]
+#[pyo3(name = "reindex_op", signature = (root=None))]
+fn reindex_op(py: Python<'_>, root: Option<String>) -> PyResult<Py<PyAny>> {
+    let root_path = root
+        .map(std::path::PathBuf::from)
+        .or_else(crate::state::root)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let report =
+        core_indexer::api::analyze(&root_path.to_string_lossy(), false, &[]).map_err(error)?;
+    crate::state::load(&root_path).map_err(error)?;
+    value_result(py, Ok(report))
+}
+
+#[pyfunction]
+#[pyo3(name = "remove_file_op", signature = (file_path, lineage=None))]
+fn remove_file_op(
+    py: Python<'_>,
+    file_path: String,
+    lineage: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    value_result(
+        py,
+        core_indexer::api::remove_file_observed(&file_path, lineage.as_deref()),
+    )
+}
+
+#[pyfunction]
+#[pyo3(name = "plan_replace_body_op", signature = (entity_id, new_body, expected_hash=None, dry_run=true))]
+fn plan_replace_body_op(
+    py: Python<'_>,
+    entity_id: String,
+    new_body: String,
+    expected_hash: Option<String>,
+    dry_run: bool,
+) -> PyResult<Py<PyAny>> {
+    let snap = loaded_snap().map_err(error)?;
+    let (id, plan) =
+        core_indexer::api::plan_replace_body(&entity_id, &new_body, expected_hash, dry_run, &snap)
+            .map_err(error)?;
+    value_result(py, Ok(serde_json::json!({ "id": id, "plan": plan })))
+}
+
+#[pyfunction]
+#[pyo3(name = "plan_rename_op", signature = (entity_id, new_name, dry_run=true))]
+fn plan_rename_op(
+    py: Python<'_>,
+    entity_id: String,
+    new_name: String,
+    dry_run: bool,
+) -> PyResult<Py<PyAny>> {
+    let snap = loaded_snap().map_err(error)?;
+    let (id, plan) =
+        core_indexer::api::plan_rename(&entity_id, &new_name, dry_run, &snap).map_err(error)?;
+    value_result(py, Ok(serde_json::json!({ "id": id, "plan": plan })))
+}
+
+#[pyfunction]
+#[pyo3(name = "plan_create_entity_op", signature = (target_file, anchor, code, dry_run=true))]
+fn plan_create_entity_op(
+    py: Python<'_>,
+    target_file: String,
+    anchor: String,
+    code: String,
+    dry_run: bool,
+) -> PyResult<Py<PyAny>> {
+    let snap = loaded_snap().map_err(error)?;
+    let (id, plan) =
+        core_indexer::api::plan_create_entity(&target_file, &anchor, &code, dry_run, &snap)
+            .map_err(error)?;
+    value_result(py, Ok(serde_json::json!({ "id": id, "plan": plan })))
+}
+
+#[pyfunction]
+#[pyo3(name = "apply_plan_op", signature = (id))]
+fn apply_plan_op(py: Python<'_>, id: String) -> PyResult<Py<PyAny>> {
+    value_result(py, core_indexer::api::apply_plan(&id))
+}
+
+#[pyfunction]
+#[pyo3(name = "open_items_op", signature = (scope=None))]
+fn open_items_op(py: Python<'_>, scope: Option<String>) -> PyResult<Py<PyAny>> {
+    let store = crate::state::store().map_err(error)?;
+    let items = core_indexer::annotations::open_items(&store, scope.as_deref())
+        .map_err(|e| format!("EngineError: {e:?}"))
+        .map_err(error)?;
+    let rows = serde_json::to_value(items)
+        .map_err(|e| format!("EngineError: {e:?}"))
+        .map_err(error)?;
+    value_result(py, Ok(rows))
+}
+
+#[pyfunction]
+#[pyo3(name = "ingest_status_op", signature = ())]
+fn ingest_status_op(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let store = crate::state::store().map_err(error)?;
+    value_result(
+        py,
+        core_indexer::api::ingest_status(&store).map_err(|e| format!("EngineError: {e:?}")),
+    )
+}
+
+#[pyfunction]
+#[pyo3(name = "diagnose_op", signature = (unresolved=false, low_confidence=false))]
+fn diagnose_op(py: Python<'_>, unresolved: bool, low_confidence: bool) -> PyResult<Py<PyAny>> {
+    value_result(py, crate::port::diagnose(unresolved, low_confidence))
+}
+
+#[pyfunction]
+#[pyo3(name = "compute_embeddings_op", signature = (model_name=None, batch_size=32, recompute=false))]
+fn compute_embeddings_op(
+    py: Python<'_>,
+    model_name: Option<String>,
+    batch_size: i64,
+    recompute: bool,
+) -> PyResult<Py<PyAny>> {
+    value_result(
+        py,
+        crate::port::compute_embeddings_op(model_name, batch_size, recompute),
+    )
+}
+
+#[pyfunction]
+#[pyo3(name = "search_similar_op", signature = (query, top_k=10))]
+fn search_similar_op(
+    py: Python<'_>,
+    query: pyo3::Bound<'_, PyAny>,
+    top_k: i64,
+) -> PyResult<Py<PyAny>> {
+    let query: serde_json::Value = crate::pyconv::FromPy::from_py(&query).map_err(error)?;
+    value_result(py, crate::port::search_similar_op(query, top_k))
+}
+
+#[pyfunction]
+#[pyo3(name = "search_hybrid_op", signature = (query, top_k=10, query_text=String::from("")))]
+fn search_hybrid_op(
+    py: Python<'_>,
+    query: pyo3::Bound<'_, PyAny>,
+    top_k: i64,
+    query_text: String,
+) -> PyResult<Py<PyAny>> {
+    let query: serde_json::Value = crate::pyconv::FromPy::from_py(&query).map_err(error)?;
+    value_result(py, crate::port::search_hybrid_op(query, top_k, query_text))
+}
+
 #[pymodule]
 #[pyo3(name = "_native")]
 fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1688,5 +1850,18 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sync_git_op, m)?)?;
     m.add_function(wrap_pyfunction!(reingest_merged_commits_op, m)?)?;
     m.add_function(wrap_pyfunction!(backfill_commit_messages_op, m)?)?;
+    m.add_function(wrap_pyfunction!(stats_op, m)?)?;
+    m.add_function(wrap_pyfunction!(reindex_op, m)?)?;
+    m.add_function(wrap_pyfunction!(remove_file_op, m)?)?;
+    m.add_function(wrap_pyfunction!(plan_replace_body_op, m)?)?;
+    m.add_function(wrap_pyfunction!(plan_rename_op, m)?)?;
+    m.add_function(wrap_pyfunction!(plan_create_entity_op, m)?)?;
+    m.add_function(wrap_pyfunction!(apply_plan_op, m)?)?;
+    m.add_function(wrap_pyfunction!(open_items_op, m)?)?;
+    m.add_function(wrap_pyfunction!(ingest_status_op, m)?)?;
+    m.add_function(wrap_pyfunction!(diagnose_op, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_embeddings_op, m)?)?;
+    m.add_function(wrap_pyfunction!(search_similar_op, m)?)?;
+    m.add_function(wrap_pyfunction!(search_hybrid_op, m)?)?;
     Ok(())
 }

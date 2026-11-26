@@ -445,5 +445,25 @@
     ],
     "test": "tests/test_facade_codegraph.py",
     "rule": "delegate op-shaped methods only; do not fake renderer-shaped APIs"
+  },
+  "unit27": {
+    "facade_methods": [
+      "stats",
+      "reindex",
+      "remove_file",
+      "plan_replace_body",
+      "plan_rename",
+      "plan_create_entity",
+      "open_items",
+      "ingest_status",
+      "diagnose",
+      "compute_embeddings",
+      "search_similar",
+      "search_hybrid"
+    ],
+    "not_delegated": [
+      "apply"
+    ],
+    "reason": "apply_plan does not honour dry_run guard"
   }
 }

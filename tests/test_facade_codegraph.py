@@ -30,7 +30,11 @@ note = g.annotate("app.py::module", "- [x] facade test")
 assert note.get("id")
 rows = g.annotations_on("app.py::module")["versions"]
 assert any("facade test" in str(row) for row in rows)
-print(json.dumps({"stats": sorted(g.stats_result), "rows": len(rows)}))
+stats = g.stats()
+assert "modules" in stats
+plan = g.plan_replace_body("app.py::alpha", "return 2", None, True)
+assert plan.edits and plan.affected_files
+print(json.dumps({"stats": sorted(g.stats_result), "rows": len(rows), "edits": len(plan.edits)}))
 """
     env = os.environ.copy()
     env["PYTHONPATH"] = str(FACADE)
