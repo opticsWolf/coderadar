@@ -34,7 +34,10 @@ stats = g.stats()
 assert "modules" in stats
 plan = g.plan_replace_body("app.py::alpha", "return 2", None, True)
 assert plan.edits and plan.affected_files
-print(json.dumps({"stats": sorted(g.stats_result), "rows": len(rows), "edits": len(plan.edits)}))
+result = g.apply(plan)
+assert result.status == "Applied", result.raw
+assert "return 2" in open("app.py", encoding="utf-8").read()
+print(json.dumps({"stats": sorted(g.stats_result), "rows": len(rows), "edits": len(plan.edits), "status": result.status}))
 """
     env = os.environ.copy()
     env["PYTHONPATH"] = str(FACADE)

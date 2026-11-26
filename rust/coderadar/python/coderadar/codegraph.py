@@ -353,6 +353,49 @@ class CodeGraph:
             _native.plan_create_entity_op(target_file, anchor, code, dry_run),
         )
 
+    def plan_update_signature(
+        self,
+        entity_id: str,
+        new_signature: str,
+        inject_defaults: bool = False,
+        dry_run: bool = True,
+    ) -> _MutationPlan:
+        return _plan(
+            "update_signature",
+            _native.plan_update_signature_op(
+                entity_id, new_signature, inject_defaults, dry_run
+            ),
+        )
+
+    def apply(self, plan: _MutationPlan) -> _MutationResult:
+        """Apply a plan, then sync each affected file into the live graph.
+
+        The disk engine does not own graph synchronization, so this facade
+        performs the same follow-up sync the Python handle did. ``status`` is
+        only ``Applied`` when those syncs succeed.
+        """
+        raw = _native.apply_plan_op(plan.id)
+        data = raw if isinstance(raw, dict) else {}
+        disk = str(data.get("disk_status", ""))
+        files_written = list(data.get("files_written", []) or [])
+        if disk in {"RejectedStale", "RejectedPolicy"}:
+            status = disk
+        elif disk == "Installed":
+            for file in plan.affected_files:
+                _native.update_file(file, None)
+            status = "Applied"
+        elif disk == "Restored":
+            status = "RolledBack"
+        else:
+            status = "ApplyIncomplete"
+        return _MutationResult(
+            status=status,
+            files_written=files_written,
+            syntax_errors=list(data.get("errors", []) or []),
+            attempt_id=str(data.get("attempt_id", "") or ""),
+            raw=data,
+        )
+
     def open_items(self, scope: str | None = None) -> Any:
         return _native.open_items_op(scope)
 

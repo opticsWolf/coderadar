@@ -638,9 +638,25 @@ new recorded unit.
   back as `MutationPlan` dataclasses with real edits. The facade's helper
   dataclasses are private (`_Mutation*`) so they cannot shadow the original
   classes the gate decoder uses to replay recorded mutation cases.
-- `apply` is deliberately **not** delegated: the raw Rust `apply_plan` path
-  does not honour the Python plan's `dry_run` guard, so a dry-run plan could
-  write source. This remains Python-side until that contract is fixed.
+- `apply` was initially withheld because the raw Rust `apply_plan` path does
+  not carry a `dry_run` guard. Unit 28 resolves this by following the
+  original contract: `dry_run` only affects the plan preview, and `apply`
+  writes then syncs the affected files.
 - `tests/test_facade_codegraph.py` now also proves `stats()` and a real
   dry-run `plan_replace_body()` with edits (`1 passed`).
+- Gate unchanged: **4445/4445**; clippy/fmt/cutover green.
+
+### Unit 28 proof (mutation apply and signature plans)
+
+- CodeRadar still ranked `apply` (18 callers) as the largest un-delegated
+  `CodeGraph` edge. Inspection of the Python original confirmed `dry_run`
+  is a preview flag, not a guard on `apply`; Rust matches that contract.
+- Added `plan_update_signature_op` plus facade methods for
+  `plan_update_signature` and `apply`. `apply` calls the Rust disk engine,
+  syncs every affected file through `update_file`, and only reports
+  `Applied` after those syncs succeed; rejections and incomplete outcomes
+  keep their explicit statuses.
+- `tests/test_facade_codegraph.py` now applies a dry-run plan in a temp
+  project and asserts the source changed to `return 2` with status
+  `Applied` (`1 passed`).
 - Gate unchanged: **4445/4445**; clippy/fmt/cutover green.

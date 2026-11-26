@@ -1655,6 +1655,27 @@ fn plan_rename_op(
 }
 
 #[pyfunction]
+#[pyo3(name = "plan_update_signature_op", signature = (entity_id, new_signature, inject_defaults=false, dry_run=true))]
+fn plan_update_signature_op(
+    py: Python<'_>,
+    entity_id: String,
+    new_signature: String,
+    inject_defaults: bool,
+    dry_run: bool,
+) -> PyResult<Py<PyAny>> {
+    let snap = loaded_snap().map_err(error)?;
+    let (id, plan) = core_indexer::api::plan_update_signature(
+        &entity_id,
+        &new_signature,
+        inject_defaults,
+        dry_run,
+        &snap,
+    )
+    .map_err(error)?;
+    value_result(py, Ok(serde_json::json!({ "id": id, "plan": plan })))
+}
+
+#[pyfunction]
 #[pyo3(name = "plan_create_entity_op", signature = (target_file, anchor, code, dry_run=true))]
 fn plan_create_entity_op(
     py: Python<'_>,
@@ -1855,6 +1876,7 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(remove_file_op, m)?)?;
     m.add_function(wrap_pyfunction!(plan_replace_body_op, m)?)?;
     m.add_function(wrap_pyfunction!(plan_rename_op, m)?)?;
+    m.add_function(wrap_pyfunction!(plan_update_signature_op, m)?)?;
     m.add_function(wrap_pyfunction!(plan_create_entity_op, m)?)?;
     m.add_function(wrap_pyfunction!(apply_plan_op, m)?)?;
     m.add_function(wrap_pyfunction!(open_items_op, m)?)?;

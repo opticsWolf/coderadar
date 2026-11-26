@@ -461,9 +461,17 @@
       "search_similar",
       "search_hybrid"
     ],
-    "not_delegated": [
+    "not_delegated": [],
+    "reason": "superseded by unit28: dry_run is preview-only in the Python original"
+  },
+  "unit28": {
+    "facade_methods": [
+      "plan_update_signature",
       "apply"
     ],
-    "reason": "apply_plan does not honour dry_run guard"
+    "native_ops": [
+      "plan_update_signature_op"
+    ],
+    "contract": "dry_run affects preview only; apply writes and syncs"
   }
 }
