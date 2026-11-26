@@ -370,13 +370,25 @@
       "nestjs_module_providers",
       "aspnet_mapget"
     ],
-    "cases": 4444,
+    "cases": 4445,
     "deliberately_not_emitted": [
       "fastapi_app_add_middleware",
       "flask_hooks",
       "go_use",
       "spring_autowired",
       "aspnet_usemiddleware"
+    ],
+    "stable_tells": [
+      "app/controllers/",
+      "@Module",
+      "[ApiController]"
     ]
+  },
+  "unit23": {
+    "tool": "rust/bench.py",
+    "support": "rust/bench_support/sitecustomize.py",
+    "functions_benchmarked": 76,
+    "faster_than_python": 42,
+    "median_speedup": 1.84
   }
 }

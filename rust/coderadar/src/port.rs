@@ -3153,6 +3153,7 @@ fn detect_frameworks(source: &str) -> Vec<String> {
             Some("express")
         } else if trimmed.starts_with("from '@nestjs")
             || line.starts_with("@Controller(")
+            || line.starts_with("@Module(")
             || (line.starts_with('{') && trimmed.contains("\"@nestjs/core\""))
         {
             Some("nestjs")
@@ -3174,7 +3175,9 @@ fn detect_frameworks(source: &str) -> Vec<String> {
             || line.starts_with("has_many ")
             || line.starts_with("belongs_to ")
             || line.starts_with("has_one ")
-            || (line.starts_with("class ") && trimmed.contains("applicationrecord"))
+            || (line.starts_with("class ")
+                && (trimmed.contains("applicationrecord")
+                    || trimmed.contains("applicationcontroller")))
         {
             Some("rails")
         } else if line.starts_with("Route::get(") || line.starts_with("Route::post(") {

@@ -65,7 +65,7 @@ def test_rails_callbacks(tmp_path):
         tmp_path,
         {
             "Gemfile": "gem 'rails', '~> 7.0'\n",
-            "user_controller.rb": """\
+            "app/controllers/users_controller.rb": """\
 class UsersController < ApplicationController
   before_action :authenticate_user, only: [:edit]
   after_action :log_request
@@ -73,7 +73,7 @@ class UsersController < ApplicationController
 end
 """,
         },
-        "user_controller.rb",
+        "app/controllers/users_controller.rb",
     )
     assert report["routes"] >= 2
 

@@ -471,15 +471,35 @@ patches needed after any re-bridge.
 - FastAPI `Depends`, Flask hooks, Go `r.Use`, Spring `@Autowired` / `@Bean`
   and ASP.NET `UseMiddleware` were checked and are deliberately not minted:
   the Python resolvers do not emit edges for those patterns either.
-- `diff`: **4444/4444**; `gate`: **passed**; workspace clippy: passed.
+- `diff`: **4445/4445**; `gate`: **passed**; workspace clippy: passed.
 - Smoke matched Python counts: Express 3/4, NestJS 0/2, Rails 2/2,
   ASP.NET 1/1 routes/handlers.
+- A later gate found three framework cases whose Python expectations
+  depended on pytest temp directories that had been reclaimed. They were
+  re-recorded with self-contained source text and stable project tells
+  (`app/controllers/`, `@Module`, `[ApiController]`), and source-level
+  detection was added so the cases no longer depend on directory lifetime.
+
+### Unit 23 proof (benchmark harness)
+
+- `python rust/bench.py --min-ms 20 --json` now runs the real benchmark
+  instead of failing with `ModuleNotFoundError: No module named
+  'coderadar.ops'`.
+- It measured all 76 recorded functions; 42 were faster than Python and the
+  median speedup was ~1.84x. Small string/inspection helpers were slower
+  because they cross the PyO3/JSON boundary, which is expected for the thin
+  facade; core graph operations were 35-190x faster.
+- The shim is scoped to the benchmark subprocess and never edits the
+  generated driver or Python sources.
 
 ## Remaining
 
 - MCP parity: 45 Rust tools are exposed; the remaining Python-only tools
   are primarily framework/experimental surfaces.
-- `rust-anything bench` remains unavailable in this harness (the driver
-  cannot import `coderadar.ops` from its generated working directory).
+- `rust-anything bench` runs through `python rust/bench.py`. The generated
+  driver imports the Rust facade as `coderadar` before the original
+  `coderadar.ops`; `rust/bench_support/sitecustomize.py` clears that cached
+  facade immediately before the original package import so both sides can
+  be timed in one process.
 - Shadow `enable` (replacing the Python CLI on PATH) is intentionally not
   applied; use `rust/cutover.py --install DIR` after review.
