@@ -390,5 +390,19 @@
     "functions_benchmarked": 76,
     "faster_than_python": 42,
     "median_speedup": 1.84
+  },
+  "unit24": {
+    "audit": "CodeRadar query + CLI help comparison",
+    "python_functions": 768,
+    "bridged": 76,
+    "aliases_added": [
+      "get-smells",
+      "find-clones",
+      "find-scaffolding",
+      "history"
+    ],
+    "store_repair_api": true,
+    "cutover_checks": 4,
+    "local_only_commands": 9
   }
 }

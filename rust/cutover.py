@@ -32,6 +32,21 @@ VERIFY_COMMANDS: tuple[tuple[str, ...], ...] = (
     ("module-children", "py_agent/src/coderadar::module"),
 )
 
+# Local process/admin commands: deliberately not part of the Rust binary.
+LOCAL_ONLY_COMMANDS = frozenset(
+    {
+        "docs",
+        "exclude",
+        "git",
+        "load-snapshot",
+        "rebuild-store",
+        "shell",
+        "skills",
+        "visualize",
+        "watch",
+    }
+)
+
 
 def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -68,6 +83,40 @@ def json_from(text: str) -> object | None:
     return found
 
 
+def cli_commands(argv: list[str]) -> set[str]:
+    """Read the command names from a Click/clap ``--help`` listing."""
+    import re
+
+    result = run([*argv, "--help"])
+    return {
+        match.group(1)
+        for line in (result.stdout + result.stderr).splitlines()
+        if (match := re.match(r"^  ([a-z][a-z-]*)(?:\s{2,}|$)", line))
+    }
+
+
+def verify_command_coverage() -> bool:
+    """Catch missing CLI aliases before a cutover, excluding local-only commands."""
+    import re
+
+    py = cli_commands([PY_CLI])
+    rs = cli_commands([str(RUST_BIN)])
+    source = (ROOT / "rust" / "coderadar" / "src" / "cli.rs").read_text(
+        encoding="utf-8"
+    )
+    rs |= set(re.findall(r'^        "([a-z][a-z-]*)" =>', source, re.MULTILINE))
+    missing = py - rs - LOCAL_ONLY_COMMANDS
+    if missing:
+        print("FAIL  CLI command coverage")
+        print(f"  missing in Rust: {sorted(missing)}")
+        return False
+    print(
+        f"pass  CLI command coverage ({len(py - LOCAL_ONLY_COMMANDS)} shared commands, "
+        f"{len(LOCAL_ONLY_COMMANDS)} local-only)"
+    )
+    return True
+
+
 def normalize(args: tuple[str, ...], value: object | None) -> object | None:
     """Make volatile/mutable fields explicit instead of pretending byte parity."""
     if args[0] == "status" and isinstance(value, dict):
@@ -84,6 +133,8 @@ def verify() -> int:
         print(f"missing {RUST_BIN} — run with --build first", file=sys.stderr)
         return 2
     failures = 0
+    if not verify_command_coverage():
+        failures += 1
     for args in VERIFY_COMMANDS:
         py = run([PY_CLI, *args])
         rs = run([str(RUST_BIN), *args])
@@ -98,7 +149,8 @@ def verify() -> int:
             print(f"FAIL  {label}")
             print(f"  python rc={py.returncode} json={str(py_json)[:200]}")
             print(f"  rust   rc={rs.returncode} json={str(rs_json)[:200]}")
-    print(f"{len(VERIFY_COMMANDS) - failures}/{len(VERIFY_COMMANDS)} verified")
+    total = len(VERIFY_COMMANDS) + 1
+    print(f"{total - failures}/{total} verified")
     return 1 if failures else 0
 
 

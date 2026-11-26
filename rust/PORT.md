@@ -505,8 +505,34 @@ patches needed after any re-bridge.
   bridged by rust-anything; their behavior is provided by the data-shaped
   `framework_resolve_reference` / `framework_resolve_route` API instead.
 
+### Unit 24 proof (CodeRadar CLI-coverage audit)
+
+- Queried the live CodeRadar graph (`coderadar status`, `coderadar query`)
+  over 768 Python functions and 5,153 indexed functions. 76 names are
+  bridged/gated; the remaining names are mostly front-door plumbing,
+  methods covered by consolidated extractors, or helpers behind Rust-native
+  equivalents.
+- Compared `coderadar --help` with `coderadar-rs --help` plus the captured
+  parity arms. This found four missing Python spellings for already-ported
+  ops: `get-smells`, `find-clones`, `find-scaffolding` and `history`.
+  They are now captured aliases. `store-repair` was also missing: added a
+  pure-Rust `core_indexer::api::store_repair` and a CLI arm; its
+  missing-store and clean-store outputs match Python.
+- `rust/cutover.py --verify` now includes CLI command-coverage drift
+  detection: **4/4** checks pass (46 shared commands, 9 deliberately
+  local-only).
+- Scope note: `ops.annotate`, `annotations_on`, `comment`, `comments_on`,
+  `annotation_history`, `revise_annotation`, `retire_annotation`,
+  `comment_history`, `sync_git`, `reingest_merged_commits` and
+  `backfill_commit_messages` are not bridge exports, but are implemented in
+  `annotations_ops.rs` / `port.rs` and exposed through CLI and MCP.
+
 ## Remaining
 
+- Nine CLI commands are deliberately local-only and absent from the Rust
+  binary: `docs`, `exclude`, `git`, `load-snapshot`, `rebuild-store`,
+  `shell`, `skills`, `visualize`, `watch`. They are process/admin surfaces,
+  not graph ops; cutover verification allows exactly this list.
 - Shadow `enable` (replacing the Python CLI on PATH) is intentionally not
   applied; use `rust/cutover.py --install DIR` after review. Applying it
   requires explicit approval.

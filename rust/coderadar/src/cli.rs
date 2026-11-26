@@ -1,9 +1,10 @@
 //! Unit 4: the Rust CLI front door.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::{annotations_ops as notes, port, render, state};
 
@@ -320,7 +321,84 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
         return Err("missing parity command".to_string());
     };
     let tail = &args[1..];
+    let external_flag = |name: &str| -> Option<String> {
+        tail.iter()
+            .position(|value| value == name)
+            .and_then(|index| tail.get(index + 1))
+            .cloned()
+    };
     match name.as_str() {
+        "get-smells" => {
+            ensure_loaded(project)?;
+            let rows = port::get_smells(
+                external_flag("--entity-id"),
+                external_flag("--rule-id"),
+                external_flag("--strictness").unwrap_or_else(|| "normal".to_string()),
+            )?;
+            print_value(
+                &Value::Array(rows),
+                &external_flag("--format").unwrap_or_else(|| "text".to_string()),
+                |value| render::rows(rows_as_array(value)),
+            );
+        }
+        "find-clones" => {
+            ensure_loaded(project)?;
+            let rows = port::find_clones(
+                external_flag("--min-lines")
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .unwrap_or(10),
+                external_flag("--min-similarity")
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .unwrap_or(0.8),
+                external_flag("--max-groups")
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .unwrap_or(100),
+            )?;
+            print_value(
+                &Value::Array(rows),
+                &external_flag("--format").unwrap_or_else(|| "text".to_string()),
+                |value| render::rows(rows_as_array(value)),
+            );
+        }
+        "find-scaffolding" => {
+            ensure_loaded(project)?;
+            let rows = port::find_scaffolding(
+                tail.iter().any(|value| value == "--include-secrets"),
+                external_flag("--max-findings")
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .unwrap_or(100),
+            )?;
+            print_value(
+                &Value::Array(rows),
+                &external_flag("--format").unwrap_or_else(|| "text".to_string()),
+                |value| render::rows(rows_as_array(value)),
+            );
+        }
+        "store-repair" => {
+            let db = external_flag("--db").map(PathBuf::from).unwrap_or_else(|| {
+                find_root(project)
+                    .join(".coderadar")
+                    .join("store")
+                    .join("coderadar.db")
+            });
+            let shown = db.to_string_lossy().into_owned();
+            let result = if !db.exists() {
+                json!({ "missing": shown.clone() })
+            } else if tail.iter().any(|value| value == "--delete") {
+                fs::remove_file(&db)
+                    .map_err(|error| format!("failed to delete {shown}: {error}"))?;
+                json!({ "deleted": shown.clone() })
+            } else {
+                core_indexer::api::store_repair(&shown)?
+            };
+            println!("{}", port::store_repair(shown, result)?);
+        }
+        "history" => {
+            ensure_loaded(project)?;
+            let file = tail.first().ok_or_else(|| "missing file".to_string())?;
+            let result = port::history_of(file.clone(), None)?;
+            println!("{}", render::json_text(&result));
+        }
         "revise-annotation" => {
             ensure_loaded(project)?;
             let id = tail

@@ -2072,3 +2072,40 @@ pub fn stats_full(snap: &ProjectedGraph) -> Value {
     }
     value
 }
+
+/// Inspect a Macrame store for load-blocking rows and retire safe leftovers.
+///
+/// Mirrors `ops.store_repair` without a Python interpreter: reports live v1
+/// leftovers, live unreadable rows, edges closed by retirement and legacy
+/// id spellings. The caller owns the `--delete` policy.
+pub fn store_repair(db_path: &str) -> Result<Value, String> {
+    use crate::storage::{classify_v2_concept, CodeGraphStore, V2ConceptClass};
+
+    let store = CodeGraphStore::open(db_path)
+        .map_err(|e| format!("store repair failed for {db_path}: {e:?}"))?;
+    let live = store
+        .live_concept_contents()
+        .map_err(|e| format!("store repair failed for {db_path}: {e:?}"))?;
+    let mut v1 = 0usize;
+    let mut unreadable = 0usize;
+    for (_, content) in &live {
+        match classify_v2_concept(content) {
+            V2ConceptClass::V1Leftover => v1 += 1,
+            V2ConceptClass::Unreadable => unreadable += 1,
+            _ => {}
+        }
+    }
+    let (retired, edges) = store
+        .retire_v1_leftovers()
+        .map_err(|e| format!("store repair failed for {db_path}: {e:?}"))?;
+    let legacy_ids = crate::legacy_spelled_concept_ids(&store)
+        .map_err(|e| format!("store repair failed for {db_path}: {e:?}"))?
+        .len();
+    Ok(json!({
+        "v1_found": v1,
+        "v1_retired": retired,
+        "edges_retired": edges,
+        "unreadable_live": unreadable,
+        "legacy_ids": legacy_ids,
+    }))
+}
