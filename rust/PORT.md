@@ -496,7 +496,7 @@ patches needed after any re-bridge.
 
 - All recorded port units are implemented, gated and pushed. The last
   run was **4445/4445** recorded cases, workspace clippy/fmt/tests green,
-  cutover verification **3/3**, and `python rust/bench.py` measuring 76
+  cutover verification **4/4**, and `python rust/bench.py` measuring 76
   functions.
 - MCP parity: Rust exposes 45 tools; the Python tool-name set is fully
   covered. The CLI keeps additional parity commands in the captured
@@ -527,12 +527,83 @@ patches needed after any re-bridge.
   `backfill_commit_messages` are not bridge exports, but are implemented in
   `annotations_ops.rs` / `port.rs` and exposed through CLI and MCP.
 
-## Remaining
+## Updated port plan (CodeRadar audit, Unit 25)
 
-- Nine CLI commands are deliberately local-only and absent from the Rust
-  binary: `docs`, `exclude`, `git`, `load-snapshot`, `rebuild-store`,
-  `shell`, `skills`, `visualize`, `watch`. They are process/admin surfaces,
-  not graph ops; cutover verification allows exactly this list.
-- Shadow `enable` (replacing the Python CLI on PATH) is intentionally not
-  applied; use `rust/cutover.py --install DIR` after review. Applying it
-  requires explicit approval.
+### Evidence from the live CodeRadar store
+
+- `coderadar status --format json`: fresh store, 329 modules, 5,156
+  functions, 11,569 call edges, **0 unresolved structural edges**.
+- `coderadar query` over `py_agent/src/coderadar`: 768 free functions plus
+  292 methods = 1,060 Python callables. 76 names are bridged/gated; 798
+  rows remain unbridged by name.
+- Unbridged rows with `caller_count >= 2`, by area: `mcp` 61, `resolvers`
+  60, `__init__.py` 43, `ops.py` 25, `visualizers` 15, `cli.py` 13, `query`
+  11, `embedding` 11, `skills` 8, `coldstart.py` 5, `mutation` 4,
+  `excludes.py` 4, `project_state.py` 4, `render.py` 4, `framework.py` 4,
+  `lsp` 4, `docs` 3, `config.py` 2, `markers.py` 1.
+- `coderadar diagnose --unresolved` reports only external/builtin call
+  targets (e.g. `Path.resolve`, `setdefault`, `console.print`). There is no
+  missing in-repo call edge left to chase.
+- `coderadar affected __init__.py::analyze --max-depth 2`: 142 dependents;
+  154 of 162 call edges come from tests. Production callers are
+  `ops.reindex`, `cli._ensure_graph`, `cli.init`, `coldstart.build_graph`
+  and `CodeGraph.watch`; all but `watch` have Rust equivalents
+  (`api::analyze`, `port::reindex_op`, `cli::run`).
+- MCP: 35 Python tool methods, 45 Rust tools, missing `[]`.
+- CLI: 46 shared commands, 9 deliberate local-only commands; drift is now
+  guarded by `python rust/cutover.py --verify`.
+
+### Decisions from the audit
+
+No additional graph-op unit is implied by the remaining rows. A future
+unit is opened only when CodeRadar shows a caller that cannot be served by
+an existing Rust front door, not merely because a Python name is unbridged.
+
+1. **Keep the gated core frozen.** `rust-anything gate rust/coderadar`
+   (4445/4445) and `cargo clippy --workspace --all-targets -- -D warnings`
+   are the merge bar. New behavior needs a recording through rust-anything,
+   never a hand-edited `cases.jsonl`.
+2. **Framework resolvers:** the 14 `extract` methods (57 callers) are
+   reached through `run_framework_extraction` / `refresh_framework_file`
+   and recorded fixtures. New framework families require a new focused
+   test and recorded cases; do not re-port existing methods one by one.
+3. **Python facade:** `analyze` / `CodeGraph` are still Python-side. Rust
+   has `core_indexer::api::analyze`, but the public Python class is not a
+   thin wrapper yet. Open a unit only if a real Python caller must switch;
+   the return-type contract needs explicit approval because a PyO3
+   replacement would return a stats JSON rather than a live `CodeGraph`.
+4. **Annotation / git ops not in `rust-anything.json`:** `annotate`,
+   `annotations_on`, `comment`, `comments_on`, `annotation_history`,
+   `revise_annotation`, `retire_annotation`, `comment_history`,
+   `sync_git`, `reingest_merged_commits` and `backfill_commit_messages`
+   are implemented in `annotations_ops.rs` / `port.rs` and exposed through
+   CLI + MCP. Add bridge exports only when a Python direct caller is found.
+5. **Local-only CLI:** `docs`, `exclude`, `git`, `load-snapshot`,
+   `rebuild-store`, `shell`, `skills`, `visualize` and `watch` remain in the
+   Python process/admin surface. The cutover allowlist names exactly these
+   nine; any addition to it needs a deliberate decision.
+6. **Visualizers, LSP pool, MCP lifecycle/startup/lazy:** not graph ops.
+   CLI text parity is owned by `render.rs` / `render_remaining.rs`; do not
+   port these unless a new front-door requirement appears.
+7. **Callable APIs:** `resolve_reference` / `resolve_route` stay Python-side;
+   the data-shaped `framework_resolve_reference` /
+   `framework_resolve_route` API is the Rust equivalent.
+8. **Shadow `enable`:** still approval-gated. Use
+   `python rust/cutover.py --install DIR` for review-controlled cutover.
+
+### Audit loop to use before every future unit
+
+```bash
+coderadar status --format json
+coderadar query 'functions select id, name, file_path, caller_count, callee_count where file_path starts_with "py_agent/src/coderadar/" order by caller_count desc' --format json
+coderadar callers <entity-id>
+coderadar affected <entity-id> --max-depth 2
+coderadar diagnose --unresolved
+python rust/cutover.py --verify
+rust-anything gate rust/coderadar
+python rust/bench.py --min-ms 20 --json
+```
+
+Rank by `caller_count` and blast radius, then check whether the callers are
+already served by the Rust CLI/MCP. Only uncovered caller edges justify a
+new recorded unit.

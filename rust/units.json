@@ -404,5 +404,27 @@
     "store_repair_api": true,
     "cutover_checks": 4,
     "local_only_commands": 9
+  },
+  "unit25": {
+    "plan": "updated from CodeRadar audit",
+    "store": {
+      "modules": 329,
+      "functions": 5156,
+      "call_edges": 11569,
+      "unresolved": 0
+    },
+    "python_callables": 1060,
+    "bridged_names": 76,
+    "unbridged_rows": 798,
+    "mcp": {
+      "python_methods": 35,
+      "rust_tools": 45,
+      "missing": []
+    },
+    "cli": {
+      "shared": 46,
+      "local_only": 9
+    },
+    "next_unit_rule": "open only when CodeRadar shows a caller not served by Rust CLI/MCP"
   }
 }
