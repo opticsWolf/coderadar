@@ -495,5 +495,14 @@
     ],
     "update_file": "now runs file-scoped framework refresh",
     "test": "tests/test_facade_codegraph.py"
+  },
+  "unit31": {
+    "port": [
+      "status_op"
+    ],
+    "facade_methods": [
+      "status"
+    ],
+    "test": "tests/test_facade_codegraph.py"
   }
 }

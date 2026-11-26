@@ -690,3 +690,14 @@ new recorded unit.
 - `tests/test_facade_codegraph.py` covers set-checkout and the success
   branch of route refresh (`1 passed`).
 - Gate unchanged: **4445/4445**; clippy/fmt/cutover green.
+
+### Unit 31 proof (public status on the facade)
+
+- Added `port::status_op` with the Python report shape (`root`, `config`,
+  `store`, `loaded`, `stats`, `age_seconds`, `store_fresh`) and delegated
+  `CodeGraph.status()` to it through a native wrapper. Freshness walks the
+  project tree while skipping `.git`, `.coderadar`, `target` and
+  `__pycache__`.
+- `tests/test_facade_codegraph.py` now asserts `status()["loaded"]` and a
+  `stats` object (`1 passed`).
+- Gate unchanged: **4445/4445**; clippy/fmt/cutover green.

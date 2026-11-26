@@ -339,6 +339,9 @@ class CodeGraph:
     def stats(self) -> Any:
         return _native.stats_op()
 
+    def status(self) -> Any:
+        return _native.status_op()
+
     def reindex(
         self,
         with_embeddings: bool = False,

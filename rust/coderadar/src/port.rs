@@ -4481,6 +4481,65 @@ pub fn framework_resolve_route(
     Ok(Value::Array(rows))
 }
 
+/// Ops-shaped `status`: what is indexed and how fresh the store is.
+pub fn status_op(root: Option<String>) -> Result<Value, String> {
+    let root_path = root
+        .map(std::path::PathBuf::from)
+        .or_else(crate::state::root)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    let config = root_path.join(".coderadar.toml");
+    let store_dir = root_path.join(".coderadar").join("store");
+    let db = store_dir.join("coderadar.db");
+    let loaded = crate::state::projection().is_some();
+    let modified = std::fs::metadata(&db).ok().and_then(|m| m.modified().ok());
+    let age_seconds = modified
+        .and_then(|instant| std::time::SystemTime::now().duration_since(instant).ok())
+        .map(|d| d.as_secs_f64());
+    let store_fresh = modified.map(|stamp| !has_newer_source(&root_path, stamp));
+    let stats = crate::state::projection()
+        .map(|snap| core_indexer::api::stats_full(&snap))
+        .unwrap_or(Value::Null);
+    Ok(json!({
+        "root": root_path.to_string_lossy(),
+        "config": if config.is_file() { Some(config.to_string_lossy().to_string()) } else { None },
+        "store": if store_dir.is_dir() { Some(store_dir.to_string_lossy().to_string()) } else { None },
+        "loaded": loaded,
+        "stats": stats,
+        "age_seconds": age_seconds,
+        "store_fresh": store_fresh,
+    }))
+}
+
+fn has_newer_source(root: &std::path::Path, stamp: std::time::SystemTime) -> bool {
+    fn walk(dir: &std::path::Path, stamp: std::time::SystemTime) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if path.is_dir() {
+                if matches!(name, ".git" | ".coderadar" | "target" | "__pycache__") {
+                    continue;
+                }
+                if walk(&path, stamp) {
+                    return true;
+                }
+            } else if path.is_file()
+                && path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .is_some_and(|m| m > stamp)
+            {
+                return true;
+            }
+        }
+        false
+    }
+    walk(root, stamp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

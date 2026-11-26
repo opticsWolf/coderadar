@@ -32,6 +32,8 @@ rows = g.annotations_on("app.py::module")["versions"]
 assert any("facade test" in str(row) for row in rows)
 stats = g.stats()
 assert "modules" in stats
+status = g.status()
+assert status["loaded"] is True and "stats" in status
 plan = g.plan_replace_body("app.py::alpha", "return 2", None, True)
 assert plan.edits and plan.affected_files
 result = g.apply(plan)

@@ -1885,6 +1885,12 @@ fn record_checkout_op(py: Python<'_>, branch: Option<String>) -> PyResult<Py<PyA
     crate::pyconv::ToPy::to_py(&serde_json::Value::Null, py)
 }
 
+#[pyfunction]
+#[pyo3(name = "status_op", signature = (root=None))]
+fn status_op(py: Python<'_>, root: Option<String>) -> PyResult<Py<PyAny>> {
+    value_result(py, crate::port::status_op(root))
+}
+
 #[pymodule]
 #[pyo3(name = "_native")]
 fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -2011,5 +2017,6 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(export_annotations_op, m)?)?;
     m.add_function(wrap_pyfunction!(import_annotations_op, m)?)?;
     m.add_function(wrap_pyfunction!(record_checkout_op, m)?)?;
+    m.add_function(wrap_pyfunction!(status_op, m)?)?;
     Ok(())
 }
