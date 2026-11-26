@@ -37,7 +37,12 @@ assert plan.edits and plan.affected_files
 result = g.apply(plan)
 assert result.status == "Applied", result.raw
 assert "return 2" in open("app.py", encoding="utf-8").read()
-print(json.dumps({"stats": sorted(g.stats_result), "rows": len(rows), "edits": len(plan.edits), "status": result.status}))
+export = g.export_annotations()
+assert export["rows"] >= 1
+assert isinstance(g.call_sites("app.py::alpha"), list)
+report = g.import_annotations(export["payload"], "skip")
+assert report["rows"] >= 1
+print(json.dumps({"stats": sorted(g.stats_result), "rows": len(rows), "edits": len(plan.edits), "status": result.status, "exported": export["rows"]}))
 """
     env = os.environ.copy()
     env["PYTHONPATH"] = str(FACADE)

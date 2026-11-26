@@ -396,6 +396,19 @@ class CodeGraph:
             raw=data,
         )
 
+    def call_sites(self, entity_id: str) -> Any:
+        return _native.call_sites_op(entity_id)
+
+    def export_annotations(self, path: str | Path | None = None) -> Any:
+        return _native.export_annotations_op(str(path) if path is not None else None)
+
+    def import_annotations(
+        self, source: Any, on_conflict: str = "error"
+    ) -> Any:
+        if isinstance(source, Path):
+            source = str(source)
+        return _native.import_annotations_op(source, on_conflict)
+
     def open_items(self, scope: str | None = None) -> Any:
         return _native.open_items_op(scope)
 

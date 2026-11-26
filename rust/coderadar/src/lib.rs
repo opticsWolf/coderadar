@@ -1763,6 +1763,121 @@ fn search_hybrid_op(
     value_result(py, crate::port::search_hybrid_op(query, top_k, query_text))
 }
 
+#[pyfunction]
+#[pyo3(name = "call_sites_op", signature = (entity_id))]
+fn call_sites_op(py: Python<'_>, entity_id: String) -> PyResult<Py<PyAny>> {
+    let snap = loaded_snap().map_err(error)?;
+    value_result(
+        py,
+        Ok(core_indexer::api::call_sites(&snap, &entity_id).into()),
+    )
+}
+
+#[pyfunction]
+#[pyo3(name = "export_annotations_op", signature = (path=None))]
+fn export_annotations_op(py: Python<'_>, path: Option<String>) -> PyResult<Py<PyAny>> {
+    let store = crate::state::store().map_err(error)?;
+    let document = core_indexer::annotations::export_all(&store)
+        .map_err(|e| format!("EngineError: {e:?}"))
+        .map_err(error)?;
+    let value = serde_json::to_value(document)
+        .map_err(|e| format!("EngineError: {e:?}"))
+        .map_err(error)?;
+    let rows = value
+        .get("rows")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let versions = rows
+        .iter()
+        .map(|row| {
+            row.get("versions")
+                .and_then(serde_json::Value::as_array)
+                .map_or(0, Vec::len)
+        })
+        .sum::<usize>();
+    let mut kinds = serde_json::Map::new();
+    for row in &rows {
+        let kind = row
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        *kinds
+            .entry(kind.to_string())
+            .or_insert_with(|| serde_json::json!(0)) = serde_json::json!(
+            kinds
+                .get(kind)
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
+                + 1
+        );
+    }
+    let raw = serde_json::to_string(&value)
+        .map_err(|e| format!("EngineError: {e:?}"))
+        .map_err(error)?;
+    let mut report = serde_json::json!({
+        "format": value.get("format").cloned().unwrap_or(serde_json::Value::Null),
+        "exported_at": value.get("exported_at").cloned().unwrap_or(serde_json::Value::Null),
+        "rows": rows.len(),
+        "versions": versions,
+        "kinds": kinds,
+    });
+    if let Some(path) = path {
+        let target = std::path::Path::new(&path);
+        if let Some(parent) = target.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| e.to_string())
+                .map_err(error)?;
+        }
+        let tmp = target.with_file_name(format!(
+            "{}.tmp",
+            target
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("export")
+        ));
+        std::fs::write(&tmp, raw)
+            .map_err(|e| e.to_string())
+            .map_err(error)?;
+        std::fs::rename(&tmp, target)
+            .map_err(|e| e.to_string())
+            .map_err(error)?;
+        report["path"] = serde_json::json!(path);
+    } else {
+        report["payload"] = serde_json::json!(raw);
+    }
+    value_result(py, Ok(report))
+}
+
+#[pyfunction]
+#[pyo3(name = "import_annotations_op", signature = (source, on_conflict=String::from("error")))]
+fn import_annotations_op(
+    py: Python<'_>,
+    source: pyo3::Bound<'_, PyAny>,
+    on_conflict: String,
+) -> PyResult<Py<PyAny>> {
+    let value: serde_json::Value = crate::pyconv::FromPy::from_py(&source).map_err(error)?;
+    let payload = match value {
+        serde_json::Value::String(text) if text.trim_start().starts_with('{') => text,
+        serde_json::Value::String(path) => std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .map_err(error)?,
+        other => serde_json::to_string(&other)
+            .map_err(|e| e.to_string())
+            .map_err(error)?,
+    };
+    let store = crate::state::store().map_err(error)?;
+    let report = core_indexer::annotations::import_all(&store, &payload, &on_conflict)
+        .map_err(|e| format!("EngineError: {e:?}"))
+        .map_err(error)?;
+    let rows = serde_json::to_value(report)
+        .map_err(|e| format!("EngineError: {e:?}"))
+        .map_err(error)?;
+    value_result(py, Ok(rows))
+}
+
 #[pymodule]
 #[pyo3(name = "_native")]
 fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1885,5 +2000,8 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_embeddings_op, m)?)?;
     m.add_function(wrap_pyfunction!(search_similar_op, m)?)?;
     m.add_function(wrap_pyfunction!(search_hybrid_op, m)?)?;
+    m.add_function(wrap_pyfunction!(call_sites_op, m)?)?;
+    m.add_function(wrap_pyfunction!(export_annotations_op, m)?)?;
+    m.add_function(wrap_pyfunction!(import_annotations_op, m)?)?;
     Ok(())
 }

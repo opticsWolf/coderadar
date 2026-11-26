@@ -473,5 +473,16 @@
       "plan_update_signature_op"
     ],
     "contract": "dry_run affects preview only; apply writes and syncs"
+  },
+  "unit29": {
+    "facade_methods": [
+      "call_sites",
+      "export_annotations",
+      "import_annotations"
+    ],
+    "api": [
+      "core_indexer::api::call_sites"
+    ],
+    "test": "tests/test_facade_codegraph.py"
   }
 }

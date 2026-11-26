@@ -660,3 +660,17 @@ new recorded unit.
   project and asserts the source changed to `return 2` with status
   `Applied` (`1 passed`).
 - Gate unchanged: **4445/4445**; clippy/fmt/cutover green.
+
+### Unit 29 proof (annotation export/import and call sites)
+
+- CodeRadar's remaining `CodeGraph` edges were `status` (0 callers),
+  `export_annotations` / `import_annotations` (0) and `call_sites` (0);
+  the rest are local watch/batch/lifecycle helpers.
+- Added pure-Rust `api::call_sites` plus native wrappers for `call_sites`,
+  `export_annotations` and `import_annotations`, and exposed them on the
+  facade. Export keeps the Python report shape (`format`, `exported_at`,
+  `rows`, `versions`, `kinds`, `payload` or `path`); import accepts a
+  document, JSON string or path and returns the read-back report.
+- `tests/test_facade_codegraph.py` now checks call sites, an export and a
+  skip-conflict re-import in the temp project (`1 passed`).
+- Gate unchanged: **4445/4445**; clippy/fmt/cutover green.
