@@ -131,6 +131,7 @@ def test_aspnet_middleware(tmp_path):
         {
             "MyApi.csproj": '<Project Sdk="Microsoft.NET.Sdk.Web"></Project>\n',
             "Program.cs": """\
+[ApiController]
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 app.UseMiddleware<RequestLoggingMiddleware>();
