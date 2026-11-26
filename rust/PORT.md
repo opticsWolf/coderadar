@@ -577,11 +577,10 @@ an existing Rust front door, not merely because a Python name is unbridged.
    `sync_git`, `reingest_merged_commits` and `backfill_commit_messages`
    are implemented in `annotations_ops.rs` / `port.rs` and exposed through
    CLI + MCP. Add bridge exports only when a Python direct caller is found.
-5. **Local-only CLI:** `docs`, `git`, `rebuild-store`, `shell`, `skills`,
-   `visualize` and `watch` remain in the Python process/admin surface.
-   `load-snapshot` and `exclude` were subsequently ported (Units 32/33).
-   The cutover allowlist names exactly these seven; any addition needs a
-   deliberate decision.
+5. **Local-only CLI:** none remain. `load-snapshot`, `exclude`, `docs`,
+   `git`, `rebuild-store`, `shell`, `skills`, `visualize` and `watch` were
+   ported in Units 32-34. Cutover now expects 55 shared commands and an
+   empty local-only allowlist.
 6. **Visualizers, LSP pool, MCP lifecycle/startup/lazy:** not graph ops.
    CLI text parity is owned by `render.rs` / `render_remaining.rs`; do not
    port these unless a new front-door requirement appears.
@@ -728,3 +727,36 @@ new recorded unit.
   local-only**; verification **4/4**.
 - Smoke in a temp project matched Python for list, add, duplicate add and
   remove. Gate unchanged: **4445/4445**; clippy/fmt green.
+
+### Unit 34 proof (remaining CLI surface)
+
+- `docs` and `skills` now use embedded assets (`src/assets.rs`), so the
+  Rust binary is standalone: list/show/install work without the Python
+  package directory. Frontmatter descriptions are parsed from the embedded
+  skill text.
+- `git blame`, `git is-clean` and `git diff` use pure-Rust engine APIs
+  (`api::git_blame`, `api::git_worktree_clean`, `api::git_changed_files`).
+- `rebuild-store` is a fresh-process orchestration in `port::rebuild_op`:
+  move the old store aside, export annotations from the backup, replay
+  each lineage, record branch addresses, heal merged commits, re-import
+  with read-back verification and optionally embed the final state.
+- `visualize` gained real-data Mermaid and Graphviz renderers
+  (`src/visualize.rs`) for hierarchy, dependencies and call-graph; empty
+  data is an explicit `NothingToVisualize` error.
+- `shell` supports `query`, `traverse`, `callers`, `stats`, `help` and
+  `exit` against the loaded Rust projection.
+- `watch` polls configured paths (or git refs with `--git`) and updates
+  changed files through the Rust projection; it prints banners with an
+  explicit stdout flush so it behaves under redirection.
+- `rust/cutover.py` now verifies **55 shared commands, 0 local-only**, and
+  still passes **4/4** overall checks.
+- Smoke: docs/skills list/show/install, git diff/is-clean, rebuild-store
+  on a fresh temp repo, three visualizer types, shell commands and watch
+  startup all produced real output. Gate unchanged: **4445/4445**;
+  fmt/clippy/workspace/facade/bench green.
+
+## Remaining
+
+- Shadow `enable` (replacing the Python CLI on PATH) is intentionally not
+  applied; use `rust/cutover.py --install DIR` after review. Applying it
+  requires explicit approval.

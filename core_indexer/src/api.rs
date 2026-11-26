@@ -2156,3 +2156,34 @@ pub fn default_excludes() -> Vec<String> {
         .map(|pattern| (*pattern).to_string())
         .collect()
 }
+
+/// Blame rows for one file: `{line, count, author, commit}`.
+pub fn git_blame(repo: &str, file: &str) -> Result<Value, String> {
+    let rows = crate::fs::git::blame_file(repo, file)
+        .map_err(|e| format!("git blame failed: {e:?}"))?;
+    Ok(serde_json::json!(
+        rows.iter()
+            .map(|row| serde_json::json!({
+                "line": row.line_number,
+                "count": row.line_count,
+                "author": row.author,
+                "commit": row.commit,
+            }))
+            .collect::<Vec<Value>>()
+    ))
+}
+
+/// Whether the worktree has no uncommitted or untracked changes.
+pub fn git_worktree_clean(repo: &str) -> Result<bool, String> {
+    crate::fs::git::is_worktree_clean(repo).map_err(|e| format!("{e:?}"))
+}
+
+/// Repo-relative paths changed between two revisions.
+pub fn git_changed_files(
+    repo: &str,
+    old_oid: Option<&str>,
+    new_oid: Option<&str>,
+) -> Result<Vec<String>, String> {
+    crate::fs::git::changed_files_between(repo, old_oid, new_oid)
+        .map_err(|e| format!("git diff failed: {e:?}"))
+}

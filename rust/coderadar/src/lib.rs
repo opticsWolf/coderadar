@@ -20,6 +20,7 @@ pyo3::create_exception!(coderadar, MutationFailed, OpError);
 pyo3::create_exception!(coderadar, ContentUnavailable, OpError);
 
 pub mod annotations_ops;
+pub mod assets;
 pub mod cli;
 pub mod js;
 pub mod mcp;
@@ -29,6 +30,7 @@ pub mod pynum;
 pub mod render;
 mod render_remaining;
 pub mod state;
+pub mod visualize;
 
 #[allow(unused_imports)]
 use pynum::Num;

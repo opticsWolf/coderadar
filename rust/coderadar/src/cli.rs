@@ -327,7 +327,380 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
             .and_then(|index| tail.get(index + 1))
             .cloned()
     };
+    let external_flags = |name: &str| -> Vec<String> {
+        tail.iter()
+            .enumerate()
+            .filter(|(_, value)| *value == name)
+            .filter_map(|(index, _)| tail.get(index + 1).cloned())
+            .collect()
+    };
     match name.as_str() {
+        "shell" => {
+            ensure_loaded(project)?;
+            println!("CodeRadar Shell");
+            println!("Type 'help' for commands, 'exit' to quit.");
+            flush_stdout();
+            use std::io::BufRead;
+            for line in std::io::stdin().lock().lines() {
+                let line = line.map_err(|e| e.to_string())?;
+                let trimmed = line.trim();
+                match trimmed {
+                    "exit" | "quit" => break,
+                    "help" => {
+                        println!("Commands: query <pest>, traverse <id>, callers <id>, stats, exit")
+                    }
+                    "stats" => {
+                        let snap =
+                            state::projection().ok_or_else(|| "no graph loaded".to_string())?;
+                        println!("{}", pretty(&core_indexer::api::stats_full(&snap))?);
+                    }
+                    _ if trimmed.starts_with("query ") => {
+                        let rows = port::query(trimmed[6..].to_string())?;
+                        if rows.is_empty() {
+                            println!("No results");
+                        }
+                        for row in rows {
+                            println!("{}", pretty(&row)?);
+                        }
+                    }
+                    _ if trimmed.starts_with("traverse ") => {
+                        let value = port::traverse(
+                            trimmed[9..].trim().to_string(),
+                            "both".to_string(),
+                            None,
+                            3,
+                        )?;
+                        println!("{}", pretty(&value)?);
+                    }
+                    _ if trimmed.starts_with("callers ") => {
+                        let rows = port::callers(trimmed[8..].trim().to_string())?;
+                        if rows.is_empty() {
+                            println!("No callers found for {}", trimmed[8..].trim());
+                        }
+                        for row in rows {
+                            println!("{}", pretty(&row)?);
+                        }
+                    }
+                    "" => {}
+                    other => println!("Unknown command: {other}"),
+                }
+            }
+        }
+        "watch" => {
+            ensure_loaded(project)?;
+            let root = find_root(project);
+            let debounce = external_flag("--debounce")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(100);
+            if tail.iter().any(|value| value == "--git") {
+                let repo = root.to_string_lossy().into_owned();
+                println!("Watching git refs (commits, checkouts, merges)");
+                println!("Press Ctrl+C to stop");
+                flush_stdout();
+                let mut last = core_indexer::api::git_head(&repo).ok();
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(500.max(debounce * 5)));
+                    let head = core_indexer::api::git_head(&repo).ok();
+                    if head != last {
+                        match port::sync_git(
+                            repo.clone(),
+                            None,
+                            "main".to_string(),
+                            true,
+                            "watch".to_string(),
+                        ) {
+                            Ok(report) => println!("{}", pretty(&report)?),
+                            Err(error) => println!("sync failed: {error}"),
+                        }
+                        last = head;
+                    }
+                }
+            }
+            let mut paths: Vec<std::path::PathBuf> = Vec::new();
+            let mut skip_next = false;
+            for value in tail.iter() {
+                if skip_next {
+                    skip_next = false;
+                    continue;
+                }
+                if value == "--debounce" {
+                    skip_next = true;
+                    continue;
+                }
+                if !value.starts_with('-') && value != "--git" {
+                    paths.push(root.join(value));
+                }
+            }
+            let paths = if paths.is_empty() {
+                vec![root.join("src"), root.join("tests")]
+            } else {
+                paths
+            };
+            println!(
+                "Watching: {}",
+                paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            flush_stdout();
+            println!("Press Ctrl+C to stop");
+            flush_stdout();
+            let mut seen = watch_mtimes(&paths);
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(debounce.max(50)));
+                let current = watch_mtimes(&paths);
+                let mut changed: Vec<String> = current
+                    .iter()
+                    .filter(|(path, stamp)| seen.get(*path) != Some(stamp))
+                    .map(|(path, _)| path.clone())
+                    .collect();
+                changed.sort();
+                for path in changed {
+                    let rel = std::path::Path::new(&path)
+                        .strip_prefix(&root)
+                        .unwrap_or(std::path::Path::new(&path))
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    match port::update_file(rel.clone(), None, None) {
+                        Ok(report) => {
+                            println!("updated {rel}: {}", pretty(&report)?);
+                            flush_stdout();
+                            let _ = port::refresh_framework_file(
+                                serde_json::json!(root.to_string_lossy()),
+                                rel,
+                                None,
+                            );
+                        }
+                        Err(error) => println!("update failed for {rel}: {error}"),
+                    }
+                }
+                seen = current;
+            }
+        }
+        "visualize" => {
+            ensure_loaded(project)?;
+            let viz_type = tail
+                .first()
+                .ok_or_else(|| "missing visualization type".to_string())?
+                .clone();
+            let format = external_flag("--format").unwrap_or_else(|| "mermaid".to_string());
+            if !matches!(format.as_str(), "mermaid" | "graphviz" | "dot") {
+                return Err(format!(
+                    "Unknown format: {format} (supported: mermaid, graphviz, dot)"
+                ));
+            }
+            let output = external_flag("--output").or_else(|| external_flag("-o"));
+            let mut args = Vec::new();
+            let mut skip = false;
+            for value in tail.iter().skip(1) {
+                if skip {
+                    skip = false;
+                    continue;
+                }
+                if matches!(value.as_str(), "--format" | "--output" | "-o") {
+                    skip = true;
+                    continue;
+                }
+                if !value.starts_with('-') {
+                    args.push(value.clone());
+                }
+            }
+            let snap = state::projection().ok_or_else(|| "no graph loaded".to_string())?;
+            let text = crate::visualize::render(&viz_type, &format, &args, &snap)?;
+            if let Some(path) = output {
+                std::fs::write(&path, &text).map_err(|e| e.to_string())?;
+                println!("Written to {path}");
+            } else {
+                println!("{text}");
+            }
+        }
+        "rebuild-store" => {
+            let repo = external_flag("--repo").unwrap_or_else(|| ".".to_string());
+            let store = external_flag("--store");
+            let branches = external_flag("--branches").map(|value| {
+                value
+                    .split(',')
+                    .map(|part| part.trim().to_string())
+                    .collect::<Vec<String>>()
+            });
+            let parent_ref = external_flag("--parent-ref").unwrap_or_else(|| "main".to_string());
+            let export = external_flag("--export");
+            let on_conflict = external_flag("--on-conflict").unwrap_or_else(|| "error".to_string());
+            let embed = tail.iter().any(|value| value == "--embed");
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            let result = port::rebuild_op(
+                repo,
+                store,
+                branches,
+                parent_ref,
+                export,
+                on_conflict,
+                embed,
+            )?;
+            if format == "json" {
+                println!("{}", pretty(&result)?);
+            } else {
+                println!("{}", port::rebuild(result)?);
+            }
+        }
+        "docs" => match tail.first().map(String::as_str) {
+            None => {
+                for (name, description) in crate::assets::DOC_NAMES
+                    .iter()
+                    .zip(crate::assets::DOC_DESCRIPTIONS)
+                {
+                    println!("{name}  {description}");
+                }
+            }
+            Some(name) => {
+                let text = crate::assets::doc_text(name).ok_or_else(|| {
+                    format!(
+                        "unknown document {name:?}; available: {}",
+                        crate::assets::DOC_NAMES.join(", ")
+                    )
+                })?;
+                print!("{text}");
+            }
+        },
+        "git" => match tail.first().map(String::as_str) {
+            Some("blame") => {
+                let file = tail.get(1).ok_or_else(|| "missing file".to_string())?;
+                let repo = external_flag("--repo").unwrap_or_else(|| ".".to_string());
+                let rows = core_indexer::api::git_blame(&repo, file)
+                    .map_err(|e| format!("Could not check the worktree: {e}"))?;
+                let array = rows.as_array().cloned().unwrap_or_default();
+                if array.is_empty() {
+                    println!("No blame data (git feature may be disabled)");
+                } else {
+                    println!("Blame: {file}");
+                    println!("  Line  Author  Commit");
+                    for row in array {
+                        let line = row.get("line").and_then(Value::as_u64).unwrap_or(0);
+                        let author = row.get("author").and_then(Value::as_str).unwrap_or("");
+                        let commit = row.get("commit").and_then(Value::as_str).unwrap_or("");
+                        println!("  {line:>4}  {author}  {}", &commit[..commit.len().min(8)]);
+                    }
+                }
+            }
+            Some("is-clean") => {
+                let repo = tail.get(1).cloned().unwrap_or_else(|| ".".to_string());
+                let clean = core_indexer::api::git_worktree_clean(&repo)
+                    .map_err(|e| format!("Could not check the worktree: {e}"))?;
+                if clean {
+                    println!("Worktree clean");
+                } else {
+                    println!("Worktree has uncommitted changes");
+                }
+            }
+            Some("diff") => {
+                let repo = tail.get(1).cloned().unwrap_or_else(|| ".".to_string());
+                let old = external_flag("--old");
+                let new = external_flag("--new");
+                let files =
+                    core_indexer::api::git_changed_files(&repo, old.as_deref(), new.as_deref())
+                        .map_err(|e| format!("Could not diff revisions: {e}"))?;
+                if files.is_empty() {
+                    println!("No changed files (or git feature disabled)");
+                } else {
+                    println!("{} changed files:", files.len());
+                    for file in files {
+                        println!("  {file}");
+                    }
+                }
+            }
+            _ => return Err("usage: git blame|is-clean|diff".to_string()),
+        },
+        "skills" => match tail.first().map(String::as_str) {
+            Some("list") => {
+                println!("Bundled skills");
+                for name in crate::assets::SKILL_NAMES {
+                    let description = crate::assets::skill_description(name).unwrap_or("");
+                    println!("{name}  {description}");
+                }
+                println!("Install with `coderadar skills install`.");
+            }
+            Some("show") => {
+                let name = tail
+                    .get(1)
+                    .ok_or_else(|| "missing skill name".to_string())?;
+                let text = crate::assets::skill_text(name).ok_or_else(|| {
+                    format!(
+                        "unknown skill {name:?}; available: {}",
+                        crate::assets::SKILL_NAMES.join(", ")
+                    )
+                })?;
+                print!("{text}");
+            }
+            Some("install") => {
+                let project = tail.iter().any(|value| value == "--project");
+                let force = tail.iter().any(|value| value == "--force");
+                let destinations = external_flags("--dest");
+                let selected = external_flags("--skill");
+                if !destinations.is_empty() && project {
+                    return Err("--dest and --project are mutually exclusive".to_string());
+                }
+                let home = std::env::var("HOME").unwrap_or_default();
+                let defaults = if project {
+                    vec![
+                        std::path::PathBuf::from(".claude/skills"),
+                        std::path::PathBuf::from(".opencode/skills"),
+                    ]
+                } else {
+                    vec![
+                        std::path::PathBuf::from(&home).join(".claude/skills"),
+                        std::path::PathBuf::from(&home).join(".config/opencode/skills"),
+                    ]
+                };
+                let targets: Vec<std::path::PathBuf> = if destinations.is_empty() {
+                    defaults
+                } else {
+                    destinations
+                        .into_iter()
+                        .map(std::path::PathBuf::from)
+                        .collect()
+                };
+                let names: Vec<String> = if selected.is_empty() {
+                    crate::assets::SKILL_NAMES
+                        .iter()
+                        .map(|name| (*name).to_string())
+                        .collect()
+                } else {
+                    selected
+                };
+                let mut skipped = 0;
+                for target in targets {
+                    for name in &names {
+                        let text = crate::assets::skill_text(name).ok_or_else(|| {
+                            format!(
+                                "unknown skill {name:?}; available: {}",
+                                crate::assets::SKILL_NAMES.join(", ")
+                            )
+                        })?;
+                        let dir = target.join(name);
+                        let marker = dir.join("SKILL.md");
+                        let existed = marker.is_file();
+                        if existed && !force {
+                            skipped += 1;
+                            println!("skipped    {}", dir.display());
+                            continue;
+                        }
+                        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+                        std::fs::write(&marker, text).map_err(|e| e.to_string())?;
+                        println!(
+                            "{:<9} {}",
+                            if existed { "updated" } else { "installed" },
+                            dir.display()
+                        );
+                    }
+                }
+                if skipped > 0 {
+                    println!("{skipped} skill(s) already present; use --force to overwrite.");
+                }
+            }
+            _ => return Err("usage: skills list|show NAME|install".to_string()),
+        },
         "get-smells" => {
             ensure_loaded(project)?;
             let rows = port::get_smells(
@@ -692,6 +1065,46 @@ fn rewrite_excludes(root: &Path, patterns: Vec<String>) -> Result<(), String> {
         ),
     )
     .map_err(|e| e.to_string())
+}
+
+fn watch_mtimes(
+    roots: &[std::path::PathBuf],
+) -> std::collections::BTreeMap<String, std::time::SystemTime> {
+    fn walk(
+        path: &std::path::Path,
+        found: &mut std::collections::BTreeMap<String, std::time::SystemTime>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            if path.is_dir() {
+                if matches!(name, ".git" | ".coderadar" | "target" | "__pycache__") {
+                    continue;
+                }
+                walk(&path, found);
+            } else if path.is_file()
+                && let Ok(modified) = path.metadata().and_then(|meta| meta.modified())
+            {
+                found.insert(path.to_string_lossy().into_owned(), modified);
+            }
+        }
+    }
+    let mut found = std::collections::BTreeMap::new();
+    for root in roots {
+        walk(root, &mut found);
+    }
+    found
+}
+
+fn flush_stdout() {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
 }
 
 fn find_root(start: &Path) -> PathBuf {

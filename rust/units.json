@@ -536,5 +536,34 @@
       "shared": 48,
       "local_only": 7
     }
+  },
+  "unit34": {
+    "cli": [
+      "docs",
+      "git blame",
+      "git is-clean",
+      "git diff",
+      "rebuild-store",
+      "shell",
+      "skills",
+      "visualize",
+      "watch"
+    ],
+    "modules": [
+      "assets.rs",
+      "visualize.rs"
+    ],
+    "api": [
+      "git_blame",
+      "git_worktree_clean",
+      "git_changed_files"
+    ],
+    "port": [
+      "rebuild_op"
+    ],
+    "cutover": {
+      "shared": 55,
+      "local_only": 0
+    }
   }
 }

@@ -4540,6 +4540,351 @@ fn has_newer_source(root: &std::path::Path, stamp: std::time::SystemTime) -> boo
     walk(root, stamp)
 }
 
+/// Ops-shaped store rebuild: move the old store aside, replay git history,
+/// restore annotations, and optionally embed the final state.
+///
+/// # Errors
+/// Refuses when a graph is loaded, when the repository has no usable
+/// lineage selection, or when any replay/read-back step fails.
+pub fn rebuild_op(
+    repo: String,
+    store_path: Option<String>,
+    branches: Option<Vec<String>>,
+    parent_ref: String,
+    export_path: Option<String>,
+    on_conflict: String,
+    embed: bool,
+) -> Result<Value, String> {
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+
+    if repo.trim().is_empty() {
+        return Err("InvalidRequest: Please provide a git repository path.".to_string());
+    }
+    if crate::state::projection().is_some() {
+        return Err(
+            "InvalidRequest: a graph is loaded in this process, and it holds the store this rebuild moves; run the rebuild in a fresh process".to_string(),
+        );
+    }
+    if on_conflict != "error" && on_conflict != "skip" {
+        return Err(format!(
+            "InvalidRequest: on_conflict={on_conflict:?}: expected 'error' or 'skip'"
+        ));
+    }
+
+    let started = Instant::now();
+    let repo_path = std::path::Path::new(&repo);
+    let repo = core_indexer::fs::strip_verbatim_prefix(
+        std::fs::canonicalize(repo_path)
+            .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(repo_path)),
+    )
+    .to_string_lossy()
+    .into_owned();
+    let store = store_path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(&repo).join(".coderadar/store/coderadar.db"));
+    if let Some(parent) = store.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("InvalidRequest: cannot create {}: {e}", parent.display()))?;
+    }
+
+    let backup = if store.exists() {
+        let now = core_indexer::storage::now_iso8601();
+        let head: String = now.chars().take(19).collect();
+        let stamp = format!("{}Z", head.replace(['-', ':'], ""));
+        let mut candidate = store.with_file_name(format!(
+            "{}.pre-rebuild-{}",
+            store
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("coderadar.db"),
+            stamp
+        ));
+        let mut n = 1;
+        while candidate.exists() {
+            n += 1;
+            candidate = store.with_file_name(format!(
+                "{}.pre-rebuild-{}-{}",
+                store
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("coderadar.db"),
+                stamp,
+                n
+            ));
+        }
+        std::fs::rename(&store, &candidate).map_err(|e| {
+            format!(
+                "InvalidRequest: cannot move {} aside ({e}): a process holds it open",
+                store.display()
+            )
+        })?;
+        for suffix in ["-wal", "-shm"] {
+            let name = format!(
+                "{}{}",
+                store
+                    .file_name()
+                    .and_then(|v| v.to_str())
+                    .unwrap_or("coderadar.db"),
+                suffix
+            );
+            let side = store.with_file_name(name);
+            if side.exists() {
+                let target = candidate.with_file_name(format!(
+                    "{}{}",
+                    candidate
+                        .file_name()
+                        .and_then(|v| v.to_str())
+                        .unwrap_or("backup"),
+                    suffix
+                ));
+                let _ = std::fs::rename(side, target);
+            }
+        }
+        Some(candidate)
+    } else {
+        None
+    };
+
+    let export_path = export_path
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            store.with_file_name(format!(
+                "{}.annotations.json",
+                store
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("coderadar.db")
+            ))
+        });
+    let mut export: Option<Value> = None;
+    if let Some(backup) = &backup {
+        let opened = core_indexer::storage::CodeGraphStore::open(backup.to_string_lossy().as_ref())
+            .map_err(|e| format!("EngineError: {e:?}"))?;
+        let document = core_indexer::annotations::export_all(&opened)
+            .map_err(|e| format!("EngineError: {e:?}"))?;
+        drop(opened);
+        let value = serde_json::to_value(document).map_err(|e| format!("EngineError: {e}"))?;
+        let raw = serde_json::to_string(&value).map_err(|e| format!("EngineError: {e}"))?;
+        let rows = value
+            .get("rows")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let versions = rows
+            .iter()
+            .map(|row| {
+                row.get("versions")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len)
+            })
+            .sum::<usize>();
+        if let Some(parent) = export_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
+        }
+        std::fs::write(&export_path, &raw).map_err(|e| e.to_string())?;
+        export = Some(json!({
+            "format": value.get("format").cloned().unwrap_or(Value::Null),
+            "exported_at": value.get("exported_at").cloned().unwrap_or(Value::Null),
+            "rows": rows.len(),
+            "versions": versions,
+            "path": export_path.to_string_lossy(),
+        }));
+    }
+
+    let listed = core_indexer::api::list_branches(&repo)?;
+    let plan = if listed.iter().any(|name| name == "main") {
+        core_indexer::api::branch_plan(&repo, &parent_ref)?
+    } else {
+        Vec::new()
+    };
+    let mut addresses: BTreeMap<String, String> = BTreeMap::new();
+    let ordered: Vec<String> = match branches {
+        Some(names) => {
+            if names.is_empty() {
+                return Err("InvalidRequest: branches=[] is empty: nothing to build.".to_string());
+            }
+            let mut result = names;
+            if listed.iter().any(|name| name == "main") && !result.iter().any(|name| name == "main")
+            {
+                result.insert(0, "main".to_string());
+            }
+            for entry in &plan {
+                let name = entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let tip = entry.get("tip").and_then(Value::as_str).unwrap_or_default();
+                if !result.iter().any(|value| value == name) && !tip.is_empty() {
+                    addresses.insert(name.to_string(), tip.to_string());
+                }
+            }
+            result
+        }
+        None => {
+            if !listed.iter().any(|name| name == "main") {
+                return Err(format!(
+                    "InvalidRequest: repository has no 'main' branch: pass --branches explicitly (local branches: {}).",
+                    if listed.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        listed.join(", ")
+                    }
+                ));
+            }
+            let mut chosen: BTreeMap<String, String> = BTreeMap::new();
+            let mut sorted = plan.clone();
+            sorted.sort_by(|a, b| {
+                let an = a.get("name").and_then(Value::as_str).unwrap_or_default();
+                let bn = b.get("name").and_then(Value::as_str).unwrap_or_default();
+                (an.matches('/').count(), an).cmp(&(bn.matches('/').count(), bn))
+            });
+            for entry in sorted {
+                let name = entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let tip = entry.get("tip").and_then(Value::as_str).unwrap_or_default();
+                if name == "main" || tip.is_empty() {
+                    continue;
+                }
+                if entry
+                    .get("merged")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                    || chosen.contains_key(tip)
+                {
+                    addresses.insert(name.to_string(), tip.to_string());
+                    continue;
+                }
+                chosen.insert(tip.to_string(), name.to_string());
+            }
+            let mut result = vec!["main".to_string()];
+            result.extend(chosen.into_values());
+            result
+        }
+    };
+
+    let store_s = store.to_string_lossy().into_owned();
+    let mut branch_reports = serde_json::Map::new();
+    for branch in &ordered {
+        let report = ingest_history(
+            repo.clone(),
+            branch.clone(),
+            None,
+            false,
+            None,
+            parent_ref.clone(),
+            None,
+            Some(store_s.clone()),
+        )
+        .map_err(|e| {
+            format!(
+                "{e} — the old store is at {:?}{}",
+                backup.as_ref().map(|p| p.to_string_lossy().into_owned()),
+                export
+                    .as_ref()
+                    .and_then(|v| v.get("path"))
+                    .and_then(Value::as_str)
+                    .map(|p| format!(" and the export at {p:?}"))
+                    .unwrap_or_default()
+            )
+        })?;
+        branch_reports.insert(branch.clone(), report);
+    }
+
+    let address_entries: Vec<(String, String)> = addresses
+        .iter()
+        .map(|(name, tip)| (name.clone(), tip.clone()))
+        .collect();
+    let addresses_recorded = if address_entries.is_empty() {
+        0
+    } else {
+        core_indexer::api::record_branch_addresses(&store_s, address_entries)?
+    };
+    let merge_heal = reingest_merged_commits(
+        repo.clone(),
+        "main".to_string(),
+        false,
+        Some(store_s.clone()),
+    )?;
+
+    let mut imported: Option<Value> = None;
+    if let Some(export) = &export {
+        let payload = std::fs::read_to_string(
+            export
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        )
+        .map_err(|e| e.to_string())?;
+        let opened = core_indexer::storage::CodeGraphStore::open(store.to_string_lossy().as_ref())
+            .map_err(|e| format!("EngineError: {e:?}"))?;
+        let report = core_indexer::annotations::import_all(&opened, &payload, &on_conflict)
+            .map_err(|e| format!("EngineError: {e:?}"))?;
+        drop(opened);
+        imported = Some(serde_json::to_value(report).map_err(|e| format!("EngineError: {e}"))?);
+    }
+    let verified = imported.as_ref().is_some_and(|value| {
+        value.get("verified").and_then(Value::as_u64)
+            == value.get("imported").and_then(Value::as_u64)
+    });
+    if imported.is_some() && !verified {
+        return Err(format!(
+            "EngineError: the import did not verify its own rows: the rebuilt store is incomplete; the old store is at {:?}",
+            backup.as_ref().map(|p| p.to_string_lossy().into_owned())
+        ));
+    }
+
+    let mut embeddings = json!({"embedded": false});
+    if embed {
+        crate::state::load_from(&store, std::path::Path::new(&repo))?;
+        let report = compute_embeddings_op(None, 32, false)?;
+        embeddings = json!({"embedded": true, "report": report});
+        crate::state::clear();
+    }
+
+    let commits_ingested: u64 = branch_reports
+        .values()
+        .filter_map(|v| v.get("commits_ingested"))
+        .filter_map(Value::as_u64)
+        .sum();
+    let commits_skipped: usize = branch_reports
+        .values()
+        .filter_map(|v| v.get("commits_skipped"))
+        .filter_map(Value::as_array)
+        .map(Vec::len)
+        .sum();
+    let files_failed: usize = branch_reports
+        .values()
+        .filter_map(|v| v.get("files_failed"))
+        .filter_map(Value::as_array)
+        .map(Vec::len)
+        .sum();
+
+    Ok(json!({
+        "repo": repo,
+        "store": store_s,
+        "backup": backup.map(|p| p.to_string_lossy().into_owned()),
+        "export": export,
+        "parent_ref": parent_ref,
+        "branches": ordered,
+        "branch_reports": branch_reports,
+        "addresses": addresses,
+        "addresses_recorded": addresses_recorded,
+        "commits_ingested": commits_ingested,
+        "commits_skipped": commits_skipped,
+        "files_failed": files_failed,
+        "merge_heal": merge_heal,
+        "imported": imported,
+        "verified": verified,
+        "embeddings": embeddings,
+        "elapsed_secs": (started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

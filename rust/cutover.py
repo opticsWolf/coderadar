@@ -33,17 +33,7 @@ VERIFY_COMMANDS: tuple[tuple[str, ...], ...] = (
 )
 
 # Local process/admin commands: deliberately not part of the Rust binary.
-LOCAL_ONLY_COMMANDS = frozenset(
-    {
-        "docs",
-        "git",
-        "rebuild-store",
-        "shell",
-        "skills",
-        "visualize",
-        "watch",
-    }
-)
+LOCAL_ONLY_COMMANDS = frozenset()
 
 
 def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
