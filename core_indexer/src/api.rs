@@ -2148,3 +2148,11 @@ pub fn record_checkout(branch: Option<&str>) -> Result<(), String> {
         )
         .map_err(|e| format!("cannot record checkout: {e:?}"))
 }
+
+/// The engine's built-in exclusion baseline, used by `exclude list`.
+pub fn default_excludes() -> Vec<String> {
+    crate::DEFAULT_EXCLUDES
+        .iter()
+        .map(|pattern| (*pattern).to_string())
+        .collect()
+}

@@ -374,6 +374,62 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
                 |value| render::rows(rows_as_array(value)),
             );
         }
+        "exclude" => {
+            let root = find_root(project);
+            match tail.first().map(String::as_str) {
+                Some("list") => {
+                    println!("Effective excludes (baseline +  exclude + .gitignore):");
+                    for pattern in core_indexer::api::default_excludes() {
+                        println!("  baseline  {pattern}");
+                    }
+                    for pattern in config_excludes(&root) {
+                        println!("  config    {pattern}");
+                    }
+                    let gitignore = root.join(".gitignore");
+                    match std::fs::read_to_string(&gitignore) {
+                        Ok(text) => {
+                            for line in text.lines() {
+                                let trimmed = line.trim();
+                                if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                                    println!("  gitignore {trimmed}");
+                                }
+                            }
+                        }
+                        Err(_) => println!("  gitignore  (no .gitignore)"),
+                    }
+                }
+                Some("add") => {
+                    let pattern = tail
+                        .get(1)
+                        .ok_or_else(|| "missing exclude pattern".to_string())?;
+                    let mut patterns = config_excludes(&root);
+                    if patterns.contains(pattern) {
+                        println!("Already excluded: {pattern}");
+                    } else {
+                        patterns.push(pattern.clone());
+                        rewrite_excludes(&root, patterns)?;
+                        println!("OK  Excluded {pattern} — re-analyze to apply.");
+                    }
+                }
+                Some("remove") => {
+                    let pattern = tail
+                        .get(1)
+                        .ok_or_else(|| "missing exclude pattern".to_string())?;
+                    let current = config_excludes(&root);
+                    if !current.contains(pattern) {
+                        println!("Not excluded: {pattern}");
+                    } else {
+                        let patterns: Vec<String> = current
+                            .into_iter()
+                            .filter(|value| value != pattern)
+                            .collect();
+                        rewrite_excludes(&root, patterns)?;
+                        println!("OK  No longer excluded: {pattern}.");
+                    }
+                }
+                _ => return Err("usage: exclude list|add PATTERN|remove PATTERN".to_string()),
+            }
+        }
         "load-snapshot" => {
             let snapshot = tail
                 .first()
@@ -554,6 +610,88 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
         other => return Err(format!("unknown command `{other}`")),
     }
     Ok(())
+}
+
+fn config_path(root: &Path) -> PathBuf {
+    root.join(".coderadar.toml")
+}
+
+fn config_excludes(root: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(config_path(root)) else {
+        return Vec::new();
+    };
+    let mut in_project = false;
+    for line in text.lines() {
+        let stripped = line.trim();
+        if stripped.starts_with('[') {
+            in_project = stripped == "[project]";
+            continue;
+        }
+        if in_project
+            && stripped.starts_with("exclude")
+            && let Some((_, value)) = stripped.split_once('=')
+            && let Ok(rows) = serde_json::from_str::<Vec<String>>(value.trim())
+        {
+            return rows;
+        }
+    }
+    Vec::new()
+}
+
+fn rewrite_excludes(root: &Path, patterns: Vec<String>) -> Result<(), String> {
+    let path = config_path(root);
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut unique: Vec<String> = patterns.into_iter().collect();
+    unique.sort();
+    unique.dedup();
+    let mut parts = Vec::new();
+    for pattern in &unique {
+        parts.push(serde_json::to_string(pattern).map_err(|e| e.to_string())?);
+    }
+    let value = format!("[{}]", parts.join(", "));
+    let mut in_project = false;
+    let mut done = false;
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let stripped = line.trim();
+        if stripped.starts_with('[') {
+            if in_project && !done {
+                out.push(format!("exclude = {value}"));
+                done = true;
+            }
+            in_project = stripped == "[project]";
+            out.push(line.to_string());
+            continue;
+        }
+        if in_project && stripped.starts_with("exclude") && stripped.contains('=') {
+            if !done {
+                out.push(format!("exclude = {value}"));
+                done = true;
+            }
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    if in_project && !done {
+        out.push(format!("exclude = {value}"));
+        done = true;
+    }
+    if !done {
+        out.push("[project]".to_string());
+        out.push(format!("exclude = {value}"));
+    }
+    std::fs::write(
+        &path,
+        format!(
+            "{}
+",
+            out.join(
+                "
+"
+            )
+        ),
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn find_root(start: &Path) -> PathBuf {

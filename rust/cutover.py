@@ -36,7 +36,6 @@ VERIFY_COMMANDS: tuple[tuple[str, ...], ...] = (
 LOCAL_ONLY_COMMANDS = frozenset(
     {
         "docs",
-        "exclude",
         "git",
         "rebuild-store",
         "shell",

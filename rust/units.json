@@ -522,5 +522,19 @@
       "shared": 47,
       "local_only": 8
     }
+  },
+  "unit33": {
+    "api": [
+      "core_indexer::api::default_excludes"
+    ],
+    "cli": [
+      "exclude list",
+      "exclude add",
+      "exclude remove"
+    ],
+    "cutover": {
+      "shared": 48,
+      "local_only": 7
+    }
   }
 }

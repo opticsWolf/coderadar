@@ -577,10 +577,11 @@ an existing Rust front door, not merely because a Python name is unbridged.
    `sync_git`, `reingest_merged_commits` and `backfill_commit_messages`
    are implemented in `annotations_ops.rs` / `port.rs` and exposed through
    CLI + MCP. Add bridge exports only when a Python direct caller is found.
-5. **Local-only CLI:** `docs`, `exclude`, `git`, `load-snapshot`,
-   `rebuild-store`, `shell`, `skills`, `visualize` and `watch` remain in the
-   Python process/admin surface. The cutover allowlist names exactly these
-   nine; any addition to it needs a deliberate decision.
+5. **Local-only CLI:** `docs`, `git`, `rebuild-store`, `shell`, `skills`,
+   `visualize` and `watch` remain in the Python process/admin surface.
+   `load-snapshot` and `exclude` were subsequently ported (Units 32/33).
+   The cutover allowlist names exactly these seven; any addition needs a
+   deliberate decision.
 6. **Visualizers, LSP pool, MCP lifecycle/startup/lazy:** not graph ops.
    CLI text parity is owned by `render.rs` / `render_remaining.rs`; do not
    port these unless a new front-door requirement appears.
@@ -714,3 +715,16 @@ new recorded unit.
   local-only**; verification **4/4**.
 - `tests/test_facade_codegraph.py` also cold-starts from the temp store
   (`1 passed`). Gate unchanged: **4445/4445**.
+
+### Unit 33 proof (exclude configuration)
+
+- Added `api::default_excludes` and CLI `exclude list|add PATTERN|remove
+  PATTERN`. Writes are text-level TOML edits under `[project]`, preserving
+  the rest of `.coderadar.toml`, and use JSON-style string arrays with the
+  Python separator so the file shape matches.
+- `add` / `remove` report `Already excluded`, `Not excluded` and the same
+  `OK  Excluded …` / `OK  No longer excluded …` text as Python.
+- `rust/cutover.py` now counts `exclude` as shared: **48 shared, 7
+  local-only**; verification **4/4**.
+- Smoke in a temp project matched Python for list, add, duplicate add and
+  remove. Gate unchanged: **4445/4445**; clippy/fmt green.
