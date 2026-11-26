@@ -492,14 +492,21 @@ patches needed after any re-bridge.
 - The shim is scoped to the benchmark subprocess and never edits the
   generated driver or Python sources.
 
+## Final state
+
+- All recorded port units are implemented, gated and pushed. The last
+  run was **4445/4445** recorded cases, workspace clippy/fmt/tests green,
+  cutover verification **3/3**, and `python rust/bench.py` measuring 76
+  functions.
+- MCP parity: Rust exposes 45 tools; the Python tool-name set is fully
+  covered. The CLI keeps additional parity commands in the captured
+  namespace to avoid clap-derive stack overflow.
+- `resolve_reference` / `resolve_route` callable arguments cannot be
+  bridged by rust-anything; their behavior is provided by the data-shaped
+  `framework_resolve_reference` / `framework_resolve_route` API instead.
+
 ## Remaining
 
-- MCP parity: 45 Rust tools are exposed; the remaining Python-only tools
-  are primarily framework/experimental surfaces.
-- `rust-anything bench` runs through `python rust/bench.py`. The generated
-  driver imports the Rust facade as `coderadar` before the original
-  `coderadar.ops`; `rust/bench_support/sitecustomize.py` clears that cached
-  facade immediately before the original package import so both sides can
-  be timed in one process.
 - Shadow `enable` (replacing the Python CLI on PATH) is intentionally not
-  applied; use `rust/cutover.py --install DIR` after review.
+  applied; use `rust/cutover.py --install DIR` after review. Applying it
+  requires explicit approval.
