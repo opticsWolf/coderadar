@@ -46,6 +46,28 @@ pub fn load(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Load a projection from an explicit Macrame ledger snapshot.
+///
+/// `root` keys the entity ids; the snapshot need not live at the project's
+/// default store path. This backs `coderadar load-snapshot` and the facade's
+/// `load()` helper.
+pub fn load_from(snapshot: &Path, root: &Path) -> Result<(), String> {
+    if !snapshot.is_file() {
+        return Err(format!(
+            "no snapshot at {} — pass an existing store",
+            snapshot.display()
+        ));
+    }
+    let projection = core_indexer::api::load_projection(
+        &snapshot.to_string_lossy(),
+        Some(&root.to_string_lossy()),
+    )?;
+    *root_slot().write().map_err(|e| e.to_string())? = Some(root.to_path_buf());
+    *store_slot().write().map_err(|e| e.to_string())? = Some(snapshot.to_path_buf());
+    *projection_slot().write().map_err(|e| e.to_string())? = Some(projection);
+    Ok(())
+}
+
 /// The loaded projection, if any.
 pub fn projection() -> Option<Arc<ProjectedGraph>> {
     projection_slot()

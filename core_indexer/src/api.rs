@@ -2117,20 +2117,18 @@ pub fn store_repair(db_path: &str) -> Result<Value, String> {
 pub fn call_sites(snap: &ProjectedGraph, entity_id: &str) -> Option<Value> {
     let id = canonical_entity_id(entity_id);
     let sites = crate::graph::CodeGraph::list_call_sites(snap, &id)?;
-    Some(serde_json::json!(
-        sites
-            .iter()
-            .map(|site| serde_json::json!({
-                "name": site.name,
-                "path": site.path,
-                "line": site.line,
-                "col": site.col,
-                "status": site.status,
-                "target": site.target,
-                "reason": site.reason,
-            }))
-            .collect::<Vec<Value>>()
-    ))
+    Some(serde_json::json!(sites
+        .iter()
+        .map(|site| serde_json::json!({
+            "name": site.name,
+            "path": site.path,
+            "line": site.line,
+            "col": site.col,
+            "status": site.status,
+            "target": site.target,
+            "reason": site.reason,
+        }))
+        .collect::<Vec<Value>>()))
 }
 
 /// Record the branch for bare observation writes on the loaded graph's store.

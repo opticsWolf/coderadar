@@ -48,6 +48,8 @@ assert export["rows"] >= 1
 assert isinstance(g.call_sites("app.py::alpha"), list)
 report = g.import_annotations(export["payload"], "skip")
 assert report["rows"] >= 1
+loaded = coderadar.load(".coderadar/store/coderadar.db", ".")
+assert isinstance(loaded, coderadar.CodeGraph) and loaded.stats_result
 print(json.dumps({"stats": sorted(g.stats_result), "rows": len(rows), "edits": len(plan.edits), "status": result.status, "exported": export["rows"]}))
 """
     env = os.environ.copy()

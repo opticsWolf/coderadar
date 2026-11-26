@@ -177,10 +177,10 @@ pyo3::create_exception!(coderadar, ContentUnavailable, OpError);
                 "
 # Unit 25: thin CodeGraph facade over the Rust-native ops.
 "
-                "from .codegraph import CodeGraph, analyze
+                "from .codegraph import CodeGraph, analyze, load
 
 "
-                '__all__ = sorted(set(__all__) | {"CodeGraph", "analyze"})
+                '__all__ = sorted(set(__all__) | {"CodeGraph", "analyze", "load"})
 '
             )
             facade.write_text(text, encoding="utf-8")

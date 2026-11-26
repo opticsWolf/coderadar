@@ -504,5 +504,23 @@
       "status"
     ],
     "test": "tests/test_facade_codegraph.py"
+  },
+  "unit32": {
+    "state": [
+      "load_from"
+    ],
+    "cli": [
+      "load-snapshot"
+    ],
+    "native": [
+      "load_snapshot_op"
+    ],
+    "facade": [
+      "load"
+    ],
+    "cutover": {
+      "shared": 47,
+      "local_only": 8
+    }
   }
 }

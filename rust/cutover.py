@@ -38,7 +38,6 @@ LOCAL_ONLY_COMMANDS = frozenset(
         "docs",
         "exclude",
         "git",
-        "load-snapshot",
         "rebuild-store",
         "shell",
         "skills",

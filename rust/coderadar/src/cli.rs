@@ -374,6 +374,21 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
                 |value| render::rows(rows_as_array(value)),
             );
         }
+        "load-snapshot" => {
+            let snapshot = tail
+                .first()
+                .ok_or_else(|| "missing snapshot path".to_string())?;
+            let root = external_flag("--root")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| find_root(project));
+            state::load_from(std::path::Path::new(snapshot), &root)?;
+            let snap = state::projection()
+                .ok_or_else(|| "snapshot did not produce a graph".to_string())?;
+            println!(
+                "Snapshot loaded: {}",
+                render::json_text(&core_indexer::api::stats_full(&snap))
+            );
+        }
         "store-repair" => {
             let db = external_flag("--db").map(PathBuf::from).unwrap_or_else(|| {
                 find_root(project)

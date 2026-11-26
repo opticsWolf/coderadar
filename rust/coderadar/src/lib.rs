@@ -1886,6 +1886,19 @@ fn record_checkout_op(py: Python<'_>, branch: Option<String>) -> PyResult<Py<PyA
 }
 
 #[pyfunction]
+#[pyo3(name = "load_snapshot_op", signature = (snapshot, root=None))]
+fn load_snapshot_op(py: Python<'_>, snapshot: String, root: Option<String>) -> PyResult<Py<PyAny>> {
+    let snapshot_path = std::path::Path::new(&snapshot);
+    let root_path = root
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+    crate::state::load_from(snapshot_path, &root_path).map_err(error)?;
+    let snap = crate::state::projection()
+        .ok_or_else(|| error("snapshot did not produce a graph".to_string()))?;
+    value_result(py, Ok(core_indexer::api::stats_full(&snap)))
+}
+
+#[pyfunction]
 #[pyo3(name = "status_op", signature = (root=None))]
 fn status_op(py: Python<'_>, root: Option<String>) -> PyResult<Py<PyAny>> {
     value_result(py, crate::port::status_op(root))
@@ -2018,5 +2031,6 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(import_annotations_op, m)?)?;
     m.add_function(wrap_pyfunction!(record_checkout_op, m)?)?;
     m.add_function(wrap_pyfunction!(status_op, m)?)?;
+    m.add_function(wrap_pyfunction!(load_snapshot_op, m)?)?;
     Ok(())
 }

@@ -470,4 +470,12 @@ def analyze(
     return graph
 
 
-__all__ = ["CodeGraph", "analyze"]
+__all__ = ["CodeGraph", "analyze", "load"]
+
+
+def load(snapshot: str, root: str | None = None) -> CodeGraph:
+    """Cold-start the in-memory graph from a Macrame ledger file."""
+    result = _native.load_snapshot_op(snapshot, root)
+    graph = CodeGraph(snapshot)
+    graph.stats_result = result if isinstance(result, dict) else {}
+    return graph

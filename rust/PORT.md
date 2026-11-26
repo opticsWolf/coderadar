@@ -701,3 +701,16 @@ new recorded unit.
 - `tests/test_facade_codegraph.py` now asserts `status()["loaded"]` and a
   `stats` object (`1 passed`).
 - Gate unchanged: **4445/4445**; clippy/fmt/cutover green.
+
+### Unit 32 proof (snapshot loading)
+
+- Added `state::load_from` for an explicit Macrame snapshot, a CLI
+  `load-snapshot SNAPSHOT [--root PATH]` arm, a native `load_snapshot_op`
+  and a façade `coderadar.load(snapshot, root=None)` returning a
+  `CodeGraph` handle.
+- Rust and Python CLI output have the same shape on a copied store; the
+  counts differ only because the live index advanced between runs.
+- `rust/cutover.py` now counts `load-snapshot` as shared: **47 shared, 8
+  local-only**; verification **4/4**.
+- `tests/test_facade_codegraph.py` also cold-starts from the temp store
+  (`1 passed`). Gate unchanged: **4445/4445**.
