@@ -438,12 +438,33 @@ patches needed after any re-bridge.
   cannot bridge callable arguments; they remain Python-side by design
   rather than being faked with a different API.
 
+### Unit 21 proof (framework reference-resolution heuristics)
+
+- Added pure-Rust mirrors of every resolver's `claims_reference` naming
+  convention and `resolve` directory-preference rule, including Django's
+  Model/View/Form special case and the Flask/FastAPI explicit-import
+  no-op.
+- `framework_resolve_reference` follows `ALL_RESOLVERS` order, attaches
+  `resolved_by` / `confidence`, sorts by confidence, deduplicates by id and
+  honours `limit` — the contract of `resolution.resolve_reference` without
+  a Python callable searcher.
+- `framework_resolve_route` mirrors route-pattern matching and handler
+  attachment. `port::resolve` now uses it for path-shaped queries, replacing
+  the former text-proximity fallback.
+- CLI gained `resolve-framework NAME [LIMIT]` through the captured parity
+  namespace. Python MCP has no framework-resolution tool, so none was added.
+- Rust unit tests cover claims, preferred-directory selection and route
+  handler attachment (`cargo test -p coderadar --lib`: 10 passed).
+- `diff`: **4436/4436** unchanged; `gate`: **passed**; clippy: passed.
+- Live smoke: `resolve-framework canonical` and `resolve /users/:id`
+  return honest empty results on this repo (no framework route fixtures
+  indexed).
+
 ## Remaining
 
 - MCP parity: 45 Rust tools are exposed; the remaining Python-only tools
   are primarily framework/experimental surfaces.
-- Resolver `resolve()` / `claims_reference()` naming heuristics and
-  middleware/DI edge kinds outside the recorded common shapes are not ported.
+- Middleware/DI edge kinds beyond the recorded common shapes are not emitted.
 - `rust-anything bench` remains unavailable in this harness (the driver
   cannot import `coderadar.ops` from its generated working directory).
 - Shadow `enable` (replacing the Python CLI on PATH) is intentionally not

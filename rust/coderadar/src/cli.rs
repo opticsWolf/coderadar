@@ -385,6 +385,19 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
             )?;
             println!("{}", port::render_diagnose(result)?);
         }
+        "resolve-framework" => {
+            ensure_loaded(project)?;
+            let name = tail
+                .first()
+                .ok_or_else(|| "missing reference name".to_string())?;
+            let limit = tail
+                .get(1)
+                .and_then(|value| value.parse::<i64>().ok())
+                .unwrap_or(5);
+            let candidates = port::framework_candidates_op(name.clone(), limit)?;
+            let result = port::framework_resolve_reference(name.clone(), candidates, limit)?;
+            println!("{}", pretty(&result)?);
+        }
         "reindex" => {
             let root = find_root(project);
             let result = port::reindex_op(&root)?;

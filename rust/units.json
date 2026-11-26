@@ -346,5 +346,20 @@
       "resolve_route",
       "resolver claims_reference/resolve heuristics"
     ]
+  },
+  "unit21": {
+    "port": [
+      "framework_claims_reference",
+      "framework_resolve_reference",
+      "framework_resolve_route",
+      "framework_candidates_op",
+      "resolve_route"
+    ],
+    "cli": [
+      "resolve-framework"
+    ],
+    "tests": "cargo test -p coderadar --lib (10 passed)",
+    "cases": 4436,
+    "note": "callable searcher replaced by data-shaped pure Rust API"
   }
 }
