@@ -603,5 +603,13 @@
       "coderadar_set_project guard exemption"
     ],
     "cases": 4446
+  },
+  "unit38": {
+    "audit": "CodeRadar completion audit",
+    "callables": 768,
+    "user_visible_parity": "~96%",
+    "callable_weighted": "~81%",
+    "days_to_visible_parity": "6-8",
+    "days_to_source_parity": "14-20"
   }
 }

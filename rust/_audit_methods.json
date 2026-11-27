@@ -1,0 +1,2630 @@
+[
+  {
+    "callee_count": 2,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "query",
+    "caller_count": 33,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.query",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "name": "update_file",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.update_file",
+    "callee_count": 12,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "caller_count": 24
+  },
+  {
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "name": "apply",
+    "callee_count": 13,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.apply",
+    "caller_count": 18,
+    "kind": "method"
+  },
+  {
+    "caller_count": 15,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "as_of",
+    "callee_count": 6,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.as_of",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex",
+    "caller_count": 14,
+    "id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex.wait",
+    "file_path": "py_agent/src/coderadar/mcp/startup.py",
+    "callee_count": 4,
+    "name": "wait"
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.plan_replace_body",
+    "name": "plan_replace_body",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 9,
+    "callee_count": 4,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph"
+  },
+  {
+    "name": "extract",
+    "file_path": "py_agent/src/coderadar/resolvers/laravel.py",
+    "id": "py_agent/src/coderadar/resolvers/laravel.py::LaravelResolver.extract",
+    "caller_count": 8,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/laravel.py::LaravelResolver",
+    "callee_count": 6
+  },
+  {
+    "caller_count": 7,
+    "parent_id": "py_agent/src/coderadar/resolvers/express.py::ExpressResolver",
+    "name": "extract",
+    "file_path": "py_agent/src/coderadar/resolvers/express.py",
+    "id": "py_agent/src/coderadar/resolvers/express.py::ExpressResolver.extract",
+    "callee_count": 6,
+    "kind": "method"
+  },
+  {
+    "kind": "method",
+    "caller_count": 7,
+    "id": "py_agent/src/coderadar/mcp/lifecycle.py::HandshakeTimeout.arm",
+    "parent_id": "py_agent/src/coderadar/mcp/lifecycle.py::HandshakeTimeout",
+    "name": "arm",
+    "callee_count": 0,
+    "file_path": "py_agent/src/coderadar/mcp/lifecycle.py"
+  },
+  {
+    "name": "attempt",
+    "caller_count": 7,
+    "callee_count": 5,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/mcp/lazy.py::LazyRootRetry",
+    "file_path": "py_agent/src/coderadar/mcp/lazy.py",
+    "id": "py_agent/src/coderadar/mcp/lazy.py::LazyRootRetry.attempt"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/mcp/lazy.py",
+    "name": "should_ask",
+    "caller_count": 7,
+    "callee_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/mcp/lazy.py::LazyRootRetry",
+    "id": "py_agent/src/coderadar/mcp/lazy.py::LazyRootRetry.should_ask"
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot._resolve",
+    "name": "_resolve",
+    "caller_count": 7,
+    "callee_count": 5,
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot"
+  },
+  {
+    "callee_count": 4,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.plan_rename",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "plan_rename",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "caller_count": 7
+  },
+  {
+    "id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex.start",
+    "parent_id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex",
+    "caller_count": 7,
+    "callee_count": 1,
+    "kind": "method",
+    "name": "start",
+    "file_path": "py_agent/src/coderadar/mcp/startup.py"
+  },
+  {
+    "caller_count": 6,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "callee_count": 1,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "verify_history",
+    "kind": "method",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.verify_history"
+  },
+  {
+    "caller_count": 5,
+    "kind": "static",
+    "callee_count": 2,
+    "parent_id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter",
+    "id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter._mutation_error",
+    "name": "_mutation_error",
+    "file_path": "py_agent/src/coderadar/mutation/tool_router.py"
+  },
+  {
+    "caller_count": 5,
+    "callee_count": 6,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver.extract",
+    "name": "extract",
+    "file_path": "py_agent/src/coderadar/resolvers/django.py"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.history_of",
+    "caller_count": 5,
+    "callee_count": 1,
+    "name": "history_of",
+    "kind": "method"
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/springboot.py::SpringBootResolver.extract",
+    "callee_count": 8,
+    "kind": "method",
+    "caller_count": 5,
+    "parent_id": "py_agent/src/coderadar/resolvers/springboot.py::SpringBootResolver",
+    "name": "extract",
+    "file_path": "py_agent/src/coderadar/resolvers/springboot.py"
+  },
+  {
+    "caller_count": 5,
+    "kind": "method",
+    "id": "py_agent/src/coderadar/resolvers/reactrouter.py::ReactRouterResolver.extract",
+    "name": "extract",
+    "callee_count": 4,
+    "parent_id": "py_agent/src/coderadar/resolvers/reactrouter.py::ReactRouterResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/reactrouter.py"
+  },
+  {
+    "id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter._mutation_payload",
+    "kind": "static",
+    "parent_id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter",
+    "file_path": "py_agent/src/coderadar/mutation/tool_router.py",
+    "name": "_mutation_payload",
+    "callee_count": 1,
+    "caller_count": 5
+  },
+  {
+    "kind": "method",
+    "name": "node",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.node",
+    "caller_count": 5,
+    "callee_count": 1
+  },
+  {
+    "file_path": "py_agent/src/coderadar/resolvers/aspnet.py",
+    "caller_count": 5,
+    "callee_count": 9,
+    "parent_id": "py_agent/src/coderadar/resolvers/aspnet.py::AspNetResolver",
+    "kind": "method",
+    "id": "py_agent/src/coderadar/resolvers/aspnet.py::AspNetResolver.extract",
+    "name": "extract"
+  },
+  {
+    "name": "stats",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.stats",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "caller_count": 5,
+    "callee_count": 1
+  },
+  {
+    "caller_count": 4,
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver.extract",
+    "name": "extract",
+    "callee_count": 7,
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/lsp/pool.py",
+    "id": "py_agent/src/coderadar/lsp/pool.py::LSPPool.is_enabled",
+    "name": "is_enabled",
+    "caller_count": 4,
+    "callee_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::LSPPool"
+  },
+  {
+    "name": "disarm",
+    "caller_count": 4,
+    "file_path": "py_agent/src/coderadar/mcp/lifecycle.py",
+    "kind": "method",
+    "id": "py_agent/src/coderadar/mcp/lifecycle.py::HandshakeTimeout.disarm",
+    "parent_id": "py_agent/src/coderadar/mcp/lifecycle.py::HandshakeTimeout",
+    "callee_count": 0
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/springboot.py::SpringBootResolver.detect",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/resolvers/springboot.py",
+    "name": "detect",
+    "caller_count": 4,
+    "callee_count": 2,
+    "parent_id": "py_agent/src/coderadar/resolvers/springboot.py::SpringBootResolver"
+  },
+  {
+    "name": "start",
+    "file_path": "py_agent/src/coderadar/mcp/lifecycle.py",
+    "id": "py_agent/src/coderadar/mcp/lifecycle.py::ParentWatchdog.start",
+    "caller_count": 4,
+    "callee_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/mcp/lifecycle.py::ParentWatchdog"
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::GitWatcher",
+    "name": "start",
+    "id": "py_agent/src/coderadar/__init__.py::GitWatcher.start",
+    "callee_count": 0,
+    "caller_count": 4,
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "kind": "method",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.remove_file",
+    "name": "remove_file",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 4,
+    "callee_count": 2
+  },
+  {
+    "callee_count": 5,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/vuerouter.py::VueRouterResolver",
+    "name": "extract",
+    "file_path": "py_agent/src/coderadar/resolvers/vuerouter.py",
+    "id": "py_agent/src/coderadar/resolvers/vuerouter.py::VueRouterResolver.extract",
+    "caller_count": 4
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::Watcher._apply",
+    "name": "_apply",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Watcher",
+    "caller_count": 4,
+    "callee_count": 5
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "search",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 4,
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.search",
+    "kind": "method"
+  },
+  {
+    "callee_count": 4,
+    "id": "py_agent/src/coderadar/resolvers/rails.py::RailsResolver.extract",
+    "file_path": "py_agent/src/coderadar/resolvers/rails.py",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/rails.py::RailsResolver",
+    "name": "extract",
+    "caller_count": 4
+  },
+  {
+    "kind": "method",
+    "name": "callees",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.callees",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "callee_count": 2,
+    "caller_count": 4
+  },
+  {
+    "kind": "static",
+    "name": "_get_name",
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver._get_name",
+    "caller_count": 4,
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver",
+    "callee_count": 2
+  },
+  {
+    "caller_count": 4,
+    "kind": "static",
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver._get_name",
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "callee_count": 2,
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "name": "_get_name"
+  },
+  {
+    "caller_count": 4,
+    "file_path": "py_agent/src/coderadar/mcp/lazy.py",
+    "id": "py_agent/src/coderadar/mcp/lazy.py::LazyRootRetry.mark_user_chosen",
+    "name": "mark_user_chosen",
+    "callee_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/mcp/lazy.py::LazyRootRetry"
+  },
+  {
+    "kind": "method",
+    "callee_count": 7,
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver.extract",
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "name": "extract",
+    "caller_count": 4
+  },
+  {
+    "caller_count": 4,
+    "callee_count": 1,
+    "name": "callers_of",
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameQuery.callers_of",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameQuery",
+    "file_path": "py_agent/src/coderadar/query/executor.py"
+  },
+  {
+    "caller_count": 3,
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver._get_call_name",
+    "name": "_get_call_name",
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "callee_count": 1,
+    "kind": "static",
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver"
+  },
+  {
+    "name": "resolve",
+    "parent_id": "py_agent/src/coderadar/resolvers/express.py::ExpressResolver",
+    "kind": "method",
+    "caller_count": 3,
+    "callee_count": 0,
+    "id": "py_agent/src/coderadar/resolvers/express.py::ExpressResolver.resolve",
+    "file_path": "py_agent/src/coderadar/resolvers/express.py"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.watch",
+    "name": "watch",
+    "caller_count": 3,
+    "callee_count": 1
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.comment",
+    "callee_count": 1,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "name": "comment",
+    "caller_count": 3,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "caller_count": 3,
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver._get_call_name",
+    "kind": "static",
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "name": "_get_call_name"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver._get_call_name",
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "name": "_get_call_name",
+    "caller_count": 3,
+    "callee_count": 1,
+    "kind": "static"
+  },
+  {
+    "caller_count": 3,
+    "name": "traverse",
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameQuery",
+    "kind": "method",
+    "callee_count": 2,
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameQuery.traverse",
+    "file_path": "py_agent/src/coderadar/query/executor.py"
+  },
+  {
+    "kind": "static",
+    "parent_id": "py_agent/src/coderadar/query/cache.py::QueryCache",
+    "file_path": "py_agent/src/coderadar/query/cache.py",
+    "name": "make_key",
+    "id": "py_agent/src/coderadar/query/cache.py::QueryCache.make_key",
+    "caller_count": 3,
+    "callee_count": 0
+  },
+  {
+    "name": "detect",
+    "callee_count": 2,
+    "file_path": "py_agent/src/coderadar/resolvers/express.py",
+    "id": "py_agent/src/coderadar/resolvers/express.py::ExpressResolver.detect",
+    "caller_count": 3,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/express.py::ExpressResolver"
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/nestjs.py::NestJSResolver.extract",
+    "caller_count": 3,
+    "name": "extract",
+    "file_path": "py_agent/src/coderadar/resolvers/nestjs.py",
+    "callee_count": 4,
+    "parent_id": "py_agent/src/coderadar/resolvers/nestjs.py::NestJSResolver",
+    "kind": "method"
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex",
+    "callee_count": 1,
+    "name": "restart",
+    "id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex.restart",
+    "file_path": "py_agent/src/coderadar/mcp/startup.py",
+    "caller_count": 3
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/mcp/lifecycle.py::ParentWatchdog",
+    "file_path": "py_agent/src/coderadar/mcp/lifecycle.py",
+    "name": "stop",
+    "callee_count": 1,
+    "kind": "method",
+    "id": "py_agent/src/coderadar/mcp/lifecycle.py::ParentWatchdog.stop",
+    "caller_count": 3
+  },
+  {
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::Watcher.start",
+    "name": "start",
+    "kind": "method",
+    "caller_count": 3,
+    "parent_id": "py_agent/src/coderadar/__init__.py::Watcher",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "callee_count": 3,
+    "id": "py_agent/src/coderadar/resolvers/laravel.py::LaravelResolver.detect",
+    "parent_id": "py_agent/src/coderadar/resolvers/laravel.py::LaravelResolver",
+    "caller_count": 3,
+    "kind": "method",
+    "name": "detect",
+    "file_path": "py_agent/src/coderadar/resolvers/laravel.py"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "callers",
+    "caller_count": 3,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.callers",
+    "callee_count": 2,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method"
+  },
+  {
+    "caller_count": 3,
+    "parent_id": "py_agent/src/coderadar/query/cache.py::QueryCache",
+    "name": "set",
+    "file_path": "py_agent/src/coderadar/query/cache.py",
+    "callee_count": 3,
+    "kind": "method",
+    "id": "py_agent/src/coderadar/query/cache.py::QueryCache.set"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/resolvers/aspnet.py::AspNetResolver",
+    "id": "py_agent/src/coderadar/resolvers/aspnet.py::AspNetResolver.detect",
+    "caller_count": 3,
+    "file_path": "py_agent/src/coderadar/resolvers/aspnet.py",
+    "name": "detect",
+    "kind": "method",
+    "callee_count": 2
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.retire_annotation",
+    "caller_count": 3,
+    "callee_count": 1,
+    "name": "retire_annotation"
+  },
+  {
+    "name": "_get_name",
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "caller_count": 3,
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver._get_name",
+    "callee_count": 2,
+    "kind": "static"
+  },
+  {
+    "name": "find",
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameQuery",
+    "caller_count": 3,
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameQuery.find"
+  },
+  {
+    "id": "py_agent/src/coderadar/embedding/dedup.py::EmbeddingDedup.embed_batch",
+    "caller_count": 3,
+    "parent_id": "py_agent/src/coderadar/embedding/dedup.py::EmbeddingDedup",
+    "callee_count": 5,
+    "kind": "method",
+    "name": "embed_batch",
+    "file_path": "py_agent/src/coderadar/embedding/dedup.py"
+  },
+  {
+    "callee_count": 1,
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver.detect",
+    "kind": "method",
+    "caller_count": 2,
+    "name": "detect",
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver"
+  },
+  {
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/__init__.py::GitWatcher",
+    "name": "stop",
+    "caller_count": 2,
+    "id": "py_agent/src/coderadar/__init__.py::GitWatcher.stop"
+  },
+  {
+    "name": "_refresh_framework_routes",
+    "caller_count": 2,
+    "callee_count": 2,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "kind": "static",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph._refresh_framework_routes",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "name": "_model_embed",
+    "caller_count": 2,
+    "file_path": "py_agent/src/coderadar/embedding/dedup.py",
+    "callee_count": 3,
+    "kind": "method",
+    "id": "py_agent/src/coderadar/embedding/dedup.py::EmbeddingDedup._model_embed",
+    "parent_id": "py_agent/src/coderadar/embedding/dedup.py::EmbeddingDedup"
+  },
+  {
+    "callee_count": 3,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph._remove_file_full",
+    "name": "_remove_file_full",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 2,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "kind": "method"
+  },
+  {
+    "name": "cache_hit_rate",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/embedding/dedup.py",
+    "callee_count": 0,
+    "caller_count": 2,
+    "id": "py_agent/src/coderadar/embedding/dedup.py::EmbeddingDedup.cache_hit_rate",
+    "parent_id": "py_agent/src/coderadar/embedding/dedup.py::EmbeddingDedup"
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.traverse",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "callee_count": 1,
+    "name": "traverse",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "caller_count": 2,
+    "kind": "method"
+  },
+  {
+    "name": "detect",
+    "kind": "method",
+    "callee_count": 1,
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "caller_count": 2,
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver.detect"
+  },
+  {
+    "name": "extract",
+    "id": "py_agent/src/coderadar/resolvers/go.py::GoResolver.extract",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/resolvers/go.py",
+    "caller_count": 2,
+    "callee_count": 6,
+    "parent_id": "py_agent/src/coderadar/resolvers/go.py::GoResolver"
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.compute_embeddings",
+    "callee_count": 1,
+    "name": "compute_embeddings",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 2,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "kind": "method"
+  },
+  {
+    "caller_count": 2,
+    "callee_count": 0,
+    "id": "py_agent/src/coderadar/resolvers/actix.py::RustActixResolver.detect",
+    "parent_id": "py_agent/src/coderadar/resolvers/actix.py::RustActixResolver",
+    "kind": "method",
+    "name": "detect",
+    "file_path": "py_agent/src/coderadar/resolvers/actix.py"
+  },
+  {
+    "kind": "method",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.annotate",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 2,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "callee_count": 1,
+    "name": "annotate"
+  },
+  {
+    "name": "revise_annotation",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.revise_annotation",
+    "callee_count": 1,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "caller_count": 2
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "caller_count": 2,
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver._get_string_value",
+    "name": "_get_string_value",
+    "callee_count": 1,
+    "kind": "static"
+  },
+  {
+    "name": "ensure_server",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::LSPPool",
+    "id": "py_agent/src/coderadar/lsp/pool.py::LSPPool.ensure_server",
+    "caller_count": 2,
+    "file_path": "py_agent/src/coderadar/lsp/pool.py",
+    "callee_count": 2
+  },
+  {
+    "caller_count": 2,
+    "callee_count": 3,
+    "name": "detect",
+    "kind": "method",
+    "id": "py_agent/src/coderadar/resolvers/go.py::GoResolver.detect",
+    "file_path": "py_agent/src/coderadar/resolvers/go.py",
+    "parent_id": "py_agent/src/coderadar/resolvers/go.py::GoResolver"
+  },
+  {
+    "callee_count": 0,
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/resolvers/actix.py",
+    "parent_id": "py_agent/src/coderadar/resolvers/actix.py::RustActixResolver",
+    "id": "py_agent/src/coderadar/resolvers/actix.py::RustActixResolver.resolve",
+    "name": "resolve",
+    "caller_count": 2
+  },
+  {
+    "kind": "method",
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver.detect",
+    "caller_count": 2,
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "name": "detect"
+  },
+  {
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/resolvers/rails.py::RailsResolver.detect",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/rails.py::RailsResolver",
+    "name": "detect",
+    "file_path": "py_agent/src/coderadar/resolvers/rails.py",
+    "caller_count": 2
+  },
+  {
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "callee_count": 10,
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot._read_raw",
+    "caller_count": 2,
+    "name": "_read_raw"
+  },
+  {
+    "name": "get",
+    "caller_count": 2,
+    "callee_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/query/cache.py::QueryCache",
+    "id": "py_agent/src/coderadar/query/cache.py::QueryCache.get",
+    "file_path": "py_agent/src/coderadar/query/cache.py"
+  },
+  {
+    "caller_count": 2,
+    "kind": "method",
+    "callee_count": 1,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.get_smells",
+    "name": "get_smells"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "caller_count": 1,
+    "callee_count": 1,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.resolve",
+    "name": "resolve"
+  },
+  {
+    "id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGContextBuilder._compress",
+    "file_path": "py_agent/src/coderadar/agent/graphrag.py",
+    "caller_count": 1,
+    "name": "_compress",
+    "callee_count": 2,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGContextBuilder"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 1,
+    "kind": "method",
+    "callee_count": 1,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "find_scaffolding",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.find_scaffolding"
+  },
+  {
+    "name": "record_checkout",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "callee_count": 3,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.record_checkout"
+  },
+  {
+    "callee_count": 4,
+    "name": "_parse_route_decorator",
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver._parse_route_decorator",
+    "caller_count": 1
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/laravel.py::LaravelResolver.claims_reference",
+    "file_path": "py_agent/src/coderadar/resolvers/laravel.py",
+    "caller_count": 1,
+    "kind": "method",
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/resolvers/laravel.py::LaravelResolver",
+    "name": "claims_reference"
+  },
+  {
+    "name": "detect",
+    "caller_count": 1,
+    "callee_count": 2,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/vuerouter.py::VueRouterResolver",
+    "id": "py_agent/src/coderadar/resolvers/vuerouter.py::VueRouterResolver.detect",
+    "file_path": "py_agent/src/coderadar/resolvers/vuerouter.py"
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver._extract_routes",
+    "name": "_extract_routes",
+    "caller_count": 1,
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "callee_count": 3,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver"
+  },
+  {
+    "name": "_synchronize_mutation_files",
+    "kind": "method",
+    "callee_count": 8,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph._synchronize_mutation_files",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "caller_count": 1
+  },
+  {
+    "caller_count": 1,
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "name": "_extract_route_decorators",
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver._extract_route_decorators",
+    "callee_count": 3,
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver"
+  },
+  {
+    "caller_count": 1,
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver._get_decorator_name",
+    "name": "_get_decorator_name",
+    "callee_count": 1,
+    "kind": "static",
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver"
+  },
+  {
+    "id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter._handle_rename",
+    "file_path": "py_agent/src/coderadar/mutation/tool_router.py",
+    "name": "_handle_rename",
+    "parent_id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter",
+    "callee_count": 3,
+    "caller_count": 1,
+    "kind": "method"
+  },
+  {
+    "name": "poll_once",
+    "caller_count": 1,
+    "kind": "method",
+    "callee_count": 3,
+    "parent_id": "py_agent/src/coderadar/__init__.py::GitWatcher",
+    "id": "py_agent/src/coderadar/__init__.py::GitWatcher.poll_once",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "caller_count": 1,
+    "name": "module_children",
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.module_children",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "kind": "method",
+    "caller_count": 1,
+    "parent_id": "py_agent/src/coderadar/resolvers/nestjs.py::NestJSResolver",
+    "id": "py_agent/src/coderadar/resolvers/nestjs.py::NestJSResolver.claims_reference",
+    "file_path": "py_agent/src/coderadar/resolvers/nestjs.py",
+    "callee_count": 0,
+    "name": "claims_reference"
+  },
+  {
+    "caller_count": 1,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.dead_code",
+    "name": "dead_code",
+    "callee_count": 1,
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "callee_count": 2,
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameQuery",
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameQuery.list_by_kind",
+    "caller_count": 1,
+    "kind": "method",
+    "name": "list_by_kind"
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "callee_count": 3,
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver._get_route_handler",
+    "name": "_get_route_handler",
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "caller_count": 1
+  },
+  {
+    "kind": "method",
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameQuery",
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameQuery.search_similar",
+    "name": "search_similar",
+    "caller_count": 1
+  },
+  {
+    "file_path": "py_agent/src/coderadar/agent/graphrag.py",
+    "caller_count": 1,
+    "callee_count": 5,
+    "name": "_execute_plan",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGPipeline",
+    "id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGPipeline._execute_plan"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "callee_count": 1,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.annotations_on",
+    "name": "annotations_on",
+    "caller_count": 1
+  },
+  {
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver._get_string_value",
+    "caller_count": 1,
+    "kind": "static",
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "name": "_get_string_value",
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py"
+  },
+  {
+    "caller_count": 1,
+    "name": "_get_list_value",
+    "kind": "static",
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver",
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver._get_list_value",
+    "callee_count": 1
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/resolvers/aspnet.py::AspNetResolver",
+    "id": "py_agent/src/coderadar/resolvers/aspnet.py::AspNetResolver.resolve",
+    "name": "resolve",
+    "file_path": "py_agent/src/coderadar/resolvers/aspnet.py",
+    "caller_count": 1,
+    "callee_count": 0,
+    "kind": "method"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/lsp/pool.py",
+    "name": "bump_version",
+    "caller_count": 1,
+    "callee_count": 0,
+    "id": "py_agent/src/coderadar/lsp/pool.py::ManagedServer.bump_version",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::ManagedServer"
+  },
+  {
+    "kind": "method",
+    "caller_count": 1,
+    "name": "find_clones",
+    "callee_count": 1,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.find_clones"
+  },
+  {
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::Watcher.stop",
+    "name": "stop",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Watcher",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "caller_count": 1
+  },
+  {
+    "caller_count": 1,
+    "name": "claims_reference",
+    "file_path": "py_agent/src/coderadar/resolvers/reactrouter.py",
+    "callee_count": 0,
+    "id": "py_agent/src/coderadar/resolvers/reactrouter.py::ReactRouterResolver.claims_reference",
+    "parent_id": "py_agent/src/coderadar/resolvers/reactrouter.py::ReactRouterResolver",
+    "kind": "method"
+  },
+  {
+    "caller_count": 1,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/actix.py::RustActixResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/actix.py",
+    "callee_count": 0,
+    "id": "py_agent/src/coderadar/resolvers/actix.py::RustActixResolver.claims_reference",
+    "name": "claims_reference"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/agent/graphrag.py",
+    "name": "_estimate_tokens",
+    "caller_count": 1,
+    "parent_id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGContextBuilder",
+    "callee_count": 4,
+    "kind": "method",
+    "id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGContextBuilder._estimate_tokens"
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/actix.py::RustActixResolver.extract",
+    "file_path": "py_agent/src/coderadar/resolvers/actix.py",
+    "kind": "method",
+    "name": "extract",
+    "parent_id": "py_agent/src/coderadar/resolvers/actix.py::RustActixResolver",
+    "caller_count": 1,
+    "callee_count": 3
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "kind": "method",
+    "callee_count": 6,
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver._extract_routes",
+    "name": "_extract_routes",
+    "caller_count": 1
+  },
+  {
+    "name": "watch_git",
+    "caller_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.watch_git",
+    "callee_count": 2,
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/resolvers/springboot.py",
+    "id": "py_agent/src/coderadar/resolvers/springboot.py::SpringBootResolver._join_paths",
+    "name": "_join_paths",
+    "caller_count": 1,
+    "callee_count": 0,
+    "kind": "static",
+    "parent_id": "py_agent/src/coderadar/resolvers/springboot.py::SpringBootResolver"
+  },
+  {
+    "caller_count": 1,
+    "callee_count": 3,
+    "parent_id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGContextBuilder",
+    "id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGContextBuilder.build_context",
+    "file_path": "py_agent/src/coderadar/agent/graphrag.py",
+    "kind": "method",
+    "name": "build_context"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/resolvers/rails.py::RailsResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/rails.py",
+    "caller_count": 1,
+    "name": "claims_reference",
+    "callee_count": 0,
+    "id": "py_agent/src/coderadar/resolvers/rails.py::RailsResolver.claims_reference",
+    "kind": "method"
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/laravel.py::LaravelResolver.extract._group_prefix_for",
+    "caller_count": 1,
+    "name": "_group_prefix_for",
+    "file_path": "py_agent/src/coderadar/resolvers/laravel.py",
+    "callee_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/laravel.py::LaravelResolver"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameQuery",
+    "caller_count": 1,
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameQuery.callees_of",
+    "name": "callees_of",
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "callee_count": 1,
+    "kind": "method"
+  },
+  {
+    "id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter._handle_body_replacement",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter",
+    "file_path": "py_agent/src/coderadar/mutation/tool_router.py",
+    "name": "_handle_body_replacement",
+    "caller_count": 1,
+    "callee_count": 3
+  },
+  {
+    "name": "traverse",
+    "callee_count": 5,
+    "caller_count": 1,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.traverse",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "name": "resolve",
+    "caller_count": 1,
+    "id": "py_agent/src/coderadar/resolvers/go.py::GoResolver.resolve",
+    "callee_count": 0,
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/resolvers/go.py",
+    "parent_id": "py_agent/src/coderadar/resolvers/go.py::GoResolver"
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver.claims_reference",
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver",
+    "callee_count": 1,
+    "name": "claims_reference",
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "caller_count": 1,
+    "kind": "method"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "name": "_detect_app_name",
+    "caller_count": 1,
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver._detect_app_name",
+    "callee_count": 2,
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "kind": "method"
+  },
+  {
+    "name": "_extract_dependencies",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver",
+    "callee_count": 4,
+    "caller_count": 1,
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver._extract_dependencies",
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py"
+  },
+  {
+    "callee_count": 1,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "name": "claims_reference",
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver.claims_reference",
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "caller_count": 1
+  },
+  {
+    "kind": "static",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "caller_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph._sync_failure",
+    "name": "_sync_failure",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "callee_count": 2
+  },
+  {
+    "caller_count": 1,
+    "kind": "method",
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver._extract_drf_router",
+    "callee_count": 6,
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "name": "_extract_drf_router"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "name": "_extract_admin_register",
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver._extract_admin_register",
+    "kind": "method",
+    "callee_count": 3,
+    "caller_count": 1
+  },
+  {
+    "caller_count": 1,
+    "callee_count": 0,
+    "name": "claims_reference",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver.claims_reference"
+  },
+  {
+    "id": "py_agent/src/coderadar/embedding/dedup.py::EmbeddingDedup._get_cached",
+    "file_path": "py_agent/src/coderadar/embedding/dedup.py",
+    "parent_id": "py_agent/src/coderadar/embedding/dedup.py::EmbeddingDedup",
+    "name": "_get_cached",
+    "callee_count": 1,
+    "kind": "method",
+    "caller_count": 1
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "open_items",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.open_items",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 1,
+    "callee_count": 1
+  },
+  {
+    "kind": "method",
+    "name": "_extract_blueprint_register",
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "caller_count": 1,
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver._extract_blueprint_register",
+    "callee_count": 3
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.comments_on",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "name": "comments_on",
+    "caller_count": 1,
+    "callee_count": 1,
+    "kind": "method"
+  },
+  {
+    "id": "py_agent/src/coderadar/mcp/lifecycle.py::ParentWatchdog.check_once",
+    "caller_count": 1,
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/mcp/lifecycle.py",
+    "callee_count": 0,
+    "name": "check_once",
+    "parent_id": "py_agent/src/coderadar/mcp/lifecycle.py::ParentWatchdog"
+  },
+  {
+    "id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGContextBuilder._skeletonize",
+    "caller_count": 1,
+    "name": "_skeletonize",
+    "file_path": "py_agent/src/coderadar/agent/graphrag.py",
+    "parent_id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGContextBuilder",
+    "kind": "method",
+    "callee_count": 2
+  },
+  {
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/resolvers/go.py",
+    "caller_count": 1,
+    "parent_id": "py_agent/src/coderadar/resolvers/go.py::GoResolver",
+    "name": "claims_reference",
+    "id": "py_agent/src/coderadar/resolvers/go.py::GoResolver.claims_reference",
+    "callee_count": 0
+  },
+  {
+    "caller_count": 1,
+    "callee_count": 2,
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver",
+    "name": "_detect_app_name",
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver._detect_app_name"
+  },
+  {
+    "caller_count": 1,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "batch",
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.batch"
+  },
+  {
+    "callee_count": 0,
+    "name": "claims_reference",
+    "file_path": "py_agent/src/coderadar/resolvers/springboot.py",
+    "id": "py_agent/src/coderadar/resolvers/springboot.py::SpringBootResolver.claims_reference",
+    "caller_count": 1,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/springboot.py::SpringBootResolver"
+  },
+  {
+    "id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter._handle_create_entity",
+    "file_path": "py_agent/src/coderadar/mutation/tool_router.py",
+    "callee_count": 3,
+    "kind": "method",
+    "caller_count": 1,
+    "name": "_handle_create_entity",
+    "parent_id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter"
+  },
+  {
+    "kind": "method",
+    "callee_count": 2,
+    "parent_id": "py_agent/src/coderadar/resolvers/reactrouter.py::ReactRouterResolver",
+    "id": "py_agent/src/coderadar/resolvers/reactrouter.py::ReactRouterResolver.detect",
+    "name": "detect",
+    "caller_count": 1,
+    "file_path": "py_agent/src/coderadar/resolvers/reactrouter.py"
+  },
+  {
+    "caller_count": 1,
+    "callee_count": 1,
+    "kind": "static",
+    "name": "_strip_as_view",
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver._strip_as_view"
+  },
+  {
+    "caller_count": 1,
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/resolvers/vuerouter.py",
+    "name": "claims_reference",
+    "id": "py_agent/src/coderadar/resolvers/vuerouter.py::VueRouterResolver.claims_reference",
+    "parent_id": "py_agent/src/coderadar/resolvers/vuerouter.py::VueRouterResolver",
+    "callee_count": 0
+  },
+  {
+    "file_path": "py_agent/src/coderadar/lsp/pool.py",
+    "callee_count": 0,
+    "id": "py_agent/src/coderadar/lsp/pool.py::LSPPool._invalidate_prefix",
+    "name": "_invalidate_prefix",
+    "kind": "method",
+    "caller_count": 1,
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::LSPPool"
+  },
+  {
+    "name": "comment_history",
+    "caller_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.comment_history",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "callee_count": 1
+  },
+  {
+    "file_path": "py_agent/src/coderadar/resolvers/aspnet.py",
+    "caller_count": 1,
+    "kind": "static",
+    "callee_count": 1,
+    "parent_id": "py_agent/src/coderadar/resolvers/aspnet.py::AspNetResolver",
+    "id": "py_agent/src/coderadar/resolvers/aspnet.py::AspNetResolver._join_paths",
+    "name": "_join_paths"
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.plan_create_entity",
+    "callee_count": 4,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "caller_count": 1,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "name": "plan_create_entity"
+  },
+  {
+    "name": "find",
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.find",
+    "caller_count": 1,
+    "callee_count": 5,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "callee_count": 4,
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "caller_count": 1,
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver",
+    "name": "_extract_router_include",
+    "kind": "method",
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver._extract_router_include"
+  },
+  {
+    "callee_count": 5,
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "name": "_extract_route_edges",
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "kind": "method",
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver._extract_route_edges",
+    "caller_count": 1
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "synchronize_once",
+    "callee_count": 1,
+    "caller_count": 1,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph._synchronize_mutation_files.synchronize_once"
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.annotation_history",
+    "name": "annotation_history",
+    "callee_count": 1,
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "caller_count": 1
+  },
+  {
+    "id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter._handle_signature_update",
+    "name": "_handle_signature_update",
+    "file_path": "py_agent/src/coderadar/mutation/tool_router.py",
+    "callee_count": 3,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter",
+    "caller_count": 1
+  },
+  {
+    "id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter.route",
+    "callee_count": 6,
+    "name": "route",
+    "file_path": "py_agent/src/coderadar/mutation/tool_router.py",
+    "kind": "method",
+    "caller_count": 1,
+    "parent_id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter"
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver._get_decorator_attr",
+    "name": "_get_decorator_attr",
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "caller_count": 1,
+    "callee_count": 1,
+    "kind": "static",
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver"
+  },
+  {
+    "callee_count": 2,
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver._parse_route_call",
+    "caller_count": 1,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "name": "_parse_route_call"
+  },
+  {
+    "name": "definition",
+    "file_path": "py_agent/src/coderadar/lsp/pool.py",
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::LSPPool",
+    "caller_count": 1,
+    "kind": "method",
+    "id": "py_agent/src/coderadar/lsp/pool.py::LSPPool.definition",
+    "callee_count": 2
+  },
+  {
+    "caller_count": 1,
+    "name": "_get_list_value",
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver._get_list_value",
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "callee_count": 1,
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "kind": "static"
+  },
+  {
+    "callee_count": 2,
+    "parent_id": "py_agent/src/coderadar/resolvers/nestjs.py::NestJSResolver",
+    "name": "detect",
+    "id": "py_agent/src/coderadar/resolvers/nestjs.py::NestJSResolver.detect",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/resolvers/nestjs.py",
+    "caller_count": 1
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/springboot.py::SpringBootResolver.resolve",
+    "name": "resolve",
+    "callee_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/springboot.py::SpringBootResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/springboot.py",
+    "caller_count": 1
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::ManagedServer",
+    "caller_count": 1,
+    "file_path": "py_agent/src/coderadar/lsp/pool.py",
+    "id": "py_agent/src/coderadar/lsp/pool.py::ManagedServer.is_open",
+    "callee_count": 0,
+    "name": "is_open",
+    "kind": "method"
+  },
+  {
+    "caller_count": 1,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.affected",
+    "callee_count": 1,
+    "kind": "method",
+    "name": "affected"
+  },
+  {
+    "kind": "method",
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver._find_depends_call",
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "name": "_find_depends_call",
+    "caller_count": 1,
+    "callee_count": 3,
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver"
+  },
+  {
+    "kind": "method",
+    "name": "claims_reference",
+    "caller_count": 1,
+    "parent_id": "py_agent/src/coderadar/resolvers/aspnet.py::AspNetResolver",
+    "id": "py_agent/src/coderadar/resolvers/aspnet.py::AspNetResolver.claims_reference",
+    "file_path": "py_agent/src/coderadar/resolvers/aspnet.py",
+    "callee_count": 0
+  },
+  {
+    "callee_count": 0,
+    "file_path": "py_agent/src/coderadar/resolvers/express.py",
+    "id": "py_agent/src/coderadar/resolvers/express.py::ExpressResolver.claims_reference",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/express.py::ExpressResolver",
+    "name": "claims_reference",
+    "caller_count": 1
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver._get_string_value",
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver",
+    "callee_count": 1,
+    "name": "_get_string_value",
+    "kind": "static",
+    "caller_count": 1
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/query/cache.py::QueryCache",
+    "callee_count": 1,
+    "file_path": "py_agent/src/coderadar/query/cache.py",
+    "id": "py_agent/src/coderadar/query/cache.py::QueryCache.prune_expired",
+    "caller_count": 1,
+    "kind": "method",
+    "name": "prune_expired"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/mcp/lazy.py::LazyRootRetry",
+    "id": "py_agent/src/coderadar/mcp/lazy.py::LazyRootRetry.describe",
+    "kind": "method",
+    "caller_count": 1,
+    "file_path": "py_agent/src/coderadar/mcp/lazy.py",
+    "callee_count": 1,
+    "name": "describe"
+  },
+  {
+    "kind": "method",
+    "caller_count": 1,
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver._extract_add_resource",
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "name": "_extract_add_resource",
+    "callee_count": 5
+  },
+  {
+    "callee_count": 0,
+    "id": "py_agent/src/coderadar/lsp/pool.py::LSPPool._maps_to_known_entity",
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::LSPPool",
+    "name": "_maps_to_known_entity",
+    "caller_count": 1,
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/lsp/pool.py"
+  },
+  {
+    "name": "resolve",
+    "file_path": "py_agent/src/coderadar/resolvers/laravel.py",
+    "callee_count": 0,
+    "kind": "method",
+    "id": "py_agent/src/coderadar/resolvers/laravel.py::LaravelResolver.resolve",
+    "parent_id": "py_agent/src/coderadar/resolvers/laravel.py::LaravelResolver",
+    "caller_count": 1
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/__init__.py::Watcher",
+    "kind": "method",
+    "caller_count": 0,
+    "name": "__exit__",
+    "id": "py_agent/src/coderadar/__init__.py::Watcher.__exit__",
+    "callee_count": 1,
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "kind": "abstract",
+    "parent_id": "py_agent/src/coderadar/resolvers/base.py::FrameworkResolver",
+    "name": "resolve",
+    "file_path": "py_agent/src/coderadar/resolvers/base.py",
+    "id": "py_agent/src/coderadar/resolvers/base.py::FrameworkResolver.resolve",
+    "callee_count": 0,
+    "caller_count": 0
+  },
+  {
+    "callee_count": 1,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "caller_count": 0,
+    "name": "archive",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.archive"
+  },
+  {
+    "name": "__init__",
+    "caller_count": 0,
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/query/cache.py::QueryCache",
+    "id": "py_agent/src/coderadar/query/cache.py::QueryCache.__init__",
+    "file_path": "py_agent/src/coderadar/query/cache.py",
+    "kind": "method"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.read_source",
+    "name": "read_source",
+    "kind": "method",
+    "callee_count": 7,
+    "caller_count": 0
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/resolvers/vuerouter.py::VueRouterResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/vuerouter.py",
+    "id": "py_agent/src/coderadar/resolvers/vuerouter.py::VueRouterResolver.name",
+    "caller_count": 0,
+    "kind": "property",
+    "callee_count": 0,
+    "name": "name"
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.reindex",
+    "name": "reindex",
+    "callee_count": 1,
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/vuerouter.py::VueRouterResolver.resolve",
+    "parent_id": "py_agent/src/coderadar/resolvers/vuerouter.py::VueRouterResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/vuerouter.py",
+    "caller_count": 0,
+    "kind": "method",
+    "name": "resolve",
+    "callee_count": 0
+  },
+  {
+    "file_path": "py_agent/src/coderadar/mcp/roots.py",
+    "callee_count": 0,
+    "id": "py_agent/src/coderadar/mcp/roots.py::ResolvedRoot.confirmed",
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/mcp/roots.py::ResolvedRoot",
+    "name": "confirmed",
+    "caller_count": 0
+  },
+  {
+    "name": "root",
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex",
+    "callee_count": 0,
+    "file_path": "py_agent/src/coderadar/mcp/startup.py",
+    "id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex.root",
+    "caller_count": 0
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::LSPPool",
+    "caller_count": 0,
+    "name": "shutdown",
+    "id": "py_agent/src/coderadar/lsp/pool.py::LSPPool.shutdown",
+    "callee_count": 0,
+    "file_path": "py_agent/src/coderadar/lsp/pool.py"
+  },
+  {
+    "id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex.status",
+    "name": "status",
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/mcp/startup.py",
+    "callee_count": 0,
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex"
+  },
+  {
+    "kind": "method",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.ingest_status",
+    "name": "ingest_status",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "callee_count": 1,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::LSPPool",
+    "caller_count": 0,
+    "callee_count": 3,
+    "kind": "method",
+    "id": "py_agent/src/coderadar/lsp/pool.py::LSPPool.sync_file",
+    "name": "sync_file",
+    "file_path": "py_agent/src/coderadar/lsp/pool.py"
+  },
+  {
+    "name": "__init__",
+    "callee_count": 0,
+    "kind": "method",
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.__init__"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/resolvers/base.py::FrameworkResolver",
+    "id": "py_agent/src/coderadar/resolvers/base.py::FrameworkResolver.extract",
+    "name": "extract",
+    "file_path": "py_agent/src/coderadar/resolvers/base.py",
+    "callee_count": 0,
+    "caller_count": 0,
+    "kind": "abstract"
+  },
+  {
+    "callee_count": 1,
+    "name": "basis",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "property",
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.basis",
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.export_annotations",
+    "callee_count": 1,
+    "name": "export_annotations",
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph"
+  },
+  {
+    "callee_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameSnapshot",
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameSnapshot.__init__",
+    "name": "__init__",
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "caller_count": 0
+  },
+  {
+    "caller_count": 0,
+    "name": "override_batch",
+    "id": "py_agent/src/coderadar/lsp/pool.py::LSPPool.override_batch",
+    "callee_count": 3,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::LSPPool",
+    "file_path": "py_agent/src/coderadar/lsp/pool.py"
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGContextBuilder",
+    "name": "__init__",
+    "callee_count": 0,
+    "file_path": "py_agent/src/coderadar/agent/graphrag.py",
+    "id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGContextBuilder.__init__",
+    "caller_count": 0
+  },
+  {
+    "callee_count": 1,
+    "kind": "method",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.import_annotations",
+    "name": "import_annotations",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::BatchContext.__enter__",
+    "parent_id": "py_agent/src/coderadar/__init__.py::BatchContext",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "callee_count": 0,
+    "kind": "method",
+    "name": "__enter__"
+  },
+  {
+    "callee_count": 1,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.search_similar",
+    "name": "search_similar"
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.plan_update_signature",
+    "kind": "method",
+    "callee_count": 4,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "name": "plan_update_signature",
+    "caller_count": 0
+  },
+  {
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/__init__.py::Watcher",
+    "name": "__enter__",
+    "id": "py_agent/src/coderadar/__init__.py::Watcher.__enter__",
+    "callee_count": 1,
+    "kind": "method"
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.diagnose",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "diagnose",
+    "callee_count": 1
+  },
+  {
+    "callee_count": 0,
+    "kind": "abstract",
+    "id": "py_agent/src/coderadar/resolvers/base.py::FrameworkResolver.claims_reference",
+    "parent_id": "py_agent/src/coderadar/resolvers/base.py::FrameworkResolver",
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/resolvers/base.py",
+    "name": "claims_reference"
+  },
+  {
+    "name": "name",
+    "parent_id": "py_agent/src/coderadar/resolvers/rails.py::RailsResolver",
+    "kind": "property",
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/resolvers/rails.py",
+    "id": "py_agent/src/coderadar/resolvers/rails.py::RailsResolver.name",
+    "callee_count": 0
+  },
+  {
+    "kind": "method",
+    "name": "__init__",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.__init__",
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph"
+  },
+  {
+    "kind": "method",
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::LSPPool",
+    "id": "py_agent/src/coderadar/lsp/pool.py::LSPPool.__init__",
+    "file_path": "py_agent/src/coderadar/lsp/pool.py",
+    "name": "__init__",
+    "callee_count": 0
+  },
+  {
+    "name": "classify",
+    "callee_count": 1,
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/agent/graphrag.py::QueryPlanner.classify",
+    "file_path": "py_agent/src/coderadar/agent/graphrag.py",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/agent/graphrag.py::QueryPlanner"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/mcp/startup.py",
+    "caller_count": 0,
+    "callee_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex",
+    "id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex.__init__",
+    "name": "__init__"
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/springboot.py::SpringBootResolver.name",
+    "caller_count": 0,
+    "callee_count": 0,
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/resolvers/springboot.py::SpringBootResolver",
+    "name": "name",
+    "file_path": "py_agent/src/coderadar/resolvers/springboot.py"
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/mcp/lifecycle.py::HandshakeTimeout",
+    "file_path": "py_agent/src/coderadar/mcp/lifecycle.py",
+    "callee_count": 0,
+    "id": "py_agent/src/coderadar/mcp/lifecycle.py::HandshakeTimeout.__init__",
+    "name": "__init__",
+    "caller_count": 0
+  },
+  {
+    "callee_count": 0,
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/resolvers/go.py",
+    "id": "py_agent/src/coderadar/resolvers/go.py::GoResolver.name",
+    "name": "name",
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/resolvers/go.py::GoResolver"
+  },
+  {
+    "id": "py_agent/src/coderadar/query/cache.py::QueryCache.invalidate",
+    "name": "invalidate",
+    "caller_count": 0,
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/query/cache.py::QueryCache",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/query/cache.py"
+  },
+  {
+    "id": "py_agent/src/coderadar/lsp/pool.py::ManagedServer.did_open",
+    "callee_count": 0,
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/lsp/pool.py",
+    "name": "did_open",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::ManagedServer"
+  },
+  {
+    "id": "py_agent/src/coderadar/lsp/pool.py::ManagedServer.did_change",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::ManagedServer",
+    "caller_count": 0,
+    "name": "did_change",
+    "callee_count": 0,
+    "file_path": "py_agent/src/coderadar/lsp/pool.py"
+  },
+  {
+    "callee_count": 2,
+    "parent_id": "py_agent/src/coderadar/__init__.py::GitWatcher",
+    "kind": "method",
+    "id": "py_agent/src/coderadar/__init__.py::GitWatcher.__init__",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "name": "__init__",
+    "caller_count": 0
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameQuery",
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "name": "as_of",
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameQuery.as_of",
+    "caller_count": 0,
+    "callee_count": 1
+  },
+  {
+    "file_path": "py_agent/src/coderadar/resolvers/express.py",
+    "callee_count": 0,
+    "name": "name",
+    "caller_count": 0,
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/resolvers/express.py::ExpressResolver",
+    "id": "py_agent/src/coderadar/resolvers/express.py::ExpressResolver.name"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameQuery",
+    "kind": "method",
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameQuery.search_text",
+    "name": "search_text",
+    "callee_count": 0,
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "caller_count": 0
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.replace_body",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "callee_count": 1,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "replace_body"
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.changes_between",
+    "caller_count": 0,
+    "callee_count": 1,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "kind": "method",
+    "name": "changes_between"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.query",
+    "caller_count": 0,
+    "callee_count": 1,
+    "name": "query",
+    "kind": "method"
+  },
+  {
+    "caller_count": 0,
+    "name": "call_sites",
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.call_sites",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "kind": "method"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.dirty_at_commit",
+    "caller_count": 0,
+    "callee_count": 2,
+    "name": "dirty_at_commit",
+    "kind": "property"
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/aspnet.py::AspNetResolver.name",
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/resolvers/aspnet.py::AspNetResolver",
+    "name": "name",
+    "file_path": "py_agent/src/coderadar/resolvers/aspnet.py",
+    "callee_count": 0,
+    "caller_count": 0
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/resolvers/nestjs.py::NestJSResolver",
+    "id": "py_agent/src/coderadar/resolvers/nestjs.py::NestJSResolver.resolve",
+    "callee_count": 0,
+    "file_path": "py_agent/src/coderadar/resolvers/nestjs.py",
+    "caller_count": 0,
+    "kind": "method",
+    "name": "resolve"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver.resolve",
+    "name": "resolve",
+    "callee_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver"
+  },
+  {
+    "callee_count": 0,
+    "kind": "method",
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameQuery.__init__",
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameQuery",
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "caller_count": 0,
+    "name": "__init__"
+  },
+  {
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.update_signature",
+    "kind": "method",
+    "name": "update_signature"
+  },
+  {
+    "kind": "property",
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "callee_count": 0,
+    "name": "name",
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver.name",
+    "caller_count": 0
+  },
+  {
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/cli.py::_LazyErrConsole",
+    "file_path": "py_agent/src/coderadar/cli.py",
+    "name": "__getattr__",
+    "id": "py_agent/src/coderadar/cli.py::_LazyErrConsole.__getattr__",
+    "kind": "method",
+    "callee_count": 3
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "name": "callers",
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.callers"
+  },
+  {
+    "name": "__iter__",
+    "id": "py_agent/src/coderadar/__init__.py::Watcher.__iter__",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "callee_count": 1,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Watcher"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/query/cache.py",
+    "caller_count": 0,
+    "name": "__init__",
+    "id": "py_agent/src/coderadar/query/cache.py::_CacheEntry.__init__",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/query/cache.py::_CacheEntry",
+    "callee_count": 0
+  },
+  {
+    "caller_count": 0,
+    "callee_count": 2,
+    "id": "py_agent/src/coderadar/__init__.py::GitWatcher._run",
+    "parent_id": "py_agent/src/coderadar/__init__.py::GitWatcher",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "name": "_run"
+  },
+  {
+    "name": "rename",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.rename",
+    "callee_count": 1,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0
+  },
+  {
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "caller_count": 0,
+    "callee_count": 2,
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.predates_recorded_history",
+    "kind": "property",
+    "name": "predates_recorded_history"
+  },
+  {
+    "caller_count": 0,
+    "callee_count": 1,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.search_hybrid",
+    "name": "search_hybrid"
+  },
+  {
+    "callee_count": 1,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::GitWatcher",
+    "name": "__enter__",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/__init__.py::GitWatcher.__enter__"
+  },
+  {
+    "name": "__next__",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Watcher",
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/__init__.py::Watcher.__next__",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "callee_count": 2,
+    "kind": "method"
+  },
+  {
+    "callee_count": 2,
+    "name": "address",
+    "kind": "property",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.address"
+  },
+  {
+    "callee_count": 2,
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameSnapshot.traverse",
+    "name": "traverse",
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameSnapshot",
+    "kind": "method",
+    "caller_count": 0
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.timestamp",
+    "callee_count": 0,
+    "name": "timestamp",
+    "caller_count": 0,
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "name": "__init__",
+    "callee_count": 3,
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/__init__.py::Watcher.__init__",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Watcher"
+  },
+  {
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/lsp/pool.py",
+    "name": "shutdown",
+    "id": "py_agent/src/coderadar/lsp/pool.py::ManagedServer.shutdown",
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::ManagedServer",
+    "callee_count": 0,
+    "kind": "method"
+  },
+  {
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/lsp/pool.py::ManagedServer",
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/lsp/pool.py::ManagedServer.request",
+    "kind": "method",
+    "name": "request",
+    "file_path": "py_agent/src/coderadar/lsp/pool.py"
+  },
+  {
+    "caller_count": 0,
+    "callee_count": 7,
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.callees",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "name": "callees",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/rails.py::RailsResolver",
+    "name": "resolve",
+    "callee_count": 0,
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/resolvers/rails.py",
+    "id": "py_agent/src/coderadar/resolvers/rails.py::RailsResolver.resolve"
+  },
+  {
+    "name": "__init__",
+    "file_path": "py_agent/src/coderadar/mcp/lazy.py",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/mcp/lazy.py::LazyRootRetry",
+    "id": "py_agent/src/coderadar/mcp/lazy.py::LazyRootRetry.__init__",
+    "caller_count": 0,
+    "callee_count": 0
+  },
+  {
+    "name": "ready",
+    "id": "py_agent/src/coderadar/mcp/startup.py::IndexOutcome.ready",
+    "caller_count": 0,
+    "callee_count": 0,
+    "kind": "property",
+    "file_path": "py_agent/src/coderadar/mcp/startup.py",
+    "parent_id": "py_agent/src/coderadar/mcp/startup.py::IndexOutcome"
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/mcp/lifecycle.py::HandshakeTimeout",
+    "callee_count": 0,
+    "name": "_fire",
+    "caller_count": 0,
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/mcp/lifecycle.py",
+    "id": "py_agent/src/coderadar/mcp/lifecycle.py::HandshakeTimeout._fire"
+  },
+  {
+    "caller_count": 0,
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.status",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "kind": "method",
+    "name": "status"
+  },
+  {
+    "kind": "method",
+    "name": "execute",
+    "file_path": "py_agent/src/coderadar/agent/graphrag.py",
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGPipeline",
+    "callee_count": 4,
+    "id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGPipeline.execute"
+  },
+  {
+    "name": "update_file",
+    "parent_id": "py_agent/src/coderadar/__init__.py::BatchContext",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::BatchContext.update_file",
+    "kind": "method",
+    "callee_count": 0,
+    "caller_count": 0
+  },
+  {
+    "kind": "method",
+    "name": "__init__",
+    "id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGPipeline.__init__",
+    "callee_count": 2,
+    "file_path": "py_agent/src/coderadar/agent/graphrag.py",
+    "parent_id": "py_agent/src/coderadar/agent/graphrag.py::GraphRAGPipeline",
+    "caller_count": 0
+  },
+  {
+    "id": "py_agent/src/coderadar/mcp/lifecycle.py::ParentWatchdog._run",
+    "parent_id": "py_agent/src/coderadar/mcp/lifecycle.py::ParentWatchdog",
+    "callee_count": 0,
+    "file_path": "py_agent/src/coderadar/mcp/lifecycle.py",
+    "name": "_run",
+    "caller_count": 0,
+    "kind": "method"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/__init__.py::BatchContext.__exit__",
+    "name": "__exit__",
+    "callee_count": 1,
+    "parent_id": "py_agent/src/coderadar/__init__.py::BatchContext",
+    "kind": "method"
+  },
+  {
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameQuery.timeline",
+    "caller_count": 0,
+    "kind": "method",
+    "callee_count": 0,
+    "name": "timeline",
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameQuery"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/mcp/startup.py",
+    "id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex._run",
+    "caller_count": 0,
+    "kind": "method",
+    "callee_count": 2,
+    "parent_id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex",
+    "name": "_run"
+  },
+  {
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver",
+    "name": "name",
+    "id": "py_agent/src/coderadar/resolvers/fastapi.py::FastAPIResolver.name",
+    "file_path": "py_agent/src/coderadar/resolvers/fastapi.py",
+    "caller_count": 0,
+    "callee_count": 0
+  },
+  {
+    "name": "name",
+    "caller_count": 0,
+    "callee_count": 0,
+    "id": "py_agent/src/coderadar/resolvers/actix.py::RustActixResolver.name",
+    "file_path": "py_agent/src/coderadar/resolvers/actix.py",
+    "parent_id": "py_agent/src/coderadar/resolvers/actix.py::RustActixResolver",
+    "kind": "property"
+  },
+  {
+    "callee_count": 0,
+    "id": "py_agent/src/coderadar/resolvers/laravel.py::LaravelResolver.name",
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/resolvers/laravel.py::LaravelResolver",
+    "name": "name",
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/resolvers/laravel.py"
+  },
+  {
+    "name": "explore",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.explore",
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "callee_count": 1
+  },
+  {
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameQuery.stats",
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameQuery",
+    "kind": "method",
+    "caller_count": 0,
+    "name": "stats",
+    "callee_count": 1,
+    "file_path": "py_agent/src/coderadar/query/executor.py"
+  },
+  {
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameSnapshot.to_dict",
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameSnapshot",
+    "kind": "method",
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "caller_count": 0,
+    "name": "to_dict"
+  },
+  {
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "callee_count": 3,
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.read_bytes",
+    "name": "read_bytes",
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method"
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/reactrouter.py::ReactRouterResolver.name",
+    "name": "name",
+    "caller_count": 0,
+    "kind": "property",
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/resolvers/reactrouter.py::ReactRouterResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/reactrouter.py"
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::BatchContext.__init__",
+    "name": "__init__",
+    "caller_count": 0,
+    "callee_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::BatchContext",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "name": "branch",
+    "callee_count": 0,
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.branch",
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "kind": "property",
+    "callee_count": 2,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.parent_drift",
+    "name": "parent_drift"
+  },
+  {
+    "name": "__init__",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/embedding/dedup.py::EmbedTarget",
+    "file_path": "py_agent/src/coderadar/embedding/dedup.py",
+    "id": "py_agent/src/coderadar/embedding/dedup.py::EmbedTarget.__init__",
+    "caller_count": 0,
+    "callee_count": 0
+  },
+  {
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameSnapshot",
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameSnapshot.find",
+    "name": "find",
+    "caller_count": 0,
+    "callee_count": 2,
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "kind": "method"
+  },
+  {
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.sync_git",
+    "callee_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "name": "sync_git",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "name": "callers_of",
+    "callee_count": 2,
+    "kind": "method",
+    "caller_count": 0,
+    "parent_id": "py_agent/src/coderadar/query/executor.py::MacrameSnapshot",
+    "file_path": "py_agent/src/coderadar/query/executor.py",
+    "id": "py_agent/src/coderadar/query/executor.py::MacrameSnapshot.callers_of"
+  },
+  {
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver.resolve",
+    "caller_count": 0,
+    "name": "resolve",
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "callee_count": 2
+  },
+  {
+    "file_path": "py_agent/src/coderadar/mcp/lifecycle.py",
+    "id": "py_agent/src/coderadar/mcp/lifecycle.py::ParentWatchdog.__init__",
+    "caller_count": 0,
+    "name": "__init__",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/mcp/lifecycle.py::ParentWatchdog",
+    "callee_count": 0
+  },
+  {
+    "caller_count": 0,
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/resolvers/base.py::FrameworkResolver",
+    "name": "detect",
+    "kind": "abstract",
+    "id": "py_agent/src/coderadar/resolvers/base.py::FrameworkResolver.detect",
+    "file_path": "py_agent/src/coderadar/resolvers/base.py"
+  },
+  {
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/resolvers/nestjs.py::NestJSResolver",
+    "name": "name",
+    "file_path": "py_agent/src/coderadar/resolvers/nestjs.py",
+    "id": "py_agent/src/coderadar/resolvers/nestjs.py::NestJSResolver.name",
+    "caller_count": 0,
+    "callee_count": 0
+  },
+  {
+    "caller_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::GitWatcher",
+    "name": "__exit__",
+    "callee_count": 1,
+    "id": "py_agent/src/coderadar/__init__.py::GitWatcher.__exit__",
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.commit",
+    "callee_count": 1,
+    "name": "commit",
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot"
+  },
+  {
+    "id": "py_agent/src/coderadar/query/cache.py::QueryCache.__len__",
+    "file_path": "py_agent/src/coderadar/query/cache.py",
+    "callee_count": 1,
+    "name": "__len__",
+    "parent_id": "py_agent/src/coderadar/query/cache.py::QueryCache",
+    "caller_count": 0,
+    "kind": "method"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/resolvers/flask.py",
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver.resolve",
+    "kind": "method",
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/resolvers/flask.py::FlaskResolver",
+    "name": "resolve"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/resolvers/reactrouter.py",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/resolvers/reactrouter.py::ReactRouterResolver",
+    "name": "resolve",
+    "id": "py_agent/src/coderadar/resolvers/reactrouter.py::ReactRouterResolver.resolve",
+    "caller_count": 0,
+    "callee_count": 0
+  },
+  {
+    "file_path": "py_agent/src/coderadar/mcp/startup.py",
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex",
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/mcp/startup.py::BackgroundIndex.elapsed",
+    "callee_count": 0,
+    "name": "elapsed"
+  },
+  {
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph._check_root",
+    "name": "_check_root",
+    "caller_count": 0,
+    "callee_count": 2,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph"
+  },
+  {
+    "callee_count": 0,
+    "name": "__init__",
+    "caller_count": 0,
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/ops.py::NotFound",
+    "id": "py_agent/src/coderadar/ops.py::NotFound.__init__",
+    "file_path": "py_agent/src/coderadar/ops.py"
+  },
+  {
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/resolvers/base.py::FrameworkResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/base.py",
+    "id": "py_agent/src/coderadar/resolvers/base.py::FrameworkResolver.name",
+    "caller_count": 0,
+    "callee_count": 0,
+    "name": "name"
+  },
+  {
+    "id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver.name",
+    "parent_id": "py_agent/src/coderadar/resolvers/django.py::DjangoResolver",
+    "file_path": "py_agent/src/coderadar/resolvers/django.py",
+    "kind": "property",
+    "name": "name",
+    "caller_count": 0,
+    "callee_count": 0
+  },
+  {
+    "callee_count": 1,
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "kind": "method",
+    "parent_id": "py_agent/src/coderadar/__init__.py::CodeGraph",
+    "caller_count": 0,
+    "id": "py_agent/src/coderadar/__init__.py::CodeGraph.create_entity",
+    "name": "create_entity"
+  },
+  {
+    "id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter.__init__",
+    "file_path": "py_agent/src/coderadar/mutation/tool_router.py",
+    "caller_count": 0,
+    "kind": "method",
+    "name": "__init__",
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/mutation/tool_router.py::ToolRouter"
+  },
+  {
+    "file_path": "py_agent/src/coderadar/__init__.py",
+    "caller_count": 0,
+    "callee_count": 4,
+    "parent_id": "py_agent/src/coderadar/__init__.py::Watcher",
+    "id": "py_agent/src/coderadar/__init__.py::Watcher.run_forever",
+    "name": "run_forever",
+    "kind": "method"
+  },
+  {
+    "id": "py_agent/src/coderadar/embedding/dedup.py::EmbeddingDedup.__init__",
+    "file_path": "py_agent/src/coderadar/embedding/dedup.py",
+    "caller_count": 0,
+    "callee_count": 0,
+    "parent_id": "py_agent/src/coderadar/embedding/dedup.py::EmbeddingDedup",
+    "kind": "method",
+    "name": "__init__"
+  },
+  {
+    "name": "horizon",
+    "callee_count": 1,
+    "kind": "property",
+    "parent_id": "py_agent/src/coderadar/__init__.py::Snapshot",
+    "id": "py_agent/src/coderadar/__init__.py::Snapshot.horizon",
+    "caller_count": 0,
+    "file_path": "py_agent/src/coderadar/__init__.py"
+  }
+]

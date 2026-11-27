@@ -533,9 +533,10 @@ patches needed after any re-bridge.
 
 - `coderadar status --format json`: fresh store, 329 modules, 5,156
   functions, 11,569 call edges, **0 unresolved structural edges**.
-- `coderadar query` over `py_agent/src/coderadar`: 768 free functions plus
-  292 methods = 1,060 Python callables. 76 names are bridged/gated; 798
-  rows remain unbridged by name.
+- `coderadar query` over `py_agent/src/coderadar`: 768 callables, of
+  which 292 are methods. 76 exports are bridged/gated; a name-only count
+  understates front-door coverage because CLI/MCP/façade paths serve many
+  internal helpers indirectly.
 - Unbridged rows with `caller_count >= 2`, by area: `mcp` 61, `resolvers`
   60, `__init__.py` 43, `ops.py` 25, `visualizers` 15, `cli.py` 13, `query`
   11, `embedding` 11, `skills` 8, `coldstart.py` 5, `mutation` 4,
@@ -826,3 +827,49 @@ new recorded unit.
   replayed `src/a.py` and `src/b.py` with `parse_quality: clean`.
 - Gate passes including the size heuristic: 9465 Rust lines / 3188 Python
   lines (3.0x).
+
+## CodeRadar completion audit (Unit 38)
+
+### Measurements
+
+- Store: 334 modules, 696 classes, 5,309 functions, 11,813 call edges,
+  **0 unresolved structural edges**; `diagnose --unresolved` lists only
+  builtins/external calls.
+- `py_agent/src/coderadar`: **768 callables** (292 methods). 203 names are
+  in the bridge manifest (26.4% by name, 34.7% by caller edges), which is a
+  deliberately low figure: renderer/tool/facade names are reached through
+  their front doors rather than bridged one by one.
+- CLI: **55/55 shared commands**, 0 local-only (`cutover.py --verify`).
+- MCP: Python **35/35 tools** present in Rust (45 tools total) and **3/3**
+  bundled resources present.
+- Public `CodeGraph`: **52/55** methods delegated to Rust (94.5%); missing
+  are `batch`, `watch`, `watch_git`. CLI `watch` itself is Rust polling.
+- Gated op behavior: **4446/4446** recorded cases.
+
+### Estimate
+
+- **User-visible surface parity: ~96%.** Every CLI command, MCP tool and
+  resource has a Rust front door; the remaining visible gap is three
+  façade process helpers and config/embedding fidelity.
+- **Callable-weighted internal coverage: ~81%.** Weighted estimate across
+  the 768 graph rows: core ops 95%, renderers 95%, query 100%, resolvers
+  85%, MCP internals 65%, CLI helpers 80%, façade 85%, LSP/GraphRAG 0%.
+  LSP and GraphRAG are optional Python libraries with no CLI/MCP caller.
+- **Remaining work:** roughly **6-8 working days** to close the user-visible
+  gap to 98-99% (full config activation, façade watch/batch, MCP lifecycle
+  parity, exact embedding model). A literal callable-by-callable port of
+  LSP, GraphRAG and the remaining internal helpers is another **8-12 days**,
+  for **14-20 days total** to near-100% source parity.
+
+### Remaining ranked units
+
+1. Full config activation in the Rust binary (`[project] roots`, mutation
+   policy, embedding/watch/database flags), 1.5-2 days.
+2. Façade `batch` / `watch` / `watch_git`, 0.5-1 day.
+3. MCP lazy roots/startup/lifecycle parity, 2-3 days.
+4. Exact fastembed-backed natural-language vectors, 1.5-2 days.
+5. LSP pool and agent/GraphRAG, 4-6 days combined; only needed if those
+   Python libraries must become Rust-facing.
+6. Callable-taking `resolve_reference` / `resolve_route` stay Python-side;
+   Rust already exposes data-shaped equivalents, so no unit is justified
+   without a new caller edge.
