@@ -9,6 +9,8 @@ left on the original Python package rather than being faked.
 
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -459,6 +461,30 @@ class CodeGraph:
     def search_hybrid(self, query: str, top_k: int = 10) -> Any:
         return _native.search_hybrid_op(query, top_k, query)
 
+    def batch(self) -> "BatchContext":
+        """Return a context manager that folds updates into one report."""
+        return BatchContext(self)
+
+    def watch(
+        self,
+        paths: list[str] | None = None,
+        debounce_ms: int | None = None,
+        max_file_size_bytes: int | None = None,
+    ) -> "Watcher":
+        """Return a Rust-backed file watcher bound to this graph."""
+        return Watcher(self, paths or ["src/", "tests/"], debounce_ms, max_file_size_bytes)
+
+    def watch_git(self, repo: str | None = None, *, poll_ms: int = 1000) -> "GitWatcher":
+        """Return a started git-ref watcher bound to this graph."""
+        watcher = GitWatcher(repo or self._root(), graph=self, poll_ms=poll_ms)
+        watcher.start()
+        return watcher
+
+    def _root(self) -> str:
+        """Project root implied by the store path this handle carries."""
+        store = Path(self._db_path).resolve()
+        return str(store.parent.parent)
+
 
 def analyze(
     root: str, create_store: bool = False, exclude: list[str] | None = None
@@ -470,12 +496,356 @@ def analyze(
     return graph
 
 
-__all__ = ["CodeGraph", "analyze", "load"]
-
-
 def load(snapshot: str, root: str | None = None) -> CodeGraph:
     """Cold-start the in-memory graph from a Macrame ledger file."""
     result = _native.load_snapshot_op(snapshot, root)
     graph = CodeGraph(snapshot)
     graph.stats_result = result if isinstance(result, dict) else {}
     return graph
+
+
+@dataclass
+class UpdateReport:
+    """One folded batch of file updates, shaped like the Python report."""
+
+    affected_files: list[str] = field(default_factory=list)
+    changed_symbols: list[dict] = field(default_factory=list)
+    new_unresolved_references: list[dict] = field(default_factory=list)
+    newly_resolved_references: list[dict] = field(default_factory=list)
+    elapsed_ms: float = 0.0
+    parse_quality: str = "Clean"
+    parse_errors: int = 0
+    fully_applied: bool = True
+    epoch_before: int = 0
+    epoch_after: int = 0
+    blobs_stored: int = 0
+    blobs_skipped_oversize: int = 0
+    blobs_skipped_excluded: int = 0
+    blobs_bytes: int = 0
+    source_hash: str = ""
+    update_error: str | None = None
+    persistence_error: str | None = None
+    blob_error: str | None = None
+    route_warning: str | None = None
+
+
+def _field(value: Any, name: str, default: Any) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+class BatchContext:
+    """Collect ``update_file`` calls and fold them on context exit."""
+
+    def __init__(self, graph: CodeGraph):
+        self._graph = graph
+        self._files: list[str] = []
+        self._contents: list[str | None] = []
+        self.result: Any = None
+
+    def __enter__(self) -> "BatchContext":
+        return self
+
+    def update_file(self, file_path: str, content: str | None = None) -> None:
+        self._files.append(file_path)
+        self._contents.append(content)
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> bool:
+        if exc_type is not None:
+            return False
+        if self._files:
+            self.result = _native.batch_update_op(self._files, self._contents)
+        return False
+
+
+class Watcher:
+    """Rust-polled file watcher that applies real graph updates."""
+
+    def __init__(
+        self,
+        graph: CodeGraph,
+        paths: list[str],
+        debounce_ms: int | None = None,
+        max_file_size_bytes: int | None = None,
+    ):
+        try:
+            config = _native.config_op()
+        except Exception:
+            config = {}
+        watch = config.get("watch", {}) if isinstance(config, dict) else {}
+        self._graph = graph
+        self._paths = list(paths)
+        self._debounce_ms = (
+            watch.get("debounce_ms", 100) if debounce_ms is None else debounce_ms
+        )
+        self._max_file_size_bytes = (
+            watch.get("max_file_size_bytes", 1_048_576)
+            if max_file_size_bytes is None
+            else max_file_size_bytes
+        )
+        self._stamps: dict[str, Any] = {}
+        self._running = False
+
+    def start(self) -> "Watcher":
+        if self._running:
+            return self
+        result = _native.watch_changes_op(
+            self._paths, self._stamps, self._max_file_size_bytes
+        )
+        self._stamps = result.get("stamps", {}) if isinstance(result, dict) else {}
+        self._running = True
+        return self
+
+    def stop(self) -> None:
+        self._running = False
+
+    def _relative(self, path: str) -> str:
+        candidate = Path(path)
+        root_attr = getattr(self._graph, "_root", None)
+        if root_attr is None:
+            return path
+        try:
+            root = Path(root_attr()).resolve()
+            return str(candidate.resolve().relative_to(root)).replace("\\", "/")
+        except (ValueError, OSError):
+            return path
+
+    def poll_once(self) -> UpdateReport | None:
+        if not self._running:
+            self.start()
+        result = _native.watch_changes_op(
+            self._paths, self._stamps, self._max_file_size_bytes
+        )
+        if not isinstance(result, dict):
+            return None
+        changed = result.get("changed", []) or []
+        self._stamps = result.get("stamps", {}) or {}
+        batch: list[tuple[str, str]] = []
+        for path in changed:
+            kind = "Delete" if not Path(path).exists() else "Modify"
+            batch.append((path, kind))
+        if not batch:
+            return None
+        return self._apply(batch)
+
+    def _apply(self, batch: list[tuple[str, str]], echo: bool = False) -> UpdateReport:
+        started = time.perf_counter()
+        affected: list[str] = []
+        symbols: list[dict] = []
+        unresolved: list[dict] = []
+        resolved: list[dict] = []
+        rank = {"Clean": 0, "Partial": 1, "Tainted": 2, "Deferred": 3}
+        quality = "Clean"
+        errors = 0
+        fully = True
+        before: Any = None
+        after: Any = None
+        update_error: str | None = None
+        persistence_error: str | None = None
+        blob_error: str | None = None
+        route_warning: str | None = None
+        blobs = [0, 0, 0, 0]
+        for file_path, kind in batch:
+            if kind == "Delete":
+                try:
+                    self._graph.remove_file(file_path)
+                    affected.append(file_path)
+                except Exception as exc:
+                    fully = False
+                    update_error = str(exc)
+                continue
+            if kind not in ("Modify", "Any", "AnyContinuous", "Create"):
+                continue
+            try:
+                report = self._graph.update_file(self._relative(file_path))
+            except Exception as exc:
+                fully = False
+                update_error = str(exc)
+                continue
+            affected.extend(list(_field(report, "affected_files", []) or [file_path]))
+            symbols.extend(list(_field(report, "changed_symbols", []) or []))
+            unresolved.extend(list(_field(report, "new_unresolved_references", []) or []))
+            resolved.extend(list(_field(report, "newly_resolved_references", []) or []))
+            errors += int(_field(report, "parse_errors", 0) or 0)
+            fully = fully and bool(_field(report, "fully_applied", True))
+            candidate = str(_field(report, "parse_quality", "Clean"))
+            if rank.get(candidate, 0) > rank.get(quality, 0):
+                quality = candidate
+            if before is None:
+                before = _field(report, "epoch_before", None)
+            after = _field(report, "epoch_after", None)
+            for name, slot in (
+                ("update_error", "update"),
+                ("persistence_error", "persistence"),
+                ("blob_error", "blob"),
+                ("route_warning", "route"),
+            ):
+                text = _field(report, name, None)
+                if text:
+                    if slot == "update":
+                        update_error = text
+                    elif slot == "persistence":
+                        persistence_error = text
+                    elif slot == "blob":
+                        blob_error = text
+                    else:
+                        route_warning = text
+            keys = (
+                "blobs_stored",
+                "blobs_skipped_oversize",
+                "blobs_skipped_excluded",
+                "blobs_bytes",
+            )
+            for index, key in enumerate(keys):
+                blobs[index] += int(_field(report, key, 0) or 0)
+            if echo:
+                print(f"  {file_path} ({candidate})")
+        return UpdateReport(
+            affected_files=affected,
+            changed_symbols=symbols,
+            new_unresolved_references=unresolved,
+            newly_resolved_references=resolved,
+            elapsed_ms=(time.perf_counter() - started) * 1000.0,
+            parse_quality=quality,
+            parse_errors=errors,
+            fully_applied=fully,
+            epoch_before=before if before is not None else 0,
+            epoch_after=after if after is not None else 0,
+            blobs_stored=blobs[0],
+            blobs_skipped_oversize=blobs[1],
+            blobs_skipped_excluded=blobs[2],
+            blobs_bytes=blobs[3],
+            update_error=update_error,
+            persistence_error=persistence_error,
+            blob_error=blob_error,
+            route_warning=route_warning,
+        )
+
+    def run_forever(self) -> None:
+        self.start()
+        try:
+            while self._running:
+                time.sleep(max(50, self._debounce_ms) / 1000.0)
+                report = self.poll_once()
+                if report is not None:
+                    print(f"updated {len(report.affected_files)} file(s)")
+        except KeyboardInterrupt:
+            self.stop()
+
+    def __enter__(self) -> "Watcher":
+        return self.start()
+
+    def __exit__(self, *args: Any) -> None:
+        self.stop()
+
+    def __iter__(self) -> "Watcher":
+        return self.start()
+
+    def __next__(self) -> UpdateReport:
+        while self._running:
+            report = self.poll_once()
+            if report is not None and report.affected_files:
+                return report
+        raise StopIteration
+
+
+class GitWatcher:
+    """Poll git HEAD and delegate each move to the Rust sync op."""
+
+    def __init__(
+        self,
+        repo: str = ".",
+        *,
+        graph: CodeGraph | None = None,
+        store_path: str | None = None,
+        poll_ms: int = 1000,
+        catch_up: bool = True,
+    ):
+        self._repo = repo
+        self._graph = graph
+        self._store_path = store_path
+        self._poll_ms = max(50, int(poll_ms))
+        self._catch_up = catch_up
+        self._head: Any = None
+        self.reports: list[Any] = []
+        self.last_error: str | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def poll_once(self) -> Any:
+        try:
+            head = _native.git_head(self._repo)
+            if head == self._head:
+                return None
+            self._head = head
+            if not self._catch_up:
+                return None
+            report = _native.sync_git_op(
+                self._repo,
+                self._store_path,
+                "main",
+                True,
+                "watch",
+            )
+            self.reports.append(report)
+            self.last_error = None
+            return report
+        except Exception as exc:
+            self.last_error = str(exc)
+            return None
+
+    def start(self) -> "GitWatcher":
+        if self._thread is not None:
+            return self
+        self._head = _native.git_head(self._repo)
+
+        def loop() -> None:
+            while not self._stop.wait(self._poll_ms / 1000.0):
+                self.poll_once()
+
+        self._thread = threading.Thread(target=loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self._poll_ms / 1000.0 + 1)
+            self._thread = None
+
+    def __enter__(self) -> "GitWatcher":
+        return self.start()
+
+    def __exit__(self, *args: Any) -> None:
+        self.stop()
+
+
+def watch(root: str) -> Watcher:
+    """Index ``root``, then return a Rust-polled watcher over it."""
+    graph = analyze(root)
+    return graph.watch([root])
+
+
+def watch_git(
+    repo: str = ".", *, poll_ms: int = 1000, store_path: str | None = None
+) -> GitWatcher:
+    """Load ``repo``'s store, then return a git-ref watcher."""
+    store = store_path or str(Path(repo) / ".coderadar" / "store" / "coderadar.db")
+    graph = load(store, repo)
+    watcher = GitWatcher(repo, graph=graph, poll_ms=poll_ms)
+    watcher.start()
+    return watcher
+
+
+__all__ = [
+    "BatchContext",
+    "CodeGraph",
+    "GitWatcher",
+    "UpdateReport",
+    "Watcher",
+    "analyze",
+    "load",
+    "watch",
+    "watch_git",
+]

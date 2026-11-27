@@ -4960,6 +4960,31 @@ pub fn rebuild_op(
     }))
 }
 
+/// The activated config as JSON, for thin facade helpers.
+pub fn config_op() -> Value {
+    core_indexer::api::active_config_json()
+}
+
+/// Fold a façade batch of `update_file` calls into one engine report.
+///
+/// # Errors
+/// Returns the engine message when a length or update error occurs.
+pub fn batch_update_op(files: Vec<String>, contents: Vec<Option<String>>) -> Result<Value, String> {
+    core_indexer::api::batch_update(&files, &contents)
+}
+
+/// Poll watched paths once from a previously returned `stamps` object.
+pub fn watch_changes_op(
+    paths: Vec<String>,
+    previous: Value,
+    max_bytes: Option<i64>,
+) -> Result<Value, String> {
+    let limit = max_bytes
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(1_048_576);
+    Ok(core_indexer::api::watch_changes(&paths, &previous, limit))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

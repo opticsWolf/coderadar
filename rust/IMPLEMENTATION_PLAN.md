@@ -1,6 +1,6 @@
 # Implementation plan — closing the remaining CodeRadar port gaps
 
-Status: **executing; Unit A complete (Unit 39)**
+Status: **executing; Units A and B complete (Units 39–40)**
 Prepared: after commit `cab7ff1` (`dev_rustify`)
 Canonical decisions/state: [`PORT.md`](PORT.md)  
 Graph evidence: local CodeRadar store, 2026-02-17
@@ -119,9 +119,9 @@ Risks: type-validation drift between PyDict and TOML; avoiding a new clap stack 
 
 ---
 
-### Unit B — Façade process helpers: `batch`, `watch`, `watch_git`
+### Unit B — Façade process helpers: `batch`, `watch`, `watch_git` — DONE
 
-**Rank: 2. Value: low–medium. Estimate: 0.5–1 day.**
+**Rank: 2. Value: low–medium. Estimate: 0.5–1 day. Implemented as Unit 40.**
 
 Problem: `rust/coderadar/python/coderadar/codegraph.py` covers 52/55 public `CodeGraph` methods. Missing:
 

@@ -1637,6 +1637,165 @@ pub fn update_file(file_path: &str, content: Option<&str>) -> Result<Value, Stri
     }))
 }
 
+/// Fold several `update_file` calls into one report, as the Python
+/// `BatchContext` does when its context exits.
+///
+/// # Errors
+/// Returns a message when the two input lists have different lengths or any
+/// single update fails; the caller can then surface the failed file.
+pub fn batch_update(files: &[String], contents: &[Option<String>]) -> Result<Value, String> {
+    if files.len() != contents.len() {
+        return Err(format!(
+            "InvalidRequest: batch needs one content entry per file ({} files, {} contents)",
+            files.len(),
+            contents.len()
+        ));
+    }
+    let mut reports = Vec::with_capacity(files.len());
+    for (path, content) in files.iter().zip(contents) {
+        reports.push(update_file(path, content.as_deref())?);
+    }
+    let quality_rank = |value: Option<&str>| match value {
+        Some("partial") => 1,
+        Some("tainted") => 2,
+        Some("deferred") => 3,
+        _ => 0,
+    };
+    let mut quality = 0;
+    let mut fully_applied = true;
+    let mut entities_added = 0i64;
+    let mut entities_removed = 0i64;
+    let mut parse_errors = 0i64;
+    let mut elapsed_ms = 0.0f64;
+    let mut affected: Vec<String> = Vec::new();
+    let mut symbols: Vec<Value> = Vec::new();
+    let mut unresolved: Vec<Value> = Vec::new();
+    let mut resolved: Vec<Value> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    let mut epoch_before: Value = Value::Null;
+    let mut epoch_after: Value = Value::Null;
+    let mut blobs_stored = 0i64;
+    let mut blobs_skipped_oversize = 0i64;
+    let mut blobs_skipped_excluded = 0i64;
+    let mut blobs_bytes = 0i64;
+    for report in &reports {
+        quality = quality.max(quality_rank(report["parse_quality"].as_str()));
+        fully_applied &= report["fully_applied"].as_bool().unwrap_or(false);
+        entities_added += report["entities_added"].as_i64().unwrap_or(0);
+        entities_removed += report["entities_removed"].as_i64().unwrap_or(0);
+        parse_errors += report["parse_errors"].as_i64().unwrap_or(0);
+        elapsed_ms += report["elapsed_ms"].as_f64().unwrap_or(0.0);
+        if let Some(rows) = report["affected_files"].as_array() {
+            for row in rows {
+                if let Some(text) = row.as_str() {
+                    if !affected.iter().any(|value| value == text) {
+                        affected.push(text.to_string());
+                    }
+                }
+            }
+        }
+        for key in ["changed_symbols", "new_unresolved", "newly_resolved"] {
+            let target = match key {
+                "changed_symbols" => &mut symbols,
+                "new_unresolved" => &mut unresolved,
+                _ => &mut resolved,
+            };
+            if let Some(rows) = report[key].as_array() {
+                target.extend(rows.iter().cloned());
+            }
+        }
+        for key in ["update_error", "persistence_error", "blob_error"] {
+            if let Some(text) = report[key].as_str() {
+                if !text.is_empty() {
+                    errors.push(text.to_string());
+                }
+            }
+        }
+        if epoch_before.is_null() && !report["epoch_before"].is_null() {
+            epoch_before = report["epoch_before"].clone();
+        }
+        if !report["epoch_after"].is_null() {
+            epoch_after = report["epoch_after"].clone();
+        }
+        blobs_stored += report["blobs_stored"].as_i64().unwrap_or(0);
+        blobs_skipped_oversize += report["blobs_skipped_oversize"].as_i64().unwrap_or(0);
+        blobs_skipped_excluded += report["blobs_skipped_excluded"].as_i64().unwrap_or(0);
+        blobs_bytes += report["blobs_bytes"].as_i64().unwrap_or(0);
+    }
+    Ok(json!({
+        "fully_applied": fully_applied,
+        "entities_added": entities_added,
+        "entities_removed": entities_removed,
+        "affected_files": affected,
+        "changed_symbols": symbols,
+        "new_unresolved": unresolved,
+        "newly_resolved": resolved,
+        "parse_quality": match quality { 1 => "partial", 2 => "tainted", 3 => "deferred", _ => "clean" },
+        "parse_errors": parse_errors,
+        "elapsed_ms": elapsed_ms,
+        "epoch_before": epoch_before,
+        "epoch_after": epoch_after,
+        "update_error": if errors.is_empty() { Value::Null } else { Value::String(errors.join("; ")) },
+        "blobs_stored": blobs_stored,
+        "blobs_skipped_oversize": blobs_skipped_oversize,
+        "blobs_skipped_excluded": blobs_skipped_excluded,
+        "blobs_bytes": blobs_bytes,
+    }))
+}
+
+/// Snapshot the mtimes of watched files and return the changed paths.
+///
+/// The previous snapshot is the `stamps` object from an earlier call. An
+/// empty object makes every eligible file look new.
+pub fn watch_changes(paths: &[String], previous: &Value, max_bytes: u64) -> Value {
+    use std::time::UNIX_EPOCH;
+
+    fn walk(path: &std::path::Path, max_bytes: u64, found: &mut Map<String, Value>) {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            if path.is_dir() {
+                if matches!(name, ".git" | ".coderadar" | "target" | "__pycache__") {
+                    continue;
+                }
+                walk(&path, max_bytes, found);
+            } else if path.is_file() {
+                if let Ok(meta) = path.metadata() {
+                    if meta.len() <= max_bytes {
+                        if let Ok(stamp) = meta.modified() {
+                            if let Ok(modified) = stamp.duration_since(UNIX_EPOCH) {
+                                found.insert(
+                                    path.to_string_lossy().into_owned(),
+                                    json!(modified.as_millis()),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut current = Map::new();
+    for root in paths {
+        walk(std::path::Path::new(root), max_bytes, &mut current);
+    }
+    let prior = previous.as_object();
+    let mut changed: Vec<String> = current
+        .iter()
+        .filter(|(path, stamp)| prior.and_then(|rows| rows.get(*path)) != Some(*stamp))
+        .map(|(path, _)| path.clone())
+        .collect();
+    changed.sort();
+    json!({ "changed": changed, "stamps": Value::Object(current) })
+}
+
 // ── Unit 12: embedding-backed search (pure Rust) ─────────────────────────
 
 fn cosine(query: &[f64], vector: &[f64]) -> f64 {

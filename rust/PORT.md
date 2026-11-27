@@ -900,3 +900,20 @@ new recorded unit.
 - Gate: 4447/4447 recorded cases (one stable `refresh_framework_file` case
   recorded from focused config tests); clippy, fmt, cargo test, cutover 4/4
   all pass. Bench: 76 functions measured, 39 faster in this run.
+
+## Facade process helpers (Unit 40 / plan unit B)
+
+- `CodeGraph.batch`, `CodeGraph.watch`, `CodeGraph.watch_git` are no longer
+  missing: the thin facade now delegates to new Rust ops.
+- Added engine ops `batch_update`, `watch_changes` and `config_op`; the first
+  folds `update_file` reports with worst-quality-wins semantics, the second
+  snapshots watched mtimes from Rust, and the third exposes activated config.
+- Added native wrappers `batch_update_op`, `watch_changes_op`, `config_op`;
+  `after_bridge.py` re-attaches them and the expanded facade imports after
+  regeneration. Fixed a pre-existing syntax error in that regeneration script.
+- The Python-facing `BatchContext`, `Watcher`, `GitWatcher`, `UpdateReport`,
+  `watch()` and `watch_git()` are thin objects over those ops; `Watcher._apply`
+  still folds mocked reports exactly as the original test expects.
+- Proof: `tests/test_python_layer.py` 137 passed / 1 skipped with the native
+  extension; facade-package run 12 watch/batch tests passed. Gate 4447/4447,
+  fmt/clippy/cargo test clean, cutover 4/4. Bench: 76 functions, 41 faster.

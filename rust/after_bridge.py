@@ -165,6 +165,48 @@ pyo3::create_exception!(coderadar, ContentUnavailable, OpError);
         ]
     )
     text = text[:idx] + regs + text[idx:]
+    facade_ops = """#[pyfunction]
+#[pyo3(name = "config_op", signature = ())]
+fn config_op(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    value_result(py, Ok(crate::port::config_op()))
+}
+
+#[pyfunction]
+#[pyo3(name = "batch_update_op", signature = (files, contents))]
+fn batch_update_op(
+    py: Python<'_>,
+    files: Vec<String>,
+    contents: Vec<Option<String>>,
+) -> PyResult<Py<PyAny>> {
+    value_result(py, crate::port::batch_update_op(files, contents))
+}
+
+#[pyfunction]
+#[pyo3(name = "watch_changes_op", signature = (paths, previous, max_bytes=None))]
+fn watch_changes_op(
+    py: Python<'_>,
+    paths: Vec<String>,
+    previous: Bound<'_, PyAny>,
+    max_bytes: Option<i64>,
+) -> PyResult<Py<PyAny>> {
+    let previous: serde_json::Value = crate::pyconv::FromPy::from_py(&previous).map_err(error)?;
+    value_result(py, crate::port::watch_changes_op(paths, previous, max_bytes))
+}
+"""
+    if "fn batch_update_op(" not in text:
+        marker = "#[pymodule]\n"
+        idx = text.index(marker)
+        text = text[:idx] + facade_ops + "\n" + text[idx:]
+    facade_regs = (
+        "    m.add_function(wrap_pyfunction!(config_op, m)?)?;\n"
+        "    m.add_function(wrap_pyfunction!(batch_update_op, m)?)?;\n"
+        "    m.add_function(wrap_pyfunction!(watch_changes_op, m)?)?;\n"
+    )
+    if "wrap_pyfunction!(batch_update_op" not in text:
+        idx = text.rfind("    Ok(())\n}\n")
+        if idx == -1:
+            raise SystemExit("pymodule tail not found for facade ops")
+        text = text[:idx] + facade_regs + text[idx:]
     lib.write_text(text, encoding="utf-8")
 
     # Unit 25: keep the thin CodeGraph facade attached to the generated
@@ -174,14 +216,15 @@ pyo3::create_exception!(coderadar, ContentUnavailable, OpError);
         text = facade.read_text(encoding="utf-8")
         if "from .codegraph import" not in text:
             text += (
-                "
-# Unit 25: thin CodeGraph facade over the Rust-native ops.
-"
-                "from .codegraph import CodeGraph, analyze, load
-
-"
-                '__all__ = sorted(set(__all__) | {"CodeGraph", "analyze", "load"})
-'
+                "\n# Unit 25: thin CodeGraph facade over the Rust-native ops.\n"
+                "from .codegraph import (\n"
+                "    BatchContext, CodeGraph, GitWatcher, UpdateReport, Watcher, analyze, load,\n"
+                "    watch, watch_git,\n"
+                ")\n\n"
+                '__all__ = sorted(set(__all__) | {\n'
+                '    "BatchContext", "CodeGraph", "GitWatcher", "UpdateReport", "Watcher",\n'
+                '    "analyze", "load", "watch", "watch_git",\n'
+                '})\n'
             )
             facade.write_text(text, encoding="utf-8")
 
