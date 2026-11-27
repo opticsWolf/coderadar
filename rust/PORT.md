@@ -773,3 +773,32 @@ new recorded unit.
 - Smoke: `resources/list` returned all three; `resources/read` for
   `docs://query-language` returned the verbatim reference text.
 - Gate unchanged: **4445/4445**; fmt/clippy/cutover green.
+
+### Unit 36 proof (MCP guard and error wording)
+
+- CodeRadar showed 34 caller edges into `mcp/server.py::_wrong_project`;
+  Rust MCP had no equivalent, so an agent passing `project_path` could get
+  an answer about the wrong checkout. Added a real guard in `mcp.rs`:
+  it resolves a file/subdirectory to the nearest marker root, normalizes
+  Windows verbatim prefixes and casing, and refuses a different project
+  with the Python message and the `coderadar_set_project` escape hatch.
+- Added the `_op_message` equivalent: `NoIndex` errors now name the served
+  root and the reindex fix, and `InvalidRequest` errors drop the exception
+  prefix exactly as the Python MCP helper does.
+- Smoke: another project is refused; a nested path in the served project is
+  accepted; an empty query returns `Please provide a query.`.
+- Rust unit tests cover nested-path root selection, error prefix stripping
+  and path comparison.
+
+### Status of the high-fan-in glue
+
+- **Rust implementations:** `analyze`, `ingest_history`, `_require_index`,
+  `CodeGraph.query`, plus the MCP `_wrong_project` and `_op_message`
+  helpers above.
+- **Behavioral equivalents, not named 1:1 ports:** CLI `_enter_project`
+  (`cli::find_root` / `root` / `ensure_loaded`) and CLI `_op` (per-command
+  arms using `print_value` / `render`). Both are exercised by cutover.
+- **Still Python-side:** `coldstart.build_graph`'s cheap reload path
+  (restore store, stale-file update scan, build lock). Rust `init` and
+  `reindex` call `core_indexer::api::analyze` directly; because the Rust
+  full walk is 35-190x faster, no caller edge requires that fast path.

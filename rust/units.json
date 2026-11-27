@@ -576,5 +576,16 @@
       "skills://coderadar-mcp",
       "docs://query-language"
     ]
+  },
+  "unit36": {
+    "mcp": [
+      "wrong_project",
+      "op_error_message"
+    ],
+    "tests": [
+      "nested_project_path_selects_the_marker_root",
+      "invalid_request_errors_drop_the_exception_prefix",
+      "path_comparison_is_case_insensitive_on_windows"
+    ]
   }
 }

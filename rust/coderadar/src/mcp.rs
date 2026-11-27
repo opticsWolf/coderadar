@@ -17,7 +17,7 @@ fn tool_result(id: Value, result: Result<Value, String>) -> Value {
         Err(message) => json!({
             "jsonrpc": "2.0",
             "id": id,
-            "error": {"code": -32000, "message": message},
+            "error": {"code": -32000, "message": op_error_message(&message)},
         }),
     }
 }
@@ -72,7 +72,92 @@ fn tool_names() -> Value {
     ])
 }
 
+fn canonical(path: &std::path::Path) -> std::path::PathBuf {
+    core_indexer::fs::strip_verbatim_prefix(
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+    )
+}
+
+fn compare_path(left: &std::path::Path, right: &std::path::Path) -> bool {
+    let spell = |path: &std::path::Path| {
+        let text = path.to_string_lossy().replace('/', "\\");
+        if cfg!(windows) {
+            text.to_lowercase()
+        } else {
+            text
+        }
+    };
+    spell(left) == spell(right)
+}
+
+/// Resolve a tool call's `project_path` the way the original does: a file
+/// selects its directory, and the nearest enclosing marker selects the root.
+fn selected_project(input: &str) -> Option<std::path::PathBuf> {
+    let path = canonical(std::path::Path::new(input));
+    let start = if path.is_dir() {
+        path
+    } else {
+        path.parent()?.to_path_buf()
+    };
+    let mut candidate = start.clone();
+    loop {
+        if candidate.join(".coderadar").exists() || candidate.join(".coderadar.toml").exists() {
+            return Some(candidate);
+        }
+        if !candidate.pop() {
+            break;
+        }
+    }
+    Some(start)
+}
+
+fn served_root() -> std::path::PathBuf {
+    canonical(&crate::state::root().unwrap_or_else(|| std::env::current_dir().unwrap_or_default()))
+}
+
+/// The MCP project guard. Without it a tool would silently answer about the
+/// one served graph while an agent asked about a different checkout.
+fn wrong_project(args: &Value) -> Option<String> {
+    let input = args.get("project_path")?.as_str()?;
+    if input.is_empty() {
+        return None;
+    }
+    let Some(selected) = selected_project(input) else {
+        return Some(format!(
+            "`{input}` names no readable directory, so no project can be selected from it. Pass a directory (or any file inside one) and retry."
+        ));
+    };
+    let served = served_root();
+    if compare_path(&selected, &served) {
+        return None;
+    }
+    let served = served.display();
+    Some(format!(
+        "This server is serving `{served}` and cannot answer for `{}`.\n\nOne project at a time in this build: the index is a single in-process graph. To ask about that other project instead, call `coderadar_set_project` with `{}` — this server switches there and re-indexes. Or drop the `project_path` argument to keep asking about `{served}`.",
+        selected.display(),
+        selected.display()
+    ))
+}
+
+/// Word an engine error for an agent, matching the Python MCP error helper.
+fn op_error_message(error: &str) -> String {
+    if let Some(detail) = error.strip_prefix("NoIndex:") {
+        let root = served_root();
+        let root = root.display();
+        return format!(
+            "No code was indexed under `{root}`, which is where this server is serving from.\n\nThat directory does carry a `.coderadar` marker, so it is very likely the right project and simply has no indexed code yet.\n\nRun `coderadar_reindex` to index it now.\n\n{detail}"
+        );
+    }
+    if let Some(detail) = error.strip_prefix("InvalidRequest: ") {
+        return detail.to_string();
+    }
+    error.to_string()
+}
+
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
+    if let Some(message) = wrong_project(args) {
+        return Err(message);
+    }
     let arg = |key: &str| -> String {
         args.get(key)
             .and_then(Value::as_str)
@@ -529,4 +614,34 @@ pub fn serve() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_project_path_selects_the_marker_root() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..");
+        let repo = canonical(&repo);
+        let nested = repo.join("py_agent").join("src");
+        assert_eq!(selected_project(&nested.to_string_lossy()), Some(repo));
+    }
+
+    #[test]
+    fn invalid_request_errors_drop_the_exception_prefix() {
+        assert_eq!(
+            op_error_message("InvalidRequest: Please provide a query."),
+            "Please provide a query."
+        );
+    }
+
+    #[test]
+    fn path_comparison_is_case_insensitive_on_windows() {
+        let left = std::path::Path::new("D:/User/Project");
+        let right = std::path::Path::new(r"d:\user\project");
+        assert_eq!(compare_path(left, right), cfg!(windows));
+    }
 }
