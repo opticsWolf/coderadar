@@ -118,7 +118,8 @@ enum Command {
     /// Raw blob bytes by content digest
     BlobGet { digest: String },
     /// Archive cold blobs and old ledger rows
-    Archive { cutoff: String },
+    /// Archive cold blobs and old ledger rows (cutoff defaults to `[retention]`)
+    Archive { cutoff: Option<String> },
     /// Files modified after the index was built
     StaleFiles { paths: Vec<String> },
     /// Line-numbered source for one entity
@@ -389,9 +390,10 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
         "watch" => {
             ensure_loaded(project)?;
             let root = find_root(project);
+            let (config_debounce, max_bytes) = watch_config();
             let debounce = external_flag("--debounce")
                 .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(100);
+                .unwrap_or(config_debounce);
             if tail.iter().any(|value| value == "--git") {
                 let repo = root.to_string_lossy().into_owned();
                 println!("Watching git refs (commits, checkouts, merges)");
@@ -447,10 +449,10 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
             flush_stdout();
             println!("Press Ctrl+C to stop");
             flush_stdout();
-            let mut seen = watch_mtimes(&paths);
+            let mut seen = watch_mtimes(&paths, max_bytes);
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(debounce.max(50)));
-                let current = watch_mtimes(&paths);
+                let current = watch_mtimes(&paths, max_bytes);
                 let mut changed: Vec<String> = current
                     .iter()
                     .filter(|(path, stamp)| seen.get(*path) != Some(stamp))
@@ -1070,11 +1072,28 @@ fn rewrite_excludes(root: &Path, patterns: Vec<String>) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+fn watch_config() -> (u64, u64) {
+    let config = core_indexer::api::active_config_json();
+    let debounce = config
+        .get("watch")
+        .and_then(|section| section.get("debounce_ms"))
+        .and_then(Value::as_u64)
+        .unwrap_or(100);
+    let max_bytes = config
+        .get("watch")
+        .and_then(|section| section.get("max_file_size_bytes"))
+        .and_then(Value::as_u64)
+        .unwrap_or(1_048_576);
+    (debounce, max_bytes)
+}
+
 fn watch_mtimes(
     roots: &[std::path::PathBuf],
+    max_bytes: u64,
 ) -> std::collections::BTreeMap<String, std::time::SystemTime> {
     fn walk(
         path: &std::path::Path,
+        max_bytes: u64,
         found: &mut std::collections::BTreeMap<String, std::time::SystemTime>,
     ) {
         let Ok(entries) = std::fs::read_dir(path) else {
@@ -1090,9 +1109,11 @@ fn watch_mtimes(
                 if matches!(name, ".git" | ".coderadar" | "target" | "__pycache__") {
                     continue;
                 }
-                walk(&path, found);
+                walk(&path, max_bytes, found);
             } else if path.is_file()
-                && let Ok(modified) = path.metadata().and_then(|meta| meta.modified())
+                && let Ok(meta) = path.metadata()
+                && meta.len() <= max_bytes
+                && let Ok(modified) = meta.modified()
             {
                 found.insert(path.to_string_lossy().into_owned(), modified);
             }
@@ -1100,7 +1121,7 @@ fn watch_mtimes(
     }
     let mut found = std::collections::BTreeMap::new();
     for root in roots {
-        walk(root, &mut found);
+        walk(root, max_bytes, &mut found);
     }
     found
 }
@@ -1180,11 +1201,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let cli = Cli::try_parse_from(std::iter::once("coderadar-rs".to_string()).chain(args))
         .map_err(|e| e.to_string())?;
     let project = root(&cli);
+    let _activation = core_indexer::api::activate_config(&project.to_string_lossy());
 
     match cli.command {
         Command::Init { path, force } => {
             let target = path.unwrap_or_else(|| project.clone());
             let target = target.to_string_lossy().to_string();
+            let _activation = core_indexer::api::activate_config(&target);
             let result = core_indexer::api::analyze(&target, true, &[])?;
             state::clear();
             state::load(Path::new(&target))?;
@@ -1306,7 +1329,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             println!("{}", render::blob(&value));
         }
         Command::Archive { cutoff } => {
-            let value = port::archive(Some(cutoff))?;
+            let value = port::archive(cutoff)?;
             println!("{}", render::json_text(&value));
         }
         Command::StaleFiles { paths } => {

@@ -9,6 +9,12 @@ pub struct GraphConfig {
     pub signature: SignatureConfig,
     pub mutation: MutationConfig,
     pub query: QueryConfig,
+    /// `[embedding]` is read by the Rust binary's embedding/search path.
+    pub embedding: EmbeddingConfig,
+    /// `[watch]` is read by the Rust CLI watcher.
+    pub watch: WatchConfig,
+    /// `[retention]` supplies the default archive cutoff.
+    pub retention: RetentionConfig,
     /// Stage 4 strangler flag: refine smell metrics with CFG math when the
     /// body parses. Default OFF until validated (Milestone C); the AST
     /// numbers remain the fallback.
@@ -87,11 +93,45 @@ impl Default for DatabaseConfig {
 #[derive(Clone, Debug)]
 pub struct ResolutionConfig {
     pub min_confidence: f32,
+    /// Carried so a Rust-side LSP pool can read it if that front door opens.
+    pub lsp: LSPConfig,
 }
 impl Default for ResolutionConfig {
     fn default() -> Self {
         Self {
             min_confidence: 0.3,
+            lsp: LSPConfig::default(),
+        }
+    }
+}
+
+/// `[resolution.lsp]`. Carried, not read on any live path.
+#[derive(Clone, Debug)]
+pub struct LSPConfig {
+    pub enabled: bool,
+    pub result_ttl_s: u64,
+    pub idle_timeout_s: u64,
+    pub timeout_ms: u64,
+    pub override_threshold: f32,
+    pub servers: std::collections::BTreeMap<String, String>,
+}
+impl Default for LSPConfig {
+    fn default() -> Self {
+        let mut servers = std::collections::BTreeMap::new();
+        servers.insert("python".into(), "pyright-langserver --stdio".into());
+        servers.insert(
+            "typescript".into(),
+            "typescript-language-server --stdio".into(),
+        );
+        servers.insert("rust".into(), "rust-analyzer".into());
+        servers.insert("go".into(), "gopls".into());
+        Self {
+            enabled: false,
+            result_ttl_s: 300,
+            idle_timeout_s: 600,
+            timeout_ms: 5000,
+            override_threshold: 0.90,
+            servers,
         }
     }
 }
@@ -200,6 +240,46 @@ impl Default for QueryConfig {
             use_rust_graph_for_traversal: true,
         }
     }
+}
+
+/// `[embedding]` — one model and one dimension per store.
+#[derive(Clone, Debug)]
+pub struct EmbeddingConfig {
+    pub model: String,
+    pub dimension: usize,
+    pub max_body_tokens: usize,
+    pub batch_size: usize,
+}
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            model: "BAAI/bge-small-en-v1.5".into(),
+            dimension: 384,
+            max_body_tokens: 2000,
+            batch_size: 32,
+        }
+    }
+}
+
+/// `[watch]` — Rust CLI polling defaults.
+#[derive(Clone, Debug)]
+pub struct WatchConfig {
+    pub debounce_ms: u64,
+    pub max_file_size_bytes: u64,
+}
+impl Default for WatchConfig {
+    fn default() -> Self {
+        Self {
+            debounce_ms: 100,
+            max_file_size_bytes: 1_048_576,
+        }
+    }
+}
+
+/// `[retention]` — `None` means archive requires an explicit cutoff.
+#[derive(Clone, Debug, Default)]
+pub struct RetentionConfig {
+    pub archive_after_days: Option<i64>,
 }
 
 /// Analysis-engine refinements (Stage 4).

@@ -6,6 +6,7 @@
 //! no function round-trips through Python).
 
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{json, Map, Value};
@@ -63,6 +64,28 @@ pub fn load_projection(db_path: &str, root: Option<&str>) -> Result<Arc<Projecte
 
 fn insert(map: &mut Map<String, Value>, key: &str, value: impl Into<Value>) {
     map.insert(key.to_string(), value.into());
+}
+
+/// Activate `<root>/.coderadar.toml` for the rest of this process.
+///
+/// The Rust CLI and MCP call this before any graph work. A missing or broken
+/// file applies defaults and is reported in the returned JSON instead of
+/// failing startup.
+pub fn activate_config(root: &str) -> Value {
+    match crate::config_activation::activate_root(Path::new(root)) {
+        Ok(value) => value,
+        Err(error) => json!({
+            "applied": {},
+            "ignored": [],
+            "config_present": true,
+            "config_error": error,
+        }),
+    }
+}
+
+/// The configuration currently in force, as JSON.
+pub fn active_config_json() -> Value {
+    crate::config_activation::active_json()
 }
 
 /// The live entity as a JSON object, in the shape the Python bindings return.

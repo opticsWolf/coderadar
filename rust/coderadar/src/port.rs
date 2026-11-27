@@ -769,13 +769,71 @@ pub fn blob_get(digest: String) -> Result<Option<Value>, String> {
     core_indexer::api::blob_get(&store, &digest)
 }
 
-/// Port of `archive` (`py_agent/src/coderadar/ops.py:642`).
-pub fn archive(cutoff: Option<String>) -> Result<Value, String> {
-    let Some(cutoff) = cutoff else {
+/// `[retention] archive_after_days` → canonical cutoff stamp.
+fn retention_cutoff() -> Result<String, String> {
+    let config = core_indexer::api::active_config_json();
+    let days = config
+        .get("retention")
+        .and_then(|section| section.get("archive_after_days"))
+        .and_then(Value::as_i64);
+    let Some(days) = days else {
         return Err(
             "InvalidRequest: no archive cutoff: pass cutoff=... or set [retention] archive_after_days in .coderadar.toml"
                 .to_string(),
         );
+    };
+    if days < 0 {
+        return Err(format!(
+            "InvalidRequest: [retention] archive_after_days is negative: {days}"
+        ));
+    }
+    Ok(canonical_stamp_days_ago(days))
+}
+
+fn canonical_stamp_days_ago(days: i64) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+        - days.saturating_mul(86_400);
+    let day = seconds.div_euclid(86_400);
+    let within = seconds.rem_euclid(86_400);
+    let (year, month, date) = civil_from_days(day);
+    format!(
+        "{year:04}-{month:02}-{date:02}T{:02}:{:02}:{:02}.000000Z",
+        within / 3600,
+        (within % 3600) / 60,
+        within % 60
+    )
+}
+
+/// Howard Hinnant's civil-from-days conversion, UTC only.
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let doe = shifted - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let date = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month, date)
+}
+
+/// Port of `archive` (`py_agent/src/coderadar/ops.py:642`).
+pub fn archive(cutoff: Option<String>) -> Result<Value, String> {
+    let cutoff = match cutoff {
+        Some(value) => value,
+        None => retention_cutoff()?,
     };
     if !valid_stamp(&cutoff) {
         return Err(format!(
@@ -2302,23 +2360,19 @@ pub fn trim_to_char_budget(body_lines: Vec<String>, max_chars: i64) -> Result<Ve
 // ── Unit 12: pure-Rust embedding lifecycle and vector search ─────────────
 
 fn embedding_config() -> (String, usize) {
-    let mut model = "sentence-transformers/all-MiniLM-L6-v2".to_string();
-    let mut dimension = 384usize;
-    if let Ok(text) = std::fs::read_to_string("coderadar.toml") {
-        for line in text.lines() {
-            if let Some(value) = line.split_once('=') {
-                let key = value.0.trim();
-                let raw = value.1.trim().trim_matches(['"', '\'']);
-                if key == "model" {
-                    model = raw.to_string();
-                } else if key == "dimension" {
-                    if let Ok(parsed) = raw.parse::<usize>() {
-                        dimension = parsed;
-                    }
-                }
-            }
-        }
-    }
+    let config = core_indexer::api::active_config_json();
+    let model = config
+        .get("embedding")
+        .and_then(|section| section.get("model"))
+        .and_then(Value::as_str)
+        .unwrap_or("BAAI/bge-small-en-v1.5")
+        .to_string();
+    let dimension = config
+        .get("embedding")
+        .and_then(|section| section.get("dimension"))
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(384);
     (model, dimension)
 }
 

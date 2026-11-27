@@ -481,6 +481,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         }
         "coderadar_set_project" => {
             let path = std::path::PathBuf::from(arg("project_path"));
+            let _activation = core_indexer::api::activate_config(&path.to_string_lossy());
             crate::state::load(&path)?;
             Ok(json!({"project": path.to_string_lossy(), "loaded": true}))
         }
@@ -589,6 +590,8 @@ fn dispatch(message: &Value) -> Option<Value> {
 /// # Errors
 /// Returns an I/O error only; protocol errors are replied to inline.
 pub fn serve() -> Result<(), String> {
+    let launch_root = std::env::current_dir().unwrap_or_default();
+    let _activation = core_indexer::api::activate_config(&launch_root.to_string_lossy());
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();

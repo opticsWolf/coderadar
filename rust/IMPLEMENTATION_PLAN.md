@@ -1,7 +1,7 @@
 # Implementation plan — closing the remaining CodeRadar port gaps
 
-Status: **plan only, no implementation in this document**  
-Prepared: after commit `cab7ff1` (`dev_rustify`)  
+Status: **executing; Unit A complete (Unit 39)**
+Prepared: after commit `cab7ff1` (`dev_rustify`)
 Canonical decisions/state: [`PORT.md`](PORT.md)  
 Graph evidence: local CodeRadar store, 2026-02-17
 
@@ -67,9 +67,9 @@ Completion estimate from this evidence:
 
 ## 3. Ranked implementation units
 
-### Unit A — Full config activation in the Rust binary
+### Unit A — Full config activation in the Rust binary — DONE
 
-**Rank: 1. Value: highest. Estimate: 1.5–2 days.**
+**Rank: 1. Value: highest. Estimate: 1.5–2 days. Implemented as Unit 39.**
 
 Problem: Python calls `activate_config()` and `set_config()` at CLI/MCP startup. The engine has the mapping in `core_indexer/src/ffi_config.rs`, but it is PyO3-only, so `coderadar-rs` runs with `GraphConfig::default()`. Unit 37 parses only `[project] exclude` and `[database] path` for the coldstart walk.
 

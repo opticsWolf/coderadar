@@ -4,6 +4,7 @@
 pub mod annotations;
 pub mod api;
 pub mod clones;
+pub mod config_activation;
 pub mod extract;
 mod ffi_config;
 mod ffi_convert;

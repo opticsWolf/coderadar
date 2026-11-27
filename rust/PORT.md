@@ -875,3 +875,28 @@ new recorded unit.
 6. Callable-taking `resolve_reference` / `resolve_route` stay Python-side;
    Rust already exposes data-shaped equivalents, so no unit is justified
    without a new caller edge.
+
+## Full config activation (Unit 39 / plan unit A)
+
+- Added `core_indexer::config_activation`: a single value-based mapping used
+  by both PyO3 `set_config` and pure-Rust `api::activate_config(root)`. It
+  publishes `ACTIVE_CONFIG` from `.coderadar.toml`, reports applied/ignored
+  paths, and applies defaults for a missing or broken file.
+- `GraphConfig` now carries `embedding`, `watch`, `retention` and
+  `resolution.lsp` alongside the already-mapped sections, so the TOML the
+  Python model accepts has a Rust consumer (or an explicit ignored report).
+- Raw TOML is filtered against the pydantic schema before mapping, matching
+  Python's ignore-unknown-key behavior (`truncated_dimension` stays harmless).
+- CLI, MCP startup, `coderadar_set_project`, `state::load`, `load_snapshot`
+  and coldstart now activate the project config before graph work.
+- `[database] path` is resolved against the project root; `[retention]`
+  supplies the default `archive` cutoff; `[watch]` drives CLI debounce and
+  max file size; `port::embedding_config()` reads `.coderadar.toml` through
+  the activated config instead of the stray `coderadar.toml` filename.
+- Smoke: a temp project with `exclude`, `mutation.deny`, `watch` and
+  `embedding` settings indexed successfully and `exclude list` showed the
+  configured pattern. Engine tests cover roots/mutation/watch, ignored keys,
+  schema filtering, wrong-type paths and broken TOML.
+- Gate: 4447/4447 recorded cases (one stable `refresh_framework_file` case
+  recorded from focused config tests); clippy, fmt, cargo test, cutover 4/4
+  all pass. Bench: 76 functions measured, 39 faster in this run.
