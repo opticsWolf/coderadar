@@ -981,3 +981,21 @@ new recorded unit.
   environment, so the definition round-trip is proven by construction only.
 - Gate 4447/4447, fmt/clippy/cargo test clean, cutover 4/4. Bench: 76
   functions, 40 faster.
+
+## Callable resolver facade (Unit 44 / plan unit F)
+
+- Added PyO3 wrappers `framework_resolve_reference` and
+  `framework_resolve_route` over the existing data-shaped Rust resolvers, and
+  callable-shaped facade functions `coderadar.resolve_reference(name,
+  searcher, resolvers=None, limit=5)` / `coderadar.resolve_route(path,
+  searcher, callees=None, limit=5)`.
+- The Python callables are invoked for candidate discovery only; resolution
+  stays in Rust. The `resolvers` argument is accepted for API compatibility;
+  Rust owns the framework order. A `resolvers/resolution.py` module shim is
+  deliberately not added because the resolver classes themselves remain
+  Python-side.
+- Fixed Django's `prefer_in_dir` equivalent to use substring hints, so
+  `app/models.py` matches `models` as in the original. Smoke now returns the
+  original's `django` / 0.85 result and the Go route handler result.
+- `after_bridge.py` re-attaches the wrappers and expanded facade imports.
+- Gate 4447/4447, fmt/clippy/cargo test clean, cutover 4/4.

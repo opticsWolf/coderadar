@@ -166,6 +166,32 @@ pyo3::create_exception!(coderadar, ContentUnavailable, OpError);
     )
     text = text[:idx] + regs + text[idx:]
     facade_ops = """#[pyfunction]
+#[pyo3(name = "framework_resolve_reference", signature = (name, candidates, limit=5))]
+fn framework_resolve_reference(
+    py: Python<'_>,
+    name: String,
+    candidates: Bound<'_, PyAny>,
+    limit: i64,
+) -> PyResult<Py<PyAny>> {
+    let rows: Vec<serde_json::Value> = crate::pyconv::FromPy::from_py(&candidates).map_err(error)?;
+    value_result(py, crate::port::framework_resolve_reference(name, rows, limit))
+}
+
+#[pyfunction]
+#[pyo3(name = "framework_resolve_route", signature = (path, routes, callees, limit=5))]
+fn framework_resolve_route(
+    py: Python<'_>,
+    path: String,
+    routes: Bound<'_, PyAny>,
+    callees: Bound<'_, PyAny>,
+    limit: i64,
+) -> PyResult<Py<PyAny>> {
+    let routes: Vec<serde_json::Value> = crate::pyconv::FromPy::from_py(&routes).map_err(error)?;
+    let callees: Vec<serde_json::Value> = crate::pyconv::FromPy::from_py(&callees).map_err(error)?;
+    value_result(py, crate::port::framework_resolve_route(path, routes, callees, limit))
+}
+
+#[pyfunction]
 #[pyo3(name = "embed_texts_op", signature = (texts, model=None))]
 fn embed_texts_op(
     py: Python<'_>,
@@ -208,6 +234,8 @@ fn watch_changes_op(
         idx = text.index(marker)
         text = text[:idx] + facade_ops + "\n" + text[idx:]
     facade_regs = (
+        "    m.add_function(wrap_pyfunction!(framework_resolve_reference, m)?)?;\n"
+        "    m.add_function(wrap_pyfunction!(framework_resolve_route, m)?)?;\n"
         "    m.add_function(wrap_pyfunction!(embed_texts_op, m)?)?;\n"
         "    m.add_function(wrap_pyfunction!(config_op, m)?)?;\n"
         "    m.add_function(wrap_pyfunction!(batch_update_op, m)?)?;\n"
@@ -230,11 +258,11 @@ fn watch_changes_op(
                 "\n# Unit 25: thin CodeGraph facade over the Rust-native ops.\n"
                 "from .codegraph import (\n"
                 "    BatchContext, CodeGraph, GitWatcher, UpdateReport, Watcher, analyze, load,\n"
-                "    watch, watch_git,\n"
+                "    resolve_reference, resolve_route, watch, watch_git,\n"
                 ")\n\n"
                 '__all__ = sorted(set(__all__) | {\n'
                 '    "BatchContext", "CodeGraph", "GitWatcher", "UpdateReport", "Watcher",\n'
-                '    "analyze", "load", "watch", "watch_git",\n'
+                '    "analyze", "load", "resolve_reference", "resolve_route", "watch", "watch_git",\n'
                 '})\n'
             )
             facade.write_text(text, encoding="utf-8")

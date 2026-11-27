@@ -4400,7 +4400,10 @@ fn resolve_one(name: &str, framework: &str, candidates: &[Value]) -> Option<Valu
                 .get("file_path")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if candidate_name == base && path_in_dir(file_path, hint) {
+            // Python's `prefer_in_dir` uses a substring hint, so
+            // `app/models.py` matches `models` even though it is a file,
+            // not a directory component.
+            if candidate_name == base && file_path.contains(hint) {
                 return Some(with_confidence(candidate, 0.85));
             }
         }

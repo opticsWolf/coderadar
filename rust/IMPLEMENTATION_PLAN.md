@@ -1,6 +1,6 @@
 # Implementation plan — closing the remaining CodeRadar port gaps
 
-Status: **executing; Units A, B and E complete (Units 39–40, 43), Units C and D partial (Units 41–42)**
+Status: **all units attempted; A, B, E and F complete (Units 39–40, 43–44), C and D partial (Units 41–42)**
 Prepared: after commit `cab7ff1` (`dev_rustify`)
 Canonical decisions/state: [`PORT.md`](PORT.md)  
 Graph evidence: local CodeRadar store, 2026-02-17
@@ -235,9 +235,9 @@ Risks: external language servers may be absent in CI; treat as best-effort with 
 
 ---
 
-### Unit F — Callable-taking resolver APIs
+### Unit F — Callable-taking resolver APIs — DONE
 
-**Rank: 6. Value: low. Estimate: 0.5–1 day, but only with a new caller edge.**
+**Rank: 6. Value: low. Estimate: 0.5–1 day. Implemented as Unit 44.**
 
 Problem: `resolve_reference` and `resolve_route` accept Python callables. rust-anything cannot bridge that shape. Rust already exposes data-shaped equivalents (`framework_resolve_reference`, `framework_resolve_route`).
 

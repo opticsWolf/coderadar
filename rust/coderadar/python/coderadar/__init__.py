@@ -180,6 +180,8 @@ from .codegraph import (
     Watcher,
     analyze,
     load,
+    resolve_reference,
+    resolve_route,
     watch,
     watch_git,
 )
@@ -192,6 +194,8 @@ __all__ = sorted(set(__all__) | {
     "Watcher",
     "analyze",
     "load",
+    "resolve_reference",
+    "resolve_route",
     "watch",
     "watch_git",
 })

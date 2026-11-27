@@ -838,6 +838,31 @@ def watch_git(
     return watcher
 
 
+def resolve_reference(name, searcher, resolvers=None, *, limit=5):
+    """Callable-shaped facade over the Rust framework reference resolver.
+
+    ``resolvers`` is accepted for API compatibility; Rust owns the framework
+    order. Only the callable searcher crosses into Python.
+    """
+    return _native.framework_resolve_reference(name, searcher(name, limit), limit)
+
+
+def resolve_route(path, searcher, callees=None, *, limit=5):
+    """Callable-shaped facade over the Rust route resolver."""
+    if callees is None:
+        return []
+    static = [
+        part for part in path.strip("/").split("/")
+        if part[:1] not in ("<", ":", "{") and part != "*"
+    ]
+    candidates = searcher(" ".join(static) or path, limit * 2)
+    handlers = []
+    for route in candidates:
+        if route.get("kind") == "route":
+            handlers.extend(callees(route.get("id", "")) or [])
+    return _native.framework_resolve_route(path, candidates, handlers, limit)
+
+
 __all__ = [
     "BatchContext",
     "CodeGraph",
@@ -846,6 +871,8 @@ __all__ = [
     "Watcher",
     "analyze",
     "load",
+    "resolve_reference",
+    "resolve_route",
     "watch",
     "watch_git",
 ]
