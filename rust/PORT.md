@@ -938,3 +938,26 @@ new recorded unit.
   hidden.
 - Gate 4447/4447, fmt/clippy/cargo test clean, cutover 4/4. Focused Python
   suite 138 passed. Bench: 76 functions, 40 faster.
+
+## MCP lifecycle (Unit 42 / plan unit D, partial)
+
+- Added `core_indexer::mcp_runtime`: two-pass root ladder (client roots,
+  `--path` via `CODERADAR_MCP_PATH`, previous session record, cwd), root
+  selector, previous-session persistence, lazy-retry decision, generation-
+  tracked `BackgroundIndex` with a build lock and bounded/heartbeating wait,
+  and a handshake timeout guard.
+- `mcp.rs` now creates one `McpSession` at startup, announces the resolved
+  root on stderr, starts cold-start indexing off the request path, disarms the
+  handshake on the first inbound message, and applies a lazy root retry before
+  the first tool call.
+- `coderadar_set_project` now records the choice, marks the retry as answered,
+  and restarts the background index for the new root.
+- **Residual gap:** the Rust stdio loop does not issue a server-to-client
+  `roots/list` request during the first tool call; it uses roots supplied in
+  `initialize` params, `--path`, and the persisted choice. There is also no
+  parent-process watchdog. Tool parity and the 45 tools/3 resources are
+  unchanged.
+- Smoke: `coderadar-rs mcp serve` with a project path resolved the marker root,
+  answered `initialize`/`tools/list` immediately, and reported indexing
+  progress on stderr. Gate 4447/4447, fmt/clippy/cargo test clean, cutover
+  4/4. Bench: 76 functions, 41 faster.

@@ -13,6 +13,7 @@ mod ffi_synthetic;
 mod ffi_watcher;
 pub mod fs;
 pub mod graph;
+pub mod mcp_runtime;
 pub mod mutation;
 pub mod query;
 pub mod resolve;

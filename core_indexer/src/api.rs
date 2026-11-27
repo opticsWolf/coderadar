@@ -6,7 +6,7 @@
 //! no function round-trips through Python).
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use serde_json::{json, Map, Value};
@@ -86,6 +86,55 @@ pub fn activate_config(root: &str) -> Value {
 /// The configuration currently in force, as JSON.
 pub fn active_config_json() -> Value {
     crate::config_activation::active_json()
+}
+
+/// Canonical archive cutoff from `[retention] archive_after_days`.
+pub fn retention_cutoff(days: Option<i64>) -> Result<String, String> {
+    crate::config_activation::retention_cutoff(days)
+}
+
+/// Active `[watch]` settings as `(debounce_ms, max_file_size_bytes)`.
+pub fn watch_settings() -> (u64, u64) {
+    crate::config_activation::watch_settings()
+}
+
+/// Resolve the MCP startup root from client roots, `--path` and cwd.
+pub fn mcp_resolve_root(
+    client_roots: &[String],
+    path_flag: Option<&str>,
+    cwd: Option<&str>,
+    launch_cwd: Option<&str>,
+) -> Value {
+    let root =
+        crate::mcp_runtime::resolve_root(client_roots, path_flag, cwd, launch_cwd.map(Path::new));
+    root.json()
+}
+
+/// Resolve an MCP tool call's `project_path` selector.
+pub fn mcp_resolve_selector(path: &str) -> Option<Value> {
+    crate::mcp_runtime::resolve_selector(path).map(|root| root.json())
+}
+
+/// Remember an explicit `coderadar_set_project` choice.
+pub fn mcp_record_project(launch_cwd: &str, root: &str) {
+    crate::mcp_runtime::record_project(Path::new(launch_cwd), Path::new(root));
+}
+
+/// One-line startup description for a resolved root.
+pub fn mcp_describe(root: &Value) -> String {
+    let resolved = crate::mcp_runtime::ResolvedRoot {
+        path: PathBuf::from(root.get("path").and_then(Value::as_str).unwrap_or(".")),
+        source: root
+            .get("source")
+            .and_then(Value::as_str)
+            .unwrap_or("cwd")
+            .to_string(),
+        marker: root
+            .get("marker")
+            .and_then(Value::as_str)
+            .map(PathBuf::from),
+    };
+    resolved.describe()
 }
 
 /// The live entity as a JSON object, in the shape the Python bindings return.

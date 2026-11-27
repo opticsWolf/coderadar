@@ -1,6 +1,6 @@
 # Implementation plan — closing the remaining CodeRadar port gaps
 
-Status: **executing; Units A and B complete (Units 39–40), Unit C partial (Unit 41)**
+Status: **executing; Units A and B complete (Units 39–40), Units C and D partial (Units 41–42)**
 Prepared: after commit `cab7ff1` (`dev_rustify`)
 Canonical decisions/state: [`PORT.md`](PORT.md)  
 Graph evidence: local CodeRadar store, 2026-02-17
@@ -177,9 +177,9 @@ Risks: dependency availability/licensing, model download in CI, changed vector b
 
 ---
 
-### Unit D — MCP lifecycle parity
+### Unit D — MCP lifecycle parity — PARTIAL
 
-**Rank: 4. Value: medium for server embedding, low for CLI. Estimate: 2–3 days.**
+**Rank: 4. Value: medium for server embedding, low for CLI. Estimate: 2–3 days. Implemented as Unit 42; `roots/list` request and parent watchdog remain.**
 
 Problem: Rust MCP has all tools/resources, but the process model is synchronous and single-root. Python has a lazy root ladder, roots/list handshake, background indexing, build lock, heartbeat and persisted project.
 

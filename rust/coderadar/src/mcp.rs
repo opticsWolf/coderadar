@@ -1,8 +1,22 @@
 //! Unit 5: a stdio JSON-RPC server over the same library as the CLI.
 
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
+use std::sync::OnceLock;
 
+use core_indexer::mcp_runtime::{HandshakeGuard, McpSession};
 use serde_json::{Value, json};
+
+static SESSION: OnceLock<McpSession> = OnceLock::new();
+
+fn coldstart(root: PathBuf) -> Result<Value, String> {
+    let path = root.to_string_lossy().into_owned();
+    let report = core_indexer::api::coldstart_build_graph(&path, true)?;
+    if let Some(store) = report.get("store").and_then(Value::as_str) {
+        crate::state::load_from(std::path::Path::new(store), &root)?;
+    }
+    Ok(report)
+}
 
 fn tool_result(id: Value, result: Result<Value, String>) -> Value {
     match result {
@@ -480,7 +494,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             crate::port::reindex_op(&root)
         }
         "coderadar_set_project" => {
-            let path = std::path::PathBuf::from(arg("project_path"));
+            let raw = arg("project_path");
+            let path = match SESSION.get() {
+                Some(session) => session.set_project(&raw, coldstart)?,
+                None => PathBuf::from(&raw),
+            };
             let _activation = core_indexer::api::activate_config(&path.to_string_lossy());
             crate::state::load(&path)?;
             Ok(json!({"project": path.to_string_lossy(), "loaded": true}))
@@ -569,6 +587,16 @@ fn dispatch(message: &Value) -> Option<Value> {
             }
         }
         "tools/call" => {
+            if let Some(session) = SESSION.get() {
+                if let Err(error) = session.ensure_ready() {
+                    return Some(tool_result(id, Err(error)));
+                }
+                if let Some(path) = session.retarget(coldstart)
+                    && let Err(error) = crate::state::load(&path)
+                {
+                    return Some(tool_result(id, Err(error)));
+                }
+            }
             let params = message.get("params").unwrap_or(&Value::Null);
             let name = params
                 .get("name")
@@ -590,8 +618,19 @@ fn dispatch(message: &Value) -> Option<Value> {
 /// # Errors
 /// Returns an I/O error only; protocol errors are replied to inline.
 pub fn serve() -> Result<(), String> {
-    let launch_root = std::env::current_dir().unwrap_or_default();
-    let _activation = core_indexer::api::activate_config(&launch_root.to_string_lossy());
+    let launch = std::env::current_dir().unwrap_or_default();
+    let path_flag = std::env::var("CODERADAR_MCP_PATH").ok();
+    let session = McpSession::new(launch, path_flag.as_deref());
+    eprintln!("{}", session.describe());
+    let root = PathBuf::from(session.root()["path"].as_str().unwrap_or("."));
+    let _ = SESSION.set(session.clone());
+    let _activation = core_indexer::api::activate_config(&root.to_string_lossy());
+    session.begin(coldstart);
+    let timeout = std::env::var("CODERADAR_HANDSHAKE_TIMEOUT")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(60);
+    let guard = HandshakeGuard::arm(timeout);
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
@@ -600,6 +639,7 @@ pub fn serve() -> Result<(), String> {
         if line.trim().is_empty() {
             continue;
         }
+        guard.disarm();
         let message: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
@@ -608,6 +648,7 @@ pub fn serve() -> Result<(), String> {
                 continue;
             }
         };
+        session.on_message(&message);
         if let Some(response) = dispatch(&message) {
             writeln!(
                 writer,
@@ -618,6 +659,7 @@ pub fn serve() -> Result<(), String> {
             writer.flush().map_err(|e| e.to_string())?;
         }
     }
+    guard.disarm();
     Ok(())
 }
 

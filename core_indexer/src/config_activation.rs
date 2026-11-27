@@ -718,6 +718,71 @@ fn config_json(config: &graph::GraphConfig) -> Value {
     })
 }
 
+/// `[retention] archive_after_days` → canonical UTC cutoff stamp.
+///
+/// # Errors
+/// Returns Python's `InvalidRequest` messages for a missing or negative
+/// value.
+pub fn retention_cutoff(days: Option<i64>) -> Result<String, String> {
+    let Some(days) = days else {
+        return Err(
+            "InvalidRequest: no archive cutoff: pass cutoff=... or set [retention] archive_after_days in .coderadar.toml"
+                .to_string(),
+        );
+    };
+    if days < 0 {
+        return Err(format!(
+            "InvalidRequest: [retention] archive_after_days is negative: {days}"
+        ));
+    }
+    Ok(canonical_stamp_days_ago(days))
+}
+
+fn canonical_stamp_days_ago(days: i64) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+        - days.saturating_mul(86_400);
+    let day = seconds.div_euclid(86_400);
+    let within = seconds.rem_euclid(86_400);
+    let (year, month, date) = civil_from_days(day);
+    format!(
+        "{year:04}-{month:02}-{date:02}T{:02}:{:02}:{:02}.000000Z",
+        within / 3600,
+        (within % 3600) / 60,
+        within % 60
+    )
+}
+
+/// Howard Hinnant's civil-from-days conversion, UTC only.
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let shifted = days + 719_468;
+    let era = if shifted >= 0 {
+        shifted
+    } else {
+        shifted - 146_096
+    } / 146_097;
+    let doe = shifted - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let mut year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let date = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    if month <= 2 {
+        year += 1;
+    }
+    (year, month, date)
+}
+
+/// Active `[watch]` settings as `(debounce_ms, max_file_size_bytes)`.
+pub fn watch_settings() -> (u64, u64) {
+    let config = active_config();
+    (config.watch.debounce_ms, config.watch.max_file_size_bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

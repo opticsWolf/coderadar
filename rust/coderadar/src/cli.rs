@@ -1073,18 +1073,7 @@ fn rewrite_excludes(root: &Path, patterns: Vec<String>) -> Result<(), String> {
 }
 
 fn watch_config() -> (u64, u64) {
-    let config = core_indexer::api::active_config_json();
-    let debounce = config
-        .get("watch")
-        .and_then(|section| section.get("debounce_ms"))
-        .and_then(Value::as_u64)
-        .unwrap_or(100);
-    let max_bytes = config
-        .get("watch")
-        .and_then(|section| section.get("max_file_size_bytes"))
-        .and_then(Value::as_u64)
-        .unwrap_or(1_048_576);
-    (debounce, max_bytes)
+    core_indexer::api::watch_settings()
 }
 
 fn watch_mtimes(
