@@ -4,6 +4,8 @@ Canonical copy of the decisions and state for moving the Python surface
 (`py_agent/`, 20k LOC) onto the Rust engine so the whole tool links as Rust
 crates. Started 2026-02 (repo at 0.16.0, `44c6cf9`).
 
+Detailed forward plan for the remaining gaps: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
+
 ## Decisions (user, step 0)
 
 1. **Layout â€” mono crate.** One crate under `rust/` holds every ported unit:
