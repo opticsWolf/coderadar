@@ -2149,6 +2149,19 @@ pub fn record_checkout(branch: Option<&str>) -> Result<(), String> {
         .map_err(|e| format!("cannot record checkout: {e:?}"))
 }
 
+/// Whether a path is excluded by config, extra patterns and the baseline.
+/// used by the cold-start staleness walk with the same rules as `analyze`.
+pub fn is_excluded(root: &str, path: &str, is_dir: bool, extra: &[String]) -> bool {
+    let Some(matcher) = crate::exclusion_gitignore(extra) else {
+        return false;
+    };
+    let path = std::path::Path::new(path);
+    let rel = path
+        .strip_prefix(std::path::Path::new(root))
+        .unwrap_or(path);
+    crate::path_excluded(&matcher, rel, is_dir)
+}
+
 /// The engine's built-in exclusion baseline, used by `exclude list`.
 pub fn default_excludes() -> Vec<String> {
     crate::DEFAULT_EXCLUDES
@@ -2185,4 +2198,395 @@ pub fn git_changed_files(
 ) -> Result<Vec<String>, String> {
     crate::fs::git::changed_files_between(repo, old_oid, new_oid)
         .map_err(|e| format!("git diff failed: {e:?}"))
+}
+
+// ── Cold-start fast path ────────────────────────────────────────────────
+//
+// Python's `coldstart.build_graph` loads the ledger and replays only files
+// newer than it. Rust's full analyze is already much faster, but the caller
+// edge is real, so the decision lives in the engine and can be retired as
+// one unit when those callers move to `analyze` directly.
+
+static COLDSTART_BUILD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+const INDEXABLE_EXTS: &[&str] = &[
+    "py", "pyi", "ts", "tsx", "js", "jsx", "mjs", "cjs", "go", "rs", "java", "c", "h", "cpp", "cc",
+    "cxx", "hpp", "hxx", "rb", "php", "cs", "kt", "kts", "swift", "scala", "sc", "lua", "ex",
+    "exs", "zig", "zon", "r", "sh", "bash", "zsh", "dart", "proto", "sql", "hcl", "tf", "cmake",
+    "graphql", "gql", "erl", "hrl", "hs", "lhs", "nix", "groovy", "gvy",
+];
+
+struct ColdConfig {
+    raw: String,
+    excludes: Vec<String>,
+    db: std::path::PathBuf,
+    present: bool,
+    mtime: Option<f64>,
+}
+
+fn cold_config(root: &std::path::Path) -> ColdConfig {
+    let path = root.join(".coderadar.toml");
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return ColdConfig {
+            raw: String::new(),
+            excludes: Vec::new(),
+            db: root.join(".coderadar").join("store").join("coderadar.db"),
+            present: false,
+            mtime: None,
+        };
+    };
+    let mtime = std::fs::metadata(&path)
+        .ok()
+        .and_then(|meta| meta.modified().ok())
+        .and_then(|stamp| stamp.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_secs_f64());
+    let mut excludes = Vec::new();
+    let mut db = root.join(".coderadar").join("store").join("coderadar.db");
+    if let Ok(parsed) = toml::from_str::<toml::Value>(&raw) {
+        if let Some(rows) = parsed
+            .get("project")
+            .and_then(|section| section.get("exclude"))
+            .and_then(toml::Value::as_array)
+        {
+            excludes = rows
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .filter(|pattern| !pattern.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+        if let Some(configured) = parsed
+            .get("database")
+            .and_then(|section| section.get("path"))
+            .and_then(toml::Value::as_str)
+        {
+            let configured = std::path::PathBuf::from(configured);
+            db = if configured.is_absolute() {
+                configured
+            } else {
+                root.join(configured)
+            };
+        }
+    }
+    ColdConfig {
+        raw,
+        excludes,
+        db,
+        present: true,
+        mtime,
+    }
+}
+
+fn record_cold_config(root: &std::path::Path, config: &ColdConfig) {
+    let marker = root.join(".coderadar");
+    if !marker.is_dir() {
+        return;
+    }
+    let document = json!({
+        "exclude": config.excludes,
+        "toml_present": config.present,
+        "toml_mtime": config.mtime,
+        "text": config.raw,
+    });
+    let _ = std::fs::write(
+        marker.join("indexed_config.json"),
+        serde_json::to_string(&document).unwrap_or_default(),
+    );
+}
+
+fn cold_config_changed(root: &std::path::Path, config: &ColdConfig) -> bool {
+    let Ok(text) = std::fs::read_to_string(root.join(".coderadar").join("indexed_config.json"))
+    else {
+        return config.present && !config.excludes.is_empty();
+    };
+    let Ok(recorded) = serde_json::from_str::<Value>(&text) else {
+        return config.present && !config.excludes.is_empty();
+    };
+    recorded.get("text").and_then(Value::as_str) != Some(config.raw.as_str())
+}
+
+fn indexable_file(path: &std::path::Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    name.eq_ignore_ascii_case("dockerfile")
+        || path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| INDEXABLE_EXTS.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
+fn stale_cold_files(
+    root: &std::path::Path,
+    db_stamp: std::time::SystemTime,
+    excludes: &[String],
+) -> Vec<String> {
+    fn walk(
+        dir: &std::path::Path,
+        root: &std::path::Path,
+        stamp: std::time::SystemTime,
+        excludes: &[String],
+        found: &mut Vec<String>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            let is_dir = path.is_dir();
+            if matches!(name, ".git" | ".coderadar" | "target" | "__pycache__")
+                || is_excluded(
+                    &root.to_string_lossy(),
+                    &path.to_string_lossy(),
+                    is_dir,
+                    excludes,
+                )
+            {
+                continue;
+            }
+            if is_dir {
+                walk(&path, root, stamp, excludes, found);
+            } else if path.is_file()
+                && indexable_file(&path)
+                && path
+                    .metadata()
+                    .and_then(|meta| meta.modified())
+                    .ok()
+                    .and_then(|modified| modified.duration_since(stamp).ok())
+                    .is_some_and(|elapsed| elapsed.as_secs_f64() > 2.0)
+            {
+                let Ok(relative) = path.strip_prefix(root) else {
+                    continue;
+                };
+                found.push(relative.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(root, root, db_stamp, excludes, &mut found);
+    found.sort();
+    found
+}
+
+fn rehydrate_cold_embeddings(config: &ColdConfig) {
+    let mut model = "sentence-transformers/all-MiniLM-L6-v2".to_string();
+    if let Ok(parsed) = toml::from_str::<toml::Value>(&config.raw) {
+        if let Some(name) = parsed
+            .get("embedding")
+            .and_then(|section| section.get("model"))
+            .and_then(toml::Value::as_str)
+        {
+            model = name.to_string();
+        }
+    }
+    let mut entries = Vec::new();
+    {
+        let guard = crate::GLOBAL_GRAPH.read();
+        let Some(graph) = guard.as_ref() else {
+            return;
+        };
+        let Some(store) = graph.store.as_ref() else {
+            return;
+        };
+        let Ok(vectors) = store.read_model_vectors(&model) else {
+            return;
+        };
+        let by_id: std::collections::HashMap<&str, &[f32]> = vectors
+            .rows
+            .iter()
+            .map(|(id, vector)| (id.as_str(), vector.as_slice()))
+            .collect();
+        let mut consider = |id: &String, vector: &[f64], hash: &str| {
+            if vector.is_empty() && !hash.is_empty() {
+                if let Some(persisted) = by_id.get(id.as_str()) {
+                    entries.push((
+                        id.clone(),
+                        persisted.iter().map(|value| f64::from(*value)).collect(),
+                        hash.to_string(),
+                    ));
+                }
+            }
+        };
+        let snap = graph.snapshot();
+        for entity in snap.functions.values() {
+            consider(&entity.id, &entity.embedding.vec, &entity.embedding.hash);
+        }
+        for entity in snap.classes.values() {
+            consider(&entity.id, &entity.embedding.vec, &entity.embedding.hash);
+        }
+        for entity in snap.modules.values() {
+            consider(&entity.id, &entity.embedding.vec, &entity.embedding.hash);
+        }
+        for entity in snap.imports.values() {
+            consider(&entity.id, &entity.embedding.vec, &entity.embedding.hash);
+        }
+        for entity in snap.constants.values() {
+            consider(&entity.id, &entity.embedding.vec, &entity.embedding.hash);
+        }
+    }
+    if !entries.is_empty() {
+        let _ = set_embeddings(entries);
+    }
+}
+
+fn coldstart_analyze(
+    root: &std::path::Path,
+    create_store: bool,
+    reason: &str,
+    load_error: Option<String>,
+) -> Result<Value, String> {
+    let analyzed = analyze(&root.to_string_lossy(), create_store, &[])?;
+    let config = cold_config(root);
+    record_cold_config(root, &config);
+    if config.db.is_file() {
+        let _ = load_projection(&config.db.to_string_lossy(), Some(&root.to_string_lossy()));
+        rehydrate_cold_embeddings(&config);
+    }
+    let mut report = json!({
+        "path": "analyze",
+        "reason": reason,
+        "root": root.to_string_lossy(),
+        "store": config.db.to_string_lossy(),
+    });
+    if let Some(error) = load_error {
+        report["load_error"] = json!(error);
+    }
+    if let (Some(map), Some(rows)) = (report.as_object_mut(), analyzed.as_object()) {
+        for (key, value) in rows {
+            map.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(report)
+}
+
+/// A current graph for `root`, the cheap way: load the ledger and replay
+/// only files newer than it. No store, an unloadable store, or a changed
+/// config falls back to a full analyze.
+///
+/// # Errors
+/// Returns the engine's error when a full analyze fails.
+pub fn coldstart_build_graph(root: &str, create_store: bool) -> Result<Value, String> {
+    let _guard = COLDSTART_BUILD_LOCK
+        .lock()
+        .map_err(|e| format!("coldstart build lock poisoned: {e}"))?;
+    let root = crate::fs::strip_verbatim_prefix(
+        std::path::Path::new(root)
+            .canonicalize()
+            .unwrap_or_else(|_| std::path::PathBuf::from(root)),
+    );
+    let config = cold_config(&root);
+    if !config.db.is_file() {
+        return coldstart_analyze(&root, create_store, "no-store", None);
+    }
+    let root_text = root.to_string_lossy().to_string();
+    if let Err(error) = load_projection(&config.db.to_string_lossy(), Some(&root_text)) {
+        return coldstart_analyze(&root, create_store, "store-load-failed", Some(error));
+    }
+    if cold_config_changed(&root, &config) {
+        return coldstart_analyze(&root, create_store, "config-changed", None);
+    }
+    let stamp = std::fs::metadata(&config.db)
+        .and_then(|meta| meta.modified())
+        .map_err(|e| format!("cannot stat store: {e}"))?;
+    let stale = stale_cold_files(&root, stamp, &config.excludes);
+    let mut updated = Vec::new();
+    let mut failed = Vec::new();
+    for path in &stale {
+        match update_file(path, None) {
+            Ok(result) => updated.push(json!({
+                "path": path,
+                "fully_applied": result.get("fully_applied").cloned().unwrap_or(json!(false)),
+                "parse_quality": result.get("parse_quality").cloned().unwrap_or(Value::Null),
+            })),
+            Err(error) => failed.push(json!({"path": path, "error": error})),
+        }
+    }
+    rehydrate_cold_embeddings(&config);
+    let guard = crate::GLOBAL_GRAPH.read();
+    let stats = guard
+        .as_ref()
+        .map(|graph| stats(&graph.snapshot()))
+        .unwrap_or(Value::Null);
+    Ok(json!({
+        "path": "load",
+        "reason": "warm-store",
+        "root": root_text,
+        "store": config.db.to_string_lossy(),
+        "fresh": stale.is_empty(),
+        "stale": stale,
+        "updated": updated,
+        "failed": failed,
+        "stats": stats,
+    }))
+}
+
+#[cfg(test)]
+mod coldstart_tests {
+    use super::*;
+
+    fn temp_root(label: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("core-coldstart-{}-{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".coderadar")).expect("temp root");
+        root
+    }
+
+    #[test]
+    fn cold_config_reads_database_path_and_excludes() {
+        let root = temp_root("config");
+        std::fs::write(
+            root.join(".coderadar.toml"),
+            "[project]\nexclude = [\"vendor/**\"]\n[database]\npath = \"custom/store.db\"\n",
+        )
+        .expect("config");
+        let config = cold_config(&root);
+        assert_eq!(config.excludes, vec!["vendor/**"]);
+        assert_eq!(config.db, root.join("custom/store.db"));
+        assert!(config.present);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cold_config_change_is_detected_after_recording() {
+        let root = temp_root("sidecar");
+        std::fs::write(root.join(".coderadar.toml"), "[project]\nexclude = []\n").expect("config");
+        let config = cold_config(&root);
+        record_cold_config(&root, &config);
+        assert!(!cold_config_changed(&root, &config));
+        std::fs::write(
+            root.join(".coderadar.toml"),
+            "[project]\nexclude = [\"new/**\"]\n",
+        )
+        .expect("changed config");
+        assert!(cold_config_changed(&root, &cold_config(&root)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn stale_cold_files_uses_mtime_and_extensions() {
+        let root = temp_root("stale");
+        let db = root.join(".coderadar").join("coderadar.db");
+        std::fs::write(&db, "store").expect("store");
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&db)
+            .expect("open store")
+            .set_modified(old)
+            .expect("set store mtime");
+        std::fs::create_dir_all(root.join("src")).expect("src");
+        std::fs::write(root.join("src/a.py"), "x = 1\n").expect("source");
+        std::fs::write(root.join("src/notes.txt"), "not indexable").expect("notes");
+        let stamp = std::fs::metadata(&db)
+            .and_then(|meta| meta.modified())
+            .expect("stamp");
+        assert_eq!(stale_cold_files(&root, stamp, &[]), vec!["src/a.py"]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

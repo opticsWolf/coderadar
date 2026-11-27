@@ -923,8 +923,11 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
         "reindex" => {
             let root = find_root(project);
             let result = port::reindex_op(&root)?;
-            state::load(&root)?;
-            println!("{}", render::reindex(&result));
+            if external_flag("--format").as_deref() == Some("json") {
+                println!("{}", pretty(&result)?);
+            } else {
+                println!("{}", render::reindex(&result));
+            }
         }
         "sync-git" => {
             ensure_loaded(project)?;

@@ -802,3 +802,27 @@ new recorded unit.
   (restore store, stale-file update scan, build lock). Rust `init` and
   `reindex` call `core_indexer::api::analyze` directly; because the Rust
   full walk is 35-190x faster, no caller edge requires that fast path.
+
+### Unit 37 proof (cold-start fast path)
+
+- `core_indexer::api::coldstart_build_graph` now owns the Python
+  `coldstart.build_graph` contract: load the ledger when it is usable,
+  compare `.coderadar.toml` against the `indexed_config.json` sidecar,
+  replay only source files newer than the store by a 2s grace, tolerate a
+  bad individual file, rehydrate persisted vectors best-effort, and fall
+  back to full analyze when there is no store or the store will not load.
+- The engine-side move is deliberate: the Rust port crate stays a thin
+  wrapper that only syncs CLI state. The remark above the wrapper records
+  why the whole unit may be removed later — Rust's full analyze is already
+  35-190x faster than Python's, so the mtime scan buys no speed here.
+- `reindex` (CLI and MCP) now uses the fast path. `reindex --format json`
+  prints the full report, including `coldstart.path`, `stale`, `updated`
+  and `failed`.
+- Fixed the MCP project guard so `coderadar_set_project` can switch roots;
+  every other tool still refuses a foreign `project_path`.
+- Recorded one stable case from a focused cold-start test: 4446/4446.
+  Rust engine tests cover config parsing, sidecar change detection and
+  mtime/extension staleness. Smoke on a fresh temp store: warm load
+  replayed `src/a.py` and `src/b.py` with `parse_quality: clean`.
+- Gate passes including the size heuristic: 9465 Rust lines / 3188 Python
+  lines (3.0x).

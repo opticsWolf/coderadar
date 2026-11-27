@@ -2449,14 +2449,35 @@ pub fn search_hybrid_op(query: Value, top_k: i64, query_text: String) -> Result<
     core_indexer::api::search_hybrid_vec(&configured, &text, &vector, top_k.max(0) as usize)
 }
 
+// ── Unit 37: cold-start fast path ───────────────────────────────────────
+
+// The engine owns the load-vs-analyze decision and the staleness walk; this
+// crate only keeps its CLI state in step. NOTE: Rust's full analyze is
+// already 35-190x faster than Python's, so this path exists for caller-edge
+// parity and can be removed once those callers use `api::analyze` directly.
+pub fn coldstart_build_graph_op(
+    root: &std::path::Path,
+    create_store: bool,
+) -> Result<Value, String> {
+    let report = core_indexer::api::coldstart_build_graph(&root.to_string_lossy(), create_store)?;
+    if let Some(store) = report.get("store").and_then(Value::as_str) {
+        let _ = crate::state::load_from(std::path::Path::new(store), root);
+    }
+    Ok(report)
+}
+
 /// Bring the current project's index up to date, returning an ops-shaped report.
 pub fn reindex_op(root: &std::path::Path) -> Result<Value, String> {
-    let report = core_indexer::api::analyze(&root.to_string_lossy(), false, &[])?;
+    let report = coldstart_build_graph_op(root, false)?;
+    let stats = crate::state::projection()
+        .map(|snap| core_indexer::api::stats(&snap))
+        .unwrap_or(Value::Null);
     Ok(json!({
-        "stats": {
-            "files_indexed": report.get("files_indexed").cloned().unwrap_or(json!(0)),
-            "entities_extracted": report.get("entities_extracted").cloned().unwrap_or(json!(0)),
-        }
+        "files_indexed": report.get("files_indexed").cloned().unwrap_or(json!(0)),
+        "entities_extracted": report.get("entities_extracted").cloned().unwrap_or(json!(0)),
+        "extraction_failures": report.get("extraction_failures").cloned().unwrap_or(json!(0)),
+        "stats": stats,
+        "coldstart": report,
     }))
 }
 

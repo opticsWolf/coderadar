@@ -587,5 +587,21 @@
       "invalid_request_errors_drop_the_exception_prefix",
       "path_comparison_is_case_insensitive_on_windows"
     ]
+  },
+  "unit37": {
+    "engine": [
+      "core_indexer::api::coldstart_build_graph"
+    ],
+    "port": [
+      "coldstart_build_graph_op",
+      "reindex_op"
+    ],
+    "cli": [
+      "reindex --format json"
+    ],
+    "mcp": [
+      "coderadar_set_project guard exemption"
+    ],
+    "cases": 4446
   }
 }

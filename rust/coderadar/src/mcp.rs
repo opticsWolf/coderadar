@@ -155,7 +155,9 @@ fn op_error_message(error: &str) -> String {
 }
 
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
-    if let Some(message) = wrong_project(args) {
+    if name != "coderadar_set_project"
+        && let Some(message) = wrong_project(args)
+    {
         return Err(message);
     }
     let arg = |key: &str| -> String {
