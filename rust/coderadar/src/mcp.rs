@@ -401,6 +401,49 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     }
 }
 
+fn resource_entries() -> Vec<Value> {
+    let mut rows = Vec::new();
+    for name in crate::assets::SKILL_NAMES {
+        rows.push(json!({
+            "uri": format!("skills://{name}"),
+            "name": name,
+            "description": crate::assets::skill_description(name).unwrap_or(""),
+            "mimeType": "text/markdown",
+        }));
+    }
+    for (name, description) in crate::assets::DOC_NAMES
+        .iter()
+        .zip(crate::assets::DOC_DESCRIPTIONS)
+    {
+        rows.push(json!({
+            "uri": format!("docs://{name}"),
+            "name": name,
+            "description": description,
+            "mimeType": "text/markdown",
+        }));
+    }
+    rows
+}
+
+fn read_resource(uri: &str) -> Result<Value, String> {
+    let (text, mime) = if let Some(name) = uri.strip_prefix("skills://") {
+        (
+            crate::assets::skill_text(name).ok_or_else(|| format!("unknown resource {uri:?}"))?,
+            "text/markdown",
+        )
+    } else if let Some(name) = uri.strip_prefix("docs://") {
+        (
+            crate::assets::doc_text(name).ok_or_else(|| format!("unknown resource {uri:?}"))?,
+            "text/markdown",
+        )
+    } else {
+        return Err(format!("unknown resource {uri:?}"));
+    };
+    Ok(json!({
+        "contents": [{"uri": uri, "mimeType": mime, "text": text}],
+    }))
+}
+
 fn dispatch(message: &Value) -> Option<Value> {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     let method = message.get("method").and_then(Value::as_str)?;
@@ -411,7 +454,7 @@ fn dispatch(message: &Value) -> Option<Value> {
             "result": {
                 "protocolVersion": "2024-11-05",
                 "serverInfo": {"name": "coderadar-rs", "version": env!("CARGO_PKG_VERSION")},
-                "capabilities": {"tools": {}},
+                "capabilities": {"tools": {}, "resources": {}},
             },
         }),
         "ping" => json!({"jsonrpc": "2.0", "id": id, "result": {}}),
@@ -419,6 +462,24 @@ fn dispatch(message: &Value) -> Option<Value> {
             "jsonrpc": "2.0", "id": id,
             "result": {"tools": tool_names()},
         }),
+        "resources/list" => json!({
+            "jsonrpc": "2.0", "id": id,
+            "result": {"resources": resource_entries()},
+        }),
+        "resources/read" => {
+            let params = message.get("params").unwrap_or(&Value::Null);
+            let uri = params
+                .get("uri")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            match read_resource(uri) {
+                Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                Err(error) => json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "error": {"code": -32002, "message": error},
+                }),
+            }
+        }
         "tools/call" => {
             let params = message.get("params").unwrap_or(&Value::Null);
             let name = params

@@ -760,3 +760,16 @@ new recorded unit.
 - Shadow `enable` (replacing the Python CLI on PATH) is intentionally not
   applied; use `rust/cutover.py --install DIR` after review. Applying it
   requires explicit approval.
+
+### Unit 35 proof (MCP bundled resources)
+
+- Rust MCP now advertises `resources` capability and implements
+  `resources/list` / `resources/read`.
+- The three Python resources are exposed with their original URIs,
+  names, descriptions and `text/markdown` MIME type:
+  `skills://coderadar-cli`, `skills://coderadar-mcp`,
+  `docs://query-language`. Text comes from the embedded assets, so the
+  binary needs no Python package directory.
+- Smoke: `resources/list` returned all three; `resources/read` for
+  `docs://query-language` returned the verbatim reference text.
+- Gate unchanged: **4445/4445**; fmt/clippy/cutover green.

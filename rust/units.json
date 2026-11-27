@@ -565,5 +565,16 @@
       "shared": 55,
       "local_only": 0
     }
+  },
+  "unit35": {
+    "mcp": [
+      "resources/list",
+      "resources/read"
+    ],
+    "resources": [
+      "skills://coderadar-cli",
+      "skills://coderadar-mcp",
+      "docs://query-language"
+    ]
   }
 }
