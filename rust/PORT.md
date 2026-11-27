@@ -977,10 +977,20 @@ new recorded unit.
   inside the gate's size heuristic; no Python round-trip is involved.
 - Smoke: `lsp status` reports the disabled default pool; `context 'who calls
   analyze'` returned real caller rows over the current store with
-  `impact_analysis` intent. A live language server was not installed in this
-  environment, so the definition round-trip is proven by construction only.
+  `impact_analysis` intent. The round-trip is now proven live: `.coderadar.toml`
+  enables `pyright-langserver --stdio` (Pyright 1.1.414, invoked through its
+  Node entry point on Windows) and `rust-analyzer` (1.100.0). CLI definitions
+  resolve `PREPROCESS_VERSION` in `py_agent/src/coderadar/embedding/dedup.py`
+  and `cli::run` in `rust/coderadar/src/main.rs`; MCP
+  `coderadar_lsp_definition` resolves the same Rust location through the
+  background-indexed session.
+- Live testing exposed and fixed three engine issues: a parking_lot reentrant
+  lock in `BackgroundIndex::wait`, Windows verbatim prefixes leaking into LSP
+  URIs from `state::root()`, and rust-analyzer's transient `-32801 content
+  modified` during Cargo metadata load. Added a regression test for `wait` on
+  a non-running index.
 - Gate 4447/4447, fmt/clippy/cargo test clean, cutover 4/4. Bench: 76
-  functions, 40 faster.
+  functions, 41 faster.
 
 ## Callable resolver facade (Unit 44 / plan unit F)
 

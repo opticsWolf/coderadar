@@ -231,7 +231,7 @@ Acceptance criteria:
 - Existing gate count does not regress.
 - Optional features are disabled by default exactly as Python config specifies.
 
-Risks: external language servers may be absent in CI; treat as best-effort with explicit status.
+Risks: external language servers may be absent in CI; treat as best-effort with explicit status. Local verification now installs Pyright 1.1.414 and rust-analyzer 1.100.0, enables them in `.coderadar.toml`, and proves CLI and MCP definitions against real source positions.
 
 ---
 

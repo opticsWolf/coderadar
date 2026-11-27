@@ -281,17 +281,46 @@ pub fn definition(
                 }),
             )?;
         }
-        let result = server.request(
-            "textDocument/definition",
-            json!({
-                "textDocument": { "uri": uri },
-                "position": { "line": line, "character": column },
-            }),
-        )?;
-        let location = match &result {
-            Value::Array(rows) => rows.first().cloned().unwrap_or(Value::Null),
-            other => other.clone(),
-        };
+        let params = json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": column },
+        });
+        // rust-analyzer loads Cargo metadata after initialize; an immediate
+        // definition can legitimately be null, an empty array, or a transient
+        // `-32801 content modified` before that work finishes. Retry each of
+        // those until a real location appears or the budget expires. Other
+        // server errors are returned immediately.
+        fn location_of(result: &Value) -> Value {
+            match result {
+                Value::Array(rows) => rows.first().cloned().unwrap_or(Value::Null),
+                other => other.clone(),
+            }
+        }
+        let mut attempt = server.request("textDocument/definition", params.clone());
+        let mut location = Value::Null;
+        let mut transient_error = None;
+        for _ in 0..24 {
+            match attempt {
+                Ok(result) => {
+                    location = location_of(&result);
+                    if !location.is_null() {
+                        transient_error = None;
+                        break;
+                    }
+                }
+                Err(error) if error.contains("content modified") => {
+                    transient_error = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+            std::thread::sleep(Duration::from_millis(250));
+            attempt = server.request("textDocument/definition", params.clone());
+        }
+        if location.is_null() {
+            if let Some(error) = transient_error {
+                return Err(error);
+            }
+        }
         guard.cache.insert(cache_key, (now, location.clone()));
         Ok(if location.is_null() {
             None

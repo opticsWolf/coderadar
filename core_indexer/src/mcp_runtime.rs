@@ -469,6 +469,9 @@ impl BackgroundIndex {
         loop {
             let state = lock.lock();
             if state.status != IndexStatus::Indexing {
+                // parking_lot mutexes are not reentrant: drop this guard
+                // before `status()` takes the same lock.
+                drop(state);
                 return self.status();
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -476,6 +479,7 @@ impl BackgroundIndex {
                 return json!({
                     "status": "indexing",
                     "ready": false,
+                    "root": state.root.to_string_lossy(),
                     "elapsed": state.started.map(|s| s.elapsed().as_secs_f64()),
                     "message": "still indexing",
                 });
@@ -694,5 +698,12 @@ mod tests {
         let uri = format!("file://{}", dir.path().display());
         let path = uri_to_path(&uri).expect("uri");
         assert_eq!(path, std::fs::canonicalize(dir.path()).expect("canonical"));
+    }
+
+    #[test]
+    fn wait_returns_for_a_non_running_index() {
+        let index = BackgroundIndex::new(PathBuf::from("."));
+        let outcome = index.wait(Duration::from_millis(50), Duration::from_millis(10));
+        assert_eq!(outcome["status"], "not_started");
     }
 }

@@ -100,7 +100,10 @@ pub fn lsp_cli(args: &[String], workspace: &str) -> Result<Value, String> {
 
 /// Parse MCP definition-tool arguments in the engine.
 pub fn lsp_definition_args(workspace: &str, args: &Value) -> Result<Value, String> {
-    crate::lsp::definition_args(Path::new(workspace), args)
+    // `state::root()` can carry Windows verbatim prefixes; LSP URIs must
+    // receive the normal drive spelling.
+    let root = crate::fs::strip_verbatim_prefix(PathBuf::from(workspace));
+    crate::lsp::definition_args(&root, args)
 }
 
 /// Ask the configured LSP server for a definition.
