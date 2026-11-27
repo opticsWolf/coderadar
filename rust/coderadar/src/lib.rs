@@ -1907,6 +1907,16 @@ fn status_op(py: Python<'_>, root: Option<String>) -> PyResult<Py<PyAny>> {
 }
 
 #[pyfunction]
+#[pyo3(name = "embed_texts_op", signature = (texts, model=None))]
+fn embed_texts_op(
+    py: Python<'_>,
+    texts: Vec<String>,
+    model: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    value_result(py, crate::port::embed_texts_op(texts, model))
+}
+
+#[pyfunction]
 #[pyo3(name = "config_op", signature = ())]
 fn config_op(py: Python<'_>) -> PyResult<Py<PyAny>> {
     value_result(py, Ok(crate::port::config_op()))
@@ -2065,6 +2075,7 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(record_checkout_op, m)?)?;
     m.add_function(wrap_pyfunction!(status_op, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshot_op, m)?)?;
+    m.add_function(wrap_pyfunction!(embed_texts_op, m)?)?;
     m.add_function(wrap_pyfunction!(config_op, m)?)?;
     m.add_function(wrap_pyfunction!(batch_update_op, m)?)?;
     m.add_function(wrap_pyfunction!(watch_changes_op, m)?)?;

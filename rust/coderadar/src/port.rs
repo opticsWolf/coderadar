@@ -2376,28 +2376,35 @@ fn embedding_config() -> (String, usize) {
     (model, dimension)
 }
 
-/// Deterministic local embedder. It keeps the Rust binary usable without a
-/// Python model; vector queries against a Python-built store still use the
-/// engine's exact cosine ranking.
-fn embed_text(text: &str, dimension: usize) -> Vec<f64> {
-    use std::hash::{Hash, Hasher};
-    let mut vector = vec![0.0f64; dimension.max(1)];
-    let width = vector.len();
-    for token in text
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|t| !t.is_empty())
-    {
-        let lowered = token.to_lowercase();
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        lowered.hash(&mut hasher);
-        let hash = hasher.finish() as usize;
-        vector[hash % width] += 1.0;
-        let bigram = format!("{lowered}#");
-        let mut bigram_hasher = std::collections::hash_map::DefaultHasher::new();
-        bigram.hash(&mut bigram_hasher);
-        vector[(bigram_hasher.finish() as usize) % width] += 0.25;
-    }
-    vector
+fn embedding_batch_size() -> usize {
+    core_indexer::api::active_config_json()
+        .get("embedding")
+        .and_then(|section| section.get("batch_size"))
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(32)
+}
+
+fn embed_texts(texts: &[String]) -> Result<Vec<Vec<f64>>, String> {
+    let (model, dimension) = embedding_config();
+    core_indexer::api::embed_texts_checked(
+        &model,
+        texts,
+        embedding_batch_size(),
+        dimension,
+        deterministic_embeddings(),
+    )
+}
+
+fn deterministic_embeddings() -> bool {
+    std::env::var("CODERADAR_DETERMINISTIC_EMBEDDINGS").as_deref() == Ok("1")
+}
+
+fn embed_text(text: &str, _dimension: usize) -> Result<Vec<f64>, String> {
+    embed_texts(&[text.to_string()])?
+        .into_iter()
+        .next()
+        .ok_or_else(|| "EngineError: fastembed produced no vector".to_string())
 }
 
 fn query_vector(query: &Value, dimension: usize) -> Result<Vec<f64>, String> {
@@ -2409,7 +2416,7 @@ fn query_vector(query: &Value, dimension: usize) -> Result<Vec<f64>, String> {
                         .to_string(),
                 )
             } else {
-                Ok(embed_text(text, dimension))
+                embed_text(text, dimension)
             }
         }
         Value::Array(rows) => {
@@ -2437,15 +2444,18 @@ pub fn compute_embeddings_op(
     recompute: bool,
 ) -> Result<Value, String> {
     require_index()?;
-    let (configured, dimension) = embedding_config();
+    let (configured, _dimension) = embedding_config();
     let model = model_name.unwrap_or(configured);
     if recompute {
         core_indexer::api::clear_embeddings()?;
     }
     let targets = core_indexer::api::embedding_targets()?;
+    let texts: Vec<String> = targets.iter().map(|(_, text, _)| text.clone()).collect();
+    let vectors = embed_texts(&texts)?;
     let entries: Vec<(String, Vec<f64>, String)> = targets
         .iter()
-        .map(|(id, text, hash)| (id.clone(), embed_text(text, dimension), hash.clone()))
+        .zip(vectors)
+        .map(|((id, _, hash), vector)| (id.clone(), vector, hash.clone()))
         .collect();
     let report = core_indexer::api::set_embeddings(entries.clone())?;
     let persisted = core_indexer::api::persist_embeddings(
@@ -2491,7 +2501,7 @@ pub fn search_hybrid_op(query: Value, top_k: i64, query_text: String) -> Result<
                         .to_string(),
                 );
             }
-            (value.clone(), embed_text(value, dimension))
+            (value.clone(), embed_text(value, dimension)?)
         }
         other => (query_text, query_vector(other, dimension)?),
     };
@@ -4958,6 +4968,24 @@ pub fn rebuild_op(
         "embeddings": embeddings,
         "elapsed_secs": (started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0,
     }))
+}
+
+/// Embed texts with the activated model, for parity checks and callers that
+/// need vectors directly.
+///
+/// # Errors
+/// Returns the engine message when the model cannot load or the vectors have
+/// the wrong width.
+pub fn embed_texts_op(texts: Vec<String>, model: Option<String>) -> Result<Value, String> {
+    let (configured, dimension) = embedding_config();
+    let vectors = core_indexer::api::embed_texts_checked(
+        &model.unwrap_or(configured),
+        &texts,
+        embedding_batch_size(),
+        dimension,
+        deterministic_embeddings(),
+    )?;
+    serde_json::to_value(vectors).map_err(|e| format!("EngineError: {e}"))
 }
 
 /// The activated config as JSON, for thin facade helpers.

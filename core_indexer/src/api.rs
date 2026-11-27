@@ -5,9 +5,9 @@
 //! the engine as an rlib without a Python interpreter in the middle (M-FFI:
 //! no function round-trips through Python).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde_json::{json, Map, Value};
 
@@ -1412,8 +1412,7 @@ pub fn backfill_commit_messages(store_path: &str, repo: &str) -> Result<Value, S
 
 // ── Unit 9: mutation planners and single-file sync ───────────────────────
 
-use std::collections::HashMap;
-use std::sync::{OnceLock, RwLock};
+use std::sync::RwLock;
 
 use crate::mutation::{MutationEngine, MutationPlan};
 
@@ -1794,6 +1793,133 @@ pub fn watch_changes(paths: &[String], previous: &Value, max_bytes: u64) -> Valu
         .collect();
     changed.sort();
     json!({ "changed": changed, "stamps": Value::Object(current) })
+}
+
+// ── Unit 41: fastembed-backed text vectors ───────────────────────────────
+
+static FASTEMBED_MODELS: OnceLock<
+    parking_lot::Mutex<HashMap<String, Arc<parking_lot::Mutex<fastembed::TextEmbedding>>>>,
+> = OnceLock::new();
+
+fn embedding_model_variant(name: &str) -> Result<fastembed::EmbeddingModel, String> {
+    let model = match name {
+        // Python fastembed 0.7 resolves this HF id to the quantized
+        // `qdrant/bge-small-en-v1.5-onnx-q / model_optimized.onnx` pair. The
+        // Rust variant with that exact source is BGESmallENV15Q; the
+        // non-quantized BGESmallENV15 differs by ~4e-4, which is not parity.
+        "BAAI/bge-small-en-v1.5" => fastembed::EmbeddingModel::BGESmallENV15Q,
+        "BAAI/bge-small-en-v1.5-q" | "BAAI/bge-small-en-v1.5-Q" => {
+            fastembed::EmbeddingModel::BGESmallENV15Q
+        }
+        "BAAI/bge-base-en-v1.5" => fastembed::EmbeddingModel::BGEBaseENV15,
+        "BAAI/bge-large-en-v1.5" => fastembed::EmbeddingModel::BGELargeENV15,
+        "sentence-transformers/all-MiniLM-L6-v2" => fastembed::EmbeddingModel::AllMiniLML6V2,
+        "sentence-transformers/all-MiniLM-L12-v2" => fastembed::EmbeddingModel::AllMiniLML12V2,
+        other => {
+            return Err(format!(
+                "MissingDependency: fastembed model {other:?} has no Rust variant; \
+                 use BAAI/bge-small-en-v1.5 or supply vectors directly"
+            ));
+        }
+    };
+    Ok(model)
+}
+
+fn fastembed_model(
+    name: &str,
+) -> Result<Arc<parking_lot::Mutex<fastembed::TextEmbedding>>, String> {
+    let models = FASTEMBED_MODELS.get_or_init(|| parking_lot::Mutex::new(HashMap::new()));
+    if let Some(model) = models.lock().get(name) {
+        return Ok(Arc::clone(model));
+    }
+    let variant = embedding_model_variant(name)?;
+    let model = fastembed::TextEmbedding::try_new(fastembed::TextInitOptions::new(variant))
+        .map_err(|error| {
+            format!("MissingDependency: fastembed could not load {name:?}: {error}")
+        })?;
+    let model = Arc::new(parking_lot::Mutex::new(model));
+    models.lock().insert(name.to_string(), Arc::clone(&model));
+    Ok(model)
+}
+
+/// Embed text with the same model Python fastembed loads.
+///
+/// Vectors are produced as `f32` by fastembed and widened to `f64` for the
+/// in-memory projection, matching the store's persisted `f32` values exactly.
+///
+/// # Errors
+/// Returns an explicit error for an unsupported model or an unavailable
+/// model download; it never substitutes zero vectors.
+pub fn embed_texts(
+    model_name: &str,
+    texts: &[String],
+    batch_size: usize,
+) -> Result<Vec<Vec<f64>>, String> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    let model = fastembed_model(model_name)?;
+    let vectors = model
+        .lock()
+        .embed(texts, Some(batch_size))
+        .map_err(|error| format!("EngineError: fastembed failed: {error}"))?;
+    Ok(vectors
+        .into_iter()
+        .map(|vector| vector.into_iter().map(f64::from).collect())
+        .collect())
+}
+
+fn deterministic_vector(text: &str, dimension: usize) -> Vec<f64> {
+    use std::hash::{Hash, Hasher};
+
+    let mut vector = vec![0.0f64; dimension.max(1)];
+    let width = vector.len();
+    for token in text
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|token| !token.is_empty())
+    {
+        let lowered = token.to_lowercase();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        lowered.hash(&mut hasher);
+        vector[hasher.finish() as usize % width] += 1.0;
+        let mut bigram_hasher = std::collections::hash_map::DefaultHasher::new();
+        format!("{lowered}#").hash(&mut bigram_hasher);
+        vector[bigram_hasher.finish() as usize % width] += 0.25;
+    }
+    vector
+}
+
+/// Embed with an explicit dimension contract and an opt-out fallback.
+///
+/// `deterministic` is selected only by `CODERADAR_DETERMINISTIC_EMBEDDINGS=1`;
+/// it is not vector-compatible with Python and must be an explicit choice.
+///
+/// # Errors
+/// Returns a message when the model cannot load or produces the wrong width.
+pub fn embed_texts_checked(
+    model_name: &str,
+    texts: &[String],
+    batch_size: usize,
+    dimension: usize,
+    deterministic: bool,
+) -> Result<Vec<Vec<f64>>, String> {
+    if deterministic {
+        return Ok(texts
+            .iter()
+            .map(|text| deterministic_vector(text, dimension))
+            .collect());
+    }
+    let vectors = embed_texts(model_name, texts, batch_size)?;
+    for vector in &vectors {
+        if vector.len() != dimension {
+            return Err(format!(
+                "EngineError: model {model_name:?} produced {}-dimensional vectors; \
+                 store expects {dimension}",
+                vector.len()
+            ));
+        }
+    }
+    Ok(vectors)
 }
 
 // ── Unit 12: embedding-backed search (pure Rust) ─────────────────────────
@@ -2705,6 +2831,23 @@ pub fn coldstart_build_graph(root: &str, create_store: bool) -> Result<Value, St
         "failed": failed,
         "stats": stats,
     }))
+}
+
+#[cfg(test)]
+mod embedding_model_tests {
+    use super::*;
+
+    #[test]
+    fn default_hf_model_maps_to_fastembed_variant() {
+        let variant = embedding_model_variant("BAAI/bge-small-en-v1.5").expect("known model");
+        assert!(format!("{variant:?}").contains("BGESmallENV15"));
+    }
+
+    #[test]
+    fn unknown_model_is_an_explicit_error() {
+        let error = embedding_model_variant("not/a/model").expect_err("unknown");
+        assert!(error.contains("MissingDependency"), "{error}");
+    }
 }
 
 #[cfg(test)]

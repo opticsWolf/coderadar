@@ -1,6 +1,6 @@
 # Implementation plan — closing the remaining CodeRadar port gaps
 
-Status: **executing; Units A and B complete (Units 39–40)**
+Status: **executing; Units A and B complete (Units 39–40), Unit C partial (Unit 41)**
 Prepared: after commit `cab7ff1` (`dev_rustify`)
 Canonical decisions/state: [`PORT.md`](PORT.md)  
 Graph evidence: local CodeRadar store, 2026-02-17
@@ -152,9 +152,9 @@ Risks: Python object identity for watcher classes; do not fake a different API.
 
 ---
 
-### Unit C — Exact fastembed-backed natural-language vectors
+### Unit C — Exact fastembed-backed natural-language vectors — PARTIAL
 
-**Rank: 3. Value: medium. Estimate: 1.5–2 days plus model download.**
+**Rank: 3. Value: medium. Estimate: 1.5–2 days plus model download. Implemented as Unit 41; exact-float residual remains.**
 
 Problem: Python uses `BAAI/bge-small-en-v1.5` (dimension 384) via fastembed. Rust uses a deterministic local hashing embedder. Exact parity is proven only for vector-input searches, not for natural-language embedding values.
 

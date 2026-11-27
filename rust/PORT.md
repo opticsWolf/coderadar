@@ -917,3 +917,24 @@ new recorded unit.
 - Proof: `tests/test_python_layer.py` 137 passed / 1 skipped with the native
   extension; facade-package run 12 watch/batch tests passed. Gate 4447/4447,
   fmt/clippy/cargo test clean, cutover 4/4. Bench: 76 functions, 41 faster.
+
+## Fastembed vectors (Unit 41 / plan unit C, partial)
+
+- Replaced the silent deterministic text embedder with a real fastembed path
+  in `core_indexer::api::embed_texts` (crate `fastembed` 7.8, ONNX + rustls
+  features only). The default HF id `BAAI/bge-small-en-v1.5` is mapped to the
+  quantized `Qdrant/bge-small-en-v1.5-onnx-Q / model_optimized.onnx` variant,
+  which is the exact file Python fastembed 0.7.4 resolves.
+- `CODERADAR_DETERMINISTIC_EMBEDDINGS=1` keeps an explicit, non-compatible
+  fallback for offline use; an unsupported model or failed load is an error,
+  never zero vectors. Dimension checks happen in the engine.
+- Added `embed_texts_op` so vectors can be inspected from the facade.
+- **Residual parity gap:** model files and tokenizer hashes match Python, but
+  Rust's pinned `ort 2.0.0-rc.15` and Python's `onnxruntime 1.32.0` produce
+  small numeric drift: max absolute difference about `2.3e-4` over 384 dims.
+  Exact float parity needs a matching ORT runtime (or a shared runtime), which
+  would break the pure-Rust dependency contract. The path is implemented and
+  vector-input parity remains exact; this residual is recorded rather than
+  hidden.
+- Gate 4447/4447, fmt/clippy/cargo test clean, cutover 4/4. Focused Python
+  suite 138 passed. Bench: 76 functions, 40 faster.

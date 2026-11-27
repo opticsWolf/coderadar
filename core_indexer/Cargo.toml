@@ -43,6 +43,9 @@ tracing = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
+# Unit 41: exact BAAI/bge-small-en-v1.5 vectors. Keep the default features off
+# so the binary pulls only ONNX + rustls hf-hub, not image models or native-tls.
+fastembed = { version = "7.8", default-features = false, features = ["onnx", "hf-hub-rustls-tls", "ort-download-binaries-rustls-tls", "fancy-regex"] }
 regex = "1"
 # Must track macrame-db's own libsql: `diagnostic_conn()` hands back one of
 # *its* Connections, and two semver-incompatible libsql versions in the tree
