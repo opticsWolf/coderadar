@@ -88,6 +88,59 @@ pub fn active_config_json() -> Value {
     crate::config_activation::active_json()
 }
 
+/// Configured LSP surface (no server is started).
+pub fn lsp_status() -> Value {
+    crate::lsp::status()
+}
+
+/// Parse `coderadar-rs lsp ...` arguments in the engine.
+pub fn lsp_cli(args: &[String], workspace: &str) -> Result<Value, String> {
+    crate::lsp::cli(args, Path::new(workspace))
+}
+
+/// Parse MCP definition-tool arguments in the engine.
+pub fn lsp_definition_args(workspace: &str, args: &Value) -> Result<Value, String> {
+    crate::lsp::definition_args(Path::new(workspace), args)
+}
+
+/// Ask the configured LSP server for a definition.
+///
+/// # Errors
+/// Returns an explicit message for spawn/protocol/server failures.
+pub fn lsp_definition(
+    language: &str,
+    workspace: &str,
+    path: &str,
+    line: u32,
+    column: u32,
+) -> Result<Option<Value>, String> {
+    crate::lsp::definition(
+        language,
+        Path::new(workspace),
+        Path::new(path),
+        line,
+        column,
+    )
+}
+
+/// Parse the CLI `context` arguments in the engine.
+pub fn graphrag_cli(args: &[String]) -> Result<Value, String> {
+    crate::agent::cli(args)
+}
+
+/// Parse the MCP `coderadar_context` arguments in the engine.
+pub fn graphrag_mcp(args: &Value) -> Result<Value, String> {
+    crate::agent::mcp(args)
+}
+
+/// Run the GraphRAG pipeline over the loaded projection.
+///
+/// # Errors
+/// Returns a message when no graph is loaded or a search primitive fails.
+pub fn graphrag_context(query: &str, max_tokens: usize) -> Result<Value, String> {
+    crate::agent::graphrag_context(query, max_tokens)
+}
+
 /// Canonical archive cutoff from `[retention] archive_after_days`.
 pub fn retention_cutoff(days: Option<i64>) -> Result<String, String> {
     crate::config_activation::retention_cutoff(days)

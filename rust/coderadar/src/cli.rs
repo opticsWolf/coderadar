@@ -481,6 +481,15 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
                 seen = current;
             }
         }
+        "lsp" => {
+            let value = core_indexer::api::lsp_cli(tail, &project.to_string_lossy())?;
+            println!("{}", pretty(&value)?);
+        }
+        "context" => {
+            ensure_loaded(project)?;
+            let value = core_indexer::api::graphrag_cli(tail)?;
+            println!("{}", pretty(&value)?);
+        }
         "visualize" => {
             ensure_loaded(project)?;
             let viz_type = tail

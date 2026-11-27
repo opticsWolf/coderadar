@@ -1,6 +1,6 @@
 # Implementation plan — closing the remaining CodeRadar port gaps
 
-Status: **executing; Units A and B complete (Units 39–40), Units C and D partial (Units 41–42)**
+Status: **executing; Units A, B and E complete (Units 39–40, 43), Units C and D partial (Units 41–42)**
 Prepared: after commit `cab7ff1` (`dev_rustify`)
 Canonical decisions/state: [`PORT.md`](PORT.md)  
 Graph evidence: local CodeRadar store, 2026-02-17
@@ -210,9 +210,9 @@ Risks: stdio handshake deadlock; keep server→client `roots/list` strictly time
 
 ---
 
-### Unit E — LSP pool and agent/GraphRAG
+### Unit E — LSP pool and agent/GraphRAG — DONE
 
-**Rank: 5. Value: low without a new front door. Estimate: 4–6 days combined.**
+**Rank: 5. Value: low without a new front door. Estimate: 4–6 days combined. Implemented as Unit 43.**
 
 Problem: 15 LSP callables and 9 GraphRAG callables remain Python-only. Both have low fan-in and no CLI/MCP command.
 

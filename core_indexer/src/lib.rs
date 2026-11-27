@@ -1,6 +1,7 @@
 // CodeRadar v3.6 — Rust Core Library
 // PyO3 bindings for the Python layer (MCP server, CLI, resolvers).
 
+pub mod agent;
 pub mod annotations;
 pub mod api;
 pub mod clones;
@@ -13,6 +14,7 @@ mod ffi_synthetic;
 mod ffi_watcher;
 pub mod fs;
 pub mod graph;
+pub mod lsp;
 pub mod mcp_runtime;
 pub mod mutation;
 pub mod query;

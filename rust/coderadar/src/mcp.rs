@@ -79,6 +79,9 @@ fn tool_names() -> Value {
         "coderadar_annotation_history",
         "coderadar_comment_history",
         "coderadar_diagnose",
+        "coderadar_context",
+        "coderadar_lsp_status",
+        "coderadar_lsp_definition",
         "coderadar_module_children",
         "coderadar_resolve",
         "coderadar_reindex",
@@ -475,6 +478,13 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         "coderadar_comments_on" => crate::annotations_ops::comments_on(&arg("target")),
         "coderadar_annotation_history" => crate::annotations_ops::annotation_history(&arg("id")),
         "coderadar_comment_history" => crate::annotations_ops::comment_history(&arg("id")),
+        "coderadar_lsp_status" => Ok(core_indexer::api::lsp_status()),
+        "coderadar_lsp_definition" => {
+            let root = crate::state::root()
+                .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
+            core_indexer::api::lsp_definition_args(&root.to_string_lossy(), args)
+        }
+        "coderadar_context" => core_indexer::api::graphrag_mcp(args),
         "coderadar_diagnose" => crate::port::diagnose(
             args.get("unresolved")
                 .and_then(Value::as_bool)

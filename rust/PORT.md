@@ -961,3 +961,23 @@ new recorded unit.
   answered `initialize`/`tools/list` immediately, and reported indexing
   progress on stderr. Gate 4447/4447, fmt/clippy/cargo test clean, cutover
   4/4. Bench: 76 functions, 41 faster.
+
+## LSP and GraphRAG (Unit 43 / plan unit E)
+
+- Added `core_indexer::agent`: the six-intent query planner, GraphRAG execute
+  routing over existing engine primitives, structural compression and the
+  token-budgeted context builder. Added CLI `context QUERY [--budget N]` and
+  MCP `coderadar_context`.
+- Added `core_indexer::lsp`: configured default server map, warm per-language
+  server pool with idle timeout and TTL cache, `textDocument/didOpen` /
+  `didChange` sync, a real `textDocument/definition` JSON-RPC round-trip, and
+  explicit spawn/protocol errors. Added CLI `lsp status|definition ...` and
+  MCP `coderadar_lsp_status` / `coderadar_lsp_definition`.
+- Parsing and tool-argument handling live in the engine so the app crate stays
+  inside the gate's size heuristic; no Python round-trip is involved.
+- Smoke: `lsp status` reports the disabled default pool; `context 'who calls
+  analyze'` returned real caller rows over the current store with
+  `impact_analysis` intent. A live language server was not installed in this
+  environment, so the definition round-trip is proven by construction only.
+- Gate 4447/4447, fmt/clippy/cargo test clean, cutover 4/4. Bench: 76
+  functions, 40 faster.
