@@ -1995,6 +1995,134 @@ fn embed_texts_op(
     value_result(py, crate::port::embed_texts_op(texts, model))
 }
 
+/// Compress plan results into a token-budgeted GraphRAG context.
+#[pyfunction]
+#[pyo3(
+    name = "graphrag_build_context",
+    signature = (results_json, intent, max_tokens=8192, strategy="structural")
+)]
+fn graphrag_build_context_op(
+    py: Python<'_>,
+    results_json: &str,
+    intent: &str,
+    max_tokens: usize,
+    strategy: &str,
+) -> PyResult<Py<PyAny>> {
+    let results: Vec<serde_json::Value> = serde_json::from_str(results_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("InvalidRequest: {e}")))?;
+    value_result(
+        py,
+        Ok(core_indexer::api::graphrag_build_context(
+            &results, intent, max_tokens, strategy,
+        )),
+    )
+}
+
+/// Plan, execute and compress one natural-language query (GraphRAG).
+#[pyfunction]
+#[pyo3(
+    name = "graphrag_execute",
+    signature = (text, max_tokens=8192, strategy="structural")
+)]
+fn graphrag_execute_op(
+    py: Python<'_>,
+    text: &str,
+    max_tokens: usize,
+    strategy: &str,
+) -> PyResult<Py<PyAny>> {
+    let snap = crate::state::projection().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
+    })?;
+    value_result(
+        py,
+        Ok(core_indexer::api::graphrag_execute(
+            &snap, text, max_tokens, strategy,
+        )),
+    )
+}
+
+/// Classify a natural-language query into an intent and engine route.
+#[pyfunction]
+#[pyo3(name = "plan_query")]
+fn plan_query_op(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
+    value_result(py, Ok(core_indexer::api::plan_query(text)))
+}
+
+/// DR-11 preprocessing version shared with the Python facade.
+#[pyfunction]
+#[pyo3(name = "embed_preprocess_version")]
+fn embed_preprocess_version() -> u32 {
+    core_indexer::api::EMBED_PREPROCESS_VERSION
+}
+
+/// The embedded text for one entity row (JSON in, text out).
+#[pyfunction]
+#[pyo3(name = "embed_body", signature = (entity_json, kind))]
+fn embed_body_op(entity_json: &str, kind: &str) -> PyResult<String> {
+    let entity: serde_json::Value = serde_json::from_str(entity_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("InvalidRequest: {e}")))?;
+    Ok(core_indexer::api::embed_body(&entity, kind))
+}
+
+/// The stored dedup key for a body hash, or the model id inside a key.
+#[pyfunction]
+#[pyo3(name = "embed_cache_key")]
+fn embed_cache_key_op(body_hash: &str, model_id: &str) -> String {
+    core_indexer::api::embed_cache_key(body_hash, model_id)
+}
+
+#[pyfunction]
+#[pyo3(name = "stored_key_model")]
+fn stored_key_model_op(stored_hash: &str) -> Option<String> {
+    core_indexer::api::stored_key_model(stored_hash)
+}
+
+/// xxHash3-64 of bytes, as the 16-digit hex the Python xxhash package prints.
+#[pyfunction]
+#[pyo3(name = "content_hash")]
+fn content_hash_op(data: &[u8]) -> String {
+    core_indexer::api::content_hash(data)
+}
+
+/// Content-addressed embedding batch over the loaded graph.
+#[pyfunction]
+#[pyo3(
+    name = "embedding_batch",
+    signature = (model, ids, bodies, hashes, batch_size=32, dimension=384,
+                 max_body_tokens=2000, deterministic=false)
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call carries the batch, its cache keys and the model limits"
+)]
+fn embedding_batch_op(
+    py: Python<'_>,
+    model: &str,
+    ids: Vec<String>,
+    bodies: Vec<String>,
+    hashes: Vec<String>,
+    batch_size: usize,
+    dimension: usize,
+    max_body_tokens: usize,
+    deterministic: bool,
+) -> PyResult<Py<PyAny>> {
+    let snap = crate::state::projection().ok_or_else(|| {
+        pyo3::exceptions::PyRuntimeError::new_err("No graph loaded — run coderadar init first")
+    })?;
+    let result = core_indexer::api::embedding_batch(
+        &snap,
+        model,
+        &ids,
+        &bodies,
+        &hashes,
+        batch_size,
+        dimension,
+        max_body_tokens,
+        deterministic,
+    );
+    value_result(py, result)
+}
+
 #[pyfunction]
 #[pyo3(name = "config_op", signature = ())]
 fn config_op(py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -2324,6 +2452,15 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(framework_resolve_reference, m)?)?;
     m.add_function(wrap_pyfunction!(framework_resolve_route, m)?)?;
     m.add_function(wrap_pyfunction!(embed_texts_op, m)?)?;
+    m.add_function(wrap_pyfunction!(plan_query_op, m)?)?;
+    m.add_function(wrap_pyfunction!(graphrag_build_context_op, m)?)?;
+    m.add_function(wrap_pyfunction!(graphrag_execute_op, m)?)?;
+    m.add_function(wrap_pyfunction!(embed_preprocess_version, m)?)?;
+    m.add_function(wrap_pyfunction!(embed_body_op, m)?)?;
+    m.add_function(wrap_pyfunction!(embed_cache_key_op, m)?)?;
+    m.add_function(wrap_pyfunction!(stored_key_model_op, m)?)?;
+    m.add_function(wrap_pyfunction!(content_hash_op, m)?)?;
+    m.add_function(wrap_pyfunction!(embedding_batch_op, m)?)?;
     m.add_function(wrap_pyfunction!(config_op, m)?)?;
     m.add_function(wrap_pyfunction!(batch_update_op, m)?)?;
     m.add_function(wrap_pyfunction!(watch_changes_op, m)?)?;

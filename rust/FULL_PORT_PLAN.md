@@ -23,7 +23,7 @@ are partially done.
 |---|---|---|
 | **D1 Protocol** | `coderadar mcp serve` is MCP-spec valid and schema-compatible with the Python server for all 35 shared tools. | ✅ 49 schema-valid tools; conformance harness green |
 | **D2 CLI contract** | Every Python command accepts the same options, defaults, exit codes and output formats. | ✅ inventory, `--help`, exit codes, `--format` and 15/15 payloads green |
-| **D3 Python surface** | `import coderadar.<module>` resolves the same public names, all delegating to Rust. | ⚠️ 166/342 (48.5%) public names; 8 modules still absent |
+| **D3 Python surface** | `import coderadar.<module>` resolves the same public names, all delegating to Rust. | ⚠️ 181/342 (52.9%) public names; 5 modules still absent |
 | **D4 Numeric fidelity** | Embedding vectors match Python exactly, or a recorded tolerance is enforced by a test. | ⚠️ dynamic-runtime build path shipped; measurement pending |
 | **D5 Cutover** | Rust binary is installed as `coderadar`; Python survives only as a shim; packaging reproducible. | ⚠️ `cutover.py` exists, never applied |
 | **D6 Closeout** | A committed audit script reports zero gaps; full verification matrix green. | ⚠️ `cli_parity.py` + `mcp_conformance.py` + import test committed |
@@ -607,18 +607,34 @@ Landed (all delegate to Rust, no duplicated logic):
   cold start, exclusions and project files, marker/project state, live config,
   embedding settings, visualization, LSP definition/override/status.
 
+Landed after the first pass (S5/S6):
+
+- `embedding.dedup`: `EmbeddingDedup`, `EmbedTarget`,
+  `EmbeddingUnavailable`, `compute_content_hash`, `embed_body`,
+  `embed_cache_key`, `stored_key_model`. The hash rule mirrors Python
+  (xxHash3-64 when `xxhash` is importable, else SHA-256[:16]); the batch
+  dedup, the embedded text and the cache-key format run in Rust
+  (`api::embedding_batch`, `api::embed_body`, `api::embed_cache_key`).
+- `query.planner`: `QueryIntent`, `QueryPlan`, `plan_query` over
+  `api::plan_query` (same keyword ladder and order as Python).
+- `agent.graphrag`: `ContextStrategy`, `GraphRAGResult`,
+  `GraphRAGContextBuilder`, `GraphRAGPipeline`, `QueryPlanner` over
+  `api::graphrag_build_context` / `api::graphrag_execute` (compression,
+  skeletonising, token estimate and truncation in Rust).
+
 Still absent, recorded in `rust/golden/import_surface_pending.json`:
 
 | Module | Why it needs another unit |
 |---|---|
-| `agent.graphrag` | needs `QueryPlanner`/`GraphRAGPipeline` classes over `agent.rs` |
-| `embedding.dedup` | needs `EmbeddingDedup`, `compute_content_hash`, `embed_body` exports |
+| `query.executor` | `MacrameQuery`/`MacrameSnapshot` wrap ledger primitives the engine already exposes as ops |
 | `mcp.lazy`, `mcp.lifecycle`, `mcp.roots`, `mcp.startup` | need the `mcp_runtime` types (`LazyRootRetry`, `ParentWatchdog`, `BackgroundIndex`, roots ladder) exported as Python classes |
-| `query.planner`, `query.executor` | need `plan_query` and snapshot/query objects |
+
+The surface is measured by `python rust/import_surface.py` (rewrites the
+baseline) and `--check` fails on regression.
 
 Evidence: `python -m pytest tests/test_import_surface.py` (passes; asserted
-against the recorded baseline) and 166/342 public names resolved
-(31.3% -> 48.5%).
+against the recorded baseline) and 181/342 public names resolved
+(31.3% -> 52.9%).
 
 ### P3 — embeddings (mechanism shipped)
 
@@ -644,11 +660,10 @@ against the recorded baseline) and 166/342 public names resolved
 
 | Unit | Scope | Effort |
 |---|---|---|
-| S5 | `agent.graphrag` + `query.planner/executor` shims (needs 3 exports) | 0.5 d |
-| S6 | `embedding.dedup` shims (needs 3 exports) | 0.5 d |
 | S7 | `mcp.{lazy,lifecycle,roots,startup}` shims (needs `McpSession` types) | 1-1.5 d |
 | E2 | Pin the reference runtime and record the drift contract | 1 d |
 | R0 | ~~row shape~~ done: fixture harness compares 15 payloads, 0 differences | — |
 | R1/R3 | Rename the artifact, packaging matrix, clean-machine smoke | 1.5 d |
 | R2/A2 | Shadow cutover with approval, final audit | 1 d |
-| **Total** | | **~5-6 d** |
+| S5 | `query.executor` shims (`MacrameQuery`, `MacrameSnapshot`) | 0.5 d |
+| **Total** | | **~4-5 d** |

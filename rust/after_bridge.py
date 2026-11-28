@@ -318,93 +318,56 @@ fn watch_changes_op(
             facade.write_text(text, encoding="utf-8")
         if "coldstart_build_graph = _native.coldstart_build_graph" not in text:
             text += (
-                "
-# Unit S1: engine-backed helpers used by the module shims.
-"
-                "from ._native import (  # noqa: F401 - re-export the Rust error taxonomy
-"
-                "    ContentUnavailable, EngineError, InvalidRequest, MissingDependency,
-"
-                "    MutationFailed, NoEmbeddings, NoExtension, NoIndex, NotFound, OpError,
-"
-                "    TemporalUnsupported,
-"
-                ")
-
-"
-                '__all__ = sorted(set(__all__) | {
-'
-                '    "ContentUnavailable", "EngineError", "InvalidRequest",
-'
-                '    "MissingDependency", "MutationFailed", "NoEmbeddings", "NoExtension",
-'
-                '    "NoIndex", "NotFound", "OpError", "TemporalUnsupported",
-'
-                '})
-'
+                "\n# Unit S1: engine-backed helpers used by the module shims.\n"
+                "from ._native import (  # noqa: F401 - re-export the Rust error taxonomy\n"
+                "    ContentUnavailable, EngineError, InvalidRequest, MissingDependency,\n"
+                "    MutationFailed, NoEmbeddings, NoExtension, NoIndex, NotFound, OpError,\n"
+                "    TemporalUnsupported,\n"
+                ")\n\n"
+                '__all__ = sorted(set(__all__) | {\n'
+                '    "ContentUnavailable", "EngineError", "InvalidRequest",\n'
+                '    "MissingDependency", "MutationFailed", "NoEmbeddings", "NoExtension",\n'
+                '    "NoIndex", "NotFound", "OpError", "TemporalUnsupported",\n'
+                '})\n'
             )
             for name in (
                 "doc_description", "doc_names", "doc_text", "skill_description",
                 "skill_names", "skill_text", "coldstart_build_graph", "is_excluded",
                 "project_files", "find_marker", "record_project", "last_project_for",
                 "project_state_file", "config_json", "embedding_settings", "visualize",
+                "embed_preprocess_version", "embed_body", "embed_cache_key",
+                "stored_key_model", "content_hash", "embedding_batch", "plan_query",
+                "graphrag_build_context", "graphrag_execute",
             ):
-                text += f"{name} = _native.{name}
-"
+                text += f"{name} = _native.{name}\n"
             facade.write_text(text, encoding="utf-8")
         if "sync_git = _native.sync_git" not in text:
             text += (
-                "
-# Unit S1: ops names the engine already provides.
-"
-                "annotate = _native.annotate
-"
-                "comment = _native.comment
-"
-                "revise_annotation = _native.revise_annotation
-"
-                "retire_annotation = _native.retire_annotation
-"
-                "annotations_on = _native.annotations_on
-"
-                "comments_on = _native.comments_on
-"
-                "annotation_history = _native.annotation_history
-"
-                "comment_history = _native.comment_history
-"
-                "open_items = _native.open_items
-"
-                "sync_git = _native.sync_git
-"
-                "reingest_merged_commits = _native.reingest_merged_commits
-"
-                "backfill_commit_index = _native.backfill_commit_index
-"
-                "backfill_commit_messages = _native.backfill_commit_messages
-"
-                "activate_config = _native.activate_config
-"
-                "lsp_status = _native.lsp_status
-"
-                "lsp_definition = _native.lsp_definition
-"
-                "lsp_override_edges = _native.lsp_override_edges
-"
-                "__all__ = sorted(set(__all__) | {
-"
-                '    "annotate", "annotation_history", "annotations_on",
-'
-                '    "backfill_commit_index", "backfill_commit_messages", "comment",
-'
-                '    "comment_history", "comments_on", "open_items",
-'
-                '    "reingest_merged_commits", "retire_annotation",
-'
-                '    "revise_annotation", "sync_git",
-'
-                "})
-"
+                "\n# Unit S1: ops names the engine already provides.\n"
+                "annotate = _native.annotate\n"
+                "comment = _native.comment\n"
+                "revise_annotation = _native.revise_annotation\n"
+                "retire_annotation = _native.retire_annotation\n"
+                "annotations_on = _native.annotations_on\n"
+                "comments_on = _native.comments_on\n"
+                "annotation_history = _native.annotation_history\n"
+                "comment_history = _native.comment_history\n"
+                "open_items = _native.open_items\n"
+                "sync_git = _native.sync_git\n"
+                "reingest_merged_commits = _native.reingest_merged_commits\n"
+                "backfill_commit_index = _native.backfill_commit_index\n"
+                "backfill_commit_messages = _native.backfill_commit_messages\n"
+                "activate_config = _native.activate_config\n"
+                "lsp_status = _native.lsp_status\n"
+                "lsp_definition = _native.lsp_definition\n"
+                "lsp_override_edges = _native.lsp_override_edges\n"
+                "__all__ = sorted(set(__all__) | {\n"
+                '    "annotate", "annotation_history", "annotations_on",\n'
+                '    "backfill_commit_index", "backfill_commit_messages", "comment",\n'
+                '    "comment_history", "comments_on", "open_items",\n'
+                '    "reingest_merged_commits", "retire_annotation",\n'
+                '    "revise_annotation", "sync_git",\n'
+                "})\n"
             )
             facade.write_text(text, encoding="utf-8")
         if "from .resolvers import" not in text:

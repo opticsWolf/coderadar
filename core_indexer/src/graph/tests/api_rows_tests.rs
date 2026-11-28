@@ -175,3 +175,54 @@ fn traverse_reports_its_start_at_depth_zero() {
         rows.iter().map(|r| r["id"].clone()).collect::<Vec<_>>()
     );
 }
+
+#[test]
+fn plan_query_routes_each_intent_family() {
+    let cases = [
+        ("who calls parse", "impact_analysis", "callers_of"),
+        ("path from a to b", "call_chain", "traverse"),
+        (
+            "find similar functions",
+            "similarity_search",
+            "search_similar",
+        ),
+        ("module dependencies", "dependency_graph", "traverse"),
+        ("what is foo", "definition_lookup", "find"),
+        ("list everything", "scope_exploration", "list_by_kind"),
+    ];
+    for (text, intent, method) in cases {
+        let plan = api::plan_query(text);
+        assert_eq!(plan["intent"], intent, "intent for {text:?}");
+        assert_eq!(plan["method"], method, "method for {text:?}");
+        assert_eq!(plan["top_k"], 10);
+    }
+}
+
+#[test]
+fn graphrag_context_compresses_and_truncates_on_the_budget() {
+    let rows = vec![serde_json::json!({
+        "id": "a.py::f",
+        "name": "f",
+        "signature": "def f()",
+        "body": "if x:\n  return 1\nelse:\n  pass",
+    })];
+    let built = api::graphrag_build_context(&rows, "definition_lookup", 8192, "structural");
+    // chars/4 over the compressed row's values (skeleton included).
+    let used = built["tokens_used"].as_u64().unwrap_or(0);
+    assert!(
+        (13..=20).contains(&used),
+        "unexpected token estimate {used}"
+    );
+    assert_eq!(built["rows"][0]["body_skeleton"], "if x:\n  return 1");
+    assert_eq!(built["rows"][0]["name"], "f");
+
+    let tiny = api::graphrag_build_context(&rows, "definition_lookup", 1, "structural");
+    assert_eq!(tiny["tokens_used"], 0);
+    assert_eq!(tiny["rows"].as_array().map(Vec::len), Some(0));
+
+    let signatures = api::graphrag_build_context(&rows, "call_chain", 8192, "signatures_only");
+    let row = signatures["rows"][0].as_object().expect("one row");
+    let mut keys: Vec<&str> = row.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["docstring", "name", "signature"]);
+}

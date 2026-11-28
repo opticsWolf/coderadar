@@ -394,6 +394,238 @@ pub fn entity_json(snap: &ProjectedGraph, entity_id: &str) -> Option<Value> {
     None
 }
 
+/// Compress plan results into a token-budgeted context (GraphRAG).
+///
+/// `strategy` is `signatures_only`, `structural` (adds `body_skeleton`) or
+/// `full`. Rows are admitted in order until the next one would exceed
+/// `max_tokens`; the estimate is `max(1, chars / 4)` per row.
+pub fn graphrag_build_context(
+    results: &[Value],
+    intent: &str,
+    max_tokens: usize,
+    strategy: &str,
+) -> Value {
+    let mut used = 0usize;
+    let mut rows: Vec<Value> = Vec::new();
+    let mut per_entity = Map::new();
+    for result in results {
+        let compressed = match strategy {
+            "signatures_only" => json!({
+                "name": result.get("name").cloned().unwrap_or_else(|| json!("")),
+                "signature": result.get("signature").cloned().unwrap_or_else(|| json!("")),
+                "docstring": result.get("docstring").cloned().unwrap_or_else(|| json!("")),
+            }),
+            "full" => result.clone(),
+            _ => {
+                let mut row = result.clone();
+                if let Value::Object(ref mut map) = row {
+                    let body = result.get("body").and_then(Value::as_str).unwrap_or("");
+                    insert(map, "body_skeleton", skeletonize(body));
+                }
+                row
+            }
+        };
+        let tokens = estimate_tokens(&compressed);
+        if used + tokens > max_tokens {
+            break;
+        }
+        used += tokens;
+        let id = result
+            .get("id")
+            .or_else(|| result.get("entity_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        insert(&mut per_entity, &id, strategy);
+        rows.push(compressed);
+    }
+    json!({
+        "intent": intent,
+        "rows": rows,
+        "tokens_used": used,
+        "strategy_per_entity": per_entity,
+        "elapsed_ms": 0.0,
+    })
+}
+
+/// The lines of a body that carry control flow or a definition.
+fn skeletonize(body: &str) -> String {
+    const KEYWORDS: &[&str] = &[
+        "if ", "for ", "while ", "return ", "def ", "class ", "try:", "except", "raise", "with ",
+        "match ", "case ",
+    ];
+    body.lines()
+        .filter(|line| {
+            let stripped = line.trim();
+            KEYWORDS.iter().any(|keyword| stripped.starts_with(keyword))
+                || (stripped.contains('(') && stripped.ends_with(')'))
+        })
+        .collect::<Vec<_>>()
+        .join(
+            "
+",
+        )
+}
+
+/// `max(1, chars / 4)` over the row's values, like the Python builder.
+fn estimate_tokens(row: &Value) -> usize {
+    let chars: usize = match row {
+        Value::Object(map) => map
+            .values()
+            .map(|value| match value {
+                Value::String(text) => text.chars().count(),
+                other => other.to_string().chars().count(),
+            })
+            .sum(),
+        other => other.to_string().chars().count(),
+    };
+    (chars / 4).max(1)
+}
+
+/// Plan, execute and compress one natural-language query (GraphRAG).
+///
+/// # Errors
+/// Returns the standard no-graph error when the engine has no projection.
+pub fn graphrag_execute(
+    snap: &ProjectedGraph,
+    text: &str,
+    max_tokens: usize,
+    strategy: &str,
+) -> Value {
+    let plan = plan_query(text);
+    let intent = plan["intent"].as_str().unwrap_or("scope_exploration");
+    let params = &plan["params"];
+    let param = |name: &str| params.get(name).and_then(Value::as_str).unwrap_or("");
+    let results: Vec<Value> = match plan["method"].as_str().unwrap_or("") {
+        "callers_of" => {
+            let id = if param("entity_id").is_empty() {
+                param("target_id")
+            } else {
+                param("entity_id")
+            };
+            if id.is_empty() {
+                Vec::new()
+            } else {
+                callers(snap, id)
+            }
+        }
+        "traverse" => {
+            let start = param("start_id");
+            if start.is_empty() {
+                Vec::new()
+            } else {
+                let depth = params
+                    .get("max_depth")
+                    .or_else(|| params.get("depth"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(3) as usize;
+                let kinds: Vec<String> = params
+                    .get("edge_types")
+                    .and_then(Value::as_array)
+                    .map(|rows| {
+                        rows.iter()
+                            .filter_map(Value::as_str)
+                            .map(|kind| kind.to_ascii_lowercase())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                traverse(snap, start, "out", &kinds, depth)
+            }
+        }
+        "find" => {
+            let id = param("entity_id");
+            if id.is_empty() {
+                Vec::new()
+            } else {
+                lookup(snap, id).into_iter().collect()
+            }
+        }
+        "list_by_kind" => list_by_kind(snap, param("kind"), 100),
+        _ => Vec::new(),
+    };
+    graphrag_build_context(&results, intent, max_tokens, strategy)
+}
+
+/// Rows of one entity kind, in id order, capped at `limit`.
+fn list_by_kind(snap: &ProjectedGraph, kind: &str, limit: usize) -> Vec<Value> {
+    let kind = if kind.is_empty() { "function" } else { kind };
+    let mut ids: Vec<String> = match kind {
+        "class" => snap.classes.keys().cloned().collect(),
+        "module" => snap.modules.keys().cloned().collect(),
+        "import" => snap.imports.keys().cloned().collect(),
+        "constant" => snap.constants.keys().cloned().collect(),
+        "type_alias" => snap.type_aliases.keys().cloned().collect(),
+        "route" => snap.routes.keys().cloned().collect(),
+        _ => snap.functions.keys().cloned().collect(),
+    };
+    ids.sort();
+    ids.iter()
+        .filter_map(|id| entity_json(snap, id))
+        .take(limit)
+        .collect()
+}
+
+/// Classify a natural-language query into an intent and engine route.
+///
+/// The keyword ladder is the Python planner's, in its order: the first
+/// matching family wins, so "who calls X" is impact analysis even though it
+/// also contains "call".
+pub fn plan_query(text: &str) -> Value {
+    let lower = text.to_lowercase();
+    let has = |words: &[&str]| words.iter().any(|word| lower.contains(word));
+    let (intent, method, params, top_k) = if has(&[
+        "impact",
+        "what breaks",
+        "depends on",
+        "who calls",
+        "callers of",
+        "affected by",
+    ]) {
+        (
+            "impact_analysis",
+            "callers_of",
+            json!({"query_text": text, "depth": 3}),
+            10,
+        )
+    } else if has(&["chain", "path from", "how does", "reach", "flow from"]) {
+        (
+            "call_chain",
+            "traverse",
+            json!({"query_text": text, "max_depth": 5, "edge_types": ["CALLS"]}),
+            10,
+        )
+    } else if has(&["find", "search", "similar", "like", "related"]) {
+        (
+            "similarity_search",
+            "search_similar",
+            json!({"query_text": text, "top_k": 10}),
+            10,
+        )
+    } else if has(&["dependencies", "imports", "module graph", "what imports"]) {
+        (
+            "dependency_graph",
+            "traverse",
+            json!({"query_text": text, "depth": 3, "edge_types": ["IMPORTS"]}),
+            10,
+        )
+    } else if has(&["what is", "define", "show me", "definition", "signature of"]) {
+        ("definition_lookup", "find", json!({"query_text": text}), 10)
+    } else {
+        (
+            "scope_exploration",
+            "list_by_kind",
+            json!({"query_text": text}),
+            10,
+        )
+    };
+    json!({
+        "intent": intent,
+        "method": method,
+        "params": params,
+        "top_k": top_k,
+    })
+}
+
 /// One module's children in the FFI binding's shape: full entity rows for
 /// classes and functions, `raw`/`kind` imports, and `id`/`name` constants.
 /// Returns `None` when the id is not a module.
@@ -2027,6 +2259,131 @@ fn fastembed_model(
     let model = Arc::new(parking_lot::Mutex::new(model));
     models.lock().insert(name.to_string(), Arc::clone(&model));
     Ok(model)
+}
+
+/// DR-11 preprocessing version. Bump when the embedded text or the cache
+/// key format changes: every stored key then misses once, by design.
+pub const EMBED_PREPROCESS_VERSION: u32 = 1;
+
+/// The text that gets embedded for one entity (DR-11 embed-what).
+///
+/// Functions, classes and modules embed `signature + docstring`; anything
+/// else embeds `signature or name`. Bodies stay unembedded on purpose.
+pub fn embed_body(entity: &Value, kind: &str) -> String {
+    let field =
+        |name: &str| -> &str { entity.get(name).and_then(Value::as_str).unwrap_or_default() };
+    let signature = field("signature");
+    let name = field("name");
+    if matches!(kind, "function" | "class" | "module") {
+        let doc = field("docstring");
+        if doc.trim().is_empty() {
+            if signature.is_empty() {
+                name.to_string()
+            } else {
+                signature.to_string()
+            }
+        } else {
+            format!(
+                "{signature}
+{doc}"
+            )
+            .trim()
+            .to_string()
+        }
+    } else if signature.is_empty() {
+        name.to_string()
+    } else {
+        signature.to_string()
+    }
+}
+
+/// The dedup key stored as `embedding_hash`: `{model}#pp{N}#{body_xxh3}`.
+pub fn embed_cache_key(body_hash: &str, model_id: &str) -> String {
+    format!("{model_id}#pp{EMBED_PREPROCESS_VERSION}#{body_hash}")
+}
+
+/// The model id baked into a stored key (`None` for legacy bare hashes).
+pub fn stored_key_model(stored_hash: &str) -> Option<String> {
+    let (model, _) = stored_hash.split_once('#')?;
+    if model.is_empty() {
+        None
+    } else {
+        Some(model.to_string())
+    }
+}
+
+/// xxHash3-64 of the bytes, as the 16-digit hex Python's `xxhash` returns.
+pub fn content_hash(data: &[u8]) -> String {
+    format!("{:016x}", xxhash_rust::xxh3::xxh3_64(data))
+}
+
+/// Embed a batch with content-addressed dedup (DR-11 §13.1).
+///
+/// Returns `{vectors, metrics}`: `vectors[i]` is `null` for a cache hit and
+/// the vector for a miss; `metrics` counts hits, misses and generated
+/// vectors. Cache hits compare the stored `embedding_hash` against the
+/// caller's hash, so an edited body re-embeds exactly once.
+///
+/// # Errors
+/// Returns the model/engine error when a miss cannot be embedded.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one call carries the batch and its cache keys"
+)]
+pub fn embedding_batch(
+    snap: &ProjectedGraph,
+    model_name: &str,
+    ids: &[String],
+    bodies: &[String],
+    hashes: &[String],
+    batch_size: usize,
+    dimension: usize,
+    max_body_tokens: usize,
+    deterministic: bool,
+) -> Result<Value, String> {
+    let mut slots: Vec<Option<Vec<f64>>> = vec![None; ids.len()];
+    let mut misses: Vec<usize> = Vec::new();
+    let mut hits = 0usize;
+    for (index, id) in ids.iter().enumerate() {
+        let cached = entity_json(snap, id).is_some_and(|entity| {
+            entity
+                .get("has_embedding")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                && entity.get("embedding_hash").and_then(Value::as_str)
+                    == hashes.get(index).map(String::as_str)
+        });
+        if cached {
+            hits += 1;
+        } else {
+            misses.push(index);
+        }
+    }
+    if !misses.is_empty() {
+        let limit = max_body_tokens.saturating_mul(4);
+        let texts: Vec<String> = misses
+            .iter()
+            .map(|index| {
+                bodies
+                    .get(*index)
+                    .map(|body| body.chars().take(limit).collect())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let vectors =
+            embed_texts_checked(model_name, &texts, batch_size, dimension, deterministic)?;
+        for (slot, vector) in misses.iter().zip(vectors) {
+            slots[*slot] = Some(vector);
+        }
+    }
+    Ok(json!({
+        "vectors": slots,
+        "metrics": {
+            "cache_hit": hits,
+            "cache_miss": misses.len(),
+            "generated": misses.len(),
+        },
+    }))
 }
 
 /// Embed text with the same model Python fastembed loads.

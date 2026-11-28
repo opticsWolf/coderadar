@@ -1317,7 +1317,39 @@ Result: **15/15 payloads identical**, 72/59 command inventory, `--help` and
 exit codes green. Guard tests live in
 `core_indexer/src/graph/tests/api_rows_tests.rs`.
 
-Remaining plan units: S5 (`agent.graphrag`, `query.planner/executor`), S6
-(`embedding.dedup`), S7 (`mcp.{lazy,lifecycle,roots,startup}`), E2 (embedding
+Remaining plan units: S5 (`query.executor`), S7
+(`mcp.{lazy,lifecycle,roots,startup}`), E2 (embedding
 drift contract), R1/R3 (artifact rename + packaging), R2/A2 (shadow cutover
 approval + final audit) — about **5-6 days**.
+
+## Embedding dedup, query planner and GraphRAG shims (Unit 53)
+
+Three more Python modules now delegate to the engine instead of carrying
+their own logic:
+
+- `embedding.dedup` — `api::embed_body` owns the embedded text,
+  `api::embed_cache_key` the `{model}#pp{N}#{hash}` key,
+  `api::stored_key_model` the legacy bare-hash case, `api::content_hash`
+  the xxHash3-64 value (the shim keeps Python's SHA-256 fallback when the
+  `xxhash` package is absent), and `api::embedding_batch` the
+  cache-hit/miss split plus the model call.
+- `query.planner` — `api::plan_query` is the keyword ladder, in the same
+  order, returning intent/method/params/top_k; the shim only builds the
+  `QueryIntent`/`QueryPlan` dataclasses.
+- `agent.graphrag` — `api::graphrag_build_context` compresses rows
+  (`signatures_only` / `structural` / `full`), skeletonises bodies and
+  enforces the token budget; `api::graphrag_execute` plans, executes and
+  compresses. The shim exposes `ContextStrategy`, `GraphRAGResult`,
+  `GraphRAGContextBuilder`, `GraphRAGPipeline` and `QueryPlanner`.
+
+`rust/import_surface.py` is now the committed measurement tool: it loads the
+bridge under a private alias, records every public name under
+`py_agent/src/coderadar`, and writes
+`rust/golden/import_surface_pending.json` (or `--check` for CI). Coverage is
+**181/342 (52.9%)** with five modules left: `query.executor` and
+`mcp.{lazy,lifecycle,roots,startup}`.
+
+`rust/after_bridge.py` had been left with literal newlines inside string
+literals (invalid Python), so a re-bridge would have failed at the facade
+step. It is repaired and now also re-attaches the dedup/planner/GraphRAG
+exports.

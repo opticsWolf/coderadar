@@ -259,16 +259,27 @@ project_state_file = _native.project_state_file
 config_json = _native.config_json
 embedding_settings = _native.embedding_settings
 visualize = _native.visualize
+embed_preprocess_version = _native.embed_preprocess_version
+embed_body = _native.embed_body
+embed_cache_key = _native.embed_cache_key
+stored_key_model = _native.stored_key_model
+content_hash = _native.content_hash
+embedding_batch = _native.embedding_batch
+plan_query = _native.plan_query
+graphrag_build_context = _native.graphrag_build_context
+graphrag_execute = _native.graphrag_execute
 
 __all__ = sorted(set(__all__) | {
     "ContentUnavailable", "EngineError", "InvalidRequest", "MissingDependency",
     "MutationFailed", "NoEmbeddings", "NoExtension", "NoIndex", "NotFound",
     "OpError", "TemporalUnsupported",
-    "coldstart_build_graph", "config_json", "doc_description", "doc_names",
-    "doc_text", "embedding_settings", "find_marker", "is_excluded",
-    "last_project_for", "project_files", "project_state_file",
+    "coldstart_build_graph", "config_json", "content_hash", "doc_description",
+    "doc_names", "doc_text", "embed_body", "embed_cache_key", "embedding_batch",
+    "embedding_settings", "embed_preprocess_version", "find_marker",
+    "graphrag_build_context", "graphrag_execute", "is_excluded",
+    "last_project_for", "plan_query", "project_files", "project_state_file",
     "record_project", "skill_description", "skill_names", "skill_text",
-    "visualize",
+    "stored_key_model", "visualize",
 })
 
 # Unit S1: ops names the engine already provides, re-exported for

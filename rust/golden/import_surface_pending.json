@@ -1,23 +1,19 @@
 {
+ "coverage": 0.5292,
+ "declared_names": 342,
  "import_errors": {
-  "agent.graphrag": "No module named 'coderadar.agent'",
-  "embedding.dedup": "No module named 'coderadar.embedding.dedup'",
-  "mcp.lazy": "No module named 'coderadar.mcp.lazy'",
-  "mcp.lifecycle": "No module named 'coderadar.mcp.lifecycle'",
-  "mcp.roots": "No module named 'coderadar.mcp.roots'",
-  "mcp.startup": "No module named 'coderadar.mcp.startup'",
-  "query.executor": "No module named 'coderadar.query.executor'",
-  "query.planner": "No module named 'coderadar.query.planner'"
+  "mcp.lazy": "No module named 'coderadar_rs.mcp.lazy'",
+  "mcp.lifecycle": "No module named 'coderadar_rs.mcp.lifecycle'",
+  "mcp.roots": "No module named 'coderadar_rs.mcp.roots'",
+  "mcp.startup": "No module named 'coderadar_rs.mcp.startup'",
+  "query.executor": "No module named 'coderadar_rs.query.executor'"
  },
  "missing_modules": [
-  "agent.graphrag",
-  "embedding.dedup",
   "mcp.lazy",
   "mcp.lifecycle",
   "mcp.roots",
   "mcp.startup",
-  "query.executor",
-  "query.planner"
+  "query.executor"
  ],
  "missing_names": {
   "__init__": [
@@ -38,13 +34,6 @@
    "SymbolChange",
    "blob_stats",
    "edge_persist_error"
-  ],
-  "agent.graphrag": [
-   "ContextStrategy",
-   "GraphRAGContextBuilder",
-   "GraphRAGPipeline",
-   "GraphRAGResult",
-   "QueryPlanner"
   ],
   "cli": [
    "affected",
@@ -118,15 +107,6 @@
    "store_db_path",
    "store_is_fresh"
   ],
-  "embedding.dedup": [
-   "EmbedTarget",
-   "EmbeddingDedup",
-   "EmbeddingUnavailable",
-   "compute_content_hash",
-   "embed_body",
-   "embed_cache_key",
-   "stored_key_model"
-  ],
   "excludes": [
    "resolve_entity_path"
   ],
@@ -178,11 +158,6 @@
    "MacrameQuery",
    "MacrameSnapshot"
   ],
-  "query.planner": [
-   "QueryIntent",
-   "QueryPlan",
-   "plan_query"
-  ],
   "render": [
    "affected",
    "annotation_stored",
@@ -230,5 +205,6 @@
   "skills": [
    "InstallResult"
   ]
- }
+ },
+ "resolved_names": 181
 }
