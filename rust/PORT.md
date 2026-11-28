@@ -1023,3 +1023,29 @@ new recorded unit.
   original's `django` / 0.85 result and the Go route handler result.
 - `after_bridge.py` re-attaches the wrappers and expanded facade imports.
 - Gate 4447/4447, fmt/clippy/cargo test clean, cutover 4/4.
+
+## LSP graph wiring and MCP lifecycle (Unit 45 / post-plan hardening)
+
+- `resolve_calls_scoped` now consults LSP for unresolved calls whose effective
+  confidence is 0.0 (below `[resolution.lsp].override_threshold`). Positions
+  come from the recorded `name_span`; a successful definition is mapped back
+  to a known function or class in the same module and becomes a normal call
+  edge. Server failures stay best-effort so an optional server cannot fail an
+  index.
+- Smoke fixture: `cast(Service, value).run()` left the call unresolved with
+  LSP disabled; with Pyright enabled the rebuild added `go -> Service.run`,
+  and `callers service.py::Service.run` changed from 0 to 1.
+- MCP now emits one server-to-client `roots/list` request on the first tool
+  call when the current root is unconfirmed or indexing is not ready. Inbound
+  messages are parsed off the dispatcher thread so the matching reply can
+  arrive while the tool call waits; the wait is bounded by
+  `CODERADAR_ROOTS_TIMEOUT_MS` (default 1000ms). Client roots are fed back into
+  `LazyRootRetry` for the existing retarget ladder. Server requests use
+  negative ids so they cannot collide with client tool ids.
+- Added a best-effort parent watchdog: parent pid discovery uses PowerShell
+  on Windows and `/proc` or `ps` on Unix, with a one-second poll that exits
+  the MCP server when the parent disappears. `CODERADAR_PARENT_WATCHDOG=0`
+  disables it for embedded callers.
+- Unit tests cover one-shot root probing/reply parsing and live/dead parent
+  detection. Gate 4447/4447, fmt/clippy/cargo test clean (625 core tests),
+  cutover 4/4. Bench: 76 functions, 40 faster in the final run.

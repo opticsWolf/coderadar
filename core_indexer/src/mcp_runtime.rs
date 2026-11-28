@@ -5,7 +5,11 @@
 //! keeps the port crate's line count inside the gate's size heuristic.
 
 use std::collections::BTreeMap;
+use std::io::BufRead;
 use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -321,6 +325,9 @@ impl LazyRootRetry {
     pub fn mark_user_chosen(&self) {
         *self.attempted.lock() = true;
     }
+    pub fn set_client_roots(&mut self, uris: Vec<String>) {
+        self.client_roots = uris;
+    }
     pub fn attempt(&self, current: &ResolvedRoot) -> Option<ResolvedRoot> {
         let mut attempted = self.attempted.lock();
         if *attempted {
@@ -520,6 +527,97 @@ impl BackgroundIndex {
     }
 }
 
+/// Keep a stdio MCP server tied to its launching process.
+///
+/// The watchdog polls once a second and exits cleanly when the parent is
+/// gone. `CODERADAR_PARENT_WATCHDOG=0` disables it for embedded callers.
+pub struct ParentWatchdog {
+    parent_pid: u32,
+}
+impl ParentWatchdog {
+    /// Start the watchdog when a parent pid can be discovered.
+    pub fn start() -> Option<Self> {
+        if std::env::var("CODERADAR_PARENT_WATCHDOG").as_deref() == Ok("0") {
+            return None;
+        }
+        let Some(parent_pid) = parent_pid() else {
+            if std::env::var_os("CODERADAR_WATCHDOG_DEBUG").is_some() {
+                eprintln!("[coderadar-rs] parent pid unavailable; watchdog disabled");
+            }
+            return None;
+        };
+        if std::env::var_os("CODERADAR_WATCHDOG_DEBUG").is_some() {
+            eprintln!("[coderadar-rs] parent watchdog follows {parent_pid}");
+        }
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(1));
+            let alive = process_alive(parent_pid);
+            if std::env::var_os("CODERADAR_WATCHDOG_DEBUG").is_some() {
+                eprintln!("[coderadar-rs] parent {parent_pid} alive={alive}");
+            }
+            if !alive {
+                eprintln!("[coderadar-rs] MCP parent {parent_pid} exited");
+                std::process::exit(0);
+            }
+        });
+        Some(Self { parent_pid })
+    }
+
+    /// The pid this watchdog follows.
+    pub fn parent_pid(&self) -> u32 {
+        self.parent_pid
+    }
+}
+
+fn parent_pid() -> Option<u32> {
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "(Get-CimInstance Win32_Process -Filter \"ProcessId={}\").ParentProcessId",
+            std::process::id()
+        );
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(text) = std::fs::read_to_string(format!("/proc/{}/stat", std::process::id())) {
+            return text.split_whitespace().nth(3)?.parse().ok();
+        }
+        let output = Command::new("ps")
+            .args(["-o", "ppid=", "-p", &std::process::id().to_string()])
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+    }
+}
+
+fn process_alive(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        let filter = format!("PID eq {pid}");
+        Command::new("tasklist")
+            .args(["/FI", &filter, "/NH"])
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).contains(&pid.to_string()))
+            .unwrap_or(true)
+    }
+    #[cfg(not(windows))]
+    {
+        if std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            return true;
+        }
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(true)
+    }
+}
+
 /// Exit if no inbound MCP message arrives within the handshake budget.
 pub struct HandshakeGuard {
     stop: Arc<(Mutex<bool>, Condvar)>,
@@ -550,6 +648,74 @@ impl HandshakeGuard {
     }
 }
 
+/// One active `roots/list` probe for a stdio session.
+///
+/// The server asks the client once, on the first tool call, when the current
+/// root is unconfirmed or the background index is not ready. The caller owns
+/// the transport: this type only allocates the id and waits for the matching
+/// reply.
+struct RootProbe {
+    asked: Mutex<bool>,
+    pending: Arc<(Mutex<Option<i64>>, Condvar)>,
+    next_id: AtomicI64,
+}
+impl Default for RootProbe {
+    fn default() -> Self {
+        Self {
+            asked: Mutex::new(false),
+            pending: Arc::new((Mutex::new(None), Condvar::new())),
+            // Negative ids keep server-to-client requests distinct from the
+            // client's own tool-call ids.
+            next_id: AtomicI64::new(-1_000_000),
+        }
+    }
+}
+impl RootProbe {
+    fn request(&self, needed: bool) -> Option<Value> {
+        if !needed || *self.asked.lock() {
+            return None;
+        }
+        *self.asked.lock() = true;
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        *self.pending.0.lock() = Some(id);
+        Some(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "roots/list",
+            "params": {},
+        }))
+    }
+
+    fn accept(&self, message: &Value) -> Option<Vec<String>> {
+        let id = message.get("id").and_then(Value::as_i64)?;
+        if *self.pending.0.lock() != Some(id) {
+            return None;
+        }
+        let uris = message
+            .get("result")
+            .and_then(|result| result.get("roots"))
+            .and_then(Value::as_array)
+            .map(|rows| {
+                rows.iter()
+                    .filter_map(|row| row.get("uri").and_then(Value::as_str))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        *self.pending.0.lock() = None;
+        self.pending.1.notify_all();
+        Some(uris)
+    }
+
+    fn wait(&self, timeout: Duration) {
+        let (lock, wake) = &*self.pending;
+        let mut pending = lock.lock();
+        if pending.is_some() {
+            let _ = wake.wait_for(&mut pending, timeout);
+        }
+    }
+}
+
 /// The process-wide MCP session: resolved root, lazy retry, index.
 ///
 /// The stdio crate supplies one build callback that performs the cold start
@@ -559,6 +725,7 @@ pub struct McpSession {
     launch_cwd: PathBuf,
     root: Arc<Mutex<Value>>,
     lazy: Arc<Mutex<Option<LazyRootRetry>>>,
+    roots_probe: Arc<RootProbe>,
     pub index: BackgroundIndex,
 }
 impl McpSession {
@@ -568,6 +735,7 @@ impl McpSession {
             launch_cwd,
             root: Arc::new(Mutex::new(resolved.json())),
             lazy: Arc::new(Mutex::new(None)),
+            roots_probe: Arc::new(RootProbe::default()),
             index: BackgroundIndex::new(resolved.path),
         }
     }
@@ -601,6 +769,12 @@ impl McpSession {
     }
 
     pub fn on_message(&self, message: &Value) {
+        if let Some(uris) = self.roots_probe.accept(message) {
+            if let Some(lazy) = self.lazy.lock().as_mut() {
+                lazy.set_client_roots(uris);
+            }
+            return;
+        }
         if message.get("method").and_then(Value::as_str) != Some("initialize") {
             return;
         }
@@ -608,6 +782,34 @@ impl McpSession {
         if lazy.is_none() {
             *lazy = Some(LazyRootRetry::new(Self::client_roots(message)));
         }
+    }
+
+    /// Build the one `roots/list` request for a first tool call.
+    pub fn roots_request(&self) -> Option<Value> {
+        let root = self.root();
+        let confirmed = root["confirmed"] == true;
+        let empty = self.index.is_empty();
+        let needed = self
+            .lazy
+            .lock()
+            .as_ref()
+            .is_some_and(|lazy| lazy.should_ask(confirmed, empty));
+        self.roots_probe.request(needed)
+    }
+
+    /// Serialized `roots/list` request, ready for the stdio writer.
+    pub fn roots_request_line(&self) -> Option<String> {
+        self.roots_request()
+            .and_then(|request| serde_json::to_string(&request).ok())
+    }
+
+    /// Wait briefly for the client's `roots/list` response.
+    pub fn wait_for_roots(&self) {
+        let timeout = std::env::var("CODERADAR_ROOTS_TIMEOUT_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(1000);
+        self.roots_probe.wait(Duration::from_millis(timeout));
     }
 
     pub fn ensure_ready(&self) -> Result<(), String> {
@@ -681,6 +883,32 @@ impl McpSession {
     }
 }
 
+/// Parse stdio JSON-RPC messages off the dispatcher thread.
+///
+/// The session clone handles `roots/list` replies as they arrive so a tool
+/// call can wait for them without blocking the reader.
+pub fn stdin_messages(session: &McpSession) -> Receiver<Result<Value, String>> {
+    let (tx, rx) = mpsc::channel();
+    let reader = session.clone();
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            let parsed = match line {
+                Ok(line) if line.trim().is_empty() => continue,
+                Ok(line) => serde_json::from_str::<Value>(&line).map_err(|e| e.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+            if let Ok(message) = &parsed {
+                reader.on_message(message);
+            }
+            if tx.send(parsed).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -726,5 +954,29 @@ mod tests {
         let index = BackgroundIndex::new(PathBuf::from("."));
         let outcome = index.wait(Duration::from_millis(50), Duration::from_millis(10));
         assert_eq!(outcome["status"], "not_started");
+    }
+
+    #[test]
+    fn roots_probe_is_one_shot_and_accepts_the_reply() {
+        let probe = RootProbe::default();
+        let request = probe.request(true).expect("roots request");
+        let id = request["id"].as_i64().expect("request id");
+        assert!(id < 0, "server requests use negative ids");
+        assert_eq!(probe.request(true), None);
+        let reply = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {"roots": [{"uri": "file:///tmp/example", "name": "example"}]}
+        });
+        assert_eq!(
+            probe.accept(&reply).expect("matching reply"),
+            vec!["file:///tmp/example"]
+        );
+    }
+
+    #[test]
+    fn parent_probe_sees_a_live_process() {
+        assert!(process_alive(std::process::id()));
+        assert!(!process_alive(u32::MAX));
     }
 }

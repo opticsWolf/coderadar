@@ -1,6 +1,6 @@
 # Implementation plan — closing the remaining CodeRadar port gaps
 
-Status: **all units attempted; A, B, E and F complete (Units 39–40, 43–44), C and D partial (Units 41–42)**
+Status: **A, B, D, E and F complete (Units 39–40, 42–44); C partial (Unit 41). Post-plan hardening (Unit 45) wired the LSP threshold into the main call-graph builder and closed the MCP lifecycle residuals.**
 Prepared: after commit `cab7ff1` (`dev_rustify`)
 Canonical decisions/state: [`PORT.md`](PORT.md)  
 Graph evidence: local CodeRadar store, 2026-02-17
@@ -177,9 +177,9 @@ Risks: dependency availability/licensing, model download in CI, changed vector b
 
 ---
 
-### Unit D — MCP lifecycle parity — PARTIAL
+### Unit D — MCP lifecycle parity — DONE
 
-**Rank: 4. Value: medium for server embedding, low for CLI. Estimate: 2–3 days. Implemented as Unit 42; `roots/list` request and parent watchdog remain.**
+**Rank: 4. Value: medium for server embedding, low for CLI. Estimate: 2–3 days. Implemented as Unit 42; `roots/list` request and parent watchdog added in Unit 45.**
 
 Problem: Rust MCP has all tools/resources, but the process model is synchronous and single-root. Python has a lazy root ladder, roots/list handshake, background indexing, build lock, heartbeat and persisted project.
 
@@ -206,7 +206,7 @@ Acceptance criteria:
 - Heartbeats stop once indexing completes.
 - Existing 45 tools and 3 resources remain unchanged.
 
-Risks: stdio handshake deadlock; keep server→client `roots/list` strictly timeout-bounded.
+Risks: stdio handshake deadlock; keep server→client `roots/list` strictly timeout-bounded. Resolved in Unit 45: one negative-id `roots/list` request per session, inbound replies parsed off the dispatcher thread, bounded by `CODERADAR_ROOTS_TIMEOUT_MS` (default 1000ms). A best-effort parent watchdog polls the parent pid once a second and exits when it disappears; `CODERADAR_PARENT_WATCHDOG=0` disables it.
 
 ---
 

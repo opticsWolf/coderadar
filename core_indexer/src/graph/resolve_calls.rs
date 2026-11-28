@@ -16,6 +16,133 @@ type ResolveOutcome = (
     Vec<((String, String), crate::types::ReceiverEvidence)>,
 );
 
+fn normalized_path_key(path: &std::path::Path) -> String {
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        crate::indexed_root().join(path)
+    };
+    let resolved = std::fs::canonicalize(&joined).unwrap_or(joined);
+    crate::fs::strip_verbatim_prefix(resolved)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_lowercase()
+}
+
+/// Map an LSP override target (`file#line:column`) back to a known entity.
+fn entity_id_at_override(projection: &ProjectedGraph, target: &str) -> Option<EntityId> {
+    let (path_text, position) = target.rsplit_once('#')?;
+    let (line_text, _) = position.split_once(':')?;
+    let line = line_text.parse::<usize>().ok()?;
+    let key = normalized_path_key(std::path::Path::new(path_text));
+    let module_ids: Vec<EntityId> = projection
+        .modules
+        .values()
+        .filter(|module| normalized_path_key(&module.path) == key)
+        .map(|module| module.id.clone())
+        .collect();
+    if module_ids.is_empty() {
+        return None;
+    }
+
+    let mut best: Option<(usize, EntityId)> = None;
+    for function in projection.functions.values() {
+        if !module_ids.contains(&function.parent_module)
+            || function.line > line
+            || line > function.exit_line
+        {
+            continue;
+        }
+        let distance = line - function.line;
+        if best.as_ref().is_none_or(|(current, _)| distance < *current) {
+            best = Some((distance, function.id.clone()));
+        }
+    }
+    if let Some((_, id)) = best {
+        return Some(id);
+    }
+    for class in projection.classes.values() {
+        if module_ids.contains(&class.parent_module)
+            && class.line <= line
+            && line <= class.exit_line
+        {
+            return Some(class.id.clone());
+        }
+    }
+    None
+}
+
+fn lsp_position(source: &str, call: &UnresolvedRef) -> (u32, u32) {
+    if call.name_span.start != call.name_span.end {
+        if let Some(prefix) = source.get(..call.name_span.start) {
+            let line = prefix.bytes().filter(|byte| *byte == b'\n').count() as u32;
+            let column = prefix.rsplit('\n').next().unwrap_or("").chars().count() as u32;
+            return (line, column);
+        }
+    }
+    (call.line.saturating_sub(1) as u32, call.col as u32)
+}
+
+/// Consult LSP for unresolved calls that sit below the override threshold.
+///
+/// Unresolved calls have confidence 0.0, so a disabled config or a threshold
+/// at/below zero is a no-op. Server failures are best-effort: the original
+/// unresolved result stays in place.
+fn apply_lsp_overrides_to_unresolved(
+    projection: &ProjectedGraph,
+    func_id: &str,
+    calls: &[UnresolvedRef],
+    resolved: &mut [crate::types::ResolvedCall],
+    edge_pairs: &mut Vec<(String, String)>,
+) {
+    if !crate::lsp::should_override(0.0) {
+        return;
+    }
+    let Some(function) = projection.functions.get(func_id) else {
+        return;
+    };
+    let Some(module) = projection.modules.get(&function.parent_module) else {
+        return;
+    };
+    let language = format!("{:?}", module.language).to_ascii_lowercase();
+    let workspace = crate::indexed_root();
+    let source_path = if module.path.is_absolute() {
+        module.path.clone()
+    } else {
+        workspace.join(&module.path)
+    };
+    let Ok(source) = std::fs::read_to_string(&source_path) else {
+        return;
+    };
+    for (index, call) in calls.iter().enumerate() {
+        if !matches!(
+            resolved.get(index),
+            Some(crate::types::ResolvedCall::Unresolved { .. })
+        ) {
+            continue;
+        }
+        let (line, column) = lsp_position(&source, call);
+        match crate::lsp::override_edge(&language, &workspace, &module.path, line, column, 0.0) {
+            Ok(Some(overridden)) => {
+                if let Some(target) = overridden
+                    .get("target_id")
+                    .and_then(|value| value.as_str())
+                    .and_then(|target| entity_id_at_override(projection, target))
+                {
+                    resolved[index] = crate::types::ResolvedCall::Function(target.clone());
+                    edge_pairs.push((func_id.to_string(), target));
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                if std::env::var_os("CODERADAR_LSP_DEBUG").is_some() {
+                    eprintln!("[coderadar] LSP call override skipped: {error}");
+                }
+            }
+        }
+    }
+}
+
 /// Resolve one Rust `::` call path to its target (DR-13 §0.3).
 ///
 /// Order matters: (1) `self::f` is the current module's own names;
@@ -348,7 +475,7 @@ impl CodeGraph {
             })
         };
 
-        let resolved: Vec<_> = resolved
+        let mut resolved: Vec<_> = resolved
             .into_iter()
             .map(|rc| {
                 if let crate::types::ResolvedCall::Unresolved { reason, raw } = &rc {
@@ -545,6 +672,14 @@ impl CodeGraph {
                 crate::types::ResolvedCall::Unresolved { .. } => {}
             }
         }
+
+        apply_lsp_overrides_to_unresolved(
+            projection,
+            func_id,
+            calls,
+            &mut resolved,
+            &mut edge_pairs,
+        );
 
         (resolved, edge_pairs, evidence_pairs)
     }

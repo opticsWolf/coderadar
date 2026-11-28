@@ -1,10 +1,10 @@
 //! Unit 5: a stdio JSON-RPC server over the same library as the CLI.
 
-use std::io::{BufRead, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use core_indexer::mcp_runtime::{HandshakeGuard, McpSession};
+use core_indexer::mcp_runtime::{HandshakeGuard, McpSession, ParentWatchdog, stdin_messages};
 use serde_json::{Value, json};
 
 static SESSION: OnceLock<McpSession> = OnceLock::new();
@@ -648,24 +648,31 @@ pub fn serve() -> Result<(), String> {
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(60);
     let guard = HandshakeGuard::arm(timeout);
-    let stdin = std::io::stdin();
+    let _watchdog = ParentWatchdog::start();
     let stdout = std::io::stdout();
     let mut writer = stdout.lock();
-    for line in stdin.lock().lines() {
-        let line = line.map_err(|e| e.to_string())?;
-        if line.trim().is_empty() {
-            continue;
-        }
+    let rx = stdin_messages(&session);
+
+    for parsed in rx {
         guard.disarm();
-        let message: Value = match serde_json::from_str(&line) {
-            Ok(v) => v,
-            Err(e) => {
-                writeln!(writer, "{}", json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}}))
+        let message: Value = match parsed {
+            Ok(value) => value,
+            Err(error) => {
+                writeln!(writer, "{}", json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": error}}))
                     .map_err(|e| e.to_string())?;
                 continue;
             }
         };
-        session.on_message(&message);
+        let roots_line = if message.get("method").and_then(Value::as_str) == Some("tools/call") {
+            session.roots_request_line()
+        } else {
+            None
+        };
+        if let Some(line) = roots_line {
+            writeln!(writer, "{line}").map_err(|e| e.to_string())?;
+            writer.flush().map_err(|e| e.to_string())?;
+            session.wait_for_roots();
+        }
         if let Some(response) = dispatch(&message) {
             writeln!(
                 writer,
