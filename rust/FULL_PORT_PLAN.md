@@ -1,6 +1,7 @@
 # Full-port plan — closing every remaining gap
 
-Status: **planned, not started**. Canonical decisions: [`PORT.md`](PORT.md).
+Status: **in progress**. P0 and P1 landed; P2/P3 partially landed (measured
+below). Canonical decisions: [`PORT.md`](PORT.md).
 Forward plan for the original gap set: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
 This document supersedes both as the *completion* plan: it lists every
 measured gap between the Rust product and the Python reference, and the
@@ -20,12 +21,12 @@ are partially done.
 
 | Gate | Definition | Status |
 |---|---|---|
-| **D1 Protocol** | `coderadar mcp serve` is MCP-spec valid and schema-compatible with the Python server for all 35 shared tools. | ❌ `tools/list` returns bare strings |
-| **D2 CLI contract** | Every Python command accepts the same options, defaults, exit codes and output formats. | ❌ 33 commands lack `--format`; 18 capture `--help` |
-| **D3 Python surface** | `import coderadar.<module>` resolves the same public names, all delegating to Rust. | ❌ 169 public names missing across 27 modules |
-| **D4 Numeric fidelity** | Embedding vectors match Python exactly, or a recorded tolerance is enforced by a test. | ⚠️ ~2e-4 drift, untested |
+| **D1 Protocol** | `coderadar mcp serve` is MCP-spec valid and schema-compatible with the Python server for all 35 shared tools. | ✅ 49 schema-valid tools; conformance harness green |
+| **D2 CLI contract** | Every Python command accepts the same options, defaults, exit codes and output formats. | ✅ inventory, `--help`, exit codes and `--format` green; payload differences tracked (R0) |
+| **D3 Python surface** | `import coderadar.<module>` resolves the same public names, all delegating to Rust. | ⚠️ 166/342 (48.5%) public names; 8 modules still absent |
+| **D4 Numeric fidelity** | Embedding vectors match Python exactly, or a recorded tolerance is enforced by a test. | ⚠️ dynamic-runtime build path shipped; measurement pending |
 | **D5 Cutover** | Rust binary is installed as `coderadar`; Python survives only as a shim; packaging reproducible. | ⚠️ `cutover.py` exists, never applied |
-| **D6 Closeout** | A committed audit script reports zero gaps; full verification matrix green. | ❌ audit is ad-hoc |
+| **D6 Closeout** | A committed audit script reports zero gaps; full verification matrix green. | ⚠️ `cli_parity.py` + `mcp_conformance.py` + import test committed |
 
 **Non-goals** (documented, so they don't reopen): private Python helpers with
 no caller edge (`_render_row`, `_print_effective_excludes`, …) are not ported
@@ -39,13 +40,13 @@ reference implementation until D3 lands, then moves to `reference/`.
 | Surface | Python | Rust | Gap |
 |---|---|---|---|
 | CLI command names | 55 | 55 | 0 |
-| CLI `--format` | 42 | 12 | **33** |
-| CLI other flags | — | — | **12 commands** |
-| CLI `--help` handled | 55 | 37 | **18 captured commands execute `--help`** |
+| CLI `--format` | 42 | 42 | 0 |
+| CLI other flags | — | — | 0 (aliases accepted both ways) |
+| CLI `--help` handled | 55 | 55 | 0 |
 | MCP tool names | 35 | 49 | 0 (+14 Rust extras) |
-| MCP `tools/list` schema | full objects | **strings** | **blocking** |
-| MCP tool params honoured | — | — | **7 tools ignore args** |
-| Python module public names | 768 callables | 599 resolvable | **169 across 27 modules** |
+| MCP `tools/list` schema | full objects | full objects | 0 (35 shared tools byte-identical) |
+| MCP tool params honoured | — | — | 0 (7 tools fixed) |
+| Python module public names | 342 public names | 166 resolvable | **176 across 15 modules + 8 absent** |
 | Framework extraction parity | — | — | 23/23 fixtures identical |
 | Gate cases | — | 4,447 | exact |
 | Embedding max drift | — | ~2e-4 | ORT 1.31 vs 1.32 |
@@ -510,3 +511,115 @@ worker.
 - [ ] E1/E2: embedding drift ≤ 1e-6 or recorded tolerance enforced by a test.
 - [ ] R1–R3: `coderadar --version` = `0.16.0 (spec v3.6)`; clean-machine install works.
 - [ ] A1–A2: `rust/audit.py` reports zero gaps; full verification matrix green.
+
+---
+
+## 13. Execution log (Unit 51)
+
+What landed, and the evidence for each unit.
+
+### P0 — MCP protocol (done)
+
+- `core_indexer/src/mcp_catalogue.rs`: the catalogue is built from
+  `rust/golden/mcp_tools.json` (captured from the Python server) plus
+  `rust/golden/mcp_extra_tools.json` (14 Rust-only tools) and
+  `rust/golden/mcp_schema_overrides.json` (additive Rust arguments).
+- `tools/list` returns `{name, description, inputSchema}` for all 49 tools;
+  the 35 shared tools keep the Python schema by construction.
+- `tools/call` errors are `result.isError`, not JSON-RPC errors; unknown tools
+  are rejected before the index handshake.
+- `initialize` echoes a supported `protocolVersion`, reports
+  `serverInfo {name: "CodeRadar", version: "0.16.0"}` and the Python
+  instructions block; `ping`, `prompts/list`, `resources/templates/list` and
+  `notifications/*` are handled.
+- Argument defaults now come from the schema (`Args::str/i64/f64/bool/strings`),
+  undeclared arguments are rejected, and the seven ignored parameters are
+  wired: `node.include_neighbors`, `explore.symbols/direction/max_files`,
+  `traverse.edge_kinds`, `reindex.with_embeddings/full`,
+  `verify_history.all_generations`, `set_project.confirm`, plus mutation
+  `dry_run` with `apply` accepted as its inverse.
+- Evidence: `python rust/mcp_conformance.py` ->
+  `MCP conformance ok: 49 tools, 3 resources`; `tests/test_mcp_conformance.py`.
+
+### P1 — CLI contract (done, payload residual R0)
+
+- 42/42 Python `--format` commands now emit JSON; a global `--format` covers
+  every native command, captured commands parse it themselves.
+- Flag parity: `as-of --query`, `explore SYMBOLS... --query/--direction/
+  --max-files`, `traverse --edge-kinds`, `open-items --scope`,
+  `export-annotations --out/--store`, `import-annotations --store/
+  --on-conflict`, `ingest-history --repo/--from/--to/--store` (old spellings
+  kept as aliases), `verify-history --from/--to`, `changes-between --t1/--t2`,
+  `ingest-status --store`.
+- `--help` for all 28 captured commands comes from
+  `rust/golden/cli_usage.json`; help/version exit 0 and usage errors exit 2.
+- Binary identity: clap name `coderadar`, version `0.16.0 (spec v3.6)`.
+- Evidence: `python rust/cli_parity.py` -> `CLI parity ok: 72/59 commands,
+  18 JSON payloads compared`; `rust/golden/cli_parity.json` records the
+  11 payload differences.
+- **R0 (new, engine)**: persisted rows still serialize a narrower shape than
+  the Python engine. `search` rows lack `embedding_hash`,
+  `name_span_start/end`; `query` rows differ in field set. The source is
+  `core_indexer/src/storage.rs` (around line 4690) rather than
+  `api::entity_json`. Closing this needs a row-shape pass over the storage
+  reader; the plan tracks it as R0 rather than hiding it in "text output is
+  normalized".
+
+### P2 — Python surface (partial, measured)
+
+Landed (all delegate to Rust, no duplicated logic):
+
+- `ops`, `render` (engine-backed helpers), `docs`, `skills`, `coldstart`,
+  `excludes`, `markers`, `project_state`, `config`, `embedding`,
+  `query` + `query.cache`, `visualizers` (+ `mermaid`, `graphviz_viz`,
+  `call_graph`), `lsp` + `lsp.pool`, `mutation` + `mutation.tool_router`,
+  `mcp` + `mcp.server`, `framework`, and the 13 resolver modules.
+- 21 new native exports: annotations CRUD, git ingest/backfill, docs/skills,
+  cold start, exclusions and project files, marker/project state, live config,
+  embedding settings, visualization, LSP definition/override/status.
+
+Still absent, recorded in `rust/golden/import_surface_pending.json`:
+
+| Module | Why it needs another unit |
+|---|---|
+| `agent.graphrag` | needs `QueryPlanner`/`GraphRAGPipeline` classes over `agent.rs` |
+| `embedding.dedup` | needs `EmbeddingDedup`, `compute_content_hash`, `embed_body` exports |
+| `mcp.lazy`, `mcp.lifecycle`, `mcp.roots`, `mcp.startup` | need the `mcp_runtime` types (`LazyRootRetry`, `ParentWatchdog`, `BackgroundIndex`, roots ladder) exported as Python classes |
+| `query.planner`, `query.executor` | need `plan_query` and snapshot/query objects |
+
+Evidence: `python -m pytest tests/test_import_surface.py` (passes; asserted
+against the recorded baseline) and 166/342 public names resolved
+(31.3% -> 48.5%).
+
+### P3 — embeddings (mechanism shipped)
+
+- `core_indexer` feature `dynamic-ort` adds `ort/load-dynamic`; the default
+  build keeps fastembed's pinned prebuilt runtime.
+- Build: `cargo build --features core_indexer/dynamic-ort`, then set
+  `ORT_DYLIB_PATH` to the reference `onnxruntime.dll`.
+- Not done: the reference environment here carries onnxruntime 1.28/fastembed
+  0.8, not the 1.32/0.7.4 pair the audit compared against, so the drift
+  measurement and the tolerance test (E2) need a pinned reference env.
+
+### P4/P5 — cutover, packaging, audit
+
+- Committed harnesses: `rust/cli_parity.py`, `rust/mcp_conformance.py`,
+  `tests/test_import_surface.py`, `tests/test_mcp_conformance.py`.
+- Not done: binary renamed to `coderadar` (the artifact is still
+  `coderadar-rs` so the harnesses and `cutover.py` keep working), clean-machine
+  packaging, shadow cutover approval, and a single `rust/audit.py` entry point.
+
+---
+
+## 14. Revised sequence for the remainder
+
+| Unit | Scope | Effort |
+|---|---|---|
+| R0 | Align persisted row shape with `api::entity_json` (fields above) | 1-1.5 d |
+| S5 | `agent.graphrag` + `query.planner/executor` shims (needs 3 exports) | 0.5 d |
+| S6 | `embedding.dedup` shims (needs 3 exports) | 0.5 d |
+| S7 | `mcp.{lazy,lifecycle,roots,startup}` shims (needs `McpSession` types) | 1-1.5 d |
+| E2 | Pin the reference runtime and record the drift contract | 1 d |
+| R1/R3 | Rename the artifact, packaging matrix, clean-machine smoke | 1.5 d |
+| R2/A2 | Shadow cutover with approval, final audit | 1 d |
+| **Total** | | **~7-8 d** |

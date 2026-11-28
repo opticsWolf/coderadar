@@ -1233,3 +1233,57 @@ behaviour (`1`): neither implementation mints an edge for `r.Use(...)`.
 - MCP parameter gaps (7 tools): **0.5 day**.
 - **Total ≈ 2.5–3 days** to make the contracts, not just the names, match.
 - Exact embedding float parity and shadow cutover are unchanged from Unit 49.
+
+## Contract execution (Unit 51)
+
+The completion plan in [`FULL_PORT_PLAN.md`](FULL_PORT_PLAN.md) was executed
+through its first two phases.
+
+**MCP protocol (done).** `tools/list` now returns real `Tool` objects built
+from a catalogue captured from the Python server
+(`rust/golden/mcp_tools.json`, 35 tools) plus 14 Rust-only tools and an
+additive override file. Tool errors are `result.isError` rather than JSON-RPC
+errors, `initialize` negotiates the protocol version and reports
+`CodeRadar 0.16.0` with the Python instructions block, and notifications,
+`ping`, `prompts/list` and `resources/templates/list` are handled. Argument
+defaults come from the schema, undeclared arguments are rejected, and the
+seven previously ignored parameters (`include_neighbors`, `explore`
+direction/symbols/max_files, `edge_kinds`, `reindex` flags,
+`all_generations`, `confirm`) are wired. Mutations accept Python's `dry_run`
+with `apply` as its inverse.
+
+**CLI contract (done, one engine residual).** All 42 Python commands that
+advertise `--format` accept it; `as-of`, `explore`, `traverse`, `open-items`,
+`export/import-annotations`, `ingest-history`, `verify-history`,
+`changes-between` and `ingest-status` gained the missing flags (old spellings
+kept as aliases); captured commands answer `--help` from
+`rust/golden/cli_usage.json`; help/version exit 0, usage errors exit 2. The
+binary reports `coderadar 0.16.0 (spec v3.6)`.
+
+Residual **R0**: persisted rows are narrower than the Python engine's
+(`search` lacks `embedding_hash` / `name_span_*`; `query` differs in field
+set) because `core_indexer/src/storage.rs` serializes the stored shape rather
+than `api::entity_json`. `rust/cli_parity.py` records the 11 affected
+commands instead of hiding them.
+
+**Python surface (partial, measured).** `rust/coderadar/python/coderadar`
+now ships `ops`, `render`, `docs`, `skills`, `coldstart`, `excludes`,
+`markers`, `project_state`, `config`, `embedding`, `query`, `visualizers`,
+`lsp`, `mutation`, `mcp`, `framework` and the 13 per-framework resolver
+modules, backed by 21 new native exports. `tests/test_import_surface.py`
+measures 166/342 public names (48.5%); the remainder is recorded in
+`rust/golden/import_surface_pending.json` and consists of `agent.graphrag`,
+`embedding.dedup`, `query.planner/executor`, and the four internal
+`mcp.{lazy,lifecycle,roots,startup}` modules.
+
+**Embeddings.** `core_indexer` gained an opt-in `dynamic-ort` feature that
+loads an external ONNX Runtime via `ORT_DYLIB_PATH`, so a release can match
+the Python wheel's runtime; the default build keeps fastembed's pinned
+prebuilt runtime. The drift measurement needs a pinned reference env
+(onnxruntime 1.32 / fastembed 0.7.4), which this machine does not have.
+
+**Verification.** `python rust/mcp_conformance.py` (49 tools, 3 resources),
+`python rust/cli_parity.py` (72/59 commands, 18 payloads compared),
+`python -m pytest tests/test_mcp_conformance.py tests/test_import_surface.py`,
+`cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`
+(628 + 13 + 17) and `rust-anything gate rust/coderadar` (4447/4447, 3.0x).

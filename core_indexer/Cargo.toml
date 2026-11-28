@@ -47,6 +47,10 @@ toml = "0.8"
 # so the binary pulls only ONNX + rustls hf-hub, not image models or native-tls.
 fastembed = { version = "7.8", default-features = false, features = ["onnx", "hf-hub-rustls-tls", "ort-download-binaries-rustls-tls", "fancy-regex"] }
 regex = "1"
+# Unit E1: opt-in dynamic loading of an external ONNX Runtime build (the
+# release path that has to match the Python wheel's runtime exactly).
+# Default builds keep fastembed's pinned prebuilt runtime.
+ort = { version = "=2.0.0-rc.15", features = ["load-dynamic"], optional = true }
 # Must track macrame-db's own libsql: `diagnostic_conn()` hands back one of
 # *its* Connections, and two semver-incompatible libsql versions in the tree
 # make that value untouchable from here.
@@ -58,6 +62,9 @@ postcard = "1.0"
 [features]
 default = ["watcher"]
 watcher = ["dep:notify", "dep:notify-debouncer-mini"]
+# `cargo build --features dynamic-ort` links no ONNX Runtime and instead
+# loads `ORT_DYLIB_PATH` (or an adjacent `onnxruntime.dll`) at run time.
+dynamic-ort = ["dep:ort", "ort/load-dynamic"]
 
 [dev-dependencies]
 tempfile = "3"

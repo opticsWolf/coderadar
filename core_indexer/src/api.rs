@@ -2595,6 +2595,101 @@ pub fn is_excluded(root: &str, path: &str, is_dir: bool, extra: &[String]) -> bo
     crate::path_excluded(&matcher, rel, is_dir)
 }
 
+/// Every indexable source file under `root`, relative and slash-separated.
+///
+/// Walks with the same exclusion rules as `analyze`, so a caller can preview
+/// exactly what an index would see.
+pub fn project_files(root: &str, extra: &[String]) -> Vec<String> {
+    fn walk(
+        root: &std::path::Path,
+        dir: &std::path::Path,
+        extra: &[String],
+        found: &mut Vec<String>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
+            let is_dir = path.is_dir();
+            if matches!(name, ".git" | ".coderadar" | "target" | "__pycache__")
+                || is_excluded(
+                    &root.to_string_lossy(),
+                    &path.to_string_lossy(),
+                    is_dir,
+                    extra,
+                )
+            {
+                continue;
+            }
+            if is_dir {
+                walk(root, &path, extra, found);
+            } else if path.is_file() && indexable_file(&path) {
+                if let Ok(relative) = path.strip_prefix(root) {
+                    found.push(relative.to_string_lossy().replace('\\', "/"));
+                }
+            }
+        }
+    }
+    let root_path = std::path::Path::new(root);
+    let mut found = Vec::new();
+    walk(root_path, root_path, extra, &mut found);
+    found.sort();
+    found
+}
+
+/// The nearest marker root at or above `path`.
+pub fn find_marker(path: &str) -> Option<String> {
+    crate::mcp_runtime::find_marker(std::path::Path::new(path))
+        .map(|root| root.to_string_lossy().into_owned())
+}
+
+/// Remember the project chosen from a launch directory.
+pub fn record_project(launch_cwd: &str, root: &str) {
+    crate::mcp_runtime::record_project(
+        std::path::Path::new(launch_cwd),
+        std::path::Path::new(root),
+    );
+}
+
+/// The project remembered for a launch directory.
+pub fn last_project_for(launch_cwd: &str) -> Option<String> {
+    crate::mcp_runtime::last_project_for(std::path::Path::new(launch_cwd))
+        .map(|root| root.to_string_lossy().into_owned())
+}
+
+/// The file that records the last project per launch directory.
+pub fn project_state_file() -> Option<String> {
+    crate::mcp_runtime::state_file().map(|path| path.to_string_lossy().into_owned())
+}
+
+/// The live graph config as JSON.
+pub fn config_json() -> Value {
+    crate::config_activation::active_json()
+}
+
+/// The effective embedding settings: configured model and dimension.
+pub fn embedding_settings() -> Value {
+    let config = config_json();
+    let section = config
+        .get("embedding")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let model = section
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("BAAI/bge-small-en-v1.5");
+    let dimension = section
+        .get("dimension")
+        .and_then(Value::as_u64)
+        .unwrap_or(384);
+    json!({"model": model, "dimension": dimension})
+}
+
 /// The engine's built-in exclusion baseline, used by `exclude list`.
 pub fn default_excludes() -> Vec<String> {
     crate::DEFAULT_EXCLUDES

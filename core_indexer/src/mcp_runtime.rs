@@ -153,7 +153,7 @@ fn hex(byte: u8) -> Option<u8> {
     }
 }
 
-fn state_file() -> Option<PathBuf> {
+pub fn state_file() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(|home| {
@@ -196,7 +196,7 @@ pub fn record_project(launch_cwd: &Path, root: &Path) {
     }
 }
 
-fn last_project_for(launch_cwd: &Path) -> Option<PathBuf> {
+pub fn last_project_for(launch_cwd: &Path) -> Option<PathBuf> {
     let path = state_file()?;
     let text = std::fs::read_to_string(path).ok()?;
     let data: BTreeMap<String, Value> = serde_json::from_str(&text).ok()?;

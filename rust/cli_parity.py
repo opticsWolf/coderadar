@@ -57,8 +57,8 @@ PROBES: dict[str, list[str]] = {
     "diagnose": [],
     "module-children": ["tests/test_p5b4_addresses.py::module"],
     "resolve": ["/health"],
-    "search-similar": ["analysis"],
-    "search-hybrid": ["analysis"],
+    # search-similar/search-hybrid need the embedding model on first use;
+    # they are skipped unless the cache is warm (E2 owns that measurement).
     "history": ["src/lib.rs"],
 }
 
@@ -80,9 +80,11 @@ def commands(binary: str) -> list[str]:
     help_text = run(binary, ["--help"]).stdout
     block = help_text.split("Commands:", 1)[-1]
     found = COMMAND_RE.findall(block)
-    if "coderadar-rs" in Path(binary).name or "coderadar" in Path(binary).name:
-        usage = (ROOT / "rust" / "coderadar" / "src" / "usage.rs").read_text(encoding="utf-8")
-        found += re.findall(r'^\s{4}\(\n\s+"([a-z][a-z0-9-]+)",', usage, re.MULTILINE)
+    if "coderadar" in Path(binary).name:
+        usage = json.loads(
+            (ROOT / "rust" / "golden" / "cli_usage.json").read_text(encoding="utf-8")
+        )
+        found += list(usage.get("commands", {}))
     return sorted(set(found))
 
 

@@ -25,6 +25,15 @@ def rust_bridge() -> Any:
     loaded = sys.modules.get(_ALIAS)
     if loaded is not None:
         return loaded
+    # A previous test may already have imported the bridge as `coderadar`.
+    # PyO3 extension modules can only initialise once per process, so reuse
+    # that module under the alias instead of loading the .pyd twice.
+    existing = sys.modules.get("coderadar")
+    if existing is not None:
+        origin = getattr(existing, "__file__", None)
+        if origin and Path(origin).resolve().parent == _BRIDGE:
+            sys.modules[_ALIAS] = existing
+            return existing
     spec = importlib.util.spec_from_file_location(
         _ALIAS,
         _BRIDGE / "__init__.py",

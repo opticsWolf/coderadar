@@ -5,6 +5,13 @@ from __future__ import annotations
 import os
 import time
 
+import pytest
+
+pytest.importorskip(
+    "coderadar._core",
+    reason="the Python reference needs the built extension",
+)
+
 import coderadar
 from coderadar import ops
 

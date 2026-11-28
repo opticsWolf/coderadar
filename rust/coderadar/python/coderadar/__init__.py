@@ -235,3 +235,71 @@ __all__ = sorted(set(__all__) | {
     "SpringBootResolver", "SyntheticEdge",
     "SyntheticNode", "VueRouterResolver",
 })
+
+# Unit S1/S2: engine-backed helpers used by the module shims.
+from ._native import (  # noqa: E402,F401 - re-export the Rust error taxonomy
+    ContentUnavailable, EngineError, InvalidRequest, MissingDependency,
+    MutationFailed, NoEmbeddings, NoExtension, NoIndex, NotFound, OpError,
+    TemporalUnsupported,
+)
+
+doc_description = _native.doc_description
+doc_names = _native.doc_names
+doc_text = _native.doc_text
+skill_description = _native.skill_description
+skill_names = _native.skill_names
+skill_text = _native.skill_text
+coldstart_build_graph = _native.coldstart_build_graph
+is_excluded = _native.is_excluded
+project_files = _native.project_files
+find_marker = _native.find_marker
+record_project = _native.record_project
+last_project_for = _native.last_project_for
+project_state_file = _native.project_state_file
+config_json = _native.config_json
+embedding_settings = _native.embedding_settings
+visualize = _native.visualize
+
+__all__ = sorted(set(__all__) | {
+    "ContentUnavailable", "EngineError", "InvalidRequest", "MissingDependency",
+    "MutationFailed", "NoEmbeddings", "NoExtension", "NoIndex", "NotFound",
+    "OpError", "TemporalUnsupported",
+    "coldstart_build_graph", "config_json", "doc_description", "doc_names",
+    "doc_text", "embedding_settings", "find_marker", "is_excluded",
+    "last_project_for", "project_files", "project_state_file",
+    "record_project", "skill_description", "skill_names", "skill_text",
+    "visualize",
+})
+
+# Unit S1: ops names the engine already provides, re-exported for
+# `coderadar.ops` callers (the generated facade only listed a subset).
+annotate = _native.annotate
+comment = _native.comment
+revise_annotation = _native.revise_annotation
+retire_annotation = _native.retire_annotation
+annotations_on = _native.annotations_on
+comments_on = _native.comments_on
+annotation_history = _native.annotation_history
+comment_history = _native.comment_history
+open_items = _native.open_items
+sync_git = _native.sync_git
+reingest_merged_commits = _native.reingest_merged_commits
+backfill_commit_index = _native.backfill_commit_index
+backfill_commit_messages = _native.backfill_commit_messages
+
+__all__ = sorted(set(__all__) | {
+    "annotate", "annotation_history", "annotations_on", "backfill_commit_index",
+    "backfill_commit_messages", "comment", "comment_history", "comments_on",
+    "open_items", "reingest_merged_commits", "retire_annotation",
+    "revise_annotation", "sync_git",
+})
+
+# Unit S2: config activation and live LSP helpers.
+activate_config = _native.activate_config
+lsp_status = _native.lsp_status
+lsp_definition = _native.lsp_definition
+lsp_override_edges = _native.lsp_override_edges
+
+__all__ = sorted(set(__all__) | {
+    "activate_config", "lsp_definition", "lsp_override_edges", "lsp_status",
+})

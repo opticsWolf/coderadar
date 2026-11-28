@@ -3,6 +3,7 @@
 
 #![allow(clippy::too_many_arguments)]
 
+use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 
 // The Python API's error taxonomy is part of the contract: callers catch
@@ -2001,6 +2002,181 @@ fn config_op(py: Python<'_>) -> PyResult<Py<PyAny>> {
 }
 
 #[pyfunction]
+#[pyo3(name = "activate_config")]
+fn activate_config_op(py: Python<'_>, root: &str) -> PyResult<Py<PyAny>> {
+    value_result(py, Ok(core_indexer::api::activate_config(root)))
+}
+
+#[pyfunction]
+#[pyo3(name = "lsp_status")]
+fn lsp_status_op(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    value_result(py, Ok(core_indexer::api::lsp_status()))
+}
+
+#[pyfunction]
+#[pyo3(name = "lsp_definition", signature = (language, path, line, column, root=None))]
+fn lsp_definition_op(
+    py: Python<'_>,
+    language: &str,
+    path: &str,
+    line: u32,
+    column: u32,
+    root: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let workspace = root
+        .or_else(|| crate::state::root().map(|path| path.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| ".".to_string());
+    value_result(
+        py,
+        core_indexer::api::lsp_definition(language, &workspace, path, line, column)
+            .map(|value| value.unwrap_or(serde_json::Value::Null)),
+    )
+}
+
+#[pyfunction]
+#[pyo3(name = "lsp_override_edges", signature = (edges, root=None))]
+fn lsp_override_edges_op(
+    py: Python<'_>,
+    edges: Bound<'_, PyAny>,
+    root: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let workspace = root
+        .or_else(|| crate::state::root().map(|path| path.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| ".".to_string());
+    let payload = crate::pyconv::from_py(&edges)
+        .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
+    value_result(
+        py,
+        core_indexer::api::lsp_override_edges(&workspace, &payload),
+    )
+}
+
+#[pyfunction]
+#[pyo3(name = "backfill_commit_index", signature = (branch="main", store=None))]
+fn backfill_commit_index_op(
+    py: Python<'_>,
+    branch: &str,
+    store: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    value_result(
+        py,
+        crate::port::backfill_commit_index(branch.to_string(), store),
+    )
+}
+
+#[pyfunction]
+#[pyo3(name = "doc_names")]
+fn doc_names_op() -> Vec<String> {
+    crate::assets::DOC_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
+#[pyfunction]
+#[pyo3(name = "doc_description")]
+fn doc_description_op(name: &str) -> Option<String> {
+    crate::assets::DOC_NAMES
+        .iter()
+        .position(|doc| *doc == name)
+        .and_then(|index| crate::assets::DOC_DESCRIPTIONS.get(index))
+        .map(|text| (*text).to_string())
+}
+
+#[pyfunction]
+#[pyo3(name = "doc_text")]
+fn doc_text_op(name: &str) -> Option<String> {
+    crate::assets::doc_text(name).map(str::to_string)
+}
+
+#[pyfunction]
+#[pyo3(name = "skill_names")]
+fn skill_names_op() -> Vec<String> {
+    crate::assets::SKILL_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect()
+}
+
+#[pyfunction]
+#[pyo3(name = "skill_description")]
+fn skill_description_op(name: &str) -> Option<String> {
+    crate::assets::skill_description(name).map(str::to_string)
+}
+
+#[pyfunction]
+#[pyo3(name = "skill_text")]
+fn skill_text_op(name: &str) -> Option<String> {
+    crate::assets::skill_text(name).map(str::to_string)
+}
+
+#[pyfunction]
+#[pyo3(name = "coldstart_build_graph", signature = (root, create_store=true))]
+fn coldstart_build_graph_op(py: Python<'_>, root: &str, create_store: bool) -> PyResult<Py<PyAny>> {
+    value_result(
+        py,
+        core_indexer::api::coldstart_build_graph(root, create_store),
+    )
+}
+
+#[pyfunction]
+#[pyo3(name = "is_excluded", signature = (root, path, is_dir=false, extra=None))]
+fn is_excluded_op(root: &str, path: &str, is_dir: bool, extra: Option<Vec<String>>) -> bool {
+    core_indexer::api::is_excluded(root, path, is_dir, &extra.unwrap_or_default())
+}
+
+#[pyfunction]
+#[pyo3(name = "project_files", signature = (root, extra=None))]
+fn project_files_op(root: &str, extra: Option<Vec<String>>) -> Vec<String> {
+    core_indexer::api::project_files(root, &extra.unwrap_or_default())
+}
+
+#[pyfunction]
+#[pyo3(name = "find_marker")]
+fn find_marker_op(path: &str) -> Option<String> {
+    core_indexer::api::find_marker(path)
+}
+
+#[pyfunction]
+#[pyo3(name = "record_project")]
+fn record_project_op(launch_cwd: &str, root: &str) {
+    core_indexer::api::record_project(launch_cwd, root);
+}
+
+#[pyfunction]
+#[pyo3(name = "last_project_for")]
+fn last_project_for_op(launch_cwd: &str) -> Option<String> {
+    core_indexer::api::last_project_for(launch_cwd)
+}
+
+#[pyfunction]
+#[pyo3(name = "project_state_file")]
+fn project_state_file_op() -> Option<String> {
+    core_indexer::api::project_state_file()
+}
+
+#[pyfunction]
+#[pyo3(name = "config_json")]
+fn config_json_op(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    value_result(py, Ok(core_indexer::api::config_json()))
+}
+
+#[pyfunction]
+#[pyo3(name = "embedding_settings")]
+fn embedding_settings_op(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    value_result(py, Ok(core_indexer::api::embedding_settings()))
+}
+
+#[pyfunction]
+#[pyo3(name = "visualize", signature = (kind, format, args=None))]
+fn visualize_op(kind: &str, format: &str, args: Option<Vec<String>>) -> PyResult<String> {
+    let snap = crate::state::projection()
+        .ok_or_else(|| PyRuntimeError::new_err("No graph loaded — run coderadar init first"))?;
+    crate::visualize::render(kind, format, &args.unwrap_or_default(), &snap)
+        .map_err(PyRuntimeError::new_err)
+}
+
+#[pyfunction]
 #[pyo3(name = "batch_update_op", signature = (files, contents))]
 fn batch_update_op(
     py: Python<'_>,
@@ -2122,17 +2298,6 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.py().get_type::<ContentUnavailable>(),
     )?;
     m.add_function(wrap_pyfunction!(analyze_op, m)?)?;
-    m.add_function(wrap_pyfunction!(annotate_op, m)?)?;
-    m.add_function(wrap_pyfunction!(comment_op, m)?)?;
-    m.add_function(wrap_pyfunction!(revise_annotation_op, m)?)?;
-    m.add_function(wrap_pyfunction!(retire_annotation_op, m)?)?;
-    m.add_function(wrap_pyfunction!(annotations_on_op, m)?)?;
-    m.add_function(wrap_pyfunction!(comments_on_op, m)?)?;
-    m.add_function(wrap_pyfunction!(annotation_history_op, m)?)?;
-    m.add_function(wrap_pyfunction!(comment_history_op, m)?)?;
-    m.add_function(wrap_pyfunction!(sync_git_op, m)?)?;
-    m.add_function(wrap_pyfunction!(reingest_merged_commits_op, m)?)?;
-    m.add_function(wrap_pyfunction!(backfill_commit_messages_op, m)?)?;
     m.add_function(wrap_pyfunction!(stats_op, m)?)?;
     m.add_function(wrap_pyfunction!(reindex_op, m)?)?;
     m.add_function(wrap_pyfunction!(remove_file_op, m)?)?;
@@ -2141,7 +2306,6 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(plan_update_signature_op, m)?)?;
     m.add_function(wrap_pyfunction!(plan_create_entity_op, m)?)?;
     m.add_function(wrap_pyfunction!(apply_plan_op, m)?)?;
-    m.add_function(wrap_pyfunction!(open_items_op, m)?)?;
     m.add_function(wrap_pyfunction!(ingest_status_op, m)?)?;
     m.add_function(wrap_pyfunction!(diagnose_op, m)?)?;
     m.add_function(wrap_pyfunction!(compute_embeddings_op, m)?)?;
@@ -2163,5 +2327,38 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(config_op, m)?)?;
     m.add_function(wrap_pyfunction!(batch_update_op, m)?)?;
     m.add_function(wrap_pyfunction!(watch_changes_op, m)?)?;
+    m.add_function(wrap_pyfunction!(annotate_op, m)?)?;
+    m.add_function(wrap_pyfunction!(comment_op, m)?)?;
+    m.add_function(wrap_pyfunction!(revise_annotation_op, m)?)?;
+    m.add_function(wrap_pyfunction!(retire_annotation_op, m)?)?;
+    m.add_function(wrap_pyfunction!(annotations_on_op, m)?)?;
+    m.add_function(wrap_pyfunction!(comments_on_op, m)?)?;
+    m.add_function(wrap_pyfunction!(annotation_history_op, m)?)?;
+    m.add_function(wrap_pyfunction!(comment_history_op, m)?)?;
+    m.add_function(wrap_pyfunction!(open_items_op, m)?)?;
+    m.add_function(wrap_pyfunction!(sync_git_op, m)?)?;
+    m.add_function(wrap_pyfunction!(reingest_merged_commits_op, m)?)?;
+    m.add_function(wrap_pyfunction!(activate_config_op, m)?)?;
+    m.add_function(wrap_pyfunction!(lsp_status_op, m)?)?;
+    m.add_function(wrap_pyfunction!(lsp_definition_op, m)?)?;
+    m.add_function(wrap_pyfunction!(lsp_override_edges_op, m)?)?;
+    m.add_function(wrap_pyfunction!(backfill_commit_index_op, m)?)?;
+    m.add_function(wrap_pyfunction!(backfill_commit_messages_op, m)?)?;
+    m.add_function(wrap_pyfunction!(doc_names_op, m)?)?;
+    m.add_function(wrap_pyfunction!(doc_description_op, m)?)?;
+    m.add_function(wrap_pyfunction!(doc_text_op, m)?)?;
+    m.add_function(wrap_pyfunction!(skill_names_op, m)?)?;
+    m.add_function(wrap_pyfunction!(skill_description_op, m)?)?;
+    m.add_function(wrap_pyfunction!(skill_text_op, m)?)?;
+    m.add_function(wrap_pyfunction!(coldstart_build_graph_op, m)?)?;
+    m.add_function(wrap_pyfunction!(is_excluded_op, m)?)?;
+    m.add_function(wrap_pyfunction!(project_files_op, m)?)?;
+    m.add_function(wrap_pyfunction!(find_marker_op, m)?)?;
+    m.add_function(wrap_pyfunction!(record_project_op, m)?)?;
+    m.add_function(wrap_pyfunction!(last_project_for_op, m)?)?;
+    m.add_function(wrap_pyfunction!(project_state_file_op, m)?)?;
+    m.add_function(wrap_pyfunction!(config_json_op, m)?)?;
+    m.add_function(wrap_pyfunction!(embedding_settings_op, m)?)?;
+    m.add_function(wrap_pyfunction!(visualize_op, m)?)?;
     Ok(())
 }

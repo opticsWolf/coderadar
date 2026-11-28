@@ -316,6 +316,97 @@ fn watch_changes_op(
                 '})\n'
             )
             facade.write_text(text, encoding="utf-8")
+        if "coldstart_build_graph = _native.coldstart_build_graph" not in text:
+            text += (
+                "
+# Unit S1: engine-backed helpers used by the module shims.
+"
+                "from ._native import (  # noqa: F401 - re-export the Rust error taxonomy
+"
+                "    ContentUnavailable, EngineError, InvalidRequest, MissingDependency,
+"
+                "    MutationFailed, NoEmbeddings, NoExtension, NoIndex, NotFound, OpError,
+"
+                "    TemporalUnsupported,
+"
+                ")
+
+"
+                '__all__ = sorted(set(__all__) | {
+'
+                '    "ContentUnavailable", "EngineError", "InvalidRequest",
+'
+                '    "MissingDependency", "MutationFailed", "NoEmbeddings", "NoExtension",
+'
+                '    "NoIndex", "NotFound", "OpError", "TemporalUnsupported",
+'
+                '})
+'
+            )
+            for name in (
+                "doc_description", "doc_names", "doc_text", "skill_description",
+                "skill_names", "skill_text", "coldstart_build_graph", "is_excluded",
+                "project_files", "find_marker", "record_project", "last_project_for",
+                "project_state_file", "config_json", "embedding_settings", "visualize",
+            ):
+                text += f"{name} = _native.{name}
+"
+            facade.write_text(text, encoding="utf-8")
+        if "sync_git = _native.sync_git" not in text:
+            text += (
+                "
+# Unit S1: ops names the engine already provides.
+"
+                "annotate = _native.annotate
+"
+                "comment = _native.comment
+"
+                "revise_annotation = _native.revise_annotation
+"
+                "retire_annotation = _native.retire_annotation
+"
+                "annotations_on = _native.annotations_on
+"
+                "comments_on = _native.comments_on
+"
+                "annotation_history = _native.annotation_history
+"
+                "comment_history = _native.comment_history
+"
+                "open_items = _native.open_items
+"
+                "sync_git = _native.sync_git
+"
+                "reingest_merged_commits = _native.reingest_merged_commits
+"
+                "backfill_commit_index = _native.backfill_commit_index
+"
+                "backfill_commit_messages = _native.backfill_commit_messages
+"
+                "activate_config = _native.activate_config
+"
+                "lsp_status = _native.lsp_status
+"
+                "lsp_definition = _native.lsp_definition
+"
+                "lsp_override_edges = _native.lsp_override_edges
+"
+                "__all__ = sorted(set(__all__) | {
+"
+                '    "annotate", "annotation_history", "annotations_on",
+'
+                '    "backfill_commit_index", "backfill_commit_messages", "comment",
+'
+                '    "comment_history", "comments_on", "open_items",
+'
+                '    "reingest_merged_commits", "retire_annotation",
+'
+                '    "revise_annotation", "sync_git",
+'
+                "})
+"
+            )
+            facade.write_text(text, encoding="utf-8")
         if "from .resolvers import" not in text:
             text += (
                 "\n# Unit 46: Rust-backed framework resolver classes.\n"

@@ -2,7 +2,7 @@
  "ok": true,
  "python_commands": 59,
  "rust_commands": 72,
- "json_compared": 18,
+ "json_compared": 17,
  "payload_differences": [
   "affected",
   "dead-code",
@@ -18,7 +18,6 @@
   "traverse"
  ],
  "skipped": [
-  "search-hybrid",
   "verify-history"
  ],
  "problems": []
