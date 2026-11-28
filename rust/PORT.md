@@ -5,6 +5,7 @@ Canonical copy of the decisions and state for moving the Python surface
 crates. Started 2026-02 (repo at 0.16.0, `44c6cf9`).
 
 Detailed forward plan for the remaining gaps: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
+Completion plan (protocol, CLI contract, Python surface, embedding, cutover): [`FULL_PORT_PLAN.md`](FULL_PORT_PLAN.md).
 
 ## Decisions (user, step 0)
 

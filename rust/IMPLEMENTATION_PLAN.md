@@ -3,6 +3,7 @@
 Status: **A, B, D, E and F complete (Units 39–40, 42–44); C partial (Unit 41). Post-plan Units 45–49 closed LSP hardening, lifecycle, resolver classes, live call-edge confidence and route refresh. A fresh audit supersedes the numeric baseline below.**
 Prepared: after commit `cab7ff1` (`dev_rustify`)
 Canonical decisions/state: [`PORT.md`](PORT.md)  
+Completion plan: [`FULL_PORT_PLAN.md`](FULL_PORT_PLAN.md)  
 Graph evidence: refreshed by `coderadar reindex --full` in Unit 49; see the fresh audit at the end of `PORT.md`.
 
 ## 0. Post-plan residuals (Unit 50 audit)
