@@ -104,8 +104,10 @@ pub fn comment_history(id: &str) -> Result<Value, String> {
 /// Every unchecked task item, optionally scoped to one id/prefix.
 pub fn open_items(scope: Option<&str>) -> Result<Value, String> {
     let store = crate::state::store()?;
-    let items = ann::open_items(&store, scope).map_err(err)?;
-    Ok(json!({"items": json_of(items, "open_items")?}))
+    let rows = ann::open_items(&store, scope).map_err(err)?;
+    let count = rows.len();
+    let items = json_of(rows, "open_items")?;
+    Ok(json!({"scope": scope, "count": count, "items": items}))
 }
 
 /// The store's own rows as one JSON document.

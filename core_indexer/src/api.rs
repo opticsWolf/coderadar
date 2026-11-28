@@ -292,6 +292,8 @@ pub fn entity_json(snap: &ProjectedGraph, entity_id: &str) -> Option<Value> {
         insert(&mut d, "id", c.id.clone());
         insert(&mut d, "name", c.name.clone());
         insert(&mut d, "grammar_kind", c.grammar_kind.clone());
+        insert(&mut d, "name_span_start", c.name_span.start);
+        insert(&mut d, "name_span_end", c.name_span.end);
         insert(&mut d, "kind", "class");
         insert(&mut d, "parent_module", c.parent_module.clone());
         if let Some((file, _)) = c.id.rsplit_once("::") {
@@ -315,6 +317,7 @@ pub fn entity_json(snap: &ProjectedGraph, entity_id: &str) -> Option<Value> {
             c.bases.iter().map(|b| b.name.clone()).collect::<Vec<_>>(),
         );
         insert(&mut d, "has_embedding", !c.embedding.vec.is_empty());
+        insert(&mut d, "embedding_hash", c.embedding.hash.clone());
         if let Some(m) = snap.modules.get(&c.parent_module) {
             insert(&mut d, "file_path", m.path.to_string_lossy().to_string());
         }
@@ -335,6 +338,7 @@ pub fn entity_json(snap: &ProjectedGraph, entity_id: &str) -> Option<Value> {
         insert(&mut d, "type_aliases", m.type_aliases.clone());
         insert(&mut d, "file_version", m.file_version);
         insert(&mut d, "has_embedding", !m.embedding.vec.is_empty());
+        insert(&mut d, "embedding_hash", m.embedding.hash.clone());
         return Some(Value::Object(d));
     }
     if let Some(i) = snap.imports.get(entity_id) {
@@ -344,6 +348,10 @@ pub fn entity_json(snap: &ProjectedGraph, entity_id: &str) -> Option<Value> {
         insert(&mut d, "kind", "import");
         insert(&mut d, "line", i.line);
         insert(&mut d, "start_line", i.line);
+        insert(&mut d, "name_span_start", i.name_span.start);
+        insert(&mut d, "name_span_end", i.name_span.end);
+        insert(&mut d, "has_embedding", !i.embedding.vec.is_empty());
+        insert(&mut d, "embedding_hash", i.embedding.hash.clone());
         return Some(Value::Object(d));
     }
     if let Some(k) = snap.constants.get(entity_id) {
@@ -355,6 +363,9 @@ pub fn entity_json(snap: &ProjectedGraph, entity_id: &str) -> Option<Value> {
             insert(&mut d, "annotation", a.clone());
         }
         insert(&mut d, "span_start", k.span.start);
+        insert(&mut d, "span_end", k.span.end);
+        insert(&mut d, "has_embedding", !k.embedding.vec.is_empty());
+        insert(&mut d, "embedding_hash", k.embedding.hash.clone());
         return Some(Value::Object(d));
     }
     if let Some(t) = snap.type_aliases.get(entity_id) {
@@ -363,6 +374,10 @@ pub fn entity_json(snap: &ProjectedGraph, entity_id: &str) -> Option<Value> {
         insert(&mut d, "name", t.name.clone());
         insert(&mut d, "kind", "type_alias");
         insert(&mut d, "target", t.target.clone());
+        insert(&mut d, "span_start", t.span.start);
+        insert(&mut d, "span_end", t.span.end);
+        insert(&mut d, "has_embedding", !t.embedding.vec.is_empty());
+        insert(&mut d, "embedding_hash", t.embedding.hash.clone());
         return Some(Value::Object(d));
     }
     if let Some(r) = snap.routes.get(entity_id) {
@@ -377,6 +392,42 @@ pub fn entity_json(snap: &ProjectedGraph, entity_id: &str) -> Option<Value> {
         return Some(Value::Object(d));
     }
     None
+}
+
+/// One module's children in the FFI binding's shape: full entity rows for
+/// classes and functions, `raw`/`kind` imports, and `id`/`name` constants.
+/// Returns `None` when the id is not a module.
+pub fn module_children(snap: &ProjectedGraph, module_id: &str) -> Option<Value> {
+    let module = snap.modules.get(module_id)?;
+    let entities = |ids: &Vec<String>| -> Vec<Value> {
+        ids.iter().filter_map(|id| entity_json(snap, id)).collect()
+    };
+    let imports: Vec<Value> = module
+        .imports
+        .iter()
+        .filter_map(|id| snap.imports.get(id.as_str()))
+        .map(|i| {
+            json!({
+                "id": i.id,
+                "raw": i.raw,
+                "kind": format!("{:?}", i.kind),
+                "line": i.line,
+            })
+        })
+        .collect();
+    let constants: Vec<Value> = module
+        .constants
+        .iter()
+        .filter_map(|id| snap.constants.get(id.as_str()))
+        .map(|c| json!({"id": c.id, "name": c.name}))
+        .collect();
+    Some(json!({
+        "module_id": module_id,
+        "classes": entities(&module.classes),
+        "functions": entities(&module.functions),
+        "imports": imports,
+        "constants": constants,
+    }))
 }
 
 /// A sparse row for a call-graph id with no concept row (external/builtin).
@@ -583,6 +634,14 @@ pub fn traverse(
     let mut frontier: Vec<(String, usize, String)> = Vec::new();
     let root = crate::canonical_lookup_id(entity_id);
     seen.insert(root.clone());
+    // The walk reports its start at depth 0, like `traverse_bfs`.
+    if let Some(mut row) = entity_json(snap, &root) {
+        if let Value::Object(ref mut map) = row {
+            insert(map, "depth", 0usize);
+            insert(map, "edge_type", "");
+        }
+        out.push(row);
+    }
     frontier.push((root, 0, "self".to_string()));
 
     while let Some((id, depth, _edge)) = frontier.pop() {
@@ -966,6 +1025,9 @@ pub fn scaffolding(
             stats.resolved_via_id_fallback
         ),
     );
+    // The binding carries an empty snippet on the stats row too; the
+    // renderer and agent schemas read `snippet` unconditionally.
+    insert(&mut stats_row, "snippet", "");
     rows.push(Value::Object(stats_row));
     Ok(rows)
 }

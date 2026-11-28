@@ -1287,3 +1287,37 @@ prebuilt runtime. The drift measurement needs a pinned reference env
 `python -m pytest tests/test_mcp_conformance.py tests/test_import_surface.py`,
 `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`
 (628 + 13 + 17) and `rust-anything gate rust/coderadar` (4447/4447, 3.0x).
+
+## Row-shape parity and a deterministic CLI harness (Unit 52)
+
+R0 is closed. The gap was not one bug: `api::entity_json` had drifted from
+`ffi_convert.rs`, and the parity harness had been comparing two CLIs that
+each rewrote the live store between runs, so its "payload differences" mixed
+port gaps with cold-start churn.
+
+What changed:
+
+- `api::entity_json` now emits the binding's full field set (classes gained
+  `name_span_*` and `embedding_hash`, modules `embedding_hash`, imports
+  `name_span_*`/`has_embedding`/`embedding_hash`, constants and aliases
+  `span_end`/`has_embedding`/`embedding_hash`).
+- New `api::module_children` returns full entity rows plus the binding's
+  import/constant projections; `traverse` reports its start at depth 0 and
+  echoes `edge_kinds: null`; `open_items` returns `{scope, items, count}`;
+  scaffolding rows always carry `snippet`.
+- `rust/cli_parity.py` no longer probes the repository. It builds
+  `core_indexer`, installs `_core.pyd` beside `py_agent/src` (so the Python
+  reference runs the same engine revision), indexes
+  `rust/golden/parity_fixture` once, then runs each probe against a private
+  copy with `-C` for both sides. Rows are sorted by rank then id before
+  comparison because `graph.functions` is a `HashMap` and tie order is not a
+  contract.
+
+Result: **15/15 payloads identical**, 72/59 command inventory, `--help` and
+exit codes green. Guard tests live in
+`core_indexer/src/graph/tests/api_rows_tests.rs`.
+
+Remaining plan units: S5 (`agent.graphrag`, `query.planner/executor`), S6
+(`embedding.dedup`), S7 (`mcp.{lazy,lifecycle,roots,startup}`), E2 (embedding
+drift contract), R1/R3 (artifact rename + packaging), R2/A2 (shadow cutover
+approval + final audit) — about **5-6 days**.

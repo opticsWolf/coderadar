@@ -3,6 +3,7 @@ use super::*;
 // location (they were in scope via the old single-file graph.rs header).
 use petgraph::graph::NodeIndex;
 
+mod api_rows_tests;
 mod call_graph_tests;
 mod embedding_tests;
 mod import_graph_tests;

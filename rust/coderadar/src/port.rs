@@ -379,30 +379,8 @@ pub fn module_children(module_id: String) -> Result<Value, String> {
     }
     let module_id = canonical_entity_id(module_id)?;
     let snap = graph()?;
-    let Some(module) = snap.modules.get(module_id.as_str()) else {
-        return Err(format!(
-            "NotFound: Module `{module_id}` not found or error: not in graph"
-        ));
-    };
-    let rows = |ids: &[String]| -> Vec<Value> {
-        ids.iter()
-            .map(|id| {
-                let entity = core_indexer::api::entity_json(&snap, id);
-                json!({
-                    "name": entity.as_ref().and_then(|e| e.get("name")).cloned().unwrap_or(Value::Null),
-                    "id": id,
-                    "line": entity.as_ref().and_then(|e| e.get("line")).cloned().unwrap_or(Value::Null),
-                })
-            })
-            .collect()
-    };
-    Ok(json!({
-        "module_id": module_id,
-        "classes": rows(&module.classes),
-        "functions": rows(&module.functions),
-        "imports": rows(&module.imports),
-        "constants": rows(&module.constants),
-    }))
+    core_indexer::api::module_children(&snap, &module_id)
+        .ok_or_else(|| format!("NotFound: Module `{module_id}` not found or error: not in graph"))
 }
 
 /// Port of `resolve` (`py_agent/src/coderadar/ops.py:531`).
@@ -663,6 +641,11 @@ pub fn traverse(
     let canonical = canonical_entity_id(entity_id)?;
     let snap = graph()?;
     let kinds = edge_kinds.unwrap_or_default();
+    let echo_kinds = if kinds.is_empty() {
+        Value::Null
+    } else {
+        serde_json::json!(kinds)
+    };
     let core_direction = match direction {
         "upstream" => "in",
         "downstream" => "out",
@@ -680,7 +663,7 @@ pub fn traverse(
         "entity_id": canonical,
         "direction": direction,
         "max_depth": max_depth.min(10),
-        "edge_kinds": kinds,
+        "edge_kinds": echo_kinds,
         "results": results,
         "unresolved": 0,
     }))

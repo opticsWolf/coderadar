@@ -13,7 +13,7 @@ The Unit 49/50 audit changed the residual list. Names are covered; the
 
 | Gap | Measured | Effort |
 |---|---|---|
-| CLI `--format` | 42/55 Python commands vs 12/55 Rust | 1.5-2 days |
+| CLI `--format` | 42/42 in both; 15/15 payloads identical on the fixture | done |
 | CLI flags on shared commands | 25 commands missing at least one Python flag | included above |
 | Captured `--help` | 18 of 21 captured commands execute `--help` as an argument; `reindex --help` hangs | 0.5 day |
 | MCP parameters | 7 tools ignore documented args (`node.include_neighbors`, `explore.symbols/direction/max_files`, `traverse.edge_kinds`, `reindex.with_embeddings/full`, `verify_history.all_generations`, `set_project.confirm`); mutations use `apply` not `dry_run` | 0.5 day |

@@ -58,3 +58,5 @@ dist/
 Thumbs.db
 .coderadar/
 .fastembed_cache/
+.testdeps/
+py_agent/src/coderadar/_core.pyd

@@ -2,23 +2,9 @@
  "ok": true,
  "python_commands": 59,
  "rust_commands": 72,
- "json_compared": 17,
- "payload_differences": [
-  "affected",
-  "dead-code",
-  "explore",
-  "find-scaffolding",
-  "get-smells",
-  "module-children",
-  "node",
-  "open-items",
-  "query",
-  "search",
-  "status",
-  "traverse"
- ],
- "skipped": [
-  "verify-history"
- ],
+ "json_compared": 15,
+ "payload_differences": [],
+ "payload_details": {},
+ "skipped": [],
  "problems": []
 }

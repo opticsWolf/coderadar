@@ -1,7 +1,7 @@
 # Full-port plan — closing every remaining gap
 
-Status: **in progress**. P0 and P1 landed; P2/P3 partially landed (measured
-below). Canonical decisions: [`PORT.md`](PORT.md).
+Status: **in progress**. P0, P1 and R0 landed; P2/P3 partially landed
+(measured below). Canonical decisions: [`PORT.md`](PORT.md).
 Forward plan for the original gap set: [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md).
 This document supersedes both as the *completion* plan: it lists every
 measured gap between the Rust product and the Python reference, and the
@@ -22,7 +22,7 @@ are partially done.
 | Gate | Definition | Status |
 |---|---|---|
 | **D1 Protocol** | `coderadar mcp serve` is MCP-spec valid and schema-compatible with the Python server for all 35 shared tools. | ✅ 49 schema-valid tools; conformance harness green |
-| **D2 CLI contract** | Every Python command accepts the same options, defaults, exit codes and output formats. | ✅ inventory, `--help`, exit codes and `--format` green; payload differences tracked (R0) |
+| **D2 CLI contract** | Every Python command accepts the same options, defaults, exit codes and output formats. | ✅ inventory, `--help`, exit codes, `--format` and 15/15 payloads green |
 | **D3 Python surface** | `import coderadar.<module>` resolves the same public names, all delegating to Rust. | ⚠️ 166/342 (48.5%) public names; 8 modules still absent |
 | **D4 Numeric fidelity** | Embedding vectors match Python exactly, or a recorded tolerance is enforced by a test. | ⚠️ dynamic-runtime build path shipped; measurement pending |
 | **D5 Cutover** | Rust binary is installed as `coderadar`; Python survives only as a shim; packaging reproducible. | ⚠️ `cutover.py` exists, never applied |
@@ -41,6 +41,7 @@ reference implementation until D3 lands, then moves to `reference/`.
 |---|---|---|---|
 | CLI command names | 55 | 55 | 0 |
 | CLI `--format` | 42 | 42 | 0 |
+| CLI payload rows (fixture) | 15 payloads | 15 identical | 0 |
 | CLI other flags | — | — | 0 (aliases accepted both ways) |
 | CLI `--help` handled | 55 | 55 | 0 |
 | MCP tool names | 35 | 49 | 0 (+14 Rust extras) |
@@ -541,7 +542,7 @@ What landed, and the evidence for each unit.
 - Evidence: `python rust/mcp_conformance.py` ->
   `MCP conformance ok: 49 tools, 3 resources`; `tests/test_mcp_conformance.py`.
 
-### P1 — CLI contract (done, payload residual R0)
+### P1 — CLI contract (done)
 
 - 42/42 Python `--format` commands now emit JSON; a global `--format` covers
   every native command, captured commands parse it themselves.
@@ -555,15 +556,43 @@ What landed, and the evidence for each unit.
   `rust/golden/cli_usage.json`; help/version exit 0 and usage errors exit 2.
 - Binary identity: clap name `coderadar`, version `0.16.0 (spec v3.6)`.
 - Evidence: `python rust/cli_parity.py` -> `CLI parity ok: 72/59 commands,
-  18 JSON payloads compared`; `rust/golden/cli_parity.json` records the
-  11 payload differences.
-- **R0 (new, engine)**: persisted rows still serialize a narrower shape than
-  the Python engine. `search` rows lack `embedding_hash`,
-  `name_span_start/end`; `query` rows differ in field set. The source is
-  `core_indexer/src/storage.rs` (around line 4690) rather than
-  `api::entity_json`. Closing this needs a row-shape pass over the storage
-  reader; the plan tracks it as R0 rather than hiding it in "text output is
-  normalized".
+  15 JSON payloads compared`, zero payload differences.
+
+#### R0 — payload rows (landed)
+
+The probe used to run against the live repository, where the store is
+rewritten between the two runs (cold-start replay), so row sets differed for
+reasons that had nothing to do with the port. It now:
+
+1. builds `core_indexer` and installs `_core.pyd` beside `py_agent/src`, so
+   both front doors run the same engine revision;
+2. indexes `rust/golden/parity_fixture` once with the Rust binary;
+3. gives each side its own copy of the indexed project per command, runs the
+   probe with `-C`, and compares normalised payloads.
+
+That turned 12 opaque "payload differences" into real fixes:
+
+- `api::entity_json` now matches `ffi_convert.rs`: classes carry
+  `name_span_start/end` and `embedding_hash`; modules carry
+  `embedding_hash`; imports carry `name_span_*`, `has_embedding`,
+  `embedding_hash`; constants and type aliases carry `span_end`,
+  `has_embedding`, `embedding_hash`.
+- `module_children` returns full entity rows for classes/functions and the
+  binding's `{id, raw, kind, line}` imports and `{id, name}` constants
+  (`core_indexer::api::module_children`).
+- `traverse` reports its start at `depth: 0` with `edge_type: ""`, and the
+  payload echoes `edge_kinds: null` when no kinds were requested.
+- `open_items` returns `{scope, items, count}`.
+- scaffolding rows always carry `snippet` (empty on the `scan-stats` row).
+
+Two comparison rules were added because the ordering is not a contract:
+`graph.functions` is a `HashMap`, so equally ranked findings come back in
+per-process order in BOTH implementations; the harness sorts rows by
+(`score` desc, id) before comparing, and ignores volatile keys (`root`,
+`store`, `indexed_at`, `age_seconds`, `config`, ...).
+
+Guard tests: `core_indexer/src/graph/tests/api_rows_tests.rs` pins the shared
+field set, the module-children projection and the traverse start row.
 
 ### P2 — Python surface (partial, measured)
 
@@ -615,11 +644,11 @@ against the recorded baseline) and 166/342 public names resolved
 
 | Unit | Scope | Effort |
 |---|---|---|
-| R0 | Align persisted row shape with `api::entity_json` (fields above) | 1-1.5 d |
 | S5 | `agent.graphrag` + `query.planner/executor` shims (needs 3 exports) | 0.5 d |
 | S6 | `embedding.dedup` shims (needs 3 exports) | 0.5 d |
 | S7 | `mcp.{lazy,lifecycle,roots,startup}` shims (needs `McpSession` types) | 1-1.5 d |
 | E2 | Pin the reference runtime and record the drift contract | 1 d |
+| R0 | ~~row shape~~ done: fixture harness compares 15 payloads, 0 differences | — |
 | R1/R3 | Rename the artifact, packaging matrix, clean-machine smoke | 1.5 d |
 | R2/A2 | Shadow cutover with approval, final audit | 1 d |
-| **Total** | | **~7-8 d** |
+| **Total** | | **~5-6 d** |
