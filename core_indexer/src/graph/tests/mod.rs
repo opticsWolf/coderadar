@@ -5,6 +5,7 @@ use petgraph::graph::NodeIndex;
 
 mod api_rows_tests;
 mod call_graph_tests;
+mod embedding_parity_tests;
 mod embedding_tests;
 mod import_graph_tests;
 mod indexing_tests;

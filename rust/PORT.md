@@ -1411,3 +1411,27 @@ inside nine resolving modules: `cli` (65 click wrappers), `render` (42),
 
 New tests: `tests/test_facade_mcp_handles.py` (10 cases — custom build,
 failure message, restart, watchdog, handshake, lazy ask/trade-up/retarget).
+
+## Embedding drift contract (Unit 56)
+
+`fastembed` on both sides means the *same* model file
+(`qdrant/bge-small-en-v1.5-onnx-q`, `model_optimized.onnx`) and tokenizer, but
+the linked ONNX Runtime differs (Python 1.32.0 vs the `ort` crate's 1.31.0),
+and the quantized kernels do not round identically. E2 turns that from a
+known unknown into a recorded contract:
+
+- `rust/embedding_parity.py --python <reference-interpreter>` records the
+  corpus, its vectors and the reference versions into
+  `rust/golden/embedding_parity.json`.
+- `core_indexer/src/graph/tests/embedding_parity_tests.rs` (ignored by
+  default, loads the model) asserts the width, a max component drift within
+  the recorded tolerance, identical top-3 ranking, and pairwise cosine
+  agreement.
+
+Measured: **4.328e-4** max component drift, 2.460e-5 mean, 1.254e-4 max
+cosine drift, **identical ranking** on all 12 texts. Tolerance is 5e-4 —
+deliberately too tight for a different model to slip through.
+
+Note for CI: the reference runtime is not a dependency of this repo. On this
+machine it lives in the `coderadar-rs` uv tool venv
+(`uv/tools/coderadar-rs/Scripts/python.exe`); re-record with that path.

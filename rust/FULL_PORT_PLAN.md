@@ -50,7 +50,7 @@ reference implementation until D3 lands, then moves to `reference/`.
 | Python module public names | 342 public names | 210 resolvable | **132 inside 9 modules + 0 absent** |
 | Framework extraction parity | — | — | 23/23 fixtures identical |
 | Gate cases | — | 4,447 | exact |
-| Embedding max drift | — | ~2e-4 | ORT 1.31 vs 1.32 |
+| Embedding drift | — | **4.33e-4 max** (mean 2.46e-5) | contract: ≤5e-4 **and** identical top-3 |
 
 ---
 
@@ -681,7 +681,36 @@ liveness, and the lazy ask/trade-up rules), and `query.executor` delegates to
 the engine. `mcp.server` gained `serve`/`set_launch_cwd`. **No module is
 absent**; 210/342 public names resolve.
 
-### P3 — embeddings (mechanism shipped)
+### P3 — embeddings (contract recorded)
+
+Mechanism and contract are now both in place:
+
+- `rust/embedding_parity.py` records reference vectors from the Python
+  fastembed stack into `rust/golden/embedding_parity.json` (model, texts,
+  vectors, tolerance, reference versions).
+- `core_indexer/src/graph/tests/embedding_parity_tests.rs` is the contract:
+  same width, max component drift ≤ recorded tolerance, identical top-3
+  ranking, and pairwise cosine agreement ≤2e-4. It loads the ONNX model, so
+  it is `#[ignore]`d and run with
+  `cargo test -p core_indexer embedding_parity -- --ignored`.
+
+Measured with the reference runtime available on this machine
+(fastembed 0.9.1 / onnxruntime 1.32.0) against the Rust build
+(fastembed 7.8 / ORT ms@1.31.0), same `model_optimized.onnx` and tokenizer:
+
+| Metric | Value |
+|---|---|
+| max component drift | **4.328e-4** |
+| mean component drift | 2.460e-5 |
+| max pairwise cosine drift | 1.254e-4 |
+| top-3 ranking | identical for all 12 corpus texts |
+
+The tolerance is 5e-4: tight enough that a different model, tokenizer or
+preprocessing cannot pass, loose enough that int8 kernel scheduling does.
+The earlier ~2e-4 figure came from a different fastembed version pair; the
+load-bearing guarantee is the ranking identity, not the float ceiling.
+
+### P3b — original mechanism notes
 
 - `core_indexer` feature `dynamic-ort` adds `ort/load-dynamic`; the default
   build keeps fastembed's pinned prebuilt runtime.
@@ -706,9 +735,9 @@ absent**; 210/342 public names resolve.
 | Unit | Scope | Effort |
 |---|---|---|
 | ~~S7~~ | ~~`mcp.{lazy,lifecycle,roots,startup}` + `query.executor`~~ done: all modules resolve | — |
-| E2 | Pin the reference runtime and record the drift contract | 1 d |
+| ~~E2~~ | ~~drift contract~~ done: 4.33e-4 max, identical ranking, golden recorded | — |
 | R0 | ~~row shape~~ done: fixture harness compares 15 payloads, 0 differences | — |
 | R1/R3 | Rename the artifact, packaging matrix, clean-machine smoke | 1.5 d |
 | R2/A2 | Shadow cutover with approval, final audit | 1 d |
 | S8 | close the 134 names inside `cli`/`render`/`__init__` (command wrappers, renderer exports, mutation types) | 1-1.5 d |
-| **Total** | | **~2-3 d** |
+| **Total** | | **~1.5-2.5 d** |
