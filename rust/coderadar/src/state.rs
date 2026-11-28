@@ -92,11 +92,17 @@ pub fn load_from(snapshot: &Path, root: &Path) -> Result<(), String> {
 }
 
 /// The loaded projection, if any.
+///
+/// Engine mutations commit a fresh `Arc` into `GLOBAL_GRAPH`, so prefer that
+/// live snapshot over the one cached by `load`: otherwise a route upserted
+/// by `refresh_framework_file` is persisted but invisible to `resolve`.
 pub fn projection() -> Option<Arc<ProjectedGraph>> {
-    projection_slot()
+    let loaded = projection_slot()
         .read()
         .ok()
-        .and_then(|guard| guard.clone())
+        .and_then(|guard| guard.clone());
+    loaded.as_ref()?;
+    core_indexer::api::live_snapshot().or(loaded)
 }
 
 /// The project root the loaded projection came from.

@@ -1206,7 +1206,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             let target = path.unwrap_or_else(|| project.clone());
             let target = target.to_string_lossy().to_string();
             let _activation = core_indexer::api::activate_config(&target);
-            let result = core_indexer::api::analyze(&target, true, &[])?;
+            let result = port::analyze_with_routes(&target, true, &[])?;
             state::clear();
             state::load(Path::new(&target))?;
             let _ = force;

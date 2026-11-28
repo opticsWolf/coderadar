@@ -62,6 +62,16 @@ pub fn load_projection(db_path: &str, root: Option<&str>) -> Result<Arc<Projecte
     Ok(snapshot)
 }
 
+/// Clone the live engine projection, if a graph is loaded.
+///
+/// Engine mutations commit a new `Arc`, so readers that cache the `Arc`
+/// returned by `load_projection` can go stale. Callers such as the Rust app's
+/// `state::projection` use this to see the same graph the engine just wrote.
+pub fn live_snapshot() -> Option<Arc<ProjectedGraph>> {
+    let guard = crate::GLOBAL_GRAPH.read();
+    guard.as_ref().map(|graph| graph.snapshot())
+}
+
 fn insert(map: &mut Map<String, Value>, key: &str, value: impl Into<Value>) {
     map.insert(key.to_string(), value.into());
 }

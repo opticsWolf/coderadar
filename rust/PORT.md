@@ -1073,3 +1073,20 @@ new recorded unit.
   detection, claims, one-file extraction, Django resolution and the
   `resolution.py` helpers through the compiled extension.
 - Gate 4447/4447, fmt/clippy/cargo test clean, cutover 4/4.
+
+## File-scoped route refresh closure (post-plan)
+
+- `core_indexer::api::live_snapshot()` exposes the live engine projection.
+  `state::projection()` prefers it over the `Arc` cached by `state::load`,
+  while still returning `None` before a load. Engine mutations commit a new
+  `Arc`, so this closes the gap where `refresh_framework_file` upserted a
+  route but `ops.resolve('/health')` read a stale snapshot.
+- Added `port::analyze_with_routes`, a best-effort DR-10 hook that runs
+  whole-tree extraction after `core_indexer::api::analyze`. The facade's
+  `analyze`/`reindex_op` and the CLI's `init` now use it, matching Python's
+  `analyze()` route pass without changing the analyze report.
+- `tests/test_facade_routes.py` proves the initial `/health` route, an added
+  `/orders/:id` route surviving a fresh load, and removal of `/health` after
+  a file update. Both facade and CLI smoke now resolve routes.
+- Gate 4447/4447, clippy/fmt/cargo test clean (628 core tests), cutover 4/4,
+  facade pytest 3 passed.

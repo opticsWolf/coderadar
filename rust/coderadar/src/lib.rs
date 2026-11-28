@@ -1471,8 +1471,9 @@ fn analyze_op(
     create_store: bool,
     exclude: Option<Vec<String>>,
 ) -> PyResult<Py<PyAny>> {
-    let report = core_indexer::api::analyze(&root, create_store, &exclude.unwrap_or_default())
-        .map_err(error)?;
+    let report =
+        crate::port::analyze_with_routes(&root, create_store, &exclude.unwrap_or_default())
+            .map_err(error)?;
     crate::state::load(std::path::Path::new(&root)).map_err(error)?;
     crate::pyconv::ToPy::to_py(&report, py)
 }
@@ -1607,8 +1608,8 @@ fn reindex_op(py: Python<'_>, root: Option<String>) -> PyResult<Py<PyAny>> {
         .map(std::path::PathBuf::from)
         .or_else(crate::state::root)
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-    let report =
-        core_indexer::api::analyze(&root_path.to_string_lossy(), false, &[]).map_err(error)?;
+    let report = crate::port::analyze_with_routes(&root_path.to_string_lossy(), false, &[])
+        .map_err(error)?;
     crate::state::load(&root_path).map_err(error)?;
     value_result(py, Ok(report))
 }

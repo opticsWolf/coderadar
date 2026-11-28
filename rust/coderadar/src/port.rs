@@ -4058,6 +4058,21 @@ pub fn run_framework_extraction(root: serde_json::Value) -> Result<serde_json::V
     Ok(report)
 }
 
+/// Full analyze plus the DR-10 framework-route hook.
+///
+/// Python's `analyze` runs extraction best-effort after the Rust index so a
+/// fresh-session `resolve('/health')` can see persisted routes. Extraction
+/// failures never fail the index; the analyze report stays byte-identical.
+pub fn analyze_with_routes(
+    root: &str,
+    create_store: bool,
+    exclude: &[String],
+) -> Result<serde_json::Value, String> {
+    let report = core_indexer::api::analyze(root, create_store, exclude)?;
+    let _ = run_framework_extraction(serde_json::json!(root));
+    Ok(report)
+}
+
 /// One-file framework extraction (`framework.py::refresh_framework_file`).
 pub fn refresh_framework_file(
     root: serde_json::Value,
