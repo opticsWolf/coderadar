@@ -23,7 +23,7 @@ are partially done.
 |---|---|---|
 | **D1 Protocol** | `coderadar mcp serve` is MCP-spec valid and schema-compatible with the Python server for all 35 shared tools. | ✅ 49 schema-valid tools; conformance harness green |
 | **D2 CLI contract** | Every Python command accepts the same options, defaults, exit codes and output formats. | ✅ inventory, `--help`, exit codes, `--format` and 15/15 payloads green |
-| **D3 Python surface** | `import coderadar.<module>` resolves the same public names, all delegating to Rust. | ⚠️ 181/342 (52.9%) public names; 5 modules still absent |
+| **D3 Python surface** | `import coderadar.<module>` resolves the same public names, all delegating to Rust. | ⚠️ 189/342 (55.3%) public names; 4 modules still absent |
 | **D4 Numeric fidelity** | Embedding vectors match Python exactly, or a recorded tolerance is enforced by a test. | ⚠️ dynamic-runtime build path shipped; measurement pending |
 | **D5 Cutover** | Rust binary is installed as `coderadar`; Python survives only as a shim; packaging reproducible. | ⚠️ `cutover.py` exists, never applied |
 | **D6 Closeout** | A committed audit script reports zero gaps; full verification matrix green. | ⚠️ `cli_parity.py` + `mcp_conformance.py` + import test committed |
@@ -621,20 +621,26 @@ Landed after the first pass (S5/S6):
   `GraphRAGContextBuilder`, `GraphRAGPipeline`, `QueryPlanner` over
   `api::graphrag_build_context` / `api::graphrag_execute` (compression,
   skeletonising, token estimate and truncation in Rust).
+- `mcp.roots`: `ResolvedRoot`, `uri_to_path`, `resolve_project_root`,
+  `resolve_from_client_roots`, `resolve_selector`, `adopt_project_root`,
+  `describe`, `find_marker` over `core_indexer::mcp_runtime`. Fixing this
+  surfaced two engine bugs: the walk-up crossed `$HOME` (Python stops at it)
+  and canonical paths kept the Windows verbatim prefix, so root comparisons
+  failed against `Path.cwd()`.
 
 Still absent, recorded in `rust/golden/import_surface_pending.json`:
 
 | Module | Why it needs another unit |
 |---|---|
 | `query.executor` | `MacrameQuery`/`MacrameSnapshot` wrap ledger primitives the engine already exposes as ops |
-| `mcp.lazy`, `mcp.lifecycle`, `mcp.roots`, `mcp.startup` | need the `mcp_runtime` types (`LazyRootRetry`, `ParentWatchdog`, `BackgroundIndex`, roots ladder) exported as Python classes |
+| `mcp.lazy`, `mcp.lifecycle`, `mcp.startup` | need the process/thread handles (`LazyRootRetry` glue, `ParentWatchdog`, `BackgroundIndex`) shaped for the Python SDK |
 
 The surface is measured by `python rust/import_surface.py` (rewrites the
 baseline) and `--check` fails on regression.
 
 Evidence: `python -m pytest tests/test_import_surface.py` (passes; asserted
-against the recorded baseline) and 181/342 public names resolved
-(31.3% -> 52.9%).
+against the recorded baseline) and 189/342 public names resolved
+(31.3% -> 55.3%).
 
 ### P3 — embeddings (mechanism shipped)
 
@@ -666,4 +672,5 @@ against the recorded baseline) and 181/342 public names resolved
 | R1/R3 | Rename the artifact, packaging matrix, clean-machine smoke | 1.5 d |
 | R2/A2 | Shadow cutover with approval, final audit | 1 d |
 | S5 | `query.executor` shims (`MacrameQuery`, `MacrameSnapshot`) | 0.5 d |
-| **Total** | | **~4-5 d** |
+| S7 | `mcp.{lazy,lifecycle,startup}` handles over `mcp_runtime` | 1 d |
+| **Total** | | **~3-4 d** |

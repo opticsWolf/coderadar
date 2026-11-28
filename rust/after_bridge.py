@@ -338,6 +338,9 @@ fn watch_changes_op(
                 "embed_preprocess_version", "embed_body", "embed_cache_key",
                 "stored_key_model", "content_hash", "embedding_batch", "plan_query",
                 "graphrag_build_context", "graphrag_execute",
+                "roots_uri_to_path", "roots_resolve_project_root",
+                "roots_resolve_from_client_roots", "roots_resolve_selector",
+                "roots_adopt_project_root", "roots_describe",
             ):
                 text += f"{name} = _native.{name}\n"
             facade.write_text(text, encoding="utf-8")

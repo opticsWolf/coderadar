@@ -2041,6 +2041,78 @@ fn graphrag_execute_op(
     )
 }
 
+// ── MCP roots ladder (plan unit S7) ──────────────────────────────────────
+
+#[pyfunction]
+#[pyo3(name = "roots_uri_to_path")]
+fn roots_uri_to_path(uri: &str) -> Option<String> {
+    core_indexer::mcp_runtime::uri_to_path(uri)
+        .map(|path| core_indexer::fs::display_path(&std::path::PathBuf::from("."), &path))
+}
+
+#[pyfunction]
+#[pyo3(
+    name = "roots_resolve_project_root",
+    signature = (client_roots=None, path_flag=None, cwd=None, launch_cwd=None)
+)]
+fn roots_resolve_project_root(
+    py: Python<'_>,
+    client_roots: Option<Vec<String>>,
+    path_flag: Option<String>,
+    cwd: Option<String>,
+    launch_cwd: Option<String>,
+) -> PyResult<Py<PyAny>> {
+    let launch = launch_cwd.map(std::path::PathBuf::from);
+    let resolved = core_indexer::mcp_runtime::resolve_root(
+        &client_roots.unwrap_or_default(),
+        path_flag.as_deref(),
+        cwd.as_deref(),
+        launch.as_deref(),
+    );
+    value_result(py, Ok(resolved.json()))
+}
+
+#[pyfunction]
+#[pyo3(name = "roots_resolve_from_client_roots")]
+fn roots_resolve_from_client_roots(py: Python<'_>, uris: Vec<String>) -> PyResult<Py<PyAny>> {
+    let resolved = core_indexer::mcp_runtime::resolve_client_roots(&uris)
+        .map(|root| root.json())
+        .unwrap_or(serde_json::Value::Null);
+    value_result(py, Ok(resolved))
+}
+
+#[pyfunction]
+#[pyo3(name = "roots_resolve_selector")]
+fn roots_resolve_selector(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
+    let resolved = core_indexer::mcp_runtime::resolve_selector(path)
+        .map(|root| root.json())
+        .unwrap_or(serde_json::Value::Null);
+    value_result(py, Ok(resolved))
+}
+
+/// Make a resolved root the process cwd; returns the previous one.
+#[pyfunction]
+#[pyo3(name = "roots_adopt_project_root")]
+fn roots_adopt_project_root(path: &str) -> PyResult<String> {
+    let previous = std::env::current_dir()
+        .map(|dir| dir.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    std::env::set_current_dir(path)
+        .map_err(|error| pyo3::exceptions::PyOSError::new_err(error.to_string()))?;
+    Ok(previous)
+}
+
+#[pyfunction]
+#[pyo3(name = "roots_describe", signature = (path, source, marker=None))]
+fn roots_describe(path: &str, source: &str, marker: Option<String>) -> String {
+    core_indexer::mcp_runtime::ResolvedRoot {
+        path: std::path::PathBuf::from(path),
+        source: source.to_string(),
+        marker: marker.map(std::path::PathBuf::from),
+    }
+    .describe()
+}
+
 /// Classify a natural-language query into an intent and engine route.
 #[pyfunction]
 #[pyo3(name = "plan_query")]
@@ -2453,6 +2525,12 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(framework_resolve_route, m)?)?;
     m.add_function(wrap_pyfunction!(embed_texts_op, m)?)?;
     m.add_function(wrap_pyfunction!(plan_query_op, m)?)?;
+    m.add_function(wrap_pyfunction!(roots_uri_to_path, m)?)?;
+    m.add_function(wrap_pyfunction!(roots_resolve_project_root, m)?)?;
+    m.add_function(wrap_pyfunction!(roots_resolve_from_client_roots, m)?)?;
+    m.add_function(wrap_pyfunction!(roots_resolve_selector, m)?)?;
+    m.add_function(wrap_pyfunction!(roots_adopt_project_root, m)?)?;
+    m.add_function(wrap_pyfunction!(roots_describe, m)?)?;
     m.add_function(wrap_pyfunction!(graphrag_build_context_op, m)?)?;
     m.add_function(wrap_pyfunction!(graphrag_execute_op, m)?)?;
     m.add_function(wrap_pyfunction!(embed_preprocess_version, m)?)?;

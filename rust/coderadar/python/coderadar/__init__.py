@@ -268,6 +268,12 @@ embedding_batch = _native.embedding_batch
 plan_query = _native.plan_query
 graphrag_build_context = _native.graphrag_build_context
 graphrag_execute = _native.graphrag_execute
+roots_uri_to_path = _native.roots_uri_to_path
+roots_resolve_project_root = _native.roots_resolve_project_root
+roots_resolve_from_client_roots = _native.roots_resolve_from_client_roots
+roots_resolve_selector = _native.roots_resolve_selector
+roots_adopt_project_root = _native.roots_adopt_project_root
+roots_describe = _native.roots_describe
 
 __all__ = sorted(set(__all__) | {
     "ContentUnavailable", "EngineError", "InvalidRequest", "MissingDependency",
@@ -278,6 +284,8 @@ __all__ = sorted(set(__all__) | {
     "embedding_settings", "embed_preprocess_version", "find_marker",
     "graphrag_build_context", "graphrag_execute", "is_excluded",
     "last_project_for", "plan_query", "project_files", "project_state_file",
+    "roots_adopt_project_root", "roots_describe", "roots_resolve_from_client_roots",
+    "roots_resolve_project_root", "roots_resolve_selector", "roots_uri_to_path",
     "record_project", "skill_description", "skill_names", "skill_text",
     "stored_key_model", "visualize",
 })

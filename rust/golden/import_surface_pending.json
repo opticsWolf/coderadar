@@ -1,17 +1,15 @@
 {
- "coverage": 0.5292,
+ "coverage": 0.5526,
  "declared_names": 342,
  "import_errors": {
   "mcp.lazy": "No module named 'coderadar_rs.mcp.lazy'",
   "mcp.lifecycle": "No module named 'coderadar_rs.mcp.lifecycle'",
-  "mcp.roots": "No module named 'coderadar_rs.mcp.roots'",
   "mcp.startup": "No module named 'coderadar_rs.mcp.startup'",
   "query.executor": "No module named 'coderadar_rs.query.executor'"
  },
  "missing_modules": [
   "mcp.lazy",
   "mcp.lifecycle",
-  "mcp.roots",
   "mcp.startup",
   "query.executor"
  ],
@@ -124,16 +122,6 @@
    "install",
    "make_middleware"
   ],
-  "mcp.roots": [
-   "ResolvedRoot",
-   "adopt_project_root",
-   "client_roots",
-   "describe",
-   "resolve_from_client_roots",
-   "resolve_project_root",
-   "resolve_selector",
-   "uri_to_path"
-  ],
   "mcp.server": [
    "serve",
    "set_launch_cwd"
@@ -206,5 +194,5 @@
    "InstallResult"
   ]
  },
- "resolved_names": 181
+ "resolved_names": 189
 }

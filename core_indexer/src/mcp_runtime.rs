@@ -60,8 +60,12 @@ impl ResolvedRoot {
 
 /// Walk up from `path` looking for `.coderadar/` or `.coderadar.toml`.
 pub fn find_marker(path: &Path) -> Option<PathBuf> {
+    let home = home_dir();
     let mut dir = path.to_path_buf();
     loop {
+        if !can_be_a_root(&dir, home.as_deref()) {
+            return None;
+        }
         if dir.join(".coderadar").is_dir() || dir.join(".coderadar.toml").is_file() {
             return Some(dir);
         }
@@ -71,8 +75,39 @@ pub fn find_marker(path: &Path) -> Option<PathBuf> {
     }
 }
 
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(|home| {
+            crate::fs::strip_verbatim_prefix(
+                std::fs::canonicalize(&home).unwrap_or_else(|_| PathBuf::from(home)),
+            )
+        })
+}
+
+/// Projects live inside the home directory, never at it or above it.
+fn can_be_a_root(directory: &Path, home: Option<&Path>) -> bool {
+    let Some(home) = home else {
+        return true;
+    };
+    directory != home && !home.starts_with(directory)
+}
+
+/// Resolve as far as the path exists, re-appending the missing tail.
+fn resolve_non_strict(path: &Path) -> Option<PathBuf> {
+    if let Ok(resolved) = std::fs::canonicalize(path) {
+        return Some(crate::fs::strip_verbatim_prefix(resolved));
+    }
+    let parent = path.parent()?;
+    let mut base = resolve_non_strict(parent)?;
+    if let Some(name) = path.file_name() {
+        base.push(name);
+    }
+    Some(base)
+}
+
 fn canonical_dir(path: &Path) -> Option<PathBuf> {
-    let mut resolved = std::fs::canonicalize(path).ok()?;
+    let mut resolved = resolve_non_strict(path)?;
     if !resolved.is_dir() {
         resolved.pop();
         if !resolved.is_dir() {
@@ -113,14 +148,17 @@ pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
         if text.starts_with('/') && text.as_bytes().get(2) == Some(&b':') {
             text.remove(0);
         }
-        return canonical_dir(Path::new(&text));
+        if text.is_empty() {
+            return None;
+        }
+        return Some(crate::fs::strip_verbatim_prefix(PathBuf::from(text)));
     }
     if uri.starts_with("file:") {
         return None;
     }
     let path = Path::new(uri);
     if path.is_absolute() {
-        canonical_dir(path)
+        Some(path.to_path_buf())
     } else {
         None
     }
@@ -285,7 +323,7 @@ pub fn resolve_selector(path: &str) -> Option<ResolvedRoot> {
 /// Resolve only over client roots, for the lazy first-tool retry.
 pub fn resolve_client_roots(uris: &[String]) -> Option<ResolvedRoot> {
     for uri in uris {
-        if let Some(path) = uri_to_path(uri) {
+        if let Some(path) = uri_to_path(uri).and_then(|path| canonical_dir(&path)) {
             if let Some(marker) = find_marker(&path) {
                 let root = marker.clone();
                 return Some(ResolvedRoot {
@@ -297,7 +335,7 @@ pub fn resolve_client_roots(uris: &[String]) -> Option<ResolvedRoot> {
         }
     }
     uris.iter()
-        .filter_map(|uri| uri_to_path(uri))
+        .filter_map(|uri| uri_to_path(uri).and_then(|path| canonical_dir(&path)))
         .map(|path| ResolvedRoot {
             path,
             source: "client root".to_string(),
@@ -934,7 +972,7 @@ mod tests {
         assert!(root.confirmed());
         assert_eq!(
             root.path,
-            std::fs::canonicalize(&project).expect("canonical")
+            crate::fs::strip_verbatim_prefix(std::fs::canonicalize(&project).expect("canonical"))
         );
         assert_eq!(root.source, "--path");
     }
@@ -942,7 +980,16 @@ mod tests {
     #[test]
     fn directory_candidate_is_canonical() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let root = resolve_root(&[], Some(dir.path().to_str().unwrap()), None, None);
+        // An unmarked cwd too, or the repo's own marker (a confirmed lower
+        // rung) would win over this unconfirmed --path candidate.
+        let cwd = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&cwd).expect("cwd");
+        let root = resolve_root(
+            &[],
+            Some(dir.path().to_str().unwrap()),
+            Some(cwd.to_str().unwrap()),
+            None,
+        );
         assert_eq!(root.source, "--path");
         assert!(root.path.is_dir());
     }
@@ -952,7 +999,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let uri = format!("file://{}", dir.path().display());
         let path = uri_to_path(&uri).expect("uri");
-        assert_eq!(path, std::fs::canonicalize(dir.path()).expect("canonical"));
+        assert_eq!(
+            path,
+            crate::fs::strip_verbatim_prefix(std::fs::canonicalize(dir.path()).expect("canonical"))
+        );
     }
 
     #[test]

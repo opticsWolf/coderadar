@@ -1353,3 +1353,33 @@ bridge under a private alias, records every public name under
 literals (invalid Python), so a re-bridge would have failed at the facade
 step. It is repaired and now also re-attaches the dedup/planner/GraphRAG
 exports.
+
+## MCP root ladder (Unit 54)
+
+`coderadar.mcp.roots` now delegates to `core_indexer::mcp_runtime`. The
+`ResolvedRoot` dataclass, `uri_to_path`, `resolve_project_root`,
+`resolve_from_client_roots`, `resolve_selector`, `adopt_project_root` and
+`describe` are shims over native functions; only `client_roots(session)`
+stays in Python because it calls the MCP SDK's session object (the decision
+about the answer is still Rust's).
+
+Two engine bugs surfaced while matching the reference tests:
+
+- `find_marker` walked past `$HOME`, so a stray `~/.coderadar` was adopted as
+  the root of every project underneath it. The walk now stops at home and
+  never treats home or its ancestors as a project root, like Python.
+- Canonical paths kept the Windows `\\?\` verbatim prefix, so a resolved root
+  never compared equal to `Path.cwd()`. Canonicalisation now strips it, and
+  `uri_to_path` decodes without requiring the path to exist (Python's
+  `uri_to_path` does not check the filesystem; `_canonical` does).
+
+`resolve_non_strict` also replaced `canonicalize` in `canonical_dir`, so a
+tool call naming a file below a real directory resolves to that directory
+instead of failing — the same rule Python applies.
+
+Guard tests: `tests/test_facade_roots.py` (10 cases mirroring
+`tests/mcp/test_root_resolution.py`) plus the existing `mcp_runtime` unit
+tests, which were updated for the non-verbatim canonical form.
+
+Surface: **189/342 (55.3%)**; four modules remain (`query.executor` and
+`mcp.{lazy,lifecycle,startup}`).
