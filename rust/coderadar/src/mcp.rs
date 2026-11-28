@@ -82,6 +82,7 @@ fn tool_names() -> Value {
         "coderadar_context",
         "coderadar_lsp_status",
         "coderadar_lsp_definition",
+        "coderadar_lsp_override",
         "coderadar_module_children",
         "coderadar_resolve",
         "coderadar_reindex",
@@ -483,6 +484,12 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             let root = crate::state::root()
                 .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
             core_indexer::api::lsp_definition_args(&root.to_string_lossy(), args)
+        }
+        "coderadar_lsp_override" => {
+            let root = crate::state::root()
+                .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
+            let edges = args.get("edges").unwrap_or(&Value::Null);
+            core_indexer::api::lsp_override_edges(&root.to_string_lossy(), edges)
         }
         "coderadar_context" => core_indexer::api::graphrag_mcp(args),
         "coderadar_diagnose" => crate::port::diagnose(

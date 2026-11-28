@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -17,7 +18,7 @@ use serde_json::{json, Value};
 struct ManagedServer {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<ChildStdout>,
+    inbox: Receiver<Result<Value, String>>,
     next_id: i64,
     opened: Vec<String>,
     last_activity: Instant,
@@ -32,15 +33,56 @@ impl Drop for ManagedServer {
         let _ = self.child.wait();
     }
 }
+/// Build the process described by a configured command string.
+///
+/// Commands are shell-expanded so quotes, environment variables, and npm's
+/// Windows `.cmd` shims behave the way the Python configuration intends.
+fn shell_command(command: &str) -> Command {
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new("cmd.exe");
+        cmd.args(["/D", "/S", "/C", command]);
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", command]);
+        cmd
+    }
+}
+
+/// Read one framed JSON-RPC message from a language server's stdout.
+fn read_message(reader: &mut BufReader<ChildStdout>) -> Result<Value, String> {
+    let mut length = None;
+    loop {
+        let mut line = String::new();
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|e| format!("EngineError: LSP read: {e}"))?;
+        if read == 0 {
+            return Err("EngineError: LSP server closed stdout".to_string());
+        }
+        let trimmed = line.trim_end_matches(['\r', '\n']);
+        if trimmed.is_empty() {
+            break;
+        }
+        if let Some(value) = trimmed.strip_prefix("Content-Length:") {
+            length = value.trim().parse::<usize>().ok();
+        }
+    }
+    let length = length.ok_or_else(|| "EngineError: LSP response has no length".to_string())?;
+    let mut body = vec![0u8; length];
+    reader
+        .read_exact(&mut body)
+        .map_err(|e| format!("EngineError: LSP read: {e}"))?;
+    serde_json::from_slice(&body).map_err(|e| format!("EngineError: LSP JSON: {e}"))
+}
+
 impl ManagedServer {
-    fn spawn(command: &str, root: &std::path::Path) -> Result<Self, String> {
-        let mut parts = command.split_whitespace();
-        let program = parts
-            .next()
-            .ok_or_else(|| "empty LSP command".to_string())?;
-        let mut cmd = Command::new(program);
-        cmd.args(parts)
-            .current_dir(root)
+    fn spawn(command: &str, root: &std::path::Path, timeout: Duration) -> Result<Self, String> {
+        let mut cmd = shell_command(command);
+        cmd.current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -55,23 +97,47 @@ impl ManagedServer {
             .stdout
             .take()
             .ok_or_else(|| "EngineError: LSP stdout unavailable".to_string())?;
+        let (tx, inbox) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            loop {
+                match read_message(&mut reader) {
+                    Ok(message) => {
+                        if tx.send(Ok(message)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = tx.send(Err(error));
+                        break;
+                    }
+                }
+            }
+        });
         let mut server = Self {
             child,
             stdin,
-            stdout: BufReader::new(stdout),
+            inbox,
             next_id: 1,
             opened: Vec::new(),
             last_activity: Instant::now(),
         };
-        server.request(
+        if let Err(error) = server.request(
             "initialize",
             json!({
                 "processId": std::process::id(),
                 "rootUri": Some(file_uri(root)),
                 "capabilities": {},
             }),
-        )?;
-        server.notify("initialized", json!({}))?;
+            timeout,
+        ) {
+            server.terminate();
+            return Err(error);
+        }
+        if let Err(error) = server.notify("initialized", json!({})) {
+            server.terminate();
+            return Err(error);
+        }
         Ok(server)
     }
 
@@ -87,33 +153,6 @@ impl ManagedServer {
             .map_err(|e| format!("EngineError: LSP write: {e}"))
     }
 
-    fn read_message(&mut self) -> Result<Value, String> {
-        let mut length = None;
-        loop {
-            let mut line = String::new();
-            let read = self
-                .stdout
-                .read_line(&mut line)
-                .map_err(|e| format!("EngineError: LSP read: {e}"))?;
-            if read == 0 {
-                return Err("EngineError: LSP server closed stdout".to_string());
-            }
-            let trimmed = line.trim_end_matches(['\r', '\n']);
-            if trimmed.is_empty() {
-                break;
-            }
-            if let Some(value) = trimmed.strip_prefix("Content-Length:") {
-                length = value.trim().parse::<usize>().ok();
-            }
-        }
-        let length = length.ok_or_else(|| "EngineError: LSP response has no length".to_string())?;
-        let mut body = vec![0u8; length];
-        self.stdout
-            .read_exact(&mut body)
-            .map_err(|e| format!("EngineError: LSP read: {e}"))?;
-        serde_json::from_slice(&body).map_err(|e| format!("EngineError: LSP JSON: {e}"))
-    }
-
     fn notify(&mut self, method: &str, params: Value) -> Result<(), String> {
         self.write_message(&json!({
             "jsonrpc": "2.0",
@@ -122,7 +161,24 @@ impl ManagedServer {
         }))
     }
 
-    fn request(&mut self, method: &str, params: Value) -> Result<Value, String> {
+    fn terminate(&mut self) {
+        #[cfg(windows)]
+        {
+            // Shell-expanded commands spawn a `cmd.exe` parent; killing only
+            // that parent can leave the language server holding the stdout
+            // pipe. End the whole tree first.
+            let pid = self.child.id().to_string();
+            let _ = Command::new("taskkill")
+                .args(["/T", "/F", "/PID", &pid])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
+    fn request(&mut self, method: &str, params: Value, timeout: Duration) -> Result<Value, String> {
         let id = self.next_id;
         self.next_id += 1;
         self.write_message(&json!({
@@ -132,7 +188,22 @@ impl ManagedServer {
             "params": params,
         }))?;
         loop {
-            let message = self.read_message()?;
+            let message = match self.inbox.recv_timeout(timeout) {
+                Ok(Ok(message)) => message,
+                Ok(Err(error)) => return Err(error),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err("EngineError: LSP server disconnected".to_string());
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    // The caller decides whether a slow answer is transient;
+                    // killing here would prevent the retry budget from ever
+                    // recovering a busy language server.
+                    return Err(format!(
+                        "EngineError: LSP {method} timed out after {}ms",
+                        timeout.as_millis()
+                    ));
+                }
+            };
             if message.get("id").and_then(Value::as_i64) == Some(id) {
                 if let Some(error) = message.get("error") {
                     return Err(format!("EngineError: LSP {method}: {error}"));
@@ -140,6 +211,14 @@ impl ManagedServer {
                 return Ok(message.get("result").cloned().unwrap_or(Value::Null));
             }
         }
+    }
+}
+
+/// First definition from an LSP result, or null when none was returned.
+fn first_location(result: &Value) -> Value {
+    match result {
+        Value::Array(rows) => rows.first().cloned().unwrap_or(Value::Null),
+        other => other.clone(),
     }
 }
 
@@ -200,6 +279,121 @@ pub fn status() -> Value {
     })
 }
 
+/// Whether a graph edge's confidence is low enough to consult LSP.
+///
+/// The threshold comes from `[resolution.lsp].override_threshold`; disabled
+/// configurations never override an edge.
+pub fn should_override(confidence: f32) -> bool {
+    let cfg = config();
+    cfg.enabled && confidence < cfg.override_threshold
+}
+
+fn override_target_id(location: &Value, source: &std::path::Path) -> String {
+    let target = location
+        .get("uri")
+        .and_then(Value::as_str)
+        .and_then(crate::mcp_runtime::uri_to_file_path)
+        .unwrap_or_else(|| source.to_path_buf());
+    let start = location.get("range").and_then(|range| range.get("start"));
+    let line = start
+        .and_then(|pos| pos.get("line"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .saturating_add(1);
+    let column = start
+        .and_then(|pos| pos.get("character"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        .saturating_add(1);
+    format!("{}#{}:{}", target.display(), line, column)
+}
+
+/// Apply the configured threshold to one graph-edge position.
+///
+/// # Errors
+/// Returns an explicit message for a spawn, protocol, or server failure. A
+/// disabled config or a confidence at/above the threshold returns `None`
+/// without starting a server.
+pub fn override_edge(
+    language: &str,
+    workspace: &std::path::Path,
+    path: &std::path::Path,
+    line: u32,
+    column: u32,
+    confidence: f32,
+) -> Result<Option<Value>, String> {
+    if !should_override(confidence) {
+        return Ok(None);
+    }
+    let Some(location) = definition(language, workspace, path, line, column)? else {
+        return Ok(None);
+    };
+    if location.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(json!({
+        "uri": location.get("uri").cloned().unwrap_or(Value::Null),
+        "range": location.get("range").cloned().unwrap_or(Value::Null),
+        "target_id": override_target_id(&location, path),
+        "confidence": 1.0,
+    })))
+}
+
+/// Apply the configured threshold to a list of graph-edge rows.
+///
+/// Rows below the threshold are checked; a real definition rewrites
+/// `target_id`, `method`, `provenance`, and `confidence` in place. Rows at or
+/// above the threshold are returned untouched.
+///
+/// # Errors
+/// Returns `InvalidRequest` when `edges` is not an array, or the server error
+/// when a checked lookup fails.
+pub fn override_edges(workspace: &std::path::Path, edges: &Value) -> Result<Value, String> {
+    let rows = edges
+        .as_array()
+        .ok_or_else(|| "InvalidRequest: edges must be an array".to_string())?;
+    let cfg = config();
+    let mut output = Vec::with_capacity(rows.len());
+    let mut checked = 0usize;
+    let mut applied = 0usize;
+    for row in rows {
+        let mut row = row.clone();
+        let confidence = row.get("confidence").and_then(Value::as_f64).unwrap_or(0.0) as f32;
+        if cfg.enabled && confidence < cfg.override_threshold {
+            checked += 1;
+            let language = row.get("language").and_then(Value::as_str).unwrap_or("");
+            let file = row.get("file").and_then(Value::as_str).unwrap_or("");
+            let line = row.get("line").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let column = row.get("column").and_then(Value::as_u64).unwrap_or(0) as u32;
+            if let Some(overridden) = override_edge(
+                language,
+                workspace,
+                std::path::Path::new(file),
+                line,
+                column,
+                confidence,
+            )? {
+                if let Some(map) = row.as_object_mut() {
+                    if let Some(target) = overridden.get("target_id").and_then(Value::as_str) {
+                        map.insert("target_id".into(), json!(target));
+                    }
+                    map.insert("method".into(), json!("lsp"));
+                    map.insert("provenance".into(), json!("lsp"));
+                    map.insert("confidence".into(), json!(1.0));
+                }
+                applied += 1;
+            }
+        }
+        output.push(row);
+    }
+    Ok(json!({
+        "threshold": cfg.override_threshold,
+        "checked": checked,
+        "applied": applied,
+        "edges": output,
+    }))
+}
+
 /// Ask the configured server for a definition, or return `None` when disabled.
 ///
 /// # Errors
@@ -219,11 +413,19 @@ pub fn definition(
     if !cfg.enabled {
         return Ok(None);
     }
-    let absolute = if path.is_absolute() {
+    // A zero timeout would make every request fail immediately rather than
+    // block forever, so keep it at one millisecond.
+    let timeout = Duration::from_millis(cfg.timeout_ms.max(1));
+    let joined = if path.is_absolute() {
         path.to_path_buf()
     } else {
         workspace.join(path)
     };
+    // Language servers expect absolute URIs. Resolve a relative workspace
+    // path before the URI is built so Windows drives are not rewritten as
+    // filesystem-root paths.
+    let absolute =
+        crate::fs::strip_verbatim_prefix(std::fs::canonicalize(&joined).unwrap_or(joined));
     let text = std::fs::read_to_string(&absolute)
         .map_err(|e| format!("EngineError: LSP source {}: {e}", absolute.display()))?;
     let hash = content_hash(&text);
@@ -249,9 +451,10 @@ pub fn definition(
             .retain(|_, server| now.duration_since(server.last_activity) < idle);
         let key = format!("{language}:{}", workspace.display());
         if !guard.servers.contains_key(&key) {
-            guard
-                .servers
-                .insert(key.clone(), ManagedServer::spawn(&command, workspace)?);
+            guard.servers.insert(
+                key.clone(),
+                ManagedServer::spawn(&command, workspace, timeout)?,
+            );
         }
         let server = guard
             .servers
@@ -287,37 +490,47 @@ pub fn definition(
         });
         // rust-analyzer loads Cargo metadata after initialize; an immediate
         // definition can legitimately be null, an empty array, or a transient
-        // `-32801 content modified` before that work finishes. Retry each of
-        // those until a real location appears or the budget expires. Other
-        // server errors are returned immediately.
-        fn location_of(result: &Value) -> Value {
-            match result {
-                Value::Array(rows) => rows.first().cloned().unwrap_or(Value::Null),
-                other => other.clone(),
-            }
-        }
-        let mut attempt = server.request("textDocument/definition", params.clone());
+        // `-32801 content modified` before that work finishes. A per-request
+        // timeout can also fire while the server is busy. Retry all four
+        // until a location appears or the overall budget expires; the budget
+        // is what makes a server that never answers an error, not a hang.
+        let budget = Duration::from_millis(cfg.timeout_ms.saturating_mul(4).max(10_000));
+        let deadline = Instant::now() + budget;
+        let mut attempt = server.request("textDocument/definition", params.clone(), timeout);
         let mut location = Value::Null;
         let mut transient_error = None;
-        for _ in 0..24 {
+        loop {
             match attempt {
                 Ok(result) => {
-                    location = location_of(&result);
+                    location = first_location(&result);
                     if !location.is_null() {
                         transient_error = None;
                         break;
                     }
                 }
-                Err(error) if error.contains("content modified") => {
+                Err(error) if error.contains("content modified") || error.contains("timed out") => {
                     transient_error = Some(error);
                 }
                 Err(error) => return Err(error),
             }
-            std::thread::sleep(Duration::from_millis(250));
-            attempt = server.request("textDocument/definition", params.clone());
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250).min(remaining));
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            attempt = server.request(
+                "textDocument/definition",
+                params.clone(),
+                timeout.min(remaining),
+            );
         }
         if location.is_null() {
             if let Some(error) = transient_error {
+                server.terminate();
                 return Err(error);
             }
         }
@@ -350,7 +563,30 @@ pub fn cli(args: &[String], workspace: &std::path::Path) -> Result<Value, String
             )?
             .unwrap_or(Value::Null))
         }
-        _ => Err("usage: lsp status | lsp definition LANGUAGE FILE LINE COL".to_string()),
+        Some("override") if args.len() >= 6 => {
+            let line = args[3]
+                .parse::<u32>()
+                .map_err(|e| format!("InvalidRequest: {e}"))?;
+            let column = args[4]
+                .parse::<u32>()
+                .map_err(|e| format!("InvalidRequest: {e}"))?;
+            let confidence = args[5]
+                .parse::<f32>()
+                .map_err(|e| format!("InvalidRequest: {e}"))?;
+            Ok(override_edge(
+                &args[1],
+                workspace,
+                std::path::Path::new(&args[2]),
+                line,
+                column,
+                confidence,
+            )?
+            .unwrap_or(Value::Null))
+        }
+        _ => Err(
+            "usage: lsp status | lsp definition LANGUAGE FILE LINE COL | lsp override LANGUAGE FILE LINE COL CONFIDENCE"
+                .to_string(),
+        ),
     }
 }
 
@@ -381,5 +617,26 @@ mod tests {
         assert!(value["languages"]
             .as_array()
             .is_some_and(|rows| !rows.is_empty()));
+    }
+
+    #[test]
+    fn disabled_config_does_not_override_low_confidence_edges() {
+        assert!(!should_override(0.1));
+        let result = override_edge(
+            "python",
+            std::path::Path::new("."),
+            std::path::Path::new("missing.py"),
+            0,
+            0,
+            0.1,
+        );
+        assert_eq!(result.expect("disabled override"), None);
+    }
+
+    #[test]
+    fn override_edges_requires_an_array() {
+        let error = override_edges(std::path::Path::new("."), &json!({}))
+            .expect_err("object is not an edge list");
+        assert!(error.contains("InvalidRequest"), "{error}");
     }
 }

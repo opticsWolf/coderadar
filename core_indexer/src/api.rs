@@ -106,6 +106,16 @@ pub fn lsp_definition_args(workspace: &str, args: &Value) -> Result<Value, Strin
     crate::lsp::definition_args(&root, args)
 }
 
+/// Apply `[resolution.lsp].override_threshold` to graph-edge rows.
+///
+/// # Errors
+/// Returns `InvalidRequest` for a non-array input, or the LSP server error
+/// when a low-confidence row is checked.
+pub fn lsp_override_edges(workspace: &str, edges: &Value) -> Result<Value, String> {
+    let root = crate::fs::strip_verbatim_prefix(PathBuf::from(workspace));
+    crate::lsp::override_edges(&root, edges)
+}
+
 /// Ask the configured LSP server for a definition.
 ///
 /// # Errors

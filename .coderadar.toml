@@ -81,10 +81,9 @@ result_ttl_s = 300
 idle_timeout_s = 600
 timeout_ms = 5000
 override_threshold = 0.90
-# Rust's Command does not resolve npm's `.cmd` shim on Windows; call the
-# Node entry point directly. No spaces in either path, so split_whitespace
-# works.
-servers = { python = "node C:/Users/Main/AppData/Roaming/npm/node_modules/pyright/langserver.index.js --stdio", rust = "rust-analyzer" }
+# Commands are shell-expanded by the Rust pool, so npm's Windows `.cmd`
+# shim works just as it does from a shell.
+servers = { python = "pyright-langserver --stdio", rust = "rust-analyzer" }
 
 [resolution.signature]
 min_score = 0.5

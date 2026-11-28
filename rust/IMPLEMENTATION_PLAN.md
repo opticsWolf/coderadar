@@ -231,7 +231,7 @@ Acceptance criteria:
 - Existing gate count does not regress.
 - Optional features are disabled by default exactly as Python config specifies.
 
-Risks: external language servers may be absent in CI; treat as best-effort with explicit status. Local verification now installs Pyright 1.1.414 and rust-analyzer 1.100.0, enables them in `.coderadar.toml`, and proves CLI and MCP definitions against real source positions.
+Risks: external language servers may be absent in CI; treat as best-effort with explicit status. Local verification installs Pyright 1.1.414 and rust-analyzer 1.100.0, enables them in `.coderadar.toml`, and proves CLI and MCP definitions against real source positions. The three live-use caveats are now closed: `timeout_ms` is enforced with a bounded retry budget, `override_threshold` drives low-confidence graph-edge overrides through the orchestrator plus CLI/MCP edge-list entry points, and configured commands are shell-expanded so npm shims and quoted paths work.
 
 ---
 

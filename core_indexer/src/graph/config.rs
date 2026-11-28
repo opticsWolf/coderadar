@@ -105,7 +105,8 @@ impl Default for ResolutionConfig {
     }
 }
 
-/// `[resolution.lsp]`. Carried, not read on any live path.
+/// `[resolution.lsp]`. Read by the pure-Rust LSP client and the low-confidence
+/// edge-override seam.
 #[derive(Clone, Debug)]
 pub struct LSPConfig {
     pub enabled: bool,

@@ -78,6 +78,27 @@ fn canonical_dir(path: &Path) -> Option<PathBuf> {
     Some(resolved)
 }
 
+/// Decode a `file://` URI that names a file, without reducing it to its
+/// containing directory.
+pub fn uri_to_file_path(uri: &str) -> Option<PathBuf> {
+    if uri.is_empty() {
+        return None;
+    }
+    if let Some(rest) = uri.strip_prefix("file://") {
+        let mut text = percent_decode(rest);
+        if text.starts_with('/') && text.as_bytes().get(2) == Some(&b':') {
+            text.remove(0);
+        }
+        let path = PathBuf::from(text);
+        let resolved = std::fs::canonicalize(&path).unwrap_or(path);
+        return Some(crate::fs::strip_verbatim_prefix(resolved));
+    }
+    if uri.starts_with("file:") {
+        return None;
+    }
+    Some(PathBuf::from(uri))
+}
+
 /// Accept `file://` URIs and bare absolute paths, as the Python ladder does.
 pub fn uri_to_path(uri: &str) -> Option<PathBuf> {
     if uri.is_empty() {

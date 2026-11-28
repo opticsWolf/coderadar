@@ -163,12 +163,75 @@ impl ResolutionOrchestrator {
             // may attempt L4/L5 and the agent queries can report them.
         }
 
+        // L4: low-confidence edges below `[resolution.lsp].override_threshold`
+        // are checked against the configured language server before coverage
+        // decides whether they survive.
+        self.apply_lsp_overrides(&mut edges, references);
+
         // §6.1a: Validate partial coverage — suppress internal dead-ends.
         // An edge to an external target is always kept. An edge to an internal
         // target whose callers/callees are not in the graph is suppressed.
         self.validate_partial_coverage(&mut edges, &unresolved, file_path);
 
         edges
+    }
+
+    /// Upgrade graph edges whose confidence is below the configured LSP
+    /// override threshold.
+    ///
+    /// A successful definition replaces the target id with the resolved
+    /// `file#line:column`, sets confidence to 1.0, and marks the edge as an
+    /// LSP result. Server failures are best-effort: the original edge stays
+    /// in place so an optional server cannot fail an otherwise valid index.
+    fn apply_lsp_overrides(&self, edges: &mut [ResolvedEdge], references: &[ParsedReference]) {
+        let cfg = crate::active_config().resolution.lsp.clone();
+        if !cfg.enabled {
+            return;
+        }
+        let workspace = crate::indexed_root();
+        for edge in edges.iter_mut() {
+            if !crate::lsp::should_override(edge.confidence) {
+                continue;
+            }
+            let Some(reference) = references.iter().find(|reference| {
+                reference.line as usize == edge.line
+                    && edge.source_id.ends_with(&format!("::{}", reference.name))
+            }) else {
+                continue;
+            };
+            let path = std::path::Path::new(&reference.file_path);
+            let language = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if language.is_empty() || !cfg.servers.contains_key(&language) {
+                continue;
+            }
+            match crate::lsp::override_edge(
+                &language,
+                &workspace,
+                path,
+                reference.line,
+                reference.column,
+                edge.confidence,
+            ) {
+                Ok(Some(overridden)) => {
+                    if let Some(target) =
+                        overridden.get("target_id").and_then(|value| value.as_str())
+                    {
+                        edge.target_id = target.to_string();
+                    }
+                    edge.confidence = 1.0;
+                    edge.method = ResolutionMethod::Lsp;
+                    edge.provenance = EdgeProvenance::Lsp;
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!("[coderadar] LSP override skipped: {error}");
+                }
+            }
+        }
     }
 
     /// §6.1a Partial Coverage Validation.

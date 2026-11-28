@@ -979,9 +979,9 @@ new recorded unit.
   analyze'` returned real caller rows over the current store with
   `impact_analysis` intent. The round-trip is now proven live: `.coderadar.toml`
   enables `pyright-langserver --stdio` (Pyright 1.1.414, invoked through its
-  Node entry point on Windows) and `rust-analyzer` (1.100.0). CLI definitions
-  resolve `PREPROCESS_VERSION` in `py_agent/src/coderadar/embedding/dedup.py`
-  and `cli::run` in `rust/coderadar/src/main.rs`; MCP
+  npm `.cmd` shim) and `rust-analyzer` (1.100.0). CLI definitions resolve
+  `PREPROCESS_VERSION` in `py_agent/src/coderadar/embedding/dedup.py` and
+  `cli::run` in `rust/coderadar/src/main.rs`; MCP
   `coderadar_lsp_definition` resolves the same Rust location through the
   background-indexed session.
 - Live testing exposed and fixed three engine issues: a parking_lot reentrant
@@ -989,6 +989,20 @@ new recorded unit.
   URIs from `state::root()`, and rust-analyzer's transient `-32801 content
   modified` during Cargo metadata load. Added a regression test for `wait` on
   a non-running index.
+- LSP hardening follow-up closed the three remaining caveats: `[resolution.lsp]
+  timeout_ms` now bounds every JSON-RPC request and the retry loop has a
+  bounded overall budget; a hung server returns an explicit timeout error and
+  its Windows process tree is terminated. Commands are shell-expanded
+  (`cmd /D /S /C` on Windows, `/bin/sh -c` elsewhere), so the plain npm shim
+  command works. `override_threshold` is applied to graph-edge decisions in
+  `ResolutionOrchestrator::resolve_file`, and is exposed for explicit edge
+  lists through CLI `lsp override` and MCP `coderadar_lsp_override`.
+- Focused smoke: a fake `python hang.py` server with `timeout_ms = 500` failed
+  in about 0.6s with `LSP initialize timed out after 500ms`; `lsp override`
+  resolved a `0.80`-confidence Python edge and returned `null` at `0.95`; MCP
+  `coderadar_lsp_override` reported `checked: 1, applied: 1` and rewrote the
+  target id, method, provenance and confidence. Two new unit tests cover the
+  disabled-config no-op and the non-array error path.
 - Gate 4447/4447, fmt/clippy/cargo test clean, cutover 4/4. Bench: 76
   functions, 41 faster.
 
