@@ -1575,6 +1575,10 @@ pub struct ProjectedGraph {
     /// tags and the §2.4 weighting then degrades to "strong" (no ×0.8). Never
     /// tagged edges (plain `name()` calls) count as strong.
     pub call_evidence: HashMap<(EntityId, EntityId), ReceiverEvidence>,
+    /// Confidence of each resolved call edge, keyed by `(caller, callee)`. In-memory
+    /// only: scoped resolution records it so `[resolution.lsp].override_threshold`
+    /// can re-check already-resolved edges, not just unresolved ones.
+    pub call_confidence: HashMap<(EntityId, EntityId), f32>,
     pub subclasses: HashMap<EntityId, BTreeSet<EntityId>>,
     /// Reverse interface index: interface → set of implementing classes.
     /// Symmetric to `subclasses`; built by `resolve_class_hierarchy` from

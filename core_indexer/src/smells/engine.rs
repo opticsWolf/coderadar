@@ -444,6 +444,7 @@ pub(crate) mod tests {
             callers_by_callee: HashMap::new(),
             callees_by_caller: HashMap::new(),
             call_evidence: HashMap::new(),
+            call_confidence: HashMap::new(),
             subclasses: HashMap::new(),
             implementers: HashMap::new(),
             decorated_by: HashMap::new(),

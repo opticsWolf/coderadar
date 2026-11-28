@@ -8229,6 +8229,7 @@ mod stamped_write_tests {
             callers_by_callee: HashMap::new(),
             callees_by_caller: HashMap::new(),
             call_evidence: HashMap::new(),
+            call_confidence: HashMap::new(),
             subclasses: HashMap::new(),
             implementers: HashMap::new(),
             instantiated_by: HashMap::new(),

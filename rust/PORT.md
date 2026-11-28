@@ -1031,6 +1031,13 @@ new recorded unit.
   to a known function or class in the same module and becomes a normal call
   edge. Server failures stay best-effort so an optional server cannot fail an
   index.
+- Live call edges now carry per-edge confidence in
+  `ProjectedGraph.call_confidence`. Internal heuristic targets score 0.85,
+  builtins 1.0, unresolved/external 0.0, and a successful LSP override 1.0.
+  Scoped re-resolution re-checks already-resolved internal edges below the
+  threshold and replaces both the `ResolvedCall` and the edge target when the
+  language server disagrees. A fake-LSP smoke changed `caller() -> wrong()`
+  to `caller() -> right()` and moved the caller row between the two entities.
 - Smoke fixture: `cast(Service, value).run()` left the call unresolved with
   LSP disabled; with Pyright enabled the rebuild added `go -> Service.run`,
   and `callers service.py::Service.run` changed from 0 to 1.

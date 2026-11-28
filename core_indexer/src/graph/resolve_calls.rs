@@ -8,13 +8,41 @@ use crate::types::*;
 use super::receiver_types::MethodsByClass;
 
 /// What one function resolution produces: bound calls, plain edge pairs,
-/// and edge pairs with receiver evidence. Factored out for
+/// receiver evidence, and per-edge confidence. Factored out for
 /// `type_complexity` (clippy 0).
+type ConfidenceMap = std::collections::HashMap<(String, String), f32>;
 type ResolveOutcome = (
     Vec<crate::types::ResolvedCall>,
     Vec<(String, String)>,
     Vec<((String, String), crate::types::ReceiverEvidence)>,
+    ConfidenceMap,
 );
+
+/// Confidence assigned to a call resolved by the in-graph heuristics.
+/// It sits in the import-graph band (§6.1a L1: 0.80–0.89), below the default
+/// LSP override threshold of 0.90, so a configured language server gets a
+/// chance to confirm or replace the target.
+fn resolved_call_confidence(call: &crate::types::ResolvedCall) -> f32 {
+    match call {
+        crate::types::ResolvedCall::Builtin(_) => 1.0,
+        crate::types::ResolvedCall::Function(_)
+        | crate::types::ResolvedCall::Method { .. }
+        | crate::types::ResolvedCall::Constructor(_) => 0.85,
+        crate::types::ResolvedCall::External(_) | crate::types::ResolvedCall::Unresolved { .. } => {
+            0.0
+        }
+    }
+}
+
+/// Confidence eligible for an LSP re-check. Builtins and external targets are
+/// authoritative for this resolver; unresolved and internal heuristic targets
+/// are not.
+fn lsp_candidate_confidence(call: &crate::types::ResolvedCall) -> Option<f32> {
+    match call {
+        crate::types::ResolvedCall::Builtin(_) | crate::types::ResolvedCall::External(_) => None,
+        _ => Some(resolved_call_confidence(call)),
+    }
+}
 
 fn normalized_path_key(path: &std::path::Path) -> String {
     let joined = if path.is_absolute() {
@@ -83,19 +111,55 @@ fn lsp_position(source: &str, call: &UnresolvedRef) -> (u32, u32) {
     (call.line.saturating_sub(1) as u32, call.col as u32)
 }
 
-/// Consult LSP for unresolved calls that sit below the override threshold.
+/// Replace one call and its edge after a successful LSP definition lookup.
+fn record_lsp_override(
+    resolved: &mut [crate::types::ResolvedCall],
+    edge_pairs: &mut Vec<(String, String)>,
+    edge_index_for_call: &[Option<usize>],
+    confidences: &mut ConfidenceMap,
+    func_id: &str,
+    index: usize,
+    target: String,
+) {
+    resolved[index] = crate::types::ResolvedCall::Function(target.clone());
+    match edge_index_for_call.get(index).copied().flatten() {
+        Some(edge_index) => {
+            let (source, old_target) = &mut edge_pairs[edge_index];
+            confidences.remove(&(source.clone(), old_target.clone()));
+            *old_target = target.clone();
+            confidences.insert((source.clone(), target), 1.0);
+        }
+        None => {
+            // An unresolved call had no structural edge yet.
+            edge_pairs.push((func_id.to_string(), target.clone()));
+            confidences.insert((func_id.to_string(), target), 1.0);
+        }
+    }
+}
+
+/// Consult LSP for calls below the override threshold.
 ///
-/// Unresolved calls have confidence 0.0, so a disabled config or a threshold
-/// at/below zero is a no-op. Server failures are best-effort: the original
-/// unresolved result stays in place.
-fn apply_lsp_overrides_to_unresolved(
+/// Unresolved calls score 0.0 and internal heuristic calls 0.85, so both are
+/// re-checked under the default 0.90 threshold. Builtins and external targets
+/// are skipped. Server failures are best-effort: the original result stays.
+fn apply_lsp_overrides(
     projection: &ProjectedGraph,
     func_id: &str,
     calls: &[UnresolvedRef],
     resolved: &mut [crate::types::ResolvedCall],
     edge_pairs: &mut Vec<(String, String)>,
+    edge_index_for_call: &[Option<usize>],
+    confidences: &mut ConfidenceMap,
 ) {
-    if !crate::lsp::should_override(0.0) {
+    let candidates: Vec<(usize, f32)> = calls
+        .iter()
+        .enumerate()
+        .filter_map(|(index, _)| {
+            let confidence = resolved.get(index).and_then(lsp_candidate_confidence)?;
+            crate::lsp::should_override(confidence).then_some((index, confidence))
+        })
+        .collect();
+    if candidates.is_empty() {
         return;
     }
     let Some(function) = projection.functions.get(func_id) else {
@@ -114,23 +178,32 @@ fn apply_lsp_overrides_to_unresolved(
     let Ok(source) = std::fs::read_to_string(&source_path) else {
         return;
     };
-    for (index, call) in calls.iter().enumerate() {
-        if !matches!(
-            resolved.get(index),
-            Some(crate::types::ResolvedCall::Unresolved { .. })
-        ) {
-            continue;
-        }
+    for (index, confidence) in candidates {
+        let call = &calls[index];
         let (line, column) = lsp_position(&source, call);
-        match crate::lsp::override_edge(&language, &workspace, &module.path, line, column, 0.0) {
+        match crate::lsp::override_edge(
+            &language,
+            &workspace,
+            &module.path,
+            line,
+            column,
+            confidence,
+        ) {
             Ok(Some(overridden)) => {
                 if let Some(target) = overridden
                     .get("target_id")
                     .and_then(|value| value.as_str())
                     .and_then(|target| entity_id_at_override(projection, target))
                 {
-                    resolved[index] = crate::types::ResolvedCall::Function(target.clone());
-                    edge_pairs.push((func_id.to_string(), target));
+                    record_lsp_override(
+                        resolved,
+                        edge_pairs,
+                        edge_index_for_call,
+                        confidences,
+                        func_id,
+                        index,
+                        target,
+                    );
                 }
             }
             Ok(None) => {}
@@ -648,11 +721,14 @@ impl CodeGraph {
             })
             .collect();
 
-        // Build edge pairs (applied later by caller)
+        // Build edge pairs (applied later by caller) and remember which pair
+        // belongs to which call so an LSP override can replace its target.
+        let mut edge_index_for_call: Vec<Option<usize>> = Vec::with_capacity(resolved.len());
         for rc in &resolved {
-            match rc {
+            let edge_index = match rc {
                 crate::types::ResolvedCall::Function(target_id) => {
                     edge_pairs.push((func_id.to_string(), target_id.clone()));
+                    Some(edge_pairs.len() - 1)
                 }
                 // Instantiation runs `__init__` when the class (or a base)
                 // defines one; otherwise the edge lands on the class itself.
@@ -660,28 +736,45 @@ impl CodeGraph {
                     let target =
                         method_of(class_id, "__init__").unwrap_or_else(|| class_id.clone());
                     edge_pairs.push((func_id.to_string(), target));
+                    Some(edge_pairs.len() - 1)
                 }
                 crate::types::ResolvedCall::Method { method, .. } => {
                     edge_pairs.push((func_id.to_string(), method.clone()));
+                    Some(edge_pairs.len() - 1)
                 }
                 crate::types::ResolvedCall::Builtin(name)
                 | crate::types::ResolvedCall::External(name) => {
                     let ext_id = format!("external::{}", name);
                     edge_pairs.push((func_id.to_string(), ext_id));
+                    Some(edge_pairs.len() - 1)
                 }
-                crate::types::ResolvedCall::Unresolved { .. } => {}
+                crate::types::ResolvedCall::Unresolved { .. } => None,
+            };
+            edge_index_for_call.push(edge_index);
+        }
+
+        let mut confidences = ConfidenceMap::new();
+        for (index, edge_index) in edge_index_for_call.iter().enumerate() {
+            if let Some(edge_index) = edge_index {
+                let (source, target) = &edge_pairs[*edge_index];
+                confidences.insert(
+                    (source.clone(), target.clone()),
+                    resolved_call_confidence(&resolved[index]),
+                );
             }
         }
 
-        apply_lsp_overrides_to_unresolved(
+        apply_lsp_overrides(
             projection,
             func_id,
             calls,
             &mut resolved,
             &mut edge_pairs,
+            &edge_index_for_call,
+            &mut confidences,
         );
 
-        (resolved, edge_pairs, evidence_pairs)
+        (resolved, edge_pairs, evidence_pairs, confidences)
     }
 
     /// Resolve calls scoped to a single file (or all if None).
@@ -1037,6 +1130,7 @@ impl CodeGraph {
             Vec<crate::types::ResolvedCall>,
             Vec<(String, String)>,
             Vec<((String, String), crate::types::ReceiverEvidence)>,
+            ConfidenceMap,
         );
 
         let results: Vec<ResolveResult> = if all_work.len() > 50 {
@@ -1066,7 +1160,7 @@ impl CodeGraph {
                         let mut local = Vec::new();
                         let mut orch = ResolutionOrchestrator::with_config(import_cfg);
                         for (fid, calls, lkp) in &chunk_owned {
-                            let (rc, ep, ev) = Self::resolve_one_function(
+                            let (rc, ep, ev, cf) = Self::resolve_one_function(
                                 fid,
                                 calls,
                                 &lkp.0,
@@ -1076,7 +1170,7 @@ impl CodeGraph {
                                 import_graph,
                                 &mut orch,
                             );
-                            local.push((fid.clone(), rc, ep, ev));
+                            local.push((fid.clone(), rc, ep, ev, cf));
                         }
                         results_ref.lock().unwrap().extend(local);
                     });
@@ -1088,7 +1182,7 @@ impl CodeGraph {
             // Small work set — sequential (avoid thread overhead)
             let mut results_vec = Vec::new();
             for (fid, calls, lkp) in &all_work {
-                let (rc, ep, ev) = Self::resolve_one_function(
+                let (rc, ep, ev, cf) = Self::resolve_one_function(
                     fid,
                     calls,
                     &lkp.0,
@@ -1098,13 +1192,21 @@ impl CodeGraph {
                     import_graph_ref,
                     &mut orchestrator,
                 );
-                results_vec.push((fid.clone(), rc, ep, ev));
+                results_vec.push((fid.clone(), rc, ep, ev, cf));
             }
             results_vec
         };
 
+        // Drop confidence rows for callers being re-resolved so a removed
+        // edge cannot keep its old tag in the live map.
+        let rescoped_callers: std::collections::HashSet<String> =
+            all_work.iter().map(|(fid, _, _)| fid.clone()).collect();
+        projection
+            .call_confidence
+            .retain(|(source, _), _| !rescoped_callers.contains(source));
+
         // Phase C: Apply results to projection (sequential)
-        for (func_id, resolved, edge_pairs, evidence_pairs) in &results {
+        for (func_id, resolved, edge_pairs, evidence_pairs, confidence_pairs) in &results {
             if let Some(func_arc) = projection.functions.get(func_id.as_str()) {
                 if func_arc.resolved_calls != *resolved {
                     let mut updated = (**func_arc).clone();
@@ -1134,6 +1236,82 @@ impl CodeGraph {
             for (key, ev) in evidence_pairs {
                 projection.call_evidence.insert(key.clone(), ev.clone());
             }
+            // Per-edge confidence for the live call graph. Scoped runs replace
+            // the tags for edges they re-resolve; older entries for edges that
+            // disappeared are harmless and are overwritten on the next full
+            // resolve.
+            for (key, confidence) in confidence_pairs {
+                projection.call_confidence.insert(key.clone(), *confidence);
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::GraphConfig;
+    use crate::types::ResolvedCall;
+
+    #[test]
+    fn resolved_call_confidence_matches_resolver_tiers() {
+        assert_eq!(
+            resolved_call_confidence(&ResolvedCall::Builtin("len".into())),
+            1.0
+        );
+        assert_eq!(
+            resolved_call_confidence(&ResolvedCall::Function("a.py::f".into())),
+            0.85
+        );
+        assert_eq!(
+            resolved_call_confidence(&ResolvedCall::External("os".into())),
+            0.0
+        );
+        assert_eq!(
+            lsp_candidate_confidence(&ResolvedCall::External("os".into())),
+            None
+        );
+    }
+
+    #[test]
+    fn lsp_override_replaces_an_already_resolved_edge() {
+        let mut resolved = vec![ResolvedCall::Function("a.py::wrong".into())];
+        let mut edges = vec![("a.py::caller".into(), "a.py::wrong".into())];
+        let mut confidences =
+            ConfidenceMap::from([(("a.py::caller".into(), "a.py::wrong".into()), 0.85)]);
+        record_lsp_override(
+            &mut resolved,
+            &mut edges,
+            &[Some(0)],
+            &mut confidences,
+            "a.py::caller",
+            0,
+            "a.py::right".into(),
+        );
+        assert_eq!(edges, vec![("a.py::caller".into(), "a.py::right".into())]);
+        assert!(!confidences.contains_key(&("a.py::caller".into(), "a.py::wrong".into())));
+        assert_eq!(
+            confidences[&("a.py::caller".into(), "a.py::right".into())],
+            1.0
+        );
+    }
+
+    #[test]
+    fn scoped_resolution_records_call_confidence() {
+        let graph = CodeGraph::new(GraphConfig::default());
+        graph
+            .index_file(
+                "def callee(): pass\n\ndef caller():\n    callee()\n",
+                "confidence.py",
+                &Language::Python,
+            )
+            .expect("index small python fixture");
+        let mut projection = (*graph.snapshot()).clone();
+        graph.resolve_all_calls(&mut projection);
+        let key = (
+            "confidence.py::caller".into(),
+            "confidence.py::callee".into(),
+        );
+        assert_eq!(projection.call_confidence.get(&key), Some(&0.85));
     }
 }
