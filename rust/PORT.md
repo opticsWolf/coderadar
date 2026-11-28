@@ -832,6 +832,9 @@ new recorded unit.
 
 ## CodeRadar completion audit (Unit 38)
 
+> Historical snapshot. The fresh audit at the end of this file supersedes
+> these numbers.
+
 ### Measurements
 
 - Store: 334 modules, 696 classes, 5,309 functions, 11,813 call edges,
@@ -1090,3 +1093,63 @@ new recorded unit.
   a file update. Both facade and CLI smoke now resolve routes.
 - Gate 4447/4447, clippy/fmt/cargo test clean (628 core tests), cutover 4/4,
   facade pytest 3 passed.
+
+## Fresh CodeRadar completion audit (Unit 49)
+
+Refresh: `coderadar reindex --full` after Units 39–48, then CodeRadar
+queries over `py_agent/src/coderadar` and the Rust facade/export surface.
+The store is fresh; `diagnose --unresolved` lists only builtins, external
+methods and test helpers, no structural edge failures.
+
+### Measurements
+
+- Store: **345 modules**, **735 classes**, **5,548 functions**, **2,769
+  imports**, **394 constants**, **12,243 call edges**, **0 unresolved
+  structural edges**, 345 files.
+- `py_agent/src/coderadar`: **768 callables**, **292 methods**, **322** with
+  `caller_count >= 2`, **116** with `caller_count >= 5`. Area counts are
+  unchanged from Unit 38 (mcp 134, resolvers 126, `__init__.py` 120,
+  `ops.py` 99, `cli.py` 89, `render.py` 60, query 27, visualizers 26, lsp 15,
+  embedding 11, skills 10, agent 9, coldstart/framework/mutation 8 each,
+  excludes 6, project_state 4, docs/markers 3, config 2).
+- Exact-name bridge coverage: **232/768 (30.2%)** against native exports plus
+  facade `__all__` (158 names), up from 203/768 (26.4%). Caller-weighted
+  coverage (`max(caller_count, 1)`) is **42.8%**, up from 34.7%. Allowing the
+  `_op` / leading-underscore normalizations raises those to 272/768 (35.4%)
+  and 49.6%; all remain undercounts because CLI/MCP/facade front doors reach
+  many helpers without a same-named export.
+- CLI: **55/55 shared commands**, **0 local-only** (`cutover.py --verify`).
+- MCP: Python **35/35 tool names** present in Rust; Rust advertises **49
+  tools** (14 extras: history/temporal, LSP, `context` and other Rust-only
+  front doors) and **3/3 bundled resources**.
+- Public `CodeGraph`: **55/55** Python methods have Rust-backed facade
+  implementations — 52 call `_native` directly; `batch`, `watch` and
+  `watch_git` delegate to Rust-backed `BatchContext` / `Watcher` /
+  `GitWatcher` helpers.
+- Gate: **4447/4447** recorded cases; bench 76 functions, 42 faster, median
+  **1.569x**.
+
+### Estimate
+
+- **User-visible surface parity: ~98%.** Every CLI command, MCP tool,
+  resource and public facade method has a Rust implementation. The only
+  user-visible implementation gap left is exact embedding float parity;
+  shadow cutover is an operational approval, not code.
+- **Callable-weighted internal coverage: ~43% by exact name**, ~50% with
+  naming normalization. This metric still understates the front doors but is
+  the honest literal source-parity number.
+- **Remaining work:** **1–3 days** to align or explicitly tolerate the ONNX
+  Runtime 1.31.0/1.32.0 vector drift, plus cutover approval. A literal
+  callable-by-callable port of the remaining internal helpers is another
+  **8–12 days** to near-100% source parity; no new front-door gap has been
+  found by CodeRadar.
+
+### Ranked residual units
+
+1. Exact embedding float parity: pin/align the native ONNX Runtime or record
+   an explicit gate tolerance (~2e-4 max drift), 1–3 days.
+2. Shadow cutover: `python rust/cutover.py --install DIR` once approved,
+   minutes.
+3. Optional internal callable parity: no caller-edge gap at the CLI/MCP/facade
+   boundary; only needed if every private Python helper must be bridged by
+   name, 8–12 days.

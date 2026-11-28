@@ -1,9 +1,9 @@
 # Implementation plan — closing the remaining CodeRadar port gaps
 
-Status: **A, B, D, E and F complete (Units 39–40, 42–44); C partial (Unit 41). Post-plan hardening (Unit 45) wired the LSP threshold into the main call-graph builder and closed the MCP lifecycle residuals.**
+Status: **A, B, D, E and F complete (Units 39–40, 42–44); C partial (Unit 41). Post-plan Units 45–49 closed LSP hardening, lifecycle, resolver classes, live call-edge confidence and route refresh. A fresh audit supersedes the numeric baseline below.**
 Prepared: after commit `cab7ff1` (`dev_rustify`)
 Canonical decisions/state: [`PORT.md`](PORT.md)  
-Graph evidence: local CodeRadar store, 2026-02-17
+Graph evidence: refreshed by `coderadar reindex --full` in Unit 49; see the fresh audit at the end of `PORT.md`.
 
 ## 1. Scope and ground rules
 
@@ -25,7 +25,7 @@ Rust-guideline rules that shape this plan:
 
 ## 2. CodeRadar evidence
 
-Store: **334 modules, 696 classes, 5,309 functions, 11,813 call edges, 0 unresolved structural edges**. `diagnose --unresolved` lists only builtins/external calls, so there is no missing in-repo edge left to chase.
+Store at plan preparation: **334 modules, 696 classes, 5,309 functions, 11,813 call edges, 0 unresolved structural edges**. The Unit 49 refresh is **345 modules, 735 classes, 5,548 functions, 12,243 call edges, 0 unresolved structural edges**; `diagnose --unresolved` lists only builtins/external calls, so there is no missing in-repo edge left to chase.
 
 Python surface: **768 callables** (292 are methods).
 
@@ -34,9 +34,9 @@ Current parity:
 | Surface | Current state |
 |---|---|
 | CLI | 55/55 shared commands, 0 local-only |
-| MCP | Python 35/35 tools present; Rust has 45; resources 3/3 |
-| Public `CodeGraph` | 52/55 methods delegate to Rust (94.5%) |
-| Gate | 4446/4446 recorded cases |
+| MCP | Python 35/35 tools present; Rust has 49; resources 3/3 |
+| Public `CodeGraph` | 55/55 methods delegate to Rust (100%) |
+| Gate | 4447/4447 recorded cases |
 | Coldstart | Ported into `core_indexer::api::coldstart_build_graph` |
 
 High-fan-in evidence for the remaining units:
