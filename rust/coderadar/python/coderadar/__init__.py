@@ -274,6 +274,19 @@ roots_resolve_from_client_roots = _native.roots_resolve_from_client_roots
 roots_resolve_selector = _native.roots_resolve_selector
 roots_adopt_project_root = _native.roots_adopt_project_root
 roots_describe = _native.roots_describe
+stats = _native.stats_op
+startup_configure = _native.startup_configure
+startup_start = _native.startup_start
+startup_restart = _native.startup_restart
+startup_status = _native.startup_status
+startup_wait = _native.startup_wait
+startup_root = _native.startup_root
+startup_elapsed = _native.startup_elapsed
+startup_progress_message = _native.startup_progress_message
+lifecycle_parent_alive = _native.lifecycle_parent_alive
+lifecycle_parent_pid = _native.lifecycle_parent_pid
+lazy_should_ask = _native.lazy_should_ask
+lazy_trade_up = _native.lazy_trade_up
 
 __all__ = sorted(set(__all__) | {
     "ContentUnavailable", "EngineError", "InvalidRequest", "MissingDependency",
@@ -284,8 +297,13 @@ __all__ = sorted(set(__all__) | {
     "embedding_settings", "embed_preprocess_version", "find_marker",
     "graphrag_build_context", "graphrag_execute", "is_excluded",
     "last_project_for", "plan_query", "project_files", "project_state_file",
-    "roots_adopt_project_root", "roots_describe", "roots_resolve_from_client_roots",
-    "roots_resolve_project_root", "roots_resolve_selector", "roots_uri_to_path",
+    "lazy_should_ask", "lazy_trade_up", "lifecycle_parent_alive",
+    "lifecycle_parent_pid", "roots_adopt_project_root", "roots_describe",
+    "roots_resolve_from_client_roots", "roots_resolve_project_root",
+    "roots_resolve_selector", "roots_uri_to_path",
+    "stats", "startup_configure", "startup_elapsed", "startup_progress_message",
+    "startup_restart", "startup_root", "startup_start", "startup_status",
+    "startup_wait",
     "record_project", "skill_description", "skill_names", "skill_text",
     "stored_key_model", "visualize",
 })

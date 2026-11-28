@@ -344,6 +344,22 @@ pub fn resolve_client_roots(uris: &[String]) -> Option<ResolvedRoot> {
         .next()
 }
 
+/// Trade up to a client root, or keep what we have.
+///
+/// `None` means "no better evidence": the client named nothing usable, named
+/// the root we already have, or named an unconfirmed path while the current
+/// root is confirmed. Same rule `LazyRootRetry::attempt` applies.
+pub fn lazy_trade_up(current: &ResolvedRoot, uris: &[String]) -> Option<ResolvedRoot> {
+    let candidate = resolve_client_roots(uris)?;
+    if candidate.path == current.path {
+        return None;
+    }
+    if current.confirmed() && !candidate.confirmed() {
+        return None;
+    }
+    Some(candidate)
+}
+
 /// One connection's "should we ask the client again?" decision.
 #[derive(Default)]
 pub struct LazyRootRetry {
@@ -607,6 +623,11 @@ impl ParentWatchdog {
     }
 }
 
+/// The process that launched this one, when it can be determined.
+pub fn current_parent_pid() -> Option<u32> {
+    parent_pid()
+}
+
 fn parent_pid() -> Option<u32> {
     #[cfg(windows)]
     {
@@ -633,7 +654,8 @@ fn parent_pid() -> Option<u32> {
     }
 }
 
-fn process_alive(pid: u32) -> bool {
+/// Is this process still running? (Windows: tasklist; Unix: `kill -0`.)
+pub fn process_alive(pid: u32) -> bool {
     #[cfg(windows)]
     {
         let filter = format!("PID eq {pid}");

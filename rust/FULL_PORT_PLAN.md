@@ -23,7 +23,7 @@ are partially done.
 |---|---|---|
 | **D1 Protocol** | `coderadar mcp serve` is MCP-spec valid and schema-compatible with the Python server for all 35 shared tools. | ✅ 49 schema-valid tools; conformance harness green |
 | **D2 CLI contract** | Every Python command accepts the same options, defaults, exit codes and output formats. | ✅ inventory, `--help`, exit codes, `--format` and 15/15 payloads green |
-| **D3 Python surface** | `import coderadar.<module>` resolves the same public names, all delegating to Rust. | ⚠️ 189/342 (55.3%) public names; 4 modules still absent |
+| **D3 Python surface** | `import coderadar.<module>` resolves the same public names, all delegating to Rust. | ⚠️ 210/342 (61.4%) public names; **0 modules absent** |
 | **D4 Numeric fidelity** | Embedding vectors match Python exactly, or a recorded tolerance is enforced by a test. | ⚠️ dynamic-runtime build path shipped; measurement pending |
 | **D5 Cutover** | Rust binary is installed as `coderadar`; Python survives only as a shim; packaging reproducible. | ⚠️ `cutover.py` exists, never applied |
 | **D6 Closeout** | A committed audit script reports zero gaps; full verification matrix green. | ⚠️ `cli_parity.py` + `mcp_conformance.py` + import test committed |
@@ -47,7 +47,7 @@ reference implementation until D3 lands, then moves to `reference/`.
 | MCP tool names | 35 | 49 | 0 (+14 Rust extras) |
 | MCP `tools/list` schema | full objects | full objects | 0 (35 shared tools byte-identical) |
 | MCP tool params honoured | — | — | 0 (7 tools fixed) |
-| Python module public names | 342 public names | 166 resolvable | **176 across 15 modules + 8 absent** |
+| Python module public names | 342 public names | 210 resolvable | **132 inside 9 modules + 0 absent** |
 | Framework extraction parity | — | — | 23/23 fixtures identical |
 | Gate cases | — | 4,447 | exact |
 | Embedding max drift | — | ~2e-4 | ORT 1.31 vs 1.32 |
@@ -628,19 +628,58 @@ Landed after the first pass (S5/S6):
   and canonical paths kept the Windows verbatim prefix, so root comparisons
   failed against `Path.cwd()`.
 
-Still absent, recorded in `rust/golden/import_surface_pending.json`:
+Landed in the S7/S5 closure:
 
-| Module | Why it needs another unit |
-|---|---|
-| `query.executor` | `MacrameQuery`/`MacrameSnapshot` wrap ledger primitives the engine already exposes as ops |
-| `mcp.lazy`, `mcp.lifecycle`, `mcp.startup` | need the process/thread handles (`LazyRootRetry` glue, `ParentWatchdog`, `BackgroundIndex`) shaped for the Python SDK |
+- `mcp.roots` (unit S7): the full ladder, selector, adoption and describe.
+- `mcp.startup`: `BackgroundIndex`, `IndexStatus`, `IndexOutcome`,
+  `configure/current/ensure_ready`, `progress_message`. The generation
+  tracking, shared build lock, status/elapsed and the heart-beating wait are
+  `mcp_runtime::BackgroundIndex` behind native `startup_*` functions; a
+  custom `analyze` stub runs through the same worker (the native closure
+  calls back into Python), and `startup_wait` releases the GIL while it
+  blocks.
+- `mcp.lifecycle`: `ParentWatchdog`, `HandshakeTimeout`, `install` and the
+  middleware. Threads/timers stay in Python (they are host objects); the
+  liveness probe is `mcp_runtime::process_alive`, and the lazy "ask or keep"
+  rule is native (`lazy_should_ask`, `lazy_trade_up`).
+- `mcp.lazy`: `LazyRootRetry` with native decisions, async `roots/list` and
+  the trade-up/reindex step.
+- `query.executor`: `MacrameQuery`/`MacrameSnapshot` delegate traversal,
+  lookup, listing, call indexes and stats to the engine; the three
+  unwired-in-the-reference methods still return `[]`.
+- `mcp.server`: `serve` and `set_launch_cwd` added, so the module matches the
+  reference surface.
+
+Every module under `py_agent/src/coderadar` now imports from the bridge.
+What remains is **134 names inside 9 already-resolving modules**, recorded in
+`rust/golden/import_surface_pending.json`:
+
+| Module | Missing | What they are |
+|---|---:|---|
+| `cli` | 65 | click command wrappers (`*_cmd`) and helpers; the binary owns the commands |
+| `render` | 42 | renderer functions the binary renders internally |
+| `__init__` | 17 | mutation dataclasses/exceptions not yet re-exported |
+| `coldstart` | 3 | `store_db_path`, `store_is_fresh`, `stale_source_files` |
+| `mcp.server` | 2 | `serve`/`set_launch_cwd` landed after the measurement run |
+| `ops` | 2 | `ingest_history`, `open_project` |
+| `excludes` | 1 | `resolve_entity_path` |
+| `query.cache` | 1 | `cached_query` |
+| `skills` | 1 | `InstallResult` |
 
 The surface is measured by `python rust/import_surface.py` (rewrites the
 baseline) and `--check` fails on regression.
 
 Evidence: `python -m pytest tests/test_import_surface.py` (passes; asserted
-against the recorded baseline) and 189/342 public names resolved
-(31.3% -> 55.3%).
+against the recorded baseline) and 210/342 public names resolved
+(31.3% -> 61.4%), with every module present.
+
+### P2b — MCP handles and the last absent module (done)
+
+`mcp.startup`, `mcp.lifecycle` and `mcp.lazy` are shims over `mcp_runtime`
+(generation tracking, build lock, status/elapsed, bounded wait, process
+liveness, and the lazy ask/trade-up rules), and `query.executor` delegates to
+the engine. `mcp.server` gained `serve`/`set_launch_cwd`. **No module is
+absent**; 210/342 public names resolve.
 
 ### P3 — embeddings (mechanism shipped)
 
@@ -666,11 +705,10 @@ against the recorded baseline) and 189/342 public names resolved
 
 | Unit | Scope | Effort |
 |---|---|---|
-| S7 | `mcp.{lazy,lifecycle,roots,startup}` shims (needs `McpSession` types) | 1-1.5 d |
+| ~~S7~~ | ~~`mcp.{lazy,lifecycle,roots,startup}` + `query.executor`~~ done: all modules resolve | — |
 | E2 | Pin the reference runtime and record the drift contract | 1 d |
 | R0 | ~~row shape~~ done: fixture harness compares 15 payloads, 0 differences | — |
 | R1/R3 | Rename the artifact, packaging matrix, clean-machine smoke | 1.5 d |
 | R2/A2 | Shadow cutover with approval, final audit | 1 d |
-| S5 | `query.executor` shims (`MacrameQuery`, `MacrameSnapshot`) | 0.5 d |
-| S7 | `mcp.{lazy,lifecycle,startup}` handles over `mcp_runtime` | 1 d |
-| **Total** | | **~3-4 d** |
+| S8 | close the 134 names inside `cli`/`render`/`__init__` (command wrappers, renderer exports, mutation types) | 1-1.5 d |
+| **Total** | | **~2-3 d** |

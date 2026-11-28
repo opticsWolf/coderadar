@@ -1,18 +1,8 @@
 {
- "coverage": 0.5526,
+ "coverage": 0.614,
  "declared_names": 342,
- "import_errors": {
-  "mcp.lazy": "No module named 'coderadar_rs.mcp.lazy'",
-  "mcp.lifecycle": "No module named 'coderadar_rs.mcp.lifecycle'",
-  "mcp.startup": "No module named 'coderadar_rs.mcp.startup'",
-  "query.executor": "No module named 'coderadar_rs.query.executor'"
- },
- "missing_modules": [
-  "mcp.lazy",
-  "mcp.lifecycle",
-  "mcp.startup",
-  "query.executor"
- ],
+ "import_errors": {},
+ "missing_modules": [],
  "missing_names": {
   "__init__": [
    "CodeRadarError",
@@ -108,43 +98,12 @@
   "excludes": [
    "resolve_entity_path"
   ],
-  "mcp.lazy": [
-   "LazyRootRetry",
-   "configure",
-   "current",
-   "make_middleware"
-  ],
-  "mcp.lifecycle": [
-   "HandshakeTimeout",
-   "ParentWatchdog",
-   "configure",
-   "current",
-   "install",
-   "make_middleware"
-  ],
-  "mcp.server": [
-   "serve",
-   "set_launch_cwd"
-  ],
-  "mcp.startup": [
-   "BackgroundIndex",
-   "IndexOutcome",
-   "IndexStatus",
-   "configure",
-   "current",
-   "ensure_ready",
-   "progress_message"
-  ],
   "ops": [
    "ingest_history",
    "open_project"
   ],
   "query.cache": [
    "cached_query"
-  ],
-  "query.executor": [
-   "MacrameQuery",
-   "MacrameSnapshot"
   ],
   "render": [
    "affected",
@@ -194,5 +153,5 @@
    "InstallResult"
   ]
  },
- "resolved_names": 189
+ "resolved_names": 210
 }

@@ -1383,3 +1383,31 @@ tests, which were updated for the non-verbatim canonical form.
 
 Surface: **189/342 (55.3%)**; four modules remain (`query.executor` and
 `mcp.{lazy,lifecycle,startup}`).
+
+## MCP handles and the last absent module (Unit 55)
+
+The Python MCP server's process handles are now engine-backed:
+
+- `mcp.startup` — `BackgroundIndex.start/restart/wait/status/elapsed` call
+  native `startup_*` functions over `mcp_runtime::BackgroundIndex` (the same
+  type the Rust server uses): one build lock, generation-guarded status,
+  bounded wait. A custom `analyze` stub still works because the native worker
+  calls back into Python, and `startup_wait` releases the GIL while blocking.
+- `mcp.lifecycle` — threads/timers stay in Python (they are host objects),
+  but the liveness probe is `mcp_runtime::process_alive` and the exit reasons
+  are shared.
+- `mcp.lazy` — `LazyRootRetry` keeps only the "already attempted" flag and
+  the async `roots/list` call; `lazy_should_ask` and `lazy_trade_up` decide.
+- `query.executor` — `MacrameQuery`/`MacrameSnapshot` delegate traverse,
+  find, list-by-kind, callers/callees and stats to the engine; the three
+  methods that were unwired in the reference still return `[]`.
+- `mcp.server` gained `serve` (SDK stdio loop + lifecycle guards) and
+  `set_launch_cwd`.
+
+**Every module under `py_agent/src/coderadar` now imports from the bridge**
+(0 absent), at **210/342 public names (61.4%)**. The remaining 134 live
+inside nine resolving modules: `cli` (65 click wrappers), `render` (42),
+`__init__` (17 mutation dataclasses/exceptions), and a handful of helpers.
+
+New tests: `tests/test_facade_mcp_handles.py` (10 cases — custom build,
+failure message, restart, watchdog, handshake, lazy ask/trade-up/retarget).

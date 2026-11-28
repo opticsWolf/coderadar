@@ -2041,6 +2041,219 @@ fn graphrag_execute_op(
     )
 }
 
+// ── MCP startup handles (plan unit S7) ───────────────────────────────────
+
+type BuildFn = std::sync::Arc<dyn Fn(String) -> Result<serde_json::Value, String> + Send + Sync>;
+
+struct StartupState {
+    index: core_indexer::mcp_runtime::BackgroundIndex,
+    build: BuildFn,
+}
+
+static STARTUP: std::sync::OnceLock<std::sync::Mutex<Option<StartupState>>> =
+    std::sync::OnceLock::new();
+
+fn startup_slot() -> &'static std::sync::Mutex<Option<StartupState>> {
+    STARTUP.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn startup_error(message: &str) -> PyErr {
+    pyo3::exceptions::PyRuntimeError::new_err(message.to_string())
+}
+
+fn startup_state() -> PyResult<(core_indexer::mcp_runtime::BackgroundIndex, BuildFn)> {
+    let guard = startup_slot()
+        .lock()
+        .map_err(|_| startup_error("startup index lock poisoned"))?;
+    let state = guard
+        .as_ref()
+        .ok_or_else(|| startup_error("no startup index is configured"))?;
+    Ok((state.index.clone(), std::sync::Arc::clone(&state.build)))
+}
+
+fn env_seconds(name: &str, default: f64, minimum: f64) -> f64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.trim().parse::<f64>().ok())
+        .map(|value| value.max(minimum))
+        .unwrap_or(default)
+}
+
+fn outcome_json(outcome: serde_json::Value) -> serde_json::Value {
+    let mut map = match outcome {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    map.entry("stats".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    serde_json::Value::Object(map)
+}
+
+/// Install the process-wide background index (default cold start or a stub).
+#[pyfunction]
+#[pyo3(name = "startup_configure", signature = (root, analyze=None))]
+fn startup_configure(root: &str, analyze: Option<Py<PyAny>>) -> PyResult<()> {
+    let build: BuildFn = match analyze {
+        Some(callable) => std::sync::Arc::new(move |root: String| {
+            Python::with_gil(|py| match callable.bind(py).call1((root,)) {
+                Ok(_) => Ok(serde_json::Value::Null),
+                Err(error) => Err(format!("{error}")),
+            })
+        }),
+        None => std::sync::Arc::new(|root: String| {
+            crate::mcp::coldstart(std::path::PathBuf::from(root))
+        }),
+    };
+    let mut guard = startup_slot()
+        .lock()
+        .map_err(|_| startup_error("startup index lock poisoned"))?;
+    *guard = Some(StartupState {
+        index: core_indexer::mcp_runtime::BackgroundIndex::new(std::path::PathBuf::from(root)),
+        build,
+    });
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "startup_start")]
+fn startup_start() -> PyResult<()> {
+    let (index, build) = startup_state()?;
+    index.start(move |root| build(root));
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "startup_restart")]
+fn startup_restart(root: String) -> PyResult<()> {
+    let (index, build) = startup_state()?;
+    index.restart(std::path::PathBuf::from(root), move |root| build(root));
+    Ok(())
+}
+
+#[pyfunction]
+#[pyo3(name = "startup_status")]
+fn startup_status(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let (index, _) = startup_state()?;
+    value_result(py, Ok(outcome_json(index.status())))
+}
+
+/// Start if needed, wait up to `timeout`, and report where we got to.
+#[pyfunction]
+#[pyo3(name = "startup_wait", signature = (timeout=None))]
+fn startup_wait(py: Python<'_>, timeout: Option<f64>) -> PyResult<Py<PyAny>> {
+    let (index, build) = startup_state()?;
+    index.start(move |root| build(root));
+    let outcome = py.allow_threads(move || {
+        let budget = timeout.unwrap_or_else(|| env_seconds("CODERADAR_INDEX_WAIT", 25.0, 1.0));
+        let heartbeat = env_seconds("CODERADAR_INDEX_HEARTBEAT", 5.0, 1.0);
+        index.wait(
+            std::time::Duration::from_secs_f64(budget.max(0.0)),
+            std::time::Duration::from_secs_f64(heartbeat),
+        )
+    });
+    value_result(py, Ok(outcome_json(outcome)))
+}
+
+#[pyfunction]
+#[pyo3(name = "startup_root")]
+fn startup_root() -> PyResult<String> {
+    let (index, _) = startup_state()?;
+    let status = index.status();
+    Ok(status
+        .get("root")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(".")
+        .to_string())
+}
+
+#[pyfunction]
+#[pyo3(name = "startup_elapsed")]
+fn startup_elapsed() -> PyResult<f64> {
+    let (index, _) = startup_state()?;
+    Ok(index
+        .status()
+        .get("elapsed")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0))
+}
+
+/// What to tell the agent when the index is not ready yet.
+#[pyfunction]
+#[pyo3(name = "startup_progress_message")]
+fn startup_progress_message(outcome_json: &str) -> PyResult<String> {
+    let outcome: serde_json::Value = serde_json::from_str(outcome_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("InvalidRequest: {e}")))?;
+    let status = outcome
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if status == "failed" {
+        let error = outcome
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown error");
+        return Ok(format!(
+            "The project index failed to build, so no code intelligence is available: {error}\n\nFix the underlying problem and call coderadar_reindex to retry."
+        ));
+    }
+    let elapsed = outcome
+        .get("elapsed")
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    Ok(format!(
+        "The project is still being indexed ({elapsed:.0}s so far). Nothing is wrong — the first index walks every source file.\n\nRetry this call in a few seconds. Answering now would mean answering from a partial graph, which is worse than waiting."
+    ))
+}
+
+// ── MCP lifecycle and lazy-root decisions (plan unit S7) ─────────────────
+
+#[pyfunction]
+#[pyo3(name = "lifecycle_parent_alive")]
+fn lifecycle_parent_alive(pid: u32) -> bool {
+    core_indexer::mcp_runtime::process_alive(pid)
+}
+
+#[pyfunction]
+#[pyo3(name = "lifecycle_parent_pid")]
+fn lifecycle_parent_pid() -> Option<u32> {
+    core_indexer::mcp_runtime::current_parent_pid()
+}
+
+#[pyfunction]
+#[pyo3(name = "lazy_should_ask")]
+fn lazy_should_ask(attempted: bool, confirmed: bool, index_empty: bool) -> bool {
+    if attempted {
+        return false;
+    }
+    if !confirmed {
+        return true;
+    }
+    index_empty
+}
+
+/// Trade up to a client root, or keep what we have.
+#[pyfunction]
+#[pyo3(name = "lazy_trade_up")]
+fn lazy_trade_up(py: Python<'_>, current_json: &str, uris: Vec<String>) -> PyResult<Py<PyAny>> {
+    let current: serde_json::Value = serde_json::from_str(current_json)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("InvalidRequest: {e}")))?;
+    let field = |name: &str| {
+        current
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    };
+    let resolved = core_indexer::mcp_runtime::ResolvedRoot {
+        path: std::path::PathBuf::from(field("path").unwrap_or_default()),
+        source: field("source").unwrap_or_default(),
+        marker: field("marker").map(std::path::PathBuf::from),
+    };
+    let better = core_indexer::mcp_runtime::lazy_trade_up(&resolved, &uris)
+        .map(|root| root.json())
+        .unwrap_or(serde_json::Value::Null);
+    value_result(py, Ok(better))
+}
+
 // ── MCP roots ladder (plan unit S7) ──────────────────────────────────────
 
 #[pyfunction]
@@ -2525,6 +2738,18 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(framework_resolve_route, m)?)?;
     m.add_function(wrap_pyfunction!(embed_texts_op, m)?)?;
     m.add_function(wrap_pyfunction!(plan_query_op, m)?)?;
+    m.add_function(wrap_pyfunction!(startup_configure, m)?)?;
+    m.add_function(wrap_pyfunction!(startup_start, m)?)?;
+    m.add_function(wrap_pyfunction!(startup_restart, m)?)?;
+    m.add_function(wrap_pyfunction!(startup_status, m)?)?;
+    m.add_function(wrap_pyfunction!(startup_wait, m)?)?;
+    m.add_function(wrap_pyfunction!(startup_root, m)?)?;
+    m.add_function(wrap_pyfunction!(startup_elapsed, m)?)?;
+    m.add_function(wrap_pyfunction!(startup_progress_message, m)?)?;
+    m.add_function(wrap_pyfunction!(lifecycle_parent_alive, m)?)?;
+    m.add_function(wrap_pyfunction!(lifecycle_parent_pid, m)?)?;
+    m.add_function(wrap_pyfunction!(lazy_should_ask, m)?)?;
+    m.add_function(wrap_pyfunction!(lazy_trade_up, m)?)?;
     m.add_function(wrap_pyfunction!(roots_uri_to_path, m)?)?;
     m.add_function(wrap_pyfunction!(roots_resolve_project_root, m)?)?;
     m.add_function(wrap_pyfunction!(roots_resolve_from_client_roots, m)?)?;

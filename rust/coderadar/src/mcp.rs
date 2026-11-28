@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 
 static SESSION: OnceLock<McpSession> = OnceLock::new();
 
-fn coldstart(root: PathBuf) -> Result<Value, String> {
+pub(crate) fn coldstart(root: PathBuf) -> Result<Value, String> {
     let path = root.to_string_lossy().into_owned();
     let report = core_indexer::api::coldstart_build_graph(&path, true)?;
     if let Some(store) = report.get("store").and_then(Value::as_str) {

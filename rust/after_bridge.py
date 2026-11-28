@@ -341,6 +341,11 @@ fn watch_changes_op(
                 "roots_uri_to_path", "roots_resolve_project_root",
                 "roots_resolve_from_client_roots", "roots_resolve_selector",
                 "roots_adopt_project_root", "roots_describe",
+                "startup_configure", "startup_start", "startup_restart",
+                "startup_status", "startup_wait", "startup_root",
+                "startup_elapsed", "startup_progress_message",
+                "lifecycle_parent_alive", "lifecycle_parent_pid",
+                "lazy_should_ask", "lazy_trade_up", "stats",
             ):
                 text += f"{name} = _native.{name}\n"
             facade.write_text(text, encoding="utf-8")

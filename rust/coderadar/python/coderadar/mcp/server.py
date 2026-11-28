@@ -218,4 +218,32 @@ def create_server(graph: Any = None):
     return server
 
 
-__all__ = ["SERVER_INSTRUCTIONS", "create_server", "requires_index"]
+_LAUNCH_CWD = None
+
+
+def set_launch_cwd(directory) -> None:
+    """Record the launch directory for the lifetime of this process."""
+    global _LAUNCH_CWD
+    _LAUNCH_CWD = directory
+
+
+def serve(graph=None) -> None:
+    """Run the MCP server over stdio (blocking)."""
+    from .lifecycle import install
+
+    handshake, watchdog = install()
+    server = create_server(graph)
+    try:
+        server.run(transport="stdio")
+    finally:
+        handshake.disarm()
+        watchdog.stop()
+
+
+__all__ = [
+    "SERVER_INSTRUCTIONS",
+    "create_server",
+    "requires_index",
+    "serve",
+    "set_launch_cwd",
+]
