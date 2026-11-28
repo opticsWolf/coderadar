@@ -5,6 +5,8 @@ from . import _native
 
 import json as _json
 import math as _math
+from dataclasses import fields as _dc_fields
+from dataclasses import is_dataclass as _is_dataclass
 
 # Structured values cross as JSON text. JSON has no NaN, tuples, sets, bytes, big ints or
 # non-string keys: those travel as markers (see `js.rs`) and come back as Python values.
@@ -164,8 +166,46 @@ annotation_stored = _native.annotation_stored
 migrate_to_commit_time = _native.migrate_to_commit_time
 edit = _native.edit
 mutation_error = _native.mutation_error
-mutation_plan = _native.mutation_plan
-mutation_applied = _native.mutation_applied
+def _coerce(value):
+    """Turn the public result dataclasses into the plain data the engine takes.
+
+    `MutationPlan`/`MutationResult` are the documented shape callers hold; the
+    native renderers read mappings. This is the boundary translation, so both
+    a dataclass and a dict keep working.
+    """
+    if _is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: _coerce(getattr(value, field.name))
+            for field in _dc_fields(value)
+        }
+    if isinstance(value, list):
+        return [_coerce(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_coerce(item) for item in value)
+    if isinstance(value, dict):
+        return {key: _coerce(item) for key, item in value.items()}
+    return value
+
+
+_mutation_plan = _native.mutation_plan
+_mutation_applied = _native.mutation_applied
+_edit = _native.edit
+
+
+def mutation_plan(plan):
+    """Render a mutation plan as text (dry-run preview)."""
+    return _mutation_plan(_coerce(plan))
+
+
+def mutation_applied(result, unverified_sites=None):
+    """Render an applied mutation result as text."""
+    sites = None if unverified_sites is None else _coerce(unverified_sites)
+    return _mutation_applied(_coerce(result), sites)
+
+
+def edit(outcome, apply_hint="call again with `dry_run=False`"):
+    """Render one mutation outcome."""
+    return _edit(_coerce(outcome), apply_hint)
 reindex = _native.reindex
 status = _native.status
 

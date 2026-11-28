@@ -349,6 +349,54 @@ fn watch_changes_op(
             ):
                 text += f"{name} = _native.{name}\n"
             facade.write_text(text, encoding="utf-8")
+        if "def _coerce(" not in text:
+            text += (
+                "\n# Public result types (data shapes) and the boundary translation.\n"
+                "from dataclasses import fields as _dc_fields\n"
+                "from dataclasses import is_dataclass as _is_dataclass\n"
+                "from .models import (\n"
+                "    CodeRadarError, MutationEdit, MutationError, MutationFailure,\n"
+                "    MutationFileError, MutationFileResult, MutationPlan, MutationResult,\n"
+                "    MutationSyncSummary, ParseError, PolicyViolation, ResolutionError,\n"
+                "    StaleHandle, SymbolChange, UpdateReport,\n"
+                ")\n\n"
+                "def _coerce(value):\n"
+                '    """Turn the public result dataclasses into the plain data the engine takes."""\n'
+                "    if _is_dataclass(value) and not isinstance(value, type):\n"
+                "        return {\n"
+                "            field.name: _coerce(getattr(value, field.name))\n"
+                "            for field in _dc_fields(value)\n"
+                "        }\n"
+                "    if isinstance(value, list):\n"
+                "        return [_coerce(item) for item in value]\n"
+                "    if isinstance(value, tuple):\n"
+                "        return tuple(_coerce(item) for item in value)\n"
+                "    if isinstance(value, dict):\n"
+                "        return {key: _coerce(item) for key, item in value.items()}\n"
+                "    return value\n\n"
+                "_mutation_plan = _native.mutation_plan\n"
+                "_mutation_applied = _native.mutation_applied\n"
+                "_edit = _native.edit\n\n"
+                "def mutation_plan(plan):\n"
+                '    """Render a mutation plan as text (dry-run preview)."""\n'
+                "    return _mutation_plan(_coerce(plan))\n\n"
+                "def mutation_applied(result, unverified_sites=None):\n"
+                '    """Render an applied mutation result as text."""\n'
+                "    sites = None if unverified_sites is None else _coerce(unverified_sites)\n"
+                "    return _mutation_applied(_coerce(result), sites)\n\n"
+                "def edit(outcome, apply_hint=\"call again with `dry_run=False`\"):\n"
+                '    """Render one mutation outcome."""\n'
+                "    return _edit(_coerce(outcome), apply_hint)\n\n"
+                "__all__ = sorted(set(__all__) | {\n"
+                '    "CodeRadarError", "MutationEdit", "MutationError", "MutationFailure",\n'
+                '    "MutationFileError", "MutationFileResult", "MutationPlan",\n'
+                '    "MutationResult", "MutationSyncSummary", "ParseError",\n'
+                '    "PolicyViolation", "ResolutionError", "StaleHandle", "SymbolChange",\n'
+                '    "UpdateReport",\n'
+                "})\n"
+            )
+            facade.write_text(text, encoding="utf-8")
+
         if "sync_git = _native.sync_git" not in text:
             text += (
                 "\n# Unit S1: ops names the engine already provides.\n"

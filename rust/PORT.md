@@ -1463,6 +1463,12 @@ machine it lives in the `coderadar-rs` uv tool venv
   the exception hierarchy, field-for-field with the reference. They are data
   shapes; the engine produces every value. `codegraph.py` keeps its private
   aliases so the rust-anything decoder namespace is unchanged.
+- Exporting those names collided with the rust-anything driver's own decoder
+  classes (the driver imports `coderadar.*` into its namespace), which failed
+  52 recorded cases with `TypeError: unsupported argument type MutationPlan`.
+  The fix is the boundary translation, not hidden names: `mutation_plan`,
+  `mutation_applied` and `edit` accept a dataclass *or* a mapping and coerce
+  with `dataclasses.asdict`-style recursion. Gate is back to 4447/4447.
 - `coderadar.query.cache` gained the reference LRU (`>=` TTL expiry,
   `make_key` hashing method/params/epoch) and the `cached_query` decorator.
   The previous shim cached *query text* through the engine, which is a

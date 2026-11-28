@@ -694,7 +694,11 @@ Landed for `__init__`/`skills`/`query.cache`/`excludes`:
   `UpdateReport`, `MutationEdit`, `MutationPlan`, `MutationResult`,
   `MutationFailure`, `MutationFileError`, `MutationFileResult`,
   `MutationSyncSummary`, `CodeRadarError` + five subclasses). They are data
-  shapes only; the engine produces the values.
+  shapes only; the engine produces the values. Because the rust-anything
+  driver decodes cases into classes with the same names, the boundary now
+  translates: `mutation_plan`, `mutation_applied` and `edit` accept either the
+  dataclass or a plain mapping (`_coerce` in `coderadar/__init__.py`), which is
+  what keeps the 4447-case gate green.
 - `skills.InstallResult` and `query.cache.cached_query` (with the reference
   LRU semantics: `>=` TTL expiry, `make_key` hashing method/params/epoch).
 - `excludes.resolve_entity_path` resolves against the engine's indexed root,
