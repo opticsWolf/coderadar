@@ -2068,43 +2068,14 @@ pub fn extract_all_exports(source: String) -> Result<Option<Vec<String>>, String
     Ok(Some(names))
 }
 
-fn route_segments(value: &Value) -> Vec<String> {
-    let inner = value.get("$tuple").unwrap_or(value);
-    match inner {
-        Value::Array(rows) => rows
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect(),
-        _ => Vec::new(),
-    }
-}
-
 /// Port of `canonical_route_pattern` (`py_agent/src/coderadar/resolvers/resolution.py:81`).
 pub fn canonical_route_pattern(path: String) -> Result<Value, String> {
-    let segments: Vec<String> = path
-        .trim_matches('/')
-        .split('/')
-        .map(|seg| {
-            if seg.starts_with('<') || seg.starts_with(':') || seg.starts_with('{') || seg == "*" {
-                "*".to_string()
-            } else {
-                seg.to_string()
-            }
-        })
-        .collect();
-    Ok(json!({"$tuple": segments}))
+    core_indexer::frameworks::canonical_route_pattern(path)
 }
 
 /// Port of `route_patterns_match` (`py_agent/src/coderadar/resolvers/resolution.py:99`).
 pub fn route_patterns_match(query: String, candidate: String) -> Result<bool, String> {
-    let left = route_segments(&canonical_route_pattern(query)?);
-    let right = route_segments(&canonical_route_pattern(candidate)?);
-    Ok(left.len() == right.len()
-        && left
-            .iter()
-            .zip(right.iter())
-            .all(|(a, b)| a == b || a == "*" || b == "*"))
+    core_indexer::frameworks::route_patterns_match(query, candidate)
 }
 
 /// Port of `prefer_in_dir` (`py_agent/src/coderadar/resolvers/resolution.py:160`).
@@ -4126,307 +4097,127 @@ pub fn refresh_framework_file(
 
 // ── Unit 21: framework reference-resolution heuristics ──────────────────
 
-const FRAMEWORK_ORDER: &[&str] = &[
-    "django",
-    "flask",
-    "fastapi",
-    "go",
-    "actix",
-    "express",
-    "springboot",
-    "laravel",
-    "aspnet",
-    "rails",
-    "nestjs",
-    "vue-router",
-    "react-router",
-];
-
-fn preferred_dirs(framework: &str) -> &'static [&'static str] {
-    match framework {
-        "django" => &["models", "views", "forms"],
-        "actix" => &["handler", "handlers", "routes", "services", "service"],
-        "express" => &[
-            "routes",
-            "controllers",
-            "handlers",
-            "api",
-            "middleware",
-            "router",
-            "services",
-            "models",
-            "utils",
-            "lib",
-            "helpers",
-        ],
-        "go" => &[
-            "handler",
-            "handlers",
-            "api",
-            "routes",
-            "controller",
-            "controllers",
-            "service",
-            "services",
-            "repository",
-            "store",
-            "pkg",
-            "middleware",
-            "middlewares",
-            "model",
-            "models",
-            "entity",
-            "entities",
-            "domain",
-        ],
-        "springboot" => &[
-            "controller",
-            "controllers",
-            "api",
-            "handler",
-            "resource",
-            "endpoint",
-            "service",
-            "services",
-            "repository",
-            "component",
-            "manager",
-            "facade",
-        ],
-        "laravel" => &[
-            "Http/Controllers",
-            "Controllers",
-            "routes",
-            "handlers",
-            "api",
-            "Services",
-            "Repositories",
-            "Models",
-            "Providers",
-            "Middleware",
-        ],
-        "aspnet" => &[
-            "Controllers",
-            "Controllers/Api",
-            "Endpoints",
-            "Handlers",
-            "Services",
-            "Repositories",
-            "Data",
-            "Models",
-            "Middleware",
-        ],
-        "rails" => &[
-            "app/models",
-            "app/controllers",
-            "app/services",
-            "models",
-            "controllers",
-            "app/helpers",
-            "lib",
-            "config",
-        ],
-        "nestjs" => &[
-            "controllers",
-            "services",
-            "providers",
-            "modules",
-            "guards",
-            "interceptors",
-        ],
-        "vue-router" => &[
-            "router",
-            "routes",
-            "views",
-            "pages",
-            "components",
-            "layouts",
-        ],
-        "react-router" => &["routes", "pages", "components", "layouts", "views", "app"],
-        _ => &[],
-    }
-}
-
-fn path_in_dir(file_path: &str, dir: &str) -> bool {
-    file_path.contains(&format!("/{dir}/")) || file_path.contains(&format!("\\{dir}\\"))
-}
-
-fn with_confidence(row: &Value, confidence: f64) -> Value {
-    let mut row = row.clone();
-    if let Some(map) = row.as_object_mut() {
-        map.insert("confidence".into(), json!(confidence));
-    }
-    row
-}
+// ── Unit 21/46: framework reference-resolution wrappers ─────────────────
 
 /// Mirror of a resolver's `claims_reference` naming convention.
 pub fn framework_claims_reference(name: String, framework: String) -> Result<bool, String> {
-    let parts = name.rsplit('.').next().unwrap_or(&name);
-    let ok = match framework.as_str() {
-        "django" => {
-            parts.ends_with("Model")
-                || parts.ends_with("View")
-                || parts.ends_with("Form")
-                || name == "objects"
-                || name == "DoesNotExist"
-                || name == "MultipleObjectsReturned"
-        }
-        "flask" => {
-            let lower = parts.to_lowercase();
-            ["blueprint", "route", "flask", "current_app", "g"]
-                .iter()
-                .any(|kw| lower.contains(kw))
-        }
-        "fastapi" => {
-            let lower = parts.to_lowercase();
-            [
-                "fastapi",
-                "apirouter",
-                "depends",
-                "query",
-                "path_param",
-                "body_param",
-                "header_param",
-            ]
+    core_indexer::frameworks::claims_reference(name, framework)
+}
+
+/// Whether a project uses a framework, checked in pure Rust.
+pub fn framework_detect(root: String, framework: String) -> Result<bool, String> {
+    let valid = core_indexer::frameworks::framework_names();
+    if !valid.iter().any(|name| *name == framework) {
+        return Err(format!("InvalidRequest: unknown framework `{framework}`"));
+    }
+    let root = std::path::PathBuf::from(root);
+    if detect_root_frameworks(&root)
+        .iter()
+        .any(|found| found == &framework)
+    {
+        return Ok(true);
+    }
+    for file in walk_sources(&root) {
+        let Ok(source) = std::fs::read_to_string(&file) else {
+            continue;
+        };
+        if detect_frameworks(&source)
             .iter()
-            .any(|kw| lower.contains(kw))
+            .any(|found| found == &framework)
+        {
+            return Ok(true);
         }
-        "go" => {
-            parts.ends_with("Handler")
-                || parts.ends_with("Service")
-                || parts.ends_with("Repository")
-                || parts.ends_with("Store")
-                || parts.ends_with("Middleware")
-                || name.starts_with("Handle")
-                || name.starts_with("Auth")
-                || name.starts_with("Log")
-        }
-        "actix" => {
-            parts.ends_with("_handler")
-                || parts.ends_with("_service")
-                || name.starts_with("handle_")
-                || name.starts_with("get_")
-                || name.starts_with("post_")
-                || name.starts_with("put_")
-                || name.starts_with("delete_")
-        }
-        "express" => {
-            parts.ends_with("Controller")
-                || parts.ends_with("Handler")
-                || parts.ends_with("Middleware")
-                || parts.ends_with("Service")
-                || parts.ends_with("Router")
-                || name.starts_with("handle")
-                || name.starts_with("get")
-                || name.starts_with("post")
-                || name.starts_with("put")
-                || name.starts_with("delete")
-        }
-        "springboot" => {
-            parts.ends_with("Controller")
-                || parts.ends_with("Service")
-                || parts.ends_with("Repository")
-                || parts.ends_with("Component")
-                || parts.ends_with("Handler")
-                || parts.ends_with("Resource")
-                || parts.ends_with("Facade")
-                || parts.contains("ServiceImpl")
-        }
-        "laravel" => {
-            parts.ends_with("Controller")
-                || parts.ends_with("Service")
-                || parts.ends_with("Repository")
-                || parts.ends_with("Provider")
-                || parts.ends_with("Middleware")
-        }
-        "aspnet" => {
-            parts.ends_with("Controller")
-                || parts.ends_with("Service")
-                || parts.ends_with("Repository")
-                || parts.ends_with("Handler")
-                || parts.ends_with("Endpoint")
-                || parts.ends_with("Middleware")
-        }
-        "rails" => {
-            parts.ends_with("Controller") || parts.ends_with("Model") || parts.ends_with("Record")
-        }
-        "nestjs" => {
-            parts.ends_with("Controller")
-                || parts.ends_with("Service")
-                || parts.ends_with("Module")
-                || parts.ends_with("Guard")
-                || parts.ends_with("Interceptor")
-                || parts.ends_with("Provider")
-        }
-        "vue-router" => name.contains("View") || name.contains("Page") || name.contains("Layout"),
-        "react-router" => {
-            parts.ends_with("Page")
-                || parts.ends_with("View")
-                || parts.ends_with("Route")
-                || parts.ends_with("Layout")
-                || parts.ends_with("Screen")
-        }
-        other => return Err(format!("unknown framework `{other}`")),
+    }
+    Ok(false)
+}
+
+/// Pure one-file extraction for a single resolver class.
+pub fn framework_extract(
+    file_path: String,
+    source: String,
+    framework: String,
+) -> Result<Value, String> {
+    let valid = core_indexer::frameworks::framework_names();
+    if !valid.iter().any(|name| *name == framework) {
+        return Err(format!("InvalidRequest: unknown framework `{framework}`"));
+    }
+    let is_js = std::path::Path::new(&file_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| matches!(ext, "js" | "ts" | "jsx" | "tsx"));
+    let (routes, extra_edges) = extract_routes(&source, &file_path, is_js);
+    let (nodes, edges) = collect_extractions(
+        &file_path,
+        routes
+            .into_iter()
+            .filter(|(_, _, _, found)| found == &framework)
+            .collect(),
+    );
+    let metadata = |found: &str| {
+        json!({
+            "synthesized_by": found,
+            "framework": found,
+        })
     };
-    Ok(ok)
+    let node_rows: Vec<Value> = nodes
+        .into_iter()
+        .map(|(id, name, file, handler, methods, found)| {
+            let mut meta = metadata(&found);
+            if let Some(map) = meta.as_object_mut() {
+                map.insert("pattern".into(), json!(name));
+                map.insert("handler".into(), json!(handler));
+                map.insert("methods".into(), json!(methods));
+            }
+            json!({
+                "id": id,
+                "name": name,
+                "kind": "route",
+                "file_path": file,
+                "metadata": meta,
+            })
+        })
+        .collect();
+    let mut edge_rows: Vec<Value> = edges
+        .into_iter()
+        .map(|(source_id, target_id, kind)| {
+            json!({
+                "source_id": source_id,
+                "target_id": target_id,
+                "kind": kind.rsplit(':').next().unwrap_or(&kind),
+                "metadata": metadata(&framework),
+            })
+        })
+        .collect();
+    let prefix = format!("synthetic:{framework}:");
+    for (source_id, target_id, kind) in extra_edges {
+        if !kind.starts_with(&prefix) {
+            continue;
+        }
+        edge_rows.push(json!({
+            "source_id": source_id,
+            "target_id": target_id,
+            "kind": kind.strip_prefix(&prefix).unwrap_or(&kind),
+            "metadata": metadata(&framework),
+        }));
+    }
+    Ok(json!({
+        "file_path": file_path,
+        "nodes": node_rows,
+        "edges": edge_rows,
+    }))
 }
 
-fn resolve_one(name: &str, framework: &str, candidates: &[Value]) -> Option<Value> {
-    if candidates.is_empty() {
-        return None;
-    }
-    if framework == "django" {
-        let parts = name.rsplit('.').next().unwrap_or(name);
-        let (suffix, hint) = if parts.ends_with("Model") {
-            ("Model", "models")
-        } else if parts.ends_with("View") {
-            ("View", "views")
-        } else if parts.ends_with("Form") {
-            ("Form", "forms")
-        } else {
-            return None;
-        };
-        let base = if parts == suffix {
-            parts
-        } else {
-            &parts[..parts.len() - suffix.len()]
-        };
-        for candidate in candidates {
-            let candidate_name = candidate
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let file_path = candidate
-                .get("file_path")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            // Python's `prefer_in_dir` uses a substring hint, so
-            // `app/models.py` matches `models` even though it is a file,
-            // not a directory component.
-            if candidate_name == base && file_path.contains(hint) {
-                return Some(with_confidence(candidate, 0.85));
-            }
-        }
-        return None;
-    }
-    if framework == "flask" || framework == "fastapi" {
-        return None;
-    }
-    for candidate in candidates {
-        let file_path = candidate
-            .get("file_path")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        for dir in preferred_dirs(framework) {
-            if path_in_dir(file_path, dir) {
-                return Some(with_confidence(candidate, 0.85));
-            }
-        }
-    }
-    Some(with_confidence(&candidates[0], 0.65))
+/// Resolve one framework's naming convention against supplied candidates.
+pub fn framework_resolve_one(
+    name: String,
+    framework: String,
+    candidates: Vec<Value>,
+) -> Result<Value, String> {
+    Ok(
+        core_indexer::frameworks::resolve_one(&name, &framework, &candidates)
+            .unwrap_or(Value::Null),
+    )
 }
-
-/// Search the live graph for framework-resolution candidates.
 pub fn framework_candidates_op(query: String, limit: i64) -> Result<Vec<Value>, String> {
     require_index()?;
     let snap = graph()?;
@@ -4434,46 +4225,14 @@ pub fn framework_candidates_op(query: String, limit: i64) -> Result<Vec<Value>, 
 }
 
 /// Mirror of `resolution.resolve_reference` with search results supplied as
+/// Mirror of `resolution.resolve_reference` with search results supplied as
 /// data (the Python original takes a callable searcher).
 pub fn framework_resolve_reference(
     name: String,
     candidates: Vec<Value>,
     limit: i64,
 ) -> Result<Value, String> {
-    let mut rows: Vec<Value> = Vec::new();
-    for framework in FRAMEWORK_ORDER {
-        if !framework_claims_reference(name.clone(), (*framework).to_string())? {
-            continue;
-        }
-        if let Some(resolved) = resolve_one(&name, framework, &candidates) {
-            let mut row = resolved;
-            if let Some(map) = row.as_object_mut() {
-                map.entry("resolved_by".to_string())
-                    .or_insert_with(|| json!(framework));
-                map.entry("confidence".to_string()).or_insert(json!(0.7));
-            }
-            rows.push(row);
-        }
-    }
-    rows.sort_by(|a, b| {
-        b.get("confidence")
-            .and_then(Value::as_f64)
-            .partial_cmp(&a.get("confidence").and_then(Value::as_f64))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let mut seen: Vec<String> = Vec::new();
-    let mut deduped = Vec::new();
-    for row in rows {
-        let id = row.get("id").and_then(Value::as_str).unwrap_or_default();
-        if id.is_empty() || !seen.iter().any(|value| value == id) {
-            if !id.is_empty() {
-                seen.push(id.to_string());
-            }
-            deduped.push(row);
-        }
-    }
-    deduped.truncate(limit.max(0) as usize);
-    Ok(Value::Array(deduped))
+    core_indexer::frameworks::resolve_reference(name, candidates, limit)
 }
 
 /// Mirror of `resolution.resolve_route` over supplied route/handler rows.
@@ -4483,39 +4242,7 @@ pub fn framework_resolve_route(
     callees: Vec<Value>,
     limit: i64,
 ) -> Result<Value, String> {
-    let mut rows = Vec::new();
-    for route in route_candidates {
-        if route.get("kind").and_then(Value::as_str) != Some("route") {
-            continue;
-        }
-        let name = route
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if !route_patterns_match(path.clone(), name.to_string())? {
-            continue;
-        }
-        for handler in &callees {
-            let kind = handler
-                .get("kind")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if !matches!(kind, "function" | "method" | "struct") {
-                continue;
-            }
-            let mut row = handler.clone();
-            if let Some(map) = row.as_object_mut() {
-                map.entry("resolved_by".to_string())
-                    .or_insert_with(|| json!("route-resolution"));
-                map.entry("confidence".to_string()).or_insert(json!(0.9));
-                map.entry("route".to_string())
-                    .or_insert_with(|| route.clone());
-            }
-            rows.push(row);
-        }
-    }
-    rows.truncate(limit.max(0) as usize);
-    Ok(Value::Array(rows))
+    core_indexer::frameworks::resolve_route(path, route_candidates, callees, limit)
 }
 
 /// Ops-shaped `status`: what is indexed and how fresh the store is.

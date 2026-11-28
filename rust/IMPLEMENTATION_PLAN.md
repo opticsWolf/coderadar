@@ -243,7 +243,7 @@ Problem: `resolve_reference` and `resolve_route` accept Python callables. rust-a
 
 Plan: do **not** fake these APIs. If a Python caller must keep the callable form, add a PyO3 wrapper that accepts encoded resolver descriptors (framework name, pattern, path) and delegates to the data-shaped Rust functions. Otherwise leave Python-side and record the decision.
 
-Acceptance criteria: no new unit opened without a CodeRadar caller edge that cannot be served by the data-shaped API.
+Acceptance criteria: no new unit opened without a CodeRadar caller edge that cannot be served by the data-shaped API. Source-level closure was added in Unit 46: the facade now also ships `coderadar.resolvers` with a `resolution.py` shim and all 13 resolver classes delegating to `core_indexer::frameworks`.
 
 ## 4. Per-unit execution protocol
 

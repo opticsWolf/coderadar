@@ -166,6 +166,41 @@ pyo3::create_exception!(coderadar, ContentUnavailable, OpError);
     )
     text = text[:idx] + regs + text[idx:]
     facade_ops = """#[pyfunction]
+#[pyo3(name = "framework_claims_reference", signature = (name, framework))]
+fn framework_claims_reference(name: String, framework: String) -> PyResult<bool> {
+    crate::port::framework_claims_reference(name, framework).map_err(error)
+}
+
+#[pyfunction]
+#[pyo3(name = "framework_detect", signature = (root, framework))]
+fn framework_detect(root: String, framework: String) -> PyResult<bool> {
+    crate::port::framework_detect(root, framework).map_err(error)
+}
+
+#[pyfunction]
+#[pyo3(name = "framework_extract", signature = (file_path, source, framework))]
+fn framework_extract(
+    py: Python<'_>,
+    file_path: String,
+    source: String,
+    framework: String,
+) -> PyResult<Py<PyAny>> {
+    value_result(py, crate::port::framework_extract(file_path, source, framework))
+}
+
+#[pyfunction]
+#[pyo3(name = "framework_resolve_one", signature = (name, framework, candidates))]
+fn framework_resolve_one(
+    py: Python<'_>,
+    name: String,
+    framework: String,
+    candidates: Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    let rows: Vec<serde_json::Value> = crate::pyconv::FromPy::from_py(&candidates).map_err(error)?;
+    value_result(py, crate::port::framework_resolve_one(name, framework, rows))
+}
+
+#[pyfunction]
 #[pyo3(name = "framework_resolve_reference", signature = (name, candidates, limit=5))]
 fn framework_resolve_reference(
     py: Python<'_>,
@@ -234,6 +269,10 @@ fn watch_changes_op(
         idx = text.index(marker)
         text = text[:idx] + facade_ops + "\n" + text[idx:]
     facade_regs = (
+        "    m.add_function(wrap_pyfunction!(framework_claims_reference, m)?)?;\n"
+        "    m.add_function(wrap_pyfunction!(framework_detect, m)?)?;\n"
+        "    m.add_function(wrap_pyfunction!(framework_extract, m)?)?;\n"
+        "    m.add_function(wrap_pyfunction!(framework_resolve_one, m)?)?;\n"
         "    m.add_function(wrap_pyfunction!(framework_resolve_reference, m)?)?;\n"
         "    m.add_function(wrap_pyfunction!(framework_resolve_route, m)?)?;\n"
         "    m.add_function(wrap_pyfunction!(embed_texts_op, m)?)?;\n"
@@ -253,6 +292,17 @@ fn watch_changes_op(
     facade = CRATE / "python" / "coderadar" / "__init__.py"
     if facade.exists():
         text = facade.read_text(encoding="utf-8")
+        if "framework_claims_reference = _native.framework_claims_reference" not in text:
+            marker = "extract_all_exports = _native.extract_all_exports\n"
+            text = text.replace(
+                marker,
+                marker
+                + "framework_claims_reference = _native.framework_claims_reference\n"
+                + "framework_detect = _native.framework_detect\n"
+                + "framework_extract = _native.framework_extract\n"
+                + "framework_resolve_one = _native.framework_resolve_one\n",
+                1,
+            )
         if "from .codegraph import" not in text:
             text += (
                 "\n# Unit 25: thin CodeGraph facade over the Rust-native ops.\n"
@@ -264,6 +314,27 @@ fn watch_changes_op(
                 '    "BatchContext", "CodeGraph", "GitWatcher", "UpdateReport", "Watcher",\n'
                 '    "analyze", "load", "resolve_reference", "resolve_route", "watch", "watch_git",\n'
                 '})\n'
+            )
+            facade.write_text(text, encoding="utf-8")
+        if "from .resolvers import" not in text:
+            text += (
+                "\n# Unit 46: Rust-backed framework resolver classes.\n"
+                "from .resolvers import (\n"
+                "    ALL_RESOLVERS, AspNetResolver, DjangoResolver, ExpressResolver,\n"
+                "    FastAPIResolver, FlaskResolver, FrameworkExtraction, FrameworkResolver,\n"
+                "    GoResolver, LaravelResolver, NestJSResolver, RailsResolver,\n"
+                "    ReactRouterResolver, RustActixResolver, RustFrameworkResolver,\n"
+                "    SpringBootResolver, SyntheticEdge, SyntheticNode, VueRouterResolver,\n"
+                ")\n\n"
+                "__all__ = sorted(set(__all__) | {\n"
+                "    \"ALL_RESOLVERS\", \"AspNetResolver\", \"DjangoResolver\", \"ExpressResolver\",\n"
+                "    \"FastAPIResolver\", \"FlaskResolver\", \"FrameworkExtraction\",\n"
+                "    \"FrameworkResolver\", \"GoResolver\", \"LaravelResolver\",\n"
+                "    \"NestJSResolver\", \"RailsResolver\", \"ReactRouterResolver\",\n"
+                "    \"RustActixResolver\", \"RustFrameworkResolver\",\n"
+                "    \"SpringBootResolver\", \"SyntheticEdge\",\n"
+                "    \"SyntheticNode\", \"VueRouterResolver\",\n"
+                "})\n"
             )
             facade.write_text(text, encoding="utf-8")
 

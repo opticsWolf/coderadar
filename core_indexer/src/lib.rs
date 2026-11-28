@@ -12,6 +12,7 @@ mod ffi_convert;
 mod ffi_git;
 mod ffi_synthetic;
 mod ffi_watcher;
+pub mod frameworks;
 pub mod fs;
 pub mod graph;
 pub mod lsp;

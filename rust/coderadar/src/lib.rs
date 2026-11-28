@@ -1907,6 +1907,48 @@ fn status_op(py: Python<'_>, root: Option<String>) -> PyResult<Py<PyAny>> {
 }
 
 #[pyfunction]
+#[pyo3(name = "framework_claims_reference", signature = (name, framework))]
+fn framework_claims_reference(name: String, framework: String) -> PyResult<bool> {
+    crate::port::framework_claims_reference(name, framework).map_err(error)
+}
+
+#[pyfunction]
+#[pyo3(name = "framework_detect", signature = (root, framework))]
+fn framework_detect(root: String, framework: String) -> PyResult<bool> {
+    crate::port::framework_detect(root, framework).map_err(error)
+}
+
+#[pyfunction]
+#[pyo3(name = "framework_extract", signature = (file_path, source, framework))]
+fn framework_extract(
+    py: Python<'_>,
+    file_path: String,
+    source: String,
+    framework: String,
+) -> PyResult<Py<PyAny>> {
+    value_result(
+        py,
+        crate::port::framework_extract(file_path, source, framework),
+    )
+}
+
+#[pyfunction]
+#[pyo3(name = "framework_resolve_one", signature = (name, framework, candidates))]
+fn framework_resolve_one(
+    py: Python<'_>,
+    name: String,
+    framework: String,
+    candidates: Bound<'_, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    let rows: Vec<serde_json::Value> =
+        crate::pyconv::FromPy::from_py(&candidates).map_err(error)?;
+    value_result(
+        py,
+        crate::port::framework_resolve_one(name, framework, rows),
+    )
+}
+
+#[pyfunction]
 #[pyo3(name = "framework_resolve_reference", signature = (name, candidates, limit=5))]
 fn framework_resolve_reference(
     py: Python<'_>,
@@ -2109,6 +2151,10 @@ fn native_module(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(record_checkout_op, m)?)?;
     m.add_function(wrap_pyfunction!(status_op, m)?)?;
     m.add_function(wrap_pyfunction!(load_snapshot_op, m)?)?;
+    m.add_function(wrap_pyfunction!(framework_claims_reference, m)?)?;
+    m.add_function(wrap_pyfunction!(framework_detect, m)?)?;
+    m.add_function(wrap_pyfunction!(framework_extract, m)?)?;
+    m.add_function(wrap_pyfunction!(framework_resolve_one, m)?)?;
     m.add_function(wrap_pyfunction!(framework_resolve_reference, m)?)?;
     m.add_function(wrap_pyfunction!(framework_resolve_route, m)?)?;
     m.add_function(wrap_pyfunction!(embed_texts_op, m)?)?;

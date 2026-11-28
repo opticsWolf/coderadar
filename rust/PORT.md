@@ -1015,9 +1015,8 @@ new recorded unit.
   searcher, callees=None, limit=5)`.
 - The Python callables are invoked for candidate discovery only; resolution
   stays in Rust. The `resolvers` argument is accepted for API compatibility;
-  Rust owns the framework order. A `resolvers/resolution.py` module shim is
-  deliberately not added because the resolver classes themselves remain
-  Python-side.
+  Rust owns the framework order. The corresponding facade module shim and
+  Rust-backed resolver classes were added later in Unit 46.
 - Fixed Django's `prefer_in_dir` equivalent to use substring hints, so
   `app/models.py` matches `models` as in the original. Smoke now returns the
   original's `django` / 0.85 result and the Go route handler result.
@@ -1049,3 +1048,21 @@ new recorded unit.
 - Unit tests cover one-shot root probing/reply parsing and live/dead parent
   detection. Gate 4447/4447, fmt/clippy/cargo test clean (625 core tests),
   cutover 4/4. Bench: 76 functions, 40 faster in the final run.
+
+## Rust-backed resolver classes (Unit 46 / source-parity closure)
+
+- Moved the framework reference-resolution heuristics out of the PyO3 crate
+  into `core_indexer::frameworks` so CLI, MCP and the new facade classes share
+  one pure-Rust implementation (M-FFI-TRANSLATES). Gate size dropped to 2.9x.
+- Added native functions `framework_claims_reference`, `framework_detect`,
+  `framework_extract` and `framework_resolve_one`. Added facade exports and
+  re-attachment rules in `after_bridge.py`.
+- Added `coderadar.resolvers` to the Rust facade package: `base.py` keeps the
+  original dataclass/ABC shape, `resolution.py` delegates all five helpers to
+  Rust, and `frameworks.py` exposes all 13 resolver classes as thin delegates
+  whose `name`, `detect`, `claims_reference`, `extract` and `resolve` methods
+  execute in Rust. `ALL_RESOLVERS` matches the original order.
+- `tests/test_facade_resolvers.py` proves all 13 names, inherited Rust methods,
+  detection, claims, one-file extraction, Django resolution and the
+  `resolution.py` helpers through the compiled extension.
+- Gate 4447/4447, fmt/clippy/cargo test clean, cutover 4/4.
