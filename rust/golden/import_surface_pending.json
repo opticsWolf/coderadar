@@ -1,25 +1,11 @@
 {
- "coverage": 0.614,
+ "coverage": 0.6637,
  "declared_names": 342,
  "import_errors": {},
  "missing_modules": [],
  "missing_names": {
   "__init__": [
-   "CodeRadarError",
-   "MutationEdit",
-   "MutationError",
-   "MutationFailure",
-   "MutationFileError",
-   "MutationFileResult",
-   "MutationPlan",
-   "MutationResult",
-   "MutationSyncSummary",
-   "ParseError",
-   "PolicyViolation",
-   "ResolutionError",
    "Snapshot",
-   "StaleHandle",
-   "SymbolChange",
    "blob_stats",
    "edge_persist_error"
   ],
@@ -95,15 +81,9 @@
    "store_db_path",
    "store_is_fresh"
   ],
-  "excludes": [
-   "resolve_entity_path"
-  ],
   "ops": [
    "ingest_history",
    "open_project"
-  ],
-  "query.cache": [
-   "cached_query"
   ],
   "render": [
    "affected",
@@ -148,10 +128,7 @@
    "traverse",
    "update_file",
    "verify_history"
-  ],
-  "skills": [
-   "InstallResult"
   ]
  },
- "resolved_names": 210
+ "resolved_names": 227
 }

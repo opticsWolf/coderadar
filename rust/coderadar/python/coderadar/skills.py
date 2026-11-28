@@ -1,5 +1,6 @@
 """Skill packs bundled with the binary."""
 
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import skill_description, skill_names, skill_text
@@ -47,7 +48,15 @@ def install(destinations=None, names=None, project=False, force=False):
     return installed, skipped
 
 
+@dataclass(frozen=True)
+class InstallResult:
+    """One skill copy attempt."""
+
+    path: Path
+    status: str
+
+
 __all__ = [
-    "SkillNotFound", "default_destinations", "install", "iter_skills",
-    "skill_description", "skill_names", "skill_text",
+    "InstallResult", "SkillNotFound", "default_destinations", "install",
+    "iter_skills", "skill_description", "skill_names", "skill_text",
 ]

@@ -1456,3 +1456,22 @@ machine it lives in the `coderadar-rs` uv tool venv
 - Shadow cutover stays unapplied: `rust/cutover.py --verify` passes 4/4, and
   `--install DIR` is ready, but putting the Rust binary on `PATH` in place of
   the Python CLI still needs explicit approval.
+
+## Public result types and the host-side query cache (Unit 58)
+
+- `coderadar/models.py` holds the public mutation/update result dataclasses and
+  the exception hierarchy, field-for-field with the reference. They are data
+  shapes; the engine produces every value. `codegraph.py` keeps its private
+  aliases so the rust-anything decoder namespace is unchanged.
+- `coderadar.query.cache` gained the reference LRU (`>=` TTL expiry,
+  `make_key` hashing method/params/epoch) and the `cached_query` decorator.
+  The previous shim cached *query text* through the engine, which is a
+  different contract — that mismatch is why the decorator now exercises the
+  reference semantics instead.
+- `excludes.resolve_entity_path` resolves against the engine's indexed root
+  (`stats()["indexed_root"]`), falling back to the process root only when no
+  graph is loaded — the reference's own fallback order.
+
+Surface: **227/342 (66.4%)**, still 0 absent modules. Remaining: `cli` 65,
+`render` 42, `__init__` 3 (`Snapshot`, `blob_stats`, `edge_persist_error`),
+`coldstart` 3, `ops` 2.

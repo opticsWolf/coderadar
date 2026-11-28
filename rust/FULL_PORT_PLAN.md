@@ -23,7 +23,7 @@ are partially done.
 |---|---|---|
 | **D1 Protocol** | `coderadar mcp serve` is MCP-spec valid and schema-compatible with the Python server for all 35 shared tools. | ✅ 49 schema-valid tools; conformance harness green |
 | **D2 CLI contract** | Every Python command accepts the same options, defaults, exit codes and output formats. | ✅ inventory, `--help`, exit codes, `--format` and 15/15 payloads green |
-| **D3 Python surface** | `import coderadar.<module>` resolves the same public names, all delegating to Rust. | ⚠️ 210/342 (61.4%) public names; **0 modules absent** |
+| **D3 Python surface** | `import coderadar.<module>` resolves the same public names, all delegating to Rust. | ⚠️ 227/342 (66.4%) public names; **0 modules absent** |
 | **D4 Numeric fidelity** | Embedding vectors match Python exactly, or a recorded tolerance is enforced by a test. | ⚠️ dynamic-runtime build path shipped; measurement pending |
 | **D5 Cutover** | Rust binary is installed as `coderadar`; Python survives only as a shim; packaging reproducible. | ⚠️ `cutover.py` exists, never applied |
 | **D6 Closeout** | A committed audit script reports zero gaps; full verification matrix green. | ⚠️ `cli_parity.py` + `mcp_conformance.py` + import test committed |
@@ -47,7 +47,7 @@ reference implementation until D3 lands, then moves to `reference/`.
 | MCP tool names | 35 | 49 | 0 (+14 Rust extras) |
 | MCP `tools/list` schema | full objects | full objects | 0 (35 shared tools byte-identical) |
 | MCP tool params honoured | — | — | 0 (7 tools fixed) |
-| Python module public names | 342 public names | 210 resolvable | **132 inside 9 modules + 0 absent** |
+| Python module public names | 342 public names | 227 resolvable | **115 inside 6 modules + 0 absent** |
 | Framework extraction parity | — | — | 23/23 fixtures identical |
 | Gate cases | — | 4,447 | exact |
 | Embedding drift | — | **4.33e-4 max** (mean 2.46e-5) | contract: ≤5e-4 **and** identical top-3 |
@@ -675,28 +675,37 @@ Landed in the S7/S5 closure:
 - `mcp.server`: `serve` and `set_launch_cwd` added, so the module matches the
   reference surface.
 
-Every module under `py_agent/src/coderadar` now imports from the bridge.
-What remains is **134 names inside 9 already-resolving modules**, recorded in
+Every module under `py_agent/src/coderadar` imports from the bridge. **227/342
+public names (66.4%)** now resolve; the remaining 115 are recorded in
 `rust/golden/import_surface_pending.json`:
 
-| Module | Missing | What they are |
-|---|---:|---|
-| `cli` | 65 | click command wrappers (`*_cmd`) and helpers; the binary owns the commands |
-| `render` | 42 | renderer functions the binary renders internally |
-| `__init__` | 17 | mutation dataclasses/exceptions not yet re-exported |
-| `coldstart` | 3 | `store_db_path`, `store_is_fresh`, `stale_source_files` |
-| `mcp.server` | 2 | `serve`/`set_launch_cwd` landed after the measurement run |
-| `ops` | 2 | `ingest_history`, `open_project` |
-| `excludes` | 1 | `resolve_entity_path` |
-| `query.cache` | 1 | `cached_query` |
-| `skills` | 1 | `InstallResult` |
+| Module | Missing | What they are | Plan |
+|---|---:|---|---|
+| `cli` | 65 | click command wrappers and op re-exports | binary-backed wrappers with the same parameter names |
+| `render` | 42 | text renderers (data in, text out) | one native dispatcher + thin Python wrappers |
+| `__init__` | 3 | `Snapshot`, `blob_stats`, `edge_persist_error` | `Snapshot` needs the bitemporal methods; the counters are engine state |
+| `coldstart` | 3 | `store_db_path`, `store_is_fresh`, `stale_source_files` | engine walk with the shared exclusion matcher |
+| `ops` | 2 | `ingest_history`, `open_project` | `open_project` maps onto the MCP project opener; `ingest_history` needs the git ingest signature, not the renderer |
+
+Landed for `__init__`/`skills`/`query.cache`/`excludes`:
+
+- `models.py` defines the public mutation/update result types and the
+  exception hierarchy field-for-field with the reference (`SymbolChange`,
+  `UpdateReport`, `MutationEdit`, `MutationPlan`, `MutationResult`,
+  `MutationFailure`, `MutationFileError`, `MutationFileResult`,
+  `MutationSyncSummary`, `CodeRadarError` + five subclasses). They are data
+  shapes only; the engine produces the values.
+- `skills.InstallResult` and `query.cache.cached_query` (with the reference
+  LRU semantics: `>=` TTL expiry, `make_key` hashing method/params/epoch).
+- `excludes.resolve_entity_path` resolves against the engine's indexed root,
+  falling back to the module root only when no graph is loaded.
 
 The surface is measured by `python rust/import_surface.py` (rewrites the
 baseline) and `--check` fails on regression.
 
 Evidence: `python -m pytest tests/test_import_surface.py` (passes; asserted
-against the recorded baseline) and 210/342 public names resolved
-(31.3% -> 61.4%), with every module present.
+against the recorded baseline) and 227/342 public names resolved
+(31.3% -> 66.4%), with every module present.
 
 ### P2b — MCP handles and the last absent module (done)
 

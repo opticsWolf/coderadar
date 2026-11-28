@@ -236,6 +236,14 @@ __all__ = sorted(set(__all__) | {
     "SyntheticNode", "VueRouterResolver",
 })
 
+# Public result types and exceptions (data shapes only; the engine produces them).
+from .models import (  # noqa: E402,F401
+    CodeRadarError, MutationEdit, MutationError, MutationFailure,
+    MutationFileError, MutationFileResult, MutationPlan, MutationResult,
+    MutationSyncSummary, ParseError, PolicyViolation, ResolutionError,
+    StaleHandle, SymbolChange, UpdateReport,
+)
+
 # Unit S1/S2: engine-backed helpers used by the module shims.
 from ._native import (  # noqa: E402,F401 - re-export the Rust error taxonomy
     ContentUnavailable, EngineError, InvalidRequest, MissingDependency,
@@ -289,6 +297,10 @@ lazy_should_ask = _native.lazy_should_ask
 lazy_trade_up = _native.lazy_trade_up
 
 __all__ = sorted(set(__all__) | {
+    "CodeRadarError", "MutationEdit", "MutationError", "MutationFailure",
+    "MutationFileError", "MutationFileResult", "MutationPlan", "MutationResult",
+    "MutationSyncSummary", "ParseError", "PolicyViolation", "ResolutionError",
+    "StaleHandle", "SymbolChange", "UpdateReport",
     "ContentUnavailable", "EngineError", "InvalidRequest", "MissingDependency",
     "MutationFailed", "NoEmbeddings", "NoExtension", "NoIndex", "NotFound",
     "OpError", "TemporalUnsupported",

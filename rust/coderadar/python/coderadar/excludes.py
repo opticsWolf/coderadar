@@ -4,6 +4,7 @@ from pathlib import Path
 
 from . import is_excluded as _is_excluded
 from . import project_files
+from . import stats as _stats
 
 _ROOT = Path.cwd()
 
@@ -26,4 +27,21 @@ def iter_project_files(root=None, extra=None):
         yield base / relative
 
 
-__all__ = ["is_excluded", "iter_project_files", "project_files", "set_indexed_root"]
+def resolve_entity_path(path):
+    """Resolve a possibly root-relative entity path for disk reads."""
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    try:
+        indexed = _stats().get("indexed_root")
+    except Exception:  # noqa: BLE001 - best-effort root probe; None means "unknown"
+        indexed = None
+    if indexed:
+        return Path(indexed) / candidate
+    return _ROOT / candidate
+
+
+__all__ = [
+    "is_excluded", "iter_project_files", "project_files",
+    "resolve_entity_path", "set_indexed_root",
+]
