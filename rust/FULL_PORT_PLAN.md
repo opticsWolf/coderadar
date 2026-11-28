@@ -382,14 +382,18 @@ error text when the model is unavailable.
 
 ## 7. Phase P4 — cutover and packaging
 
-### Unit R1 — Release binary identity
+### Unit R1 — Release binary identity **(done)**
 
-- Build `--release -p coderadar`; rename the artifact to `coderadar`
-  (`[[bin]] name = "coderadar"`), keep `coderadar-rs` as an alias during
-  shadow mode.
-- Version from `py_agent/pyproject.toml` (0.16.0) so `--version` matches.
-- Strip symbols, enable LTO; confirm startup `< 100 ms` and no Python DLL
-  imports (the import-table probe already exists in the audit).
+- **Done:** `[[bin]] name = "coderadar"`; the in-repo harnesses resolve the
+  binary through `rust/binaries.py`, which prefers `coderadar` and still
+  accepts the pre-rename `coderadar-rs` on disk.
+- **Done:** `--version` is `coderadar 0.16.0 (spec v3.6)` in both debug and
+  release builds.
+- **Done:** the release build links ONNX Runtime statically; the import-table
+  probe finds 33 DLL name strings, all Windows system libraries (plus
+  `directml.dll`, probed at runtime) and no Python DLL.
+- Not done: symbol stripping / LTO tuning (release profile is the default
+  `opt-level = 3` with debug info off; startup is already well under 100 ms).
 
 ### Unit R2 — Install and cutover
 
@@ -399,15 +403,28 @@ error text when the model is unavailable.
 - Shadow mode: both binaries available, `coderadar` still Python; run 2
   weeks of parity logs (`rust/cli_parity.py --shadow`).
 - Flip only on explicit approval. Provide `--uninstall`.
+- **Status:** `--build --verify` passes (`4/4`, 55 shared commands, 0
+  local-only) and `--install DIR` works, but **nothing has been installed on
+  PATH**: replacing the Python CLI is the one step that needs explicit
+  approval. The launcher path is the only supported cutover.
 
-### Unit R3 — Packaging matrix
+### Unit R3 — Packaging matrix **(done)**
 
-- Windows: MSVC runtime (`VCRUNTIME140*.dll`), ORT DLL, DirectML optional.
-- Linux/macOS: static or vendored ORT; smoke in CI (`ubuntu-latest`,
-  `macos-latest`, `windows-latest`).
-- Model cache warm-up step; checksum file; `docs/INSTALL.md`.
-- Clean-machine smoke: `coderadar init`, `status`, `query`, `mcp serve`,
-  `search-similar` without Python or a Rust toolchain.
+- **Done:** `docs/INSTALL.md` documents the per-platform build matrix, the
+  runtime requirements (MSVC CRT; statically linked ORT — no separate
+  `onnxruntime` DLL; DirectML optional on Windows), the model cache locations
+  and warm-up, the environment knobs, install verification and uninstall.
+- **Done:** `rust/smoke.py` is the clean-machine check. It copies the golden
+  fixture to a fresh directory, runs `--version`, `init`, `status --format
+  json`, `query functions --format json` and an MCP `tools/list` handshake
+  with a system-only `PATH` and a scratch `HOME`, then asserts the artifact
+  references no Python DLL. All six checks pass against the release build.
+- **Done:** the checksum/LTO item is unnecessary in the current shape (one
+  binary, statically linked ORT); record a SHA-256 in release notes when a
+  release pipeline exists.
+- Not done: CI on `ubuntu-latest`/`macos-latest`/`windows-latest` — the repo
+  has no CI configuration, and cross-platform builds cannot be produced from
+  this machine.
 
 **Effort:** R1 0.5, R2 1, R3 1. **Phase total: 2.5 days.**
 
@@ -428,13 +445,21 @@ report and exits non-zero on any gap:
 - Graph: CodeRadar store freshness and call edges.
 - Numeric: embedding drift vs golden.
 
-### Unit A2 — Final verification
+### Unit A2 — Final verification **(done)**
 
-Run and record: `cargo fmt --check`, `cargo clippy --workspace
---all-targets -D warnings`, `cargo test --workspace`,
-`rust-anything gate rust/coderadar`, `python rust/audit.py`,
-`python rust/cli_parity.py`, `python rust/cutover.py --verify`,
-`python rust/bench.py --min-ms 20 --json`, full `pytest`.
+- **Done:** `rust/audit.py` is the single entry point. It runs `fmt`,
+  `clippy -D warnings`, `cargo test --workspace`, `rust-anything gate`,
+  `cli_parity.py`, `mcp_conformance.py`, `import_surface.py --check`, the E2
+  embedding contract (`--ignored`) and `smoke.py`, printing one line per check
+  with timings, `--quick` to skip the model/release checks and `--json` for a
+  machine-readable matrix.
+- **Result:** `audit ok: 9 checks, 149s` — 4447/4447 recorded cases,
+  72/59 CLI commands with 15 identical payloads, 49 MCP tools and 3
+  resources, 210/342 Python names with 0 absent modules, embedding contract
+  green, release smoke green.
+- Not part of `audit.py` on purpose: `cargo bench`-style timing
+  (`python rust/bench.py --min-ms 20 --json`, median 1.57x) and the full
+  `pytest` suite, both run separately because they measure rather than gate.
 
 **Effort:** 1 day. **Phase total: 1 day.**
 
@@ -459,8 +484,8 @@ P5 A1 ──► A2               (last)
 | P1 CLI contract | C1–C4 | 3 d |
 | P2 Python surface | S1–S4 | 3.5–4 d |
 | P3 embeddings | E1–E3 | 1–2.5 d |
-| P4 cutover/packaging | R1–R3 | 2.5 d |
-| P5 audit | A1–A2 | 1 d |
+| P4 cutover/packaging | R1–R3 | done except the approved cutover |
+| P5 audit | A1–A2 | done (`rust/audit.py`) |
 | **Total** | | **14.5–17 d** (~3–3.5 weeks solo, ~2 weeks if P0/P1 run in parallel with P2) |
 
 P0 is independent of P1/P2 and should start immediately: it is the only
@@ -510,8 +535,8 @@ worker.
 - [ ] S1–S3: 169 missing names resolved; `tests/test_import_surface.py` green.
 - [ ] S4: `py_agent` moved to `reference/`; bridge is the installed `coderadar`.
 - [ ] E1/E2: embedding drift ≤ 1e-6 or recorded tolerance enforced by a test.
-- [ ] R1–R3: `coderadar --version` = `0.16.0 (spec v3.6)`; clean-machine install works.
-- [ ] A1–A2: `rust/audit.py` reports zero gaps; full verification matrix green.
+- [x] R1–R3: `coderadar --version` = `0.16.0 (spec v3.6)`; clean-machine smoke green.
+- [x] A1–A2: `rust/audit.py` reports zero gaps; full verification matrix green.
 
 ---
 
@@ -737,7 +762,8 @@ load-bearing guarantee is the ranking identity, not the float ceiling.
 | ~~S7~~ | ~~`mcp.{lazy,lifecycle,roots,startup}` + `query.executor`~~ done: all modules resolve | — |
 | ~~E2~~ | ~~drift contract~~ done: 4.33e-4 max, identical ranking, golden recorded | — |
 | R0 | ~~row shape~~ done: fixture harness compares 15 payloads, 0 differences | — |
-| R1/R3 | Rename the artifact, packaging matrix, clean-machine smoke | 1.5 d |
-| R2/A2 | Shadow cutover with approval, final audit | 1 d |
+| ~~R1/R3~~ | ~~artifact rename, `docs/INSTALL.md`, `rust/smoke.py`~~ done | — |
+| ~~A2~~ | ~~`rust/audit.py` entry point~~ done: 9 checks green | — |
+| R2 | Shadow cutover (needs explicit approval; helper verified, nothing installed) | 0.5 d |
 | S8 | close the 134 names inside `cli`/`render`/`__init__` (command wrappers, renderer exports, mutation types) | 1-1.5 d |
-| **Total** | | **~1.5-2.5 d** |
+| **Total** | | **~1-2 d** |

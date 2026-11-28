@@ -31,5 +31,5 @@ unused_lifetimes = "warn"
 trivial_numeric_casts = "warn"
 
 [[bin]]
-name = "coderadar-rs"
+name = "coderadar"
 path = "src/main.rs"

@@ -28,6 +28,9 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from binaries import debug_binary as rust_binary
+
 ROOT = Path(__file__).resolve().parent.parent
 GOLDEN = ROOT / "rust" / "golden" / "cli_parity.json"
 FIXTURE = ROOT / "rust" / "golden" / "parity_fixture"
@@ -219,8 +222,7 @@ def prepare_fixture(binary: str | list[str]) -> tuple[Path | None, list[str]]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    default_rust = str(ROOT / "target" / "debug" / "coderadar-rs.exe")
-    parser.add_argument("--rust", default=default_rust)
+    parser.add_argument("--rust", default=str(rust_binary()))
     parser.add_argument("--python", default=None, help="reference CLI (default: local launcher)")
     parser.add_argument("--json", action="store_true")
     options_ = parser.parse_args(argv)

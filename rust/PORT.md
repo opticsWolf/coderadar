@@ -1435,3 +1435,24 @@ deliberately too tight for a different model to slip through.
 Note for CI: the reference runtime is not a dependency of this repo. On this
 machine it lives in the `coderadar-rs` uv tool venv
 (`uv/tools/coderadar-rs/Scripts/python.exe`); re-record with that path.
+
+## Packaging, smoke and one audit entry point (Unit 57)
+
+- **The artifact is `coderadar`.** `[[bin]] name = "coderadar"`; the harnesses
+  go through `rust/binaries.py`, which prefers the product name and still
+  finds pre-rename `coderadar-rs` builds.
+- **`docs/INSTALL.md`** is the install contract: platform matrix, statically
+  linked ORT (no separate DLL), MSVC CRT/DirectML note on Windows, model cache
+  locations and offline warm-up, environment knobs, verification and
+  uninstall.
+- **`rust/smoke.py`** is the clean-machine check: fresh directory, system-only
+  `PATH`, scratch `HOME`, `--version` -> `init` -> `status` -> `query` -> MCP
+  `tools/list`, then a PE string scan for Python DLL references. Six checks,
+  all green against the release build (49 tools; no Python DLL).
+- **`rust/audit.py`** is the single verification entry point: fmt, clippy,
+  workspace tests, `rust-anything gate`, CLI parity, MCP conformance, import
+  surface, the E2 embedding contract and the smoke test, with `--quick` and
+  `--json`. Current run: 9 checks, 149 s, all green.
+- Shadow cutover stays unapplied: `rust/cutover.py --verify` passes 4/4, and
+  `--install DIR` is ready, but putting the Rust binary on `PATH` in place of
+  the Python CLI still needs explicit approval.

@@ -50,7 +50,7 @@ def main() -> None:
 
     cargo = (CRATE / "Cargo.toml").read_text(encoding="utf-8")
     if "[[bin]]" not in cargo:
-        cargo += '\n[[bin]]\nname = "coderadar-rs"\npath = "src/main.rs"\n'
+        cargo += '\n[[bin]]\nname = "coderadar"\npath = "src/main.rs"\n'
         (CRATE / "Cargo.toml").write_text(cargo, encoding="utf-8")
 
     patch_rel("src/pyconv.rs", ".cast::<PyDict>()", ".downcast::<PyDict>()")

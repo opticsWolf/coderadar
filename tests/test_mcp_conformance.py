@@ -12,11 +12,13 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def test_mcp_conformance() -> None:
     script = ROOT / "rust" / "mcp_conformance.py"
-    binary = ROOT / "target" / "debug" / "coderadar-rs.exe"
-    if not binary.exists():
+    sys.path.insert(0, str(ROOT / "rust"))
+    from binaries import debug_binary
+
+    if not debug_binary().exists():
         import pytest
 
-        pytest.skip("coderadar-rs debug binary is not built")
+        pytest.skip("the debug binary is not built")
     completed = subprocess.run(
         [sys.executable, str(script), "--json"],
         capture_output=True,

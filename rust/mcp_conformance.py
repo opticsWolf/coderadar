@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """MCP conformance check for the Rust server (plan unit M4).
 
-Spawns `coderadar-rs mcp serve`, walks the handshake, validates the protocol
+Spawns `coderadar mcp serve`, walks the handshake, validates the protocol
 shape a client SDK enforces, and exits non-zero on the first violation.
 
 Usage:
@@ -16,6 +16,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from binaries import debug_binary as rust_binary
 
 ROOT = Path(__file__).resolve().parent.parent
 SHARED_TOOLS = ROOT / "rust" / "golden" / "mcp_tools.json"
@@ -177,7 +180,7 @@ def run(binary: Path, cwd: Path) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bin", default=str(ROOT / "target" / "debug" / "coderadar-rs.exe"))
+    parser.add_argument("--bin", default=str(rust_binary()))
     parser.add_argument("--cwd", default=str(ROOT))
     parser.add_argument("--json", action="store_true")
     options = parser.parse_args(argv)

@@ -2,7 +2,7 @@
 """Cutover helper: build, verify and optionally shim the Rust CLI.
 
 The Python package is never modified. ``--verify`` compares read-only
-surfaces of the Python CLI and ``coderadar-rs``; ``--install DIR`` writes a
+surfaces of the Python CLI and ``coderadar``; ``--install DIR`` writes a
 small launcher named ``coderadar`` in ``DIR`` so callers on PATH pick the
 Rust binary up without changing source files.
 
@@ -23,7 +23,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-RUST_BIN = ROOT / "target" / "debug" / ("coderadar-rs.exe" if os.name == "nt" else "coderadar-rs")
+sys.path.insert(0, str(ROOT / "rust"))
+from binaries import debug_binary as _debug_binary
+
+RUST_BIN = _debug_binary()
 PY_CLI = os.environ.get("CODERADAR_PY_CLI", "coderadar")
 
 VERIFY_COMMANDS: tuple[tuple[str, ...], ...] = (
@@ -49,8 +52,8 @@ def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def build() -> int:
-    print("building coderadar-rs ...", flush=True)
-    result = run(["cargo", "build", "-p", "coderadar", "--bin", "coderadar-rs"])
+    print("building coderadar ...", flush=True)
+    result = run(["cargo", "build", "-p", "coderadar", "--bin", "coderadar"])
     sys.stdout.write(result.stdout[-2000:])
     sys.stderr.write(result.stderr[-2000:])
     return result.returncode
