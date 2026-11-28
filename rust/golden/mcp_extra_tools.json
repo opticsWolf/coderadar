@@ -1,0 +1,195 @@
+{
+ "tools": [
+  {
+   "name": "coderadar_blob_get",
+   "description": "Read a content blob (file text or parsed body) that the index stored under an immutable digest. Returns null when the digest is unknown.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_blob_getArguments",
+    "properties": {
+     "digest": {"type": "string", "title": "Digest"},
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    },
+    "required": ["digest"]
+   }
+  },
+  {
+   "name": "coderadar_archive",
+   "description": "List archived (pruned) history rows, optionally up to a cutoff timestamp.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_archiveArguments",
+    "properties": {
+     "cutoff": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Cutoff"},
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    }
+   }
+  },
+  {
+   "name": "coderadar_stale_files",
+   "description": "Report which of the given paths changed since the index recorded them, using mtime and extension rules.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_stale_filesArguments",
+    "properties": {
+     "paths": {"type": "array", "items": {"type": "string"}, "default": [], "title": "Paths"},
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    }
+   }
+  },
+  {
+   "name": "coderadar_read_source",
+   "description": "Return the verbatim, line-numbered source of one entity as recorded by the index. Fails when the entity or its source is unavailable.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_read_sourceArguments",
+    "properties": {
+     "entity_id": {"type": "string", "title": "Entity Id"},
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    },
+    "required": ["entity_id"]
+   }
+  },
+  {
+   "name": "coderadar_history_of",
+   "description": "Show the recorded generations of one file: every version the index retained, newest first.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_history_ofArguments",
+    "properties": {
+     "file": {"type": "string", "title": "File"},
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    },
+    "required": ["file"]
+   }
+  },
+  {
+   "name": "coderadar_branches",
+   "description": "List the branches recorded in the store, with their latest generations.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_branchesArguments",
+    "properties": {
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    }
+   }
+  },
+  {
+   "name": "coderadar_ingest_history",
+   "description": "Ingest commit history into a fresh commit-time store. Dry-run by default; pass dry_run=false to write. Refuses a legacy index-now store.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_ingest_historyArguments",
+    "properties": {
+     "repo": {"type": "string", "title": "Repo"},
+     "branch": {"type": "string", "default": "main", "title": "Branch"},
+     "from_sha": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "From Sha"},
+     "to_sha": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "To Sha"},
+     "lineage": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Lineage"},
+     "parent_ref": {"type": "string", "default": "main", "title": "Parent Ref"},
+     "store_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Store Path"},
+     "dry_run": {"type": "boolean", "default": true, "title": "Dry Run"},
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    },
+    "required": ["repo"]
+   }
+  },
+  {
+   "name": "coderadar_reingest_merged_commits",
+   "description": "Re-ingest commits that were merged after their branch ingest, healing lineage gaps. Dry-run unless dry_run is false.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_reingest_merged_commitsArguments",
+    "properties": {
+     "repo": {"type": "string", "title": "Repo"},
+     "branch": {"type": "string", "default": "main", "title": "Branch"},
+     "store_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Store Path"},
+     "dry_run": {"type": "boolean", "default": false, "title": "Dry Run"},
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    },
+    "required": ["repo"]
+   }
+  },
+  {
+   "name": "coderadar_backfill_commit_index",
+   "description": "Rebuild the commit index for a branch from the recorded generations.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_backfill_commit_indexArguments",
+    "properties": {
+     "branch": {"type": "string", "default": "main", "title": "Branch"},
+     "store_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Store Path"},
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    }
+   }
+  },
+  {
+   "name": "coderadar_backfill_commit_messages",
+   "description": "Fill in missing commit messages for an ingested store from the repository.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_backfill_commit_messagesArguments",
+    "properties": {
+     "repo": {"type": "string", "title": "Repo"},
+     "store_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Store Path"},
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    },
+    "required": ["repo"]
+   }
+  },
+  {
+   "name": "coderadar_context",
+   "description": "Build a token-budgeted GraphRAG context for a natural-language question: ranked entities, their source, and the call paths that connect them.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_contextArguments",
+    "properties": {
+     "query": {"type": "string", "title": "Query"},
+     "budget": {"type": "integer", "default": 8192, "title": "Budget"},
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    },
+    "required": ["query"]
+   }
+  },
+  {
+   "name": "coderadar_lsp_status",
+   "description": "Report whether live LSP resolution is enabled, which servers are configured, and the timeout and override threshold in force.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_lsp_statusArguments",
+    "properties": {
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    }
+   }
+  },
+  {
+   "name": "coderadar_lsp_definition",
+   "description": "Ask the configured language server for the definition at a source position. Returns the resolved location or null when the server has none.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_lsp_definitionArguments",
+    "properties": {
+     "language": {"type": "string", "title": "Language"},
+     "path": {"type": "string", "title": "Path"},
+     "line": {"type": "integer", "title": "Line"},
+     "column": {"type": "integer", "title": "Column"},
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    },
+    "required": ["language", "path", "line", "column"]
+   }
+  },
+  {
+   "name": "coderadar_lsp_override",
+   "description": "Apply [resolution.lsp].override_threshold to call-edge rows, replacing low-confidence targets with language-server results where one is found.",
+   "inputSchema": {
+    "type": "object",
+    "title": "coderadar_lsp_overrideArguments",
+    "properties": {
+     "edges": {"type": "array", "items": {"type": "object"}, "title": "Edges"},
+     "project_path": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Project Path"}
+    },
+    "required": ["edges"]
+   }
+  }
+ ]
+}

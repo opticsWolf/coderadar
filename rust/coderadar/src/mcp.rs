@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+use core_indexer::mcp_catalogue::{Args, find, specs};
 use core_indexer::mcp_runtime::{HandshakeGuard, McpSession, ParentWatchdog, stdin_messages};
 use serde_json::{Value, json};
 
@@ -20,74 +21,47 @@ fn coldstart(root: PathBuf) -> Result<Value, String> {
 
 fn tool_result(id: Value, result: Result<Value, String>) -> Value {
     match result {
-        Ok(value) => json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "content": [{"type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_default()}],
-                "structuredContent": value,
-            },
-        }),
+        Ok(value) => {
+            let text = serde_json::to_string_pretty(&value).unwrap_or_default();
+            let mut payload = json!({
+                "content": [{"type": "text", "text": text}],
+                "isError": false,
+            });
+            if value.is_object() {
+                payload["structuredContent"] = value;
+            }
+            json!({"jsonrpc": "2.0", "id": id, "result": payload})
+        }
         Err(message) => json!({
             "jsonrpc": "2.0",
             "id": id,
-            "error": {"code": -32000, "message": op_error_message(&message)},
+            "result": {
+                "content": [{"type": "text", "text": op_error_message(&message)}],
+                "isError": true,
+            },
         }),
     }
 }
 
-fn tool_names() -> Value {
-    json!([
-        "coderadar_status",
-        "coderadar_search",
-        "coderadar_node",
-        "coderadar_callers",
-        "coderadar_callees",
-        "coderadar_affected",
-        "coderadar_explore",
-        "coderadar_traverse",
-        "coderadar_query",
-        "coderadar_annotations_on",
-        "coderadar_open_items",
-        "coderadar_dead_code",
-        "coderadar_get_smells",
-        "coderadar_find_clones",
-        "coderadar_find_scaffolding",
-        "coderadar_blob_get",
-        "coderadar_archive",
-        "coderadar_stale_files",
-        "coderadar_read_source",
-        "coderadar_as_of",
-        "coderadar_verify_history",
-        "coderadar_history_of",
-        "coderadar_changes_between",
-        "coderadar_branches",
-        "coderadar_ingest_status",
-        "coderadar_ingest_history",
-        "coderadar_reingest_merged_commits",
-        "coderadar_backfill_commit_index",
-        "coderadar_backfill_commit_messages",
-        "coderadar_replace_body",
-        "coderadar_update_signature",
-        "coderadar_rename",
-        "coderadar_create_entity",
-        "coderadar_update_file",
-        "coderadar_compute_embeddings",
-        "coderadar_search_similar",
-        "coderadar_search_hybrid",
-        "coderadar_comments_on",
-        "coderadar_annotation_history",
-        "coderadar_comment_history",
-        "coderadar_diagnose",
-        "coderadar_context",
-        "coderadar_lsp_status",
-        "coderadar_lsp_definition",
-        "coderadar_lsp_override",
-        "coderadar_module_children",
-        "coderadar_resolve",
-        "coderadar_reindex",
-        "coderadar_set_project",
-    ])
+/// MCP protocol versions this server can serve. The newest is the default
+/// when a client asks for something unknown.
+const SUPPORTED_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
+
+fn negotiated_protocol(requested: &str) -> &'static str {
+    SUPPORTED_PROTOCOLS
+        .iter()
+        .copied()
+        .find(|version| *version == requested)
+        .unwrap_or(SUPPORTED_PROTOCOLS[0])
+}
+
+fn tool_catalogue() -> Value {
+    Value::Array(
+        specs()
+            .iter()
+            .map(core_indexer::mcp_catalogue::ToolSpec::to_mcp)
+            .collect(),
+    )
 }
 
 fn canonical(path: &std::path::Path) -> std::path::PathBuf {
@@ -172,18 +146,24 @@ fn op_error_message(error: &str) -> String {
     error.to_string()
 }
 
-fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
+fn dry_run(raw: &Value) -> bool {
+    if let Some(explicit) = raw.get("dry_run").and_then(Value::as_bool) {
+        return explicit;
+    }
+    if let Some(apply) = raw.get("apply").and_then(Value::as_bool) {
+        return !apply;
+    }
+    true
+}
+
+fn call_tool(name: &str, raw: &Value) -> Result<Value, String> {
+    let spec = find(name).ok_or_else(|| format!("unknown tool `{name}`"))?;
     if name != "coderadar_set_project"
-        && let Some(message) = wrong_project(args)
+        && let Some(message) = wrong_project(raw)
     {
         return Err(message);
     }
-    let arg = |key: &str| -> String {
-        args.get(key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    };
+    let a = Args::new(spec, raw)?;
     match name {
         "coderadar_status" => {
             let snap = crate::state::projection()
@@ -194,327 +174,196 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "stats": core_indexer::api::stats(&snap),
             }))
         }
-        "coderadar_search" => crate::port::search(
-            arg("query"),
-            args.get("kind").and_then(Value::as_str).map(str::to_string),
-            args.get("top_k").and_then(Value::as_i64).unwrap_or(10),
-        )
-        .map(Value::Array),
-        "coderadar_node" => crate::port::node(arg("entity_id"), false),
-        "coderadar_callers" => Ok(Value::Array(crate::port::callers(arg("entity_id"))?)),
-        "coderadar_callees" => Ok(Value::Array(crate::port::callees(arg("entity_id"))?)),
-        "coderadar_affected" => crate::port::affected(
-            arg("entity_id"),
-            args.get("max_depth").and_then(Value::as_i64).unwrap_or(5),
-        ),
-        "coderadar_explore" => crate::port::explore(arg("query"), None, "both".into(), 8),
-        "coderadar_traverse" => crate::port::traverse(
-            arg("entity_id"),
-            args.get("direction")
-                .and_then(Value::as_str)
-                .unwrap_or("both")
-                .to_string(),
-            None,
-            args.get("max_depth").and_then(Value::as_i64).unwrap_or(3),
-        ),
-        "coderadar_query" => crate::port::query(arg("query")).map(Value::Array),
-        "coderadar_annotations_on" => crate::annotations_ops::annotations_on(&arg("target")),
-        "coderadar_open_items" => {
-            crate::annotations_ops::open_items(args.get("scope").and_then(Value::as_str))
+        "coderadar_search" => {
+            crate::port::search(a.str("query"), a.opt_str("kind"), a.i64("top_k")).map(Value::Array)
         }
+        "coderadar_node" => crate::port::node(a.str("entity_id"), a.bool("include_neighbors")),
+        "coderadar_callers" => Ok(Value::Array(crate::port::callers(a.str("entity_id"))?)),
+        "coderadar_callees" => Ok(Value::Array(crate::port::callees(a.str("entity_id"))?)),
+        "coderadar_affected" => crate::port::affected(a.str("entity_id"), a.i64("max_depth")),
+        "coderadar_explore" => crate::port::explore(
+            a.str("query"),
+            a.strings("symbols"),
+            a.str("direction"),
+            a.i64("max_files"),
+        ),
+        "coderadar_traverse" => crate::port::traverse(
+            a.str("entity_id"),
+            a.str("direction"),
+            a.strings("edge_kinds"),
+            a.i64("max_depth"),
+        ),
+        "coderadar_query" => crate::port::query(a.str("query")).map(Value::Array),
+        "coderadar_annotations_on" => crate::annotations_ops::annotations_on(&a.str("target")),
+        "coderadar_open_items" => crate::annotations_ops::open_items(a.opt_str("scope").as_deref()),
         "coderadar_dead_code" => crate::port::dead_code(
-            args.get("min_confidence")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.6),
-            args.get("include_test_reachable")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            args.get("max_findings")
-                .and_then(Value::as_i64)
-                .unwrap_or(100),
+            a.f64("min_confidence"),
+            a.bool("include_test_reachable"),
+            a.i64("max_findings"),
         )
         .map(Value::Array),
         "coderadar_get_smells" => crate::port::get_smells(
-            args.get("entity_id")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            args.get("rule_id")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            args.get("strictness")
-                .and_then(Value::as_str)
-                .unwrap_or("normal")
-                .to_string(),
+            a.opt_str("entity_id"),
+            a.opt_str("rule_id"),
+            a.str("strictness"),
         )
         .map(Value::Array),
         "coderadar_find_clones" => crate::port::find_clones(
-            args.get("min_lines").and_then(Value::as_i64).unwrap_or(10),
-            args.get("min_similarity")
-                .and_then(Value::as_f64)
-                .unwrap_or(0.8),
-            args.get("max_groups")
-                .and_then(Value::as_i64)
-                .unwrap_or(100),
+            a.i64("min_lines"),
+            a.f64("min_similarity"),
+            a.i64("max_groups"),
         )
         .map(Value::Array),
-        "coderadar_find_scaffolding" => crate::port::find_scaffolding(
-            args.get("include_secrets")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            args.get("max_findings")
-                .and_then(Value::as_i64)
-                .unwrap_or(100),
-        )
-        .map(Value::Array),
-        "coderadar_blob_get" => {
-            crate::port::blob_get(arg("digest")).map(|v| v.unwrap_or(Value::Null))
+        "coderadar_find_scaffolding" => {
+            crate::port::find_scaffolding(a.bool("include_secrets"), a.i64("max_findings"))
+                .map(Value::Array)
         }
-        "coderadar_archive" => crate::port::archive(
-            args.get("cutoff")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        ),
-        "coderadar_stale_files" => crate::port::stale_files(
-            args.get("paths")
-                .and_then(Value::as_array)
-                .map(|a| {
-                    a.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string)
-                        .collect()
-                })
-                .unwrap_or_default(),
-        )
-        .map(Value::Array),
+        "coderadar_blob_get" => {
+            crate::port::blob_get(a.str("digest")).map(|v| v.unwrap_or(Value::Null))
+        }
+        "coderadar_archive" => crate::port::archive(a.opt_str("cutoff")),
+        "coderadar_stale_files" => {
+            crate::port::stale_files(a.strings("paths").unwrap_or_default()).map(Value::Array)
+        }
         "coderadar_read_source" => {
-            let entity = crate::port::find_entity(arg("entity_id"))?
+            let entity = crate::port::find_entity(a.str("entity_id"))?
                 .ok_or_else(|| "NotFound: entity does not exist".to_string())?;
             crate::port::read_source(entity)?
                 .map(Value::String)
                 .ok_or_else(|| "ContentUnavailable: no source for that entity".to_string())
         }
         "coderadar_as_of" => crate::port::as_of(
-            arg("timestamp"),
-            arg("query"),
-            args.get("symbols").and_then(Value::as_array).map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            }),
-            args.get("branch")
-                .and_then(Value::as_str)
-                .unwrap_or("main")
-                .to_string(),
-            args.get("strict").and_then(Value::as_bool).unwrap_or(false),
-            args.get("at").and_then(Value::as_str).map(str::to_string),
-            args.get("valid").and_then(Value::as_bool).unwrap_or(false),
+            a.str("timestamp"),
+            a.str("query"),
+            a.strings("symbols"),
+            a.str("branch"),
+            a.bool("strict"),
+            a.opt_str("at"),
+            a.bool("valid"),
             None,
         ),
         "coderadar_verify_history" => crate::port::verify_history(
-            args.get("from_ts")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            args.get("to_ts")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            args.get("generations")
-                .and_then(Value::as_i64)
-                .unwrap_or(25),
-            args.get("all").and_then(Value::as_bool).unwrap_or(false),
-            args.get("branch")
-                .and_then(Value::as_str)
-                .unwrap_or("main")
-                .to_string(),
-            args.get("offenders").and_then(Value::as_i64).unwrap_or(10),
-            args.get("max_generations").and_then(Value::as_i64),
+            a.opt_str("from_ts"),
+            a.opt_str("to_ts"),
+            a.i64("generations"),
+            raw.get("all")
+                .and_then(Value::as_bool)
+                .unwrap_or_else(|| a.bool("all_generations")),
+            a.str("branch"),
+            a.i64("offenders"),
+            a.raw("max_generations").and_then(Value::as_i64),
             None,
         ),
-        "coderadar_history_of" => crate::port::history_of(arg("file"), None),
+        "coderadar_history_of" => crate::port::history_of(a.str("file"), None),
         "coderadar_changes_between" => crate::port::changes_between(
-            arg("t1"),
-            arg("t2"),
-            args.get("scope")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            args.get("branch")
-                .and_then(Value::as_str)
-                .unwrap_or("main")
-                .to_string(),
-            args.get("valid").and_then(Value::as_bool).unwrap_or(false),
+            a.str("t1"),
+            a.str("t2"),
+            a.opt_str("scope"),
+            a.str("branch"),
+            a.bool("valid"),
             None,
         ),
         "coderadar_branches" => crate::port::branches(None).map(Value::Array),
-        "coderadar_ingest_status" => crate::port::ingest_status(
-            args.get("store_path")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        ),
+        "coderadar_ingest_status" => crate::port::ingest_status(a.opt_str("store_path")),
         "coderadar_ingest_history" => crate::port::ingest_history(
-            arg("repo"),
-            args.get("branch")
-                .and_then(Value::as_str)
-                .unwrap_or("main")
-                .to_string(),
-            args.get("from_sha")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            args.get("dry_run").and_then(Value::as_bool).unwrap_or(true),
-            args.get("lineage")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            args.get("parent_ref")
-                .and_then(Value::as_str)
-                .unwrap_or("main")
-                .to_string(),
-            args.get("to_sha")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            args.get("store_path")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            a.str("repo"),
+            a.str("branch"),
+            a.opt_str("from_sha"),
+            a.bool("dry_run"),
+            a.opt_str("lineage"),
+            a.str("parent_ref"),
+            a.opt_str("to_sha"),
+            a.opt_str("store_path"),
         ),
         "coderadar_reingest_merged_commits" => crate::port::reingest_merged_commits(
-            arg("repo"),
-            args.get("branch")
-                .and_then(Value::as_str)
-                .unwrap_or("main")
-                .to_string(),
-            args.get("dry_run")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            args.get("store_path")
-                .and_then(Value::as_str)
-                .map(str::to_string),
+            a.str("repo"),
+            a.str("branch"),
+            a.bool("dry_run"),
+            a.opt_str("store_path"),
         ),
-        "coderadar_backfill_commit_index" => crate::port::backfill_commit_index(
-            args.get("branch")
-                .and_then(Value::as_str)
-                .unwrap_or("main")
-                .to_string(),
-            args.get("store_path")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        ),
-        "coderadar_backfill_commit_messages" => crate::port::backfill_commit_messages(
-            arg("repo"),
-            args.get("store_path")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        ),
+        "coderadar_backfill_commit_index" => {
+            crate::port::backfill_commit_index(a.str("branch"), a.opt_str("store_path"))
+        }
+        "coderadar_backfill_commit_messages" => {
+            crate::port::backfill_commit_messages(a.str("repo"), a.opt_str("store_path"))
+        }
         "coderadar_replace_body" => crate::port::replace_body(
-            arg("entity_id"),
-            arg("new_body"),
-            args.get("expected_hash")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            !args.get("apply").and_then(Value::as_bool).unwrap_or(false),
+            a.str("entity_id"),
+            a.str("new_body"),
+            a.opt_str("expected_hash"),
+            dry_run(raw),
             None,
         ),
         "coderadar_update_signature" => crate::port::update_signature(
-            arg("entity_id"),
-            arg("new_signature"),
-            args.get("inject_defaults")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            !args.get("apply").and_then(Value::as_bool).unwrap_or(false),
+            a.str("entity_id"),
+            a.str("new_signature"),
+            a.bool("inject_defaults"),
+            dry_run(raw),
             None,
         ),
-        "coderadar_rename" => crate::port::rename(
-            arg("entity_id"),
-            arg("new_name"),
-            !args.get("apply").and_then(Value::as_bool).unwrap_or(false),
-            None,
-        ),
+        "coderadar_rename" => {
+            crate::port::rename(a.str("entity_id"), a.str("new_name"), dry_run(raw), None)
+        }
         "coderadar_create_entity" => crate::port::create_entity(
-            arg("file_path"),
-            arg("language"),
-            arg("kind"),
-            arg("name"),
-            arg("body"),
-            args.get("decorators").and_then(Value::as_array).map(|a| {
-                a.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_string)
-                    .collect()
-            }),
-            args.get("anchor")
-                .and_then(Value::as_str)
-                .unwrap_or("end")
-                .to_string(),
-            args.get("signature")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            !args.get("apply").and_then(Value::as_bool).unwrap_or(false),
+            a.str("file_path"),
+            a.str("language"),
+            a.str("kind"),
+            a.str("name"),
+            a.str("body"),
+            a.strings("decorators"),
+            a.str("anchor"),
+            a.opt_str("signature"),
+            dry_run(raw),
             None,
         ),
-        "coderadar_update_file" => crate::port::update_file(
-            arg("file_path"),
-            args.get("content")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            None,
-        ),
+        "coderadar_update_file" => {
+            crate::port::update_file(a.str("file_path"), a.opt_str("content"), None)
+        }
         "coderadar_compute_embeddings" => crate::port::compute_embeddings_op(
-            args.get("model_name")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-            args.get("batch_size").and_then(Value::as_i64).unwrap_or(32),
-            args.get("recompute")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            a.opt_str("model_name"),
+            a.i64("batch_size"),
+            a.bool("recompute"),
         ),
         "coderadar_search_similar" => crate::port::search_similar_op(
-            args.get("query").cloned().unwrap_or(Value::Null),
-            args.get("top_k").and_then(Value::as_i64).unwrap_or(10),
+            a.raw("query").cloned().unwrap_or(Value::Null),
+            a.i64("top_k"),
         ),
         "coderadar_search_hybrid" => crate::port::search_hybrid_op(
-            args.get("query").cloned().unwrap_or(Value::Null),
-            args.get("top_k").and_then(Value::as_i64).unwrap_or(10),
-            args.get("query_text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            a.raw("query").cloned().unwrap_or(Value::Null),
+            a.i64("top_k"),
+            a.str("query_text"),
         ),
-        "coderadar_comments_on" => crate::annotations_ops::comments_on(&arg("target")),
-        "coderadar_annotation_history" => crate::annotations_ops::annotation_history(&arg("id")),
-        "coderadar_comment_history" => crate::annotations_ops::comment_history(&arg("id")),
+        "coderadar_comments_on" => crate::annotations_ops::comments_on(&a.str("target")),
+        "coderadar_annotation_history" => crate::annotations_ops::annotation_history(&a.str("id")),
+        "coderadar_comment_history" => crate::annotations_ops::comment_history(&a.str("id")),
         "coderadar_lsp_status" => Ok(core_indexer::api::lsp_status()),
         "coderadar_lsp_definition" => {
             let root = crate::state::root()
                 .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
-            core_indexer::api::lsp_definition_args(&root.to_string_lossy(), args)
+            core_indexer::api::lsp_definition_args(&root.to_string_lossy(), raw)
         }
         "coderadar_lsp_override" => {
             let root = crate::state::root()
                 .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
-            let edges = args.get("edges").unwrap_or(&Value::Null);
+            let edges = a.raw("edges").unwrap_or(&Value::Null);
             core_indexer::api::lsp_override_edges(&root.to_string_lossy(), edges)
         }
-        "coderadar_context" => core_indexer::api::graphrag_mcp(args),
-        "coderadar_diagnose" => crate::port::diagnose(
-            args.get("unresolved")
-                .and_then(Value::as_bool)
-                .unwrap_or(true),
-            args.get("low_confidence")
-                .and_then(Value::as_bool)
-                .unwrap_or(true),
-        ),
-        "coderadar_module_children" => crate::port::module_children(arg("module_id")),
-        "coderadar_resolve" => crate::port::resolve(
-            arg("name"),
-            args.get("limit").and_then(Value::as_i64).unwrap_or(5),
-        ),
+        "coderadar_context" => core_indexer::api::graphrag_mcp(raw),
+        "coderadar_diagnose" => {
+            crate::port::diagnose(a.bool("unresolved"), a.bool("low_confidence"))
+        }
+        "coderadar_module_children" => crate::port::module_children(a.str("module_id")),
+        "coderadar_resolve" => crate::port::resolve(a.str("name"), a.i64("limit")),
         "coderadar_reindex" => {
             let root = crate::state::root()
                 .ok_or_else(|| "No graph loaded — run coderadar init first".to_string())?;
-            crate::port::reindex_op(&root)
+            crate::port::reindex_with_op(&root, a.bool("with_embeddings"), a.bool("full"))
         }
         "coderadar_set_project" => {
-            let raw = arg("project_path");
+            let raw_path = a.str("project_path");
             let path = match SESSION.get() {
-                Some(session) => session.set_project(&raw, coldstart)?,
-                None => PathBuf::from(&raw),
+                Some(session) => session.set_project(&raw_path, a.bool("confirm"), coldstart)?,
+                None => PathBuf::from(&raw_path),
             };
             let _activation = core_indexer::api::activate_config(&path.to_string_lossy());
             crate::state::load(&path)?;
@@ -570,20 +419,37 @@ fn read_resource(uri: &str) -> Result<Value, String> {
 fn dispatch(message: &Value) -> Option<Value> {
     let id = message.get("id").cloned().unwrap_or(Value::Null);
     let method = message.get("method").and_then(Value::as_str)?;
+    if method.starts_with("notifications/") {
+        return None;
+    }
     let response = match method {
-        "initialize" => json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "serverInfo": {"name": "coderadar-rs", "version": env!("CARGO_PKG_VERSION")},
-                "capabilities": {"tools": {}, "resources": {}},
-            },
-        }),
+        "initialize" => {
+            let requested = message
+                .get("params")
+                .and_then(|params| params.get("protocolVersion"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "protocolVersion": negotiated_protocol(requested),
+                    "serverInfo": {"name": "CodeRadar", "version": env!("CARGO_PKG_VERSION")},
+                    "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+                    "instructions": crate::assets::SERVER_INSTRUCTIONS,
+                },
+            })
+        }
         "ping" => json!({"jsonrpc": "2.0", "id": id, "result": {}}),
         "tools/list" => json!({
             "jsonrpc": "2.0", "id": id,
-            "result": {"tools": tool_names()},
+            "result": {"tools": tool_catalogue()},
+        }),
+        "prompts/list" => json!({
+            "jsonrpc": "2.0", "id": id, "result": {"prompts": []},
+        }),
+        "resources/templates/list" => json!({
+            "jsonrpc": "2.0", "id": id, "result": {"resourceTemplates": []},
         }),
         "resources/list" => json!({
             "jsonrpc": "2.0", "id": id,
@@ -604,6 +470,14 @@ fn dispatch(message: &Value) -> Option<Value> {
             }
         }
         "tools/call" => {
+            let params = message.get("params").unwrap_or(&Value::Null);
+            let name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if find(name).is_none() {
+                return Some(tool_result(id, Err(format!("unknown tool `{name}`"))));
+            }
             if let Some(session) = SESSION.get() {
                 if let Err(error) = session.ensure_ready() {
                     return Some(tool_result(id, Err(error)));
@@ -614,11 +488,6 @@ fn dispatch(message: &Value) -> Option<Value> {
                     return Some(tool_result(id, Err(error)));
                 }
             }
-            let params = message.get("params").unwrap_or(&Value::Null);
-            let name = params
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
             let arguments = params.get("arguments").unwrap_or(&Value::Null);
             tool_result(id, call_tool(name, arguments))
         }

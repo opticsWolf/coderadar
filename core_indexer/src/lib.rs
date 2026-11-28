@@ -16,6 +16,7 @@ pub mod frameworks;
 pub mod fs;
 pub mod graph;
 pub mod lsp;
+pub mod mcp_catalogue;
 pub mod mcp_runtime;
 pub mod mutation;
 pub mod query;

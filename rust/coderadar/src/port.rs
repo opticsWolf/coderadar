@@ -2452,17 +2452,45 @@ pub fn coldstart_build_graph_op(
 
 /// Bring the current project's index up to date, returning an ops-shaped report.
 pub fn reindex_op(root: &std::path::Path) -> Result<Value, String> {
-    let report = coldstart_build_graph_op(root, false)?;
+    reindex_with_op(root, false, false)
+}
+
+/// Reindex with the flags the MCP tool advertises.
+///
+/// `full` walks the whole tree through `analyze`; the default replays only
+/// stale files through the cold-start fast path. `with_embeddings` refreshes
+/// vectors after the graph is current.
+///
+/// # Errors
+/// Returns the engine error when the walk, the replay, or the embedding pass
+/// fails.
+pub fn reindex_with_op(
+    root: &std::path::Path,
+    with_embeddings: bool,
+    full: bool,
+) -> Result<Value, String> {
+    let report = if full {
+        let report = analyze_with_routes(&root.to_string_lossy(), false, &[])?;
+        crate::state::clear();
+        crate::state::load(root)?;
+        report
+    } else {
+        coldstart_build_graph_op(root, false)?
+    };
     let stats = crate::state::projection()
         .map(|snap| core_indexer::api::stats(&snap))
         .unwrap_or(Value::Null);
-    Ok(json!({
+    let mut value = json!({
         "files_indexed": report.get("files_indexed").cloned().unwrap_or(json!(0)),
         "entities_extracted": report.get("entities_extracted").cloned().unwrap_or(json!(0)),
         "extraction_failures": report.get("extraction_failures").cloned().unwrap_or(json!(0)),
         "stats": stats,
         "coldstart": report,
-    }))
+    });
+    if with_embeddings {
+        value["embeddings"] = compute_embeddings_op(None, 32, false)?;
+    }
+    Ok(value)
 }
 
 // ── Unit 14: git sync and commit-time migration ─────────────────────────

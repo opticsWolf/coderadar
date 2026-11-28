@@ -1,0 +1,25 @@
+{
+ "ok": true,
+ "python_commands": 59,
+ "rust_commands": 72,
+ "json_compared": 18,
+ "payload_differences": [
+  "affected",
+  "dead-code",
+  "explore",
+  "find-scaffolding",
+  "get-smells",
+  "module-children",
+  "node",
+  "open-items",
+  "query",
+  "search",
+  "status",
+  "traverse"
+ ],
+ "skipped": [
+  "search-hybrid",
+  "verify-history"
+ ],
+ "problems": []
+}

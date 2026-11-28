@@ -30,6 +30,7 @@ pub mod pynum;
 pub mod render;
 mod render_remaining;
 pub mod state;
+pub mod usage;
 pub mod visualize;
 
 #[allow(unused_imports)]

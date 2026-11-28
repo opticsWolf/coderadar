@@ -866,7 +866,7 @@ impl McpSession {
         Some(candidate.path)
     }
 
-    pub fn set_project<F>(&self, raw: &str, build: F) -> Result<PathBuf, String>
+    pub fn set_project<F>(&self, raw: &str, confirm: bool, build: F) -> Result<PathBuf, String>
     where
         F: Fn(PathBuf) -> Result<Value, String> + Send + 'static,
     {
@@ -874,6 +874,12 @@ impl McpSession {
             .map(|root| root.json())
             .unwrap_or_else(|| json!({"path": raw, "source": "project_path", "confirmed": false}));
         let path = PathBuf::from(selected["path"].as_str().unwrap_or(raw));
+        if selected.get("confirmed").and_then(Value::as_bool) != Some(true) && !confirm {
+            return Err(format!(
+                "InvalidRequest: No `.coderadar/` or `.coderadar.toml` was found at or above `{}`, so nothing confirms that directory as a project root. Run `coderadar init` there if it should be one, or re-call with confirm=true to serve it anyway.",
+                path.display()
+            ));
+        }
         *self.root.lock() = selected;
         record_project(&self.launch_cwd, &path);
         self.mark_user_chosen();

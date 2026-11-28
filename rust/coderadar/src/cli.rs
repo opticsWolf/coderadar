@@ -4,20 +4,52 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
+
+/// A CLI failure that carries its own exit code.
+///
+/// `DisplayHelp` and `DisplayVersion` are successes (code 0, message on
+/// stdout); usage errors exit 2; runtime errors exit 1 — the same contract as
+/// the Python CLI.
+#[derive(Debug)]
+pub struct Failure {
+    /// The text to print.
+    pub message: String,
+    /// Process exit code.
+    pub code: u8,
+}
+
+impl Failure {
+    fn usage(message: String) -> Self {
+        Self { message, code: 2 }
+    }
+
+    fn display(message: String) -> Self {
+        Self { message, code: 0 }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(message: String) -> Self {
+        Self { message, code: 1 }
+    }
+}
 use serde_json::{Value, json};
 
 use crate::{annotations_ops as notes, port, render, state};
 
 #[derive(Parser)]
 #[command(
-    name = "coderadar-rs",
-    version,
+    name = "coderadar",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (spec v3.6)"),
     about = "Live semantic graph of your codebase"
 )]
 struct Cli {
     /// Project root (defaults to the nearest `.coderadar` marker)
     #[arg(short = 'C', long)]
     project: Option<PathBuf>,
+    /// Output format: text for people, json for scripts
+    #[arg(long, global = true, default_value = "text", value_parser = ["text", "json"])]
+    format: String,
     #[command(subcommand)]
     command: Command,
 }
@@ -62,12 +94,25 @@ enum Command {
         max_depth: i64,
     },
     /// Source and call paths for named symbols
-    Explore { query: String },
+    Explore {
+        /// Symbols to explore
+        symbols: Vec<String>,
+        /// Free text naming the symbols
+        #[arg(short = 'q', long)]
+        query: Option<String>,
+        #[arg(long, default_value = "both")]
+        direction: String,
+        #[arg(long, default_value_t = 8)]
+        max_files: i64,
+    },
     /// Breadth-first graph traversal
     Traverse {
         id: String,
         #[arg(long, default_value = "both")]
         direction: String,
+        /// Comma-separated edge kinds: calls, imports, extends
+        #[arg(long, value_delimiter = ',')]
+        edge_kinds: Vec<String>,
         #[arg(long, default_value_t = 3)]
         max_depth: i64,
     },
@@ -126,11 +171,13 @@ enum Command {
     ReadSource { id: String },
     /// Entities as they were at a recorded instant
     AsOf {
-        timestamp: String,
-        #[arg(default_value = "")]
-        query: String,
-        #[arg(long)]
+        /// Timestamp (omit when addressing a commit with `--at`)
+        timestamp: Option<String>,
+        /// Symbols to look up as of that instant
         symbols: Vec<String>,
+        /// Free text naming the symbols
+        #[arg(short = 'q', long)]
+        query: Option<String>,
         #[arg(long, default_value = "main")]
         branch: String,
         #[arg(long)]
@@ -142,9 +189,9 @@ enum Command {
     },
     /// Byte coverage across recorded generations
     VerifyHistory {
-        #[arg(long)]
+        #[arg(long = "from", alias = "from-ts")]
         from_ts: Option<String>,
-        #[arg(long)]
+        #[arg(long = "to", alias = "to-ts")]
         to_ts: Option<String>,
         #[arg(long, default_value_t = 25)]
         generations: i64,
@@ -161,8 +208,12 @@ enum Command {
     HistoryOf { file: String },
     /// Entity changes between two instants
     ChangesBetween {
-        t1: String,
-        t2: String,
+        #[arg(long)]
+        t1: Option<String>,
+        #[arg(long)]
+        t2: Option<String>,
+        /// Deprecated positional t1/t2
+        positional: Vec<String>,
         #[arg(long)]
         scope: Option<String>,
         #[arg(long, default_value = "main")]
@@ -174,17 +225,23 @@ enum Command {
     Branches,
     /// The store's own ingest state
     IngestStatus {
-        #[arg(long)]
+        #[arg(long = "store", alias = "store-path")]
         store_path: Option<PathBuf>,
     },
     /// Ingest git history (dry-run by default)
     IngestHistory {
-        repo: PathBuf,
+        /// Git repository to ingest
+        #[arg(long)]
+        repo: Option<PathBuf>,
+        /// Deprecated positional repository
+        repo_pos: Option<PathBuf>,
         #[arg(long, default_value = "main")]
         branch: String,
-        #[arg(long)]
+        /// Exclusive window start (a sha)
+        #[arg(long = "from", alias = "from-sha")]
         from_sha: Option<String>,
-        #[arg(long)]
+        /// Backfill window end (a sha)
+        #[arg(long = "to", alias = "to-sha")]
         to_sha: Option<String>,
         #[arg(long)]
         dry_run: bool,
@@ -192,6 +249,9 @@ enum Command {
         lineage: Option<String>,
         #[arg(long, default_value = "main")]
         parent_ref: String,
+        /// Store file to write
+        #[arg(long, alias = "store-path")]
+        store: Option<PathBuf>,
     },
     /// Heal merge commits skipped hollow by an older trunk walk
     ReingestMergedCommits {
@@ -200,6 +260,8 @@ enum Command {
         branch: String,
         #[arg(long)]
         dry_run: bool,
+        #[arg(long, alias = "store-path")]
+        store: Option<PathBuf>,
     },
     /// Rebuild a lineage's commit index
     BackfillCommitIndex {
@@ -293,11 +355,32 @@ enum Command {
     /// Comments anchored to a concept
     CommentsOn { target: String },
     /// Unchecked checklist items
-    OpenItems { scope: Option<String> },
+    OpenItems {
+        /// Prefix on the annotated id (`a.py` covers `a.py::f`)
+        #[arg(long)]
+        scope: Option<String>,
+        /// Deprecated positional scope
+        scope_pos: Option<String>,
+    },
     /// Export all note rows as JSON
-    ExportAnnotations,
+    ExportAnnotations {
+        /// File to write (default: print the JSON document)
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Store file to read (default: the loaded project's store)
+        #[arg(long)]
+        store: Option<PathBuf>,
+    },
     /// Replay an annotation export
-    ImportAnnotations { path: PathBuf },
+    ImportAnnotations {
+        path: PathBuf,
+        /// Store file to write (default: the loaded project's store)
+        #[arg(long)]
+        store: Option<PathBuf>,
+        /// An id that already exists refuses, or is skipped
+        #[arg(long, default_value = "skip", value_parser = ["error", "skip"])]
+        on_conflict: String,
+    },
     /// Additional parity commands (captured verbatim)
     #[command(external_subcommand)]
     External(Vec<String>),
@@ -322,6 +405,12 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
         return Err("missing parity command".to_string());
     };
     let tail = &args[1..];
+    if tail.iter().any(|value| value == "-h" || value == "--help")
+        && let Some(usage) = crate::usage::for_command(&name)
+    {
+        println!("{usage}");
+        return Ok(());
+    }
     let external_flag = |name: &str| -> Option<String> {
         tail.iter()
             .position(|value| value == name)
@@ -846,13 +935,20 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
             } else {
                 core_indexer::api::store_repair(&shown)?
             };
-            println!("{}", port::store_repair(shown, result)?);
+            let text = port::store_repair(shown, result)?;
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            if format == "json" {
+                println!("{}", text);
+            } else {
+                println!("{text}");
+            }
         }
         "history" => {
             ensure_loaded(project)?;
             let file = tail.first().ok_or_else(|| "missing file".to_string())?;
             let result = port::history_of(file.clone(), None)?;
-            println!("{}", render::json_text(&result));
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            emit(&result, &format, render::json_text)?;
         }
         "revise-annotation" => {
             ensure_loaded(project)?;
@@ -862,42 +958,54 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
             let body = tail
                 .get(1)
                 .ok_or_else(|| "missing revision body".to_string())?;
-            println!("{}", pretty(&notes::revise_annotation(id, body)?)?);
+            let value = notes::revise_annotation(id, body)?;
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            emit(&value, &format, render::json_text)?;
         }
         "retire-annotation" => {
             ensure_loaded(project)?;
             let id = tail
                 .first()
                 .ok_or_else(|| "missing annotation id".to_string())?;
-            println!("{}", pretty(&notes::retire_annotation(id)?)?);
+            let value = notes::retire_annotation(id)?;
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            emit(&value, &format, render::json_text)?;
         }
         "comments-on" => {
             ensure_loaded(project)?;
             let target = tail
                 .first()
                 .ok_or_else(|| "missing target id".to_string())?;
-            println!("{}", pretty(&notes::comments_on(target)?)?);
+            let value = notes::comments_on(target)?;
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            emit(&value, &format, render::json_text)?;
         }
         "annotation-history" => {
             ensure_loaded(project)?;
             let id = tail
                 .first()
                 .ok_or_else(|| "missing annotation id".to_string())?;
-            println!("{}", pretty(&notes::annotation_history(id)?)?);
+            let value = notes::annotation_history(id)?;
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            emit(&value, &format, render::json_text)?;
         }
         "comment-history" => {
             ensure_loaded(project)?;
             let id = tail
                 .first()
                 .ok_or_else(|| "missing comment id".to_string())?;
-            println!("{}", pretty(&notes::comment_history(id)?)?);
+            let value = notes::comment_history(id)?;
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            emit(&value, &format, render::json_text)?;
         }
         "module-children" => {
             ensure_loaded(project)?;
             let id = tail
                 .first()
                 .ok_or_else(|| "missing module id".to_string())?;
-            println!("{}", pretty(&port::module_children(id.clone())?)?);
+            let value = port::module_children(id.clone())?;
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            emit(&value, &format, render::json_text)?;
         }
         "resolve" => {
             ensure_loaded(project)?;
@@ -908,15 +1016,23 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
                 .and_then(|i| tail.get(i + 1))
                 .and_then(|v| v.parse::<i64>().ok())
                 .unwrap_or(5);
-            println!("{}", pretty(&port::resolve(name.clone(), limit)?)?);
+            let value = port::resolve(name.clone(), limit)?;
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            emit(&value, &format, render::json_text)?;
         }
         "diagnose" => {
             ensure_loaded(project)?;
-            let result = port::diagnose(
-                tail.iter().any(|v| v == "--unresolved"),
-                tail.iter().any(|v| v == "--low-confidence"),
-            )?;
-            println!("{}", port::render_diagnose(result)?);
+            let mut unresolved = tail.iter().any(|v| v == "--unresolved");
+            let mut low_confidence = tail.iter().any(|v| v == "--low-confidence");
+            if !unresolved && !low_confidence {
+                unresolved = true;
+                low_confidence = true;
+            }
+            let result = port::diagnose(unresolved, low_confidence)?;
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            emit(&result, &format, |_| {
+                port::render_diagnose(result.clone()).unwrap_or_default()
+            })?;
         }
         "resolve-framework" => {
             ensure_loaded(project)?;
@@ -959,7 +1075,8 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
                 !tail.iter().any(|v| v == "--no-catch-up"),
                 flag("--source").unwrap_or_else(|| "watch".to_string()),
             )?;
-            println!("{}", pretty(&result)?);
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            emit(&result, &format, render::json_text)?;
         }
         "migrate-to-commit-time" => {
             let repo = tail
@@ -992,7 +1109,8 @@ fn run_external(args: Vec<String>, project: &Path) -> Result<(), String> {
                 !tail.iter().any(|v| v == "--no-embed"),
                 !tail.iter().any(|v| v == "--no-verify"),
             )?;
-            println!("{}", pretty(&result)?);
+            let format = external_flag("--format").unwrap_or_else(|| "text".to_string());
+            emit(&result, &format, render::json_text)?;
         }
         other => return Err(format!("unknown command `{other}`")),
     }
@@ -1156,6 +1274,16 @@ fn ensure_loaded(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Print one result as text or as pretty JSON.
+fn emit(value: &Value, format: &str, text: impl FnOnce(&Value) -> String) -> Result<(), String> {
+    if format == "json" {
+        println!("{}", pretty(value)?);
+    } else {
+        println!("{}", text(value));
+    }
+    Ok(())
+}
+
 fn print_value(value: &Value, format: &str, text: impl FnOnce(&Value) -> String) {
     if format == "json" {
         println!(
@@ -1181,12 +1309,19 @@ fn status_value(root: &Path) -> Value {
         }
         None => (None, false),
     };
+    let age_seconds = std::fs::metadata(&store)
+        .and_then(|meta| meta.modified())
+        .ok()
+        .and_then(|modified| std::time::SystemTime::now().duration_since(modified).ok())
+        .map(|elapsed| elapsed.as_secs_f64())
+        .unwrap_or(0.0);
     serde_json::json!({
         "root": root.to_string_lossy(),
         "config": config.to_string_lossy(),
         "store": store.to_string_lossy(),
         "loaded": loaded.is_some(),
         "store_fresh": store_fresh,
+        "age_seconds": age_seconds,
         "stats": stats,
     })
 }
@@ -1195,9 +1330,19 @@ fn status_value(root: &Path) -> Value {
 ///
 /// # Errors
 /// Returns the operation's error message for a non-zero exit.
-pub fn run(args: Vec<String>) -> Result<(), String> {
-    let cli = Cli::try_parse_from(std::iter::once("coderadar-rs".to_string()).chain(args))
-        .map_err(|e| e.to_string())?;
+pub fn run(args: Vec<String>) -> Result<(), Failure> {
+    let cli = match Cli::try_parse_from(std::iter::once("coderadar-rs".to_string()).chain(args)) {
+        Ok(cli) => cli,
+        Err(error) => {
+            use clap::error::ErrorKind;
+            return Err(match error.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                    Failure::display(error.to_string())
+                }
+                _ => Failure::usage(error.to_string()),
+            });
+        }
+    };
     let project = root(&cli);
     let _activation = core_indexer::api::activate_config(&project.to_string_lossy());
 
@@ -1235,7 +1380,9 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         Command::Node { id, neighbors } => {
             ensure_loaded(&project)?;
             let entity = port::node(id, neighbors)?;
-            if let Some(Value::String(strategy)) = entity.get("_strategy") {
+            if cli.format == "json" {
+                println!("{}", pretty(&entity)?);
+            } else if let Some(Value::String(strategy)) = entity.get("_strategy") {
                 println!("{strategy}");
             } else {
                 println!("{}", render::node(&entity));
@@ -1244,36 +1391,66 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         Command::Callers { id } => {
             ensure_loaded(&project)?;
             let rows = port::callers(id.clone())?;
-            println!("{}", render::callers(&id, &rows));
+            emit(&Value::Array(rows.clone()), &cli.format, |_| {
+                render::callers(&id, &rows)
+            })?;
         }
         Command::Callees { id } => {
             ensure_loaded(&project)?;
             let rows = port::callees(id.clone())?;
-            println!("{}", render::callees(&id, &rows));
+            emit(&Value::Array(rows.clone()), &cli.format, |_| {
+                render::callees(&id, &rows)
+            })?;
         }
         Command::Affected { id, max_depth } => {
             ensure_loaded(&project)?;
             let result = port::affected(id.clone(), max_depth)?;
-            println!("{}", render::affected(&id, &result));
+            emit(&result, &cli.format, |value| render::affected(&id, value))?;
         }
-        Command::Explore { query } => {
+        Command::Explore {
+            symbols,
+            query,
+            direction,
+            max_files,
+        } => {
             ensure_loaded(&project)?;
-            let result = port::explore(query, None, "both".into(), 8)?;
-            println!("{}", render::explore(&result));
+            let result = port::explore(
+                query.unwrap_or_default(),
+                if symbols.is_empty() {
+                    None
+                } else {
+                    Some(symbols)
+                },
+                direction,
+                max_files,
+            )?;
+            emit(&result, &cli.format, render::explore)?;
         }
         Command::Traverse {
             id,
             direction,
+            edge_kinds,
             max_depth,
         } => {
             ensure_loaded(&project)?;
-            let result = port::traverse(id, direction, None, max_depth)?;
-            println!("{}", render::traverse(&result));
+            let result = port::traverse(
+                id,
+                direction,
+                if edge_kinds.is_empty() {
+                    None
+                } else {
+                    Some(edge_kinds)
+                },
+                max_depth,
+            )?;
+            emit(&result, &cli.format, render::traverse)?;
         }
         Command::Query { text } => {
             ensure_loaded(&project)?;
             let rows = port::query(text)?;
-            println!("{}", render::query(&rows));
+            emit(&Value::Array(rows.clone()), &cli.format, |_| {
+                render::query(&rows)
+            })?;
         }
         Command::DeadCode {
             min_confidence,
@@ -1324,15 +1501,17 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         }
         Command::BlobGet { digest } => {
             let value = port::blob_get(digest)?.unwrap_or(Value::Null);
-            println!("{}", render::blob(&value));
+            emit(&value, &cli.format, render::blob)?;
         }
         Command::Archive { cutoff } => {
             let value = port::archive(cutoff)?;
-            println!("{}", render::json_text(&value));
+            emit(&value, &cli.format, render::json_text)?;
         }
         Command::StaleFiles { paths } => {
             let rows = port::stale_files(paths)?;
-            println!("{}", render::rows(&rows));
+            emit(&Value::Array(rows.clone()), &cli.format, |_| {
+                render::rows(&rows)
+            })?;
         }
         Command::ReadSource { id } => {
             ensure_loaded(&project)?;
@@ -1340,12 +1519,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 .ok_or_else(|| "NotFound: entity does not exist".to_string())?;
             let source = port::read_source(entity)?
                 .ok_or_else(|| "ContentUnavailable: no source for that entity".to_string())?;
-            println!("{source}");
+            emit(&Value::String(source.clone()), &cli.format, |_| {
+                source.clone()
+            })?;
         }
         Command::AsOf {
             timestamp,
-            query,
             symbols,
+            query,
             branch,
             strict,
             at,
@@ -1353,8 +1534,8 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         } => {
             ensure_loaded(&project)?;
             let result = port::as_of(
-                timestamp,
-                query,
+                timestamp.unwrap_or_default(),
+                query.unwrap_or_default(),
                 if symbols.is_empty() {
                     None
                 } else {
@@ -1366,7 +1547,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 valid,
                 None,
             )?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::VerifyHistory {
             from_ts,
@@ -1388,44 +1569,58 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 max_generations,
                 None,
             )?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::HistoryOf { file } => {
             ensure_loaded(&project)?;
             let result = port::history_of(file, None)?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::ChangesBetween {
             t1,
             t2,
+            positional,
             scope,
             branch,
             valid,
         } => {
             ensure_loaded(&project)?;
+            let t1 = t1
+                .or_else(|| positional.first().cloned())
+                .ok_or_else(|| "missing --t1".to_string())?;
+            let t2 = t2
+                .or_else(|| positional.get(1).cloned())
+                .ok_or_else(|| "missing --t2".to_string())?;
             let result = port::changes_between(t1, t2, scope, branch, valid, None)?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::Branches => {
             ensure_loaded(&project)?;
             let rows = port::branches(None)?;
-            println!("{}", render::rows(&rows));
+            emit(&Value::Array(rows.clone()), &cli.format, |_| {
+                render::rows(&rows)
+            })?;
         }
         Command::IngestStatus { store_path } => {
             ensure_loaded(&project)?;
             let result = port::ingest_status(store_path.map(|p| p.to_string_lossy().to_string()))?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::IngestHistory {
             repo,
+            repo_pos,
             branch,
             from_sha,
             to_sha,
             dry_run,
             lineage,
             parent_ref,
+            store,
         } => {
             ensure_loaded(&project)?;
+            let repo = repo
+                .or(repo_pos)
+                .ok_or_else(|| "missing --repo".to_string())?;
             let result = port::ingest_history(
                 repo.to_string_lossy().to_string(),
                 branch,
@@ -1434,23 +1629,24 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 lineage,
                 parent_ref,
                 to_sha,
-                None,
+                store.map(|p| p.to_string_lossy().to_string()),
             )?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::ReingestMergedCommits {
             repo,
             branch,
             dry_run,
+            store,
         } => {
             ensure_loaded(&project)?;
             let result = port::reingest_merged_commits(
                 repo.to_string_lossy().to_string(),
                 branch,
                 dry_run,
-                None,
+                store.map(|p| p.to_string_lossy().to_string()),
             )?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::BackfillCommitIndex { branch, store_path } => {
             ensure_loaded(&project)?;
@@ -1458,7 +1654,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 branch,
                 store_path.map(|p| p.to_string_lossy().to_string()),
             )?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::BackfillCommitMessages { repo, store_path } => {
             ensure_loaded(&project)?;
@@ -1466,7 +1662,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 repo.to_string_lossy().to_string(),
                 store_path.map(|p| p.to_string_lossy().to_string()),
             )?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::ComputeEmbeddings {
             model,
@@ -1475,12 +1671,12 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         } => {
             ensure_loaded(&project)?;
             let result = port::compute_embeddings_op(model, batch_size, recompute)?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::SearchSimilar { query, top_k } => {
             ensure_loaded(&project)?;
             let result = port::search_similar_op(Value::String(query), top_k)?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::SearchHybrid {
             query,
@@ -1488,8 +1684,13 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
             query_text,
         } => {
             ensure_loaded(&project)?;
-            let result = port::search_hybrid_op(Value::String(query), top_k, query_text)?;
-            println!("{}", render::json_text(&result));
+            let text = if query_text.is_empty() {
+                query.clone()
+            } else {
+                query_text
+            };
+            let result = port::search_hybrid_op(Value::String(text), top_k, query)?;
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::ReplaceBody {
             id,
@@ -1499,7 +1700,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         } => {
             ensure_loaded(&project)?;
             let result = port::replace_body(id, body, expected_hash, !apply, None)?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::UpdateSignature {
             id,
@@ -1509,7 +1710,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         } => {
             ensure_loaded(&project)?;
             let result = port::update_signature(id, signature, inject_defaults, !apply, None)?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::Rename {
             id,
@@ -1518,7 +1719,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         } => {
             ensure_loaded(&project)?;
             let result = port::rename(id, new_name, !apply, None)?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::CreateEntity {
             file,
@@ -1548,51 +1749,67 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 !apply,
                 None,
             )?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::UpdateFile { file, content } => {
             ensure_loaded(&project)?;
             let result = port::update_file(file.to_string_lossy().to_string(), content, None)?;
-            println!("{}", render::json_text(&result));
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::Annotate { about, body } => {
             ensure_loaded(&project)?;
             let result = notes::annotate(&about, &body)?;
-            println!("{}", pretty(&result)?);
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::Comment { about, body } => {
             ensure_loaded(&project)?;
             let result = notes::comment(&about, &body)?;
-            println!("{}", pretty(&result)?);
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::AnnotationsOn { target } => {
             ensure_loaded(&project)?;
             let result = notes::annotations_on(&target)?;
-            println!("{}", pretty(&result)?);
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::CommentsOn { target } => {
             ensure_loaded(&project)?;
             let result = notes::comments_on(&target)?;
-            println!("{}", pretty(&result)?);
+            emit(&result, &cli.format, render::json_text)?;
         }
-        Command::OpenItems { scope } => {
+        Command::OpenItems { scope, scope_pos } => {
             ensure_loaded(&project)?;
-            let result = notes::open_items(scope.as_deref())?;
-            if let Ok(text) = serde_json::to_string_pretty(&result) {
-                let _ = text;
+            let result = notes::open_items(scope.or(scope_pos).as_deref())?;
+            emit(&result, &cli.format, render::open_items)?;
+        }
+        Command::ExportAnnotations { out, store } => {
+            if let Some(store) = store {
+                state::load_from(&store, &project)?;
+            } else {
+                ensure_loaded(&project)?;
             }
-            println!("{}", render::open_items(&result));
-        }
-        Command::ExportAnnotations => {
-            ensure_loaded(&project)?;
             let result = notes::export_annotations()?;
-            println!("{}", pretty(&result)?);
+            match out {
+                Some(path) => {
+                    let text = pretty(&result)?;
+                    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+                    println!("Exported to {}", path.display());
+                }
+                None => println!("{}", pretty(&result)?),
+            }
         }
-        Command::ImportAnnotations { path } => {
-            ensure_loaded(&project)?;
+        Command::ImportAnnotations {
+            path,
+            store,
+            on_conflict,
+        } => {
+            if let Some(store) = store {
+                state::load_from(&store, &project)?;
+            } else {
+                ensure_loaded(&project)?;
+            }
             let payload = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-            let result = notes::import_annotations(&payload, "skip")?;
-            println!("{}", pretty(&result)?);
+            let result = notes::import_annotations(&payload, &on_conflict)?;
+            emit(&result, &cli.format, render::json_text)?;
         }
         Command::External(args) => run_external(args, &project)?,
         Command::Mcp { action } => match action {

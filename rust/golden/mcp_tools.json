@@ -1,0 +1,1387 @@
+{
+ "tools": [
+  {
+   "description": "Explore the code graph: given symbol or file names (or a natural-language question), returns the verbatim line-numbered source of the relevant symbols grouped by file, PLUS the call paths between them and a blast-radius summary of what depends on them. Use this instead of grep + Read for any structural or flow question. For multiple symbols, pass them together in one call to get the relationships between them. Entity ids look like `path/to/file.py::Qualified.name` (project-root-relative, forward slashes, no `./` prefix; methods as `File::Class.member`, modules as `File::module`). Absolute paths, backslashes, and a leading `./` are also accepted, and a dotted qualified name (`app.helpers.combine`) resolves when its module prefix matches. `external::name` marks a callee outside the index (not an entity \u2014 it resolves nothing further).",
+   "inputSchema": {
+    "properties": {
+     "direction": {
+      "default": "both",
+      "enum": [
+       "downstream",
+       "upstream",
+       "both"
+      ],
+      "title": "Direction",
+      "type": "string"
+     },
+     "max_files": {
+      "default": 8,
+      "title": "Max Files",
+      "type": "integer"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "query": {
+      "default": "",
+      "title": "Query",
+      "type": "string"
+     },
+     "symbols": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Symbols"
+     }
+    },
+    "title": "coderadar_exploreArguments",
+    "type": "object"
+   },
+   "name": "coderadar_explore"
+  },
+  {
+   "description": "Get full details for a specific entity identified via coderadar_explore. Returns complete metadata, source location, docstring, decorators, and optionally immediate neighbors (callers and callees). Entity ids look like `path/to/file.py::Qualified.name` (project-root-relative, forward slashes, no `./` prefix; methods as `File::Class.member`, modules as `File::module`). Absolute paths, backslashes, and a leading `./` are also accepted, and a dotted qualified name (`app.helpers.combine`) resolves when its module prefix matches. `external::name` marks a callee outside the index (not an entity \u2014 it resolves nothing further).",
+   "inputSchema": {
+    "properties": {
+     "entity_id": {
+      "title": "Entity Id",
+      "type": "string"
+     },
+     "include_neighbors": {
+      "default": false,
+      "title": "Include Neighbors",
+      "type": "boolean"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "entity_id"
+    ],
+    "title": "coderadar_nodeArguments",
+    "type": "object"
+   },
+   "name": "coderadar_node"
+  },
+  {
+   "description": "Search for symbols by keyword or natural-language description when you don't know the exact symbol name. Returns ranked results with snippets. Use this to discover what's available before calling explore. kind filters to one of: function | class | type_alias | constant | module | import.",
+   "inputSchema": {
+    "properties": {
+     "kind": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Kind"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "top_k": {
+      "default": 10,
+      "title": "Top K",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "coderadar_searchArguments",
+    "type": "object"
+   },
+   "name": "coderadar_search"
+  },
+  {
+   "description": "Find all entities transitively affected by a given entity \u2014 the blast radius. Traverses upstream through callers to show the full dependency tree, ordered within each depth by harmonic centrality (the three most-depended-on ids carry a star marker). Use this before editing to understand the impact. Entity ids look like `path/to/file.py::Qualified.name` (project-root-relative, forward slashes, no `./` prefix; methods as `File::Class.member`, modules as `File::module`). Absolute paths, backslashes, and a leading `./` are also accepted, and a dotted qualified name (`app.helpers.combine`) resolves when its module prefix matches. `external::name` marks a callee outside the index (not an entity \u2014 it resolves nothing further).",
+   "inputSchema": {
+    "properties": {
+     "entity_id": {
+      "title": "Entity Id",
+      "type": "string"
+     },
+     "max_depth": {
+      "default": 5,
+      "title": "Max Depth",
+      "type": "integer"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "entity_id"
+    ],
+    "title": "coderadar_affectedArguments",
+    "type": "object"
+   },
+   "name": "coderadar_affected"
+  },
+  {
+   "description": "Resolve a framework-level reference like a URL path or naming convention. Use when the agent sees route paths (/users/:id), handler names (UserService), or framework patterns (*Model, *View, *Controller). Searches indexed route nodes and uses framework resolvers to match naming conventions. Returns ranked candidates with confidence scores.",
+   "inputSchema": {
+    "properties": {
+     "limit": {
+      "default": 5,
+      "title": "Limit",
+      "type": "integer"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "name"
+    ],
+    "title": "coderadar_resolveArguments",
+    "type": "object"
+   },
+   "name": "coderadar_resolve"
+  },
+  {
+   "description": "Execute a structured graph query against the indexed codebase. Shape: '<entity> [select ...] [where ...] [group by ...] [order by ...] [limit N]'. Entities: modules, classes, functions, methods, constants, entities, imports, calls, fields. Operators: ==, !=, <, <=, >, >=, contains, matches (regex), starts_with, ends_with, in \u2014 combined with and/or/not. Examples: 'classes where inherits_from contains \"BaseModel\"', 'methods where is_async == true', 'functions where name starts_with \"test_\"', 'functions where caller_count == 0 and not name matches \"^test_\"'. Every row carries id, file_path, kind and parent_id, so a hit can be fed to coderadar_affected / coderadar_rename. Unknown fields are rejected with the available list instead of returning nothing. Full field reference: resource docs://query-language.",
+   "inputSchema": {
+    "properties": {
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "coderadar_queryArguments",
+    "type": "object"
+   },
+   "name": "coderadar_query"
+  },
+  {
+   "description": "Find symbols semantically similar to a natural-language query. Scans ALL entity types (functions, classes, modules, imports, constants, type aliases) with stored embeddings. Returns ranked results with cosine similarity scores and entity kind. Use for conceptual search: 'authentication logic', 'error handling', etc. Auto-computes embeddings on first call if none exist.",
+   "inputSchema": {
+    "properties": {
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "top_k": {
+      "default": 10,
+      "title": "Top K",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "coderadar_search_similarArguments",
+    "type": "object"
+   },
+   "name": "coderadar_search_similar"
+  },
+  {
+   "description": "Hybrid search: RRF-fused keyword (BM25) and semantic (vector) search over one embedding model. Returns fused ranks with per-arm evidence (vector_rank/keyword_rank). Use when neither exact terms nor pure similarity suffice. Auto-computes embeddings on first call if no vectors exist.",
+   "inputSchema": {
+    "properties": {
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "query": {
+      "title": "Query",
+      "type": "string"
+     },
+     "top_k": {
+      "default": 10,
+      "title": "Top K",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "query"
+    ],
+    "title": "coderadar_search_hybridArguments",
+    "type": "object"
+   },
+   "name": "coderadar_search_hybrid"
+  },
+  {
+   "description": "Compute and store embedding vectors for all entities in the index (functions, classes, modules, imports, constants, type aliases). Uses fastembed (BAAI/bge-small-en-v1.5) for local embedding generation. This is a prerequisite for coderadar_search_similar \u2014 without embeddings, semantic search returns 'no embeddings found'. Run once after indexing. Subsequent runs skip unchanged functions via content hash dedup. A model switch needs recompute=true (clear + regenerate). Returns: {generated, cached, total, errors}.",
+   "inputSchema": {
+    "properties": {
+     "model_name": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Model Name"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "recompute": {
+      "default": false,
+      "title": "Recompute",
+      "type": "boolean"
+     }
+    },
+    "title": "coderadar_compute_embeddingsArguments",
+    "type": "object"
+   },
+   "name": "coderadar_compute_embeddings"
+  },
+  {
+   "description": "List all children (classes, functions, imports, constants) of a module. The module ID is typically '{file_path}::module' \u2014 get it from coderadar_explore or coderadar_search results. Use to understand a module's structure before editing.",
+   "inputSchema": {
+    "properties": {
+     "module_id": {
+      "title": "Module Id",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "module_id"
+    ],
+    "title": "coderadar_module_childrenArguments",
+    "type": "object"
+   },
+   "name": "coderadar_module_children"
+  },
+  {
+   "description": "List the direct callers of one entity (1 hop upstream). For the transitive blast radius use coderadar_affected instead. Unknown ids are reported as unknown, not as callerless.",
+   "inputSchema": {
+    "properties": {
+     "entity_id": {
+      "title": "Entity Id",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "entity_id"
+    ],
+    "title": "coderadar_callersArguments",
+    "type": "object"
+   },
+   "name": "coderadar_callers"
+  },
+  {
+   "description": "List the direct callees of one entity (1 hop downstream). An entity with no callees reports empty; unknown ids report unknown.",
+   "inputSchema": {
+    "properties": {
+     "entity_id": {
+      "title": "Entity Id",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "entity_id"
+    ],
+    "title": "coderadar_calleesArguments",
+    "type": "object"
+   },
+   "name": "coderadar_callees"
+  },
+  {
+   "description": "Report graph self-health: unresolved call targets per function and ambiguous base classes. Empty sections read as a clean bill of health. Use before trusting coderadar_affected on an unfamiliar project.",
+   "inputSchema": {
+    "properties": {
+     "low_confidence": {
+      "default": true,
+      "title": "Low Confidence",
+      "type": "boolean"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "unresolved": {
+      "default": true,
+      "title": "Unresolved",
+      "type": "boolean"
+     }
+    },
+    "title": "coderadar_diagnoseArguments",
+    "type": "object"
+   },
+   "name": "coderadar_diagnose"
+  },
+  {
+   "description": "Query the code graph as it existed at a specific point in time. Macrame's bitemporal ledger stores every version of every entity and edge, so this reconstructs the graph at any past timestamp. The answer names its axis: the default is the recorded one (what the store had observed by then), valid=true is what was true in the repository at that instant. at= addresses a commit instead of a timestamp \u2014 a sha, a branch, or a {branch}#{n} generation \u2014 and never rounds to a neighbour. branch= reads a branch lineage; strict=true refuses the git-history fallback. Use for: 'what did this look like last week?', 'when was X introduced?'.",
+   "inputSchema": {
+    "properties": {
+     "at": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "At"
+     },
+     "branch": {
+      "default": "main",
+      "title": "Branch",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "query": {
+      "default": "",
+      "title": "Query",
+      "type": "string"
+     },
+     "strict": {
+      "default": false,
+      "title": "Strict",
+      "type": "boolean"
+     },
+     "symbols": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Symbols"
+     },
+     "timestamp": {
+      "title": "Timestamp",
+      "type": "string"
+     },
+     "valid": {
+      "default": false,
+      "title": "Valid",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "timestamp"
+    ],
+    "title": "coderadar_as_ofArguments",
+    "type": "object"
+   },
+   "name": "coderadar_as_of"
+  },
+  {
+   "description": "Per-generation byte coverage of the code ledger: what fraction of the files described at each recorded generation can actually have their bytes reconstructed. Use it to ask whether history can be trusted \u2014 before quoting a past version of the code, verify the bytes are there. Sampling is on by default (25 generations, both window ends always included); the scan is capped, so pass all_generations=true only for a small window.",
+   "inputSchema": {
+    "properties": {
+     "all_generations": {
+      "default": false,
+      "title": "All Generations",
+      "type": "boolean"
+     },
+     "branch": {
+      "default": "main",
+      "title": "Branch",
+      "type": "string"
+     },
+     "from_ts": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "From Ts"
+     },
+     "generations": {
+      "default": 25,
+      "title": "Generations",
+      "type": "integer"
+     },
+     "offenders": {
+      "default": 10,
+      "title": "Offenders",
+      "type": "integer"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "to_ts": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "To Ts"
+     }
+    },
+    "title": "coderadar_verify_historyArguments",
+    "type": "object"
+   },
+   "name": "coderadar_verify_history"
+  },
+  {
+   "description": "Entity diff between two instants from recorded content hashes: added / removed / modified / moved per entity, no byte reads. Use it to ask what changed between two timestamps \u2014 it works even where byte coverage is 0%. Equal hash is evidence of no change, not proof; scope bounds the diff to one file or id prefix. valid=true compares what was true in the repository at both instants instead of what the store had recorded.",
+   "inputSchema": {
+    "properties": {
+     "branch": {
+      "default": "main",
+      "title": "Branch",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "scope": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Scope"
+     },
+     "t1": {
+      "title": "T1",
+      "type": "string"
+     },
+     "t2": {
+      "title": "T2",
+      "type": "string"
+     },
+     "valid": {
+      "default": false,
+      "title": "Valid",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "t1",
+     "t2"
+    ],
+    "title": "coderadar_changes_betweenArguments",
+    "type": "object"
+   },
+   "name": "coderadar_changes_between"
+  },
+  {
+   "description": "What the store records about its own ingest, per branch and generation: the cursor a resume would start at, the horizon where recorded observation begins, the tip the name points at, how many commits the lineage holds and how many completion marks exist. Use it to answer 'is this store's history complete?' before quoting it \u2014 commits without completion marks mean an interrupted run. Read-only: it reports the store, never writes to it, and coverage is coderadar_verify_history's question.",
+   "inputSchema": {
+    "properties": {
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "title": "coderadar_ingest_statusArguments",
+    "type": "object"
+   },
+   "name": "coderadar_ingest_status"
+  },
+  {
+   "description": "Every version of every annotation on a concept, newest first: the enforced-list markdown (checklists, review notes, rationale) agents and users wrote about the code, with who-checked-what-when in each version's interval. Use it to ask why the code is the way it is \u2014 the ledger's answer to what the code cannot say.",
+   "inputSchema": {
+    "properties": {
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "target": {
+      "title": "Target",
+      "type": "string"
+     }
+    },
+    "required": [
+     "target"
+    ],
+    "title": "coderadar_annotations_onArguments",
+    "type": "object"
+   },
+   "name": "coderadar_annotations_on"
+  },
+  {
+   "description": "Every version of every freeform comment on a concept, newest first: the rationale and archaeology agents and users wrote about the code. Use it alongside annotations_on \u2014 comments are prose where annotations are lists.",
+   "inputSchema": {
+    "properties": {
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "target": {
+      "title": "Target",
+      "type": "string"
+     }
+    },
+    "required": [
+     "target"
+    ],
+    "title": "coderadar_comments_onArguments",
+    "type": "object"
+   },
+   "name": "coderadar_comments_on"
+  },
+  {
+   "description": "Every version of one annotation row, newest first: the full checklist history behind a single annotation id.",
+   "inputSchema": {
+    "properties": {
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "title": "coderadar_annotation_historyArguments",
+    "type": "object"
+   },
+   "name": "coderadar_annotation_history"
+  },
+  {
+   "description": "Every version of one comment row, newest first: the full prose history behind a single comment id.",
+   "inputSchema": {
+    "properties": {
+     "id": {
+      "title": "Id",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "title": "coderadar_comment_historyArguments",
+    "type": "object"
+   },
+   "name": "coderadar_comment_history"
+  },
+  {
+   "description": "Every unchecked task item under a scope, annotations only: the open work the ledgers' checklists record, read from each row's current version (a checked item is gone, a superseded body's items are gone, a retired row contributes nothing). `scope` is a prefix on the annotated id \u2014 `a.py` covers `a.py::f` and `a.py::C.m`; omit it for the whole store. Comments are freeform and never appear: only lists can be aggregated.",
+   "inputSchema": {
+    "properties": {
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "scope": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Scope"
+     }
+    },
+    "title": "coderadar_open_itemsArguments",
+    "type": "object"
+   },
+   "name": "coderadar_open_items"
+  },
+  {
+   "description": "Traverse the graph from a starting entity along specified edge kinds. Direction: 'downstream' (callees), 'upstream' (callers), 'both'. Edge kinds: 'calls', 'imports', 'inherits' (alias 'extends'), 'implements', 'decorates', 'instantiates', 'references', 'overrides'; default all. Returns a tree of linked entities. Use for custom flow analysis beyond explore/affected. Entity ids look like `path/to/file.py::Qualified.name` (project-root-relative, forward slashes, no `./` prefix; methods as `File::Class.member`, modules as `File::module`). Absolute paths, backslashes, and a leading `./` are also accepted, and a dotted qualified name (`app.helpers.combine`) resolves when its module prefix matches. `external::name` marks a callee outside the index (not an entity \u2014 it resolves nothing further).",
+   "inputSchema": {
+    "properties": {
+     "direction": {
+      "default": "both",
+      "enum": [
+       "downstream",
+       "upstream",
+       "both"
+      ],
+      "title": "Direction",
+      "type": "string"
+     },
+     "edge_kinds": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Edge Kinds"
+     },
+     "entity_id": {
+      "title": "Entity Id",
+      "type": "string"
+     },
+     "max_depth": {
+      "default": 3,
+      "title": "Max Depth",
+      "type": "integer"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "entity_id"
+    ],
+    "title": "coderadar_traverseArguments",
+    "type": "object"
+   },
+   "name": "coderadar_traverse"
+  },
+  {
+   "description": "Detect code smells (architectural issues) across the indexed codebase. Run without arguments to list all findings, or filter by entity_id (exact match) and/or rule_id (one of: god-class, long-method, long-parameter-list, deep-nesting, data-class, high-cyclomatic-complexity, brain-method, excessive-returns, too-many-fields, dead-code, dead-branch, intra-dead-statements). Each finding carries a severity, a human message, and the metric signals (WMC, CBO, LOC, cyclomatic, nesting_depth, param_count, field_count, return_count, max_method_cyclomatic) that triggered it. strictness selects the threshold profile: 'strict' catches more (thresholds drop ~40%), 'loose' only egregious cases (thresholds rise ~80%); default 'normal'. Entity ids look like `path/to/file.py::Qualified.name` (project-root-relative, forward slashes, no `./` prefix; methods as `File::Class.member`, modules as `File::module`). Absolute paths, backslashes, and a leading `./` are also accepted, and a dotted qualified name (`app.helpers.combine`) resolves when its module prefix matches. `external::name` marks a callee outside the index (not an entity \u2014 it resolves nothing further).",
+   "inputSchema": {
+    "properties": {
+     "entity_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Entity Id"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "rule_id": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Rule Id"
+     },
+     "strictness": {
+      "default": "normal",
+      "title": "Strictness",
+      "type": "string"
+     }
+    },
+    "title": "coderadar_get_smellsArguments",
+    "type": "object"
+   },
+   "name": "coderadar_get_smells"
+  },
+  {
+   "description": "Find dead code: functions unreachable from any entry point (the mirror image of coderadar_affected). Entry points: mains, framework handlers (routes, CLIs, pytest, Qt slots), dunder methods, overrides of external bases (e.g. Qt paintEvent), Protocol/ABC members, __all__ and package exports, project scripts, and tests. Calls, callbacks passed as values and virtual dispatch all extend liveness. Each finding carries kind (unreachable | transitively-dead | test-only | rta-dead), tier, confidence, removable lines and the evidence behind it, ranked most-safely-deletable first. rta-dead is the weakest kind: the method lives only through dispatch on a class never constructed in the indexed root. Verify with coderadar_affected before removing anything.",
+   "inputSchema": {
+    "properties": {
+     "include_test_reachable": {
+      "default": false,
+      "title": "Include Test Reachable",
+      "type": "boolean"
+     },
+     "max_findings": {
+      "default": 100,
+      "title": "Max Findings",
+      "type": "integer"
+     },
+     "min_confidence": {
+      "default": 0.6,
+      "title": "Min Confidence",
+      "type": "number"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "title": "coderadar_dead_codeArguments",
+    "type": "object"
+   },
+   "name": "coderadar_dead_code"
+  },
+  {
+   "description": "Detect syntactic code clones (Types 1-3): identical bodies, renamed bodies, and near-duplicates above a similarity floor. Each group lists its instances (entity_id, file, byte span) with a confidence tier; groups are ranked largest first. Type-4 (semantic-only) similarity is covered by coderadar_search_similar. min_lines filters trivially short bodies; min_similarity applies to Type-3 candidates.",
+   "inputSchema": {
+    "properties": {
+     "max_groups": {
+      "default": 100,
+      "title": "Max Groups",
+      "type": "integer"
+     },
+     "min_lines": {
+      "default": 10,
+      "title": "Min Lines",
+      "type": "integer"
+     },
+     "min_similarity": {
+      "default": 0.8,
+      "title": "Min Similarity",
+      "type": "number"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "title": "coderadar_find_clonesArguments",
+    "type": "object"
+   },
+   "name": "coderadar_find_clones"
+  },
+  {
+   "description": "Detect AI-coding scaffolding debt: TODO/FIXME/HACK/WIP/implement-me comment markers, placeholder bodies (pass/todo!/NotImplementedError), temp-file naming (temp_*/backup_*/old_*), and \u2014 opt-in \u2014 hardcoded secrets. Secret findings are always redacted to their first 8 characters plus '***'; full matches never leave this process. Gitignored files are skipped. max_findings applies PER finding kind so one noisy kind cannot crowd out the others; the result ends with a scan-coverage footer.",
+   "inputSchema": {
+    "properties": {
+     "include_secrets": {
+      "default": false,
+      "title": "Include Secrets",
+      "type": "boolean"
+     },
+     "max_findings": {
+      "default": 100,
+      "title": "Max Findings",
+      "type": "integer"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "title": "coderadar_find_scaffoldingArguments",
+    "type": "object"
+   },
+   "name": "coderadar_find_scaffolding"
+  },
+  {
+   "description": "Replace the body of a function/method. With dry_run=True (default): returns a diff preview for review. With dry_run=False: writes the file, then runs synchronous graph synchronization; Applied requires that sync to succeed, while ApplyIncomplete keeps valid source and names the sync repair. Best practice: call first with dry_run=True to review, then call again with dry_run=False to apply. Use expected_hash to verify the current body matches before replacing (safety check). Indentation: the replacement is re-based to the function's body column \u2014 pass it either unindented or copied verbatim from the source; both produce identical files. Do not include the def/signature line or decorators. Entity ids look like `path/to/file.py::Qualified.name` (project-root-relative, forward slashes, no `./` prefix; methods as `File::Class.member`, modules as `File::module`). Absolute paths, backslashes, and a leading `./` are also accepted, and a dotted qualified name (`app.helpers.combine`) resolves when its module prefix matches. `external::name` marks a callee outside the index (not an entity \u2014 it resolves nothing further).",
+   "inputSchema": {
+    "properties": {
+     "dry_run": {
+      "default": true,
+      "title": "Dry Run",
+      "type": "boolean"
+     },
+     "entity_id": {
+      "title": "Entity Id",
+      "type": "string"
+     },
+     "expected_hash": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Expected Hash"
+     },
+     "new_body": {
+      "title": "New Body",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "entity_id",
+     "new_body"
+    ],
+    "title": "coderadar_replace_bodyArguments",
+    "type": "object"
+   },
+   "name": "coderadar_replace_body"
+  },
+  {
+   "description": "Change a function/method signature. With dry_run=True: shows the signature change and all affected call sites. With dry_run=False: writes the definition change, then runs synchronous graph synchronization; Applied requires that sync to succeed. NOTE: the definition signature is edited automatically; call sites with explicit per-caller values and a recorded arg span (\u00a72.3) are edited too, the rest are returned as unverified_sites (with line numbers) for manual review. Entity ids look like `path/to/file.py::Qualified.name` (project-root-relative, forward slashes, no `./` prefix; methods as `File::Class.member`, modules as `File::module`). Absolute paths, backslashes, and a leading `./` are also accepted, and a dotted qualified name (`app.helpers.combine`) resolves when its module prefix matches. `external::name` marks a callee outside the index (not an entity \u2014 it resolves nothing further).",
+   "inputSchema": {
+    "properties": {
+     "dry_run": {
+      "default": true,
+      "title": "Dry Run",
+      "type": "boolean"
+     },
+     "entity_id": {
+      "title": "Entity Id",
+      "type": "string"
+     },
+     "inject_defaults": {
+      "default": false,
+      "title": "Inject Defaults",
+      "type": "boolean"
+     },
+     "new_signature": {
+      "title": "New Signature",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "entity_id",
+     "new_signature"
+    ],
+    "title": "coderadar_update_signatureArguments",
+    "type": "object"
+   },
+   "name": "coderadar_update_signature"
+  },
+  {
+   "description": "Rename an entity (function, class, variable) and all references. With dry_run=True: shows all files and references that need updating. With dry_run=False: renames the definition and ALL references, then runs synchronous graph synchronization. Covers definition site and all usages. Entity ids look like `path/to/file.py::Qualified.name` (project-root-relative, forward slashes, no `./` prefix; methods as `File::Class.member`, modules as `File::module`). Absolute paths, backslashes, and a leading `./` are also accepted, and a dotted qualified name (`app.helpers.combine`) resolves when its module prefix matches. `external::name` marks a callee outside the index (not an entity \u2014 it resolves nothing further).",
+   "inputSchema": {
+    "properties": {
+     "dry_run": {
+      "default": true,
+      "title": "Dry Run",
+      "type": "boolean"
+     },
+     "entity_id": {
+      "title": "Entity Id",
+      "type": "string"
+     },
+     "new_name": {
+      "title": "New Name",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "entity_id",
+     "new_name"
+    ],
+    "title": "coderadar_renameArguments",
+    "type": "object"
+   },
+   "name": "coderadar_rename"
+  },
+  {
+   "description": "Create a new entity (function, class, constant) in a file. With dry_run=True: shows where the entity would be inserted. With dry_run=False: inserts the entity into the file, then runs synchronous graph synchronization. anchor='end' appends at file end, 'top' inserts at file top, or pass an entity ID to insert after that entity. The code is rendered from name/body/decorators using language-aware syntax for common languages. For function-like kinds, pass `signature` with the complete header to write verbatim, e.g. `fn sync_status_text(store: &Store) -> String` or `def save(self, name: str) -> None` \u2014 omit it only for parameter-less helpers, whose header is rendered from `name` alone.",
+   "inputSchema": {
+    "properties": {
+     "anchor": {
+      "default": "end",
+      "title": "Anchor",
+      "type": "string"
+     },
+     "body": {
+      "title": "Body",
+      "type": "string"
+     },
+     "decorators": {
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Decorators"
+     },
+     "dry_run": {
+      "default": true,
+      "title": "Dry Run",
+      "type": "boolean"
+     },
+     "file_path": {
+      "title": "File Path",
+      "type": "string"
+     },
+     "kind": {
+      "title": "Kind",
+      "type": "string"
+     },
+     "language": {
+      "title": "Language",
+      "type": "string"
+     },
+     "name": {
+      "title": "Name",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "signature": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Signature"
+     }
+    },
+    "required": [
+     "file_path",
+     "language",
+     "kind",
+     "name",
+     "body"
+    ],
+    "title": "coderadar_create_entityArguments",
+    "type": "object"
+   },
+   "name": "coderadar_create_entity"
+  },
+  {
+   "description": "Re-index the entire project to refresh the code graph. Use after batch edits when you've changed many files and want a guaranteed-fresh index. Slower than coderadar_update_file but always correct. Cheap by default (only changed files); set full=True to walk the whole tree (e.g. after config changes). Set with_embeddings=True to also compute embedding vectors for semantic search (adds 8-10s for small projects). Returns index statistics.",
+   "inputSchema": {
+    "properties": {
+     "full": {
+      "default": false,
+      "title": "Full",
+      "type": "boolean"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     },
+     "with_embeddings": {
+      "default": false,
+      "title": "With Embeddings",
+      "type": "boolean"
+     }
+    },
+    "title": "coderadar_reindexArguments",
+    "type": "object"
+   },
+   "name": "coderadar_reindex"
+  },
+  {
+   "description": "Incrementally update the graph after editing a single file. Call this after using Read/Edit to modify source code, before the next coderadar_explore or coderadar_affected call. Faster than coderadar_reindex \u2014 only re-parses one file. Pass the file path and optionally the new content; if content is omitted, the file is read from disk.",
+   "inputSchema": {
+    "properties": {
+     "content": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Content"
+     },
+     "file_path": {
+      "title": "File Path",
+      "type": "string"
+     },
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "required": [
+     "file_path"
+    ],
+    "title": "coderadar_update_fileArguments",
+    "type": "object"
+   },
+   "name": "coderadar_update_file"
+  },
+  {
+   "description": "Switch this server to a different project. All other tools then verify their project_path against this root. Pass any directory, subdirectory or file inside the target project \u2014 the nearest .coderadar marker at or above it defines the root; pass confirm=true only if the directory has no marker and you want it served anyway. Config and mutation policy are re-read from the new project, and indexing restarts in the background. Switching replaces the graph wholesale: calls racing a switch get the old or new answer, never a mix.",
+   "inputSchema": {
+    "properties": {
+     "confirm": {
+      "default": false,
+      "title": "Confirm",
+      "type": "boolean"
+     },
+     "project_path": {
+      "title": "Project Path",
+      "type": "string"
+     }
+    },
+    "required": [
+     "project_path"
+    ],
+    "title": "coderadar_set_projectArguments",
+    "type": "object"
+   },
+   "name": "coderadar_set_project"
+  },
+  {
+   "description": "Report the project this server serves, its config and store, whether the index is loaded, how long ago it was synced, and its counts (files, modules, classes, functions, call edges). Answers even while indexing is in progress or no index exists.",
+   "inputSchema": {
+    "properties": {
+     "project_path": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "default": null,
+      "title": "Project Path"
+     }
+    },
+    "title": "coderadar_statusArguments",
+    "type": "object"
+   },
+   "name": "coderadar_status"
+  }
+ ]
+}

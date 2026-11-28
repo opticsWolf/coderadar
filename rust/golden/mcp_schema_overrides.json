@@ -1,0 +1,52 @@
+{
+ "tools": [
+  {
+   "name": "coderadar_ingest_status",
+   "properties": {
+    "store_path": {"type": ["string", "null"], "default": null, "title": "Store Path"}
+   }
+  },
+  {
+   "name": "coderadar_compute_embeddings",
+   "properties": {
+    "batch_size": {"type": "integer", "default": 32, "title": "Batch Size"}
+   }
+  },
+  {
+   "name": "coderadar_search_hybrid",
+   "properties": {
+    "query_text": {"type": "string", "default": "", "title": "Query Text"}
+   }
+  },
+  {
+   "name": "coderadar_verify_history",
+   "properties": {
+    "max_generations": {"type": ["integer", "null"], "default": null, "title": "Max Generations"}
+   }
+  },
+  {
+   "name": "coderadar_replace_body",
+   "properties": {
+    "apply": {"type": "boolean", "default": false, "title": "Apply"}
+   }
+  },
+  {
+   "name": "coderadar_update_signature",
+   "properties": {
+    "apply": {"type": "boolean", "default": false, "title": "Apply"}
+   }
+  },
+  {
+   "name": "coderadar_rename",
+   "properties": {
+    "apply": {"type": "boolean", "default": false, "title": "Apply"}
+   }
+  },
+  {
+   "name": "coderadar_create_entity",
+   "properties": {
+    "apply": {"type": "boolean", "default": false, "title": "Apply"}
+   }
+  }
+ ]
+}
