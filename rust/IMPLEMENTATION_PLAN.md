@@ -5,6 +5,26 @@ Prepared: after commit `cab7ff1` (`dev_rustify`)
 Canonical decisions/state: [`PORT.md`](PORT.md)  
 Graph evidence: refreshed by `coderadar reindex --full` in Unit 49; see the fresh audit at the end of `PORT.md`.
 
+## 0. Post-plan residuals (Unit 50 audit)
+
+The Unit 49/50 audit changed the residual list. Names are covered; the
+**contract** is not:
+
+| Gap | Measured | Effort |
+|---|---|---|
+| CLI `--format` | 42/55 Python commands vs 12/55 Rust | 1.5-2 days |
+| CLI flags on shared commands | 25 commands missing at least one Python flag | included above |
+| Captured `--help` | 18 of 21 captured commands execute `--help` as an argument; `reindex --help` hangs | 0.5 day |
+| MCP parameters | 7 tools ignore documented args (`node.include_neighbors`, `explore.symbols/direction/max_files`, `traverse.edge_kinds`, `reindex.with_embeddings/full`, `verify_history.all_generations`, `set_project.confirm`); mutations use `apply` not `dry_run` | 0.5 day |
+
+Framework extraction parity is verified: 23/23 fixtures produce identical
+`routes`/`handlers`/`frameworks` in Rust and Python. The port tests for it
+now load the Rust bridge explicitly (`tests/_rust_bridge.py`) instead of
+resolving to `py_agent`.
+
+Still open from Unit 49: exact embedding float parity (1-3 days) and shadow
+cutover approval.
+
 ## 1. Scope and ground rules
 
 This plan covers the gap between the current Rust port and the Python package as measured by CodeRadar. It does **not** change the decisions already recorded in `PORT.md`:

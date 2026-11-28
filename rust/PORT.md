@@ -1153,3 +1153,82 @@ methods and test helpers, no structural edge failures.
 3. Optional internal callable parity: no caller-edge gap at the CLI/MCP/facade
    boundary; only needed if every private Python helper must be bridged by
    name, 8–12 days.
+
+## Functional-surface audit (Unit 50)
+
+The Unit 49 audit counted names. This one probes the **contract**: every
+Python CLI option, every MCP tool parameter, and a differential run of the
+framework extractors. Method: `coderadar query`/`calls` for the graph,
+`coderadar <cmd> --help` for both front doors, AST extraction of the Python
+MCP signatures, and 23 framework fixtures executed against both packages.
+
+### Verdict
+
+- **Rust binary (`coderadar-rs`)**: 55/55 CLI command names, 35/35 Python
+  MCP tool names, 49 tools total, 3/3 resources. No Python process, no
+  Python DLL. Functionally complete at the *name* level.
+- **Python facade (`rust/coderadar/python`, 1,395 LOC)**: 69 of 94 functions
+  call `_native` directly; the rest are dataclass/plan shape helpers and the
+  `Watcher`/`GitWatcher`/`BatchContext` process wrappers, whose work
+  (`watch_changes_op`, `sync_git_op`, `git_head`) is Rust.
+- **Legacy `py_agent` (20,088 LOC)**: still a full Python implementation of
+  the front doors over the shared Rust `_core` engine. It is the reference
+  implementation, not a runtime dependency of the Rust binary.
+
+### Measured contract gaps
+
+1. **CLI options are not transferred.** 42 of 55 Python commands accept
+   `--format`; only **12** Rust commands do (6 native + 6 captured:
+   `visualize`, `rebuild-store`, `get-smells`, `find-clones`,
+   `find-scaffolding`, `reindex`). `coderadar-rs node <id> --format json`
+   fails with `unexpected argument`.
+   25 shared commands are missing at least one Python flag:
+   - `--format` (30 commands, e.g. `node`, `callers`, `affected`, `query`)
+   - `as-of --query`, `explore --query/--direction/--max-files`,
+     `traverse --edge-kinds`, `open-items --scope`
+   - `export-annotations --out/--store`,
+     `import-annotations --store/--on-conflict`
+   - `ingest-history --repo/--from/--to/--store` (Rust spells them
+     `--from-sha`/`--to-sha`)
+   - `verify-history --from/--to`, `changes-between --t1/--t2`
+2. **Captured commands ignore `--help`.** `diagnose`, `docs`, `history`,
+   `load-snapshot`, `migrate-to-commit-time`, `module-children`,
+   `rebuild-store`, `reindex`, `resolve`, `revise-annotation`,
+   `retire-annotation`, `store-repair`, `visualize`,
+   `annotation-history`, `comment-history`, `find-clones`,
+   `find-scaffolding`, `get-smells` **execute the command** with
+   `"--help"` as its argument. `reindex --help` starts a full reindex and
+   hangs. Only `exclude`, `git` and `skills` print usage.
+3. **MCP tools silently ignore documented parameters.** 35/35 names are
+   present; these parameters are never read:
+   - `coderadar_node.include_neighbors` (hardcoded `false`)
+   - `coderadar_explore.symbols/direction/max_files` (hardcoded
+     `None`/`"both"`/`8`)
+   - `coderadar_traverse.edge_kinds` (always `None`)
+   - `coderadar_reindex.with_embeddings/full` (ignored, so
+     `with_embeddings: true` does nothing)
+   - `coderadar_verify_history.all_generations` (Rust reads `"all"`)
+   - `coderadar_set_project.confirm` (ignored)
+   - mutation tools read `apply` instead of Python's `dry_run` (recorded
+     decision, but breaking for Python-shaped clients)
+
+### Framework parity
+
+23 fixtures from `tests/test_port_unit{17,18,19,22}*` were executed against
+both packages: **23/23 identical** `routes`/`handlers`/`frameworks`.
+
+Those four test files were also **silently testing the Python reference**:
+`pyproject.toml` puts `py_agent/src` on `sys.path`, so
+`from coderadar.framework import ...` resolved to `py_agent`. They now load
+the bridge under a private alias (`tests/_rust_bridge.py`) and assert the
+Rust extraction counts equal the Python reference on every fixture. The
+stale `test_go_middleware` expectation (`>= 2`) was corrected to the shared
+behaviour (`1`): neither implementation mints an edge for `r.Use(...)`.
+
+### Estimate
+
+- CLI flags + `--format` for 30 commands: **1.5–2 days**.
+- `--help` routing for 18 captured commands: **0.5 day**.
+- MCP parameter gaps (7 tools): **0.5 day**.
+- **Total ≈ 2.5–3 days** to make the contracts, not just the names, match.
+- Exact embedding float parity and shadow cutover are unchanged from Unit 49.

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from coderadar.framework import refresh_framework_file
+from tests._rust_bridge import refresh_framework_file
 
 
 def _run(tmp_path: Path, files: dict[str, str], rel: str) -> dict:
